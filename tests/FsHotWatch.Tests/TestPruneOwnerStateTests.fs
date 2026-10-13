@@ -761,3 +761,75 @@ let ``a scan's build does not replay a cached green over owed dependency fanout`
     host.EmitBuildCompleted BuildSucceeded
     settle ()
     Assert.Equal(2, runCount ())
+
+/// The test-impact DB write is one synchronous call inside the impact-selection fold, so a
+/// write blocked on a lock another process holds looked, to every reader, like a fold that
+/// never returned. It declares itself inside the selection's declaration, naming how much
+/// it writes and WHERE, so a wait or a wedge line says "test-impact DB write" and the path.
+[<Fact(Timeout = 15000)>]
+let ``the test-impact DB write declares itself, naming its file count and database`` () =
+    let root = isolatedRoot ()
+    let dbPath = Path.Combine(root, "impact.db")
+
+    let handler = create dbPath root (Some [ config "ProjA" ]) None None None None []
+
+    let symbol: TestPrune.AstAnalyzer.SymbolInfo =
+        { FullName = "Lib.value"
+          Kind = TestPrune.AstAnalyzer.SymbolKind.Value
+          SourceFile = "Lib.fs"
+          LineStart = 1
+          LineEnd = 1
+          ContentHash = "h"
+          IsExtern = false }
+
+    let pending =
+        { handler.Init with
+            PendingAnalysis =
+                Map.ofList [ "ProjA", [ TestPrune.AstAnalyzer.AnalysisResult.Create([ symbol ], [], []) ] ] }
+
+    let declarations = ResizeArray<string>()
+
+    let declaring =
+        { recordingCtx () with
+            DeclareBoundedWork =
+                fun label _ ->
+                    declarations.Add $"open: %s{label}"
+
+                    { new IDisposable with
+                        member _.Dispose() = declarations.Add $"close: %s{label}" } }
+
+    update declaring handler pending (BuildCompleted BuildSucceeded) |> ignore
+
+    let write =
+        declarations
+        |> Seq.tryFind (fun line -> line.StartsWith "open: test-impact DB write")
+
+    Assert.True(write.IsSome, $"the DB write must declare itself; declared: %A{Seq.toList declarations}")
+    Assert.Contains("1 file", write.Value)
+    Assert.Contains(dbPath, write.Value)
+
+    // Nested inside the selection: opened after it and closed before it.
+    let indexOf (line: string) = declarations.IndexOf line
+    let writeLabel = write.Value.Substring "open: ".Length
+    Assert.True(indexOf "open: impact selection" < indexOf write.Value)
+    Assert.True(indexOf $"close: %s{writeLabel}" < indexOf "close: impact selection")
+
+/// SQLite reports a lock it waited out as `SQLITE_BUSY` ("database is locked"), naming
+/// neither the database nor the write. The flush re-raises it naming both, so the failed
+/// status a blocked write leaves says where to look.
+[<Fact(Timeout = 15000)>]
+let ``a DB write refused for a lock names the database, the write and how long it waited`` () =
+    let busy =
+        Microsoft.Data.Sqlite.SqliteException("SQLite Error 5: 'database is locked'.", 5)
+
+    let named =
+        namedDbWriteFailure "/repo/.fshw/test-impact.db" 485 (TimeSpan.FromSeconds 30.0) busy
+
+    Assert.Contains("test-impact DB write blocked for 30s", named.Message)
+    Assert.Contains("/repo/.fshw/test-impact.db", named.Message)
+    Assert.Contains("485 file(s)", named.Message)
+    Assert.Same(busy, named.InnerException)
+
+    // Any other failure passes through untouched: schema-drift repair reads it as raised.
+    let other = InvalidOperationException "no such column: x"
+    Assert.Same(other, namedDbWriteFailure "/repo/.fshw/test-impact.db" 1 TimeSpan.Zero other)

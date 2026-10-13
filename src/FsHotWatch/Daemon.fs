@@ -2191,17 +2191,74 @@ let formatElapsed (ts: System.TimeSpan) = PluginWedge.formatElapsed ts
 /// diagnosable from a single log line.
 ///
 /// Example output: `test-prune (25m 12s) [Intelligence.Tests.Unit 12m 3s, Intelligence.Tests.Database 10m 1s]`
-/// The bounded work `plugin` declared over itself and still has in flight, by the label
-/// it declared (`SupervisedWork.declare` names it `<plugin>: <label>`).
-let internal boundedWorkOf (work: PluginWorkOwner.HostSnapshot) (plugin: string) =
+/// The operations among `operations` that `plugin` declared over itself, by the label it
+/// declared (`SupervisedWork.declare` names them `<plugin>: <label>`).
+let private declaredBy (plugin: string) (operations: (string * System.DateTime * System.TimeSpan option) list) =
     let prefix = $"%s{plugin}: "
 
-    work.OperationsInFlight
+    operations
     |> List.choose (fun (name, startedAt, deadline) ->
         if name.StartsWith(prefix, System.StringComparison.Ordinal) then
             Some(name.Substring prefix.Length, startedAt, deadline)
         else
             None)
+
+/// The bounded work `plugin` declared over itself and still has in flight.
+let internal boundedWorkOf (work: PluginWorkOwner.HostSnapshot) (plugin: string) =
+    declaredBy plugin work.OperationsInFlight
+
+/// The bounded work `plugin` declared over itself that has OVERRUN its deadline and not
+/// yet returned (`HostSnapshot.OverranOperations`), by its declared label.
+let internal overranWorkOf (work: PluginWorkOwner.HostSnapshot) (plugin: string) =
+    declaredBy plugin work.OverranOperations
+
+/// The wedge failure for a wait whose stalled plugins hold declared work past its bound.
+///
+/// The generic wedge describes a lost hand-off: an event whose handler never returned
+/// with nothing saying what it was doing. Work that DECLARED itself is a different
+/// failure with a different remedy — the fold is inside a call it named, which has run
+/// past the bound it stated (a write blocked on a lock another process holds, a call that
+/// hangs) — so it is named as that work, with how long it has run against its bound.
+/// `None` when no stalled plugin overran a declaration: the generic wording stands.
+let internal overranWedgeMessage
+    (now: System.DateTime)
+    (work: PluginWorkOwner.HostSnapshot)
+    (busy: string list)
+    : string option =
+    let clauses =
+        busy
+        |> List.collect (fun plugin ->
+            overranWorkOf work plugin
+            |> List.map (fun (label, startedAt, deadline) ->
+                let ran = formatElapsed (now - startedAt)
+
+                match deadline with
+                | Some bound -> $"%s{plugin}: %s{label} %s{ran} of %s{formatElapsed bound}"
+                | None -> $"%s{plugin}: %s{label} %s{ran}"))
+
+    if clauses.IsEmpty then
+        None
+    else
+        let inFlight =
+            busy
+            |> List.map (fun plugin ->
+                PluginWedge.describeAwaiting now [] (boundedWorkOf work plugin) (work.PendingEventsOf plugin))
+            |> List.filter (fun clause -> clause <> "")
+
+        let inside =
+            if inFlight.IsEmpty then
+                ""
+            else
+                let joined = String.concat "; " inFlight
+                $" Still inside its bound: %s{joined}."
+
+        let overran = String.concat "; " clauses
+
+        Some(
+            $"WaitForComplete: plugin(s) WEDGED — declared bounded work OVERRAN its deadline without returning: %s{overran}.%s{inside} "
+            + "The work named itself and stated how long it would take, so this is that call blocked or hung (a lock another process holds, I/O that never completes), not a lost hand-off. "
+            + "Inspect logs/daemon.log for the last line that work wrote, then `fshw stop` to reclaim the daemon."
+        )
 
 let formatPluginWait
     (now: System.DateTime)
@@ -2370,7 +2427,23 @@ let private waitCoreWith
                 let owned = String.concat ", " snapshot.BusyNames
                 $"no plugins are registered, but the host still owns work: %s{owned}"
             else
-                let busyNames = String.concat ", " busy
+                // Each owner with what it is on: declared bounded work names itself and how
+                // far into its bound it is, so "still working inside a stated bound" never
+                // reads as the bare name a stuck fold also shows.
+                let now = System.DateTime.UtcNow
+
+                let busyNames =
+                    busy
+                    |> List.map (fun name ->
+                        name
+                        + PluginWedge.awaitingSuffix (
+                            PluginWedge.describeAwaiting
+                                now
+                                []
+                                (boundedWorkOf snapshot name)
+                                (snapshot.PendingEventsOf name)
+                        ))
+                    |> String.concat ", "
 
                 let reasons =
                     [ if not busy.IsEmpty then
@@ -2419,7 +2492,14 @@ let private waitCoreWith
             // otherwise be computed every 10s and thrown away — a status
             // round-trip, an activity snapshot per running plugin, and in the
             // all-legs-satisfied case a reflection-based `%A` dump of every status.
-            if anyRunning () then
+            // Declared bounded work is progress a watcher needs to see too: a fold inside
+            // one (a test-impact DB write) has nothing Running, and at debug its line would
+            // leave a long silence that reads exactly like a wedge.
+            let declaredInFlight () =
+                host.WorkSnapshot.OperationsInFlight
+                |> List.exists (fun (_, _, deadline) -> deadline.IsSome)
+
+            if anyRunning () || declaredInFlight () then
                 Logging.info "wait" (formatTimeoutDetail ())
             elif Logging.isEnabled Logging.LogLevel.Debug then
                 Logging.debug "wait" (formatTimeoutDetail ())
@@ -2490,13 +2570,17 @@ let private waitCoreWith
             then
                 let joined = String.concat ", " busy
 
-                raise (
-                    System.TimeoutException(
+                let message =
+                    match overranWedgeMessage now host.WorkSnapshot busy with
+                    | Some overran -> overran
+                    | None ->
                         $"WaitForComplete: plugin(s) WEDGED — %s{joined} reported work in flight for %s{formatElapsed stallThreshold} with nothing Running and no event finishing anywhere in the host. "
                         + "That hand-off should take milliseconds, so this is a stuck inflight count (an event whose handler never returned, or an exclusive run whose completion was never posted), not slow work. "
                         + "Inspect logs/daemon.log around this timestamp, then `fshw stop` to reclaim the daemon."
-                    )
-                )
+
+                // The message points the reader at logs/daemon.log, so the log holds it.
+                Logging.error "wait" message
+                raise (System.TimeoutException message)
 
     let rec loop () =
         async {

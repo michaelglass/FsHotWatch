@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: declared bounded work is named where a wait reads it. `PluginWorkOwner.HostSnapshot`
+  gains `OverranOperations` (bounded operations still live whose deadline recorded a
+  failure). The wedge for a stalled plugin holding one names it as the work that OVERRAN
+  (`<plugin>: <label> <elapsed> of <bound>`) instead of a stuck inflight count. A wait's
+  timeout and its `[wait]` line name each owner's in-flight bounded work. That line is at
+  Info while declared work is in flight. Every wedge is logged before it is raised.
+
 ## 0.10.0-alpha.71 - 2026-10-13
 
 - fix: a scan's progress advances per file. `runChecksWithRetry` emits each result as

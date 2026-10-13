@@ -215,6 +215,16 @@ type HostSnapshot =
         |> List.filter (fun (_, operation) -> operation.Failure.IsNone)
         |> List.map (fun (_, operation) -> operation.Name, operation.StartedAt, operation.Deadline)
 
+    /// Every BOUNDED host operation still live whose declared deadline has recorded a
+    /// failure: its name, when it began, and that deadline. The work has not returned, and
+    /// it said how long it would take, so a wedge line names it as the work that overran
+    /// rather than as a lost hand-off.
+    member this.OverranOperations: (string * DateTime * TimeSpan option) list =
+        this.Operations
+        |> Map.toList
+        |> List.filter (fun (_, operation) -> operation.Bounded && operation.Failure.IsSome)
+        |> List.map (fun (_, operation) -> operation.Name, operation.StartedAt, operation.Deadline)
+
     /// Events admitted to the rows named `name` and not yet committed.
     member this.PendingEventsOf(name: string) : int =
         this.Rows

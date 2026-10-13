@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: the test-impact DB write declares itself as bounded work
+  (`test-impact DB write: <n> file(s) to <db path>`) inside the impact selection, logs its
+  elapsed time when it returns, and a write refused for a lock (`SQLITE_BUSY`/`SQLITE_LOCKED`)
+  is re-raised naming the database, the file count and how long it waited.
+
 ## 0.13.0-alpha.69 - 2026-10-08
 
 - deps: TestPrune.Core 13.3.3 (index schema 21) and TestPrune.Trace 0.7.1, built against

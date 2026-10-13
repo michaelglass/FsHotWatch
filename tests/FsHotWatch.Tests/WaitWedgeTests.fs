@@ -489,3 +489,75 @@ let ``declared work held past its own deadline still reads as wedged`` () =
         test <@ failure.Message.Contains "overrunning-plugin" @>
     finally
         release.Set()
+
+// ---------------------------------------------------------------------------
+// Declared work reads as what it is, in flight and past its bound.
+// ---------------------------------------------------------------------------
+//
+// A fold blocked inside declared work — a test-impact DB write waiting on a lock another
+// process holds — used to surface as the generic wedge, whose words describe a lost
+// hand-off ("an event whose handler never returned"), and a wait that ran out inside the
+// bound named only the plugin. An operator deciding whether to retry a ship could not tell
+// "still writing, will finish" from "stuck". Both surfaces now name the declared work, how
+// far into its bound it is, and, past the bound, that it OVERRAN.
+
+[<Fact(Timeout = 60_000)>]
+let ``declared work past its deadline is named as the work that overran, not as a lost hand-off`` () =
+    use entered = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
+
+    try
+        host.RegisterHandler(declaringHandler "overrunning-plugin" (TimeSpan.FromSeconds 1.0) entered release)
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        Assert.True(entered.Wait(TimeSpan.FromSeconds 10.0), "the declared work must start")
+
+        let failure =
+            Assert.Throws<TimeoutException>(fun () ->
+                Daemon.waitForAllTerminalCore
+                    host
+                    (TimeSpan.FromSeconds 30.0)
+                    (TimeSpan.FromMilliseconds 400.0)
+                    CancellationToken.None
+                |> fun t -> t.GetAwaiter().GetResult())
+
+        // Still a wedge, so a caller keyed on the token keeps failing closed.
+        test <@ failure.Message.Contains "WEDGED" @>
+        test <@ failure.Message.Contains "overrunning-plugin" @>
+        // ...but it names the work, its bound, and what happened to it.
+        test <@ failure.Message.Contains "cold impact attribution" @>
+        test <@ failure.Message.Contains "OVERRAN" @>
+        test <@ failure.Message.Contains "of 1s" @>
+        // And it does not send the reader after a lost hand-off that did not happen.
+        test <@ not (failure.Message.Contains "stuck inflight count") @>
+    finally
+        release.Set()
+
+[<Fact(Timeout = 60_000)>]
+let ``a wait that runs out inside declared work names that work and how far into its bound it is`` () =
+    use entered = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
+
+    try
+        host.RegisterHandler(declaringHandler "declaring-plugin" (TimeSpan.FromMinutes 5.0) entered release)
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        Assert.True(entered.Wait(TimeSpan.FromSeconds 10.0), "the declared work must start")
+
+        let failure =
+            Assert.Throws<TimeoutException>(fun () ->
+                Daemon.waitForAllTerminalCore
+                    host
+                    (TimeSpan.FromSeconds 1.0)
+                    (TimeSpan.FromMilliseconds 300.0)
+                    CancellationToken.None
+                |> fun t -> t.GetAwaiter().GetResult())
+
+        test <@ not (failure.Message.Contains "WEDGED") @>
+        test <@ failure.Message.Contains "declaring-plugin" @>
+        test <@ failure.Message.Contains "bounded work: cold impact attribution" @>
+        test <@ failure.Message.Contains "of 5m 0s" @>
+    finally
+        release.Set()
