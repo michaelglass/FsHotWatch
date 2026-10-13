@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: `tests.selection.testScopedSources` (`["sql", "sql-hydra"]`) sets the walk policy
+  the test-prune plugin opens its index with. Absent, the default is unchanged: the walk
+  follows every edge. Names other than `sql` and `sql-hydra`, a non-array value, a
+  non-string entry and unknown keys under `selection` fail configuration.
+  `DaemonConfiguration.Tests` gains `Selection: TestPrune.Domain.WalkPolicy`.
+- build(deps): TestPrune.Core 13.3.3 -> 13.4.0, TestPrune.Sql 0.3.0 -> 0.3.1,
+  TestPrune.SqlHydra 0.2.0 -> 0.2.2, TestPrune.Falco 4.0.0 -> 4.0.2. Index schema
+  unchanged (21).
+
 ## 0.14.0-alpha.98 - 2026-10-14
 
 - fix: a repository host that hangs up mid-frame no longer crashes the CLI with an

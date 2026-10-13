@@ -306,6 +306,7 @@ let ``serializeConfig with empty test projects omits tests section`` () =
                 Some
                     {| BeforeRun = None
                        Extensions = []
+                       Selection = TestPrune.Domain.WalkPolicy.FollowAll
                        Projects = []
                        Excluded = []
                        Solution = None
@@ -326,6 +327,7 @@ let ``serializeConfig test project without filterTemplate omits it`` () =
                 Some
                     {| BeforeRun = None
                        Extensions = []
+                       Selection = TestPrune.Domain.WalkPolicy.FollowAll
                        Projects =
                         [ { Project = "MyTests"
                             Command = "dotnet"

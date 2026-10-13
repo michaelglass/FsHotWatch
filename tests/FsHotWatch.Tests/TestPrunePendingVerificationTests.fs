@@ -309,6 +309,7 @@ let ``incident: a test child that never becomes a live process drives the run to
                 (TimeSpan.FromSeconds 1.0)
                 (fun () -> Map.empty)
                 ":memory:"
+                TestPrune.Domain.WalkPolicy.FollowAll
                 tmpDir
                 (Some configs)
                 None

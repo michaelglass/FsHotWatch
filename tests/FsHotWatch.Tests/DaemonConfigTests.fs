@@ -1525,6 +1525,52 @@ let ``parseConfig tests without extensions defaults to empty`` () =
     let config = parseConfig json defaults
     test <@ config.Tests.Value.Extensions |> List.isEmpty @>
 
+// --- parseConfig: tests.selection (the impact walk's policy) ---
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig without tests.selection follows every edge`` () =
+    let config = parseConfig """{"tests":{"projects":[{"project":"Tests"}]}}""" defaults
+    test <@ config.Tests.Value.Selection = TestPrune.Domain.WalkPolicy.FollowAll @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig reads tests.selection.testScopedSources as the walk policy`` () =
+    let config =
+        parseConfig
+            """{"tests":{"selection":{"testScopedSources":["sql","sql-hydra"]},"projects":[{"project":"Tests"}]}}"""
+            defaults
+
+    test <@ config.Tests.Value.Selection = TestPrune.Sql.SqlCoupling.reachabilityGated @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig reads an empty testScopedSources as following every edge`` () =
+    let config =
+        parseConfig """{"tests":{"selection":{"testScopedSources":[]},"projects":[{"project":"Tests"}]}}""" defaults
+
+    test <@ config.Tests.Value.Selection = TestPrune.Domain.WalkPolicy.FollowAll @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig reads a tests.selection without testScopedSources as following every edge`` () =
+    let config =
+        parseConfig """{"tests":{"selection":{},"projects":[{"project":"Tests"}]}}""" defaults
+
+    test <@ config.Tests.Value.Selection = TestPrune.Domain.WalkPolicy.FollowAll @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("{\"testScopedSources\":[\"sqll\"]}", "unknown value 'sqll'")>]
+[<InlineData("{\"testScopedSources\":[\"sql\",\"core\"]}", "unknown value 'core'")>]
+[<InlineData("{\"testScopedSources\":[\"SQL\"]}", "unknown value 'SQL'")>]
+[<InlineData("{\"testScopedSources\":\"sql\"}", "must be an array")>]
+[<InlineData("{\"testScopedSources\":[1]}", "must be an array of strings")>]
+[<InlineData("{\"testScoped\":[\"sql\"]}", "unknown key 'testScoped'")>]
+[<InlineData("[\"sql\"]", "tests.selection must be an object")>]
+let ``parseConfig refuses a malformed tests.selection`` (selectionJson: string) (expected: string) =
+    let json =
+        $"""{{"tests":{{"selection":{selectionJson},"projects":[{{"project":"Tests"}}]}}}}"""
+
+    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    test <@ ex.Message.Contains "tests.selection" @>
+    test <@ ex.Message.Contains expected @>
+
 [<Fact(Timeout = 15000)>]
 let ``loadConfig defaults to NoCache regardless of .jj presence`` () =
     withTempDir "cfg-def-jj" (fun tmpDir ->
@@ -1764,6 +1810,7 @@ let ``countPlugins counts build lint analyzers tests and fileCommands`` () =
                 Some
                     {| BeforeRun = None
                        Extensions = []
+                       Selection = TestPrune.Domain.WalkPolicy.FollowAll
                        Projects = []
                        Excluded = []
                        Solution = None

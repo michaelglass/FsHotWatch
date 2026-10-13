@@ -6524,6 +6524,9 @@ let internal createWithQueries
     // leaves the debt owed.
     (resolveExcludedProjects: unit -> Map<string, string>)
     (dbPath: string)
+    // The edges the impact walk follows (`tests.selection`). `WalkPolicy.FollowAll`
+    // follows every edge.
+    (walkPolicy: TestPrune.Domain.WalkPolicy)
     (repoRoot: string)
     (testConfigs: TestConfig list option)
     (buildExtensions: (Database -> ITestPruneExtension list) option)
@@ -6577,7 +6580,7 @@ let internal createWithQueries
                         folded.Task
                   Bound = TraceRun.indexFoldBound } })
 
-    let db = Database.create dbPath
+    let db = Database.create (dbPath, walkPolicy)
     let queries = queriesOf db
     let configuredTestProjects = testConfigs |> Option.defaultValue []
 
@@ -11390,6 +11393,9 @@ let internal createWithLaunchDeadline
     (launchDeadline: TimeSpan)
     (resolveExcludedProjects: unit -> Map<string, string>)
     (dbPath: string)
+    // The edges the impact walk follows (`tests.selection`). `WalkPolicy.FollowAll`
+    // follows every edge.
+    (walkPolicy: TestPrune.Domain.WalkPolicy)
     (repoRoot: string)
     (testConfigs: TestConfig list option)
     (buildExtensions: (Database -> ITestPruneExtension list) option)
@@ -11405,6 +11411,7 @@ let internal createWithLaunchDeadline
         launchDeadline
         resolveExcludedProjects
         dbPath
+        walkPolicy
         repoRoot
         testConfigs
         buildExtensions
@@ -11435,6 +11442,9 @@ let createWithTracesIn
     (weaveOverrides: Map<string, TraceWeaveTests>)
     (resolveExcludedProjects: unit -> Map<string, string>)
     (dbPath: string)
+    // The edges the impact walk follows (`tests.selection`). `WalkPolicy.FollowAll`
+    // follows every edge.
+    (walkPolicy: TestPrune.Domain.WalkPolicy)
     (repoRoot: string)
     (testConfigs: TestConfig list option)
     (buildExtensions: (Database -> ITestPruneExtension list) option)
@@ -11452,6 +11462,7 @@ let createWithTracesIn
         launchDeadline
         resolveExcludedProjects
         dbPath
+        walkPolicy
         repoRoot
         testConfigs
         buildExtensions
@@ -11489,6 +11500,7 @@ let createWithTraces
         weaveOverrides
         resolveExcludedProjects
         dbPath
+        TestPrune.Domain.WalkPolicy.FollowAll
         repoRoot
         testConfigs
         buildExtensions

@@ -61,6 +61,22 @@ registrations and `[<DispatchTemplate(channel, "/path/{name}")>]` shapes; it tak
 no other fields. Unknown or incomplete entries fail configuration. An extension
 that throws keeps its previous edges and is reported as an error until it answers.
 
+`tests.selection.testScopedSources` names edge sources the impact walk does not
+follow. Absent means every edge, the default and unchanged behaviour:
+
+```json
+{
+  "tests": {
+    "selection": {"testScopedSources": ["sql", "sql-hydra"]}
+  }
+}
+```
+
+Use it only when each test runs against its own database state (truncated and
+re-seeded per test or fixture): a changed SQL writer then selects a test through
+a reader of its table only when the test also reaches the writer. The accepted
+names are `sql` and `sql-hydra`; any other name or shape fails configuration.
+
 ## Commands
 
 | Command | Description |

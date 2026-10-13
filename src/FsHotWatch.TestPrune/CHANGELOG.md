@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **feat!: `createWithTracesIn` takes a `TestPrune.Domain.WalkPolicy` after `dbPath`**,
+  and the plugin opens its index with `Database.create(dbPath, policy)`, so impact
+  selection and covering-project debt follow it. Pass `WalkPolicy.FollowAll` for today's
+  behaviour; `create`, `createWithScope` and `createWithTraces` do, so their default is
+  unchanged.
+- deps: TestPrune.Core 13.4.0 and TestPrune.Trace 0.7.3. Index schema unchanged (21).
+
 ## 0.13.0-alpha.71 - 2026-10-14
 
 - fix: the test-impact DB write declares itself as bounded work

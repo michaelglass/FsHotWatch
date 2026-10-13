@@ -115,6 +115,7 @@ let ``a flush classifies its whole queue with one grouped query`` () =
                 (TimeSpan.FromMinutes 5.0)
                 (fun () -> Map.empty)
                 dbPath
+                TestPrune.Domain.WalkPolicy.FollowAll
                 tmpDir
                 None
                 None
@@ -173,6 +174,7 @@ let ``a seed that alone selects more than its whole queue is named as a non-mono
                 (TimeSpan.FromMinutes 5.0)
                 (fun () -> Map.empty)
                 dbPath
+                TestPrune.Domain.WalkPolicy.FollowAll
                 tmpDir
                 None
                 None

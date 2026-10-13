@@ -184,6 +184,7 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
                     Some
                         {| BeforeRun = None
                            Extensions = []
+                           Selection = TestPrune.Domain.WalkPolicy.FollowAll
                            Projects = [ makeProj "ProjA" true; makeProj "ProjB" true; makeProj "ProjOptOut" false ]
                            Excluded = []
                            Solution = None

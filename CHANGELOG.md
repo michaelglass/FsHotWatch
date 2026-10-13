@@ -74,6 +74,21 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### cli, test-prune: opt-in test-scoped SQL edges (`tests.selection`)
+
+- **feat: `tests.selection.testScopedSources` names dependency-edge sources the impact
+  walk does not follow.** **The default is unchanged:** with the key absent, selection
+  follows every edge exactly as before. `{"testScopedSources": ["sql", "sql-hydra"]}`
+  is TestPrune's `SqlCoupling.reachabilityGated`: a changed SQL writer selects a test
+  through a reader of its table only when the test also reaches the writer itself. Use
+  it only when each test runs against its own database state. Unknown source names and
+  malformed values are configuration errors. The policy reaches the index the plugin
+  selects from and computes covering-project debt with.
+- build(deps): TestPrune.Core 13.4.0, TestPrune.Sql 0.3.1, TestPrune.SqlHydra 0.2.2,
+  TestPrune.Falco 4.0.2 (a route edge starts at the symbol that names the route, not at
+  every symbol of its declaration) and TestPrune.Trace 0.7.3. The index schema is
+  unchanged, so no re-index.
+
 ### core: an executor that fails to start no longer poisons the shared build-artifacts lease
 
 - **fix: a shared run that never started hands the resource back in the state it was

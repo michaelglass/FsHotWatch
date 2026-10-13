@@ -101,6 +101,7 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
             Some
                 {| BeforeRun = None
                    Extensions = []
+                   Selection = TestPrune.Domain.WalkPolicy.FollowAll
                    Projects = testProjects
                    // A freshly-initialised repo excludes nothing. That is the
                    // honest starting state and the strict one: `fshw init`

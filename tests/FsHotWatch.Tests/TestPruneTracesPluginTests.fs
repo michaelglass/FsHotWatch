@@ -134,6 +134,7 @@ let private runTests (root: string) (configs: TestConfig list) (traces: TraceWir
             (TimeSpan.FromMinutes 2.0)
             (fun () -> Map.empty)
             (Path.Combine(root, "tp.db"))
+            TestPrune.Domain.WalkPolicy.FollowAll
             root
             (Some configs)
             None
@@ -301,6 +302,7 @@ let ``a filtered run that full-runs does not record stays silent and stores noth
                 (TimeSpan.FromMinutes 2.0)
                 (fun () -> Map.empty)
                 (Path.Combine(root, "tp.db"))
+                TestPrune.Domain.WalkPolicy.FollowAll
                 root
                 (Some [ config "T" runner "" ])
                 None
@@ -446,6 +448,7 @@ let ``a traced run joins against the analysis admitted while it ran, however far
                 (TimeSpan.FromMinutes 2.0)
                 (fun () -> Map.empty)
                 (Path.Combine(root, "tp.db"))
+                TestPrune.Domain.WalkPolicy.FollowAll
                 root
                 (Some [ config "T" "dotnet" "run --project tests/T --no-build" ])
                 (Some(fun _ -> [ holdingExtension ]))

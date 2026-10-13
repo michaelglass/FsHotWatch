@@ -370,6 +370,7 @@ let private runScenario (root: string) (setup: Setup) =
                 (TimeSpan.FromMinutes 5.0)
                 (fun () -> Map.empty)
                 dbPath
+                TestPrune.Domain.WalkPolicy.FollowAll
                 root
                 (Some configs)
                 None

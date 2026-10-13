@@ -344,6 +344,7 @@ type DaemonConfiguration =
         Tests:
             {| BeforeRun: string list option
                Extensions: TestExtensionConfig list
+               Selection: TestPrune.Domain.WalkPolicy
                Projects: TestProjectConfig list
                Excluded: SolutionScope.Exclusion list
                Solution: string option
@@ -504,6 +505,43 @@ let private parseWeaveTests (key: string) (v: JsonElement) =
     match parsed with
     | Some weave -> weave
     | None -> refuseUnknown key (describeValue v) (jsonStrings [ "sites"; "full" ])
+
+/// The edge sources `tests.selection.testScopedSources` accepts: the sources of the SQL
+/// coupling edges, whose writer→reader coupling a test observes only by running the
+/// writer when every test starts from its own database state.
+let private testScopedSourceNames: string list =
+    [ TestPrune.Sql.SqlCoupling.Source; TestPrune.Sql.SqlCoupling.SqlHydraSource ]
+
+/// `tests.selection`: `{ "testScopedSources": [...] }` as the impact walk's policy. Every
+/// malformed shape and every name outside `testScopedSourceNames` is a `ConfigError`: a
+/// typo must not fall back to following every edge, nor to some other policy.
+let private parseSelection (v: JsonElement) : TestPrune.Domain.WalkPolicy =
+    if v.ValueKind <> JsonValueKind.Object then
+        raise (ConfigError "tests.selection must be an object")
+
+    for property in v.EnumerateObject() do
+        if property.Name <> "testScopedSources" then
+            raise (ConfigError $"tests.selection: unknown key '%s{property.Name}' — expected \"testScopedSources\"")
+
+    match v.TryGetProperty("testScopedSources") with
+    | true, sources when sources.ValueKind = JsonValueKind.Array ->
+        let names =
+            sources.EnumerateArray()
+            |> Seq.map (fun source ->
+                if source.ValueKind <> JsonValueKind.String then
+                    raise (ConfigError "tests.selection.testScopedSources must be an array of strings")
+
+                let name = source.GetString()
+
+                if not (List.contains name testScopedSourceNames) then
+                    refuseUnknown "tests.selection.testScopedSources" name (jsonStrings testScopedSourceNames)
+
+                name)
+            |> Set.ofSeq
+
+        { TestPrune.Domain.WalkPolicy.TestScopedSources = names }
+    | true, _ -> raise (ConfigError "tests.selection.testScopedSources must be an array")
+    | _ -> TestPrune.Domain.WalkPolicy.FollowAll
 
 /// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
 let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
@@ -768,6 +806,11 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 | true, _ -> raise (ConfigError("tests.extensions must be an array"))
                 | _ -> []
 
+            let selection =
+                match v.TryGetProperty("selection") with
+                | true, value -> parseSelection value
+                | _ -> TestPrune.Domain.WalkPolicy.FollowAll
+
             let projects =
                 match v.TryGetProperty("projects") with
                 | true, arr ->
@@ -1005,6 +1048,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 Some
                     {| BeforeRun = beforeRun
                        Extensions = extensions
+                       Selection = selection
                        Projects = projects
                        Excluded = excluded
                        Solution = solution
@@ -2367,6 +2411,7 @@ let registerPluginsIn
                 weaveOverrides
                 excludedProjects
                 dbPath
+                t.Selection
                 repoRoot
                 (Some testConfigs)
                 buildExtensions
