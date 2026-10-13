@@ -114,6 +114,47 @@ let internal parseCtrfTests (json: string) : TestRunRecord list =
     with _ ->
         []
 
+/// The test classes a CTRF report declares. xUnit writes each row's `suite` as a path
+/// ending in the row's class and method, so a row whose `name` is that class, `.`, that
+/// method (theory arguments may follow) names its class exactly — which the `name`
+/// alone cannot, because a backticked method or class keeps every `.` written between
+/// its backticks. A row without such a path declares nothing; an unparseable document
+/// declares nothing.
+let internal parseCtrfDeclaredClasses (json: string) : Set<string> =
+    try
+        match JsonNode.Parse(json) with
+        | null -> Set.empty
+        | root ->
+            match ctrfTestsArray root with
+            | null -> Set.empty
+            | arr ->
+                arr
+                |> Seq.choose (fun node ->
+                    if isNull node then
+                        None
+                    else
+                        match tryGetString node "name", asJsonArray node.["suite"] with
+                        | Some name, suite when not (isNull suite) && suite.Count >= 2 ->
+                            let segment (i: int) =
+                                match suite.[i] with
+                                | null -> None
+                                | n ->
+                                    try
+                                        Some(n.GetValue<string>())
+                                    with _ ->
+                                        None
+
+                            match segment (suite.Count - 2), segment (suite.Count - 1) with
+                            | Some cls, Some meth when
+                                cls <> "" && name.StartsWith($"%s{cls}.%s{meth}", StringComparison.Ordinal)
+                                ->
+                                Some cls
+                            | _ -> None
+                        | _ -> None)
+                |> Set.ofSeq
+    with _ ->
+        Set.empty
+
 /// Compute a flakiness score in [0.0, 1.0] over a sequence of outcomes ordered
 /// most-recent-first. Skipped runs are filtered out before counting (a skip
 /// isn't a real outcome flip — collapse to the surrounding outcomes). The

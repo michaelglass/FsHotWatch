@@ -14,19 +14,12 @@ open FsHotWatch.TestPrune
 open FsHotWatch.TestPrune.TestPrunePlugin
 open TestPrune.Trace
 
-/// A scratch directory named by its real path. macOS's temp directory is under the `/var`
-/// symlink, and a build records the path it was given in its PDBs, so the repository root
-/// must be spelled the same way the build spells it.
+/// A scratch directory named by its real path. A build records the real path in its PDBs,
+/// and macOS's temp directory sits under a symlink (`/var` for the usual `TMPDIR`, `/tmp`
+/// when `TMPDIR` is unset), so the repository root must be spelled the way the build spells it.
 let private scratchRoot () =
-    let dir = Directory.CreateTempSubdirectory("fshw-traces-it-").FullName
-
-    if
-        dir.StartsWith("/var/", StringComparison.Ordinal)
-        && Directory.Exists "/private/var"
-    then
-        "/private" + dir
-    else
-        dir
+    Directory.CreateTempSubdirectory("fshw-traces-it-").FullName
+    |> FsHotWatch.CommandPreprocessor.realPathOf
 
 let private write (root: string) (rel: string) (text: string) =
     let path = Path.Combine(root, rel)

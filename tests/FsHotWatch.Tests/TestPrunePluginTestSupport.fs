@@ -185,7 +185,7 @@ let savedLog =
     FsHotWatch.RunLog.Ref.Written "/repo/.fshw/test-runs/deadbeef/FsHotWatch.Tests.output.log"
 
 /// No project wrote a CTRF report in this test: the console is all a red can be named from.
-let noReport (_: string) : string list = []
+let internal noReport (_: string) = ReportedFailures.none
 
 let writeAt (path: string) (contents: string) (mtime: DateTime) =
     Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore

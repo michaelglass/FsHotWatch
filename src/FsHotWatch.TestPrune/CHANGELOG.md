@@ -6,6 +6,26 @@
   (`test-impact DB write: <n> file(s) to <db path>`) inside the impact selection, logs its
   elapsed time when it returns, and a write refused for a lock (`SQLITE_BUSY`/`SQLITE_LOCKED`)
   is re-raised naming the database, the file count and how long it waited.
+- fix: a test whose backticked name contains `.` (`` member _.``parses v1.5 input`` ``,
+  reported as `Ns.Tests.parses v1.5 input`) is joined to its own test class. The runner's
+  name was split at its last `.`, which filed the red under the class
+  `Ns.Tests.parses v1`. That class is not in the index, so check-reach counted the
+  failure as a selection miss, the quarantine re-ran it under a class filter that
+  matched nothing, a class-filtered green never retired it, and its source file was not
+  found. Names now split against the classes the run's CTRF report declares (each row's
+  `suite` path) and the index stores, and the last `.` is used only for a name no known
+  class prefixes. `splitTestName` is that one split, used by the console parser, the
+  CTRF readers and recall.
+- fix: a cold daemon runs the suite once when the boot scan finishes checking after
+  the full-suite run has finished. The build launches that run before the scan has checked
+  the tree, so the scan's symbols usually arrive after the run's result is folded. There
+  is then no run in flight to attach them to, and the plugin launched a second run over
+  the same tree. That happened on both `check` and `confirm`. Now, when the last completed run
+  passed every runnable project in full over the tree and project model that the boot
+  scan sealed, and every file the scan checked is part of that tree, that run covers the
+  scan's debt and no new run launches. An in-session edit, a file outside the hashed
+  tree, a missing baseline, an unreadable ledger, or a pending dependency force-run still
+  launches its own run.
 
 ## 0.13.0-alpha.70 - 2026-10-13
 
