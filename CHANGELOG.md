@@ -455,9 +455,12 @@ for any path this does not cover; a survivor is still worth a report.
   daemon log. Parallel agents each doing a targeted rerun in their own workspace each
   bought a full suite. A narrowed rerun (`--filter-class`, `--filter-trait`, `--project`)
   now decides before it starts anything: with no daemon and no valid baseline it
-  **refuses (exit 2)**, naming the reason, and offers `fshw confirm` (earn the baseline)
-  or the same command with the new **`--allow-full-suite`** (`-F`) to start the daemon
-  anyway. Against an already-running daemon it proceeds, and says the daemon's own impact
+  **starts no daemon** and builds and runs only the requested slice in a one-shot
+  in-process host that launches no other test run. It names the reason, says the run is
+  PARTIAL (it earns no baseline and writes no verdict), and offers `fshw confirm` (earn
+  the baseline) or the same command with the new **`--allow-full-suite`** (`-F`) to start
+  the daemon anyway. (An earlier unreleased form of this change refused with exit 2
+  instead.) Against an already-running daemon it proceeds, and says the daemon's own impact
   runs are full-suite until a baseline exists and that the rerun earns no verdict. A
   plain `test-rerun` (no narrowing) and a workspace with a valid baseline are unchanged.
 
