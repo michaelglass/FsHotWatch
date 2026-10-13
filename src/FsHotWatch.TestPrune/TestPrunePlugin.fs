@@ -1926,6 +1926,12 @@ type TestPruneState =
         /// symbol is still at its captured revision: a later edit is new debt the held run
         /// never built, even if the edit restores the sealed bytes.
         DebtDuringFullRun: Map<string, int64>
+        /// The input tree, and the project model, over which the last completed run passed
+        /// every runnable project in full (`coveredByConstruction`). A BootScan cohort that
+        /// seals after that run's result has folded, over the same tree and model, and
+        /// whose files are all entries of it, describes what the run already tested: its
+        /// debt is discharged without a second run. The next completed run replaces it.
+        CoveredFullSuite: (ReceiptTree * int64 option) option
         /// Maps test class name → absolute source file path (built during FileChecked analysis).
         TestClassFiles: Map<string, string>
         /// True after the plugin has observed at least one `BuildCompleted
@@ -6866,6 +6872,14 @@ let internal createWithQueries
                 projects
                 |> Set.filter (fun project -> Set.contains project runnableProjects || not (declaredExcluded project))
 
+    /// Whether the index names no test project beyond those a run here executes or
+    /// declares excluded, so that a run of every runnable project leaves nothing owed
+    /// elsewhere. An index that cannot be scanned may name one.
+    let indexNamesOnlyRunnable (excluded: Lazy<Map<string, string>>) =
+        match queries.IndexedTestProjects() with
+        | Some indexed -> Set.isSubset (debtScope excluded (fun _ -> indexed) "") runnableProjects
+        | None -> false
+
     /// `debtScope` resolving the declarations only if a classification needs them.
     let lazyDebtScope (covering: string -> Set<string>) =
         debtScope (lazy (resolveExcludedProjects ())) covering
@@ -7460,6 +7474,7 @@ let internal createWithQueries
           LastRunId = None
           LastSeeds = []
           DebtDuringFullRun = Map.empty
+          CoveredFullSuite = None
           TestClassFiles = Map.empty
           BuildCompletedInThisSession = false
           PriorProjectFingerprints = Map.empty
@@ -8893,6 +8908,52 @@ let internal createWithQueries
         (state.InFlight |> Option.exists (fun run -> run.Scope = LaunchedFullSuite))
         && (TestMode.skips RerunIntents state.Mode || bootScan)
 
+    /// Discharge what a BootScan cohort owes when the last completed run already covered
+    /// it: that run passed every runnable project in full over the tree and model the
+    /// cohort sealed on, every file the cohort checked is part of that tree, and the
+    /// index names no coverer it did not run. A cold daemon's build launches that run
+    /// before the scan has checked the tree, so the cohort usually seals after the run's
+    /// result has folded, with no run in flight to attach to (`joinsFullRun`). Launching
+    /// for it would run the tree's impact a second time.
+    /// An in-session cohort is an edit, and debt the covering run cannot speak for (an
+    /// unreadable ledger, a missing baseline, a dependency force-run) keeps its launch.
+    let dischargeCoveredBootScan (ctx: PluginCtx<TestPruneMsg>) (batch: BatchChecked) (state: TestPruneState) =
+        // A file outside the hashed tree can change without moving its identity.
+        let inTree (tree: ReceiptTree) =
+            let hashed = tree.Entries |> List.map fst |> Set.ofList
+
+            batch.Files
+            |> List.forall (fun file ->
+                hashed.Contains(Path.GetRelativePath(repoRoot, AbsFilePath.value file).Replace('\\', '/')))
+
+        match state.CoveredFullSuite with
+        | Some(tree, generation) when
+            batch.Trigger = BootScan
+            && state.InFlight.IsNone
+            && not (Set.isEmpty state.Debt.PendingQueue && Map.isEmpty state.Debt.RuntimeObligations)
+            && not state.Debt.RecoveryOutstanding
+            && Option.isNone (baselineInvalidReason state.Debt)
+            && Set.isEmpty state.PendingForceRunProjects
+            && ReceiptInputTree.matches (Some tree.Identity) state.SealedTree
+            && inTree tree
+            && observeModelGeneration ctx = generation
+            && indexNamesOnlyRunnable (lazy (resolveExcludedProjects ()))
+            ->
+            Logging.info
+                "test-prune"
+                $"BatchChecked: %s{owedDescription state.Debt} discovered by BootScan over the tree the last full-suite run passed — covered by that run, no re-run"
+
+            // Shed what a covering completion sheds: the queue, and the in-memory view
+            // the next selection reads from, so a later edit selects only itself.
+            { state with
+                Debt =
+                    { commitPending state.Debt.PendingQueue state.Debt with
+                        RuntimeObligations = Map.empty }
+                ChangedFiles = []
+                ChangedSymbols = []
+                AffectedTests = Analyzed [] }
+        | _ -> state
+
     /// Attach what is owed to the full run in flight. The FIRST captured revision stands:
     /// a later attach must not advance a symbol past an edit the held run never built.
     let attachToFullRun (state: TestPruneState) =
@@ -9688,6 +9749,8 @@ let internal createWithQueries
                             else
                                 flushedState
 
+                        let flushedState = dischargeCoveredBootScan ctx batch flushedState
+
                         if nothingOwed flushedState.Debt then
                             if flushedState.AwaitingDiff.IsSome then
                                 return
@@ -10053,11 +10116,7 @@ let internal createWithQueries
                     // owed elsewhere, so nothing needs asking per symbol. One scan of the
                     // index, not a covering query, and only if something asks. An index
                     // that cannot be scanned may name one.
-                    let noUnrunnableCoverers =
-                        lazy
-                            (match queries.IndexedTestProjects() with
-                             | Some indexed -> Set.isSubset (debtScope excluded (fun _ -> indexed) "") runnableProjects
-                             | None -> false)
+                    let noUnrunnableCoverers = lazy (indexNamesOnlyRunnable excluded)
 
                     // Emit the lifecycle events synchronously here, inside the framework's
                     // per-event capture window, so they land in the cached EmittedEvents
@@ -10594,7 +10653,11 @@ let internal createWithQueries
                     let state =
                         { state with
                             Debt = debt
-                            Earned = earned }
+                            Earned = earned
+                            CoveredFullSuite =
+                                match launch.InputTree with
+                                | Some tree when coveredByConstruction -> Some(tree, currentModelGeneration)
+                                | _ -> None }
 
                     if earnsBaseline then
                         let runId = completed.RunId.ToString("N")

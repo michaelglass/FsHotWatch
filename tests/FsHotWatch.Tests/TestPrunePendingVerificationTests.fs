@@ -599,11 +599,20 @@ type private ScenarioOutcome =
       Queue: Set<string>
       Status: PluginStatus option }
 
-let private runCohortScenario name trigger testExitCode editAfterSeal restoreAfterEdit =
+/// When the cohort seals relative to the cold full run that the build launched.
+type private CohortSeal =
+    /// While the run is held: the cohort folds before the run's result.
+    | DuringRun
+    /// After the run's result has folded: the scan finished checking after the suite did.
+    | AfterRunFolded
+
+let private runCohortScenarioWith scope seal name trigger testExitCode editAfterSeal restoreAfterEdit =
     withTempDir name (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
-        let libFile = Path.Combine(tmpDir, "Lib.fsx")
-        let testsFile = Path.Combine(tmpDir, "Tests.fsx")
+        // Under a discovery root, so the sources are entries of the receipt input tree.
+        let sourceDir = Directory.CreateDirectory(Path.Combine(tmpDir, "src")).FullName
+        let libFile = Path.Combine(sourceDir, "Lib.fsx")
+        let testsFile = Path.Combine(sourceDir, "Tests.fsx")
         let runMarker = Path.Combine(tmpDir, "runs")
         let started = Path.Combine(tmpDir, "started")
 
@@ -674,13 +683,22 @@ let fooTest () = assert (foo 1 = 2)
             let host = createModelHost checker tmpDir
             host.RegisterHandler(create dbPath tmpDir (Some configs) None None None None [])
 
-            host.RunCommand("set-scope", [| "{\"scope\":\"full\"}" |])
-            |> Async.RunSynchronously
-            |> ignore
+            match scope with
+            | Some scope ->
+                host.RunCommand("set-scope", [| $"{{\"scope\":\"%s{scope}\"}}" |])
+                |> Async.RunSynchronously
+                |> ignore
+            | None -> ()
 
             File.WriteAllText(libFile, libSource2)
             host.EmitBuildCompleted(BuildSucceeded)
             waitUntil (fun () -> File.Exists started) 10000
+
+            match seal with
+            | DuringRun -> ()
+            | AfterRunFolded ->
+                File.WriteAllText(release, "")
+                waitForQuiescent host 20000
 
             let committedBefore = committedBy host "test-prune"
 
@@ -693,9 +711,8 @@ let fooTest () = assert (foo 1 = 2)
                     Trigger = trigger }
             )
 
-            // The run is held until the cohort seal has committed. A fixed sleep made this
-            // test assert scheduler speed on loaded Linux runners: the full run could finish
-            // before CheckFile, turning BootScan into a real second run.
+            // Under `DuringRun` the run is held until the cohort seal has committed, so a
+            // loaded runner cannot finish the run first and turn this into `AfterRunFolded`.
             test <@ waitForCommitted host "test-prune" committedBefore 2L 10000 @>
 
             // The cohort is sealed and the full run is still held. Edit the symbol again
@@ -725,6 +742,8 @@ let fooTest () = assert (foo 1 = 2)
               Queue = PendingQueueHelpers.loadQueue tmpDir
               Status = host.GetStatus("test-prune") }))
 
+let private runCohortScenario = runCohortScenarioWith (Some "full") DuringRun
+
 [<Fact(Timeout = 30000)>]
 let ``boot-scan symbols discovered during a green full run are covered without a second run`` () =
     // The production change this catches is treating `BootScan` like `InSessionBatch`
@@ -739,13 +758,36 @@ let ``boot-scan symbols discovered during a green full run are covered without a
     | Some(Completed _) -> ()
     | other -> Assert.Fail($"expected the one full run to complete green, got %A{other}")
 
+[<Theory(Timeout = 30000)>]
+[<InlineData("check")>]
+[<InlineData("confirm")>]
+let ``a boot-scan cohort sealed after the green cold full run has folded is covered without a second run``
+    (command: string)
+    =
+    // A cold daemon's build launches the full suite long before the cold FCS scan
+    // finishes, so the scan's cohort usually seals after that run's result has folded:
+    // there is no run in flight to attach to. The cohort describes the tree the green run
+    // tested, so that run already covers it; launching another run re-runs the suite's
+    // impact over an unchanged tree.
+    let scope = if command = "confirm" then Some "full" else None
+
+    let outcome =
+        runCohortScenarioWith scope AfterRunFolded $"tp-boot-after-{command}" BootScan 0 false false
+
+    Assert.Equal(1, outcome.RunCount)
+    test <@ Set.isEmpty outcome.Queue @>
+
+    match outcome.Status with
+    | Some(Completed _) -> ()
+    | other -> Assert.Fail($"expected the one full run to stay green, got %A{other}")
+
 [<Fact(Timeout = 30000)>]
 let ``an in-session cohort discovered during a confirm's full run joins it`` () =
     // Under `set-scope full` no run may follow the full run, so every cohort attaches to
     // it. The tree did not move, so the one green run covers it. That `check` still
     // queues a rerun for an in-session cohort is pinned in
     // `TestPruneConfirmPassThroughTests`.
-    let trigger = InSessionBatch [ SourceChanged [ "Lib.fsx" ] ]
+    let trigger = InSessionBatch [ SourceChanged [ "src/Lib.fsx" ] ]
     let outcome = runCohortScenario "tp-in-session" trigger 0 false false
     Assert.Equal(1, outcome.RunCount)
     test <@ Set.isEmpty outcome.Queue @>

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: a cold daemon runs the suite once when the boot scan finishes checking after
+  the full-suite run has finished. The build launches that run before the scan has checked
+  the tree, so the scan's symbols usually arrive after the run's result is folded. There
+  is then no run in flight to attach them to, and the plugin launched a second run over
+  the same tree. That happened on both `check` and `confirm`. Now, when the last completed run
+  passed every runnable project in full over the tree and project model that the boot
+  scan sealed, and every file the scan checked is part of that tree, that run covers the
+  scan's debt and no new run launches. An in-session edit, a file outside the hashed
+  tree, a missing baseline, an unreadable ledger, or a pending dependency force-run still
+  launches its own run.
+
 ## 0.13.0-alpha.70 - 2026-10-13
 
 - fix: `test-results` and `test-scope` no longer report the previous run as settled while
