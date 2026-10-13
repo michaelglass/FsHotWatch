@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.7.2 - 2026-10-13
+
+- feat(trace): recall verb checks selection against recorded traces
+- feat(sql): reachability-gated SQL coupling as a walk policy
+
+
 ## 0.7.1 - 2026-10-08
 
 - chore: rebuild to bundle updated dependencies

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.2 - 2026-10-13
+
 - feat: `Recall.check` measures selection recall against recorded traces: for every complete
   trace of test T and every symbol X it executed that the index holds at the same content
   hash, T must be in `QueryAffectedTests [X]`. It checks every pair under

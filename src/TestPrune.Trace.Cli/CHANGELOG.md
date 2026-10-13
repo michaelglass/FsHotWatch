@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.2 - 2026-10-13
+
 - feat: `test-prune-traces recall --index <db> --test-scoped <sources>` checks impact
   selection against the trace store, under `WalkPolicy.FollowAll` and under a policy that
   does not follow the named edge sources. Exit 0 when the narrower policy adds no miss, 1

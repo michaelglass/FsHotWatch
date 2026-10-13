@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.1 - 2026-10-13
+
 - feat: `SqlCoupling.reachabilityGated`, a walk policy for suites whose tests each run
   against their own database state (truncated and re-seeded per test or fixture). A
   changed writer then selects a test through a reader of its table only when the test
