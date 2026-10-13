@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: an analysis replayed from the task cache fills `DiagnosticsByFile` and
+  `CrashesByFile` like a fresh analysis, so `diagnostics` and the next summary count a
+  file served from the cache, crashes included.
+- fix: when the whole analyzer pass raises on a file, the state records the crash entry
+  the ledger holds for it, replacing that file's earlier entries; `diagnostics` and the
+  summary count it.
+
 ## 0.7.0-alpha.45 - 2026-10-13
 
 - fix: a cached analyzer result is no longer replayed after a type it depends on changes

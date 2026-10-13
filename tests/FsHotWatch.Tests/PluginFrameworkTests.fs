@@ -2885,11 +2885,12 @@ let ``a cached plugin's error reports and emitted events are captured into its e
 
 /// A state recording each replay the framework hands it, in order.
 type private ReplayLog =
-    { Replays: (string * int64 option * Result<unit, string>) list }
+    { Replays: (string * int64 option * Result<string list, string>) list }
 
     interface IFileReplayState<ReplayLog> with
         member this.Replayed currentModel result analysis =
-            { Replays = this.Replays @ [ AbsFilePath.value result.File, currentModel, analysis ] }
+            let findings = analysis |> Result.map (List.map _.Message)
+            { Replays = this.Replays @ [ AbsFilePath.value result.File, currentModel, findings ] }
 
 [<Fact(Timeout = 20000)>]
 let ``a per-file cache hit replays each cached outcome into the state, with no model published`` () =
@@ -2898,13 +2899,24 @@ let ``a per-file cache hit replays each cached outcome into the state, with no m
     let pluginNameStr = "file-replay"
     let verdict = RunVerdict.create "summary" System.TimeSpan.Zero
 
-    let cached =
-        [ "/tmp/repo/FileDone.fs", TaskCache.CachedFileCompleted System.TimeSpan.Zero
-          "/tmp/repo/FileFailed.fs", TaskCache.CachedFileFailed("file failed", System.TimeSpan.Zero)
-          "/tmp/repo/RunDone.fs", TaskCache.CachedRunCompleted verdict
-          "/tmp/repo/RunFailed.fs", TaskCache.CachedRunFailed("run failed", verdict) ]
+    // FileDone's run reported a finding for it, cleared a sibling, and reported again:
+    // the findings handed over are the ones its last report for the file left.
+    let fileDoneErrors =
+        [ "/tmp/repo/FileDone.fs", [ ErrorEntry.error "replaced" ]
+          "/tmp/repo/Sibling.fs", []
+          "/tmp/repo/FileDone.fs", [ ErrorEntry.error "kept" ] ]
 
-    for file, status in cached do
+    // RunDone's run cleared the whole plugin after reporting: nothing is left.
+    let runDoneErrors =
+        [ "/tmp/repo/RunDone.fs", [ ErrorEntry.error "cleared" ]; "*", [] ]
+
+    let cached =
+        [ "/tmp/repo/FileDone.fs", TaskCache.CachedFileCompleted System.TimeSpan.Zero, fileDoneErrors
+          "/tmp/repo/FileFailed.fs", TaskCache.CachedFileFailed("file failed", System.TimeSpan.Zero), []
+          "/tmp/repo/RunDone.fs", TaskCache.CachedRunCompleted verdict, runDoneErrors
+          "/tmp/repo/RunFailed.fs", TaskCache.CachedRunFailed("run failed", verdict), [] ]
+
+    for file, status, errors in cached do
         cache.Set
             { Plugin = pluginNameStr
               File =
@@ -2914,7 +2926,7 @@ let ``a per-file cache hit replays each cached outcome into the state, with no m
                 ) }
             cacheKey
             { CacheKey = cacheKey
-              Errors = []
+              Errors = errors
               Status = status
               EmittedEvents = [] }
 
@@ -2941,7 +2953,7 @@ let ``a per-file cache hit replays each cached outcome into the state, with no m
     let reg =
         registerHandler (servicesWithCache cache (fun (_, cmd) -> observe <- Some cmd)) handler
 
-    for file, _ in cached do
+    for file, _, _ in cached do
         dispatchAndAwait reg (DispatchFileChecked(unmodelledResult file))
 
     let replays = observe.Value [||] |> Async.RunSynchronously
@@ -2950,8 +2962,8 @@ let ``a per-file cache hit replays each cached outcome into the state, with no m
         <@
             replays = String.concat
                 "\n"
-                [ "/tmp/repo/FileDone.fs None Ok ()"
+                [ "/tmp/repo/FileDone.fs None Ok [\"kept\"]"
                   "/tmp/repo/FileFailed.fs None Error \"file failed\""
-                  "/tmp/repo/RunDone.fs None Ok ()"
+                  "/tmp/repo/RunDone.fs None Ok []"
                   "/tmp/repo/RunFailed.fs None Error \"run failed\"" ]
         @>

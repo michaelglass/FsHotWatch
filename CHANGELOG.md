@@ -74,6 +74,17 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### lint, analyzers: a result replayed from the cache counts like a fresh one
+
+- **fix: a file whose lint or analyzer result is served from the task cache is counted in
+  the plugin's own state.** A cache hit skips the plugin's `Update`, so a session that read
+  another checkout's entry put the findings in the ledger and left the file out of
+  `WarningsByFile` / `DiagnosticsByFile`: `warnings` answered `{"files": 1}` where a fresh
+  lint of the same tree answers `{"files": 2}`, and the analyzers' next summary left out
+  the replayed findings and crashes. A replay now leaves the state a fresh run leaves.
+  `IFileReplayState` is public and hands over the findings the cached run left for the
+  file, so a third-party plugin can do the same (see `src/FsHotWatch/CHANGELOG.md`).
+
 ### core: two `check` clients on a cold daemon run one full scan
 
 - **fix: a scan request that arrives while a scan is already checking the tree is

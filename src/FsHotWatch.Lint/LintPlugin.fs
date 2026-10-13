@@ -17,6 +17,17 @@ let LintTimeoutDefaultSec = 120
 type LintState =
     { WarningsByFile: Map<AbsFilePath, string list> }
 
+    // A replayed lint is recorded by the rule a live fold applies: only a result published
+    // against the model published now is linted (see `notCurrent`), and a completed lint
+    // replaces the file's warnings with the ones it reported. A failed one leaves them.
+    interface IFileReplayState<LintState> with
+        member this.Replayed currentModel result analysis =
+            match analysis with
+            | Result.Ok findings when result.ModelGeneration.IsSome && result.ModelGeneration = currentModel ->
+                { WarningsByFile = this.WarningsByFile |> Map.add result.File (findings |> List.map _.Message) }
+            | Result.Ok _
+            | Result.Error _ -> this
+
 // TODO: lintParsedSource misses hint-based rules (e.g. FL0065 "x = [] ===> List.isEmpty x")
 // that the solution-level linter (dotnet fsharplint lint) catches. Investigate using
 // Lint.lintProject with a warm FSharpChecker instead of per-file lintParsedSource.

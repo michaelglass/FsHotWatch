@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `PluginFramework.IFileReplayState` is public (it was internal, in `Events`). A
+  plugin state that keeps per-file results implements it so a task-cache hit on
+  `FileChecked`, which skips `Update`, still records the file. A completed replay hands
+  over `Ok findings`: the entries the cached run left in the plugin's ledger for the file,
+  empty when it cleared them (`TaskCache.findingsFor`, also new).
+
 ## 0.10.0-alpha.71 - 2026-10-13
 
 - fix: a scan's progress advances per file. `runChecksWithRetry` emits each result as

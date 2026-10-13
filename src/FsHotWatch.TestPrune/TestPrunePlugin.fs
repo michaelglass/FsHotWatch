@@ -2040,7 +2040,10 @@ type TestPruneState =
             else
                 { this with
                     AnalysisFiles =
-                        Map.add result.File (AnalysisFileEvidence.fromResult result analysis) this.AnalysisFiles }
+                        Map.add
+                            result.File
+                            (AnalysisFileEvidence.fromResult result (Result.map ignore analysis))
+                            this.AnalysisFiles }
 
 /// The slice of `TestPruneState` a test RUN reads — and nothing else.
 ///
