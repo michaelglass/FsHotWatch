@@ -46,6 +46,7 @@
     <Compile Include="EndToEndTests.fs" />
     <Compile Include="CensusTests.fs" />
     <Compile Include="CensusCliTests.fs" />
+    <Compile Include="RecallTests.fs" />
     <Compile Include="MeasurementLogicTests.fs" />
     <Compile Include="MeasurementTests.fs" />
     <Compile Include="CoverageParityTests.fs" />

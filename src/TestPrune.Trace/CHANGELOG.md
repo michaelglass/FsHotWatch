@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: `Recall.check` measures selection recall against recorded traces: for every complete
+  trace of test T and every symbol X it executed that the index holds at the same content
+  hash, T must be in `QueryAffectedTests [X]`. It checks every pair under
+  `WalkPolicy.FollowAll` and under a narrower policy over one index, and reports the misses
+  of each, the misses the narrower policy adds (`RecallReport.NarrowedOnly`), and what it
+  skipped. `Recall.tracesIn` reads each project's current traces from a trace store;
+  `Store.TestProjects` lists the projects that have a run.
+
 ## 0.7.1 - 2026-10-08
 
 - chore: rebuild to bundle updated dependencies
