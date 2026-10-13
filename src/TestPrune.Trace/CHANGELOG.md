@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: `Recall.check` matches an index test whose method name is backticked to its trace.
+  The index keeps the source name (` ``a test`` `), a trace the name xUnit reports
+  (`a test`); every such test counted as unindexed and none of its pairs was checked. Index
+  names now go through `AstAnalyzer.canonicalShortName`. On TestPrune's own suite, 0 of 985
+  complete traces were checked before, 952 traces and 55,829 pairs after.
+
 ## 0.7.2 - 2026-10-13
 
 - feat: `Recall.check` measures selection recall against recorded traces: for every complete

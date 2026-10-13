@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: `recall` checks traced tests whose method name is backticked in source; it counted
+  them as unindexed tests before.
+
 ## 0.7.2 - 2026-10-13
 
 - feat: `test-prune-traces recall --index <db> --test-scoped <sources>` checks impact
