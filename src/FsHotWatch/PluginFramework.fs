@@ -453,8 +453,8 @@ type CommandReadCtx =
         Log: string -> unit
         /// Whether `key` is currently running under `RunExclusive`.
         IsRunning: string -> bool
-        /// Whether a finished run's result fold holds `key` and has not committed. The
-        /// state an observation reads does not hold that run's result yet: it is the
+        /// Whether a finished run's result fold holds `key` and has not published its
+        /// state. The state an observation reads does not hold that run's result yet: it is the
         /// PREVIOUS one's, so an observer that answers from it as settled answers with a
         /// run that is no longer current.
         IsSettling: string -> bool

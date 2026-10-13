@@ -742,15 +742,19 @@ type Snapshot<'State> =
         |> Map.tryFind key
         |> Option.exists (fun lane -> holdsWorker lane.Holder)
 
-    /// A finished run's result fold holds `key` and has not committed: the run is over,
-    /// but the state does not hold its result yet. Never true while `IsRunning key` is.
+    /// A finished run's result fold holds `key` and has not published: the run is over,
+    /// but the state does not hold its result yet. A published fold still finalizing is
+    /// not settling: finalization resolves command replies, and a reader one wakes reads
+    /// the state that holds the result. Never true while `IsRunning key` is.
     member this.IsSettling(key: string) =
         obligations this.Work
         |> snd
         |> Map.tryFind key
         |> Option.exists (fun lane ->
             match lane.Holder with
-            | Folding(first, later, None) -> first :: later |> List.exists (fun fold -> fold.IsWorkerResult)
+            | Folding(first, later, None) ->
+                first :: later
+                |> List.exists (fun fold -> fold.IsWorkerResult && fold.Event.Stage = Admitted)
             | _ -> false)
 
     /// Anything holds `key`: a live worker, or a fold that has not committed. A claim on

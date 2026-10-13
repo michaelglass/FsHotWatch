@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: `Snapshot.IsSettling` (and so `CommandReadCtx.IsSettling`) turns false once a
+  run's result fold publishes its state, not when the fold settles. Finalization, which
+  resolves command replies, runs between the two, so a client reading `test-scope` or
+  `test-results` right after a `run-tests` reply could be told `settling` while the
+  state already held the run it asked for.
+
 - fix!: a peer that hangs up mid-frame on the repository endpoint is an ordinary,
   named outcome instead of an exception. `FrameError.HungUp` is a read or write that
   failed because the other end closed or reset the connection; `RepositoryIpc.writeFrame`

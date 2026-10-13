@@ -1074,6 +1074,22 @@ let ``a finished run owes its verdict until its result fold commits, except to t
     Assert.False(owner.Snapshot.IsSettling "tests")
 
 [<Fact>]
+let ``a result fold whose candidate is published is not settling while it finalizes`` () =
+    // Finalization resolves command replies, so a reader woken by one reads between
+    // publication and settlement. The state already holds the run's result there.
+    let owner = Owner(0)
+    let fold = complete owner (claim owner "tests")
+    Assert.True(owner.Snapshot.IsSettling "tests")
+
+    owner.PublishEventState(fold, 1)
+    Assert.Equal(1, owner.Snapshot.State)
+    Assert.True(owner.Snapshot.IsHeld "tests", "the fold holds its key until it settles")
+    Assert.False(owner.Snapshot.IsSettling "tests", "the published state holds the run's result")
+
+    owner.SettleEvent fold
+    Assert.False(owner.Snapshot.IsHeld "tests")
+
+[<Fact>]
 let ``a result fold that launched the next run owes that run's verdict, even to itself`` () =
     // The successor is live, so its Running stands against every report, including the
     // fold that launched it: that fold's terminal would describe the finished run.
