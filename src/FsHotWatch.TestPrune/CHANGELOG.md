@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: the stale-artifact preflight repairs every differing build-output copy in a test
+  project's bin in one round. Before, it repaired only the first copy it found in each
+  round and refused after 8 rounds, so a bin holding more than 8 stale copies failed the
+  run with "STILL stale after 8 automatic repair round(s)". `MaxRepairRounds` now
+  bounds rounds of re-detection. A copy that is stale again after this run repaired it
+  refuses at once and names the file. New `ArtifactFreshness.differingCopies` lists
+  every such copy.
+
 ## 0.13.0-alpha.69 - 2026-10-08
 
 - deps: TestPrune.Core 13.3.3 (index schema 21) and TestPrune.Trace 0.7.1, built against

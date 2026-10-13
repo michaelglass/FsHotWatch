@@ -663,7 +663,7 @@ let ``every refusal shape this module builds is recognised as a stale-output def
     let messages = StaleArtifactPreflight.refusalMessages "/repo"
     // The count is asserted so that adding a `Reason` constructor without adding it to
     // `refusalMessages` cannot leave this test passing over a shrunken list.
-    test <@ List.length messages = 4 @>
+    test <@ List.length messages = 5 @>
 
     for m in messages do
         test <@ StaleArtifactPreflight.isStaleOutputDeferral m @>
@@ -759,3 +759,122 @@ let ``FLOOR: partial coverage names exactly the projects it could not examine`` 
         // Only the gap is named — a report that listed the covered ones too would be
         // read as the failure list.
         test <@ not (report.Contains "P1") && not (report.Contains "P3") @>
+
+// -----------------------------------------------------------------------------
+// Many stale copies in ONE test project's output dir.
+// -----------------------------------------------------------------------------
+
+/// A test project referencing `count` libraries, each copied into the test project's
+/// output dir, and EVERY copy inverted — the shape a merge that touches many referenced
+/// projects leaves behind. Returns the target and each (origin, copy) pair.
+let private synthManyInverted (root: string) (count: int) =
+    let builtAt = DateTime.UtcNow.AddHours(-1.0)
+    let sourcedAt = builtAt.AddMinutes(-10.0)
+    let testsDir = Path.Combine(root, "Tests")
+    let testsOut = Path.Combine(testsDir, "bin", "Debug", "net10.0")
+    let libs = [ for i in 1..count -> $"Lib%02d{i}" ]
+
+    let pairs =
+        [ for lib in libs ->
+              let libDir = Path.Combine(root, lib)
+              let origin = Path.Combine(libDir, "bin", "Debug", "net10.0", lib + ".dll")
+              let copy = Path.Combine(testsOut, lib + ".dll")
+              writeAt (Path.Combine(libDir, lib + ".fsproj")) "<Project Sdk=\"Microsoft.NET.Sdk\" />" sourcedAt
+              writeAt (Path.Combine(libDir, lib + ".fs")) $"module %s{lib}" sourcedAt
+              writeAt origin $"%s{lib}-CURRENT" builtAt
+              // Different bytes at the SAME timestamp: what an incremental copy skips.
+              writeAt copy $"%s{lib}-STALE" builtAt
+              origin, copy ]
+
+    let references =
+        libs
+        |> List.map (fun lib -> $"    <ProjectReference Include=\"../%s{lib}/%s{lib}.fsproj\" />")
+        |> String.concat "\n"
+
+    writeAt
+        (Path.Combine(testsDir, "Tests.fsproj"))
+        $"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n%s{references}\n  </ItemGroup>\n</Project>"
+        sourcedAt
+
+    writeAt (Path.Combine(testsDir, "Tests.fs")) "module Tests" sourcedAt
+    writeAt (Path.Combine(testsOut, "Tests.dll")) "" builtAt
+
+    let target: ArtifactFreshness.RunnerTarget =
+        { ProjectFile = Some(Path.Combine(testsDir, "Tests.fsproj"))
+          ProjectDir = testsDir
+          AssemblyName = "Tests"
+          BinDir = Path.Combine(testsDir, "bin", "Debug") }
+
+    target, pairs
+
+/// More stale copies in one bin than the old 8-round cap: every one is repaired and the
+/// run is cleared to launch. Before, each round repaired only the FIRST stale copy the
+/// detector reported, so the ninth copy hit the cap and the whole run refused.
+[<Fact(Timeout = 30000)>]
+let ``a bin holding more stale copies than the round cap is repaired in full`` () =
+    withTempDir "many-stale" (fun tmpDir ->
+        let target, pairs = synthManyInverted tmpDir 24
+        test <@ pairs.Length > StaleArtifactPreflight.MaxRepairRounds @>
+
+        let outcome = StaleArtifactPreflight.run tmpDir DateTime.UtcNow [ "Tests", target ]
+
+        test <@ List.isEmpty outcome.Refusals @>
+        test <@ List.sort outcome.Healed = List.sort (pairs |> List.map snd) @>
+
+        for origin, copy in pairs do
+            test <@ File.ReadAllText copy = File.ReadAllText origin @>)
+
+/// The budget counts rounds of RE-DETECTION, not files: one round repairs every stale
+/// copy it can see, so a single round clears a bin of any size.
+[<Fact(Timeout = 30000)>]
+let ``one repair round repairs every stale copy in the bin`` () =
+    withTempDir "one-round" (fun tmpDir ->
+        let target, pairs = synthManyInverted tmpDir 20
+
+        let outcome =
+            StaleArtifactPreflight.runWithBudget 1 tmpDir DateTime.UtcNow [ "Tests", target ]
+
+        test <@ List.isEmpty outcome.Refusals @>
+        test <@ outcome.Healed.Length = 20 @>)
+
+/// POSITIVE CONTROL for the two tests above: widening the repair must not turn the gate
+/// into one that waves through a copy whose repair does not stick. The injected write
+/// reports success and changes nothing, so the copy is stale again at the next
+/// re-detection. It refuses at once, naming the file, instead of spending rounds on it.
+[<Fact(Timeout = 15000)>]
+let ``a copy that re-stales after its repair refuses and names the file`` () =
+    withTempDir "restale" (fun tmpDir ->
+        let s = synth tmpDir
+        invertCopy s
+
+        let outcome =
+            StaleArtifactPreflight.runWithRepair
+                (fun _ _ -> Ok())
+                StaleArtifactPreflight.MaxRepairRounds
+                tmpDir
+                DateTime.UtcNow
+                (targets s)
+
+        test <@ outcome.Healed = [ s.CommonCopy ] @>
+        test <@ outcome.Refusals |> List.map (fun r -> r.Project) = [ "Tests" ] @>
+        test <@ outcome.Refusals.Head.Reason.Contains "RE-STALED" @>
+        test <@ outcome.Refusals.Head.Reason.Contains s.CommonCopy @>
+        test <@ StaleArtifactPreflight.isStaleOutputDeferral outcome.Refusals.Head.Reason @>)
+
+/// `differingCopies` lists every stale copy, but only for a closure it can read. An
+/// unreadable one is `stale`'s `InputsUndeterminable` refusal, never a repair list.
+[<Fact(Timeout = 15000)>]
+let ``differingCopies lists every stale copy, and nothing for an unreadable closure`` () =
+    withTempDir "differing" (fun tmpDir ->
+        let target, pairs = synthManyInverted tmpDir 3
+
+        test <@ List.sort (ArtifactFreshness.differingCopies (ArtifactFreshness.Cache()) target) = List.sort pairs @>
+
+        // A stale COMPILE in the closure is not a copy: it is left out, and it does not
+        // hide the copies listed after it.
+        File.SetLastWriteTimeUtc(Path.Combine(tmpDir, "Lib01", "Lib01.fs"), DateTime.UtcNow)
+
+        test <@ List.sort (ArtifactFreshness.differingCopies (ArtifactFreshness.Cache()) target) = List.sort pairs @>
+
+        File.WriteAllText(Option.get target.ProjectFile, "<Project")
+        test <@ List.isEmpty (ArtifactFreshness.differingCopies (ArtifactFreshness.Cache()) target) @>)
