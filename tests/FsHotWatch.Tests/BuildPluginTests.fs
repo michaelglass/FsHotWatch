@@ -1204,8 +1204,9 @@ let ``build plugin ignores SolutionChanged events`` () =
 
     host.EmitFileChanged(SolutionChanged)
 
-    // SolutionChanged is ignored, so this wait is expected to time out.
-    waitUntil (fun () -> (getBuild ()).IsSome) 200
+    // The event was handled and started no build — witnessed by its commit, not by a
+    // wait expiring.
+    waitForHandled host 1L 10000
 
     test <@ getBuild () = None @>
 
@@ -1400,9 +1401,9 @@ let ``build with dependsOn buffers FileChanged until dependency satisfied`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    // A short bound: this wait is expected to time out, so it only has to be long enough to
-    // catch a build that wrongly started.
-    waitUntil (fun () -> (getBuild ()).IsSome) 500
+    // The FileChanged was handled and buffered — witnessed by its commit, not by a wait
+    // expiring.
+    waitForHandled host 1L 10000
     test <@ getBuild () = None @>
 
     host.EmitCommandCompleted(
@@ -1499,7 +1500,8 @@ let ``build with multiple dependsOn waits for all`` () =
           Outcome = CommandSucceeded "ok" }
     )
 
-    waitUntil (fun () -> (getBuild ()).IsSome) 500
+    // Both events were handled and the build is still buffered on `codegen`.
+    waitForHandled host 2L 10000
     test <@ getBuild () = None @>
 
     host.EmitCommandCompleted(

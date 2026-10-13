@@ -1896,8 +1896,9 @@ type TestPruneState =
         AffectedTests: AffectedTestsState
         ChangedSymbols: string list
         ChangedFiles: string list
-        /// Last completed test run's results, if any. `ctx.IsRunning "tests"` is the
-        /// source of truth for "currently running", so this carries no phase.
+        /// Last completed test run's results, if any. The owner is the source of truth
+        /// for the run's phase (`ctx.IsRunning "tests"` while its worker is live,
+        /// `ctx.IsSettling "tests"` until its result fold commits), so this carries none.
         LastResults: TestResults option
         /// The id of the run that produced `LastResults` — i.e. the directory its
         /// CTRF reports live in (`.fshw/test-runs/<runId>/`). Reported to the CLI by
@@ -2040,7 +2041,10 @@ type TestPruneState =
             else
                 { this with
                     AnalysisFiles =
-                        Map.add result.File (AnalysisFileEvidence.fromResult result analysis) this.AnalysisFiles }
+                        Map.add
+                            result.File
+                            (AnalysisFileEvidence.fromResult result (Result.map ignore analysis))
+                            this.AnalysisFiles }
 
 /// The slice of `TestPruneState` a test RUN reads — and nothing else.
 ///
@@ -8253,18 +8257,17 @@ let internal createWithQueries
               async { return JsonSerializer.Serialize(state.ChangedFiles) })
 
           "test-results",
-          // Reports the LAST COMMITTED result set, never a run that has not folded.
-          // `IsRunning "tests"` is true only while the run's worker is live. Between the
-          // worker finishing and its `TestsFinished`/`CommandTestsFinished` fold committing,
-          // the key is held by that pending fold: `IsRunning` is false and `state` is still
-          // the pre-fold state, so this answers the PREVIOUS run's results (or `not run`),
-          // not `running`. The plugin status still reads `Running` through that window —
-          // the fold is what reports the terminal status — and a `run-tests` caller is
-          // answered by the fold itself, with the new run's results.
+          // The last COMMITTED result set, and only once it is the current one. While a
+          // run's worker is live this answers `running`. Between the worker finishing and
+          // its `TestsFinished`/`CommandTestsFinished` fold committing, `state` is still
+          // the pre-fold state — the PREVIOUS run's results — so this answers `settling`
+          // rather than hand those back as though they were the run that just finished.
           PluginCommand.Observe(fun (ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->
               async {
                   if ctx.IsRunning "tests" then
                       return JsonSerializer.Serialize({| status = "running" |})
+                  elif ctx.IsSettling "tests" then
+                      return JsonSerializer.Serialize({| status = "settling" |})
                   else
                       match state.LastResults with
                       // No filter: `test-results` reports the LAST stored result set,
@@ -8344,8 +8347,9 @@ let internal createWithQueries
                         // What the last completed run ACTUALLY covered — the evidence a
                         // merge verdict is computed from. Never a restatement of what was
                         // requested: `set-scope full` is a request, this is the receipt.
-                        // A run still in flight reports `running`, which `confirm` treats
-                        // as "no verdict yet" rather than as a scope.
+                        // A run still in flight reports `running` while its worker is live
+                        // and `settling` until its result fold commits. `confirm` treats
+                        // both as "no verdict yet" rather than as a scope.
                         //
                         // The reply carries the RUN ID as well, so the CLI can DECLARE
                         // which CTRF reports belong to this run
@@ -8359,20 +8363,21 @@ let internal createWithQueries
                         // the model it is graded against instead of grading a run that no
                         // evidence for that model names.
                         //
-                        // While a finished run's fold is still pending (the worker is gone,
-                        // so `IsRunning "tests"` is false, but the fold holding the key has
-                        // not committed), this reports the LAST COMMITTED receipt, scope and
-                        // completed runs — the previous run's — not `running`. That receipt
-                        // passes through the same input-tree and model checks as any other,
-                        // so it is served only if it still speaks for the tree on disk; it
-                        // never names the pending run. The plugin status still reads
-                        // `Running` until the fold reports the terminal one, so a reader that
-                        // waits for that terminal status reads the new run's receipt.
+                        // In flight covers the fold window too: once the worker is gone,
+                        // `IsRunning "tests"` is false, but until the fold holding the key
+                        // commits, the state's receipt, scope and completed runs are the
+                        // PREVIOUS run's. Graded as settled, they would hand `confirm` that
+                        // run's scope as the current one; `settling` names no run instead.
                         let currentTree = lazy (ReceiptInputTree.read repoRoot)
 
+                        let inFlight =
+                            if ctx.IsRunning "tests" then Some "running"
+                            elif ctx.IsSettling "tests" then Some "settling"
+                            else None
+
                         let receipt =
-                            match ctx.IsRunning "tests", state.EvidenceReceipt with
-                            | false, Some evidence ->
+                            match inFlight, state.EvidenceReceipt with
+                            | None, Some evidence ->
                                 let currentModel = ObservedModel.generation ctx.ProjectGraph
 
                                 if not (ReceiptInputTree.matches evidence.InputTreeHash currentTree.Value) then
@@ -8482,17 +8487,18 @@ let internal createWithQueries
                             |> Map.toArray
                             |> Array.map (fun (file, reason) -> NotSelectedFile.wire { File = file; Reason = reason })
 
-                        if ctx.IsRunning "tests" then
+                        match inFlight with
+                        | Some kind ->
                             return
                                 JsonSerializer.Serialize(
-                                    {| kind = "running"
+                                    {| kind = kind
                                        notSelected = notSelected
                                        runId = runId
                                        runIds = runIds
                                        baseline = baseline
                                        baselineAbsent = baselineAbsent |}
                                 )
-                        else
+                        | None ->
                             let evidenceCoverage =
                                 receipt
                                 |> Option.map (fun receipt -> receipt.Coverage)

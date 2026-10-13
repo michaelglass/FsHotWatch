@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- fix: `fshw invalidate` with no daemon running clears the persisted task-result stores
+  (workspace-local and shared) itself, under the daemon's singleton lock, and starts no
+  daemon. Before, it cold-started a daemon only to clear them, and failed with exit 1 when
+  the daemon refused to start, e.g. right after a clean deleted the analyzer outputs
+  `analyzers.paths` names. `CacheResidency.openPersistedStores` is the one place both
+  store directories are named.
+- fix: a root-level plugin command (`fshw <plugin-cmd>`, e.g. `fshw coverage-ratchet`) in a
+  worktree the repository host serves is sent to that worktree's session over the
+  repository endpoint, carrying its SessionId and an InvocationId. Before, it exited 2
+  with "plugin commands do not reach a repository host session yet". Without a live
+  host session it goes to the worktree's own daemon, as before; it never attaches or
+  starts one.
+- fix: a `test-scope` reply of `kind: "settling"` (a run finished but its result is not
+  folded yet) reads as an in-flight run, `ScopeUnknown`, like `running`. Before, the CLI
+  would have refused it as an unreadable reply.
+
 ## 0.14.0-alpha.96 - 2026-10-13
 
 - feat: `fshw status` prints the daemon's `scanning: N/M files (P%)` line while a scan is

@@ -1032,6 +1032,7 @@ let ``a finished run owes its verdict until its result fold commits, except to t
 
     let run = claim owner "tests"
     Assert.True(owner.Snapshot.OwesRunVerdict None)
+    Assert.False(owner.Snapshot.IsSettling "tests", "a live worker is running, not settling")
 
     // The worker has finished; its result fold is queued. The run is not live, but its
     // verdict is still owed to every event except the fold that carries it.
@@ -1040,9 +1041,12 @@ let ``a finished run owes its verdict until its result fold commits, except to t
     Assert.True(owner.Snapshot.OwesRunVerdict None)
     Assert.True(owner.Snapshot.OwesRunVerdict(Some(owner.AdmitEvent())))
     Assert.False(owner.Snapshot.OwesRunVerdict(Some fold))
+    Assert.True(owner.Snapshot.IsSettling "tests", "the run is over and its result is not state yet")
+    Assert.False(owner.Snapshot.IsSettling "other")
 
     owner.CommitEvent(fold, 1)
     Assert.False(owner.Snapshot.OwesRunVerdict None)
+    Assert.False(owner.Snapshot.IsSettling "tests")
 
 [<Fact>]
 let ``a result fold that launched the next run owes that run's verdict, even to itself`` () =
@@ -1053,6 +1057,7 @@ let ``a result fold that launched the next run owes that run's verdict, even to 
     let successor = owner.TryClaim("tests", after = fold) |> Option.get
     Assert.True(owner.Snapshot.IsRunning "tests")
     Assert.True(owner.Snapshot.OwesRunVerdict(Some fold))
+    Assert.False(owner.Snapshot.IsSettling "tests", "a live successor is running, not settling")
 
     owner.CommitEvent(fold, 1)
     Assert.True(owner.Snapshot.OwesRunVerdict None)
@@ -1067,4 +1072,5 @@ let ``a delivered intent holds its key without owing a run verdict`` () =
     let intent = Assert.Single delivered
     Assert.True owner.Snapshot.IsBusy
     Assert.False(owner.Snapshot.OwesRunVerdict None)
+    Assert.False(owner.Snapshot.IsSettling "tests", "an intent's fold carries no run result")
     owner.CommitEvent(intent, 1)

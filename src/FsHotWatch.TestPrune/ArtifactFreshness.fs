@@ -441,6 +441,11 @@ let private consumerTfmFirst (tfmDir: string) (first: string) (rest: string list
 /// *"did the build put something here?"* — a file the build does not copy has no
 /// destination and is never asserted about, which is what keeps a false positive
 /// unrepresentable. What is at that destination is then settled by content.
+///
+/// EVERY finding, lazily, in verdict order (compile, then copies, then the assembly
+/// copy). `stale` takes the head, so the gate still stops at the first finding; the
+/// preflight's repair reads the whole sequence so one round repairs every differing
+/// copy rather than one per round.
 let private staleContribution
     (cache: Cache)
     (tfmDir: string)
@@ -448,7 +453,7 @@ let private staleContribution
     (closure: (string * string) list)
     (projectDir: string)
     (assemblyName: string)
-    : StaleInput option =
+    : seq<StaleInput> =
     let project = projectLabel projectDir
 
     // FAIL CLOSED on a walk that could not see the whole project. A directory
@@ -461,7 +466,7 @@ let private staleContribution
     // The project's own output dir likewise: an unlistable `bin/Debug` is not "not built".
     match cache.FilesUnder projectDir, cache.OwnAssemblyOutputs(projectDir, assemblyName) with
     | Error reason, _
-    | _, Error reason -> Some(InputsUndeterminable(project, reason))
+    | _, Error reason -> Seq.singleton (InputsUndeterminable(project, reason))
     | Ok sources, Ok built ->
 
         /// Every file in the CLOSURE that the build could have copied to `rel` — this
@@ -508,9 +513,9 @@ let private staleContribution
         // (2) COPY. Every file of this project that the build has copied into the test
         //     project's output dir must hold the bytes it was copied from — content and
         //     fixture items included, its own and those carried in transitively …
-        let staleCopy () =
+        let staleCopies =
             sources
-            |> List.tryPick (fun (rel, _) ->
+            |> Seq.choose (fun (rel, _) ->
                 if outputs.Contains rel then
                     let primary, others = claimantsOf rel
                     copyVerdict cache project (Path.Combine(tfmDir, rel)) primary others
@@ -533,9 +538,14 @@ let private staleContribution
                     let primary, others = consumerTfmFirst tfmDir first rest
                     copyVerdict cache project copy primary others
 
-        staleCompile
-        |> Option.orElseWith staleCopy
-        |> Option.orElseWith staleAssemblyCopy
+        seq {
+            yield! Option.toList staleCompile
+            yield! staleCopies
+
+            match staleAssemblyCopy () with
+            | Some s -> yield s
+            | None -> ()
+        }
 
 /// Is the runtime dependency manifest in `tfmDir` older than the restore it is
 /// generated from?
@@ -570,15 +580,15 @@ let private staleDepsManifest (projectDir: string) (assemblyName: string) (tfmDi
         else
             None
 
-/// Is the test project's output at `tfmDir` stale — i.e. is ANY project in its
-/// closure contributing something out of date to it? `ordered` is that closure,
-/// test project first.
-let private staleInTfmDir
+/// Everything stale in the test project's output at `tfmDir` — what each project in
+/// its closure contributes out of date — lazily, in verdict order. `ordered` is that
+/// closure, test project first.
+let private findingsInTfmDir
     (cache: Cache)
     (label: string)
     (ordered: (string * string) list)
     (tfmDir: string)
-    : StaleInput option =
+    : seq<StaleInput> =
     let walked = SafeWalk.walk Set.empty "*" tfmDir
 
     match walked.Skipped with
@@ -587,7 +597,9 @@ let private staleInTfmDir
     // not see turns every copy under it into a destination nobody checks. An absence
     // we cannot distinguish from a hole is not evidence.
     | _ :: _ ->
-        Some(InputsUndeterminable(label, walked.Skipped |> List.map SafeWalk.describeSkip |> String.concat "; "))
+        Seq.singleton (
+            InputsUndeterminable(label, walked.Skipped |> List.map SafeWalk.describeSkip |> String.concat "; ")
+        )
     | [] ->
         // A hash SET, not an F# `Map`: read exactly one way ("is there a copy at
         // `rel`?") over a full walk of the output dir (hundreds of DLLs before content
@@ -598,28 +610,13 @@ let private staleInTfmDir
             |> HashSet
 
         ordered
-        |> List.tryPick (fun (projectDir, assemblyName) ->
+        |> Seq.collect (fun (projectDir, assemblyName) ->
             staleContribution cache tfmDir outputs ordered projectDir assemblyName)
 
-/// Would a `--no-build` run of this test project execute bits that do not match
-/// the sources? `Some reason` blocks the run (and names the file pair proving
-/// it); `None` lets it through.
-///
-/// `None` — runnable — also when the project has no build output at all: absence
-/// is the presence probe's (`tryApphostPresent`) retry-friendly business, since a
-/// build in flight may still land the apphost. This gate speaks only about
-/// artifacts that EXIST and are out of date; those will not refresh on their own.
-///
-/// It FAILS CLOSED on ignorance. If the closure cannot be determined — an
-/// unreadable/unparseable project file, an unresolvable `ProjectReference` — the
-/// answer is `InputsUndeterminable`, NOT `None`.
-///
-/// A multi-targeted project is stale only when EVERY per-TFM output dir is stale:
-/// which TFM `dotnet run` selects is not knowable here, so a single fresh output
-/// dir means there is a fresh way to run — conservative against false-stale.
-let stale (cache: Cache) (target: RunnerTarget) : StaleInput option =
-    let sw = Stopwatch.StartNew()
-
+/// The test project's closure, ordered test project first, and the framework output
+/// dirs that hold its built assembly. Shared by `stale` and `differingCopies` so the
+/// two can never disagree about which files are in scope.
+let private closureAndOutputs (cache: Cache) (target: RunnerTarget) =
     // No project FILE (a `--project` naming a directory that holds none) is NOT
     // ignorance — there are no declared references to fail to read, and `dotnet run`
     // would itself fail on such a path. That directory's own files are the inputs,
@@ -645,6 +642,28 @@ let stale (cache: Cache) (target: RunnerTarget) : StaleInput option =
         tfmOutputDirs target.BinDir
         |> Result.map (Array.filter (fun tfmDir -> File.Exists(Path.Combine(tfmDir, target.AssemblyName + ".dll"))))
 
+    ordered, candidateTfmDirs
+
+/// Would a `--no-build` run of this test project execute bits that do not match
+/// the sources? `Some reason` blocks the run (and names the file pair proving
+/// it); `None` lets it through.
+///
+/// `None` — runnable — also when the project has no build output at all: absence
+/// is the presence probe's (`tryApphostPresent`) retry-friendly business, since a
+/// build in flight may still land the apphost. This gate speaks only about
+/// artifacts that EXIST and are out of date; those will not refresh on their own.
+///
+/// It FAILS CLOSED on ignorance. If the closure cannot be determined — an
+/// unreadable/unparseable project file, an unresolvable `ProjectReference` — the
+/// answer is `InputsUndeterminable`, NOT `None`.
+///
+/// A multi-targeted project is stale only when EVERY per-TFM output dir is stale:
+/// which TFM `dotnet run` selects is not knowable here, so a single fresh output
+/// dir means there is a fresh way to run — conservative against false-stale.
+let stale (cache: Cache) (target: RunnerTarget) : StaleInput option =
+    let sw = Stopwatch.StartNew()
+    let ordered, candidateTfmDirs = closureAndOutputs cache target
+
     let verdict =
         match ordered, candidateTfmDirs with
         // FAIL CLOSED: inputs unknown, so we cannot certify.
@@ -663,7 +682,7 @@ let stale (cache: Cache) (target: RunnerTarget) : StaleInput option =
             let judgeTfmDir (tfmDir: string) : StaleInput option =
                 match staleDepsManifest target.ProjectDir target.AssemblyName tfmDir with
                 | Some _ as manifestStale -> manifestStale
-                | None -> staleInTfmDir cache target.AssemblyName ordered tfmDir
+                | None -> findingsInTfmDir cache target.AssemblyName ordered tfmDir |> Seq.tryHead
 
             let perTfm = built |> Array.map judgeTfmDir
 
@@ -688,7 +707,7 @@ let stale (cache: Cache) (target: RunnerTarget) : StaleInput option =
         | None -> "fresh"
 
     let closureSize =
-        match closure with
+        match ordered with
         | Ok projects -> projects.Length
         | Error _ -> 0
 
@@ -697,3 +716,23 @@ let stale (cache: Cache) (target: RunnerTarget) : StaleInput option =
         $"freshness gate for %s{target.AssemblyName}: %d{closureSize} projects in closure, scanned in %d{sw.ElapsedMilliseconds}ms — %s{outcome}"
 
     verdict
+
+/// EVERY copy in the test project's output that holds bytes no origin in its closure
+/// holds, as `(origin, copy)` — across every built framework dir, not just the first
+/// finding `stale` stops at. The preflight asks this once `stale` has named one such
+/// copy, so a bin with twenty stale copies is repaired in one round instead of twenty.
+///
+/// Only the copy case: nothing else is repairable (see `StaleArtifactPreflight`), and
+/// a closure or output dir this cannot read contributes nothing here because `stale`
+/// has already refused it as `InputsUndeterminable`.
+let differingCopies (cache: Cache) (target: RunnerTarget) : (string * string) list =
+    match closureAndOutputs cache target with
+    | Ok ordered, Ok built ->
+        built
+        |> Seq.collect (findingsInTfmDir cache target.AssemblyName ordered)
+        |> Seq.choose (function
+            | CopyDiffersFromOrigin(origin, copy) -> Some(origin, copy)
+            | _ -> None)
+        |> Seq.distinctBy snd
+        |> List.ofSeq
+    | _ -> []

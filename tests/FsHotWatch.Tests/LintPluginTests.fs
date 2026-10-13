@@ -564,3 +564,87 @@ let ``lint refuses a FileChecked that carries no model generation at all`` () =
     waitForTerminalStatus host "lint" 15000
 
     test <@ linted |> List.ofSeq = [ present ] @>
+
+// A task-cache hit skips `Update`, so a session reading a sibling checkout's cache entry
+// for a file used to leave that file out of `WarningsByFile`: the ledger had the replayed
+// findings, but the `warnings` command counted only the files this session linted itself.
+// A replay is the same analysis of the same inputs, so the state it leaves must be the
+// state a fresh lint leaves.
+[<Fact(Timeout = 30000)>]
+let ``a lint result replayed from a sibling checkout's cache fills WarningsByFile like a fresh lint`` () =
+    withTempDir "lint-replay-store" (fun store ->
+        withTempDir "lint-replay-sibling" (fun siblingRoot ->
+            withTempDir "lint-replay-observed" (fun observedRoot ->
+                let warning (file: string) message : LintWarning =
+                    { Details =
+                        { Range = Range.mkRange file (Position.mkPos 3 2) (Position.mkPos 3 9)
+                          Message = message
+                          SuggestedFix = None
+                          TypeChecks = [] }
+                      ErrorText = "FL0001"
+                      FilePath = file
+                      RuleName = "TestRule"
+                      RuleIdentifier = "FL0001" }
+
+                let linted = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+                let runner (result: FileCheckResult) =
+                    let file = AbsFilePath.value result.File
+                    linted.Enqueue file
+
+                    if file.EndsWith "Warned.fs" then
+                        Lint.LintResult.Success [ warning file "w1"; warning file "w2" ]
+                    else
+                        Lint.LintResult.Success []
+
+                let lintIn (root: string) (shared: bool) =
+                    let host =
+                        if shared then
+                            let cache =
+                                FsHotWatch.FileTaskCache.FileTaskCache(store, repoRoot = root)
+                                :> FsHotWatch.TaskCache.ITaskCache
+
+                            PluginHost(Unchecked.defaultof<_>, root, taskCache = cache)
+                        else
+                            PluginHost(Unchecked.defaultof<_>, root)
+
+                    host.WorkStore.PublishProjectModel fixtureModel
+                    host.RegisterHandler(create (Some root) None (Some runner) None)
+
+                    for name in [ "Warned.fs"; "Clean.fs" ] do
+                        let before = committedBy host "lint"
+                        host.EmitFileChecked(fakeFileCheckResult (System.IO.Path.Combine(root, "src", name)))
+                        test <@ waitForCommitted host "lint" before 1L 15000 @>
+
+                    waitForQuiescent host 15000
+                    host.RunCommand("warnings", [||]) |> Async.RunSynchronously
+
+                // The sibling lints both files and writes them to the shared store.
+                let sibling = lintIn siblingRoot true
+                test <@ linted.Count = 2 @>
+                test <@ sibling = Some "{\"files\": 2, \"warnings\": 2}" @>
+
+                // The observed checkout reads both from it and lints nothing...
+                let observed = lintIn observedRoot true
+                test <@ linted.Count = 2 @>
+
+                // ...and its state is what a fresh lint of its own files leaves.
+                let fresh = lintIn observedRoot false
+                test <@ linted.Count = 4 @>
+                test <@ observed = fresh @>)))
+
+[<Fact>]
+let ``a replay records a completed lint for the current model, and nothing else`` () =
+    let handler = create None None None None
+    let result = fakeFileCheckResult "/tmp/test/Replayed.fs"
+
+    let replay currentModel analysis =
+        ((handler.Init :> FsHotWatch.PluginFramework.IFileReplayState<LintState>).Replayed currentModel result analysis)
+            .WarningsByFile
+
+    let completed = Result.Ok [ ErrorEntry.warningWithDetail "w1" "d" ]
+
+    test <@ replay (Some fixtureModelGeneration) completed = Map.ofList [ result.File, [ "w1" ] ] @>
+    test <@ replay (Some fixtureModelGeneration) (Result.Error "lint failed") |> Map.isEmpty @>
+    test <@ replay (Some 2L) completed |> Map.isEmpty @>
+    test <@ replay None completed |> Map.isEmpty @>

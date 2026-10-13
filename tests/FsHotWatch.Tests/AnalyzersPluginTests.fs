@@ -2036,3 +2036,149 @@ let ``a file that stops crashing drops out of the crash tally`` () =
             |> Map.tryFind file
             |> Option.forall List.isEmpty
         @>
+
+// A task-cache hit skips `Update`, so a session replaying a sibling's entry used to leave
+// the file out of `DiagnosticsByFile` and `CrashesByFile`: the ledger held the replayed
+// findings, but the `diagnostics` command and the next fresh summary counted only what
+// this session analyzed itself. A replay is the same analysis of the same inputs, so the
+// state it leaves must be the state a fresh analysis leaves.
+[<Fact(Timeout = 30000)>]
+let ``a result replayed from a sibling's cache fills the analyzers state like a fresh analysis`` () =
+    let crashed = "/my/repo/src/Crashed.fs"
+    let found = "/my/repo/src/Found.fs"
+    let later = "/my/repo/src/Later.fs"
+
+    let results (file: string) =
+        if file = crashed then
+            [ clean "Fine" [ sdkMessage "a real finding" ]
+              raising "TypedRule" (MissingMethodException "gone") ]
+        elif file = found then
+            [ clean "Fine" [ sdkMessage "another finding" ] ]
+        else
+            [ clean "Fine" [] ]
+
+    let cache =
+        FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+    let analyzeAll (taskCache: FsHotWatch.TaskCache.ITaskCache option) (files: string list) =
+        let analyzed = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+        let host =
+            match taskCache with
+            | Some c -> PluginHost(Unchecked.defaultof<_>, "/my/repo", taskCache = c)
+            | None -> PluginHost(Unchecked.defaultof<_>, "/my/repo")
+
+        host.WorkStore.PublishProjectModel fixtureModel
+
+        let runner: AnalyzerRunner =
+            fun _client context ->
+                async {
+                    analyzed.Enqueue context.FileName
+                    return results context.FileName
+                }
+
+        host.RegisterHandler(createWithSeams (Some "/my/repo") [] None DiagnosticSeverity.Error None runner)
+
+        for file in files do
+            let before = committedBy host "analyzers"
+            host.EmitFileChecked(analyzable file)
+            test <@ waitForCommitted host "analyzers" before 1L 15000 @>
+
+        waitForQuiescent host 15000
+        host, analyzed
+
+    let diagnostics (host: PluginHost) =
+        host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
+
+    // What the state says once `later` is analyzed fresh on top of it, past the counts of
+    // how the files got there.
+    let stateSummary (host: PluginHost) =
+        let summary = summaryOf host
+        summary.Substring(summary.IndexOf " from cache, ")
+
+    // The sibling's entries come from a session that analyzed both files itself.
+    analyzeAll (Some cache) [ crashed; found ] |> ignore
+
+    let fresh, _ = analyzeAll None [ crashed; found; later ]
+    let sibling, analyzed = analyzeAll (Some cache) [ crashed; found; later ]
+
+    // Only `later` was analyzed: the other two were served from the cache.
+    test <@ List.ofSeq analyzed = [ later ] @>
+    test <@ (summaryOf sibling).StartsWith "analyzed 1 files, replayed 2 from cache, " @>
+    test <@ diagnostics sibling = diagnostics fresh @>
+    test <@ stateSummary sibling = stateSummary fresh @>
+
+[<Fact>]
+let ``crashOfFinding recovers exactly the crash crashFinding recorded, and nothing else`` () =
+    let crash =
+        { Analyzer = "TypedRule"
+          Cause = "MissingMethodException: Method not found: crashed: twice"
+          Trace = "System.MissingMethodException: ...\n   at Rule" }
+
+    test <@ crashOfFinding (crashFinding crash) = Some crash @>
+    test <@ crashOfFinding (plainEntry (sdkMessage "analyzer X crashed: not a crash")) = None @>
+    test <@ crashOfFinding (ErrorEntry.error "Analyzer crashed: whole set") = None @>
+
+// When the whole analyzer pass raises, the ledger holds one crash entry for the file, and
+// the state records the same entry: the `diagnostics` command and a later summary count
+// what the ledger gates on, and a replay of the result leaves the same state.
+[<Fact(Timeout = 30000)>]
+let ``a whole-pass crash is recorded in the state the ledger holds`` () =
+    let file = "/my/repo/src/Raised.fs"
+    let host = createModelHost (Unchecked.defaultof<_>) "/my/repo"
+
+    let runner: AnalyzerRunner =
+        fun _client _context -> async { return raise (InvalidOperationException "whole pass") }
+
+    host.RegisterHandler(createWithSeams (Some "/my/repo") [] None DiagnosticSeverity.Error None runner)
+    host.EmitFileChecked(analyzable file)
+    waitForQuiescent host 15000
+
+    let entries =
+        host.GetErrorsByPlugin "analyzers" |> Map.tryFind file |> Option.defaultValue []
+
+    test <@ entries.Length = 1 @>
+
+    test
+        <@
+            host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously = Some
+                "{\"analyzers\":0,\"diagnostics\":1,\"files\":1}"
+        @>
+
+[<Fact>]
+let ``a replay records a completed analysis for the current model, and nothing else`` () =
+    let handler = create None [] None DiagnosticSeverity.Hint
+    let result = fakeResult "/tmp/test/Replayed.fs"
+
+    let crash =
+        { Analyzer = "TypedRule"
+          Cause = "MissingMethodException: gone"
+          Trace = "trace" }
+
+    let finding = plainEntry (sdkMessage "a real finding")
+
+    let replay currentModel analysis =
+        let state =
+            (handler.Init :> FsHotWatch.PluginFramework.IFileReplayState<AnalyzersState>).Replayed
+                currentModel
+                result
+                analysis
+
+        state.DiagnosticsByFile, state.CrashesByFile, state.RunAnalyzed
+
+    let completed = Result.Ok [ finding; crashFinding crash ]
+
+    test
+        <@
+            replay (Some fixtureModelGeneration) completed = (Map.ofList
+                                                                  [ result.File, [ finding; crashFinding crash ] ],
+                                                              Map.ofList [ result.File, [ crash ] ],
+                                                              0)
+        @>
+
+    let untouched: Map<AbsFilePath, ErrorEntry list> * Map<AbsFilePath, AnalyzerCrash list> * int =
+        (Map.empty, Map.empty, 0)
+
+    test <@ replay (Some fixtureModelGeneration) (Result.Error "analysis failed") = untouched @>
+    test <@ replay (Some 2L) completed = untouched @>
+    test <@ replay None completed = untouched @>

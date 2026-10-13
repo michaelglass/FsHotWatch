@@ -875,7 +875,7 @@ type internal ReadKind =
     /// uncovered, the scope could not be read, the tree moved, or the check never
     /// settled. `current` is reported and the store is cleared.
     | Disqualifying of TestScope
-    /// A mid-run read (`scope: "running"`). It says nothing about what ran and nothing
+    /// A mid-run read (`kind: "running"` or `"settling"`). It says nothing about what ran and nothing
     /// about the tree, so it neither composes nor wipes: `current` is reported, the
     /// store is kept for the settled read that follows.
     | InFlight

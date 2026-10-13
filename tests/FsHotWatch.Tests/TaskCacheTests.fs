@@ -1568,8 +1568,11 @@ let ``cache replay does not stomp a Running status while an exclusive run is in 
     let cache = InMemoryTaskCache()
 
     // B's cached entry: terminal, carrying an error so the replay is observable.
+    // Keyed exactly as the framework looks it up — a repo-relative identity under the
+    // host's root — or the "hit" below is a miss and the replay never runs.
     cache.Set(
-        ck "test-plugin" "/src/B.fs",
+        { Plugin = "test-plugin"
+          File = Some(compositeFileKey "/tmp/test" "/src/B.fs") },
         hash "k-B",
         { CacheKey = hash "k-B"
           Errors =
@@ -1587,6 +1590,9 @@ let ``cache replay does not stomp a Running status while an exclusive run is in 
     // our schedule rather than on a timer.
     use runGate = new SemaphoreSlim(0, 1)
     let host = PluginHost(nullChecker, "/tmp/test", taskCache = (cache :> ITaskCache))
+    // The fixture results are stamped with the fixture model; a host publishing no model
+    // treats them as stale and never serves them from the cache.
+    host.WorkStore.PublishProjectModel fixtureModel
 
     let handler: PluginHandler<unit, unit> =
         { Name = PluginName.create "test-plugin"

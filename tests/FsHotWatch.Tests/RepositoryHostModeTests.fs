@@ -273,8 +273,8 @@ let private withRepository (body: string -> string -> unit) =
 /// The built CLI, run in `root` as an opted-in shell would run it, under the `dotnet`
 /// host of the runtime this test runs on. Its apphost would need a runtime it can
 /// find on its own, which a test host started by `dotnet exec` does not guarantee.
-/// Fails with everything the CLI printed unless it exits 0.
-let private runCliOk (stateHome: string) (root: string) (args: string list) : unit =
+/// Returns its exit code and everything it printed, stdout and stderr interleaved.
+let private runCli (stateHome: string) (root: string) (args: string list) : int * string =
     let cli = typeof<HostLink>.Assembly.Location
 
     let host =
@@ -316,8 +316,12 @@ let private runCliOk (stateHome: string) (root: string) (args: string list) : un
 
     // The parameterless wait returns once both redirected streams have drained.
     p.WaitForExit()
+    p.ExitCode, String.concat Environment.NewLine output
 
-    Assert.True((p.ExitCode = 0), $"fshw %A{args} exited %d{p.ExitCode}:\n%s{String.concat Environment.NewLine output}")
+/// `runCli`, failing with everything the CLI printed unless it exits 0.
+let private runCliOk (stateHome: string) (root: string) (args: string list) : unit =
+    let exitCode, output = runCli stateHome root args
+    Assert.True((exitCode = 0), $"fshw %A{args} exited %d{exitCode}:\n%s{output}")
 
 /// Kill every host this test may have started for `root`: the pids it saw, and the one
 /// the repository's pid file names now, which a command that failed part-way leaves
@@ -692,23 +696,63 @@ let ``an attach reply the host cannot have written is a stop, naming why`` () =
 // Plugin passthrough
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 5000)>]
-let ``a plugin command in host mode is refused, naming the gap, never sent to a per-worktree pipe`` () =
-    let noEnv (_: string) : string = null
-    let on = "{ \"repositoryHost\": true }"
+/// Configure `worktree` for the smallest session, with one plugin command of its own:
+/// `<name>-status`, which a file command named `name` registers.
+let private withPluginCommand (worktree: string) (name: string) =
+    File.WriteAllText(
+        Path.Combine(worktree, ".fshw.json"),
+        $"""{{ "build": false, "format": false, "lint": false, "repositoryHost": true,
+              "fileCommands": [ {{ "name": "%s{name}", "pattern": "*.probe", "command": "true" }} ] }}"""
+    )
 
-    match passthroughRefusal on noEnv false "coverage-report" with
-    | Some message ->
-        test <@ message.Contains "coverage-report" @>
-        test <@ message.Contains "repository host" && message.Contains "FSHW_REPOSITORY_HOST=0" @>
-    | None -> failwith "an opted-in worktree must refuse plugin passthrough"
+[<Fact(Timeout = 600000)>]
+let ``a plugin command reaches the session of the worktree it is run in, and no other`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withRepository (fun root stateHome ->
+            // A second worktree of the same repository, with its own project and a plugin
+            // command its sibling does not have.
+            let sibling = Path.Combine(Path.GetDirectoryName root, "b")
+            let siblingJj = Path.Combine(sibling, ".jj")
+            Directory.CreateDirectory siblingJj |> ignore
 
-    // A worktree the host serves refuses too, even from a shell that has not opted in.
-    test <@ (passthroughRefusal "" noEnv true "coverage-report").IsSome @>
-    // Its own daemon still takes plugin commands.
-    test <@ (passthroughRefusal "" noEnv false "coverage-report").IsNone @>
+            File.WriteAllText(
+                Path.Combine(siblingJj, "repo"),
+                Path.GetRelativePath(siblingJj, Path.Combine(root, ".jj", "repo"))
+            )
 
-    let off (name: string) =
-        if name = RepositoryHostMode.EnvVar then "0" else null
+            let siblingLib = Path.Combine(sibling, "src", "Lib")
+            Directory.CreateDirectory siblingLib |> ignore
 
-    test <@ (passthroughRefusal on off false "coverage-report").IsNone @>
+            for file in [ "Lib.fsproj"; "Lib.fs" ] do
+                File.Copy(Path.Combine(root, "src", "Lib", file), Path.Combine(siblingLib, file))
+
+            withPluginCommand root "alpha"
+            withPluginCommand sibling "beta"
+            let since = DateTime.UtcNow.AddSeconds -1.0
+
+            try
+                runCliOk stateHome root [ "scan" ]
+                runCliOk stateHome sibling [ "scan" ]
+
+                let record worktree =
+                    (RepositoryHost.HostSessionRecord.tryReadLive RepositoryHost.processAlive worktree).Value
+
+                // One host serves both worktrees, each as its own session.
+                test <@ (record root).HostPid = (record sibling).HostPid @>
+                test <@ (record root).Session <> (record sibling).Session @>
+
+                // Each worktree's command is recognised and answered by its own session.
+                for worktree, command in [ root, "alpha-status"; sibling, "beta-status" ] do
+                    let exitCode, output = runCli stateHome worktree [ command ]
+                    Assert.True((exitCode = 0), $"fshw %s{command} exited %d{exitCode}:\n%s{output}")
+
+                // The sibling's session has no `alpha` command: the command is not served
+                // by another worktree's session, it fails as an unknown command.
+                let unknown =
+                    (CommandTree.renderParseError commandTree (UnknownCommand("alpha-status", [||], [])) cliName)
+                        .Split('\n')[0]
+
+                let exitCode, output = runCli stateHome sibling [ "alpha-status" ]
+                Assert.True((exitCode = 1 && output.Contains unknown), $"exited %d{exitCode}:\n%s{output}")
+            finally
+                reapHosts since stateHome root [] |> ignore)

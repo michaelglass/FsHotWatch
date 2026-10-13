@@ -312,6 +312,13 @@ module Reason =
           %s{ArtifactFreshness.describe s}; refusing to run --no-build on bytes this gate could not certify. \
           Remedy: %s{remedyFor s}"
 
+    /// Repaired earlier in THIS run and stale again at the next re-detection. Another
+    /// repair would not converge, so the run refuses and names the file.
+    let restaledAfterRepair (s: ArtifactFreshness.StaleInput) : string =
+        $"%s{StaleOutputMarker}RE-STALED after this run already repaired it — %s{ArtifactFreshness.describe s}. \
+          Something rewrote the copy between the repair and the re-check (a build still writing into this \
+          tree?), so repairing it again would not converge. Remedy: %s{remedyFor s}"
+
     /// The repair was attempted and the write itself failed.
     let repairFailed (error: string) (s: ArtifactFreshness.StaleInput) : string =
         $"%s{StaleOutputMarker}the automatic repair FAILED (%s{error}) — %s{ArtifactFreshness.describe s}. \
@@ -340,22 +347,26 @@ let refusalMessages (repoRoot: string) : string list =
 
     [ Reason.stale sample
       Reason.stillStaleAfterRepairs 8 sample
+      Reason.restaledAfterRepair sample
       Reason.repairFailed "IOException: locked" sample
       Reason.breakerTripped repoRoot "/c.dll" 10 ]
 
-/// How many detect→repair rounds a run may spend before it gives up and refuses.
+/// How many rounds of RE-DETECTION a run may spend before it gives up and refuses.
 ///
-/// A round repairs every stale copy it can SEE, but `ArtifactFreshness.stale` reports
-/// the FIRST finding per project, so a project holding several inverted copies needs
-/// several rounds. Each round strictly reduces the set (a repaired copy is
-/// byte-identical to its origin), so this bound is a safety net against a pathological
-/// tree, not the normal exit — and exhausting it REFUSES rather than proceeding,
-/// because bytes this module could not certify are exactly what the gate exists to
-/// keep out of a test run.
+/// It bounds rounds, not files. A round repairs EVERY differing copy in each project
+/// it finds stale (`ArtifactFreshness.differingCopies`), so a bin holding any number
+/// of stale copies is repaired in one round and certified by the next detection. A copy
+/// that comes back stale after its repair refuses at once (`Reason.restaledAfterRepair`)
+/// rather than spending rounds, so every round that continues has repaired copies never
+/// repaired before. The bound is a safety net against new stale copies appearing round
+/// after round (a build still writing into the tree), and exhausting it REFUSES rather
+/// than proceeding, because bytes this module could not certify are exactly what the
+/// gate exists to keep out of a test run.
 [<Literal>]
 let MaxRepairRounds = 8
 
-/// `run` with an explicit repair budget. See `MaxRepairRounds`.
+/// `runWithBudget` with the write itself injected, so a test can make a repair that does
+/// not stick (a copy that RE-STALES) without racing a real writer.
 ///
 /// `targets` is every config that would actually launch, already resolved to its
 /// build-output target — impact-skipped projects are excluded by the caller, since a
@@ -364,7 +375,8 @@ let MaxRepairRounds = 8
 /// Takes `(string * ArtifactFreshness.RunnerTarget) list` rather than `TestConfig`s so
 /// this module stays free of the plugin's config shape and is drivable from a test
 /// with three lines of setup.
-let runWithBudget
+let internal runWithRepair
+    (repair: string -> string -> Result<unit, string>)
     (budget: int)
     (repoRoot: string)
     (now: DateTime)
@@ -382,9 +394,10 @@ let runWithBudget
     let detect () =
         let cache = ArtifactFreshness.Cache()
 
+        cache,
         targets
         |> List.choose (fun (project, target) ->
-            ArtifactFreshness.stale cache target |> Option.map (fun s -> project, s))
+            ArtifactFreshness.stale cache target |> Option.map (fun s -> project, target, s))
 
     /// `healed` accumulates FORWARD, in repair order, so every exit can report it as-is.
     /// It is bounded by the number of stale copies in one run and appended once per
@@ -392,25 +405,39 @@ let runWithBudget
     /// invariant that three exits would each have to unwind correctly.
     let rec round (remaining: int) (ledger: HealRecord list) (healed: string list) : Outcome =
         match detect () with
-        | [] ->
+        | _, [] ->
             // Certified fresh — by a read of the bytes taken AFTER the last repair.
             { Healed = healed; Refusals = [] }
-        | detected when remaining <= 0 ->
+        | _, detected when remaining <= 0 ->
             { Healed = healed
               Refusals =
                 detected
-                |> List.map (fun (project, s) ->
+                |> List.map (fun (project, _, s) ->
                     { Project = project
                       Reason = Reason.stillStaleAfterRepairs budget s }) }
-        | detected ->
+        | cache, detected ->
             // Split by what this module is WILLING to do, not by what went wrong — and
             // carry the repair pair through with the entry that has one. Re-asking
             // `repairFor` further down would reintroduce a `None` arm the split has
             // already made impossible, i.e. an unreachable branch that has to be
             // written, read and covered forever.
+            //
+            // `stale` names only the FIRST finding per project, so a repairable one is
+            // widened to EVERY differing copy in that project's bin. Repairing one file
+            // per round is what refused bins with more stale copies than rounds. The
+            // round's own cache is the right one here: it holds the pre-repair hashes
+            // that this detection was judged on.
             let repairable =
                 detected
-                |> List.choose (fun (project, s) -> repairFor s |> Option.map (fun pair -> project, s, pair))
+                |> List.collect (fun (project, target, s) ->
+                    match repairFor s with
+                    | None -> []
+                    | Some named ->
+                        named :: ArtifactFreshness.differingCopies cache target
+                        |> List.distinctBy snd
+                        |> List.map (fun (origin, copy) ->
+                            project, ArtifactFreshness.CopyDiffersFromOrigin(origin, copy), (origin, copy)))
+                |> List.distinctBy (fun (_, _, (_, copy)) -> copy)
 
             // Case 3 — INSTRUMENT, do not build the capability.
             //
@@ -436,13 +463,24 @@ let runWithBudget
                     $"artifact-copy-differs: %s{project} — origin %s{origin} differs from copy %s{copy}"
 
             let unrepairable =
-                detected |> List.filter (fun (_, s) -> Option.isNone (repairFor s))
+                detected
+                |> List.choose (fun (project, _, s) ->
+                    if Option.isNone (repairFor s) then
+                        Some(project, s)
+                    else
+                        None)
+
+            // A copy this run already repaired and is stale again does not converge, and
+            // spending more rounds on it only hides which file it is. Refuse it by name.
+            let restaled, unrepaired =
+                repairable
+                |> List.partition (fun (_, _, (_, copy)) -> List.contains copy healed)
 
             // The breaker is consulted per FILE, and it decides one thing: whether THAT
             // file may be repaired again. It is not a verdict about the round, and it
             // was never a verdict about a run with nothing stale in it.
             let tripped, toRepair =
-                repairable
+                unrepaired
                 |> List.partition (fun (_, _, (_, copy)) -> healsInWindow now ledger copy >= Threshold)
 
             // These are the refusals this round has ALREADY earned —
@@ -451,6 +489,10 @@ let runWithBudget
             // repairs is the whole fix: the repair loop below runs either way.
             let blocked =
                 (unrepairable |> List.map (fun (project, s) -> refusalOf project s))
+                @ (restaled
+                   |> List.map (fun (project, s, _) ->
+                       { Project = project
+                         Reason = Reason.restaledAfterRepair s }))
                 @ (tripped
                    |> List.map (fun (project, _, (_, copy)) ->
                        { Project = project
@@ -468,7 +510,7 @@ let runWithBudget
             let outcomes =
                 toRepair
                 |> List.map (fun (project, s, (origin, copy)) ->
-                    match applyRepair origin copy with
+                    match repair origin copy with
                     | Ok() ->
                         Logging.warn
                             "test-prune"
@@ -511,6 +553,15 @@ let runWithBudget
                 round (remaining - 1) ledger' (healed @ repaired)
 
     round budget (loadLedger repoRoot) []
+
+/// `run` with an explicit repair budget. See `MaxRepairRounds`.
+let runWithBudget
+    (budget: int)
+    (repoRoot: string)
+    (now: DateTime)
+    (targets: (string * ArtifactFreshness.RunnerTarget) list)
+    : Outcome =
+    runWithRepair applyRepair budget repoRoot now targets
 
 /// Decide the run, before any of it starts. `Refusals` empty means every target was
 /// certified fresh by a post-repair read of the actual bytes, and the suite may launch.

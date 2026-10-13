@@ -453,6 +453,64 @@ let ``two unrelated checkouts never share a cache namespace`` () =
     withTwinCheckouts "unrelated" (fun _ -> ()) (fun a b ->
         test <@ RepoIdentity.namespaceOf a <> RepoIdentity.namespaceOf b @>)
 
+/// A git main checkout at `root`: a `.git` directory.
+let private gitRepoAt (root: string) =
+    Directory.CreateDirectory(Path.Combine(root, ".git")) |> ignore
+    root
+
+/// A linked worktree of `main` at `worktree`, laid out as `git worktree add` writes it:
+/// `.git` is a `gitdir:` FILE, and the per-worktree directory's `commondir` names the
+/// common directory.
+let private gitLinkedWorktree (main: string) (name: string) (worktree: string) =
+    let perWorktree = Path.Combine(main, ".git", "worktrees", name)
+    Directory.CreateDirectory perWorktree |> ignore
+    File.WriteAllText(Path.Combine(perWorktree, "commondir"), "../..\n")
+    Directory.CreateDirectory worktree |> ignore
+    File.WriteAllText(Path.Combine(worktree, ".git"), $"gitdir: %s{perWorktree}\n")
+    worktree
+
+[<Fact(Timeout = 15000)>]
+let ``unrelated repositories under a directory named worktrees get two cache namespaces`` () =
+    // Cutting the git dir at its last `/worktrees/` segment turned both `.git`
+    // directories into `<dir>`, so two unrelated repositories shared one store.
+    withTempDir "ns-worktrees-dir" (fun dir ->
+        let a = gitRepoAt (Path.Combine(dir, "worktrees", "a"))
+        let b = gitRepoAt (Path.Combine(dir, "worktrees", "b"))
+
+        test <@ RepoIdentity.namespaceOf a <> RepoIdentity.namespaceOf b @>
+        test <@ (RepoIdentity.namespaceOf a).StartsWith "a-" @>
+        test <@ (RepoIdentity.namespaceOf b).StartsWith "b-" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a linked worktree of a repository under a worktrees directory shares only its own repository's namespace`` () =
+    withTempDir "ns-worktrees-linked" (fun dir ->
+        let main = gitRepoAt (Path.Combine(dir, "worktrees", "main"))
+        let sibling = gitRepoAt (Path.Combine(dir, "worktrees", "sibling"))
+        let linked = gitLinkedWorktree main "wt" (Path.Combine(dir, "worktrees", "wt"))
+
+        test <@ RepoIdentity.namespaceOf linked = RepoIdentity.namespaceOf main @>
+        test <@ RepoIdentity.namespaceOf linked <> RepoIdentity.namespaceOf sibling @>)
+
+[<Fact(Timeout = 15000)>]
+let ``one repository reached through a symlink gets the same cache namespace`` () =
+    withTempDir "ns-symlink" (fun dir ->
+        let repo = gitRepoAt (Path.Combine(dir, "repo"))
+        let link = Path.Combine(dir, "link")
+        Directory.CreateSymbolicLink(link, repo) |> ignore
+
+        test <@ RepoIdentity.namespaceOf link = RepoIdentity.namespaceOf repo @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a case-variant spelling gets the same cache namespace on a case-insensitive volume`` () =
+    withTempDir "ns-case" (fun dir ->
+        let repo = gitRepoAt (Path.Combine(dir, "MyRepo"))
+        let variant = Path.Combine(dir, "myrepo")
+
+        // On a case-sensitive volume the variant names nothing, so there is no second
+        // spelling of this repository to compare.
+        if Directory.Exists variant then
+            test <@ RepoIdentity.namespaceOf variant = RepoIdentity.namespaceOf repo @>)
+
 [<Fact(Timeout = 15000)>]
 let ``a checkout under no recognised version control gets a private namespace`` () =
     withTempDir "novcs" (fun dir ->

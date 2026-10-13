@@ -1483,10 +1483,10 @@ let ``a MISSING ledger (fresh clone) is legitimately empty and does NOT force a 
 
         host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
 
-        // Give a run every chance to start before concluding none did.
-        waitUntil (fun () -> File.Exists p1Ran || File.Exists p2Ran) 3000
-        waitForQuiescent host 5000
-
+        // The batch was handled, and in the window a run would need to start, none did.
+        // The expiry IS the expected outcome here, so it is asserted rather than ignored.
+        waitForHandled host 1L 5000
+        test <@ not (waitUntilTrue (fun () -> File.Exists p1Ran || File.Exists p2Ran) 3000) @>
         test <@ not (File.Exists p1Ran) @>
         test <@ not (File.Exists p2Ran) @>)
 
@@ -1515,9 +1515,8 @@ let ``a genuinely EMPTY ledger stays a fast no-op (not a widened run)`` () =
 
         host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
 
-        waitUntil (fun () -> File.Exists p1Ran || File.Exists p2Ran) 3000
-        waitForQuiescent host 5000
-
+        waitForHandled host 1L 5000
+        test <@ not (waitUntilTrue (fun () -> File.Exists p1Ran || File.Exists p2Ran) 3000) @>
         test <@ not (File.Exists p1Ran) @>
         test <@ not (File.Exists p2Ran) @>)
 

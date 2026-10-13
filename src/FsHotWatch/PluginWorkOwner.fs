@@ -732,6 +732,17 @@ type Snapshot<'State> =
         |> Map.tryFind key
         |> Option.exists (fun lane -> holdsWorker lane.Holder)
 
+    /// A finished run's result fold holds `key` and has not committed: the run is over,
+    /// but the state does not hold its result yet. Never true while `IsRunning key` is.
+    member this.IsSettling(key: string) =
+        obligations this.Work
+        |> snd
+        |> Map.tryFind key
+        |> Option.exists (fun lane ->
+            match lane.Holder with
+            | Folding(first, later, None) -> first :: later |> List.exists (fun fold -> fold.IsWorkerResult)
+            | _ -> false)
+
     /// Anything holds `key`: a live worker, or a fold that has not committed. A claim on
     /// a held key is refused.
     member this.IsHeld(key: string) =

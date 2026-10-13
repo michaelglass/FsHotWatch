@@ -1112,8 +1112,9 @@ let computeTest () =
     ()
 """
 
-/// Emit a file through the CheckPipeline and wait for the plugin's async analysis to
-/// settle, polling `changed-files` rather than sleeping.
+/// Emit a file through the CheckPipeline and wait for the plugin's analysis to settle.
+/// Analysis is an in-handler side effect with no status transition, so quiescence is the
+/// witness.
 let private emitFileAndWait
     (checker: FSharpChecker)
     (pipeline: CheckPipeline)
@@ -1131,16 +1132,7 @@ let private emitFileAndWait
         | Some r -> host.EmitFileChecked(stampFixture r)
         | None -> failwith $"CheckFile returned None for {filePath}"
 
-        let fileName = Path.GetFileName(filePath)
-
-        waitUntil
-            (fun () ->
-                let result = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
-
-                match result with
-                | Some json -> json.Contains(fileName)
-                | None -> false)
-            10000
+        waitForQuiescent host 10000
     }
 
 // The 60s Fact cap is a cancellation guard, not a budget: tests that drive real FCS have
