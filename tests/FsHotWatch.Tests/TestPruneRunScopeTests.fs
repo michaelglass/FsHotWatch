@@ -35,7 +35,7 @@ let private noRunLog (_: string) : FsHotWatch.RunLog.Ref =
     FsHotWatch.RunLog.Ref.Unavailable "fixture: no run log"
 
 /// No project wrote a CTRF report in this test.
-let private noReport (_: string) : string list = []
+let private noReport (_: string) = ReportedFailures.none
 
 
 // =============================================================================

@@ -2825,7 +2825,11 @@ let ``failuresOf: the CTRF report names the reds when the console named none`` (
           Elapsed = TimeSpan.Zero }
 
     let fromReport (project: string) =
-        if project = "P" then [ "FsHotWatch.Tests.Foo.bar" ] else []
+        if project = "P" then
+            { ReportedFailures.none with
+                Names = [ "FsHotWatch.Tests.Foo.bar" ] }
+        else
+            ReportedFailures.none
 
     let red =
         failuresOf (fun _ -> savedLog) fromReport Map.empty failed |> List.exactlyOne
@@ -2845,7 +2849,14 @@ let ``failuresOf: the console's own failed lines are filed once, not again from 
         { Results = Map.ofList [ "P", TestsFailed(output, false, TimeSpan.Zero) ]
           Elapsed = TimeSpan.Zero }
 
-    let reds = failuresOf (fun _ -> savedLog) (fun _ -> [ "A.b" ]) Map.empty failed
+    let reds =
+        failuresOf
+            (fun _ -> savedLog)
+            (fun _ ->
+                { ReportedFailures.none with
+                    Names = [ "A.b" ] })
+            Map.empty
+            failed
 
     test <@ reds |> List.map (fun r -> r.Class, r.Method) = [ Some "A", Some "b" ] @>
 
@@ -2861,7 +2872,7 @@ let ``failuresOf: a completed run nobody could name quotes the runner's summary,
           Elapsed = TimeSpan.Zero }
 
     let red =
-        failuresOf (fun _ -> FsHotWatch.RunLog.Ref.Written path) (fun _ -> []) Map.empty failed
+        failuresOf (fun _ -> FsHotWatch.RunLog.Ref.Written path) noReport Map.empty failed
         |> List.exactlyOne
 
     test <@ red.Class = None @>
@@ -2890,7 +2901,7 @@ let ``failuresOf: a host killed at its timeout after a Passed! summary is report
           Elapsed = killedAt600s }
 
     let red =
-        failuresOf (fun _ -> savedLog) (fun _ -> []) Map.empty failed |> List.exactlyOne
+        failuresOf (fun _ -> savedLog) noReport Map.empty failed |> List.exactlyOne
 
     test <@ red.Entry.Message.Contains "timed out after 600s" @>
     test <@ red.Entry.Message.Contains "total: 9301" @>

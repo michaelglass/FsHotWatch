@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: a test whose backticked name contains `.` (`` member _.``parses v1.5 input`` ``,
+  reported as `Ns.Tests.parses v1.5 input`) is joined to its own test class. The runner's
+  name was split at its last `.`, which filed the red under the class
+  `Ns.Tests.parses v1`. That class is not in the index, so check-reach counted the
+  failure as a selection miss, the quarantine re-ran it under a class filter that
+  matched nothing, a class-filtered green never retired it, and its source file was not
+  found. Names now split against the classes the run's CTRF report declares (each row's
+  `suite` path) and the index stores, and the last `.` is used only for a name no known
+  class prefixes. `splitTestName` is that one split, used by the console parser, the
+  CTRF readers and recall.
+
 ## 0.13.0-alpha.70 - 2026-10-13
 
 - fix: `test-results` and `test-scope` no longer report the previous run as settled while

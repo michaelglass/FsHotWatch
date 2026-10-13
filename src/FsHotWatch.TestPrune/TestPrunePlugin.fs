@@ -4522,21 +4522,41 @@ let internal looksLikeApphostMissing (output: string) : bool =
 
         hasStartProcessFailure && not looksLikeRealTestFailure
 
-/// Split a fully-qualified test name into (class, method): the LAST dotted segment is
-/// the method and the COMPLETE prefix is the class. A name with no dot is its own class.
-/// Keeping the prefix is load-bearing: launch selections use fully qualified class
-/// names, so truncating `A.B.Tests.method` to `Tests` makes a test run and pass while
-/// its retained red remains permanently "not covered" (d223).
+/// Split a runner's fully-qualified test name into (class, method) against `classes`,
+/// the test classes the runner's report declares and the index stores.
+///
+/// The runner prints compiled names, and a backticked method or class keeps every `.`
+/// written between its backticks (`Ns.Tests+Parsing.parses v1.5 input`), so where the
+/// class ends is not visible in the name alone. The class is therefore the LONGEST
+/// prefix ending before a `.` that is one of `classes`; the method is the rest, theory
+/// arguments included. A name no known class prefixes falls back to the last dotted
+/// segment as the method and the COMPLETE prefix as the class. A name with no dot is its
+/// own class. Keeping the full prefix is load-bearing: launch selections use fully
+/// qualified class names, so truncating `A.B.Tests.method` to `Tests` makes a test run
+/// and pass while its retained red remains permanently "not covered".
 ///
 /// ONE derivation, used by BOTH sides of the ledger: the class a red is FILED under
-/// (`parseFailedTests`, off the runner's `failed <name>` console lines) and the class a
-/// run's report VINDICATES (`passedClassesOfReport`, off the CTRF `name` field). The two
-/// read the same runner's rendering of the same fully-qualified name, so sharing the
-/// split is what makes retirement match filing — an xUnit display name that defeats the
-/// heuristic defeats it identically on both sides, and a key that fails to match simply
-/// leaves the red standing.
-let internal splitTestName (name: string) : string * string =
-    let separator = name.LastIndexOf('.')
+/// (`parseFailedTestsAgainst`, off the runner's `failed <name>` console lines, and the
+/// CTRF rows that name a red the console did not) and the class a run's report
+/// VINDICATES (`passedClassesOfReport`, off the CTRF `name` field) — and the class a
+/// recall sample asks the retained selection about (`failedTestsOfReport`). All of them
+/// join the index's classes, so all of them split here.
+let internal splitTestName (classes: Set<string>) (name: string) : string * string =
+    let rec declared (before: int) =
+        match name.LastIndexOf('.', before) with
+        | separator when separator > 0 ->
+            if Set.contains (name.Substring(0, separator)) classes then
+                Some separator
+            else
+                declared (separator - 1)
+        | _ -> None
+
+    let separator =
+        if Set.isEmpty classes || name.Length < 2 then
+            None
+        else
+            declared (name.Length - 2)
+        |> Option.defaultWith (fun () -> name.LastIndexOf('.'))
 
     if separator > 0 && separator < name.Length - 1 then
         name.Substring(0, separator), name.Substring(separator + 1)
@@ -4546,7 +4566,8 @@ let internal splitTestName (name: string) : string * string =
 /// Parse "failed Namespace.Class.Method (Xms)" lines from test output, colour removed —
 /// `failed (canceled) <name> (Xms)` and a multi-unit duration `(10s 112ms)` included.
 /// Returns (className, methodName, fullLine) tuples; `fullLine` is the line as words.
-let parseFailedTests (output: string) : (string * string * string) list =
+/// Each name is split against `classes` (`splitTestName`).
+let internal parseFailedTestsAgainst (classes: Set<string>) (output: string) : (string * string * string) list =
     ConsoleText.lines output
     |> Array.choose (fun line ->
         let trimmed = line.Trim()
@@ -4569,11 +4590,15 @@ let parseFailedTests (output: string) : (string * string * string) list =
                 | -1 -> rest
                 | i -> rest.Substring(0, i)
 
-            let className, methodName = splitTestName name
+            let className, methodName = splitTestName classes name
             Some(className, methodName, trimmed)
         else
             None)
     |> Array.toList
+
+/// `parseFailedTestsAgainst` with no known classes: each name splits at its last `.`.
+let parseFailedTests (output: string) : (string * string * string) list =
+    parseFailedTestsAgainst Set.empty output
 
 /// The classes ONE project's CTRF report proves RAN AND PASSED in this run
 /// — the receipt `RunCoverage.ofRun` reads for a raw `--filter`
@@ -4606,8 +4631,10 @@ let internal passedTestsOfReport (json: string) : Set<string * string> =
         if records.IsEmpty || records.Length <> summary.Total then
             Set.empty
         else
+            let classes = Flakiness.parseCtrfDeclaredClasses json
+
             records
-            |> List.groupBy (fun r -> splitTestName r.Name)
+            |> List.groupBy (fun r -> splitTestName classes r.Name)
             |> List.choose (fun (testIdentity, forTest) ->
                 let anyPassed = forTest |> List.exists (fun r -> r.Outcome = Flakiness.Passed)
 
@@ -4635,8 +4662,10 @@ let internal passedClassesOfReport (json: string) : Set<string> =
         if records.IsEmpty || records.Length <> summary.Total then
             Set.empty
         else
+            let classes = Flakiness.parseCtrfDeclaredClasses json
+
             records
-            |> List.groupBy (fun r -> fst (splitTestName r.Name))
+            |> List.groupBy (fun r -> fst (splitTestName classes r.Name))
             |> List.choose (fun (cls, forClass) ->
                 let anyPassed = forClass |> List.exists (fun r -> r.Outcome = Flakiness.Passed)
 
@@ -4705,7 +4734,8 @@ let internal failedTestsOfReport (json: string) : (string * string) list option 
         if records.Length <> summary.Total || failed.Length <> summary.Failed then
             None
         else
-            failed |> List.map (fun record -> splitTestName record.Name) |> Some
+            let classes = Flakiness.parseCtrfDeclaredClasses json
+            failed |> List.map (fun record -> splitTestName classes record.Name) |> Some
 
 /// Every failed row of a CTRF report, by fully-qualified name, whether or not the rows
 /// reconcile to the summary. Naming is not counting: a report that omitted a raw-throw
@@ -4715,6 +4745,22 @@ let internal failedRowsOfReport (json: string) : string list =
     Flakiness.parseCtrfTests json
     |> List.filter (fun record -> record.Outcome = Flakiness.Failed)
     |> List.map (fun record -> record.Name)
+
+/// What one project's CTRF report contributes to filing its reds: the failed rows it
+/// names, and the classes it declares. A red is split against those classes whether the
+/// console or the report named it, so it is filed under the class the report's passing
+/// rows later vindicate.
+type internal ReportedFailures =
+    { Names: string list
+      Classes: Set<string> }
+
+module internal ReportedFailures =
+    /// No report: the console is all a red can be named from.
+    let none = { Names = []; Classes = Set.empty }
+
+    let ofReport (json: string) =
+        { Names = failedRowsOfReport json
+          Classes = Flakiness.parseCtrfDeclaredClasses json }
 
 let internal sharedInfrastructureFailureOfReport (json: string) : string option =
     try
@@ -4865,7 +4911,7 @@ let internal failedTestsOfRun
 /// what the tool knows and where the rest is.
 let internal failuresOf
     (runLogOf: string -> RunLog.Ref)
-    (reportFailuresOf: string -> string list)
+    (reportOf: string -> ReportedFailures)
     (classFiles: Map<string, string>)
     (results: TestResults)
     : OutstandingFailure list =
@@ -4890,13 +4936,18 @@ let internal failuresOf
             // The console names the reds; when it names none, the CTRF report the
             // runner wrote beside the output log names them instead. The report row is
             // the same fully-qualified name the console prints, so a red filed from it
-            // is retired by the same passing row.
+            // is retired by the same passing row. Either way the name splits against the
+            // classes the report declares and the index stores.
+            let report = reportOf project
+
+            let classes = classFiles |> Map.keys |> Set.ofSeq |> Set.union report.Classes
+
             let parsed =
-                match parseFailedTests output with
+                match parseFailedTestsAgainst classes output with
                 | [] ->
-                    reportFailuresOf project
+                    report.Names
                     |> List.map (fun name ->
-                        let className, methodName = splitTestName name
+                        let className, methodName = splitTestName classes name
 
                         className,
                         methodName,
@@ -10126,9 +10177,10 @@ let internal createWithQueries
                         else
                             RunLog.Ref.Unavailable "no output log is on disk for this run"
 
-                    // The failed rows of the CTRF report each project wrote in this run's
-                    // directory, for naming a red the console line did not.
-                    let reportFailuresOf =
+                    // The failed rows and declared classes of the CTRF report each
+                    // project wrote in this run's directory, for naming a red the console
+                    // line did not and for splitting every red's name.
+                    let reportOf =
                         let reports =
                             Ctrf.reportsForRun repoRoot completed.RunId
                             |> List.map (fun report -> report.Project, report.Path)
@@ -10136,16 +10188,15 @@ let internal createWithQueries
 
                         fun (project: string) ->
                             match Map.tryFind project reports with
-                            | None -> []
+                            | None -> ReportedFailures.none
                             | Some path ->
                                 try
-                                    failedRowsOfReport (File.ReadAllText path)
+                                    ReportedFailures.ofReport (File.ReadAllText path)
                                 with
                                 | :? IOException
-                                | :? UnauthorizedAccessException -> []
+                                | :? UnauthorizedAccessException -> ReportedFailures.none
 
-                    let foundFailures =
-                        failuresOf runLogOf reportFailuresOf state.TestClassFiles testResults
+                    let foundFailures = failuresOf runLogOf reportOf state.TestClassFiles testResults
 
                     let checkReach, conditionalFailureRecall =
                         failedTestsOfRun repoRoot completed.RunId testResults
