@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: a shared run whose executor fails to start hands the shared resource back in the
+  state it was handed. It used to release `Invalid "<plugin> shared work failed to start"`
+  without consulting the plugin's classifier, and a queued waiter that failed to start
+  handed `Invalid "shared waiter failed to start"` to the next one, so every later
+  claimant of `build-artifacts` was refused with the build named as the cause until a
+  build released `Ready`. The run's failure is still reported and its failure message
+  still folds; only the resource state is left as it was. A run that started and judged
+  the resource unusable still releases `Invalid`.
+
 ## 0.10.0-alpha.71 - 2026-10-13
 
 - fix: a scan's progress advances per file. `runChecksWithRetry` emits each result as

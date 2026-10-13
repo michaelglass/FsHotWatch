@@ -141,7 +141,8 @@ let ``throwing middle shared waiter cannot strand the tail`` () =
         @>
 
     scheduler.Release("artifacts", Ready)
-    test <@ List.ofSeq tailStates = [ Invalid "shared waiter failed to start" ] @>
+    // The middle waiter never started, so the tail is handed what the owner released.
+    test <@ List.ofSeq tailStates = [ Ready ] @>
 
     scheduler.Release("artifacts", Ready)
     test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> SharedStarted) = Some Ready @>
@@ -219,13 +220,74 @@ let ``shared start failure posts the typed failure and releases its accounting``
     waitUntil (fun () -> not (registration.IsBusy())) 5000
     test <@ not (registration.IsBusy()) @>
 
-    test
-        <@
-            releases
+    // The run never started, so it learned nothing about the resource: it hands the
+    // resource back in the state it was handed, not an Invalid nobody classified.
+    test <@ List.ofSeq releases = [ Ready ] @>
+
+/// A run whose executor cannot start says nothing about the shared resource. The next
+/// claimant is handed whatever the resource was before — a usable resource stays usable,
+/// and an unusable one stays unusable until a real owner repairs it.
+[<Theory(Timeout = 15000)>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``shared executor start failure leaves the lease as it was handed`` (handedReady: bool) =
+    let scheduler = SharedRunScheduler()
+
+    let handed =
+        if handedReady then
+            Ready
+        else
+            Invalid "build output is invalid"
+
+    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> SharedStarted) = Some Ready @>
+    scheduler.Release("artifacts", handed)
+
+    let statuses = System.Collections.Concurrent.ConcurrentBag<PluginStatus>()
+
+    let services =
+        { defaultServices with
+            StartAsync = fun _ -> raise (System.InvalidOperationException("start fault"))
+            ReportStatus = fun _ status -> statuses.Add(status)
+            ClaimOrQueueSharedRun = fun key start -> scheduler.ClaimOrQueue(key, start)
+            ReleaseSharedRun = fun key resourceState -> scheduler.Release(key, resourceState) }
+
+    let registration =
+        registerHandler services (sharedWakeHandler "start-failure" (fun _ -> async { return SharedFinished }))
+
+    registration.Dispatch(DispatchFileChanged SolutionChanged)
+
+    waitUntil
+        (fun () ->
+            statuses
             |> Seq.exists (function
-                | Invalid reason when reason.Contains("failed to start") -> true
-                | _ -> false)
-        @>
+                | Failed(summary, _, _) when summary.Contains("start fault") -> true
+                | _ -> false))
+        5000
+
+    waitUntil (fun () -> not (registration.IsBusy())) 5000
+
+    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> SharedStarted) = Some handed @>
+
+/// Control: a run that did start and judged the resource unusable still makes that
+/// verdict stick for the next claimant.
+[<Fact(Timeout = 15000)>]
+let ``shared run that finds the resource unusable still invalidates the lease`` () =
+    let scheduler = SharedRunScheduler()
+
+    let services =
+        { defaultServices with
+            ClaimOrQueueSharedRun = fun key start -> scheduler.ClaimOrQueue(key, start)
+            ReleaseSharedRun = fun key resourceState -> scheduler.Release(key, resourceState) }
+
+    let registration =
+        registerHandler
+            services
+            (sharedWakeHandler "unusable" (fun _ -> async { return SharedFailed "build output is invalid" }))
+
+    registration.Dispatch(DispatchFileChanged SolutionChanged)
+    waitUntil (fun () -> not (registration.IsBusy())) 5000
+
+    test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> SharedStarted) = Some(Invalid "build output is invalid") @>
 
 [<Fact(Timeout = 15000)>]
 let ``faulted shared owner releases its lease and wakes an accounted waiter`` () =

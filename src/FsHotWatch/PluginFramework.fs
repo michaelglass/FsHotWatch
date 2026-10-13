@@ -143,7 +143,9 @@ type SharedRunScheduler() =
                 match started with
                 | SharedStarted -> ()
                 | SharedStartFailed afterRelease ->
-                    finishSharedStartFailure (fun () -> handOff (Invalid "shared waiter failed to start")) afterRelease
+                    // A waiter that never started learned nothing about the resource: the
+                    // next one is handed the state this one was handed.
+                    finishSharedStartFailure (fun () -> handOff state) afterRelease
 
         handOff resourceState
 
@@ -1144,10 +1146,9 @@ let internal registerHandlerForOwner
                 match start resourceState with
                 | SharedStarted -> ()
                 | SharedStartFailed afterRelease ->
-                    finishSharedStartFailure
-                        (fun () ->
-                            services.ReleaseSharedRun sharedKey (Invalid $"%s{pluginName} shared work failed to start"))
-                        afterRelease
+                    // The executor never ran the work, so the run has no verdict about the
+                    // resource: it hands it back as it was handed, like a cancelled run.
+                    finishSharedStartFailure (fun () -> services.ReleaseSharedRun sharedKey resourceState) afterRelease
 
                 SharedClaimed
             | None -> SharedQueued

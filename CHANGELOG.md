@@ -74,6 +74,14 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core: an executor that fails to start no longer poisons the shared build-artifacts lease
+
+- **fix: a shared run that never started hands the resource back in the state it was
+  handed.** Before, a failure to start the executor released `Invalid` into the shared
+  lease without passing through the plugin's classifier, so every later test run on an
+  unchanged tree was refused as "artifacts unavailable", blaming the build, until a build
+  ran. A run that did start and found the build output unusable still invalidates it.
+
 ### core: two `check` clients on a cold daemon run one full scan
 
 - **fix: a scan request that arrives while a scan is already checking the tree is
