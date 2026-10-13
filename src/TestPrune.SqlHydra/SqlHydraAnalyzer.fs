@@ -187,4 +187,6 @@ type SqlHydraExtension(generatedModulePrefix: string) =
         member _.AnalyzeEdges (symbolStore: SymbolStore) (_repoRoot: string) =
             SqlHydraExtension.extractFacts generatedModulePrefix symbolStore
             |> SqlCoupling.buildEdges (symbolStore.GetTestMethodSymbolNames())
-            |> List.map (fun d -> { d with Source = "sql-hydra" })
+            |> List.map (fun d ->
+                { d with
+                    Source = SqlCoupling.SqlHydraSource })

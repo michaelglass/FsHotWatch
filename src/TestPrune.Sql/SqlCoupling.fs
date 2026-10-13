@@ -17,6 +17,26 @@ type SqlFact =
 /// Build SharedState dependency edges from SQL access facts.
 module SqlCoupling =
 
+    /// `Dependency.Source` of the edges `buildEdges` returns.
+    [<Literal>]
+    let Source = "sql"
+
+    /// `Dependency.Source` TestPrune.SqlHydra stamps on the edges it builds here.
+    [<Literal>]
+    let SqlHydraSource = "sql-hydra"
+
+    /// The walk policy for a suite whose tests each run against their own database state
+    /// (truncated and re-seeded per test or per fixture). A changed writer then selects a
+    /// test through SQL coupling only when that test reaches the writer through its other
+    /// edges, which is what not following the SQL edges at all amounts to (see
+    /// `TestPrune.Domain.WalkPolicy`). Pass it to `Database.create(path, policy)`.
+    ///
+    /// Under-selects when tests share database state: a test that reads rows another
+    /// test, a class fixture the graph does not link to it, or a pre-built seed snapshot
+    /// wrote. Keep `WalkPolicy.FollowAll` for such a suite.
+    let reachabilityGated: TestPrune.Domain.WalkPolicy =
+        { TestScopedSources = set [ Source; SqlHydraSource ] }
+
     let private columnsMatch (a: string) (b: string) = a = "*" || b = "*" || a = b
 
     /// For each (table, column) pair, connect every writer to every reader.
@@ -46,4 +66,4 @@ module SqlCoupling =
                           { FromSymbol = r.Symbol
                             ToSymbol = w.Symbol
                             Kind = SharedState
-                            Source = "sql" } ])
+                            Source = Source } ])
