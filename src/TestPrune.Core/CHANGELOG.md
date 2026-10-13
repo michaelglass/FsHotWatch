@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 13.4.0 - 2026-10-13
+
 - feat: `Domain.WalkPolicy` says which stored edges the affected-test walk follows.
   `Database.create(path, policy)` and `InMemoryStore.fromAnalysisResultsWith policy`
   apply it to `QueryAffectedTests` and `QueryCoveringProjectsBySeed`; every other query

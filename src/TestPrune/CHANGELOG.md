@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 13.4.0 - 2026-10-13
+
+- feat(sql): reachability-gated SQL coupling as a walk policy
+
+
 ## 13.3.3 - 2026-10-08
 
 - perf(core): store each edge's owner file as an integer id (schema 21)
