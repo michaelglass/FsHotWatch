@@ -136,6 +136,7 @@
     <Compile Include="TestPruneRunScopeTests.fs" />
     <Compile Include="TestPruneDiscoveryWaitTests.fs" />
     <Compile Include="TestPruneOwnerStateTests.fs" />
+    <Compile Include="TestPruneSettlingTests.fs" />
     <Compile Include="TestPruneModelChangeTests.fs" />
     <Compile Include="TestPruneSupersededModelLogTests.fs" />
     <Compile Include="AnalysisEvidenceTests.fs" />

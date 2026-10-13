@@ -451,6 +451,11 @@ type CommandReadCtx =
         Log: string -> unit
         /// Whether `key` is currently running under `RunExclusive`.
         IsRunning: string -> bool
+        /// Whether a finished run's result fold holds `key` and has not committed. The
+        /// state an observation reads does not hold that run's result yet: it is the
+        /// PREVIOUS one's, so an observer that answers from it as settled answers with a
+        /// run that is no longer current.
+        IsSettling: string -> bool
         /// Read-only project-graph accessor.
         ProjectGraph: ProjectGraphAccessor
     }
@@ -467,11 +472,13 @@ type PluginCommand<'State, 'Msg> =
     | Request of (CommandCtx<'Msg> -> string array -> Async<string>)
 
 module PluginCommand =
-    /// The observing half of a command context.
+    /// The observing half of a command context. A command context names no result fold,
+    /// so nothing in it is settling; the host overrides this from the owner's snapshot.
     let readContext (ctx: CommandCtx<'Msg>) : CommandReadCtx =
         { RepoRoot = ctx.RepoRoot
           Log = ctx.Log
           IsRunning = ctx.IsRunning
+          IsSettling = fun _ -> false
           ProjectGraph = ctx.ProjectGraph }
 
     /// Run a command against an explicit state. Plugin tests use this to drive a
@@ -1895,7 +1902,8 @@ let internal registerHandlerForOwner
 
                         let readCtx =
                             { PluginCommand.readContext commandCtx with
-                                IsRunning = snapshot.IsRunning }
+                                IsRunning = snapshot.IsRunning
+                                IsSettling = snapshot.IsSettling }
 
                         return! read readCtx snapshot.State args
                     }

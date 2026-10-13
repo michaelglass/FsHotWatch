@@ -500,6 +500,8 @@ let ``parseTestRunReport: "no scope reported" and "could not read the reply" are
     // "running" is an ANSWER — a run is in flight, so no scope is earned yet. It stays
     // the tolerated value; this is the positive control that it is still producible.
     test <@ (parseTestRunReport """{"kind":"running","runId":null}""").Scope = ScopeUnknown @>
+    // So is "settling": the run finished, but its result is not folded yet.
+    test <@ (parseTestRunReport """{"kind":"settling","runId":null}""").Scope = ScopeUnknown @>
 
     // Everything else is a FAILURE TO READ: garbage, an empty reply, a plugin error
     // object, a shape from another version.

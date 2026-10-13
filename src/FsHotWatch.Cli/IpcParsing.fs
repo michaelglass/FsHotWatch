@@ -846,7 +846,8 @@ module TestRunReport =
 /// two ways of not getting a scope are kept APART, because the inner loop must treat
 /// them differently:
 ///
-///   * `running` is an ANSWER: a run is in flight, so no scope has been earned yet.
+///   * `running` and `settling` are ANSWERS: a run is in flight (its worker is live, or
+///     its result has not been folded yet), so no scope has been earned yet.
 ///     `ScopeUnknown`, which `check` tolerates. (An `{"error": ...}` reply from a daemon
 ///     with no test-prune plugin never reaches here — both transports detect the
 ///     unknown-command sentinel first.)
@@ -901,7 +902,8 @@ let parseTestRunReport (json: string) : TestRunReport =
 
         let scope =
             match Json.tryString root "kind" with
-            | Some "running" -> ScopeUnknown
+            | Some "running"
+            | Some "settling" -> ScopeUnknown
             | Some label ->
                 TestScope.tryOfCounts
                     label

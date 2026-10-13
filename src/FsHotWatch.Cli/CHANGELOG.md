@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: a `test-scope` reply of `kind: "settling"` (a run finished but its result is not
+  folded yet) reads as an in-flight run, `ScopeUnknown`, like `running`. Before, the CLI
+  would have refused it as an unreadable reply.
+
 ## 0.14.0-alpha.96 - 2026-10-13
 
 - feat: `fshw status` prints the daemon's `scanning: N/M files (P%)` line while a scan is

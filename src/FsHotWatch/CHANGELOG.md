@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat!: `CommandReadCtx.IsSettling key`: a finished run's result fold holds `key` and
+  has not committed, so the state an observation reads is still the previous run's.
+  `IsRunning` stays false through that window. Backed by
+  `PluginWorkOwner.Snapshot.IsSettling`. Breaking: a hand-built `CommandReadCtx` must set
+  the field (`PluginCommand.readContext` sets it to `fun _ -> false`).
+
 ## 0.10.0-alpha.71 - 2026-10-13
 
 - fix: a scan's progress advances per file. `runChecksWithRetry` emits each result as
