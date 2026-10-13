@@ -59,6 +59,18 @@ type TaskCacheResult =
         EmittedEvents: CachedEvent list
     }
 
+/// The entries a cached run left in its plugin's ledger for `file`, read off the reports
+/// it captured, in order: a report replaces the file's entries, and a clear of the file
+/// or of the whole plugin (`"*"`) empties them. A file the run never reported is clean.
+let findingsFor (file: string) (result: TaskCacheResult) : FsHotWatch.ErrorLedger.ErrorEntry list =
+    result.Errors
+    |> List.fold
+        (fun found (reported, entries) ->
+            if reported = "*" then []
+            elif reported = file then entries
+            else found)
+        []
+
 /// Why a cache lookup produced nothing. A cold start must be able to say WHICH
 /// input moved, not merely that it missed: with content-addressed keys shared
 /// across checkouts, "miss" is the only observable difference between a key that

@@ -4424,21 +4424,21 @@ let ``an edit the watcher saw during the run stays a plain MOVED`` () =
                           Args =
                               $"-c \"touch '%s{started}'; while [ ! -f '%s{release}' ]; do sleep 0.05; done; exit 0\"" } ]
                     (fun host loggedSoFar ->
-                        let deadline = DateTime.UtcNow.AddSeconds 15.0
+                        // Release the run whatever happens, so a wait that expires fails the
+                        // test instead of leaving the run blocked until the xUnit cap.
+                        try
+                            waitUntilOr "the test run starting" (fun () -> File.Exists started) 15000
+                            File.WriteAllText(source, "module Value\nlet answer = 2\n")
+                            host.EmitFileChecked(fakeFileCheckResult source)
 
-                        let waitFor condition =
-                            while not (condition ()) && DateTime.UtcNow < deadline do
-                                Thread.Sleep 20
-
-                        waitFor (fun () -> File.Exists started)
-                        File.WriteAllText(source, "module Value\nlet answer = 2\n")
-                        host.EmitFileChecked(fakeFileCheckResult source)
-
-                        waitFor (fun () ->
-                            loggedSoFar ()
-                            |> List.exists (fun l -> l.Contains "watcher reported src/Value.fs"))
-
-                        File.WriteAllText(release, ""))
+                            waitUntilOr
+                                "the watcher reporting src/Value.fs"
+                                (fun () ->
+                                    loggedSoFar ()
+                                    |> List.exists (fun l -> l.Contains "watcher reported src/Value.fs"))
+                                15000
+                        finally
+                            File.WriteAllText(release, ""))
 
             let revoked = logged |> List.tryFind (fun l -> l.Contains "receipt revoked")
 

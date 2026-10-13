@@ -92,15 +92,9 @@ let ``command does not run for non-matching files`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    // Nothing matches, so this poll is expected to time out with the plugin still Idle.
-    waitUntil
-        (fun () ->
-            match host.GetStatus("run-scripts") with
-            | Some(Completed _)
-            | Some(Failed _) -> true
-            | _ -> false)
-        1000
-    |> ignore
+    // The event was handled and fired nothing — witnessed by its commit, not by a wait
+    // expiring.
+    waitForHandled host 1L 10000
 
     let status = host.GetStatus("run-scripts")
     test <@ status.IsSome @>
@@ -222,14 +216,9 @@ let ``command ignores SolutionChanged`` () =
 
     host.EmitFileChanged(SolutionChanged)
 
-    // SolutionChanged is ignored, so this poll is expected to time out at Idle.
-    waitUntil
-        (fun () ->
-            match host.GetStatus("sln-watcher") with
-            | Some(Completed _)
-            | Some(Failed _) -> true
-            | _ -> false)
-        1000
+    // The event was handled and fired nothing — witnessed by its commit, not by a wait
+    // expiring.
+    waitForHandled host 1L 10000
 
     let status = host.GetStatus("sln-watcher")
     test <@ status.IsSome @>
@@ -322,14 +311,9 @@ let ``status command returns not run when no files matched`` () =
 
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
 
-    // Nothing matches, so this poll is expected to time out with the plugin still Idle.
-    waitUntil
-        (fun () ->
-            match host.GetStatus("no-match") with
-            | Some(Completed _)
-            | Some(Failed _) -> true
-            | _ -> false)
-        1000
+    // The event was handled and fired nothing — witnessed by its commit, not by a wait
+    // expiring.
+    waitForHandled host 1L 10000
 
     waitForQuiescent host 30000
 
@@ -493,14 +477,9 @@ let ``afterTests TestProjects does not fire when only some listed projects have 
     // Only A has completed — B is still outstanding. Model as mid-run progress.
     emitProgress host (System.Guid.NewGuid()) [ "A", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero) ]
 
-    waitUntil
-        (fun () ->
-            match host.GetStatus("afterTests-partial") with
-            | Some(Completed _)
-            | Some(Failed _) -> true
-            | _ -> false)
-        1000
-    |> ignore
+    // The event was handled and fired nothing — witnessed by its commit, not by a wait
+    // expiring.
+    waitForHandled host 1L 10000
 
     let status = host.GetStatus("afterTests-partial")
     test <@ status.IsSome @>
@@ -521,14 +500,9 @@ let ``afterTests TestProjects does not fire when no listed project matches`` () 
 
     emitRunCompleted host [ "Intelligence.Tests.Integration", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero) ]
 
-    waitUntil
-        (fun () ->
-            match host.GetStatus("afterTests-miss") with
-            | Some(Completed _)
-            | Some(Failed _) -> true
-            | _ -> false)
-        1000
-    |> ignore
+    // The event was handled and fired nothing — witnessed by its commit, not by a wait
+    // expiring.
+    waitForHandled host 1L 10000
 
     let status = host.GetStatus("afterTests-miss")
     test <@ status.IsSome @>

@@ -2227,6 +2227,72 @@ let ``executeCommand Invalidate clears the live workspace cache without shutdown
     test <@ invalidated @>
     test <@ not shutdown @>
 
+[<Fact(Timeout = 15000)>]
+let ``executeCommand Invalidate with no daemon running clears both persisted stores and starts no daemon`` () =
+    // A cold start is not needed to clear files, and it can be refused: a repository
+    // whose clean just deleted the analyzer outputs `analyzers.paths` names cannot start
+    // a daemon, so `invalidate` used to fail for a reason unrelated to the cache.
+    withTempDir "cli-invalidate-cold" (fun repoRoot ->
+        withEnv FsHotWatch.FsHwPaths.CacheHomeEnvVar (Some(Path.Combine(repoRoot, "shared-home"))) (fun () ->
+            let key = FsHotWatch.TaskCache.merkleCacheKey [ "input", "1" ]
+
+            let composite plugin : FsHotWatch.TaskCache.CompositeKey =
+                { Plugin = plugin
+                  File = Some "repo:A.fs" }
+
+            let entry: FsHotWatch.TaskCache.TaskCacheResult =
+                { CacheKey = key
+                  Errors = []
+                  Status = FsHotWatch.TaskCache.CachedFileCompleted(TimeSpan.FromMilliseconds 1.0)
+                  EmittedEvents = [] }
+
+            // `build` is workspace-local and `format-check` shared: one entry per store.
+            let held () =
+                let stores = FsHotWatch.CacheResidency.openPersistedStores repoRoot
+                let local = stores.Local :> FsHotWatch.TaskCache.ITaskCache
+                let shared = stores.Shared :> FsHotWatch.TaskCache.ITaskCache
+
+                (local.TryGet (composite "build") key).IsSome, (shared.TryGet (composite "format-check") key).IsSome
+
+            let writer =
+                (FsHotWatch.CacheResidency.openPersistedStores repoRoot).Routed :> FsHotWatch.TaskCache.ITaskCache
+
+            writer.Set (composite "build") key entry
+            writer.Set (composite "format-check") key entry
+            // Positive control: a fresh reader sees both entries before the invalidate.
+            test <@ held () = (true, true) @>
+
+            let mutable launched = false
+            let mutable rpc = false
+
+            let ipc =
+                { fakeIpc () with
+                    IsRunning = fun _ -> false
+                    LaunchDaemon = fun _ _ _ -> launched <- true
+                    Invalidate =
+                        fun _ ->
+                            async {
+                                rpc <- true
+                                return "invalidated"
+                            } }
+
+            let exitCode =
+                executeCommand
+                    ""
+                    (fun _ -> Unchecked.defaultof<_>)
+                    ipc
+                    repoRoot
+                    "pipe"
+                    Invalidate
+                    defaultGlobalOptions
+                    fakeConfig
+                    0.0
+
+            test <@ exitCode = 0 @>
+            test <@ not launched @>
+            test <@ not rpc @>
+            test <@ held () = (false, false) @>))
+
 // --- Regression tests for bug fixes ---
 
 /// Trigger a daemon startup failure in an isolated temp dir, so `killStaleDaemon` cannot

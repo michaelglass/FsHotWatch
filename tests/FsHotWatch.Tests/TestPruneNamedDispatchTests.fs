@@ -56,8 +56,8 @@ let private echoConfig: TestConfig =
       ReportVerificationFormat = AutoDetect }
 
 /// Index Lib + Tests with `extensions`, edit the handler's body, and return the
-/// `affected-tests` answer once it names the dispatching test or `waitMs` elapses.
-let private affectedAfterHandlerEdit (tmpDir: string) (extensions: ITestPruneExtension list) (waitMs: int) =
+/// `affected-tests` answer once the edit has been handled.
+let private affectedAfterHandlerEdit (tmpDir: string) (extensions: ITestPruneExtension list) =
     let dbPath = Path.Combine(tmpDir, "tp.db")
     let libFile = Path.Combine(tmpDir, "Lib.fsx")
     let testsFile = Path.Combine(tmpDir, "Tests.fsx")
@@ -97,24 +97,20 @@ let private affectedAfterHandlerEdit (tmpDir: string) (extensions: ITestPruneExt
     File.WriteAllText(libFile, libSource "2")
     checkAndEmit libFile
 
-    let mutable affected = ""
+    // The edit's FileChecked has committed, so `affected-tests` answers from its changes.
+    // Both the positive case and the negative control read that same settled state, so
+    // the control's absence is not a wait that gave up early.
+    waitForQuiescent host 10000
 
-    waitUntil
-        (fun () ->
-            match host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously with
-            | Some v -> affected <- v
-            | None -> ()
-
-            affected.Contains "purgeJobTest")
-        waitMs
-
-    affected
+    host.RunCommand("affected-tests", [||])
+    |> Async.RunSynchronously
+    |> Option.defaultValue ""
 
 [<Fact(Timeout = 60000)>]
 let ``a configured named-dispatch extension selects the test that dispatches an edited handler`` () =
     withTempDir "tp-named-dispatch" (fun tmpDir ->
         let affected =
-            affectedAfterHandlerEdit tmpDir [ TestPrune.NamedDispatch.NamedDispatchExtension() ] 10000
+            affectedAfterHandlerEdit tmpDir [ TestPrune.NamedDispatch.NamedDispatchExtension() ]
 
         test <@ affected.Contains "purgeJobTest" @>)
 
@@ -123,7 +119,7 @@ let ``a configured named-dispatch extension selects the test that dispatches an 
 [<Fact(Timeout = 60000)>]
 let ``without the extension the dispatching test is not selected`` () =
     withTempDir "tp-named-dispatch-none" (fun tmpDir ->
-        let affected = affectedAfterHandlerEdit tmpDir [] 3000
+        let affected = affectedAfterHandlerEdit tmpDir []
         test <@ not (affected.Contains "purgeJobTest") @>)
 
 [<Fact(Timeout = 30000)>]

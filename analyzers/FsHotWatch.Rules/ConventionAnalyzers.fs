@@ -585,19 +585,10 @@ module Detect =
     /// is greppable: `rg "FSHW-WAIT-001 ok"` enumerates every sanctioned sleep in
     /// the suite. Exceptions that cannot be counted are not exceptions.
     ///
-    /// DECLINED, with the measurement. `waitUntil` (unit-returning, gives up
-    /// silently) belongs to the same bug class as this sleep — which is why
-    /// `waitUntilTrue` now exists beside it — and the obvious second arm is "a
-    /// test whose last act is `waitUntil`". Implemented and measured: it fires 3
-    /// times in this suite (CoveragePluginTests ×2, PluginFrameworkTests ×1) and
-    /// every one is a deliberate teardown drain — "let the check settle so the
-    /// temp dir can be cleaned" — after the real assertions have already run.
-    /// Zero true positives, three sanctioned fires, so it is not shipped (same
-    /// standard FSHW-VERDICT-001 applies to its own declined widening). The
-    /// silent-give-up that WOULD be worth catching is `waitUntil` whose condition
-    /// nothing afterwards asserts, and in this suite that set is exactly the
-    /// drains. Reopen on evidence: a flake traced to a `waitUntil` that a test
-    /// depended on.
+    /// NOT a second arm for `waitUntil`: it throws `TimeoutException` on expiry, so a
+    /// wait that gives up fails the test that depended on it rather than returning as
+    /// if its condition held. `waitUntilTrue` returns the bool for the callers that
+    /// handle an expiry themselves.
     ///
     /// `getLine` is 1-based and must return "" out of range; the analyzer feeds
     /// it from `context.SourceText`, keeping this function pure.

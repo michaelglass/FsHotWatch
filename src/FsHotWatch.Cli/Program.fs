@@ -1225,6 +1225,49 @@ let private startFreshDaemon
     : bool =
     startFreshDaemonWith defaultFileOps ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
 
+/// Take the daemon's OS-enforced singleton lock (`.fshw/daemon.lock`), or None when
+/// another process holds it. A daemon holds it for its whole lifetime, so two `start`
+/// invocations cannot both run one, and nothing else can act as if no daemon exists
+/// while one is starting.
+let internal tryAcquireSingletonLock (repoRoot: string) : FileStream option =
+    let stateDir = FsHwPaths.root repoRoot
+    Directory.CreateDirectory(stateDir) |> ignore
+
+    try
+        Some(
+            new FileStream(
+                Path.Combine(stateDir, "daemon.lock"),
+                FileMode.OpenOrCreate,
+                FileAccess.Write,
+                FileShare.None
+            )
+        )
+    with :? IOException ->
+        None
+
+/// `fshw invalidate` when no daemon serves `repoRoot`. With no daemon there is no live
+/// cache instance, so the persisted stores are the whole cache: clear them here rather
+/// than cold-start a daemon to clear them. A cold start is expensive, and it can be
+/// refused: a repository whose clean just deleted the analyzer outputs
+/// `analyzers.paths` names cannot start a daemon until it rebuilds them.
+///
+/// Holds the singleton lock while clearing, so a daemon cannot start and load the stores
+/// mid-clear. False when the lock is taken or a repository host serves this worktree;
+/// the caller then invalidates through the daemon.
+let internal tryInvalidateWithoutDaemon (repoRoot: string) : bool =
+    let hosted =
+        (FsHotWatch.RepositoryHost.HostSessionRecord.tryReadLive FsHotWatch.RepositoryHost.processAlive repoRoot).IsSome
+
+    if hosted then
+        false
+    else
+        match tryAcquireSingletonLock repoRoot with
+        | None -> false
+        | Some lockStream ->
+            use _lock = lockStream
+            ((CacheResidency.openPersistedStores repoRoot).Routed :> TaskCache.ITaskCache).Clear()
+            true
+
 let private ensureDaemon
     (ipc: IpcOps)
     (repoRoot: string)
@@ -3162,20 +3205,14 @@ let internal executeCommandWatchingConfig
                 | Some exitCode -> exitCode
                 | None ->
 
-                    let stateDir = Path.Combine(repoRoot, ".fshw")
+                    let stateDir = FsHwPaths.root repoRoot
                     let pidFile = Path.Combine(stateDir, "daemon.pid")
-                    let lockFile = Path.Combine(stateDir, "daemon.lock")
-                    Directory.CreateDirectory(stateDir) |> ignore
 
-                    // OS-enforced singleton: hold an exclusive lock on daemon.lock for the
-                    // daemon's lifetime. Two concurrent `start` invocations cannot both
-                    // acquire it; the second exits cleanly. Not a probe-based guard — that
-                    // has a TOCTOU window between the IsRunning check and the pipe claim.
-                    let acquired =
-                        try
-                            Some(new FileStream(lockFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
-                        with :? IOException ->
-                            None
+                    // OS-enforced singleton, held for the daemon's lifetime. Two concurrent
+                    // `start` invocations cannot both acquire it; the second exits cleanly.
+                    // Not a probe-based guard — that has a TOCTOU window between the
+                    // IsRunning check and the pipe claim.
+                    let acquired = tryAcquireSingletonLock repoRoot
 
                     // Which process is which, when two exist for one repo root?
                     // `ps` could not answer that after the fact:
@@ -3338,13 +3375,17 @@ let internal executeCommandWatchingConfig
                 UI.success $"Scan: %s{result}"
                 0)
         | Invalidate ->
-            // Cache invalidation is daemon-owned: clearing it through IPC updates
-            // the live cache instance as well as its persisted files, while keeping
-            // the expensive compiler service warm for the next check.
-            withDaemonAndIpc (fun () ->
-                let result = ipc.Invalidate pipeName |> Async.RunSynchronously
-                UI.success $"Cache %s{result}; daemon preserved"
-                0)
+            if not (ipc.IsRunning pipeName) && tryInvalidateWithoutDaemon repoRoot then
+                UI.success "Cache invalidated; no daemon was running, none started"
+                0
+            else
+                // With a daemon, invalidation is daemon-owned: clearing it through IPC
+                // updates the live cache instance as well as its persisted files, while
+                // keeping the expensive compiler service warm for the next check.
+                withDaemonAndIpc (fun () ->
+                    let result = ipc.Invalidate pipeName |> Async.RunSynchronously
+                    UI.success $"Cache %s{result}; daemon preserved"
+                    0)
         | Status(_, flags) when List.contains Repository flags ->
             repositoryStatus (mode = ProgressRenderer.Agent) repoRoot
         | Status(pluginName, _) ->
@@ -3898,6 +3939,19 @@ let forwardRootUnknownCommand
     | NotRecognized -> renderErr ()
     | DaemonUnavailable -> 1
 
+/// The IPC a root-level plugin command is sent through: the session of the repository
+/// host that serves this worktree when its record is live, else the worktree's own
+/// daemon. Like `status`, it reaches whichever daemon serves the worktree now and never
+/// attaches or starts one, so it needs no opt-in: a served worktree has no other daemon.
+let internal passthroughIpc (live: FsHotWatch.RepositoryHost.HostSessionRecord option) : IpcOps =
+    match live with
+    | Some record ->
+        sessionIpcOps
+            { Endpoint = record.Endpoint
+              Session = fun () -> record.Session
+              Reattach = fun () -> false }
+    | None -> defaultIpcOps
+
 /// Apply parsed global flags: configure logging and return the resolved options.
 let applyGlobalFlags (globals: GlobalFlag list) : GlobalOptions =
     let folder (opts: GlobalOptions, parts) flag =
@@ -3977,26 +4031,6 @@ let classifyParse (parsed: Result<GlobalFlag list * Command, ParseError>) : Pars
     // outside a jj/git checkout does not mask flag/arg errors.
     | Error(UnknownCommand(input, rest, []) as err) -> RootUnknownCommand(input, rest, err)
     | Error err -> RepoIndependent(reportParseError err)
-
-/// Why a root-level plugin command must not run here, or `None` when it may.
-///
-/// Plugin commands do not reach a repository-host session yet. In a worktree that uses
-/// the host (it opts in, or the host already serves it), sending one to the
-/// per-worktree pipe would talk to a daemon that is not the one serving the worktree,
-/// so the command is refused and says so.
-let internal passthroughRefusal
-    (configText: string)
-    (getEnv: string -> string)
-    (servedByHost: bool)
-    (command: string)
-    : string option =
-    if servedByHost || RepositoryHostMode.enabled configText getEnv then
-        Some
-            $"fshw: `%s{command}` is a plugin command, and plugin commands do not reach a repository host \
-              session yet. Run it in a shell with %s{RepositoryHostMode.EnvVar}=0 against this worktree's own \
-              daemon (`fshw stop` first if the repository host serves it)."
-    else
-        None
 
 /// Launch the repository host detached, from its control directory.
 let private launchHost (repoRoot: string) (control: FsHotWatch.RepositoryIdentity.RepositoryControlPaths) =
@@ -4189,22 +4223,14 @@ let private runCli (args: string array) : int =
                         AgentMode = argList |> List.exists (fun a -> a = "--agent" || a = "-a")
                         CompactMode = argList |> List.exists (fun a -> a = "--compact" || a = "-q") }
 
-                let configText =
-                    let path = Path.Combine(repoRoot, ".fshw.json")
-                    if File.Exists path then File.ReadAllText path else ""
+                let ipc =
+                    passthroughIpc (
+                        FsHotWatch.RepositoryHost.HostSessionRecord.tryReadLive
+                            FsHotWatch.RepositoryHost.processAlive
+                            repoRoot
+                    )
 
-                let servedByHost =
-                    (FsHotWatch.RepositoryHost.HostSessionRecord.tryReadLive
-                        FsHotWatch.RepositoryHost.processAlive
-                        repoRoot)
-                        .IsSome
-
-                match passthroughRefusal configText Environment.GetEnvironmentVariable servedByHost input with
-                | Some refusal ->
-                    eprintfn "%s" refusal
-                    2
-                | None ->
-                    forwardRootUnknownCommand defaultIpcOps pipeName opts input argsStr (fun () -> reportParseError err)
+                forwardRootUnknownCommand ipc pipeName opts input argsStr (fun () -> reportParseError err)
             // RepoIndependent is fully handled above before the repo-root lookup.
             | RepoIndependent exitCode -> exitCode
 

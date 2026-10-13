@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: a lint result replayed from the task cache fills `WarningsByFile` like a fresh
+  lint, so `warnings` counts a file a session served from a sibling checkout's cache.
+
 ## 0.7.0-alpha.28 - 2026-10-06
 
 - feat: logging. Ignoring a `FileChecked` captured against a replaced project model is

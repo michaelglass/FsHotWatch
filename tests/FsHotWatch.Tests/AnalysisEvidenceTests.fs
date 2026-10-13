@@ -327,12 +327,12 @@ let ``a replayed FileChecked records the cached run's outcome only for the curre
                 .FailureReasons
 
         // Positive control: a replayed clean analysis under the current model vouches.
-        Assert.Empty(replay (Some 1L) (Ok()))
+        Assert.Empty(replay (Some 1L) (Ok []))
         // A replayed FAILED analysis is still a failed analysis.
         Assert.NotEmpty(replay (Some 1L) (Error "symbol analysis failed"))
         // A result stamped with another model, or replayed under none, describes nothing now.
-        Assert.NotEmpty(replay (Some 2L) (Ok()))
-        Assert.NotEmpty(replay None (Ok())))
+        Assert.NotEmpty(replay (Some 2L) (Ok []))
+        Assert.NotEmpty(replay None (Ok [])))
 
 [<Fact(Timeout = 30000)>]
 let ``completed analysis distinguishes compiler warnings from missing or failed checking`` () =

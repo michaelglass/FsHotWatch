@@ -152,3 +152,31 @@ let ``every source that redirects Console.Error joins the serialized collection`
         List.isEmpty unserialized,
         $"these sources redirect Console.Error without joining the serialized collection: %A{unserialized}"
     )
+
+// ---------------------------------------------------------------------------
+// A bounded wait must not report an expiry as a success.
+//
+// A caller that waits and then asserts something NEGATIVE ("no cache entry was written")
+// is satisfied identically by "the work ran and wrote nothing" and "the wait gave up
+// before the work ran". Only the wait can tell those apart, so an expiry has to reach
+// the caller.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 5000)>]
+let ``waitUntil throws when its condition never holds`` () =
+    let ex = Assert.Throws<TimeoutException>(fun () -> waitUntil (fun () -> false) 100)
+
+    test <@ ex.Message.Contains "100 ms" @>
+
+[<Fact(Timeout = 5000)>]
+let ``waitUntil returns once its condition holds`` () =
+    // PositiveControl: the throw above is the expiry, not a wait that always throws.
+    let mutable polls = 0
+
+    waitUntil
+        (fun () ->
+            polls <- polls + 1
+            polls >= 3)
+        5000
+
+    test <@ polls = 3 @>

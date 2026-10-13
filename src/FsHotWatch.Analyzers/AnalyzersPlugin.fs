@@ -35,6 +35,37 @@ type AnalyzerCrash =
         Trace: string
     }
 
+/// The ledger entry for a crash: an Error at line 1 of the file, which no failure
+/// threshold demotes, naming the analyzer so the verdict says which rule is off.
+let internal crashFinding (crash: AnalyzerCrash) : ErrorEntry =
+    { Message = $"analyzer %s{crash.Analyzer} crashed: %s{crash.Cause}"
+      Severity = DiagnosticSeverity.Error
+      Line = 1
+      Column = 0
+      Detail = Some crash.Trace }
+
+/// The crash a ledger entry records, when it is one `crashFinding` wrote. A replayed
+/// result carries only its ledger entries, so this is how a replay recovers the crashes.
+let internal crashOfFinding (entry: ErrorEntry) : AnalyzerCrash option =
+    let prefix = "analyzer "
+    let separator = " crashed: "
+
+    match entry.Detail with
+    | Some trace when
+        entry.Severity = DiagnosticSeverity.Error
+        && entry.Line = 1
+        && entry.Column = 0
+        && entry.Message.StartsWith(prefix, StringComparison.Ordinal)
+        ->
+        match entry.Message.IndexOf(separator, prefix.Length, StringComparison.Ordinal) with
+        | -1 -> None
+        | at ->
+            Some
+                { Analyzer = entry.Message.Substring(prefix.Length, at - prefix.Length)
+                  Cause = entry.Message.Substring(at + separator.Length)
+                  Trace = trace }
+    | _ -> None
+
 type AnalyzersState =
     {
         /// Every entry this plugin reported to the ledger for each file: the analyzers'
@@ -50,6 +81,22 @@ type AnalyzersState =
         LoadedByPath: (string * int) list
         RunAnalyzed: int
     }
+
+    // A replayed analysis is recorded by the rule a live fold applies: only a result
+    // published against the model published now is analyzed (see `notCurrent`), and a
+    // completed analysis replaces the file's entries and crashes with the ones it
+    // reported. `RunAnalyzed` counts what this handler analyzed, so a replay leaves it.
+    interface IFileReplayState<AnalyzersState> with
+        member this.Replayed currentModel result analysis =
+            match analysis with
+            | Result.Ok entries when result.ModelGeneration.IsSome && result.ModelGeneration = currentModel ->
+                { this with
+                    DiagnosticsByFile = this.DiagnosticsByFile |> Map.add result.File entries
+                    CrashesByFile =
+                        this.CrashesByFile
+                        |> Map.add result.File (entries |> List.choose crashOfFinding) }
+            | Result.Ok _
+            | Result.Error _ -> this
 
 /// Render the analyzer run summary from the LIVE per-file diagnostic map — the
 /// SAME `DiagnosticsByFile` set that backs `reportOrClearFile` → ErrorLedger →
@@ -102,15 +149,6 @@ let internal crashOf (analyzer: string) (ex: exn) : AnalyzerCrash =
     { Analyzer = analyzer
       Cause = $"%s{ex.GetType().Name}: %s{ex.Message}"
       Trace = ex.ToString() }
-
-/// The ledger entry for a crash: an Error at line 1 of the file, which no failure
-/// threshold demotes, naming the analyzer so the verdict says which rule is off.
-let internal crashFinding (crash: AnalyzerCrash) : ErrorEntry =
-    { Message = $"analyzer %s{crash.Analyzer} crashed: %s{crash.Cause}"
-      Severity = DiagnosticSeverity.Error
-      Line = 1
-      Column = 0
-      Detail = Some crash.Trace }
 
 /// Split one file's analyzer results into what the analyzers found and which of them
 /// crashed. `toEntry` renders a message; the crashes are left to `crashFinding`.
@@ -783,7 +821,8 @@ let internal createWithSeams
                                     CrashesByFile = crashesByFile
                                     RunAnalyzed = analyzed }
                         | Choice3Of3 errMsg ->
-                            ctx.ReportErrors fileStr [ ErrorEntry.error $"Analyzer crashed: %s{errMsg}" ]
+                            let entries = [ ErrorEntry.error $"Analyzer crashed: %s{errMsg}" ]
+                            ctx.ReportErrors fileStr entries
                             ctx.EndSubtask PrimarySubtaskKey
 
                             PluginCtxHelpers.completeWith
@@ -791,7 +830,13 @@ let internal createWithSeams
                                 $"analyzer crashed on {Path.GetFileName fileStr}"
                                 (elapsed ())
 
-                            return state
+                            // The file's entries are what the ledger now holds for it — the
+                            // crash — so the summary and the `diagnostics` command count it,
+                            // and a replay of this result leaves the same state.
+                            return
+                                { state with
+                                    DiagnosticsByFile = state.DiagnosticsByFile |> Map.add result.File entries
+                                    CrashesByFile = state.CrashesByFile |> Map.add result.File [] }
                 | Custom(AnalysisComplete(file, entries)) ->
                     // Report/clear so the gated ledger set and the summary agree, and
                     // replace this file's map entry — see `summarize`.

@@ -74,6 +74,34 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### tests: a wait that expires fails the test instead of passing it
+
+- The `waitUntil` test helper discarded whether its condition held, so a wait that gave
+  up and a wait that succeeded were the same event to the test that called it. It now
+  throws `TimeoutException` naming what it waited for, and so do the helpers built on
+  it (`waitForTerminalStatus`, `waitForSettled`, `waitForQuiescent`). `waitUntilTrue`
+  still returns the answer for a caller that handles an expiry itself.
+- Fourteen waits in the unit suite expired in a green run, plus one in the integration
+  suite. Twelve were negative windows: waits expected to time out before the test
+  asserted that nothing happened. They now wait for a commit
+  (`waitForHandled`: the event committed and every plugin drained), or assert the
+  expiry outright. Two TestPrune waits polled for a `changed-files` entry that never
+  appears, spending 10 s each. One cache-replay test never replayed anything: its
+  fixture results named a project model its host did not publish, so the regression it
+  guards could return unnoticed. It now replays, and goes red when the guard is
+  removed.
+
+### lint, analyzers: a result replayed from the cache counts like a fresh one
+
+- **fix: a file whose lint or analyzer result is served from the task cache is counted in
+  the plugin's own state.** A cache hit skips the plugin's `Update`, so a session that read
+  another checkout's entry put the findings in the ledger and left the file out of
+  `WarningsByFile` / `DiagnosticsByFile`: `warnings` answered `{"files": 1}` where a fresh
+  lint of the same tree answers `{"files": 2}`, and the analyzers' next summary left out
+  the replayed findings and crashes. A replay now leaves the state a fresh run leaves.
+  `IFileReplayState` is public and hands over the findings the cached run left for the
+  file, so a third-party plugin can do the same (see `src/FsHotWatch/CHANGELOG.md`).
+
 ### core: two `check` clients on a cold daemon run one full scan
 
 - **fix: a scan request that arrives while a scan is already checking the tree is
@@ -455,9 +483,12 @@ for any path this does not cover; a survivor is still worth a report.
   daemon log. Parallel agents each doing a targeted rerun in their own workspace each
   bought a full suite. A narrowed rerun (`--filter-class`, `--filter-trait`, `--project`)
   now decides before it starts anything: with no daemon and no valid baseline it
-  **refuses (exit 2)**, naming the reason, and offers `fshw confirm` (earn the baseline)
-  or the same command with the new **`--allow-full-suite`** (`-F`) to start the daemon
-  anyway. Against an already-running daemon it proceeds, and says the daemon's own impact
+  **starts no daemon** and builds and runs only the requested slice in a one-shot
+  in-process host that launches no other test run. It names the reason, says the run is
+  PARTIAL (it earns no baseline and writes no verdict), and offers `fshw confirm` (earn
+  the baseline) or the same command with the new **`--allow-full-suite`** (`-F`) to start
+  the daemon anyway. (An earlier unreleased form of this change refused with exit 2
+  instead.) Against an already-running daemon it proceeds, and says the daemon's own impact
   runs are full-suite until a baseline exists and that the rerun earns no verdict. A
   plain `test-rerun` (no narrowing) and a workspace with a valid baseline are unchanged.
 

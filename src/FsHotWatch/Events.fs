@@ -1050,15 +1050,6 @@ type internal ICompletedBuildFailureState =
 type internal IAnalysisEvidenceState =
     abstract AnalysisEvidence: AnalysisEvidence option
 
-/// Implemented by a plugin state that records each file's completed analysis. A task-cache
-/// hit on `FileChecked` skips `Update`, and the hit is itself a completed analysis: its key
-/// names the same file, source and compiler result as the run that wrote the entry. The
-/// framework hands the replayed result here, with the published model and what the
-/// cached run's analysis concluded (`Error` when it failed), so the state records the
-/// outcome a live fold would have recorded.
-type internal IFileReplayState<'State> =
-    abstract Replayed: currentModel: int64 option -> result: FileCheckResult -> analysis: Result<unit, string> -> 'State
-
 /// Implemented by a plugin state that owns earned test evidence. The work owner projects it
 /// in the same publication as the state's work, so evidence and retirement cannot disagree.
 type internal IEarnedEvidenceState =
