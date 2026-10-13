@@ -442,6 +442,10 @@ type Store private (conn: SqliteConnection) =
             [ "@r", box runId; "@p", box testProject ]
             (fun r -> r.GetString 0)
 
+    /// Every test project that has a run, sorted.
+    member _.TestProjects() : string list =
+        readRows conn "SELECT DISTINCT test_project FROM trace_runs ORDER BY test_project" [] (fun r -> r.GetString 0)
+
     /// A project's runs, newest first.
     member _.Runs(testProject: string) : TraceRun list =
         readRows conn """SELECT run_id, tree_hash, env_fingerprint, recorded_at, kind, status, reason, stats_json

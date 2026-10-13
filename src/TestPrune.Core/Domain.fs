@@ -105,6 +105,38 @@ module CompositionRoot =
         barriered
         @ (unbarriered |> List.filter (fun t -> Set.contains (testProjectOf t) emptied))
 
+/// Which dependency edges the affected-test walk follows.
+///
+/// `TestScopedSources` names edge sources whose coupling a test can observe only by
+/// executing the edge's target. TestPrune.Sql's writer→reader edges are the case this
+/// exists for: when every test runs against its own database state (truncated and
+/// re-seeded per test), rows a writer stores are visible only to the test that ran the
+/// writer. A changed writer W can then affect a test T through a reader of W's table only
+/// if T itself executes W.
+///
+/// The rule this states is REACHABILITY-GATED coupling: T may follow a test-scoped edge
+/// R → W only when T reaches W through the other edges, with the same composition-root
+/// barriers the walk applies. The walk implements it by not following test-scoped edges
+/// at all, and the two are the same selection, not an approximation. Everything T
+/// reaches through the other edges is closed under those edges, and every gated edge
+/// lands inside that set, so a gated edge never takes T anywhere it did not already
+/// reach. `SqlReachabilityGateTests` checks this equality against the per-test gate,
+/// stated literally, on random graphs.
+///
+/// The stored edges are unchanged, so one index answers under either policy.
+type WalkPolicy =
+    {
+        /// Edge sources the walk does not follow (`Dependency.Source`).
+        TestScopedSources: Set<string>
+    }
+
+    /// Follow every edge: shared state is assumed visible across tests.
+    static member FollowAll = { TestScopedSources = Set.empty }
+
+    /// Does the walk follow an edge from `source`?
+    member this.Follows(source: string) =
+        not (this.TestScopedSources.Contains source)
+
 type ChangeKind =
     | Modified
     | Added

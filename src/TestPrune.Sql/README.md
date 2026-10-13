@@ -44,6 +44,24 @@ register `SqlExtension(facts)` instead. Registration is explicit: merely
 referencing this package does not run either extension. The host stores their
 edges with `refreshExtensionEdges` on every index build.
 
+## Tests with their own database state
+
+When every test starts from its own database state (truncated and re-seeded per
+test or per fixture), rows a writer stores are visible only to the test that ran
+the writer. A changed writer can then affect a test that reads its table only if
+that test also executes the writer. Open the index with the reachability-gated
+policy to select on that basis:
+
+```fsharp
+let db = TestPrune.Database.Database.create (dbPath, SqlCoupling.reachabilityGated)
+```
+
+A writer change then selects a test through a reader only when the test reaches
+the writer through its other edges: calls, routes, dispatch, or a fixture that
+seeds through it. The stored edges are the same under either policy. Keep the
+default (`WalkPolicy.FollowAll`) when tests share database state, for example rows
+written by another test or a seed snapshot built outside any test.
+
 See the repository's [integration guide](https://github.com/michaelglass/TestPrune/blob/main/docs/integration.md#extensions)
 for extension-host wiring and edge direction.
 <!-- sync:testprune-sql-readme:end -->

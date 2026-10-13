@@ -13,7 +13,7 @@ Three packages release together under one `trace-v` tag:
 |---------|------------|
 | [`TestPrune.Trace`](https://www.nuget.org/packages/TestPrune.Trace) | The library a test runner hosts: weaver, shadow bin, ingestion, trace store, measurements |
 | [`TestPrune.Trace.Recorder`](https://www.nuget.org/packages/TestPrune.Trace.Recorder) | The recorder loaded into the traced test process. You never reference it: the weaver adds it to the traced copy of your app |
-| [`TestPrune.Trace.Cli`](https://www.nuget.org/packages/TestPrune.Trace.Cli) | The `test-prune-traces` tool: census, isolation audit, CPU overhead and file census |
+| [`TestPrune.Trace.Cli`](https://www.nuget.org/packages/TestPrune.Trace.Cli) | The `test-prune-traces` tool: census, isolation audit, CPU overhead, file census and recall |
 
 ```bash
 dotnet add package TestPrune.Trace
@@ -176,7 +176,8 @@ The header convention:
 
 ## Measuring traces: `test-prune-traces`
 
-Four verbs measure a project against the phase-1 bars. Each prints a report (or JSON with
+Four verbs measure a project against the phase-1 bars; a fifth, `recall`, checks impact
+selection against the traces. Each prints a report (or JSON with
 `--json`) and exits **0** when the bar is met, **1** when it is not, and **2** on a usage
 error or when it cannot measure at all (no database, a project that cannot be prepared, a
 run that wrote no CTRF report).
@@ -193,6 +194,32 @@ missing database is refused (exit 2), never created. With no run to measure it e
 It reports each project's newest run whatever its status, never an older run that
 recorded: a `REFUSED` project (it ran untraced) is listed with its reason and does not
 fail the census; a `FAILED` one (the recorder produced nothing usable) does.
+
+### Recall: does selection select every test a trace shows running a symbol?
+
+```text
+test-prune-traces recall --index <test-prune index db> --test-scoped <source>[,<source>...]
+                         [--db <trace db>] [--run <runId>] [--jobs 4] [--limit 50] [--json]
+```
+
+For every complete trace of a test T, and every symbol X the trace executed that the index
+holds at the same content hash, T must be in `QueryAffectedTests [X]`. A pair where it is
+not is a miss: a change to X would leave a test that runs X unselected. `recall` checks
+every pair twice over one index: under `WalkPolicy.FollowAll`, and under a policy that does
+not follow the edge sources named by `--test-scoped` (`sql,sql-hydra` is
+`SqlCoupling.reachabilityGated`). It exits **0** when the narrower policy adds no miss
+(every pair it misses, the follow-all walk misses too), **1** when it adds one, and **2**
+on a usage error, a missing or unreadable database, an index of another schema (probed
+read-only, never recreated), or nothing to check. The report lists each added miss, up to
+`--limit` misses per policy, and what was skipped: incomplete traces, traced tests the index
+has no test method for, pairs whose symbol changed since the trace was recorded, and
+executed symbols the index does not know. Each executed symbol is one walk per policy,
+`--jobs` at a time.
+
+The traces are each project's current traces under the fingerprint of its newest recorded
+run (`--run` picks a run); a refused or failed run, or one that saw the tree move, is passed
+over. Record them with a full traced run of the same tree the
+index was built from.
 
 The three process-driving verbs (`audit`, `overhead`, `file-census`) take the same
 options:

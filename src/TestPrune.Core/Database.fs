@@ -515,14 +515,29 @@ let private openCheckedConnection (dbPath: string) : SqliteConnection * bool =
 /// that they exist or match this version.
 let openPluginConnection (dbPath: string) : SqliteConnection = openConnection dbPath
 
-/// SQLite-backed dependency graph storage.
-type Database(dbPath: string) =
+/// SQLite-backed dependency graph storage. `policy` says which stored edges the
+/// affected-test walk follows (`QueryAffectedTests`, `QueryCoveringProjectsBySeed`); every
+/// other query sees every edge.
+type Database(dbPath: string, policy: Domain.WalkPolicy) =
     let warnedUnknownKinds = HashSet<string>()
     let mutable wasRecreated = false
 
     // Recursive graph walks this instance has run. Read by tests that pin how many walks a
     // query costs, which is the property the grouped seed query exists for.
     let mutable recursiveWalks = 0L
+
+    // The walk's edge filter under `policy`: a conjunct on dependency row `alias`, empty
+    // when the walk follows every edge, so `WalkPolicy.FollowAll` runs the historical SQL.
+    let unfollowed (alias: string) =
+        if policy.TestScopedSources.IsEmpty then
+            ""
+        else
+            $"AND %s{alias}.source NOT IN (SELECT value FROM json_each(@scopedSources))"
+
+    let bindUnfollowed (cmd: SqliteCommand) =
+        if not policy.TestScopedSources.IsEmpty then
+            cmd.Parameters.AddWithValue("@scopedSources", JsonSerializer.Serialize(Set.toList policy.TestScopedSources))
+            |> ignore
 
     do
         let openedConn, fresh = openCheckedConnection dbPath
@@ -544,8 +559,18 @@ type Database(dbPath: string) =
     /// the recreated DB has lost every symbol the stale cache assumes is still indexed.
     member _.WasRecreated = wasRecreated
 
-    /// Create a Database instance, initializing the schema if needed.
+    /// A database whose walk follows every edge (`WalkPolicy.FollowAll`).
+    new(dbPath: string) = Database(dbPath, Domain.WalkPolicy.FollowAll)
+
+    /// Create a Database instance, initializing the schema if needed. The walk follows
+    /// every edge (`WalkPolicy.FollowAll`).
     static member create(dbPath: string) = Database(dbPath)
+
+    /// Create a Database instance whose affected-test walk follows `policy`.
+    static member create(dbPath: string, policy: Domain.WalkPolicy) = Database(dbPath, policy)
+
+    /// The policy `QueryAffectedTests` walks under.
+    member _.WalkPolicy = policy
 
     /// Open a fresh connection to the cache database (WAL, foreign keys on); the caller
     /// disposes it. This is the storage seam for extensions that must persist facts core
@@ -1178,7 +1203,7 @@ type Database(dbPath: string) =
                     SELECT id AS from_symbol_id FROM expanded
                     UNION
                     SELECT d.from_symbol_id FROM dependencies d
-                    JOIN transitive_deps td ON d.to_symbol_id = td.from_symbol_id
+                    JOIN transitive_deps td ON d.to_symbol_id = td.from_symbol_id %s{unfollowed "d"}
                 )
                 SELECT DISTINCT s.full_name, tm.test_project, tm.test_class, tm.test_method
                 FROM transitive_deps td
@@ -1187,6 +1212,7 @@ type Database(dbPath: string) =
                 """
 
             bindNameSet cmd changedSymbolNames
+            bindUnfollowed cmd
             cmd.Parameters.AddWithValue("@typeKind", typeKindStr) |> ignore
 
             let reader = cmd.ExecuteReader()
@@ -1340,23 +1366,33 @@ type Database(dbPath: string) =
             System.Threading.Interlocked.Increment(&recursiveWalks) |> ignore
 
             let closure =
-                rows $"""
+                rows
+                    $"""
                         WITH RECURSIVE closure(id) AS (
                             {idSet "s"}
                             UNION
                             SELECT d.from_symbol_id
                             FROM dependencies d
-                            JOIN closure c ON d.to_symbol_id = c.id
+                            JOIN closure c ON d.to_symbol_id = c.id {unfollowed "d"}
                         )
                         SELECT id FROM closure
-                        """ (bindIds "s" startIds) (fun r -> r.GetInt64(0))
+                        """
+                    (fun cmd ->
+                        bindIds "s" startIds cmd
+                        bindUnfollowed cmd)
+                    (fun r -> r.GetInt64(0))
 
             let edges =
-                rows $"""
-                        SELECT DISTINCT to_symbol_id, from_symbol_id
-                        FROM dependencies
-                        WHERE to_symbol_id IN ({idSet "c"})
-                        """ (bindIds "c" closure) (fun r -> r.GetInt64(0), r.GetInt64(1))
+                rows
+                    $"""
+                        SELECT DISTINCT d.to_symbol_id, d.from_symbol_id
+                        FROM dependencies d
+                        WHERE d.to_symbol_id IN ({idSet "c"}) {unfollowed "d"}
+                        """
+                    (fun cmd ->
+                        bindIds "c" closure cmd
+                        bindUnfollowed cmd)
+                    (fun r -> r.GetInt64(0), r.GetInt64(1))
 
             let testMethods =
                 rows $"""

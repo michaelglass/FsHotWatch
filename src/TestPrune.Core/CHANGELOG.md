@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- feat: `Domain.WalkPolicy` says which stored edges the affected-test walk follows.
+  `Database.create(path, policy)` and `InMemoryStore.fromAnalysisResultsWith policy`
+  apply it to `QueryAffectedTests` and `QueryCoveringProjectsBySeed`; every other query
+  still sees every edge, and the index itself is unchanged, so one index answers under
+  either policy. `WalkPolicy.FollowAll` (what `Database.create path` and
+  `fromAnalysisResults` use) keeps today's selection. A policy names test-scoped edge
+  sources: an edge whose coupling a test can observe only by executing the edge's target.
+  Not following such an edge is the same selection as following it only for tests that
+  reach its target through the other edges, under the same composition-root barriers;
+  random-graph tests check the two against each other on both stores.
+
 ## 13.3.3 - 2026-10-08
 
 - perf: each dependency edge names the file that owns it by an integer id into a new

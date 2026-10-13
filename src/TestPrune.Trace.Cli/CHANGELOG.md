@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `test-prune-traces recall --index <db> --test-scoped <sources>` checks impact
+  selection against the trace store, under `WalkPolicy.FollowAll` and under a policy that
+  does not follow the named edge sources. Exit 0 when the narrower policy adds no miss, 1
+  when it does, 2 on a usage error, an unreadable database, an index of another schema
+  (probed read-only, never recreated) or nothing to check.
+
 ## 0.7.1 - 2026-10-08
 
 - chore: rebuild to bundle updated dependencies

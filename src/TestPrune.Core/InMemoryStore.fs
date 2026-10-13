@@ -5,8 +5,9 @@ open TestPrune.Ports
 
 /// Create an in-memory SymbolStore from a list of AnalysisResults, ONE PER SOURCE FILE
 /// (see `Database.RebuildProjects`). A result declaring the same name in two files is
-/// rejected with an `ArgumentException`, exactly as SQLite rejects it.
-let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
+/// rejected with an `ArgumentException`, exactly as SQLite rejects it. `QueryAffectedTests`
+/// walks under `policy`, as `Database.create(path, policy)` does.
+let fromAnalysisResultsWith (policy: Domain.WalkPolicy) (results: AnalysisResult list) : SymbolStore =
     // A symbol is ONE node with one source occurrence per file that declares it (a
     // `.fsi` declaration and its `.fs` implementation). Match SQLite's rules: a real
     // occurrence is kept per (name, file), the last one winning if a caller supplies
@@ -103,6 +104,14 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
         |> Map.ofList
         |> Map.map (fun _ deps -> deps |> List.map (fun d -> d.FromSymbol) |> Set.ofList)
 
+    // The reverse edges the affected-test walk follows under `policy`.
+    let walkedReverseEdges =
+        allDeps
+        |> List.filter (fun d -> policy.Follows d.Source)
+        |> List.groupBy (fun d -> d.ToSymbol)
+        |> Map.ofList
+        |> Map.map (fun _ deps -> deps |> List.map (fun d -> d.FromSymbol) |> Set.ofList)
+
     let testMethodNames = allTests |> List.map (fun t -> t.SymbolFullName) |> Set.ofList
     let allSymbolNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
 
@@ -193,7 +202,7 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
                 allTests |> List.filter (fun t -> Set.contains t.SymbolFullName affected)
 
             if Set.isEmpty compositionRoots then
-                testsIn (transitiveClosure reverseEdges (expandChanged changedNames))
+                testsIn (transitiveClosure walkedReverseEdges (expandChanged changedNames))
             else
                 // The fail-safe is judged per changed symbol, and the batch selects the
                 // union — `Domain.CompositionRoot.emptiedProjects` says why. Stated
@@ -208,8 +217,10 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
                     // aggregates stops the walk. Subtracting the seeds is that asymmetry.
                     let barriers = Set.difference compositionRoots (Set.ofList seeds)
 
-                    let barriered = testsIn (transitiveClosureWithBarriers reverseEdges barriers seeds)
-                    let unbarriered = testsIn (transitiveClosure reverseEdges seeds)
+                    let barriered =
+                        testsIn (transitiveClosureWithBarriers walkedReverseEdges barriers seeds)
+
+                    let unbarriered = testsIn (transitiveClosure walkedReverseEdges seeds)
 
                     Domain.CompositionRoot.restoreEmptiedProjects _.TestProject barriered unbarriered
 
@@ -246,3 +257,7 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
         fun () ->
             attrsBySymbol
             |> Map.map (fun _ attrs -> attrs |> List.map (fun a -> a.AttributeName, a.ArgsJson)) }
+
+/// `fromAnalysisResultsWith WalkPolicy.FollowAll`: the walk follows every edge.
+let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
+    fromAnalysisResultsWith Domain.WalkPolicy.FollowAll results

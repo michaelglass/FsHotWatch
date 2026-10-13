@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: `SqlCoupling.reachabilityGated`, a walk policy for suites whose tests each run
+  against their own database state (truncated and re-seeded per test or fixture). A
+  changed writer then selects a test through a reader of its table only when the test
+  itself reaches the writer, through calls, routes, dispatch or a fixture that seeds
+  through it. On one application's index, a change to one case of a seven-case union
+  selected 2,246 tests following every edge and 76 under the gate. The default is
+  unchanged: a suite whose tests share database state keeps `WalkPolicy.FollowAll`.
+  `SqlCoupling.Source` and `SqlCoupling.SqlHydraSource` name the edge sources the policy
+  covers.
+
 ## 0.3.0 - 2026-09-25
 
 - chore!: `SqlExtension` and `AutoSqlExtension` implement TestPrune.Core's

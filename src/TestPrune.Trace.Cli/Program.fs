@@ -10,7 +10,8 @@ open Microsoft.Data.Sqlite
 open TestPrune.Trace
 
 /// The usage line printed for an unknown or missing verb.
-let usage = "usage: test-prune-traces census|audit|overhead|file-census [options]"
+let usage =
+    "usage: test-prune-traces census|audit|overhead|file-census|recall [options]"
 
 /// The usage of the census verb.
 let censusUsage =
@@ -80,6 +81,144 @@ let private census (cwd: string) (args: string list) : Outcome =
             | :? SqliteException -> fail 2 e.Message
             // Unexpected content (a stats_json this version cannot read): keep the whole trace.
             | _ -> fail 2 $"%s{db}: %O{e}"
+
+/// The usage of the recall verb.
+let recallUsage =
+    "usage: test-prune-traces recall --index <test-prune index db> --test-scoped <source>[,<source>...]\n"
+    + "  [--db <trace db>] [--run <runId>] [--jobs 4] [--limit 50] [--json]\n"
+    + "  checks every complete trace against the index under WalkPolicy.FollowAll and under a policy\n"
+    + "  that does not follow the --test-scoped edge sources (sql,sql-hydra is SqlCoupling.reachabilityGated)\n"
+    + "  exit 0 when the narrower policy adds no miss, 1 when it does, 2 on a usage error,\n"
+    + "  an unreadable database or nothing to check"
+
+type private RecallArgs =
+    { Index: string option
+      TestScoped: string list
+      Db: string option
+      Run: string option
+      Jobs: int
+      Limit: int
+      Json: bool }
+
+let private positive (flag: string) (set: int -> RecallArgs -> RecallArgs) (v: string) (a: RecallArgs) =
+    match Int32.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture) with
+    | true, n when n > 0 -> Ok(set n a)
+    | _ -> Error $"%s{flag} needs a positive whole number, got %s{v}"
+
+/// Every valued flag of the recall verb and how it sets its argument.
+let private recallSetters: Map<string, string -> RecallArgs -> Result<RecallArgs, string>> =
+    Map
+        [ "--index", (fun v a -> Ok { a with Index = Some v })
+          "--db", (fun v a -> Ok { a with Db = Some v })
+          "--run", (fun v a -> Ok { a with Run = Some v })
+          "--test-scoped",
+          (fun v a ->
+              Ok
+                  { a with
+                      TestScoped =
+                          v.Split(',', StringSplitOptions.RemoveEmptyEntries ||| StringSplitOptions.TrimEntries)
+                          |> List.ofArray })
+          "--jobs", positive "--jobs" (fun n a -> { a with Jobs = n })
+          "--limit", positive "--limit" (fun n a -> { a with Limit = n }) ]
+
+let rec private parseRecall (acc: RecallArgs) (args: string list) : Result<RecallArgs, string> =
+    match args with
+    | [] -> Ok acc
+    | "--json" :: rest -> parseRecall { acc with Json = true } rest
+    | flag :: v :: rest when recallSetters.ContainsKey flag && not (v.StartsWith "--") ->
+        recallSetters.[flag] v acc |> Result.bind (fun a -> parseRecall a rest)
+    | flag :: _ when recallSetters.ContainsKey flag -> Error $"%s{flag} needs a value"
+    | other :: _ -> Error $"unknown argument %s{other}"
+
+/// Why the index at `path` cannot be read as it is, if it cannot: missing, or written by
+/// another schema. Probed read-only, because opening an older index through
+/// `Database.create` would recreate it empty.
+let private unreadableIndex (path: string) : string option =
+    if not (File.Exists path) then
+        Some $"no index at %s{path}"
+    else
+        // Disposed in `finally`, not by `use`: a `use` adds a null check on a value that is
+        // never null, a branch no input can take.
+        let conn = new SqliteConnection($"Data Source=%s{path};Mode=ReadOnly")
+
+        try
+            conn.Open()
+            let cmd = conn.CreateCommand()
+            cmd.CommandText <- "PRAGMA user_version"
+            let found = cmd.ExecuteScalar() :?> int64 |> int
+            cmd.Dispose()
+
+            if found = TestPrune.Database.SchemaVersion then
+                None
+            else
+                Some
+                    $"%s{path} has index schema v%d{found}; this test-prune-traces reads v%d{TestPrune.Database.SchemaVersion}. Re-index with a matching TestPrune."
+        finally
+            SqliteConnection.ClearPool conn
+            conn.Dispose()
+
+let private recall (cwd: string) (args: string list) : Outcome =
+    let defaults =
+        { Index = None
+          TestScoped = []
+          Db = None
+          Run = None
+          Jobs = 4
+          Limit = 50
+          Json = false }
+
+    let parsed =
+        parseRecall defaults args
+        |> Result.bind (fun a ->
+            match a.Index, a.TestScoped with
+            | Some index, (_ :: _ as sources) -> Ok(a, Path.GetFullPath(index, cwd), Set.ofList sources)
+            | _ -> Error "--index and --test-scoped are required")
+
+    match parsed with
+    | Error why -> fail 2 $"%s{why}\n%s{recallUsage}"
+    | Ok(a, index, sources) ->
+        let db =
+            a.Db
+            |> Option.map (fun d -> Path.GetFullPath(d, cwd))
+            |> Option.defaultWith (fun () -> defaultDb cwd)
+
+        match unreadableIndex index with
+        | Some why -> fail 2 why
+        | None when not (File.Exists db) -> fail 2 $"no trace database at %s{db}"
+        | None ->
+            try
+                let store = TraceStore.Store.Open db
+
+                let traces =
+                    try
+                        Recall.tracesIn store a.Run
+                    finally
+                        (store :> IDisposable).Dispose()
+
+                let storeOf policy =
+                    TestPrune.Ports.toSymbolStore (TestPrune.Database.Database.create (index, policy))
+
+                let report =
+                    Recall.check
+                        a.Jobs
+                        (storeOf TestPrune.Domain.WalkPolicy.FollowAll)
+                        (storeOf { TestScopedSources = sources })
+                        traces
+
+                { Exit =
+                    if report.Pairs = 0 then 2
+                    elif Recall.passes report then 0
+                    else 1
+                  Stdout =
+                    if a.Json then
+                        JsonSerializer.Serialize(Recall.toJson report) + "\n"
+                    else
+                        Recall.render a.Limit report
+                  Stderr = "" }
+            // A trace store of a newer schema, a file that is not a database, an index
+            // that fails mid-query: nothing was measured, whichever it was.
+            with e ->
+                fail 2 $"recall measured nothing: %s{e.Message}"
 
 /// The process-driving measurements the verbs run (substituted in tests).
 type Measures =
@@ -257,6 +396,7 @@ let private measure
 let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
     match args with
     | "census" :: rest -> census cwd rest
+    | "recall" :: rest -> recall cwd rest
     | "audit" :: rest ->
         measure
             cwd
