@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.70 - 2026-10-13
+
 - fix: `test-results` and `test-scope` no longer report the previous run as settled while
   a finished run's result is being folded. Between the run's worker exiting and its fold
   committing, `test-results` answered with the previous run's results and `test-scope`

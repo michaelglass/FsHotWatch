@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.72 - 2026-10-13
+
 - feat: `PluginFramework.IFileReplayState` is public (it was internal, in `Events`). A
   plugin state that keeps per-file results implements it so a task-cache hit on
   `FileChecked`, which skips `Update`, still records the file. A completed replay hands

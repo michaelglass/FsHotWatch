@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.29 - 2026-10-13
+
 - fix: a lint result replayed from the task cache fills `WarningsByFile` like a fresh
   lint, so `warnings` counts a file a session served from a sibling checkout's cache.
 

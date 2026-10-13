@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.97 - 2026-10-13
+
 - fix: `fshw invalidate` with no daemon running clears the persisted task-result stores
   (workspace-local and shared) itself, under the daemon's singleton lock, and starts no
   daemon. Before, it cold-started a daemon only to clear them, and failed with exit 1 when

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.46 - 2026-10-13
+
 - fix: an analysis replayed from the task cache fills `DiagnosticsByFile` and
   `CrashesByFile` like a fresh analysis, so `diagnostics` and the next summary count a
   file served from the cache, crashes included.
