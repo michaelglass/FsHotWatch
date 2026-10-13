@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.71 - 2026-10-13
+
 - fix: a scan's progress advances per file. `runChecksWithRetry` emits each result as
   its check returns instead of after the whole tier's round, so a one-tier scan no longer
   reports `scanning: 0/N files (0%)` until it completes. `emit` is now called

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.45 - 2026-10-13
+
 - fix: a cached analyzer result is no longer replayed after a type it depends on changes
   shape in an earlier file or a referenced project. The key's only cross-file input was the
   file's own compiler diagnostics, which stay the same when, say, a record becomes a union

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.96 - 2026-10-13
+
 - feat: `fshw status` prints the daemon's `scanning: N/M files (P%)` line while a scan is
   running, read from the daemon's `ScanStatus`. An idle or finished scan adds nothing.
   `IpcOutput.scanProgressLine` picks that line out of a `ScanStatus` answer.
