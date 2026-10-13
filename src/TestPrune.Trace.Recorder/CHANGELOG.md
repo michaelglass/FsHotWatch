@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.3 - 2026-10-13
+
+- fix(trace): recall matches a backticked test method to its trace
+
+
 ## 0.7.2 - 2026-10-13
 
 - feat(trace): recall verb checks selection against recorded traces

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.3 - 2026-10-13
+
 - fix: `Recall.check` matches an index test whose method name is backticked to its trace.
   The index keeps the source name (` ``a test`` `), a trace the name xUnit reports
   (`a test`); every such test counted as unindexed and none of its pairs was checked. Index
