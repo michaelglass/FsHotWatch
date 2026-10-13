@@ -168,9 +168,9 @@ let ``a host that leaves between the probe and the reply is relaunched once`` ()
                 exchanges.Value <- exchanges.Value + 1
 
                 if exchanges.Value = 1 then
-                    raise (IOException "the repository host sent no reply (Truncated)")
-
-                return reply
+                    return Error(RepositoryIpc.ExchangeError.NoReply RepositoryIpc.FrameError.Truncated)
+                else
+                    return Ok reply
             }
 
         let outcome =
@@ -204,7 +204,7 @@ let ``a host that never answers the attach is refused once, naming its log`` () 
                 (fun _ _ ->
                     async {
                         exchanges.Value <- exchanges.Value + 1
-                        return raise (TimeoutException "no connection")
+                        return Error(RepositoryIpc.ExchangeError.Unreachable "no connection")
                     })
                 (Path.Combine(dir, "state"))
                 (fun _ -> launches.Value <- launches.Value + 1)
@@ -227,7 +227,7 @@ let ``a host that never answers the attach is refused once, naming its log`` () 
                 (fun _ _ ->
                     async {
                         exchanges.Value <- exchanges.Value + 1
-                        return raise (IOException "the repository host sent no reply (Truncated)")
+                        return Error(RepositoryIpc.ExchangeError.NoReply RepositoryIpc.FrameError.Truncated)
                     })
                 (Path.Combine(dir, "state"))
                 (fun _ -> launches.Value <- launches.Value + 1)
@@ -240,6 +240,64 @@ let ``a host that never answers the attach is refused once, naming its log`` () 
         | other -> failwith $"%A{other}"
 
         test <@ launches.Value = 1 && exchanges.Value = 3 @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a host that hangs up mid-frame during the attach is refused, not a crash`` () =
+    // The crash under load: the host's endpoint accepted the attach and closed while the
+    // CLI was still writing it. The write failed with a broken pipe, which escaped attach
+    // and ended the CLI with an unhandled exception. A frame larger than any socket
+    // buffer makes the hang-up land mid-write on every run: the host reads only the
+    // frame's length, then closes.
+    withTempDir "mode-hangup" (fun dir ->
+        attachedReplyFor dir |> ignore
+        let endpoint = "fshw-test-" + Guid.NewGuid().ToString "N"
+        let request = String('x', 4 * 1024 * 1024)
+        let exchanges = ref 0
+
+        let opener: Ipc.IpcServer.ConnectionOpener =
+            fun pipe _ ->
+                async {
+                    // Short of 4 bytes is the liveness probe, which connects and closes.
+                    let header = Array.zeroCreate<byte> 4
+
+                    do!
+                        pipe.ReadAtLeastAsync(header.AsMemory(), header.Length, throwOnEndOfStream = false).AsTask()
+                        |> Async.AwaitTask
+                        |> Async.Ignore
+
+                    return None
+                }
+
+        use cts = new CancellationTokenSource()
+
+        let server =
+            Async.StartImmediateAsTask(Ipc.IpcServer.serveConnections (TimeSpan.FromSeconds 5.0) endpoint opener cts)
+
+        try
+            test <@ Ipc.IpcServer.acceptsConnection endpoint @>
+
+            let outcome =
+                RepositoryHostMode.attachWith
+                    (fun _ -> true)
+                    (fun _ _ ->
+                        exchanges.Value <- exchanges.Value + 1
+                        RepositoryIpc.attach endpoint request)
+                    (Path.Combine(dir, "state"))
+                    ignore
+                    (TimeSpan.FromSeconds 5.0)
+                    dir
+                    ""
+
+            match outcome with
+            | RepositoryHostMode.Attach.Refused message ->
+                test <@ message.Contains "stopped answering" && message.Contains "hung up" @>
+            | other -> failwith $"%A{other}"
+
+            // Asked once more, as for any host that left mid-exchange.
+            test <@ exchanges.Value = 2 @>
+        finally
+            cts.Cancel()
+            server.Wait(TimeSpan.FromSeconds 10.0) |> ignore)
 
 // ---------------------------------------------------------------------------
 // Real host processes
@@ -661,6 +719,7 @@ let ``an attach reply the host cannot have written is a stop, naming why`` () =
                         do!
                             RepositoryIpc.writeFrame pipe "not json" CancellationToken.None
                             |> Async.AwaitTask
+                            |> Async.Ignore
                     | Error _ -> ()
 
                     return None

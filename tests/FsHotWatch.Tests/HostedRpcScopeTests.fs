@@ -301,7 +301,9 @@ let ``a command called through a repository host spawns and logs in its session'
                 let session =
                     match
                         decodeResponse (
-                            RepositoryIpc.attach endpoint (encodeRequest request) |> Async.RunSynchronously
+                            RepositoryIpc.attach endpoint (encodeRequest request)
+                            |> Async.RunSynchronously
+                            |> Result.defaultWith (exchangeException >> raise)
                         )
                     with
                     | Ok(AttachedReply(id, _, _)) -> id
@@ -317,10 +319,12 @@ let ``a command called through a repository host spawns and logs in its session'
                             (Preamble.Session(session, InvocationId.mint ()))
                             "RunCommand"
                             [| box "spawn"; box "" |]
-                        |> Async.RunSynchronously)
+                        |> Async.RunSynchronously
+                        |> Result.defaultWith (exchangeException >> raise))
                     (fun () ->
                         RepositoryIpc.invoke endpoint (Preamble.Repository(InvocationId.mint ())) "StopHost" [||]
                         |> Async.RunSynchronously
+                        |> Result.defaultWith (exchangeException >> raise)
                         |> ignore
 
                         host.Join(TimeSpan.FromSeconds 60.0) |> ignore)

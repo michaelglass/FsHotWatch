@@ -2545,7 +2545,9 @@ let sessionIpcOps (link: HostLink) : IpcOps =
         async {
             let preamble = FsHotWatch.RepositoryIpc.Preamble.Session(link.Session(), invocation)
 
-            return! FsHotWatch.RepositoryIpc.invoke link.Endpoint preamble methodName args
+            match! FsHotWatch.RepositoryIpc.invoke link.Endpoint preamble methodName args with
+            | Ok reply -> return reply
+            | Error e -> return raise (FsHotWatch.RepositoryIpc.exchangeException e)
         }
 
     { Shutdown = fun _ -> call "Shutdown" [||]
@@ -2569,6 +2571,8 @@ let private repositoryControl (repoRoot: string) =
     FsHotWatch.RepositoryIdentity.resolveWorktree repoRoot
     |> Result.map (fun w -> FsHotWatch.RepositoryIdentity.repositoryControlPaths (FsHwPaths.stateHome ()) w.Repository)
 
+/// One repository-level RPC. A host that leaves mid-exchange is an `ExchangeError`
+/// the caller reports, never an exception that ends the CLI.
 let private repositoryCall (endpoint: string) (methodName: string) =
     FsHotWatch.RepositoryIpc.invoke
         endpoint
@@ -2576,6 +2580,11 @@ let private repositoryCall (endpoint: string) (methodName: string) =
         methodName
         [||]
     |> Async.RunSynchronously
+
+/// Report a repository-level RPC the host never answered; the exit code says so.
+let private repositoryCallFailed (control: FsHotWatch.RepositoryIdentity.RepositoryControlPaths) error : int =
+    eprintfn $"fshw: %s{FsHotWatch.RepositoryIpc.ExchangeError.describe error}; see %s{control.HostLog}"
+    2
 
 /// Render the host's `ListSessions` answer for a human.
 let internal renderRepositoryStatus (json: string) : string list =
@@ -2612,15 +2621,16 @@ let internal repositoryStatus (agent: bool) (repoRoot: string) : int =
         eprintfn "No repository host is running for this repository."
         0
     | Ok control ->
-        let json = repositoryCall control.Endpoint "ListSessions"
+        match repositoryCall control.Endpoint "ListSessions" with
+        | Error e -> repositoryCallFailed control e
+        | Ok json ->
+            if agent then
+                printfn "%s" json
+            else
+                for line in renderRepositoryStatus json do
+                    eprintfn "%s" line
 
-        if agent then
-            printfn "%s" json
-        else
-            for line in renderRepositoryStatus json do
-                eprintfn "%s" line
-
-        0
+            0
 
 /// `stop --repository`: stop the repository's host, ending every session.
 let internal stopRepositoryHost (repoRoot: string) : int =
@@ -2632,19 +2642,21 @@ let internal stopRepositoryHost (repoRoot: string) : int =
         eprintfn "No repository host is running for this repository."
         0
     | Ok control ->
-        repositoryCall control.Endpoint "StopHost" |> ignore
-        let deadline = DateTime.UtcNow.AddSeconds 60.0
+        match repositoryCall control.Endpoint "StopHost" with
+        | Error e -> repositoryCallFailed control e
+        | Ok _ ->
+            let deadline = DateTime.UtcNow.AddSeconds 60.0
 
-        while FsHotWatch.RepositoryIpc.isRunning control.Endpoint
-              && DateTime.UtcNow < deadline do
-            Thread.Sleep 100
+            while FsHotWatch.RepositoryIpc.isRunning control.Endpoint
+                  && DateTime.UtcNow < deadline do
+                Thread.Sleep 100
 
-        if FsHotWatch.RepositoryIpc.isRunning control.Endpoint then
-            eprintfn $"The repository host is still serving 60s after it was asked to stop; see %s{control.HostLog}"
-            1
-        else
-            eprintfn "Stopped the repository host."
-            0
+            if FsHotWatch.RepositoryIpc.isRunning control.Endpoint then
+                eprintfn $"The repository host is still serving 60s after it was asked to stop; see %s{control.HostLog}"
+                1
+            else
+                eprintfn "Stopped the repository host."
+                0
 
 /// Build the daemon for the worktree at `root` from its configuration: a per-worktree
 /// daemon (`Standalone`) or a session of the repository host (`Hosted`).

@@ -595,6 +595,7 @@ let ``over the endpoint: attach, call a session, list the host, and stop it`` ()
                 decodeResponse (
                     RepositoryIpc.attach endpoint (encodeRequest (requestFrom worktree config))
                     |> Async.RunSynchronously
+                    |> Result.defaultWith (exchangeException >> raise)
                 )
             with
             | Ok reply -> attachedId reply
@@ -606,12 +607,14 @@ let ``over the endpoint: attach, call a session, list the host, and stop it`` ()
         let status =
             RepositoryIpc.invoke endpoint (Preamble.Session(a, InvocationId.mint ())) "GetStatus" [||]
             |> Async.RunSynchronously
+            |> Result.defaultWith (exchangeException >> raise)
 
         test <@ not (String.IsNullOrWhiteSpace status) @>
 
         let listed =
             RepositoryIpc.invoke endpoint (Preamble.Repository(InvocationId.mint ())) "ListSessions" [||]
             |> Async.RunSynchronously
+            |> Result.defaultWith (exchangeException >> raise)
 
         test <@ listed.Contains(SessionId.render a) && listed.Contains(SessionId.render b) @>
 
@@ -620,20 +623,19 @@ let ``over the endpoint: attach, call a session, list the host, and stop it`` ()
                 Incarnation = SessionIncarnation.mint () }
 
         let refused =
-            Assert.ThrowsAny<exn>(fun () ->
-                RepositoryIpc.invoke endpoint (Preamble.Session(stale, InvocationId.mint ())) "GetStatus" [||]
-                |> Async.RunSynchronously
-                |> ignore)
+            RepositoryIpc.invoke endpoint (Preamble.Session(stale, InvocationId.mint ())) "GetStatus" [||]
+            |> Async.RunSynchronously
 
         test
             <@
                 match refused with
-                | RepositoryRefusedException("stale-incarnation", _) -> true
+                | Error(ExchangeError.Refused("stale-incarnation", _)) -> true
                 | _ -> false
             @>
 
         RepositoryIpc.invoke endpoint (Preamble.Repository(InvocationId.mint ())) "StopHost" [||]
         |> Async.RunSynchronously
+        |> Result.defaultWith (exchangeException >> raise)
         |> ignore
 
         test <@ run.Wait(TimeSpan.FromSeconds 60.0) @>
@@ -931,6 +933,7 @@ let ``a host whose only worktree is deleted ends that session, and then exits id
             let reply =
                 RepositoryIpc.attach settings.Control.Endpoint (encodeRequest (requestFrom fx.Primary "a"))
                 |> Async.RunSynchronously
+                |> Result.defaultWith (exchangeException >> raise)
                 |> decodeResponse
 
             test <@ reply |> Result.map attachedId |> Result.isOk @>

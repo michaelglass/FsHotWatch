@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a repository host that hangs up mid-frame no longer crashes the CLI with an
+  unhandled "Broken pipe" (exit 134). During attach it is retried once and then refused
+  with "the repository host stopped answering during attach (… hung up …); see
+  <host.log>" (exit 2); `status --repository` and `stop --repository` print what
+  happened and exit 2.
+
 ## 0.14.0-alpha.96 - 2026-10-13
 
 - feat: `fshw status` prints the daemon's `scanning: N/M files (P%)` line while a scan is

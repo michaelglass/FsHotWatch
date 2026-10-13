@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- fix!: a peer that hangs up mid-frame on the repository endpoint is an ordinary,
+  named outcome instead of an exception. `FrameError.HungUp` is a read or write that
+  failed because the other end closed or reset the connection; `RepositoryIpc.writeFrame`
+  now returns `Task<Result<unit, FrameError>>`, and `readFrame` returns `HungUp` where it
+  raised. The client side reports `ExchangeError` (`Unreachable`, `NoReply`,
+  `UnreadableReply`, `Refused`, with `ExchangeError.describe`): `RepositoryIpc.attach` and
+  `invoke` return `Async<Result<string, ExchangeError>>` (an `invoke` RPC's own failures
+  still raise), and `exchangeException` turns an `ExchangeError` into the exception the
+  daemon RPC surface raises. A host whose client hangs up before its preamble answer
+  logs it and closes the connection. Breaking: `writeFrame`, `attach` and `invoke`
+  change their return types.
+
 ## 0.10.0-alpha.71 - 2026-10-13
 
 - fix: a scan's progress advances per file. `runChecksWithRetry` emits each result as

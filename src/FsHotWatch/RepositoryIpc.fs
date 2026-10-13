@@ -55,12 +55,23 @@ module InvocationId =
 [<Literal>]
 let MaxFrameBytes = 1048576
 
-/// Why a frame could not be read.
+/// Why a frame could not be read or written.
 [<RequireQualifiedAccess>]
 type FrameError =
     /// The stream ended before a whole frame arrived.
     | Truncated
     | TooLarge of bytes: int
+    /// The peer closed the connection while a frame was being read or written (a broken
+    /// pipe, a reset). An ordinary outcome for either end of a connection: the other
+    /// process may exit, or give up on it, at any moment.
+    | HungUp of reason: string
+
+module FrameError =
+    let describe (error: FrameError) : string =
+        match error with
+        | FrameError.Truncated -> "the connection ended before a whole frame arrived"
+        | FrameError.TooLarge bytes -> $"a %d{bytes}-byte frame exceeds %d{MaxFrameBytes} bytes"
+        | FrameError.HungUp reason -> $"the other end hung up (%s{reason})"
 
 let private readExactly (stream: Stream) (buffer: byte[]) (ct: CancellationToken) =
     task {
@@ -75,37 +86,48 @@ let private readExactly (stream: Stream) (buffer: byte[]) (ct: CancellationToken
         return not ended
     }
 
-/// Write one frame: a 4-byte big-endian length, then the UTF-8 text.
-let writeFrame (stream: Stream) (text: string) (ct: CancellationToken) : Task =
+/// Write one frame: a 4-byte big-endian length, then the UTF-8 text. A peer that hangs
+/// up before the frame is through is `FrameError.HungUp`; cancellation still raises.
+let writeFrame (stream: Stream) (text: string) (ct: CancellationToken) : Task<Result<unit, FrameError>> =
     task {
         let payload = Encoding.UTF8.GetBytes text
         let length = BitConverter.GetBytes(Net.IPAddress.HostToNetworkOrder payload.Length)
-        do! stream.WriteAsync(length.AsMemory(), ct)
-        do! stream.WriteAsync(payload.AsMemory(), ct)
-        do! stream.FlushAsync ct
+
+        try
+            do! stream.WriteAsync(length.AsMemory(), ct)
+            do! stream.WriteAsync(payload.AsMemory(), ct)
+            do! stream.FlushAsync ct
+            return Ok()
+        with :? IOException as ex ->
+            return Error(FrameError.HungUp ex.Message)
     }
 
-/// Read one frame written by `writeFrame`.
+/// Read one frame written by `writeFrame`. A peer that hangs up mid-frame is
+/// `Truncated` when the stream ends cleanly and `HungUp` when the read itself fails;
+/// cancellation still raises.
 let readFrame (stream: Stream) (ct: CancellationToken) : Task<Result<string, FrameError>> =
     task {
-        let header = Array.zeroCreate<byte> 4
-        let! gotHeader = readExactly stream header ct
+        try
+            let header = Array.zeroCreate<byte> 4
+            let! gotHeader = readExactly stream header ct
 
-        if not gotHeader then
-            return Error FrameError.Truncated
-        else
-            let length = Net.IPAddress.NetworkToHostOrder(BitConverter.ToInt32(header, 0))
-
-            if length < 0 || length > MaxFrameBytes then
-                return Error(FrameError.TooLarge length)
+            if not gotHeader then
+                return Error FrameError.Truncated
             else
-                let payload = Array.zeroCreate<byte> length
-                let! gotPayload = readExactly stream payload ct
+                let length = Net.IPAddress.NetworkToHostOrder(BitConverter.ToInt32(header, 0))
 
-                if gotPayload then
-                    return Ok(Encoding.UTF8.GetString payload)
+                if length < 0 || length > MaxFrameBytes then
+                    return Error(FrameError.TooLarge length)
                 else
-                    return Error FrameError.Truncated
+                    let payload = Array.zeroCreate<byte> length
+                    let! gotPayload = readExactly stream payload ct
+
+                    if gotPayload then
+                        return Ok(Encoding.UTF8.GetString payload)
+                    else
+                        return Error FrameError.Truncated
+        with :? IOException as ex ->
+            return Error(FrameError.HungUp ex.Message)
     }
 
 // ---------------------------------------------------------------------------
@@ -271,11 +293,27 @@ let internal openerWithin
             use bound = CancellationTokenSource.CreateLinkedTokenSource disconnected
             bound.CancelAfter preambleBound
 
+            // Whether the answer reached the client. One that hung up first is told
+            // nothing, and its connection closes: there is nobody left to serve.
             let reply text =
-                writeFrame pipe text disconnected |> Async.AwaitTask
+                async {
+                    match! writeFrame pipe text disconnected |> Async.AwaitTask with
+                    | Ok() -> return Ok()
+                    | Error e ->
+                        Logging.info "host" $"a connection's answer could not be sent: %s{FrameError.describe e}"
+                        return Error e
+                }
 
             let refuse kind message =
-                reply (encodeReply (PreambleReply.Refused(kind, message)))
+                reply (encodeReply (PreambleReply.Refused(kind, message))) |> Async.Ignore
+
+            // Accept the connection, and serve it with `served` once the client knows.
+            let accept (served: unit -> IpcServer.Served) =
+                async {
+                    match! reply (encodeReply PreambleReply.Accepted) with
+                    | Error _ -> return None
+                    | Ok() -> return Some(served ())
+                }
 
             // Awaited through a continuation that never cancels: awaiting the read itself
             // turns its cancellation into the whole opener's, which no `with` sees, and a
@@ -296,16 +334,17 @@ let internal openerWithin
             | read ->
 
                 match read.GetAwaiter().GetResult() with
-                | Error FrameError.Truncated ->
-                    // The client left without a preamble: a liveness probe (`isRunning`)
-                    // connects and closes. Nobody is left to answer.
-                    return None
                 | Error(FrameError.TooLarge bytes) ->
                     do! refuse "malformed-preamble" $"a %d{bytes}-byte preamble exceeds %d{MaxFrameBytes} bytes"
                     // The only refusal sent before the client's frame is read. Closing with
                     // its bytes unread resets the connection on Linux, discarding the refusal
                     // before the client reads it, so discard them first.
                     do! drainUnread pipe RefusalDrainBound |> Async.AwaitTask
+                    return None
+                | Error _ ->
+                    // `Truncated` or `HungUp`: the client left without a preamble. A
+                    // liveness probe (`isRunning`) connects and closes. Nobody is left to
+                    // answer.
                     return None
                 | Ok text ->
 
@@ -316,28 +355,27 @@ let internal openerWithin
                     | Ok(Preamble.Attach json) ->
                         let answer = handlers.Attach json
 
-                        match! reply answer |> Async.Catch with
-                        | Choice1Of2() -> ()
-                        | Choice2Of2 ex ->
-                            Logging.warn "host" $"an attach's answer could not be sent (%s{ex.Message}); undoing it"
+                        match! reply answer with
+                        | Ok() -> ()
+                        | Error e ->
+                            Logging.warn
+                                "host"
+                                $"an attach's answer could not be sent (%s{FrameError.describe e}); undoing it"
+
                             handlers.Undelivered answer
 
                         return None
                     | Ok(Preamble.Repository invocation) ->
-                        do! reply (encodeReply PreambleReply.Accepted)
-
-                        return
-                            Some
+                        return!
+                            accept (fun () ->
                                 { IpcServer.Served.Target = handlers.Repository invocation
-                                  IpcServer.Served.Context = None }
+                                  IpcServer.Served.Context = None })
                     | Ok(Preamble.Session(session, invocation)) ->
                         match! handlers.Session session invocation |> Async.AwaitTask with
                         | Error(kind, message) ->
                             do! refuse kind message
                             return None
-                        | Ok config ->
-                            do! reply (encodeReply PreambleReply.Accepted)
-                            return Some(IpcServer.servedDaemon config watchdog disconnected)
+                        | Ok config -> return! accept (fun () -> IpcServer.servedDaemon config watchdog disconnected)
         }
 
 /// The connection opener for the repository endpoint: read the preamble, answer it,
@@ -363,13 +401,43 @@ let serve (endpoint: string) (handlers: EndpointHandlers) (cts: CancellationToke
 // Client side
 // ---------------------------------------------------------------------------
 
-/// The host refused a session or repository call.
+/// Why a client's exchange with the host came to nothing.
+[<RequireQualifiedAccess>]
+type ExchangeError =
+    /// No connection to the endpoint: nothing accepted one within `ConnectBound`, or
+    /// connecting failed.
+    | Unreachable of reason: string
+    /// The host hung up, or sent something that is not a frame, before it replied.
+    | NoReply of FrameError
+    /// The host replied with a frame that is not a preamble reply.
+    | UnreadableReply of reason: string
+    /// The host refused the session or repository call.
+    | Refused of kind: string * message: string
+
+module ExchangeError =
+    let describe (error: ExchangeError) : string =
+        match error with
+        | ExchangeError.Unreachable reason -> $"the repository host could not be reached: %s{reason}"
+        | ExchangeError.NoReply e -> $"the repository host sent no reply: %s{FrameError.describe e}"
+        | ExchangeError.UnreadableReply reason -> $"the repository host's reply is unreadable: %s{reason}"
+        | ExchangeError.Refused(kind, message) -> $"the repository host refused the call (%s{kind}): %s{message}"
+
+/// The host refused a session or repository call that was sent on the daemon RPC
+/// surface (`IpcOps`), which reports failures by raising.
 exception RepositoryRefusedException of kind: string * message: string
+
+/// `error` as the exception the daemon RPC surface raises for it: a refusal as
+/// `RepositoryRefusedException`, a host that was not there or left as `IOException`,
+/// the same shape a per-worktree daemon's dropped pipe takes.
+let exchangeException (error: ExchangeError) : exn =
+    match error with
+    | ExchangeError.Refused(kind, message) -> RepositoryRefusedException(kind, message)
+    | other -> IOException(ExchangeError.describe other)
 
 /// How long a client waits to connect to the endpoint.
 let ConnectBound = TimeSpan.FromSeconds 5.0
 
-let private connect (endpoint: string) =
+let private connect (endpoint: string) : Async<Result<NamedPipeClientStream, ExchangeError>> =
     async {
         let pipe =
             new NamedPipeClientStream(".", endpoint, PipeDirection.InOut, PipeOptions.Asynchronous)
@@ -379,56 +447,69 @@ let private connect (endpoint: string) =
             |> Async.AwaitTask
             |> Async.Catch
 
-        return
-            match connected with
-            | Choice1Of2() -> pipe
-            | Choice2Of2 ex ->
-                pipe.Dispose()
-                raise ex
+        match connected with
+        | Choice1Of2() -> return Ok pipe
+        | Choice2Of2 ex ->
+            pipe.Dispose()
+            // `Async.AwaitTask` on a non-generic task raises its fault wrapped in an
+            // `AggregateException`; the base exception is the connect's own.
+            return Error(ExchangeError.Unreachable(ex.GetBaseException().Message))
     }
 
-let private readReplyFrame (pipe: Stream) =
+/// Connect, send `frame`, and read the host's one-frame reply.
+let private exchange (endpoint: string) (frame: string) : Async<Result<NamedPipeClientStream * string, ExchangeError>> =
     async {
-        let! frame = readFrame pipe CancellationToken.None |> Async.AwaitTask
+        match! connect endpoint with
+        | Error e -> return Error e
+        | Ok pipe ->
+            let! sent = writeFrame pipe frame CancellationToken.None |> Async.AwaitTask
 
-        return
-            match frame with
-            | Ok text -> text
-            | Error e -> raise (IOException $"the repository host sent no reply (%A{e})")
+            let! replied =
+                match sent with
+                | Error e -> async.Return(Error e)
+                | Ok() -> readFrame pipe CancellationToken.None |> Async.AwaitTask
+
+            match replied with
+            | Ok reply -> return Ok(pipe, reply)
+            | Error e ->
+                pipe.Dispose()
+                return Error(ExchangeError.NoReply e)
     }
-
-/// Raise unless the host's reply to a preamble accepted the connection.
-let private requireAccepted (replyText: string) : unit =
-    match decodeReply replyText with
-    | Ok PreambleReply.Accepted -> ()
-    | Ok(PreambleReply.Refused(kind, message)) -> raise (RepositoryRefusedException(kind, message))
-    | Error reason -> raise (IOException $"the repository host's reply is unreadable: %s{reason}")
 
 /// Send an attach request and return the host's response JSON.
-let attach (endpoint: string) (requestJson: string) : Async<string> =
+let attach (endpoint: string) (requestJson: string) : Async<Result<string, ExchangeError>> =
     async {
-        use! pipe = connect endpoint
-        do! writeFrame pipe requestJson CancellationToken.None |> Async.AwaitTask
-        return! readReplyFrame pipe
+        match! exchange endpoint requestJson with
+        | Error e -> return Error e
+        | Ok(pipe, reply) ->
+            pipe.Dispose()
+            return Ok reply
     }
 
-/// Open a connection for `preamble`, and invoke `methodName` once it is accepted.
-/// A refusal raises `RepositoryRefusedException`.
-let invoke (endpoint: string) (preamble: Preamble) (methodName: string) (args: obj array) : Async<string> =
+/// Open a connection for `preamble`, and invoke `methodName` once it is accepted. An
+/// exchange that never reaches the RPC is an `ExchangeError`; the RPC's own failures
+/// raise, as the daemon RPC surface's do.
+let invoke
+    (endpoint: string)
+    (preamble: Preamble)
+    (methodName: string)
+    (args: obj array)
+    : Async<Result<string, ExchangeError>> =
     async {
-        use! pipe = connect endpoint
+        match! exchange endpoint (encodePreamble preamble) with
+        | Error e -> return Error e
+        | Ok(pipe, replyText) ->
+            use pipe = pipe
 
-        do!
-            writeFrame pipe (encodePreamble preamble) CancellationToken.None
-            |> Async.AwaitTask
-
-        let! replyText = readReplyFrame pipe
-
-        requireAccepted replyText
-        let handler = new HeaderDelimitedMessageHandler(pipe :> Stream)
-        use rpc = new JsonRpc(handler)
-        rpc.StartListening()
-        return! rpc.InvokeAsync<string>(methodName, args) |> Async.AwaitTask
+            match decodeReply replyText with
+            | Error reason -> return Error(ExchangeError.UnreadableReply reason)
+            | Ok(PreambleReply.Refused(kind, message)) -> return Error(ExchangeError.Refused(kind, message))
+            | Ok PreambleReply.Accepted ->
+                let handler = new HeaderDelimitedMessageHandler(pipe :> Stream)
+                use rpc = new JsonRpc(handler)
+                rpc.StartListening()
+                let! result = rpc.InvokeAsync<string>(methodName, args) |> Async.AwaitTask
+                return Ok result
     }
 
 /// Whether anything accepts connections on `endpoint` right now.
