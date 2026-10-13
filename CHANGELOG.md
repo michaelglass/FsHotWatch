@@ -74,6 +74,23 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### tests: a wait that expires fails the test instead of passing it
+
+- The `waitUntil` test helper discarded whether its condition held, so a wait that gave
+  up and a wait that succeeded were the same event to the test that called it. It now
+  throws `TimeoutException` naming what it waited for, and so do the helpers built on
+  it (`waitForTerminalStatus`, `waitForSettled`, `waitForQuiescent`). `waitUntilTrue`
+  still returns the answer for a caller that handles an expiry itself.
+- Fourteen waits in the unit suite expired in a green run, plus one in the integration
+  suite. Twelve were negative windows: waits expected to time out before the test
+  asserted that nothing happened. They now wait for a commit
+  (`waitForHandled`: the event committed and every plugin drained), or assert the
+  expiry outright. Two TestPrune waits polled for a `changed-files` entry that never
+  appears, spending 10 s each. One cache-replay test never replayed anything: its
+  fixture results named a project model its host did not publish, so the regression it
+  guards could return unnoticed. It now replays, and goes red when the guard is
+  removed.
+
 ### core: two `check` clients on a cold daemon run one full scan
 
 - **fix: a scan request that arrives while a scan is already checking the tree is

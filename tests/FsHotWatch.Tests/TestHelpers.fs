@@ -120,9 +120,9 @@ let withTrackedSleep (seconds: int) (body: Process -> 'a) : 'a =
 /// Poll until condition is true or timeout (50ms poll interval). Returns whether it
 /// actually became true.
 ///
-/// Prefer this over `waitUntil` when the wait itself is what the test asserts: `waitUntil`
-/// cannot tell "the condition held" from "we gave up", so a test that only checks state
-/// afterwards can pass vacuously by timing out.
+/// For a caller that HANDLES an expiry itself — asserts on the bool with its own message,
+/// or expects the condition to stay false. Every other caller wants `waitUntil`, which
+/// fails the test on expiry.
 let waitUntilTrue (condition: unit -> bool) (timeoutMs: int) : bool =
     let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
     let mutable ok = condition ()
@@ -155,9 +155,17 @@ let withEveryPoolThreadBusy (body: unit -> 'T) : 'T =
         gate.Set()
         Tasks.Task.WaitAll(held |> Array.ofList, TimeSpan.FromSeconds 10.0) |> ignore
 
-/// Poll until condition is true or timeout (default 50ms poll interval).
+/// Poll until `condition` holds, and throw a `TimeoutException` naming `what` if it has
+/// not within `timeoutMs`. An expiry must reach the caller: a test that waits and then
+/// asserts something NEGATIVE is satisfied identically by "the work ran" and "the wait
+/// gave up before it ran", so a wait that returns either way makes that test vacuous.
+let waitUntilOr (what: string) (condition: unit -> bool) (timeoutMs: int) =
+    if not (waitUntilTrue condition timeoutMs) then
+        raise (TimeoutException $"%s{what} did not happen within %d{timeoutMs} ms")
+
+/// Poll until `condition` holds (50ms poll interval); throws `TimeoutException` on expiry.
 let waitUntil (condition: unit -> bool) (timeoutMs: int) =
-    waitUntilTrue condition timeoutMs |> ignore
+    waitUntilOr "the awaited condition" condition timeoutMs
 
 /// Run `write` every 2s until `hasEvent` returns true or timeout expires.
 /// Repeated writes mean a write that races watcher setup cannot lose the event,
@@ -185,7 +193,8 @@ let probeUntilEvent (dir: string) (hasEvent: unit -> bool) (timeoutMs: int) =
 
 /// Poll until the plugin reaches a terminal status (Completed or Failed).
 let waitForTerminalStatus (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string) (timeoutMs: int) =
-    waitUntil
+    waitUntilOr
+        $"a terminal status for '%s{pluginName}'"
         (fun () ->
             match host.GetStatus(pluginName) with
             | Some(FsHotWatch.Events.Completed _)
@@ -249,7 +258,8 @@ let beginAwaitNextTerminal (host: FsHotWatch.PluginHost.PluginHost) (pluginName:
 
 /// Poll until the plugin status is no longer Running, with a timeout.
 let waitForSettled (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string) (timeoutMs: int) =
-    waitUntil
+    waitUntilOr
+        $"'%s{pluginName}' leaving Running"
         (fun () ->
             match host.GetStatus(pluginName) with
             | Some(FsHotWatch.Events.Running _) -> false
@@ -261,7 +271,18 @@ let waitForSettled (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string)
 /// persist as a side-effect WITHOUT a status transition: `beginAwaitNextTerminal` hangs the
 /// full timeout on those, whereas quiescence returns the instant the handler finishes.
 let waitForQuiescent (host: FsHotWatch.PluginHost.PluginHost) (timeoutMs: int) =
-    waitUntil (fun () -> not (host.AnyPluginBusy())) timeoutMs
+    waitUntilOr "every plugin draining its mailbox" (fun () -> not (host.AnyPluginBusy())) timeoutMs
+
+/// The positive witness for a NEGATIVE assertion: the host has committed at least
+/// `atLeast` events and every plugin has drained, so "nothing happened" afterwards means
+/// the handlers ran and did nothing — not that they have yet to run. A plugin owns work
+/// from admission until its result commits, exclusive runs included, so anything an
+/// event launched has finished by the time this returns.
+let waitForHandled (host: FsHotWatch.PluginHost.PluginHost) (atLeast: int64) (timeoutMs: int) =
+    waitUntilOr
+        $"%d{atLeast} committed event(s) with every plugin drained"
+        (fun () -> host.CompletedDispatches() >= atLeast && not (host.AnyPluginBusy()))
+        timeoutMs
 
 /// Events `plugin` has committed so far, from the host's owner publication.
 let committedBy (host: FsHotWatch.PluginHost.PluginHost) (plugin: string) =

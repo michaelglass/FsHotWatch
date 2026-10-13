@@ -2199,12 +2199,16 @@ let ``cache path: only an EARNED terminal is written — every other shape is sk
     let cachedFor (f: string) =
         c.TryGet { Plugin = "gatekeeper"; File = None } (ContentHash.create f)
 
+    // Each absence below is witnessed by a commit: "the handler ran and wrote nothing",
+    // not "the handler has not run yet".
     reg.Dispatch(DispatchFileChanged(SourceChanged [ "/silent" ]))
     waitUntil (fun () -> not (reg.IsBusy())) 10000
+    test <@ reg.CompletedDispatches() = 1L @>
     test <@ (cachedFor "/silent").IsNone @>
 
     reg.Dispatch(DispatchFileChanged(SourceChanged [ "/running" ]))
     waitUntil (fun () -> not (reg.IsBusy())) 10000
+    test <@ reg.CompletedDispatches() = 2L @>
     test <@ (cachedFor "/running").IsNone @>
 
     reg.Dispatch(DispatchFileChanged(SourceChanged [ "/failed-then-run" ]))

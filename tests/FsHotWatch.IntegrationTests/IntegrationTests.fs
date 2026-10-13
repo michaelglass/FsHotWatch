@@ -1511,14 +1511,9 @@ let ``FileCommandPlugin ignores non-matching files`` () =
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    // Nothing matches, so this poll is expected to time out with the plugin still Idle.
-    waitUntil
-        (fun () ->
-            match host.GetStatus("fsx-runner") with
-            | Some(PluginStatus.Completed _)
-            | Some(PluginStatus.Failed _) -> true
-            | _ -> false)
-        1000
+    // The event was handled and fired nothing — witnessed by its commit, not by a wait
+    // expiring.
+    waitForHandled host 1L 5000
 
     let status = host.GetStatus("fsx-runner")
     test <@ status.IsSome @>
