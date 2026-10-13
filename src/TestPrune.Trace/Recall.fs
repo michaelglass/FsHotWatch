@@ -62,9 +62,10 @@ let toJson (r: RecallReport) : RecallJson =
     { Report = r
       NarrowedOnly = r.NarrowedOnly }
 
-/// A test's key as the index names it, the form a trace is stored under.
+/// The key a trace of index test `t` is stored under. The index keeps a method's source
+/// name (``` ``a test`` ```); a trace keeps the compiled name xUnit reports (`a test`).
 let private keyOf (t: TestPrune.AstAnalyzer.TestMethodInfo) =
-    TraceIngest.testKey t.TestProject t.TestClass t.TestMethod
+    TraceIngest.testKey t.TestProject t.TestClass (TestPrune.AstAnalyzer.canonicalShortName t.TestMethod)
 
 /// The project of a test key.
 let private projectOf (testKey: string) = testKey.Split('|').[0]

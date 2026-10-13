@@ -43,7 +43,8 @@ let private testMethod (name: string) =
     { SymbolFullName = $"Tests.%s{name}"
       TestProject = "P"
       TestClass = "Tests"
-      TestMethod = name }
+      // The index keeps the source name, backticks included; a trace keeps xUnit's name.
+      TestMethod = $"``%s{name}``" }
 
 let private graph (tests: string list) : AnalysisResult =
     { Symbols =
