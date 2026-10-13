@@ -132,3 +132,35 @@ type RoutedTaskCache(local: ITaskCache, shared: ITaskCache, residencyOf: string 
 
         member _.ClearPluginFile plugin file =
             (storeFor plugin).ClearPluginFile plugin file
+
+/// The two persisted task-result stores of one workspace, and the routed view over them.
+[<NoComparison; NoEquality>]
+type PersistedTaskStores =
+    {
+        /// Under the workspace's `.fshw/`: verdicts about THIS checkout.
+        Local: FsHotWatch.FileTaskCache.FileTaskCache
+        /// Outside any checkout, namespaced by repository: content-keyed verdicts.
+        Shared: FsHotWatch.FileTaskCache.FileTaskCache
+        /// Both, routed per plugin by `of_`.
+        Routed: RoutedTaskCache
+    }
+
+/// The directory of `repoRoot`'s shared store.
+let sharedStoreDir (repoRoot: string) =
+    System.IO.Path.Combine(FsHwPaths.sharedCacheHome (), "cache", "tasks", FsHotWatch.RepoIdentity.namespaceOf repoRoot)
+
+/// Open `repoRoot`'s persisted stores. The one place their directories are named, so the
+/// daemon that serves from them and `fshw invalidate` with no daemon running, which
+/// clears them, cannot name different directories.
+let openPersistedStores (repoRoot: string) : PersistedTaskStores =
+    let local =
+        FsHotWatch.FileTaskCache.FileTaskCache(System.IO.Path.Combine(FsHwPaths.root repoRoot, "cache", "tasks"))
+
+    // The shared store is handed the repo root so the paths inside an entry are stored
+    // relatively and rebound into whichever checkout reads them back.
+    let shared =
+        FsHotWatch.FileTaskCache.FileTaskCache(sharedStoreDir repoRoot, repoRoot = repoRoot)
+
+    { Local = local
+      Shared = shared
+      Routed = RoutedTaskCache(local, shared, of_) }

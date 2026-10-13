@@ -1225,6 +1225,49 @@ let private startFreshDaemon
     : bool =
     startFreshDaemonWith defaultFileOps ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
 
+/// Take the daemon's OS-enforced singleton lock (`.fshw/daemon.lock`), or None when
+/// another process holds it. A daemon holds it for its whole lifetime, so two `start`
+/// invocations cannot both run one, and nothing else can act as if no daemon exists
+/// while one is starting.
+let internal tryAcquireSingletonLock (repoRoot: string) : FileStream option =
+    let stateDir = FsHwPaths.root repoRoot
+    Directory.CreateDirectory(stateDir) |> ignore
+
+    try
+        Some(
+            new FileStream(
+                Path.Combine(stateDir, "daemon.lock"),
+                FileMode.OpenOrCreate,
+                FileAccess.Write,
+                FileShare.None
+            )
+        )
+    with :? IOException ->
+        None
+
+/// `fshw invalidate` when no daemon serves `repoRoot`. With no daemon there is no live
+/// cache instance, so the persisted stores are the whole cache: clear them here rather
+/// than cold-start a daemon to clear them. A cold start is expensive, and it can be
+/// refused: a repository whose clean just deleted the analyzer outputs
+/// `analyzers.paths` names cannot start a daemon until it rebuilds them.
+///
+/// Holds the singleton lock while clearing, so a daemon cannot start and load the stores
+/// mid-clear. False when the lock is taken or a repository host serves this worktree;
+/// the caller then invalidates through the daemon.
+let internal tryInvalidateWithoutDaemon (repoRoot: string) : bool =
+    let hosted =
+        (FsHotWatch.RepositoryHost.HostSessionRecord.tryReadLive FsHotWatch.RepositoryHost.processAlive repoRoot).IsSome
+
+    if hosted then
+        false
+    else
+        match tryAcquireSingletonLock repoRoot with
+        | None -> false
+        | Some lockStream ->
+            use _lock = lockStream
+            ((CacheResidency.openPersistedStores repoRoot).Routed :> TaskCache.ITaskCache).Clear()
+            true
+
 let private ensureDaemon
     (ipc: IpcOps)
     (repoRoot: string)
@@ -3162,20 +3205,14 @@ let internal executeCommandWatchingConfig
                 | Some exitCode -> exitCode
                 | None ->
 
-                    let stateDir = Path.Combine(repoRoot, ".fshw")
+                    let stateDir = FsHwPaths.root repoRoot
                     let pidFile = Path.Combine(stateDir, "daemon.pid")
-                    let lockFile = Path.Combine(stateDir, "daemon.lock")
-                    Directory.CreateDirectory(stateDir) |> ignore
 
-                    // OS-enforced singleton: hold an exclusive lock on daemon.lock for the
-                    // daemon's lifetime. Two concurrent `start` invocations cannot both
-                    // acquire it; the second exits cleanly. Not a probe-based guard — that
-                    // has a TOCTOU window between the IsRunning check and the pipe claim.
-                    let acquired =
-                        try
-                            Some(new FileStream(lockFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
-                        with :? IOException ->
-                            None
+                    // OS-enforced singleton, held for the daemon's lifetime. Two concurrent
+                    // `start` invocations cannot both acquire it; the second exits cleanly.
+                    // Not a probe-based guard — that has a TOCTOU window between the
+                    // IsRunning check and the pipe claim.
+                    let acquired = tryAcquireSingletonLock repoRoot
 
                     // Which process is which, when two exist for one repo root?
                     // `ps` could not answer that after the fact:
@@ -3338,13 +3375,17 @@ let internal executeCommandWatchingConfig
                 UI.success $"Scan: %s{result}"
                 0)
         | Invalidate ->
-            // Cache invalidation is daemon-owned: clearing it through IPC updates
-            // the live cache instance as well as its persisted files, while keeping
-            // the expensive compiler service warm for the next check.
-            withDaemonAndIpc (fun () ->
-                let result = ipc.Invalidate pipeName |> Async.RunSynchronously
-                UI.success $"Cache %s{result}; daemon preserved"
-                0)
+            if not (ipc.IsRunning pipeName) && tryInvalidateWithoutDaemon repoRoot then
+                UI.success "Cache invalidated; no daemon was running, none started"
+                0
+            else
+                // With a daemon, invalidation is daemon-owned: clearing it through IPC
+                // updates the live cache instance as well as its persisted files, while
+                // keeping the expensive compiler service warm for the next check.
+                withDaemonAndIpc (fun () ->
+                    let result = ipc.Invalidate pipeName |> Async.RunSynchronously
+                    UI.success $"Cache %s{result}; daemon preserved"
+                    0)
         | Status(_, flags) when List.contains Repository flags ->
             repositoryStatus (mode = ProgressRenderer.Agent) repoRoot
         | Status(pluginName, _) ->

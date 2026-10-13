@@ -4272,27 +4272,12 @@ module Daemon =
             // The shared store lives OUTSIDE any checkout, namespaced by the repository
             // (not the workspace), so a freshly created workspace starts warm: its
             // entries are keyed purely on content, and a store under `.fshw/` would be
-            // destroyed by the very act this exists to make cheap. It is handed the
-            // repo root so the paths inside an entry are stored relatively and rebound
-            // into whichever checkout reads them back.
-            let taskCacheDir = Path.Combine(FsHwPaths.root repoRoot, "cache", "tasks")
-            let localTaskCache = FsHotWatch.FileTaskCache.FileTaskCache(taskCacheDir)
-
-            let sharedTaskCacheDir =
-                Path.Combine(FsHwPaths.sharedCacheHome (), "cache", "tasks", RepoIdentity.namespaceOf repoRoot)
-
-            let sharedTaskCache =
-                FsHotWatch.FileTaskCache.FileTaskCache(sharedTaskCacheDir, repoRoot = repoRoot)
-
-            let taskCache =
-                FsHotWatch.CacheResidency.RoutedTaskCache(
-                    localTaskCache,
-                    sharedTaskCache,
-                    FsHotWatch.CacheResidency.of_
-                )
-
-            let stats = localTaskCache.Stats
-            let sharedStats = sharedTaskCache.Stats
+            // destroyed by the very act this exists to make cheap.
+            let stores = FsHotWatch.CacheResidency.openPersistedStores repoRoot
+            let sharedTaskCacheDir = FsHotWatch.CacheResidency.sharedStoreDir repoRoot
+            let taskCache = stores.Routed
+            let stats = stores.Local.Stats
+            let sharedStats = stores.Shared.Stats
 
             Logging.info
                 "task-cache"
