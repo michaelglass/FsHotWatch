@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.99 - 2026-10-14
+
 - feat: `tests.selection.testScopedSources` (`["sql", "sql-hydra"]`) sets the walk policy
   the test-prune plugin opens its index with. Absent, the default is unchanged: the walk
   follows every edge. Names other than `sql` and `sql-hydra`, a non-array value, a

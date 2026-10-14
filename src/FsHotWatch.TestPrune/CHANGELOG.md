@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.72 - 2026-10-14
+
 - **feat!: `createWithTracesIn` takes a `TestPrune.Domain.WalkPolicy` after `dbPath`**,
   and the plugin opens its index with `Database.create(dbPath, policy)`, so impact
   selection and covering-project debt follow it. Pass `WalkPolicy.FollowAll` for today's
