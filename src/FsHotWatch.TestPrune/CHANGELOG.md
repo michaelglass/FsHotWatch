@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: a scan that leaves a checkable file of the project model without a completed
+  analysis refuses the green in a repository that configures test projects, naming the
+  file. The cohort seal, which accounts for every checkable file of the model, was minted
+  only for analysis-only daemons, so with tests configured a file the scan failed to
+  check (a check that threw, a file with no project options) left nothing refusing: the
+  test receipt graded a run selected without that file's symbols. The seal is now minted
+  whether or not tests are configured, and the test evidence the verdict grades (the
+  published receipt and `test-scope`'s graded evidence) carries its refusals. An
+  analysis-only daemon's receipt is unchanged; a daemon that runs tests still publishes
+  no analysis-only receipt beside its test one.
+
 ## 0.13.0-alpha.72 - 2026-10-14
 
 - **feat!: `createWithTracesIn` takes a `TestPrune.Domain.WalkPolicy` after `dbPath`**,

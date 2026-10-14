@@ -222,14 +222,14 @@ let ``a host with a published model refuses a result or seal that names no model
     Assert.Empty persisted
 
 [<Fact(Timeout = 30000)>]
-let ``analysis proof refuses missing stale and failed file outcomes and configured tests`` () =
+let ``analysis proof refuses missing stale and failed file outcomes`` () =
     withCheckedSource (fun _ result ->
         let files = Set.singleton result.File
         let good = AnalysisFileEvidence.fromResult result (Ok())
         let outcomes = Map.ofList [ result.File, good ]
 
         let proof entries =
-            AnalysisEvidence.fromCompleted (Some 1L) files Set.empty entries |> Option.get
+            AnalysisEvidence.fromCompleted (Some 1L) files entries |> Option.get
 
         // Positive control: the actual completed analysis of every checkable file.
         Assert.Empty((proof outcomes).FailureReasons)
@@ -264,10 +264,9 @@ let ``analysis proof refuses missing stale and failed file outcomes and configur
             AnalysisFileEvidence.fromResult { result with CheckResults = ParseOnly } (Ok())
 
         Assert.NotEmpty((proof (Map.ofList [ result.File, parseOnly ])).FailureReasons)
-        // No model, an invalid generation, or a configured test suite: no analysis claim.
-        Assert.True((AnalysisEvidence.fromCompleted None files Set.empty outcomes).IsNone)
-        Assert.True((AnalysisEvidence.fromCompleted (Some -1L) files Set.empty outcomes).IsNone)
-        Assert.True((AnalysisEvidence.fromCompleted (Some 1L) files (Set.singleton "Tests.fsproj") outcomes).IsNone))
+        // No model, or an invalid generation: no analysis claim.
+        Assert.True((AnalysisEvidence.fromCompleted None files outcomes).IsNone)
+        Assert.True((AnalysisEvidence.fromCompleted (Some -1L) files outcomes).IsNone))
 
 [<Fact(Timeout = 30000)>]
 let ``a seal carries only the retained outcomes of the model it names as unchanged`` () =
@@ -294,7 +293,7 @@ let ``a seal carries only the retained outcomes of the model it names as unchang
                   notRetained, notRetainedOutcome ]
 
         let refused (outcomes: Map<AbsFilePath, AnalysisFileEvidence>) =
-            (AnalysisEvidence.fromCompleted (Some 2L) files Set.empty outcomes |> Option.get).FailureReasons
+            (AnalysisEvidence.fromCompleted (Some 2L) files outcomes |> Option.get).FailureReasons
             |> List.map (fun reason -> reason.Split(':').[0] |> AbsFilePath.create)
             |> Set.ofList
 
@@ -322,9 +321,7 @@ let ``a replayed FileChecked records the cached run's outcome only for the curre
             let state =
                 (handler.Init :> IFileReplayState<TestPruneState>).Replayed currentModel result analysis
 
-            (AnalysisEvidence.fromCompleted (Some 1L) files Set.empty state.AnalysisFiles
-             |> Option.get)
-                .FailureReasons
+            (AnalysisEvidence.fromCompleted (Some 1L) files state.AnalysisFiles |> Option.get).FailureReasons
 
         // Positive control: a replayed clean analysis under the current model vouches.
         Assert.Empty(replay (Some 1L) (Ok []))
@@ -349,11 +346,7 @@ let ``completed analysis distinguishes compiler warnings from missing or failed 
         let outcome = AnalysisFileEvidence.fromResult result (Ok())
 
         let proof =
-            AnalysisEvidence.fromCompleted
-                (Some 1L)
-                (Set.singleton result.File)
-                Set.empty
-                (Map.ofList [ result.File, outcome ])
+            AnalysisEvidence.fromCompleted (Some 1L) (Set.singleton result.File) (Map.ofList [ result.File, outcome ])
             |> Option.get
 
         // A warning is not a refusal: the file was analysed.
@@ -380,3 +373,100 @@ let ``available empty model earns no-suite analysis only after its actual batch 
         Assert.Empty proof.FailureReasons
         // An analysis-only daemon makes no test claim.
         Assert.Empty host.WorkSnapshot.Evidence)
+
+[<Fact(Timeout = 30000)>]
+let ``a daemon that runs tests seals every checkable file without publishing an analysis receipt`` () =
+    withCheckedSource (fun root result ->
+        let config: TestConfig =
+            { Project = "Tests"
+              Command = "sh"
+              Args = "-c \"exit 0\""
+              Group = "default"
+              Environment = []
+              FilterTemplate = None
+              ClassJoin = " "
+              TimeoutSec = None
+              ReportVerificationFormat = AutoDetect }
+
+        let handler =
+            create (Path.Combine(root, "tests.db")) root (Some [ config ]) None None None None []
+
+        let missing =
+            AbsFilePath.create (Path.Combine(Path.GetDirectoryName(AbsFilePath.value result.File), "Missing.fs"))
+
+        let sealOver (members: Set<AbsFilePath>) =
+            let ctx = analysisContext root 1L
+
+            let ctx =
+                { ctx with
+                    ProjectGraph =
+                        { ctx.ProjectGraph with
+                            ObserveCheckableFiles = fun () -> Some(1L, members) } }
+
+            let fold state event =
+                handler.Update ctx state event
+                |> fun work -> Async.RunSynchronously(work, timeout = 5000)
+
+            let checkedState = fold handler.Init (FileChecked result)
+
+            fold
+                checkedState
+                (BatchChecked
+                    { fakeBatchChecked [ AbsFilePath.value result.File ] with
+                        ModelGeneration = Some 1L })
+
+        // Positive control: the actual completed analysis of every member seals clean.
+        let complete = sealOver (Set.singleton result.File)
+        let seal = Option.get complete.CohortSeal
+        Assert.Empty seal.FailureReasons
+        // Its answer is graded through the test evidence, not published beside it.
+        Assert.True(complete.AnalysisReceipt.IsNone)
+
+        // A member the scan never checked is a refusal that names it.
+        let truncated = sealOver (Set.ofList [ result.File; missing ])
+        let reason = Assert.Single (Option.get truncated.CohortSeal).FailureReasons
+        Assert.StartsWith(AbsFilePath.value missing, reason)
+        Assert.True(truncated.AnalysisReceipt.IsNone))
+
+[<Fact>]
+let ``test evidence refuses through a seal about its own model or a later one only`` () =
+    let completion: TestRunCompleted =
+        { RunId = System.Guid.NewGuid()
+          TotalElapsed = System.TimeSpan.Zero
+          Outcome = Normal
+          Results = Map.ofList [ "Tests.fsproj", TestsPassed("one passed", false, System.TimeSpan.Zero) ]
+          Verification =
+            RunVerification.ofResults (
+                Map.ofList [ "Tests.fsproj", TestsPassed("one passed", false, System.TimeSpan.Zero) ]
+            ) }
+
+    let earned =
+        EarnedEvidence.fromCompletion
+            completion.RunId
+            (Some 2L)
+            (Some 2L)
+            None
+            Map.empty
+            (Set.singleton "Tests.fsproj")
+            0
+            None
+            completion
+        |> Option.get
+
+    let missing = AbsFilePath.create "/repo/src/Missing.fs"
+
+    let sealAt generation =
+        AnalysisEvidence.fromCompleted (Some generation) (Set.singleton missing) Map.empty
+
+    let refusals seal =
+        (AnalysisEvidence.refuseThrough seal earned).FailureReasons
+
+    // Positive control: the run itself refuses nothing, and a seal with nothing to refuse
+    // adds nothing.
+    Assert.Empty(refusals None)
+    Assert.Empty(refusals (AnalysisEvidence.fromCompleted (Some 2L) Set.empty Map.empty))
+    // A seal about the run's own model, or the later one it is graded under, refuses it.
+    Assert.Contains(refusals (sealAt 2L), fun reason -> reason.StartsWith(AbsFilePath.value missing))
+    Assert.NotEmpty(refusals (sealAt 3L))
+    // A seal about an older model says nothing about the tree the run selected from.
+    Assert.Empty(refusals (sealAt 1L))

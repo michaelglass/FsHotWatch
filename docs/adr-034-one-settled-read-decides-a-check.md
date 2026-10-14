@@ -65,3 +65,7 @@ different one. Taking it is how a check reported green about a state it never ve
   the scan's cohort account for every checkable file of the model regardless of whether tests
   are configured would give the retry's guarantee an evidence-level home — and only then is
   deleting it a deletion rather than a loss.
+  *Update (2026-10-14):* closed. The seal is minted whether or not tests are configured, and
+  a daemon that runs tests grades its test evidence through it
+  (`AnalysisEvidence.refuseThrough`), so an unchecked member refuses the green by name. The
+  retry stays as the repair; the seal is now the evidence that catches it when repair fails.

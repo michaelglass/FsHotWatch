@@ -963,8 +963,9 @@ module internal AnalysisFileEvidence =
             else
                 outcome)
 
-/// What an analysis-only daemon earned for one model: the checkable files of that model,
-/// and every reason the analysis cannot support a green. It makes no test claim.
+/// What a cohort seal earned for one model: the checkable files of that model, and every
+/// reason the analysis cannot support a green. It makes no test claim: an analysis-only
+/// daemon publishes it as its receipt, and a daemon that runs tests refuses through it.
 type AnalysisEvidence =
     private
         { ModelGeneration: int64
@@ -976,18 +977,19 @@ type AnalysisEvidence =
     member this.FailureReasons = this.Refusals
 
 module internal AnalysisEvidence =
-    /// The expected files are the model's checkable membership, never the subset that
-    /// happened to be observed: a file with no completed analysis is a refusal, not an
-    /// absence. `None` when no model was captured, or when tests are configured — a
-    /// daemon that runs tests earns test evidence instead.
+    /// What a cohort seal earned: the expected files are the model's checkable membership,
+    /// never the subset that happened to be observed, so a file with no completed analysis
+    /// is a refusal, not an absence. Minted whether or not tests are configured: an
+    /// analysis-only daemon publishes it as its receipt, and a daemon that runs tests
+    /// grades its test evidence through it (`refuseThrough`). `None` when no model was
+    /// captured.
     let fromCompleted
         (modelGeneration: int64 option)
         (expectedFiles: Set<AbsFilePath>)
-        (configuredTestProjects: Set<string>)
         (outcomes: Map<AbsFilePath, AnalysisFileEvidence>)
         : AnalysisEvidence option =
         match modelGeneration with
-        | Some generation when generation >= 0L && configuredTestProjects.IsEmpty ->
+        | Some generation when generation >= 0L ->
             let refusals =
                 [ for file in expectedFiles do
                       match Map.tryFind file outcomes with
@@ -1003,6 +1005,19 @@ module internal AnalysisEvidence =
                   Refusals = refusals }
         | Some _
         | None -> None
+
+    /// `evidence`, refusing as well for every reason `seal` refuses. A test run is
+    /// selected from the symbols the scan analysed, so a checkable file the scan left
+    /// without a completed analysis is one the run cannot vouch for, however clean the
+    /// run itself was. Applied when the seal is about the model the evidence was earned
+    /// under or a later one, which evidence carried forward is graded under. A seal about
+    /// an older model than the evidence says nothing about the tree the run selected from.
+    let refuseThrough (seal: AnalysisEvidence option) (evidence: EarnedEvidence) : EarnedEvidence =
+        match seal with
+        | Some seal when seal.ModelGeneration >= evidence.Generation && not seal.Refusals.IsEmpty ->
+            EarnedEvidence.withRefusals seal.Refusals evidence
+        | Some _
+        | None -> evidence
 
 /// A BUILD THAT FAILED IS AN ANSWER.
 ///

@@ -5179,6 +5179,74 @@ let ``test-scope sends the evidence for the run it grades from the same state`` 
         test <@ unvouched.RunId = Some(runIdOfFinished fullRun) @>
         test <@ unvouched.GradedEvidence = FsHotWatch.Cli.IpcParsing.GradedEvidenceReading.Reported None @>)
 
+[<Fact(Timeout = 20000)>]
+let ``a cohort seal that left a checkable file unchecked refuses the test receipt it grades`` () =
+    // A daemon that runs tests earns its green from a test receipt, and a scan that
+    // failed to check a file of the model leaves that file's symbols out of the impact
+    // graph the run was selected from. The seal accounts for every checkable file of the
+    // model, and a member with no completed analysis refuses the receipt, naming the file.
+    withReceiptSource (fun repoRoot source ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        let fullRun =
+            testsFinishedEvent
+                [ "ProjA", passed false; "ProjB", passed false ]
+                ({ fullSuiteLaunch [ "ProjA"; "ProjB" ] with
+                    ModelGeneration = Some 7L }
+                 |> bindReceiptTree repoRoot)
+
+        let earned =
+            handler.Update (ctxUnderModel (fun () -> 7L)) handler.Init fullRun
+            |> Async.RunSynchronously
+
+        let sealOver (members: string list) =
+            let ctx = ctxUnderModel (fun () -> 7L)
+
+            let ctx =
+                { ctx with
+                    ProjectGraph =
+                        { ctx.ProjectGraph with
+                            ObserveCheckableFiles =
+                                fun () -> Some(7L, members |> List.map AbsFilePath.create |> Set.ofList) } }
+
+            let state =
+                handler.Update
+                    ctx
+                    earned
+                    (BatchChecked
+                        { fakeBatchChecked [] with
+                            ModelGeneration = Some 7L })
+                |> Async.RunSynchronously
+
+            state, receiptScopeUnder repoRoot handler state 7L
+
+        // Positive control: a seal over a model with no checkable file left unchecked grades
+        // the run green.
+        let clean, cleanReport = sealOver []
+        test <@ receiptGate cleanReport clean 7L = None @>
+
+        // The scan never produced a completed analysis of `Value.fs`.
+        let truncated, report = sealOver [ source ]
+        test <@ report.RunId = Some(runIdOfFinished fullRun) @>
+
+        test
+            <@
+                receiptGate report truncated 7L
+                |> Option.exists (fun refusal -> refusal.Contains source)
+            @>
+
+        test
+            <@
+                match report.GradedEvidence with
+                | FsHotWatch.Cli.IpcParsing.GradedEvidenceReading.Reported(Some graded) ->
+                    graded.Refusals |> List.exists (fun refusal -> refusal.Contains source)
+                | _ -> false
+            @>
+
+        // A daemon that runs tests publishes no analysis-only receipt beside its test one.
+        test <@ ((truncated :> IAnalysisEvidenceState).AnalysisEvidence) = None @>)
+
 [<Fact>]
 let ``a completion warns when its receipt and its evidence name different runs`` () =
     let receiptRun = Guid.Parse("a0000000-1200-4000-8000-000000000001")

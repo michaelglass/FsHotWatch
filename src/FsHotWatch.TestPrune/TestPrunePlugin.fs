@@ -1886,11 +1886,14 @@ type TestPruneState =
         /// from a replaced model is retired before any flush can persist it.
         AnalysisModelGeneration: int64 option
         /// What each file's completed analysis concluded, for the model in
-        /// `AnalysisModelGeneration`. An analysis-only daemon's evidence is minted from
-        /// these at the cohort seal; a daemon that runs tests never reads them.
+        /// `AnalysisModelGeneration`. The cohort seal is minted from these.
         AnalysisFiles: Map<AbsFilePath, AnalysisFileEvidence>
-        /// The analysis-only evidence the last sealed cohort earned. `None` until a
-        /// cohort seals, and whenever tests are configured.
+        /// What the last sealed cohort earned: every checkable file of its model, and each
+        /// one without a completed analysis as a refusal. `None` until a cohort seals.
+        CohortSeal: AnalysisEvidence option
+        /// The analysis-only evidence the last sealed cohort earned: the cohort seal, when
+        /// no tests are configured. A daemon that runs tests publishes none; its test
+        /// evidence refuses through the seal instead.
         AnalysisReceipt: AnalysisEvidence option
         SymbolSnapshot: Map<string, SymbolInfo list>
         AffectedTests: AffectedTestsState
@@ -2033,7 +2036,8 @@ type TestPruneState =
     }
 
     interface IEarnedEvidenceState with
-        member this.EarnedEvidence = this.Earned
+        member this.EarnedEvidence =
+            this.Earned |> Option.map (AnalysisEvidence.refuseThrough this.CohortSeal)
 
     interface IAnalysisEvidenceState with
         member this.AnalysisEvidence = this.AnalysisReceipt
@@ -7567,6 +7571,7 @@ let internal createWithQueries
           PendingAnalysis = Map.empty
           AnalysisModelGeneration = None
           AnalysisFiles = Map.empty
+          CohortSeal = None
           AnalysisReceipt = None
           SymbolSnapshot = Map.empty
           AffectedTests = NotYetAnalyzed
@@ -8534,6 +8539,7 @@ let internal createWithQueries
                                     (ObservedModel.inputs ctx.ProjectGraph)
                                     receipt.RunId
                                     state.Earned)
+                            |> Option.map (AnalysisEvidence.refuseThrough state.CohortSeal)
                             |> Option.map (fun held ->
                                 box
                                     {| runId = held.RunId.ToString("N")
@@ -9356,6 +9362,7 @@ let internal createWithQueries
                             Unindexed = Set.union state.Unindexed retired
                             AnalysisModelGeneration = modelGeneration
                             AnalysisFiles = Map.empty
+                            CohortSeal = None
                             AnalysisReceipt = None
                             PendingForceRunProjects = Set.union state.PendingForceRunProjects runnableProjects }
                     else
@@ -9798,10 +9805,11 @@ let internal createWithQueries
                         tryRepairSchemaDrift ex
                         return state
                     | Ok flushedState ->
-                        // The seal is the moment an analysis-only daemon has an answer: every
-                        // checkable file of this model either analysed or did not. A daemon
-                        // that runs tests earns test evidence instead, and mints none here
-                        // (`AnalysisEvidence.fromCompleted` refuses when tests are configured).
+                        // The seal is the moment the scan has an answer: every checkable
+                        // file of this model either analysed or did not. An analysis-only
+                        // daemon publishes that answer as its receipt. A daemon that runs
+                        // tests grades its test evidence through it, so a file the scan
+                        // never finished refuses the run selected without its symbols.
                         let flushedState =
                             // A seal that re-discovered the model on the scoped path names
                             // the files it did not re-check because their inputs did not
@@ -9818,16 +9826,15 @@ let internal createWithQueries
                                 | Some _
                                 | None -> None
 
+                            let seal =
+                                membership
+                                |> Option.bind (fun files ->
+                                    AnalysisEvidence.fromCompleted modelGeneration files analysisFiles)
+
                             { flushedState with
                                 AnalysisFiles = analysisFiles
-                                AnalysisReceipt =
-                                    membership
-                                    |> Option.bind (fun files ->
-                                        AnalysisEvidence.fromCompleted
-                                            modelGeneration
-                                            files
-                                            runnableProjects
-                                            analysisFiles) }
+                                CohortSeal = seal
+                                AnalysisReceipt = if runnableProjects.IsEmpty then seal else None }
 
                         // ── DRAIN THE PENDING QUEUE ────────────────
                         // The cohort seal is the first moment this scan's symbols are
