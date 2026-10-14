@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.98 - 2026-10-14
+
 - fix: a repository host that hangs up mid-frame no longer crashes the CLI with an
   unhandled "Broken pipe" (exit 134). During attach it is retried once and then refused
   with "the repository host stopped answering during attach (… hung up …); see

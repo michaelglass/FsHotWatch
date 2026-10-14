@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.73 - 2026-10-14
+
 - fix: `Snapshot.IsSettling` (and so `CommandReadCtx.IsSettling`) turns false once a
   run's result fold publishes its state, not when the fold settles. Finalization, which
   resolves command replies, runs between the two, so a client reading `test-scope` or
