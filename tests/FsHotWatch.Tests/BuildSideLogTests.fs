@@ -228,7 +228,8 @@ let ``a done line with no matching start is ignored, and the same target in two 
 // readSideLog — from the directory and the interrupt to what the report says
 
 let private interruptAt (localTime: string) : TreeInterrupt =
-    { At = DateTime.Today.Add(at localTime).ToUniversalTime()
+    { Signal = "SIGINT"
+      At = DateTime.Today.Add(at localTime).ToUniversalTime()
       Signalled = [ 1 ]
       Refused = []
       Waited = TimeSpan.FromSeconds 0.2

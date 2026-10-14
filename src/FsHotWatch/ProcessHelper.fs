@@ -474,12 +474,15 @@ let internal treeOf (rootPid: int) (rows: ProcessRow list) : ProcessRow list =
     // A zombie has already exited: nothing to aim a kill at, nothing that can leak.
     root @ below rootPid |> List.filter (fun r -> not r.Zombie)
 
-/// What asking a timed-out tree to stop (SIGINT to every member) established before
-/// it was killed. An orderly stop lets a child write what it only writes on shutdown —
-/// MSBuild flushes its binary log — which a SIGKILL throws away.
+/// What asking a timed-out tree to stop (a stop signal to every member) established
+/// before it was killed. An orderly stop lets a child do what it only does on shutdown —
+/// MSBuild flushes its binary log, a coverage collector restores the assemblies it
+/// instrumented — which a SIGKILL throws away.
 [<NoComparison>]
 type internal TreeInterrupt =
     {
+        /// The signal sent, by name (`SIGINT`, `SIGTERM`).
+        Signal: string
         /// When the first signal was sent (UTC).
         At: DateTime
         /// Members the signal was delivered to.
@@ -591,11 +594,12 @@ let internal accountTeardown
     : TreeTeardown =
     accountTeardownWith readTable isAlive settleAttempts pause rootPid (fun _ -> None) kill
 
-/// Send the interrupt to every member of `members`, then poll the signalled ones until
-/// all are gone or `attempts` polls are spent (`pause` between them). A liveness probe
-/// that cannot answer counts as still running: the wait errs toward the kill that
-/// follows, never toward "it stopped".
-let internal interruptTree
+/// Send the stop signal (`signalName`, delivered by `signal`) to every member of
+/// `members`, then poll the signalled ones until all are gone or `attempts` polls are
+/// spent (`pause` between them). A liveness probe that cannot answer counts as still
+/// running: the wait errs toward the kill that follows, never toward "it stopped".
+let internal signalTree
+    (signalName: string)
     (signal: int -> Result<unit, string>)
     (isAlive: int -> Result<bool, string>)
     (attempts: int)
@@ -631,11 +635,111 @@ let internal interruptTree
 
     let exited = not (List.isEmpty signalled) && wait 1
 
-    { At = at
+    { Signal = signalName
+      At = at
       Signalled = signalled
       Refused = refused
       Waited = clock.Elapsed
       Exited = exited }
+
+/// `signalTree` with SIGINT: the interrupt a build's teardown sends.
+let internal interruptTree
+    (signal: int -> Result<unit, string>)
+    (isAlive: int -> Result<bool, string>)
+    (attempts: int)
+    (pause: unit -> unit)
+    (members: ProcessRow list)
+    : TreeInterrupt =
+    signalTree "SIGINT" signal isAlive attempts pause members
+
+/// The members of `alive` with no child among them: the deepest processes still running,
+/// by the snapshot's parent links.
+let internal frontierOf (alive: ProcessRow list) : ProcessRow list =
+    let parents = alive |> List.map _.ParentPid |> Set.ofList
+    alive |> List.filter (fun m -> not (parents.Contains m.Pid))
+
+/// Stop `members` from the bottom up: send the stop signal (`signalName`, delivered by
+/// `signal`) to the deepest members only, and leave each parent to exit on its own once
+/// its children are gone. A parent signalled together with its child loses what it does
+/// AFTER that child ends: a coverage controller restores the assemblies it instrumented
+/// (`X.dll.orig` back over `X.dll`) only once its test host has exited, and a SIGTERM
+/// that reaches it first ends it before the restore. Signalling the controller alone is
+/// worse: its test host is orphaned and runs on.
+///
+/// A member whose children are all gone and that has still not exited `step` polls later
+/// is signalled in turn (a test host whose own child — a browser driver — was the deepest
+/// member). Polls until the whole tree is gone or `attempts` polls are spent (`pause`
+/// between them). A liveness probe that cannot answer counts as still running, and so
+/// does a member the signal could not be sent to: the wait errs toward the kill that
+/// follows, never toward "it stopped". `Exited` = every member is gone.
+let internal stopDeepestFirst
+    (signalName: string)
+    (signal: int -> Result<unit, string>)
+    (isAlive: int -> Result<bool, string>)
+    (attempts: int)
+    (step: int)
+    (pause: unit -> unit)
+    (members: ProcessRow list)
+    : TreeInterrupt =
+    let at = DateTime.UtcNow
+    let clock = Stopwatch.StartNew()
+    let running (m: ProcessRow) = isAlive m.Pid <> Ok false
+
+    // `deepestSince`: the poll each member was first seen on the frontier. `sent`: every
+    // signal sent, newest first.
+    let rec poll attempt (deepestSince: Map<int, int>) (sent: (int * Result<unit, string>) list) =
+        let alive = members |> List.filter running
+
+        if List.isEmpty alive then
+            true, sent
+        else
+            let frontier = frontierOf alive
+
+            let deepestSince =
+                frontier
+                |> List.fold
+                    (fun (since: Map<int, int>) m ->
+                        if since.ContainsKey m.Pid then
+                            since
+                        else
+                            since.Add(m.Pid, attempt))
+                    deepestSince
+
+            // The first frontier is the tree's own leaves, signalled at once; a member
+            // that reached the frontier later gets `step` polls to exit on its own.
+            let due =
+                frontier
+                |> List.filter (fun m ->
+                    not (sent |> List.exists (fun (pid, _) -> pid = m.Pid))
+                    && (deepestSince[m.Pid] = 1 || attempt - deepestSince[m.Pid] >= step))
+
+            let sent = due |> List.fold (fun acc m -> (m.Pid, signal m.Pid) :: acc) sent
+
+            if attempt >= attempts then
+                false, sent
+            else
+                pause ()
+                poll (attempt + 1) deepestSince sent
+
+    let exited, sent =
+        if List.isEmpty members then
+            false, []
+        else
+            poll 1 Map.empty []
+
+    let sent = List.rev sent
+
+    { Signal = signalName
+      At = at
+      Signalled = sent |> List.choose (fun (pid, r) -> if Result.isOk r then Some pid else None)
+      Refused =
+        sent
+        |> List.choose (fun (pid, r) ->
+            match r with
+            | Error reason -> Some(pid, reason)
+            | Ok() -> None)
+      Waited = clock.Elapsed
+      Exited = exited && not (List.isEmpty sent) }
 
 [<RequireQualifiedAccess>]
 module private Libc =
@@ -675,6 +779,18 @@ let internal sendInterrupt (pid: int) : Result<unit, string> =
         else
             Error
                 $"kill(%d{pid}, SIGINT) failed with errno %d{System.Runtime.InteropServices.Marshal.GetLastPInvokeError()}"
+    with ex ->
+        Error $"kill(2) is unavailable: %s{ex.GetType().Name}: %s{ex.Message}"
+
+/// `kill(pid, SIGTERM)`: the polite request to terminate that service managers send, and
+/// the one the .NET runtime answers by running its process-exit handlers before it exits.
+let internal sendTerminate (pid: int) : Result<unit, string> =
+    try
+        if Libc.kill (pid, 15) = 0 then
+            Ok()
+        else
+            Error
+                $"kill(%d{pid}, SIGTERM) failed with errno %d{System.Runtime.InteropServices.Marshal.GetLastPInvokeError()}"
     with ex ->
         Error $"kill(2) is unavailable: %s{ex.GetType().Name}: %s{ex.Message}"
 
@@ -756,13 +872,83 @@ let internal interruptAttempts (grace: TimeSpan) =
 
 let internal interruptPause () = Thread.Sleep InterruptPoll
 
-/// The interrupt step of an accounted teardown: none without a grace; with one, SIGINT
-/// the snapshotted tree and wait up to the grace for it to exit.
-let internal interruptWith (grace: TimeSpan option) : ProcessRow list -> TreeInterrupt option =
-    match grace with
-    | Some g ->
-        fun members -> Some(interruptTree sendInterrupt isProcessAlive (interruptAttempts g) interruptPause members)
+/// The signal an accounted teardown sends before its kill, asking the tree to stop.
+[<RequireQualifiedAccess>]
+type internal StopSignal =
+    /// SIGINT — Ctrl+C. MSBuild cancels the build and flushes its loggers.
+    | Interrupt
+    /// SIGTERM.
+    | Terminate
+
+    member this.Name =
+        match this with
+        | Interrupt -> "SIGINT"
+        | Terminate -> "SIGTERM"
+
+    member this.Send: int -> Result<unit, string> =
+        match this with
+        | Interrupt -> sendInterrupt
+        | Terminate -> sendTerminate
+
+/// Which members of a timed-out tree the stop signal is sent to.
+[<RequireQualifiedAccess>]
+type internal StopOrder =
+    /// Every member at once (`signalTree`): a build, whose MSBuild nodes each cancel and
+    /// flush on their own.
+    | WholeTree
+    /// The deepest members first, each parent left to exit on its own
+    /// (`stopDeepestFirst`): a test host, whose coverage controller restores what it
+    /// instrumented only after the host below it has gone.
+    | DeepestFirst
+
+/// How an accounted teardown asks a timed-out tree to stop before it kills it.
+[<NoComparison>]
+type internal TreeStop =
+    {
+        Signal: StopSignal
+        Order: StopOrder
+        /// How long the tree gets to exit before the kill.
+        Grace: TimeSpan
+    }
+
+/// How long a member of a deepest-first stop whose children are gone gets to exit on its
+/// own before it is signalled too. A coverage controller restores and exits in well
+/// under a second once its test host is gone; this is the bound on one that does not.
+let internal DeepestFirstStep = TimeSpan.FromSeconds 5.0
+
+/// The stop step of an accounted teardown: none without a stop; with one, signal the
+/// snapshotted tree in the stop's order and wait up to its grace for it to exit.
+let internal stopWith (stop: TreeStop option) : ProcessRow list -> TreeInterrupt option =
+    match stop with
+    | Some s ->
+        let attempts = interruptAttempts s.Grace
+
+        match s.Order with
+        | StopOrder.WholeTree ->
+            fun members -> Some(signalTree s.Signal.Name s.Signal.Send isProcessAlive attempts interruptPause members)
+        | StopOrder.DeepestFirst ->
+            fun members ->
+                Some(
+                    stopDeepestFirst
+                        s.Signal.Name
+                        s.Signal.Send
+                        isProcessAlive
+                        attempts
+                        (interruptAttempts DeepestFirstStep)
+                        interruptPause
+                        members
+                )
     | None -> fun _ -> None
+
+/// The interrupt step of a build's accounted teardown: SIGINT to the whole tree.
+let internal interruptWith (grace: TimeSpan option) : ProcessRow list -> TreeInterrupt option =
+    stopWith (
+        grace
+        |> Option.map (fun g ->
+            { Signal = StopSignal.Interrupt
+              Order = StopOrder.WholeTree
+              Grace = g })
+    )
 
 let mutable private directSpawns = 0L
 let mutable private helperSpawns = 0L
@@ -1570,8 +1756,8 @@ let private launchViaHelper (connection: SpawnHelper.Connection) (psi: ProcessSt
 /// the kill and names its survivors after it (`accountTeardown`), returned alongside
 /// the outcome. `runProcessTo` passes false; `runProcessAccounted` passes true.
 ///
-/// `interruptGrace` (accounted teardowns only): interrupt the snapshotted tree first
-/// and give it this long to exit before the kill (`interruptTree`).
+/// `stop` (accounted teardowns only): signal the snapshotted tree as it says first and
+/// give it its grace to exit before the kill (`stopWith`).
 ///
 /// `viaHelper`: when true and a spawn helper is installed in this scope
 /// (`SpawnHelper.install`), the helper starts the child and this process does not fork.
@@ -1586,7 +1772,7 @@ let private launchViaHelper (connection: SpawnHelper.Connection) (psi: ProcessSt
 let internal runProcessCore
     (viaHelper: bool)
     (accounted: bool)
-    (interruptGrace: TimeSpan option)
+    (stop: TreeStop option)
     (sink: (string -> unit) option)
     (onStarted: int -> unit)
     (command: string)
@@ -1715,7 +1901,7 @@ let internal runProcessCore
                     SettleAttempts
                     settlePause
                     pid
-                    (interruptWith interruptGrace)
+                    (stopWith stop)
                     plainKill
 
             match t.Survivors with
@@ -1846,7 +2032,39 @@ let internal runProcessAccounted
     (env: (string * string) list)
     (bounds: ProcessBounds)
     : ProcessOutcome * TreeTeardown option =
-    runProcessCore false true interruptGrace None ignore command args workDir env bounds
+    runProcessCore
+        false
+        true
+        (interruptGrace
+         |> Option.map (fun g ->
+             { Signal = StopSignal.Interrupt
+               Order = StopOrder.WholeTree
+               Grace = g }))
+        None
+        ignore
+        command
+        args
+        workDir
+        env
+        bounds
+
+/// `runProcessTo` with an accounted teardown that asks the tree to stop before killing it:
+/// a child that overruns is signalled as `stop` says, given its grace to exit, and only
+/// then killed — with what was signalled, what exited and what survived returned
+/// (`TreeTeardown`).
+///
+/// For a child whose shutdown does work a SIGKILL would lose: a test host collecting
+/// coverage restores the assemblies it instrumented only when it is allowed to stop.
+let internal runProcessToStopping
+    (stop: TreeStop)
+    (sink: (string -> unit) option)
+    (command: string)
+    (args: string)
+    (workDir: string)
+    (env: (string * string) list)
+    (bounds: ProcessBounds)
+    : ProcessOutcome * TreeTeardown option =
+    runProcessCore false true (Some stop) sink ignore command args workDir env bounds
 
 
 /// THE spawn, with no output sink — `runProcessTo None`. This is the shape every

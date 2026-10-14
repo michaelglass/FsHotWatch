@@ -168,6 +168,19 @@ of the two keys set it, the MSBuild targets that were still running (see
 [Overrunning builds](#overrunning-builds)), the process tree it killed, and
 anything that survived the kill.
 
+A test host that overruns is stopped from the bottom up before anything is
+killed. fshw sends SIGTERM to the deepest processes of its tree only, the test
+host itself, and leaves its parents to exit on their own. A parent whose children
+are gone and that is still running 5 seconds later is signalled in turn. The whole
+tree gets 15 seconds; whatever is left after that is killed. Coverage needs this
+order. In `dotnet run` → controller → test host, the controller restores the
+assemblies it instrumented (`X.dll.orig` back over `X.dll`) once the host has
+exited, but not if it is signalled itself. So an immediate kill, or SIGTERM to
+the whole tree, would leave them instrumented for the next run. The project's run directory gets `<Project>.timed-out.json` beside its
+output log. A timed-out host writes no CTRF report, so the marker says why there
+is none: the budget, when the host was spawned, whether it stopped on the signal,
+and what the kill did. The output log ends with the same sentence.
+
 ```jsonc
 {
   "timeoutSec": 300,           // global default: 5 min for every op

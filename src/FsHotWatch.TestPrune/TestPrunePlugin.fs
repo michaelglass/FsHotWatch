@@ -248,6 +248,19 @@ let internal writtenByRun (launch: CoverageArtifactLaunch) (after: CoverageArtif
     | Missing, Fingerprinted _ -> true
     | Fingerprinted before, Fingerprinted after -> launch.DeletionProven || before <> after
 
+/// How a test host that overran its `timeoutSec` is asked to stop before its tree is
+/// killed. A coverage run is `dotnet run` → the test platform's controller → the test
+/// host; the controller restores the assemblies it instrumented (`X.dll.orig` back over
+/// `X.dll`) once the host below it has exited — whether that host stopped or was killed
+/// — but not if it is itself signalled first. So SIGTERM goes to the deepest processes
+/// only, and the controller and `dotnet run` are left to finish and exit on their own.
+/// The grace bounds the whole tree: a host that honours the signal is gone, restored,
+/// in well under a second.
+let internal TestHostStop: TreeStop =
+    { Signal = StopSignal.Terminate
+      Order = StopOrder.DeepestFirst
+      Grace = TimeSpan.FromSeconds 15.0 }
+
 /// Where a run keeps its own copy of the raw coverage `project` wrote, beside its CTRF
 /// report and output log. The per-project baseline and partial files are overwritten by
 /// every later run; this copy is not.
@@ -5612,19 +5625,31 @@ let private executeTests
                             // lines), so its first byte is a sound liveness proof and the
                             // launch deadline can bound the spawn even when the config sets
                             // no TimeoutSec at all.
+                            //
+                            // A host that overruns is asked to stop before it is killed
+                            // (`TestHostStop`); the teardown is kept for the timeout marker.
+                            let spawnedAt = ref DateTime.UtcNow
+                            let lastTeardown: TreeTeardown option ref = ref None
+
                             let launch (decision: TraceDecision) =
                                 async {
                                     let command, args, environment =
                                         TraceRun.launchOf decision (config.Command, finalArgs, config.Environment)
 
-                                    return
-                                        runProcessTo
+                                    spawnedAt.Value <- DateTime.UtcNow
+
+                                    let outcome, teardown =
+                                        runProcessToStopping
+                                            TestHostStop
                                             outputSink
                                             command
                                             args
                                             repoRoot
                                             environment
                                             (ProcessBounds.streaming timeoutSpan launchDeadline)
+
+                                    lastTeardown.Value <- teardown
+                                    return outcome
                                 }
 
                             let runOnce = async { return! launch traceDecision.Value }
@@ -5714,7 +5739,7 @@ let private executeTests
                                 async {
                                     try
                                         try
-                                            return!
+                                            let! outcome =
                                                 match ctx with
                                                 | Some c ->
                                                     PluginCtxHelpers.withSubtask
@@ -5723,6 +5748,24 @@ let private executeTests
                                                         $"testing {config.Project}"
                                                         runTestWithRetry
                                                 | None -> runTestWithRetry
+
+                                            // A host torn down at its timeout wrote no report and its
+                                            // log ends wherever the kill caught it: say why, in the
+                                            // log and beside it (`TimeoutMarker`).
+                                            match outcome with
+                                            | ProcessOutcome.TimedOut(after, _, kill) ->
+                                                let facts: TimeoutMarker.Facts =
+                                                    { Project = config.Project
+                                                      After = after
+                                                      SpawnedAt = spawnedAt.Value
+                                                      Kill = kill
+                                                      Teardown = lastTeardown.Value }
+
+                                                RunLog.note runLog (TimeoutMarker.message facts)
+                                                TimeoutMarker.write runDir facts
+                                            | _ -> ()
+
+                                            return outcome
                                         with LaunchStalledException reason ->
                                             // The watchdog killed a child that never showed a
                                             // sign of life within the launch deadline. Re-raise

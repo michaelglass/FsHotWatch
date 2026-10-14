@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- feat: `ProcessHelper.runProcessToStopping` streams a child's output like
+  `runProcessTo`. When the child overruns, it first asks the process tree to stop as a
+  `TreeStop` says: the signal (`StopSignal.Interrupt` = SIGINT or
+  `StopSignal.Terminate` = SIGTERM), the order and a grace period. Then it kills what
+  is left. It returns the `TreeTeardown` with what was signalled, what exited and what
+  survived. `TreeInterrupt.Signal` names the signal sent.
+- feat: `StopOrder.DeepestFirst` (`stopDeepestFirst`) signals only the deepest live
+  members of the tree. Each parent is left to exit on its own once its children are
+  gone, and is signalled itself only if it is still running `DeepestFirstStep` (5s)
+  later. `StopOrder.WholeTree` signals every member at once, as a build's SIGINT
+  always has.
+
 ## 0.10.0-alpha.73 - 2026-10-14
 
 - fix: `Snapshot.IsSettling` (and so `CommandReadCtx.IsSettling`) turns false once a

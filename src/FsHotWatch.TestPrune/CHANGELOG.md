@@ -12,6 +12,17 @@
   published receipt and `test-scope`'s graded evidence) carries its refusals. An
   analysis-only daemon's receipt is unchanged; a daemon that runs tests still publishes
   no analysis-only receipt beside its test one.
+- fix: a test host that overruns its `timeoutSec` is stopped from the bottom up
+  before its tree is killed. SIGTERM goes to the deepest processes only, and the tree
+  gets 15s to exit. The coverage controller above the host then restores the
+  assemblies it instrumented once the host is gone. Before, the whole tree was killed
+  at once, so the `X.dll.orig` backups were left behind and the next run loaded the
+  instrumented copies. Signalling the whole tree, even with SIGTERM, loses the
+  restore too: it ends the controller before the host does.
+- feat: a timed-out project leaves `<Project>.timed-out.json` in its run directory
+  and ends its output log with one line naming the timeout, when the host was spawned
+  and how its teardown went. Before, the only trace a timed-out host left was a log
+  without a report.
 
 ## 0.13.0-alpha.72 - 2026-10-14
 

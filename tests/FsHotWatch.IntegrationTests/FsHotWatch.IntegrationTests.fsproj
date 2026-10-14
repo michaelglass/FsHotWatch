@@ -24,6 +24,7 @@
     <Compile Include="ProcessHelperTimeoutTests.fs" />
     <Compile Include="PluginActivityConcurrencyTests.fs" />
     <Compile Include="PluginTimeoutTests.fs" />
+    <Compile Include="TestHostTimeoutTests.fs" />
     <Compile Include="TestPruneStormTests.fs" />
     <Compile Include="TestPruneIndexReplayTests.fs" />
     <Compile Include="NuGetToolBarrierOracleTests.fs" />

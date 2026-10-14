@@ -48,6 +48,7 @@
     <Compile Include="ScopeVocabulary.fs" />
     <Compile Include="TestMode.fs" />
     <Compile Include="TraceRun.fs" />
+    <Compile Include="TimeoutMarker.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 

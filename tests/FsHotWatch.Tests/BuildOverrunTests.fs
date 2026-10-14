@@ -453,7 +453,8 @@ let ``an unavailable side log is reported as unknown, with the reason`` () =
 // the interrupt in the report
 
 let private interrupted signalled refused exited : TreeInterrupt =
-    { At = DateTime.UtcNow
+    { Signal = "SIGINT"
+      At = DateTime.UtcNow
       Signalled = signalled
       Refused = refused
       Waited = TimeSpan.FromSeconds 0.4
@@ -692,3 +693,196 @@ let ``interruptWith a grace interrupts a live tree and sees it exit`` () =
     test <@ i |> Option.map _.Signalled = Some [ p.Id ] @>
     test <@ i |> Option.map _.Exited = Some true @>
     test <@ p.WaitForExit 10000 @>
+
+// ---------------------------------------------------------------------------
+// StopSignal / sendTerminate / stopWith — the stop a test host's teardown sends
+
+[<Fact>]
+let ``each stop signal is named for the signal it sends`` () =
+    test <@ StopSignal.Interrupt.Name = "SIGINT" @>
+    test <@ StopSignal.Terminate.Name = "SIGTERM" @>
+
+[<Fact(Timeout = 20000)>]
+let ``sendTerminate stops a live process`` () =
+    use p =
+        Diagnostics.Process.Start(Diagnostics.ProcessStartInfo("sleep", "30", UseShellExecute = false))
+
+    test <@ StopSignal.Terminate.Send p.Id = Ok() @>
+    test <@ p.WaitForExit 10000 @>
+
+[<Fact>]
+let ``sendTerminate to a process that does not exist is an error, not a success`` () =
+    use p =
+        Diagnostics.Process.Start(Diagnostics.ProcessStartInfo("true", UseShellExecute = false))
+
+    p.WaitForExit()
+
+    test
+        <@
+            match sendTerminate p.Id with
+            | Error reason -> reason.Contains "SIGTERM"
+            | Ok() -> false
+        @>
+
+[<Fact>]
+let ``stopWith nothing stops nothing`` () =
+    test <@ stopWith None [ row 10 1 "x" ] = None @>
+
+[<Fact(Timeout = 20000)>]
+let ``stopWith SIGTERM and a grace stops a live tree, sees it exit and names the signal`` () =
+    use p =
+        Diagnostics.Process.Start(Diagnostics.ProcessStartInfo("sleep", "30", UseShellExecute = false))
+
+    let i =
+        stopWith
+            (Some
+                { Signal = StopSignal.Terminate
+                  Order = StopOrder.WholeTree
+                  Grace = TimeSpan.FromSeconds 10.0 })
+            [ row p.Id 1 "sleep 30" ]
+
+    test <@ i |> Option.map _.Signal = Some "SIGTERM" @>
+    test <@ i |> Option.map _.Signalled = Some [ p.Id ] @>
+    test <@ i |> Option.map _.Exited = Some true @>
+    test <@ p.WaitForExit 10000 @>
+
+[<Fact(Timeout = 20000)>]
+let ``stopWith deepest-first stops a live single-process tree`` () =
+    use p =
+        Diagnostics.Process.Start(Diagnostics.ProcessStartInfo("sleep", "30", UseShellExecute = false))
+
+    let i =
+        stopWith
+            (Some
+                { Signal = StopSignal.Terminate
+                  Order = StopOrder.DeepestFirst
+                  Grace = TimeSpan.FromSeconds 10.0 })
+            [ row p.Id 1 "sleep 30" ]
+
+    test <@ i |> Option.map _.Signal = Some "SIGTERM" @>
+    test <@ i |> Option.map _.Signalled = Some [ p.Id ] @>
+    test <@ i |> Option.map _.Exited = Some true @>
+    test <@ p.WaitForExit 10000 @>
+
+[<Fact>]
+let ``interruptTree records that it sent SIGINT`` () =
+    test <@ (interruptTree (fun _ -> Ok()) (fun _ -> Ok false) 1 ignore [ row 10 1 "x" ]).Signal = "SIGINT" @>
+
+// ---------------------------------------------------------------------------
+// frontierOf / stopDeepestFirst — a test host's tree, stopped from the bottom up
+
+[<Fact>]
+let ``frontierOf is the members with no child among them`` () =
+    let tree =
+        [ row 10 1 "dotnet run"
+          row 11 10 "controller"
+          row 12 10 "sidecar"
+          row 13 11 "host" ]
+
+    test <@ frontierOf tree |> List.map _.Pid = [ 12; 13 ] @>
+
+/// A coverage run's tree: `dotnet run` (10) → controller (11) → test host (12).
+let private coverageTree =
+    [ row 10 1 "dotnet run"; row 11 10 "controller"; row 12 11 "test host" ]
+
+[<Fact>]
+let ``stopDeepestFirst signals only the test host and lets the controller restore and exit`` () =
+    let alive = ref (Set.ofList [ 10; 11; 12 ])
+    let signalled = ref []
+    // The controller restores only when its host is gone and it was not signalled itself.
+    let restored = ref false
+
+    let signal pid =
+        signalled.Value <- pid :: signalled.Value
+        alive.Value <- alive.Value.Remove pid
+        Ok()
+
+    let pause () =
+        if not (alive.Value.Contains 12) && alive.Value.Contains 11 then
+            restored.Value <- not (List.contains 11 signalled.Value)
+            alive.Value <- alive.Value.Remove 11
+        elif not (alive.Value.Contains 11) then
+            alive.Value <- alive.Value.Remove 10
+
+    let i = stopDeepestFirst "SIGTERM" signal (aliveIn alive) 50 10 pause coverageTree
+
+    test <@ i.Signalled = [ 12 ] @>
+    test <@ i.Exited @>
+    test <@ restored.Value @>
+
+[<Fact>]
+let ``stopDeepestFirst signals a parent left without children only after the step`` () =
+    // 12 is a browser driver below the test host 11: stopping it leaves the host running.
+    let alive = ref (Set.ofList [ 10; 11; 12 ])
+    let pauses = ref 0
+    let signalledAt = ref []
+
+    let signal pid =
+        signalledAt.Value <- (pid, pauses.Value) :: signalledAt.Value
+        alive.Value <- alive.Value.Remove pid
+        Ok()
+
+    let pause () =
+        pauses.Value <- pauses.Value + 1
+
+        if not (alive.Value.Contains 11) then
+            alive.Value <- alive.Value.Remove 10
+
+    let i =
+        stopDeepestFirst
+            "SIGTERM"
+            signal
+            (aliveIn alive)
+            50
+            3
+            pause
+            [ row 10 1 "dotnet run"; row 11 10 "test host"; row 12 11 "driver" ]
+
+    // The driver at once; the host on the frontier from poll 2, signalled 3 polls later.
+    test <@ List.rev signalledAt.Value = [ 12, 0; 11, 4 ] @>
+    test <@ i.Signalled = [ 12; 11 ] @>
+    test <@ i.Exited @>
+
+[<Fact>]
+let ``stopDeepestFirst never signals the parents of a host that ignores the signal`` () =
+    let signalled = ref []
+
+    let i =
+        stopDeepestFirst
+            "SIGTERM"
+            (fun pid ->
+                signalled.Value <- pid :: signalled.Value
+                Ok())
+            (fun _ -> Ok true)
+            20
+            3
+            noPause
+            coverageTree
+
+    test <@ signalled.Value = [ 12 ] @>
+    test <@ not i.Exited @>
+
+[<Fact>]
+let ``stopDeepestFirst records a member it could not signal and counts it as running`` () =
+    let i =
+        stopDeepestFirst "SIGTERM" (fun _ -> Error "errno 1") (fun _ -> Ok true) 4 2 noPause [ row 10 1 "x" ]
+
+    test <@ List.isEmpty i.Signalled @>
+    test <@ i.Refused = [ 10, "errno 1" ] @>
+    test <@ not i.Exited @>
+
+[<Fact>]
+let ``stopDeepestFirst on a tree that is already gone signals nothing and does not claim it stopped`` () =
+    let i =
+        stopDeepestFirst "SIGTERM" (fun _ -> Ok()) (fun _ -> Ok false) 4 2 noPause coverageTree
+
+    test <@ List.isEmpty i.Signalled @>
+    test <@ not i.Exited @>
+
+[<Fact>]
+let ``stopDeepestFirst counts an unanswerable liveness probe as still running`` () =
+    let i =
+        stopDeepestFirst "SIGTERM" (fun _ -> Ok()) (fun _ -> Error "errno 22") 3 2 noPause [ row 10 1 "x" ]
+
+    test <@ i.Signalled = [ 10 ] @>
+    test <@ not i.Exited @>
