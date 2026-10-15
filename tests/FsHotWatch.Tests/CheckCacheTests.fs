@@ -936,3 +936,196 @@ let ``InMemoryCheckCache a key moved to another file releases its new slot on re
 
     Assert.Equal(1, cache.Count)
     Assert.True(backend.TryGet(makeKey "k1").IsNone)
+
+// --- what the key names beyond the repository: the toolchain, and references outside it ---
+
+[<Fact(Timeout = 15000)>]
+let ``a different toolchain gives a different cache key for the same file, options and upstream`` () =
+    // A result is the checker's answer, not only the code's: a cache shared by two
+    // daemons on different fshw or FCS builds must not hand one's answers to the other.
+    withTempDir "key-toolchain" (fun dir ->
+        let file = Path.Combine(dir, "A.fs")
+        File.WriteAllText(file, "module A")
+        let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
+
+        let keyUnder toolchain =
+            makeCacheKeyWith provider toolchain "options" "upstream" file
+
+        test <@ keyUnder "fcs-1" = keyUnder "fcs-1" @>
+        test <@ keyUnder "fcs-1" <> keyUnder "fcs-2" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``toolchainIdentity names the exact compiler service, FSharp.Core and fshw builds`` () =
+    // A module version id changes with every build of an assembly, so it names the
+    // checker's code (and the settings fshw creates it with) more exactly than a version.
+    let mvid (t: Type) =
+        string t.Assembly.ManifestModule.ModuleVersionId
+
+    test <@ toolchainIdentity.Contains(mvid typeof<FSharp.Compiler.CodeAnalysis.FSharpChecker>) @>
+    test <@ toolchainIdentity.Contains(mvid typeof<option<int>>) @>
+    test <@ toolchainIdentity.Contains(mvid typeof<CacheKey>) @>
+
+[<Fact(Timeout = 15000)>]
+let ``makeCacheKey keys under this process's toolchain`` () =
+    withTempDir "key-default-toolchain" (fun dir ->
+        let file = Path.Combine(dir, "A.fs")
+        File.WriteAllText(file, "module A")
+        let opts = makeProjectOptions (Path.Combine(dir, "P.fsproj")) [ file ] []
+        let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
+
+        let upstream =
+            upstreamFingerprint (FileContentHasher().Hash) None file opts
+
+        test
+            <@
+                makeCacheKey provider file opts = makeCacheKeyWith
+                                                      provider
+                                                      toolchainIdentity
+                                                      (getProjectOptionsHash opts)
+                                                      upstream
+                                                      file
+            @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a non-F# project reference's stamp is part of the fingerprint`` () =
+    // FCS re-reads an IL or PE reference when its stamp moves. A fingerprint naming only
+    // the path served results typed against the module as it was.
+    let withStamp (stamp: DateTime) =
+        { makeProjectOptions "/repo/App.fsproj" [ "/repo/App.fs" ] [] with
+            ReferencedProjects =
+                [| FSharp.Compiler.CodeAnalysis.FSharpReferencedProject.ILModuleReference(
+                       "/repo/obj/Cs.dll",
+                       (fun () -> stamp),
+                       fun () -> failwith "a fingerprint never reads the module"
+                   ) |] }
+
+    let fp stamp =
+        upstreamFingerprint (fakeHasher (Map [ "/repo/App.fs", "app" ])) None "/repo/App.fs" (withStamp stamp)
+
+    Assert.Equal(fp (DateTime(2020, 1, 1)), fp (DateTime(2020, 1, 1)))
+    Assert.NotEqual<string>(fp (DateTime(2020, 1, 1)), fp (DateTime(2020, 1, 2)))
+
+[<Fact(Timeout = 15000)>]
+let ``upstreamFingerprint stamps assemblies outside the repository`` () =
+    // A path outside the repository names its bytes only when it is version-qualified
+    // (NuGet, the SDK). A sibling repository's bin/Sibling.dll is rebuilt in place under
+    // one path, so the path alone served results typed against the old build. A stamp
+    // read by one stat catches that without reading the bytes.
+    let stamped = System.Collections.Generic.List<string>()
+
+    let opts =
+        makeProjectOptions
+            "/repo/App.fsproj"
+            [ "/repo/App.fs" ]
+            [ "-r:/elsewhere/bin/Sibling.dll"; "-r:/repo/lib/Vendored.dll" ]
+
+    let fp stamp =
+        upstreamFingerprintWith
+            (fakeHasher (Map [ "/repo/App.fs", "app"; "/repo/lib/Vendored.dll", "v" ]))
+            (fun path ->
+                stamped.Add path
+                stamp)
+            (Some "/repo")
+            "/repo/App.fs"
+            opts
+
+    Assert.Equal(fp "s1", fp "s1")
+    Assert.NotEqual<string>(fp "s1", fp "s2")
+    // In-repo assemblies are hashed by content instead; only the outside one is stamped.
+    Assert.DoesNotContain("/repo/lib/Vendored.dll", stamped)
+    Assert.Contains("/elsewhere/bin/Sibling.dll", stamped)
+
+[<Fact(Timeout = 15000)>]
+let ``fileStampText moves when a rebuild changes a file's last-write time or length`` () =
+    // Times are set, not waited for: the stamp must not depend on the clock ticking
+    // between two writes.
+    withTempDir "stamp-text" (fun dir ->
+        let path = Path.Combine(dir, "Sibling.dll")
+        let first = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+        let second = DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc)
+
+        let writeAt (bytes: byte array) (time: DateTime) =
+            File.WriteAllBytes(path, bytes)
+            File.SetLastWriteTimeUtc(path, time)
+            fileStampText path
+
+        let original = writeAt [| 1uy |] first
+        Assert.Equal(original, writeAt [| 1uy |] first)
+        // Same length, rebuilt later.
+        Assert.NotEqual<string>(original, writeAt [| 2uy |] second)
+        // Same time, different length.
+        Assert.NotEqual<string>(original, writeAt [| 1uy; 2uy |] first)
+        Assert.Equal("missing", fileStampText (Path.Combine(dir, "absent.dll"))))
+
+// --- CacheTally: what the cache did in one scan, and why each miss missed ---
+
+open FsHotWatch.CheckCacheTally
+
+[<Fact(Timeout = 15000)>]
+let ``CacheTally counts hits, misses by reason and the outputs that moved`` () =
+    let tally =
+        CacheTally.empty
+        |> CacheTally.lookedUp (CacheLookupOutcome.Hit)
+        |> CacheTally.lookedUp (CacheLookupOutcome.Miss CacheMiss.NoEntry)
+        |> CacheTally.lookedUp (CacheLookupOutcome.Miss(CacheMiss.OutputsMoved [ "${repo}/bin/Lib.dll" ]))
+        |> CacheTally.lookedUp (CacheLookupOutcome.Miss(CacheMiss.OutputsMoved [ "${repo}/bin/Lib.dll" ]))
+        |> CacheTally.stored CacheStore.Stored
+        |> CacheTally.stored CacheStore.InputsMoved
+
+    test <@ tally.Hits = 1L @>
+    test <@ CacheTally.misses tally = 3L @>
+    test <@ tally.Misses = Map [ CacheMiss.label CacheMiss.NoEntry, 1L; "output moved", 2L ] @>
+    test <@ tally.MovedOutputs = Map [ "${repo}/bin/Lib.dll", 2L ] @>
+    test <@ tally.Stored = 1L @>
+    test <@ tally.NotStored = Map [ CacheStore.label CacheStore.InputsMoved, 1L ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``CacheTally.since is what happened between two snapshots`` () =
+    let atScanStart =
+        CacheTally.empty
+        |> CacheTally.lookedUp CacheLookupOutcome.Hit
+        |> CacheTally.lookedUp (CacheLookupOutcome.Miss CacheMiss.NoEntry)
+
+    let atScanEnd =
+        atScanStart
+        |> CacheTally.lookedUp CacheLookupOutcome.Hit
+        |> CacheTally.lookedUp (CacheLookupOutcome.Miss(CacheMiss.OutputsMoved [ "${repo}/bin/Lib.dll" ]))
+
+    let scan = CacheTally.since atScanStart atScanEnd
+
+    test <@ scan.Hits = 1L @>
+    // A reason with no misses in between is dropped, not kept at zero.
+    test <@ scan.Misses = Map [ "output moved", 1L ] @>
+    test <@ scan.MovedOutputs = Map [ "${repo}/bin/Lib.dll", 1L ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``describeCacheTally names hits, each miss reason and the outputs whose bytes moved`` () =
+    // The line a reader needs to tell "the cache missed because Lib.dll was rebuilt"
+    // from "the cache is not working": a count alone cannot.
+    let tally =
+        { CacheTally.empty with
+            Hits = 2110L
+            Misses = Map [ "output moved", 318L ]
+            MovedOutputs = Map [ "${repo}/src/Lib/bin/Lib.dll", 318L ]
+            Stored = 318L }
+
+    let line = describeCacheTally tally
+
+    test <@ line.StartsWith "check-result cache: 2110 hits, 318 misses" @>
+    test <@ line.Contains "318 output moved" @>
+    test <@ line.Contains "${repo}/src/Lib/bin/Lib.dll ×318" @>
+    test <@ line.Contains "stored 318" @>
+
+[<Fact(Timeout = 15000)>]
+let ``describeCacheTally names at most five moved outputs, the most-missed first`` () =
+    let moved = Map [ for i in 1..7 -> $"o%d{i}.dll", int64 i ]
+
+    let line =
+        describeCacheTally
+            { CacheTally.empty with
+                Misses = Map [ "output moved", 28L ]
+                MovedOutputs = moved }
+
+    test <@ line.Contains "o7.dll ×7, o6.dll ×6, o5.dll ×5, o4.dll ×4, o3.dll ×3" @>
+    test <@ not (line.Contains "o2.dll") @>
+    test <@ line.Contains "and 2 more" @>

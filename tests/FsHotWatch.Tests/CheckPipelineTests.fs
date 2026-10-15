@@ -675,6 +675,102 @@ let ``tryGetCachedFullCheck returns None when cached entry is ParseOnly`` () =
     let result = tryGetCachedFullCheck outputsHold (Some cache) (Some key)
     test <@ result = None @>
 
+/// The moved-output check for entries whose recorded outputs all still hold.
+let private noneMoved (_: (string * string) list) : string list = []
+
+let private missOf (lookup: Result<FileCheckResult, FsHotWatch.CheckCacheTally.CacheMiss>) =
+    match lookup with
+    | Ok _ -> None
+    | Error miss -> Some miss
+
+[<Fact(Timeout = 15000)>]
+let ``lookupCachedFullCheck says why it missed: no key, no entry, or a parse-only entry`` () =
+    let cache = InMemoryCache() :> ICheckCacheBackend
+    let key = dummyKey "parseonly-reason"
+    let opts = dummyOptions "/tmp/PO.fsproj" [ "/tmp/PO.fs" ]
+    cache.Set key (recorded (parseOnlyResult "/tmp/PO.fs" opts))
+
+    test <@ missOf (lookupCachedFullCheck noneMoved cache None) = Some FsHotWatch.CheckCacheTally.CacheMiss.NoKey @>
+
+    test
+        <@
+            missOf (lookupCachedFullCheck noneMoved cache (Some(dummyKey "absent"))) = Some
+                FsHotWatch.CheckCacheTally.CacheMiss.NoEntry
+        @>
+
+    test <@ missOf (lookupCachedFullCheck noneMoved cache (Some key)) = Some FsHotWatch.CheckCacheTally.CacheMiss.ParseOnly @>
+
+[<Fact(Timeout = 15000)>]
+let ``lookupCachedFullCheck names the outputs whose bytes moved since the entry was typed`` () =
+    // The miss a rebuild causes: the file, its options and its upstream sources are all
+    // unchanged, but a DLL the check read is not the one it read then. Naming it is what
+    // tells a non-deterministic build apart from a cache that does not work.
+    let cache = InMemoryCache() :> ICheckCacheBackend
+    let key = dummyKey "moved-reason"
+    let opts = dummyOptions "/tmp/App.fsproj" [ "/tmp/App.fs" ]
+
+    cache.Set
+        key
+        { Result = fullCheckResult "/tmp/App.fs" opts
+          ProjectOutputs = [ "${repo}/obj/Lib.dll", "lib-then"; "${repo}/obj/Other.dll", "other-then" ] }
+
+    let currently =
+        Map [ "${repo}/obj/Lib.dll", "lib-rebuilt"; "${repo}/obj/Other.dll", "other-then" ]
+
+    let moved (outputs: (string * string) list) =
+        outputs
+        |> List.filter (fun (name, hash) -> currently[name] <> hash)
+        |> List.map fst
+
+    test
+        <@
+            missOf (lookupCachedFullCheck moved cache (Some key)) = Some(
+                FsHotWatch.CheckCacheTally.CacheMiss.OutputsMoved [ "${repo}/obj/Lib.dll" ]
+            )
+        @>
+
+    test <@ (lookupCachedFullCheck noneMoved cache (Some key)) |> Result.isOk @>
+
+[<Fact(Timeout = 15000)>]
+let ``the pipeline tallies each lookup, so a scan can say what its cache did`` () =
+    let cache = InMemoryCache()
+    let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
+
+    withTempDir "cache-tally" (fun tempDir ->
+        let hot = Path.Combine(tempDir, "Hot.fs")
+        let cold = Path.Combine(tempDir, "Cold.fs")
+        File.WriteAllText(hot, "module Hot")
+        File.WriteAllText(cold, "module Cold")
+        let projFile = Path.Combine(tempDir, "Hot.fsproj")
+        let opts = dummyOptions projFile [ hot; cold ]
+        pipeline.RegisterProject(projFile, opts)
+
+        let key =
+            makeCacheKey (TimestampCacheKeyProvider() :> ICacheKeyProvider) hot opts
+            |> Option.defaultWith (fun () -> failwith "expected Some CacheKey for real file")
+
+        (cache :> ICheckCacheBackend).Set key (recorded (fullCheckResult hot opts))
+        let before = pipeline.CacheTally
+
+        pipeline.CheckFile(AbsFilePath.create hot) |> Async.RunSynchronously |> ignore
+        // No entry: a miss, and the null checker then fails the check.
+        pipeline.CheckFile(AbsFilePath.create cold) |> Async.RunSynchronously |> ignore
+
+        let scan = FsHotWatch.CheckCacheTally.CacheTally.since before pipeline.CacheTally
+        test <@ scan.Hits = 1L @>
+        test <@ scan.Misses = Map [ FsHotWatch.CheckCacheTally.CacheMiss.label FsHotWatch.CheckCacheTally.CacheMiss.NoEntry, 1L ] @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a pipeline with no cache tallies nothing`` () =
+    withTempDir "cache-tally-off" (fun tempDir ->
+        let file = Path.Combine(tempDir, "A.fs")
+        File.WriteAllText(file, "module A")
+        let projFile = Path.Combine(tempDir, "A.fsproj")
+        let pipeline = CheckPipeline(nullChecker)
+        pipeline.RegisterProject(projFile, dummyOptions projFile [ file ])
+        pipeline.CheckFile(AbsFilePath.create file) |> Async.RunSynchronously |> ignore
+        test <@ pipeline.CacheTally = FsHotWatch.CheckCacheTally.CacheTally.empty @>)
+
 [<Fact(Timeout = 15000)>]
 let ``CheckFile short-circuits via cache hit without invoking FCS`` () =
     // The checker is null: returning a result at all proves the cache lookup happens
@@ -975,6 +1071,52 @@ let ``a cached check is not served after a TRANSITIVE upstream project changes a
         write "A.fs" [| "module A"; "let f (x: string) = x + \"!\"" |]
 
         test <@ not (errorsOfC () |> Array.isEmpty) @>)
+
+[<Fact(Timeout = 180000)>]
+let ``a cached check is not served after a file EARLIER in its project changes a signature`` () =
+    // One project, A.fs then C.fs. C is clean against `A.x : int` and that answer is
+    // cached; then only A.fs changes, to `A.x : string`. C's own bytes and its project's
+    // options are untouched, so only the preceding-file part of the upstream fingerprint
+    // can tell the entry is stale. Serving it would report C clean when it does not compile.
+    withTempDir "cache-preceding" (fun tmpDir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let a = Path.Combine(tmpDir, "A.fs")
+        let c = Path.Combine(tmpDir, "C.fs")
+        let d = Path.Combine(tmpDir, "D.fsx")
+        File.WriteAllLines(a, [| "module A"; "let x = 1" |])
+        File.WriteAllLines(c, [| "module C"; "let y : int = A.x" |])
+        File.WriteAllLines(d, [| "#load \"A.fs\" \"C.fs\"" |])
+
+        let options, _ =
+            checker.GetProjectOptionsFromScript(
+                d,
+                SourceText.ofString (File.ReadAllText d),
+                assumeDotNetFramework = false
+            )
+            |> Async.RunSynchronously
+
+        let cache = FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(100)
+        let pipeline = CheckPipeline(checker, cacheBackend = cache)
+        pipeline.RegisterProject(Path.Combine(tmpDir, "D.fsproj"), options)
+
+        let errorsOfC () =
+            match pipeline.CheckFile(AbsFilePath.create c) |> Async.RunSynchronously with
+            | Some { CheckResults = FullCheck r } ->
+                r.Diagnostics
+                |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                |> Array.map (fun d -> d.ErrorNumber)
+            | other -> failwith $"expected a full check, got %A{other}"
+
+        // Positive control: C is clean against the original A, and that answer is cached.
+        test <@ errorsOfC () |> Array.isEmpty @>
+        let hitsBefore = pipeline.CacheTally.Hits
+        test <@ errorsOfC () |> Array.isEmpty @>
+        test <@ pipeline.CacheTally.Hits = hitsBefore + 1L @>
+
+        File.WriteAllLines(a, [| "module A"; "let x = \"s\"" |])
+
+        // FS0001: the type `string` does not match `int`.
+        test <@ errorsOfC () |> Array.contains 1 @>)
 
 [<Fact(Timeout = 120000)>]
 let ``a check whose upstream moved during the generation is not stored`` () =

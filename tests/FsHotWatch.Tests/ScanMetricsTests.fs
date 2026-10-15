@@ -23,6 +23,8 @@ let private sample generation rss =
       FilesDepsGated = 0
       FilesUncovered = 0
       CheckStarts = 1552L
+      CacheHits = 0L
+      CacheMisses = 0L
       RetryRounds = 0
       RssBytes = rss
       ManagedBytes = rss / 4L
@@ -254,6 +256,8 @@ let ``a record written before the skip fields still parses`` () =
         test <@ parsed.DirectSpawns = 0L @>
         test <@ parsed.HelperSpawns = 0L @>
         test <@ parsed.CheckStarts = 0L @>
+        test <@ parsed.CacheHits = 0L @>
+        test <@ parsed.CacheMisses = 0L @>
 
 [<Fact>]
 let ``skipped and deps-gated counts round-trip`` () =
@@ -310,3 +314,19 @@ let ``a line written before samples carried a scope reads as process-scoped`` ()
 
     test <@ not (legacy.Contains "scope") @>
     test <@ (tryParseLine legacy |> Option.map (fun s -> s.Scope)) = Some DaemonHosting.ResourceScope.Process @>
+
+[<Fact>]
+let ``cache hits and misses are reported beside the check starts`` () =
+    // `filesChecked` counts a file served from the check-result cache as checked, so
+    // only these say whether an unchanged rescan was answered by the cache or by FCS.
+    let rescan =
+        { sample 2L 1_000L with
+            FilesChecked = 2428
+            CheckStarts = 318L
+            CacheHits = 2110L
+            CacheMisses = 318L }
+
+    let line = toJsonLine rescan
+    test <@ line.Contains "\"cacheHits\":2110" @>
+    test <@ line.Contains "\"cacheMisses\":318" @>
+    test <@ (tryParseLine line |> Option.map (fun s -> s.CacheHits, s.CacheMisses)) = Some(2110L, 318L) @>
