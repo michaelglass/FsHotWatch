@@ -241,7 +241,8 @@ let ``LintPlugin cache key is stable across runs for same file content`` () =
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L
           ModelGeneration = None
-          Frame = None }
+          Frame = None
+          Placed = Map.empty }
 
     match handler.CacheKey with
     | None -> failwith "expected LintPlugin to provide a CacheKey"
@@ -279,7 +280,8 @@ let ``LintPlugin cache key reflects config file content`` () =
               ProjectOptions = Unchecked.defaultof<_>
               Version = 0L
               ModelGeneration = None
-              Frame = None }
+              Frame = None
+              Placed = Map.empty }
 
         match handler1.CacheKey with
         | None -> failwith "expected CacheKey"
@@ -310,7 +312,8 @@ let ``§1: LintPlugin cache key reflects FCS check signature for ParseOnly vs Fu
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L
           ModelGeneration = None
-          Frame = None }
+          Frame = None
+          Placed = Map.empty }
 
     match handler.CacheKey with
     | None -> failwith "expected CacheKey"
@@ -342,7 +345,8 @@ let ``LintPlugin cache key uses missing-config marker when config path doesn't e
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L
           ModelGeneration = None
-          Frame = None }
+          Frame = None
+          Placed = Map.empty }
 
     let evt = FileChecked(mkResult ())
 

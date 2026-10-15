@@ -235,7 +235,16 @@ type CheckPipeline
     // Which frame each project is checked under: its own paths unless a repository host
     // checks its worktrees under one virtual root.
     let frames = defaultArg frames PathFrame.realPaths
-    let imports = defaultArg imports ProjectSnapshots.inPlace
+    /// Each store path a check here read a reference from, and the path it was given as.
+    let placedBack = ConcurrentDictionary<string, string>()
+
+    let imports: ProjectSnapshots.ReferencePlacement =
+        let place = defaultArg imports ProjectSnapshots.inPlace
+
+        fun path ->
+            let placed = place path
+            placed |> Option.iter (fun stored -> placedBack[stored] <- path)
+            placed
 
     /// See `FcsDiagnosticFilter.shouldRecheckProject`. Injectable so the
     /// cooldown can be collapsed in tests without waiting five minutes.
@@ -711,7 +720,8 @@ type CheckPipeline
                               ProjectOptions = options
                               Version = version
                               ModelGeneration = None
-                              Frame = framed.Frame },
+                              Frame = framed.Frame
+                              Placed = Map.ofSeq (placedBack |> Seq.map (fun kv -> kv.Key, kv.Value)) },
                             outputs
                         )
             with ex ->

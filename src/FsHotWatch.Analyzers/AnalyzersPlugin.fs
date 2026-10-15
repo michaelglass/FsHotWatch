@@ -752,8 +752,7 @@ let internal createWithSeams
                                                         return Choice1Of3()
                                                     | WorkCompleted results ->
                                                         let toEntry (m: Message) : ErrorEntry =
-                                                            { Message =
-                                                                FsHotWatch.PathFrame.textFrom result.Frame m.Message
+                                                            { Message = FileCheckResult.textToReal result m.Message
                                                               Severity =
                                                                 match m.Severity with
                                                                 | Severity.Error -> DiagnosticSeverity.Error

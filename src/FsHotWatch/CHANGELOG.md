@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix!: a diagnostic that names a referenced assembly read from the import store names
+  it by the worktree path it was given as (`lib/Foo.dll`), not by its store path.
+  `FileCheckResult` gains `Placed` (each store path a check read, and the worktree path
+  it stands for), and `FileCheckResult.textToReal` renders a check's text for the
+  worktree: virtual paths made real, then placed references named by their own paths.
+  The FCS diagnostics the daemon reports and the analyzers' messages both go through it.
+
 - feat: every `scan-metrics.jsonl` record carries `fcsBootstrapStarts` and
   `fcsBootstrapProjects`, the project bootstraps the checker has computed and the
   distinct projects they were for (`FcsBootstraps`). A bootstrap is an import graph of

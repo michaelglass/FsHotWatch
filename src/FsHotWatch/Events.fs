@@ -130,7 +130,21 @@ type FileCheckResult =
         /// paths inside `ParseResults` and `CheckResults` are then virtual, and this maps
         /// them to the worktree. `None`: they are the worktree's own.
         Frame: PathFrame.PathFrame option
+        /// Each referenced assembly the check read from the repository's import store:
+        /// its store path, and the worktree path it stands for. Empty when the check read
+        /// every reference where it is.
+        Placed: Map<string, string>
     }
+
+module FileCheckResult =
+    /// `text` from `result`'s check (a diagnostic's message) as the worktree reads it:
+    /// its virtual paths made real, and each store path of a placed reference replaced
+    /// by the worktree path that reference was given as.
+    let textToReal (result: FileCheckResult) (text: string) : string =
+        result.Placed
+        |> Map.fold
+            (fun (rendered: string) stored original -> rendered.Replace(stored, original))
+            (PathFrame.textFrom result.Frame text)
 
 /// Result of checking all files in a project.
 [<NoComparison>]

@@ -95,20 +95,21 @@ type internal FcsLedgerWrites =
 /// as `Info`), so `Findings` is empty for it.
 let internal fcsLedgerWrites
     (allSuppressed: Set<int>)
-    (frame: PathFrame.PathFrame option)
+    (toReal: string -> string)
     (project: string)
     (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[])
     : FcsLedgerWrites =
     let reportable, selfIncompatible = classifyFcsDiagnostics allSuppressed diagnostics
 
-    // Checked under a virtual root, a diagnostic can name a path in its text: the
-    // reader gets the worktree's.
+    // Checked under a virtual root, or against a reference read from the import store,
+    // a diagnostic can name a path in its text: the reader gets the worktree's
+    // (`FileCheckResult.textToReal`).
     let reportable =
         reportable
         |> List.map (fun entry ->
             { entry with
-                Message = PathFrame.textFrom frame entry.Message
-                Detail = entry.Detail |> Option.map (PathFrame.textFrom frame) })
+                Message = toReal entry.Message
+                Detail = entry.Detail |> Option.map toReal })
 
     match selfIncompatible with
     | [] ->
@@ -146,7 +147,7 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
         let project = Path.GetFileName checkResult.ProjectOptions.ProjectFileName
 
         let writes =
-            fcsLedgerWrites allSuppressed checkResult.Frame project checkResults.Diagnostics
+            fcsLedgerWrites allSuppressed (FileCheckResult.textToReal checkResult) project checkResults.Diagnostics
 
         // A self-incompatible diagnostic still here is a fault in THIS process. The
         // check that produced it may have been re-checked once in `CheckPipeline`, or

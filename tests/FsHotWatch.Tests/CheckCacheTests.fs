@@ -295,7 +295,8 @@ let private makeTestResult (file: string) (version: int64) : CachedCheck =
           ProjectOptions = Unchecked.defaultof<_>
           Version = version
           ModelGeneration = None
-          Frame = None }
+          Frame = None
+          Placed = Map.empty }
       ProjectOutputs = [] }
 
 let private makeKey (fileHash: string) : CacheKey =

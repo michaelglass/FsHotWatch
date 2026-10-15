@@ -371,10 +371,38 @@ let ``a second session at its own paths starts a second bootstrap, for a second 
 
 [<Fact>]
 let ``a checker never attached, or none, counts no bootstraps`` () =
-    let unattached =
-        FSharpChecker.Create(useTransparentCompiler = true)
+    let unattached = FSharpChecker.Create(useTransparentCompiler = true)
 
     test <@ FcsBootstraps.countsOf unattached = { Started = 0L; Projects = 0 } @>
 
-    test
-        <@ FcsBootstraps.countsOf Unchecked.defaultof<FSharpChecker> = { Started = 0L; Projects = 0 } @>
+    test <@ FcsBootstraps.countsOf Unchecked.defaultof<FSharpChecker> = { Started = 0L; Projects = 0 } @>
+
+[<Fact(Timeout = 120000)>]
+let ``a hosted check names each reference it read from the store by the worktree path it was given as`` () =
+    withTempDir "import-sharing-placed" (fun dir ->
+        let w = vendoredWorld dir vendoredSource vendoredSource false
+        let canonical = CanonicalProjects.Registry()
+
+        let vendoredOf (s: Session) =
+            Path.Combine(s.Root, "lib", "Vendored.dll")
+
+        let placedBy (place: ProjectSnapshots.ReferencePlacement) (s: Session) =
+            let pipeline =
+                CheckPipeline(
+                    w.Checker,
+                    repoRoot = s.Root,
+                    frames = SessionFrames.choice canonical s.Root w.VirtualRoot ignore,
+                    imports = place
+                )
+
+            pipeline.RegisterProject(s.Options.ProjectFileName, s.Options)
+
+            match pipeline.CheckFile(AbsFilePath.create s.Source) |> Async.RunSynchronously with
+            | Some result -> result.Placed
+            | None -> failwith "check of P.fs did not complete"
+
+        let stored = (w.Store.PlaceReference(vendoredOf w.B)).Value
+
+        test <@ placedBy w.Store.PlaceReference w.B = Map.ofList [ stored, vendoredOf w.B ] @>
+        test <@ placedBy w.Store.PlaceReference w.A = Map.ofList [ stored, vendoredOf w.A ] @>
+        test <@ placedBy ProjectSnapshots.inPlace w.A = Map.empty @>)

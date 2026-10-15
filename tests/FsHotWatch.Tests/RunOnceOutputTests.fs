@@ -849,7 +849,8 @@ let ``run-once grades the one scan it ran: an unchecked file is Incomplete, with
                           ProjectOptions = Unchecked.defaultof<_>
                           Version = 0L
                           ModelGeneration = None
-                          Frame = None }
+                          Frame = None
+                          Placed = Map.empty }
                     )
 
             daemon.Host.GetAllStatuses()
