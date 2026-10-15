@@ -1129,3 +1129,58 @@ let ``describeCacheTally names at most five moved outputs, the most-missed first
     test <@ line.Contains "o7.dll ×7, o6.dll ×6, o5.dll ×5, o4.dll ×4, o3.dll ×3" @>
     test <@ not (line.Contains "o2.dll") @>
     test <@ line.Contains "and 2 more" @>
+
+[<Fact(Timeout = 15000)>]
+let ``every miss reason and every store outcome has its own label`` () =
+    let misses =
+        [ CacheMiss.NoKey
+          CacheMiss.NoEntry
+          CacheMiss.ParseOnly
+          CacheMiss.OutputsMoved [ "a.dll" ] ]
+        |> List.map CacheMiss.label
+
+    let stores =
+        [ CacheStore.Stored; CacheStore.Uncacheable; CacheStore.InputsMoved ]
+        |> List.map CacheStore.label
+
+    test <@ misses = [ "unreadable"; "no entry"; "parse-only"; "output moved" ] @>
+    test <@ stores = [ "stored"; "uncacheable answer"; "inputs moved during the check" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``describeCacheTally of a scan served entirely from the cache names no reasons`` () =
+    test <@ describeCacheTally { CacheTally.empty with Hits = 5L } = "check-result cache: 5 hits, 0 misses; stored 0" @>
+
+[<Fact(Timeout = 15000)>]
+let ``describeCacheTally counts the answers it did not store, by reason`` () =
+    let tally =
+        CacheTally.empty
+        |> CacheTally.stored CacheStore.Uncacheable
+        |> CacheTally.stored CacheStore.InputsMoved
+        |> CacheTally.stored CacheStore.InputsMoved
+
+    let line = describeCacheTally tally
+
+    test <@ line.EndsWith "stored 0, 2 not stored (inputs moved during the check), 1 not stored (uncacheable answer)" @>
+
+[<Fact(Timeout = 15000)>]
+let ``fileStampText of a path it cannot even look at is unreadable, not an exception`` () =
+    test <@ fileStampText "bad\000path.dll" = "unreadable" @>
+
+[<Fact(Timeout = 15000)>]
+let ``a PE reference's stamp is part of the fingerprint`` () =
+    let withStamp (stamp: DateTime) =
+        { makeProjectOptions "/repo/App.fsproj" [ "/repo/App.fs" ] [] with
+            ReferencedProjects =
+                [| FSharp.Compiler.CodeAnalysis.FSharpReferencedProject.PEReference(
+                       (fun () -> stamp),
+                       FSharp.Compiler.CodeAnalysis.DelayedILModuleReader(
+                           "/repo/obj/Cs.dll",
+                           fun _ -> failwith "a fingerprint never reads the module"
+                       )
+                   ) |] }
+
+    let fp stamp =
+        upstreamFingerprint (fakeHasher (Map [ "/repo/App.fs", "app" ])) None "/repo/App.fs" (withStamp stamp)
+
+    Assert.Equal(fp (DateTime(2020, 1, 1)), fp (DateTime(2020, 1, 1)))
+    Assert.NotEqual<string>(fp (DateTime(2020, 1, 1)), fp (DateTime(2020, 1, 2)))
