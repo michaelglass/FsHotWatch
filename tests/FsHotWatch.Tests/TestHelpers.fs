@@ -76,7 +76,8 @@ let fakeFileCheckResult (file: string) : FileCheckResult =
       ProjectOptions = Unchecked.defaultof<_>
       Version = 0L
       ModelGeneration = Some fixtureModelGeneration
-      Frame = None }
+      Frame = None
+      Placed = Map.empty }
 
 /// Build a `BatchChecked` payload covering `files`, with deterministic timestamps and
 /// Generation = 1.
@@ -647,7 +648,8 @@ let checkDownstream (root: string) (layout: UpstreamLayout) (upSource: string) (
       ProjectOptions = options
       Version = 0L
       ModelGeneration = None
-      Frame = None },
+      Frame = None
+      Placed = Map.empty },
     check
 
 /// Write a minimal `.fsproj` with a `<TargetFramework>` and the given `<Compile Include="…">`

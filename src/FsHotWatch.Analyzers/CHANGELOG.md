@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: an analyzer message that names a referenced assembly read from a repository
+  host's import store names it by the worktree path it was given as
+  (`FileCheckResult.textToReal`), not by its store path.
+
 ## 0.7.0-alpha.46 - 2026-10-13
 
 - fix: an analysis replayed from the task cache fills `DiagnosticsByFile` and

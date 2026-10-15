@@ -121,6 +121,7 @@
     <Compile Include="SharedWatchPool.fs" />
     <Compile Include="WorkScheduler.fs" />
     <Compile Include="CheckerPartitions.fs" />
+    <Compile Include="FcsBootstraps.fs" />
     <Compile Include="CanonicalProjects.fs" />
     <Compile Include="DaemonHosting.fs" />
     <Compile Include="PluginHost.fs" />
@@ -129,6 +130,7 @@
     <Compile Include="DepsFreshness.fs" />
     <Compile Include="ProjectSnapshots.fs" />
     <Compile Include="FrameExclusions.fs" />
+    <Compile Include="ImportStore.fs" />
     <Compile Include="SessionFrames.fs" />
     <Compile Include="CheckPipeline.fs" />
     <Compile Include="SuspectRecheck.fs" />

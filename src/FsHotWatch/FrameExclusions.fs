@@ -79,7 +79,8 @@ let private attributeTypeName (metadata: MetadataReader) (handle: CustomAttribut
 let private isProviderAttribute (name: string) =
     String.Equals(name, "TypeProviderAssemblyAttribute", StringComparison.Ordinal)
 
-let private isTypeProviderAssembly (path: string) =
+/// Whether the assembly at `path` declares itself a type provider.
+let isTypeProviderAssembly (path: string) =
     let read () =
         try
             using (File.OpenRead path) (fun stream ->

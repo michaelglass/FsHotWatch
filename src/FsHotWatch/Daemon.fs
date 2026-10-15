@@ -95,20 +95,21 @@ type internal FcsLedgerWrites =
 /// as `Info`), so `Findings` is empty for it.
 let internal fcsLedgerWrites
     (allSuppressed: Set<int>)
-    (frame: PathFrame.PathFrame option)
+    (toReal: string -> string)
     (project: string)
     (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[])
     : FcsLedgerWrites =
     let reportable, selfIncompatible = classifyFcsDiagnostics allSuppressed diagnostics
 
-    // Checked under a virtual root, a diagnostic can name a path in its text: the
-    // reader gets the worktree's.
+    // Checked under a virtual root, or against a reference read from the import store,
+    // a diagnostic can name a path in its text: the reader gets the worktree's
+    // (`FileCheckResult.textToReal`).
     let reportable =
         reportable
         |> List.map (fun entry ->
             { entry with
-                Message = PathFrame.textFrom frame entry.Message
-                Detail = entry.Detail |> Option.map (PathFrame.textFrom frame) })
+                Message = toReal entry.Message
+                Detail = entry.Detail |> Option.map toReal })
 
     match selfIncompatible with
     | [] ->
@@ -146,7 +147,7 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
         let project = Path.GetFileName checkResult.ProjectOptions.ProjectFileName
 
         let writes =
-            fcsLedgerWrites allSuppressed checkResult.Frame project checkResults.Diagnostics
+            fcsLedgerWrites allSuppressed (FileCheckResult.textToReal checkResult) project checkResults.Diagnostics
 
         // A self-incompatible diagnostic still here is a fault in THIS process. The
         // check that produced it may have been re-checked once in `CheckPipeline`, or
@@ -4111,6 +4112,7 @@ let private performScan
                 )
 
             let directSpawns, helperSpawns = ProcessHelper.spawnCounts ()
+            let bootstraps = pipeline.FcsBootstraps
 
             let cacheScan =
                 CheckCacheTally.CacheTally.since cacheTallyAtScanStart.Value pipeline.CacheTally
@@ -4138,6 +4140,8 @@ let private performScan
                   Gen2Collections = reading.Gen2Collections
                   DirectSpawns = directSpawns
                   HelperSpawns = helperSpawns
+                  FcsBootstrapStarts = bootstraps.Started
+                  FcsBootstrapProjects = bootstraps.Projects
                   Scope = ctx.Seams.ResourceScope
                   SampledAt = System.DateTime.UtcNow }
 
@@ -4422,6 +4426,7 @@ module Daemon =
                         activity = fcsSink,
                         repoRoot = repoRoot,
                         frames = seams.Frames,
+                        imports = seams.Imports,
                         admission = checks
                     )
                 | Some b, None ->
@@ -4431,6 +4436,7 @@ module Daemon =
                         activity = fcsSink,
                         repoRoot = repoRoot,
                         frames = seams.Frames,
+                        imports = seams.Imports,
                         admission = checks
                     )
                 | _ ->
@@ -4439,6 +4445,7 @@ module Daemon =
                         activity = fcsSink,
                         repoRoot = repoRoot,
                         frames = seams.Frames,
+                        imports = seams.Imports,
                         admission = checks
                     )
 
@@ -4891,14 +4898,21 @@ module Daemon =
     ///
     /// `cacheSizes` bounds the TransparentCompiler's caches; see
     /// `DefaultCheckerCacheSizeFactor`.
+    ///
+    /// Its project bootstraps are counted from the start (`FcsBootstraps`), so each
+    /// scan's record says how many import graphs the checker has computed.
     let createCheckerWithCacheSizes (cacheSizes: TransparentCompiler.CacheSizes) =
-        FSharpChecker.Create(
-            keepAssemblyContents = true,
-            keepAllBackgroundResolutions = false,
-            parallelReferenceResolution = true,
-            useTransparentCompiler = true,
-            transparentCompilerCacheSizes = cacheSizes
-        )
+        let checker =
+            FSharpChecker.Create(
+                keepAssemblyContents = true,
+                keepAllBackgroundResolutions = false,
+                parallelReferenceResolution = true,
+                useTransparentCompiler = true,
+                transparentCompilerCacheSizes = cacheSizes
+            )
+
+        FcsBootstraps.attach checker
+        checker
 
     /// The checker's cache sizes at `factor`: FCS's own, except that the per-file
     /// type-checks (`TcIntermediate`) are never released while they are current.

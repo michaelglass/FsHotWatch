@@ -137,6 +137,8 @@ let ``scan validity flags a truncated scan, a foreign window and log-metrics dis
           Gen2Collections = 0
           DirectSpawns = 0L
           HelperSpawns = 0L
+          FcsBootstrapStarts = 0L
+          FcsBootstrapProjects = 0
           Scope = FsHotWatch.DaemonHosting.ResourceScope.Process
           SampledAt = System.DateTime.UtcNow }
 
@@ -232,6 +234,8 @@ let private scanOf checkedFiles : FsHotWatch.ScanMetrics.ScanSample =
       Gen2Collections = 0
       DirectSpawns = 0L
       HelperSpawns = 0L
+      FcsBootstrapStarts = 0L
+      FcsBootstrapProjects = 0
       Scope = FsHotWatch.DaemonHosting.ResourceScope.Process
       SampledAt = System.DateTime.UtcNow }
 

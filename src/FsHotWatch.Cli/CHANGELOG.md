@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: the repository host reads every in-repository dll from the repository's import
+  store, so worktrees holding the same bytes share one import of it. `FSHW_IMPORT_STORE=0`
+  in the host's environment reads each where it is, the control for measuring the
+  store. Each session's log says `importStore=on` or `off`.
+
 ## 0.14.0-alpha.100 - 2026-10-15
 
 - chore: rebuild to bundle updated dependencies

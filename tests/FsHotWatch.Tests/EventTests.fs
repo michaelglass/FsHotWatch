@@ -415,3 +415,19 @@ let ``absolute paths resolve a relative path against the process working directo
     let cwd = Directory.GetCurrentDirectory()
     test <@ AbsFilePath.value (AbsFilePath.create "Lib.fs") = Path.Combine(cwd, "Lib.fs") @>
     test <@ AbsProjectPath.value (AbsProjectPath.create "Lib.fsproj") = Path.Combine(cwd, "Lib.fsproj") @>
+
+[<Fact(Timeout = 15000)>]
+let ``a check's text names a placed reference by the worktree path it was given as`` () =
+    let stored = "/cache/imports/v1/0effcf4e/Vendored.dll"
+
+    let result =
+        { fakeFileCheckResult "/wt/b/P.fs" with
+            Frame = Some(FsHotWatch.PathFrame.create "/wt/b" "/state/virtual")
+            Placed = Map.ofList [ stored, "/wt/b/lib/Vendored.dll" ] }
+
+    test
+        <@
+            FileCheckResult.textToReal result $"%s{stored} and /state/virtual/P.fs; also /other/Vendored.dll" = "/wt/b/lib/Vendored.dll and /wt/b/P.fs; also /other/Vendored.dll"
+        @>
+
+    test <@ FileCheckResult.textToReal (fakeFileCheckResult "/wt/b/P.fs") stored = stored @>

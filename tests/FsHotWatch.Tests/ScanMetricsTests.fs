@@ -32,6 +32,8 @@ let private sample generation rss =
       Gen2Collections = 3
       DirectSpawns = 12L
       HelperSpawns = 30L
+      FcsBootstrapStarts = 23L
+      FcsBootstrapProjects = 23
       Scope = DaemonHosting.ResourceScope.Process
       SampledAt = DateTime(2026, 9, 4, 10, 0, 0, DateTimeKind.Utc) }
 
@@ -258,6 +260,8 @@ let ``a record written before the skip fields still parses`` () =
         test <@ parsed.CheckStarts = 0L @>
         test <@ parsed.CacheHits = 0L @>
         test <@ parsed.CacheMisses = 0L @>
+        test <@ parsed.FcsBootstrapStarts = 0L @>
+        test <@ parsed.FcsBootstrapProjects = 0 @>
 
 [<Fact>]
 let ``skipped and deps-gated counts round-trip`` () =
@@ -330,3 +334,20 @@ let ``cache hits and misses are reported beside the check starts`` () =
     test <@ line.Contains "\"cacheHits\":2110" @>
     test <@ line.Contains "\"cacheMisses\":318" @>
     test <@ (tryParseLine line |> Option.map (fun s -> s.CacheHits, s.CacheMisses)) = Some(2110L, 318L) @>
+
+[<Fact>]
+let ``bootstrap counts round-trip`` () =
+    // The count that tells a second import graph from a shared one.
+    let original =
+        { sample 2L 1_000L with
+            FcsBootstrapStarts = 46L
+            FcsBootstrapProjects = 23 }
+
+    let line = toJsonLine original
+    test <@ line.Contains "\"fcsBootstrapStarts\":46" @>
+
+    test
+        <@
+            (tryParseLine line
+             |> Option.map (fun s -> s.FcsBootstrapStarts, s.FcsBootstrapProjects)) = Some(46L, 23)
+        @>

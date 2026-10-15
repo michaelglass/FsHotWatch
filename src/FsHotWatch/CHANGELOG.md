@@ -19,6 +19,37 @@
   (`cacheHits`/`cacheMisses` in `scan-metrics.jsonl`; absent in older lines reads as 0).
   New `CheckCacheTally` module; `CheckPipeline.lookupCachedFullCheck` returns the miss
   reason.
+
+- fix!: a diagnostic that names a referenced assembly read from the import store names
+  it by the worktree path it was given as (`lib/Foo.dll`), not by its store path.
+  `FileCheckResult` gains `Placed` (each store path a check read, and the worktree path
+  it stands for), and `FileCheckResult.textToReal` renders a check's text for the
+  worktree: virtual paths made real, then placed references named by their own paths.
+  The FCS diagnostics the daemon reports and the analyzers' messages both go through it.
+
+- feat: every `scan-metrics.jsonl` record carries `fcsBootstrapStarts` and
+  `fcsBootstrapProjects`, the project bootstraps the checker has computed and the
+  distinct projects they were for (`FcsBootstraps`). A bootstrap is an import graph of
+  a project's references, so more starts than projects with no edit between them is a
+  project imported twice; in a repository host the count is the shared checker's. Each
+  start is also logged at debug. Records written before these fields parse with both at
+  zero.
+
+- feat: `ImportStore.Store` keeps a repository's referenced assemblies by content: one
+  path per SHA-256 of a dll's bytes, under the dll's own file name, with a write time
+  derived from the hash. FCS identifies a referenced assembly by path and write time, so
+  equal bytes in two worktrees become one assembly to it, and different bytes never
+  can. Entries are written through a verified temporary file and an atomic rename; one
+  whose bytes no longer match is replaced, never served. `PlaceReference` leaves a type
+  provider where it is. `RepositoryIdentity.repositoryImportStoreDir` is the store's
+  directory in the repository's shared cache.
+- feat!: a hosted session reads each in-repository reference that is not a project's
+  output from where its host places it (`DaemonHosting.hostedWithImports`,
+  `HostingSeams.Imports`, `CheckPipeline`'s `imports`). Two sessions under one virtual
+  root holding the same vendored dll then hold one import of it. `Hosting.Hosted` gains
+  the placement, and `ProjectSnapshots.buildFramedWith` takes a `ReferencePlacement`
+  (`ProjectSnapshots.inPlace` reads every reference where it is). A standalone daemon
+  reads every reference where it is, as before.
 - feat: `WorkScheduler.parallelWithin bound jobs` runs a fan-out with at most `bound`
   jobs started and unfinished at once, results in input order. The daemon's change
   batch and cold-scan tiers now fan out through it, bounded by the pipeline's admission

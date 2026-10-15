@@ -181,6 +181,8 @@
     <Compile Include="CheckPipelineConcurrencyTests.fs" />
     <Compile Include="FcsCacheProbe.fs" />
     <Compile Include="SnapshotVersionTests.fs" />
+    <Compile Include="ImportSharingTests.fs" />
+    <Compile Include="ImportStoreTests.fs" />
     <Compile Include="SnapshotMemoTests.fs" />
     <Compile Include="CheckCacheReferencedOutputTests.fs" />
     <Compile Include="SolutionScopeTests.fs" />

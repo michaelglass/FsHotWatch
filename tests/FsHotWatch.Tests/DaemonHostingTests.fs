@@ -349,3 +349,54 @@ let ``a change batch names a model wait long enough to explain a slow settle`` (
         <@ captureWaitLine (TimeSpan.FromMilliseconds 100.0) = Some "change batch waited 100ms for the project model" @>
 
     test <@ captureWaitLine (TimeSpan.FromMilliseconds 99.0) = None @>
+
+/// A host's reference placement: every reference into one store directory.
+let private placed (path: string) =
+    Some(Path.Combine("/store", Path.GetFileName path))
+
+[<Fact(Timeout = 5000)>]
+let ``a standalone daemon reads every reference where it is, a hosted session where its host places it`` () =
+    let standalone = DaemonHosting.seams (DaemonHosting.standalone ())
+
+    let hosted =
+        DaemonHosting.seams (
+            DaemonHosting.hostedWithImports
+                hostWatcher
+                unaskedCheckers
+                PathFrame.realPaths
+                placed
+                (WorkScheduler.Scheduler 1)
+        )
+
+    test <@ standalone.Imports "/r/lib/X.dll" = None @>
+    test <@ hosted.Imports "/r/lib/X.dll" = Some "/store/X.dll" @>
+
+    test
+        <@
+            (DaemonHosting.seams (DaemonHosting.hostedBy hostWatcher unaskedCheckers (WorkScheduler.Scheduler 1)))
+                .Imports
+                "/r/lib/X.dll" = None
+        @>
+
+[<Fact(Timeout = 20000)>]
+let ``a hosted daemon's checks place references where its host does`` () =
+    withTempDir "hosted-imports" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let shared, _ = countingCheckers ()
+
+        using
+            (Daemon.createUsing
+                unaskedCheckers
+                tmpDir
+                { oneShotDaemonOptions with
+                    Hosting =
+                        DaemonHosting.hostedWithImports
+                            hostWatcher
+                            shared
+                            PathFrame.realPaths
+                            placed
+                            (WorkScheduler.Scheduler 1) })
+            (fun daemon -> test <@ daemon.Pipeline.Imports "/r/lib/X.dll" = Some "/store/X.dll" @>)
+
+        using (Daemon.createUsing shared tmpDir oneShotDaemonOptions) (fun daemon ->
+            test <@ daemon.Pipeline.Imports "/r/lib/X.dll" = None @>))

@@ -608,7 +608,8 @@ let private fullCheckResult path options =
       ProjectOptions = options
       Version = 1L
       ModelGeneration = None
-      Frame = None }
+      Frame = None
+      Placed = Map.empty }
 
 let private parseOnlyResult path options =
     { File = AbsFilePath.create path
@@ -618,7 +619,8 @@ let private parseOnlyResult path options =
       ProjectOptions = options
       Version = 1L
       ModelGeneration = None
-      Frame = None }
+      Frame = None
+      Placed = Map.empty }
 
 [<Fact(Timeout = 15000)>]
 let ``tryGetCachedFullCheck returns None when backend is None`` () =

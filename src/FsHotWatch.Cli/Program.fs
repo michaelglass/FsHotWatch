@@ -2791,6 +2791,23 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
         let virtualRootOn =
             Environment.GetEnvironmentVariable RepositoryHostMode.VirtualRootEnvVar <> "0"
 
+        // Every in-repository dll is read from one path per content, whichever worktree
+        // holds it, so equal bytes are one assembly to FCS. `FSHW_IMPORT_STORE=0` reads
+        // each where it is: the control a measurement of the store runs against.
+        let imports =
+            if Environment.GetEnvironmentVariable RepositoryHostMode.ImportStoreEnvVar <> "0" then
+                let store =
+                    FsHotWatch.ImportStore.Store(
+                        FsHotWatch.RepositoryIdentity.repositoryImportStoreDir
+                            (FsHwPaths.sharedCacheHome ())
+                            launchRoot.Repository,
+                        FsHotWatch.CheckCache.FileContentHasher().Hash
+                    )
+
+                Some store.PlaceReference
+            else
+                None
+
         let sinkFor (worktree: FsHotWatch.RepositoryIdentity.ResolvedWorktree) =
             let logDir =
                 try
@@ -2835,6 +2852,8 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
             // measurement can prove which way it ran.
             let virtualRootState = if virtualRootOn then "on" else "off"
             FsHotWatch.Logging.info "config" $"virtualRoot=%s{virtualRootState}"
+            let importStoreState = if imports.IsSome then "on" else "off"
+            FsHotWatch.Logging.info "config" $"importStore=%s{importStoreState}"
 
             let frames =
                 if virtualRootOn then
@@ -2847,10 +2866,11 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
                     FsHotWatch.PathFrame.realPaths
 
             let hosting =
-                FsHotWatch.DaemonHosting.hostedUnderFrames
+                FsHotWatch.DaemonHosting.hostedWithImports
                     (pool.WatcherFactoryFor(FsHotWatch.SharedWatchPool.anchorOf spec.Worktree))
                     partitions.For
                     frames
+                    (defaultArg imports (fun _ -> None))
                     checks
 
             let daemon = daemonWith opts config Daemon.RunMode.Watching hosting worktreeRoot

@@ -36,8 +36,9 @@ open FsHotWatch.Tests.TestHelpers
 /// - `host-session.json`: a hosted worktree records the host that serves it.
 /// - `heartbeat`: a wall-clock beat, rewritten while work runs.
 /// - `root-witness`: a token each daemon writes for itself (`VanishedRoot`).
-/// - `scan-metrics.jsonl`'s process figures (memory, collections, spawn counts) and `scope`: a host
-///   reports its own totals.
+/// - `scan-metrics.jsonl`'s process figures (memory, collections, spawn counts), its
+///   checker's bootstrap counts, and `scope`: a host reports its own totals, and its
+///   sessions share a checker.
 ///   Every other field of each record must agree.
 let private modeOwned =
     {| Files = set [ "host-session.json"; "heartbeat"; VanishedRoot.WitnessFile ]
@@ -51,7 +52,9 @@ let private modeOwned =
               "sampledAt"
               "durationMs"
               "directSpawns"
-              "helperSpawns" ] |}
+              "helperSpawns"
+              "fcsBootstrapStarts"
+              "fcsBootstrapProjects" ] |}
 
 let private inertWatcher: Daemon.Daemon.WatcherFactory =
     fun _ _ _ _ _ ->
