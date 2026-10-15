@@ -974,17 +974,16 @@ let ``makeCacheKey keys under this process's toolchain`` () =
         let opts = makeProjectOptions (Path.Combine(dir, "P.fsproj")) [ file ] []
         let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
 
-        let upstream =
-            upstreamFingerprint (FileContentHasher().Hash) None file opts
+        let upstream = upstreamFingerprint (FileContentHasher().Hash) None file opts
 
         test
             <@
                 makeCacheKey provider file opts = makeCacheKeyWith
-                                                      provider
-                                                      toolchainIdentity
-                                                      (getProjectOptionsHash opts)
-                                                      upstream
-                                                      file
+                    provider
+                    toolchainIdentity
+                    (getProjectOptionsHash opts)
+                    upstream
+                    file
             @>)
 
 [<Fact(Timeout = 15000)>]

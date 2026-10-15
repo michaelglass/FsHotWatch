@@ -84,7 +84,8 @@ module CacheTally =
         | CacheLookupOutcome.Miss miss ->
             let moved =
                 match miss with
-                | CacheMiss.OutputsMoved outputs -> outputs |> List.fold (fun counts o -> bump o counts) tally.MovedOutputs
+                | CacheMiss.OutputsMoved outputs ->
+                    outputs |> List.fold (fun counts o -> bump o counts) tally.MovedOutputs
                 | _ -> tally.MovedOutputs
 
             { tally with
@@ -93,12 +94,15 @@ module CacheTally =
 
     let stored (store: CacheStore) (tally: CacheTally) : CacheTally =
         match store with
-        | CacheStore.Stored -> { tally with Stored = tally.Stored + 1L }
+        | CacheStore.Stored ->
+            { tally with
+                Stored = tally.Stored + 1L }
         | other ->
             { tally with
                 NotStored = bump (CacheStore.label other) tally.NotStored }
 
-    let misses (tally: CacheTally) : int64 = tally.Misses |> Map.fold (fun sum _ n -> sum + n) 0L
+    let misses (tally: CacheTally) : int64 =
+        tally.Misses |> Map.fold (fun sum _ n -> sum + n) 0L
 
     /// Counts in `later` beyond those in `earlier`; a key with none in between is dropped.
     let since (earlier: CacheTally) (later: CacheTally) : CacheTally =
@@ -132,7 +136,9 @@ let describeCacheTally (tally: CacheTally) : string =
         | [] -> ""
         | counts ->
             " — "
-            + (counts |> List.map (fun (reason, n) -> $"%d{n} %s{reason}") |> String.concat ", ")
+            + (counts
+               |> List.map (fun (reason, n) -> $"%d{n} %s{reason}")
+               |> String.concat ", ")
 
     let moved =
         match byCount tally.MovedOutputs with

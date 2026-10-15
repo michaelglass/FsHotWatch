@@ -700,7 +700,11 @@ let ``lookupCachedFullCheck says why it missed: no key, no entry, or a parse-onl
                 FsHotWatch.CheckCacheTally.CacheMiss.NoEntry
         @>
 
-    test <@ missOf (lookupCachedFullCheck noneMoved cache (Some key)) = Some FsHotWatch.CheckCacheTally.CacheMiss.ParseOnly @>
+    test
+        <@
+            missOf (lookupCachedFullCheck noneMoved cache (Some key)) = Some
+                FsHotWatch.CheckCacheTally.CacheMiss.ParseOnly
+        @>
 
 [<Fact(Timeout = 15000)>]
 let ``lookupCachedFullCheck names the outputs whose bytes moved since the entry was typed`` () =
@@ -760,7 +764,12 @@ let ``the pipeline tallies each lookup, so a scan can say what its cache did`` (
 
         let scan = FsHotWatch.CheckCacheTally.CacheTally.since before pipeline.CacheTally
         test <@ scan.Hits = 1L @>
-        test <@ scan.Misses = Map [ FsHotWatch.CheckCacheTally.CacheMiss.label FsHotWatch.CheckCacheTally.CacheMiss.NoEntry, 1L ] @>)
+
+        test
+            <@
+                scan.Misses = Map
+                    [ FsHotWatch.CheckCacheTally.CacheMiss.label FsHotWatch.CheckCacheTally.CacheMiss.NoEntry, 1L ]
+            @>)
 
 [<Fact(Timeout = 15000)>]
 let ``a pipeline with no cache tallies nothing`` () =

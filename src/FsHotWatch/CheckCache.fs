@@ -165,7 +165,9 @@ let getProjectOptionsHash (options: FSharpProjectOptions) : string =
 /// FSharp.Core reference and package versions a project compiles against are already
 /// named by the version-qualified `-r:` paths in its options hash.
 let toolchainIdentity: string =
-    [ typeof<FSharpChecker>.Assembly; typeof<option<int>>.Assembly; typeof<CacheKey>.Assembly ]
+    [ typeof<FSharpChecker>.Assembly
+      typeof<option<int>>.Assembly
+      typeof<CacheKey>.Assembly ]
     |> List.map (fun assembly ->
         let name = assembly.GetName()
         $"%s{name.Name}@%O{name.Version}/%O{assembly.ManifestModule.ModuleVersionId}")

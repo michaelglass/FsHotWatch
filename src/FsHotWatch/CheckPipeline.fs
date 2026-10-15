@@ -973,7 +973,10 @@ type CheckPipeline
                     |> Option.bind (fun _ -> makeCacheKeyFast (AbsFilePath.create absPath) options)
 
                 let cached =
-                    match cacheBackend |> Option.map (fun b -> lookupCachedFullCheck movedOutputs b cacheKey) with
+                    match
+                        cacheBackend
+                        |> Option.map (fun b -> lookupCachedFullCheck movedOutputs b cacheKey)
+                    with
                     | Some(Ok cached) ->
                         cacheTally.LookedUp CacheLookupOutcome.Hit
                         Some cached
