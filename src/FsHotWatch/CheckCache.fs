@@ -153,6 +153,24 @@ let getProjectOptionsHashRelativeTo (repoRoot: string option) (options: FSharpPr
 let getProjectOptionsHash (options: FSharpProjectOptions) : string =
     getProjectOptionsHashRelativeTo None options
 
+/// The checker build a result was computed by: the module version id of the compiler
+/// service, of FSharp.Core and of fshw itself, which change with every build of each.
+/// A result is the checker's answer, not only the code's, so the cache key names it.
+///
+/// Within one process this is constant, so it separates nothing there. It is what keeps
+/// a cache shared by daemons on different builds — a repository host's, or one that
+/// outlives the process — from serving one build's answers to another. fshw's own id
+/// stands for the settings the daemon creates its checker with
+/// (`Daemon.createCheckerWithCacheSizes`): they are code in that assembly. The SDK,
+/// FSharp.Core reference and package versions a project compiles against are already
+/// named by the version-qualified `-r:` paths in its options hash.
+let toolchainIdentity: string =
+    [ typeof<FSharpChecker>.Assembly; typeof<option<int>>.Assembly; typeof<CacheKey>.Assembly ]
+    |> List.map (fun assembly ->
+        let name = assembly.GetName()
+        $"%s{name.Name}@%O{name.Version}/%O{assembly.ManifestModule.ModuleVersionId}")
+    |> String.concat ";"
+
 /// Content hash of a file, re-read only when its `FileStamp` moves.
 ///
 /// `upstreamFingerprint` hashes every file a check result depends on, for every
@@ -203,6 +221,24 @@ type FileContentHasher internal (now: unit -> DateTime, stamp: string -> FileSta
             Logging.debug "cache" $"Could not hash %s{path}: %s{ex.Message}"
             "unreadable"
 
+/// A file's stamp as cache-key text, read without its bytes: its length and last-write
+/// time, `"missing"` when there is no file. A build that rewrites an assembly moves its
+/// last-write time; it is the signal MSBuild's own up-to-date checks trust for these
+/// files. A copy that restores an older time onto bytes of the same length (`cp -p`,
+/// `rsync -a`) is not seen. The status-change time would see it, but it moves only as
+/// fast as the kernel's clock tick, so two writes close together could share one.
+let fileStampText (path: string) : string =
+    try
+        let info = FileInfo path
+
+        if info.Exists then
+            $"%d{info.Length}:%d{info.LastWriteTimeUtc.Ticks}"
+        else
+            "missing"
+    with ex ->
+        Logging.debug "cache" $"Could not stamp %s{path}: %s{ex.Message}"
+        "unreadable"
+
 let internal isUnderRoot (repoRoot: string option) (path: string) =
     match repoRoot with
     | None -> true
@@ -217,10 +253,14 @@ let internal isUnderRoot (repoRoot: string option) (path: string) =
 /// - every source file of every project it references, TRANSITIVELY — C referencing
 ///   B referencing A is type-checked against A's sources too;
 /// - the bytes of each `-r:` assembly inside the repository that is not the output of
-///   a referenced F# project (a C# project's output, a vendored dll). Assemblies
-///   outside the repository — NuGet, the SDK — live at version-qualified paths, so the
-///   path in the options hash already identifies them, and hashing hundreds of them
-///   per lookup would spend the CPU the cache exists to save.
+///   a referenced F# project (a C# project's output, a vendored dll);
+/// - the STAMP (`stampFile`, one stat, no read) of each `-r:` assembly outside it.
+///   NuGet's and the SDK's live at version-qualified paths, so their path already names
+///   their bytes, and hashing hundreds of them would spend the CPU the cache exists to
+///   save. A sibling repository's `bin/X.dll` is rebuilt in place under one path, so
+///   the path alone would serve results typed against its previous build;
+/// - the stamp of each non-F# project reference (IL or PE), which is what FCS itself
+///   re-reads such a reference on.
 ///
 /// Referenced F# projects contribute their SOURCE content here, but that alone does not
 /// decide a result: the checker (TransparentCompiler) types against a reference's
@@ -237,8 +277,9 @@ let internal isUnderRoot (repoRoot: string option) (path: string) =
 ///
 /// Without this a cached result survives a change to a file it was type-checked
 /// against, and the cache serves diagnostics FCS would no longer produce.
-let upstreamFingerprints
+let upstreamFingerprintsWith
     (hashFile: string -> string)
+    (stampFile: string -> string)
     (repoRoot: string option)
     (options: FSharpProjectOptions)
     : System.Collections.Generic.IReadOnlyDictionary<string, string> * string =
@@ -254,8 +295,12 @@ let upstreamFingerprints
             if opt.StartsWith("-r:", StringComparison.Ordinal) then
                 let path = opt.Substring 3
 
-                if not (projectOutputs.Contains path) && isUnderRoot repoRoot path then
+                if projectOutputs.Contains path then
+                    ()
+                elif isUnderRoot repoRoot path then
                     parts.Add $"ref:%s{relativize path}=%s{hashFile path}"
+                else
+                    parts.Add $"outside-ref:%s{path}@%s{stampFile path}"
 
     let rec addProject (opts: FSharpProjectOptions) =
         if visited.Add opts.ProjectFileName then
@@ -271,7 +316,10 @@ let upstreamFingerprints
         for reference in opts.ReferencedProjects do
             match reference with
             | FSharpReferencedProject.FSharpReference(_, referenced) -> addProject referenced
-            | other -> parts.Add $"other-ref:%s{relativize other.OutputFile}"
+            | FSharpReferencedProject.PEReference(getStamp, _) ->
+                parts.Add $"other-ref:%s{relativize reference.OutputFile}@%d{getStamp().Ticks}"
+            | FSharpReferencedProject.ILModuleReference(output, getStamp, _) ->
+                parts.Add $"other-ref:%s{relativize output}@%d{getStamp().Ticks}"
 
     visited.Add options.ProjectFileName |> ignore
     hashAssemblyRefs options
@@ -289,6 +337,14 @@ let upstreamFingerprints
 
     table :> System.Collections.Generic.IReadOnlyDictionary<string, string>, running
 
+/// `upstreamFingerprintsWith`, stamping outside assemblies with `fileStampText`.
+let upstreamFingerprints
+    (hashFile: string -> string)
+    (repoRoot: string option)
+    (options: FSharpProjectOptions)
+    : System.Collections.Generic.IReadOnlyDictionary<string, string> * string =
+    upstreamFingerprintsWith hashFile fileStampText repoRoot options
+
 /// A file's fingerprint from its project's table: its own entry, or the whole
 /// project's fingerprint for a file not in `SourceFiles`.
 let private fingerprintIn
@@ -299,6 +355,16 @@ let private fingerprintIn
     | true, fingerprint -> fingerprint
     | false, _ -> whole
 
+/// `upstreamFingerprintsWith` for one file.
+let upstreamFingerprintWith
+    (hashFile: string -> string)
+    (stampFile: string -> string)
+    (repoRoot: string option)
+    (filePath: string)
+    (options: FSharpProjectOptions)
+    : string =
+    fingerprintIn (upstreamFingerprintsWith hashFile stampFile repoRoot options) filePath
+
 /// `upstreamFingerprints` for one file.
 let upstreamFingerprint
     (hashFile: string -> string)
@@ -306,7 +372,7 @@ let upstreamFingerprint
     (filePath: string)
     (options: FSharpProjectOptions)
     : string =
-    fingerprintIn (upstreamFingerprints hashFile repoRoot options) filePath
+    upstreamFingerprintWith hashFile fileStampText repoRoot filePath options
 
 /// `upstreamFingerprints`, computed once per project per GENERATION and reused.
 ///
@@ -427,12 +493,14 @@ let fcsCheckSignature (checkResults: FileCheckState) : string =
                   Message = d.Message })
             :> DiagnosticSignature seq)
 
-/// The check-result cache key: the file's own bytes, and — in the options half — its
-/// project's options hash combined with its upstream fingerprint
-/// (`upstreamFingerprints`). The one definition `CheckPipeline` looks results up by.
-/// Returns None when the file cannot be read — callers must treat this as a miss.
+/// The check-result cache key: the file's own bytes, and — in the options half — the
+/// checker build (`toolchainIdentity`), its project's options hash and its upstream
+/// fingerprint (`upstreamFingerprints`). The one definition `CheckPipeline` looks
+/// results up by. Returns None when the file cannot be read — callers must treat this
+/// as a miss.
 let makeCacheKeyWith
     (provider: ICacheKeyProvider)
+    (toolchain: string)
     (optionsHash: string)
     (upstream: string)
     (filePath: string)
@@ -440,9 +508,10 @@ let makeCacheKeyWith
     provider.GetFileHash(filePath)
     |> Option.map (fun fileHash ->
         { FileHash = ContentHash.create fileHash
-          ProjectOptionsHash = ContentHash.create (sha256Hex $"%s{optionsHash}|%s{upstream}") })
+          ProjectOptionsHash = ContentHash.create (sha256Hex $"%s{toolchain}|%s{optionsHash}|%s{upstream}") })
 
-/// `makeCacheKeyWith` with no repository root: every path hashed as written.
+/// `makeCacheKeyWith` under this process's toolchain, with no repository root: every
+/// path hashed as written.
 let makeCacheKey (provider: ICacheKeyProvider) (filePath: string) (options: FSharpProjectOptions) : CacheKey option =
     let upstream = upstreamFingerprint (FileContentHasher().Hash) None filePath options
-    makeCacheKeyWith provider (getProjectOptionsHash options) upstream filePath
+    makeCacheKeyWith provider toolchainIdentity (getProjectOptionsHash options) upstream filePath

@@ -3719,6 +3719,8 @@ let private performScan
     // The pipeline's check-start count when the scan began, set once by `scanBody` so it
     // spans every attempt: a replaced model's cancelled checks are this scan's cost too.
     let checkStartsAtScanStart = ref 0L
+    // The cache's tally then, likewise: the scan's own hits and misses are the difference.
+    let cacheTallyAtScanStart = ref CheckCacheTally.CacheTally.empty
 
     let scanAttempt =
         async {
@@ -4110,6 +4112,12 @@ let private performScan
 
             let directSpawns, helperSpawns = ProcessHelper.spawnCounts ()
 
+            let cacheScan =
+                CheckCacheTally.CacheTally.since cacheTallyAtScanStart.Value pipeline.CacheTally
+
+            if cacheScan.Hits + CheckCacheTally.CacheTally.misses cacheScan > 0L then
+                Logging.info "cache" (CheckCacheTally.describeCacheTally cacheScan)
+
             let sample: ScanMetrics.ScanSample =
                 { Generation = newGeneration
                   Kind = ScanActivity.ScanKind.describe (scanKindFor state)
@@ -4121,6 +4129,8 @@ let private performScan
                   FilesDepsGated = depsGatedTotal
                   FilesUncovered = uncoveredTotal
                   CheckStarts = pipeline.CheckStarts - checkStartsAtScanStart.Value
+                  CacheHits = cacheScan.Hits
+                  CacheMisses = CheckCacheTally.CacheTally.misses cacheScan
                   RetryRounds = retryRounds
                   RssBytes = reading.RssBytes
                   ManagedBytes = reading.ManagedBytes
@@ -4181,6 +4191,7 @@ let private performScan
     let scanBody =
         async {
             checkStartsAtScanStart.Value <- ctx.Pipeline.CheckStarts
+            cacheTallyAtScanStart.Value <- ctx.Pipeline.CacheTally
 
             try
                 return! completeCurrent 1

@@ -9,6 +9,7 @@ open FSharp.Compiler.Text
 open FsHotWatch.Events
 open FsHotWatch.Logging
 open FsHotWatch.CheckCache
+open FsHotWatch.CheckCacheTally
 
 let private cancelAndDispose (cts: CancellationTokenSource) =
     try
@@ -25,23 +26,39 @@ let private noopSink =
         member _.Log _ = ()
         member _.SetSummary _ = () }
 
-/// Pure cache-lookup decision: returns Some only when the cached entry is a FullCheck
-/// whose recorded project outputs all still hold the bytes it was typed against
-/// (`outputsHold`). ParseOnly entries are misses so the file is re-checked. Exposed so
-/// cache-invalidation logic can be tested without disk or FCS.
+/// Pure cache-lookup decision: the entry when it is a FullCheck none of whose recorded
+/// project outputs has moved from the bytes it was typed against (`movedOutputs` names
+/// the ones that have), else why not. ParseOnly entries are misses so the file is
+/// re-checked. Exposed so cache-invalidation logic can be tested without disk or FCS.
+let lookupCachedFullCheck
+    (movedOutputs: (string * string) list -> string list)
+    (backend: ICheckCacheBackend)
+    (key: CacheKey option)
+    : Result<FileCheckResult, CacheMiss> =
+    match key with
+    | None -> Error CacheMiss.NoKey
+    | Some k ->
+        match backend.TryGet k with
+        | Some { Result = { CheckResults = FullCheck _ } as r
+                 ProjectOutputs = outputs } ->
+            match movedOutputs outputs with
+            | [] -> Ok r
+            | moved -> Error(CacheMiss.OutputsMoved moved)
+        | Some _ -> Error CacheMiss.ParseOnly
+        | None -> Error CacheMiss.NoEntry
+
+/// `lookupCachedFullCheck` as an option, with `outputsHold` saying whether every
+/// recorded output still holds; None also when there is no backend.
 let tryGetCachedFullCheck
     (outputsHold: (string * string) list -> bool)
     (backend: ICheckCacheBackend option)
     (key: CacheKey option)
     : FileCheckResult option =
-    match backend, key with
-    | Some b, Some k ->
-        match b.TryGet k with
-        | Some { Result = { CheckResults = FullCheck _ } as r
-                 ProjectOutputs = outputs } when outputsHold outputs -> Some r
-        | Some _
-        | None -> None
-    | _ -> None
+    let movedOutputs outputs =
+        if outputsHold outputs then [] else List.map fst outputs
+
+    backend
+    |> Option.bind (fun b -> lookupCachedFullCheck movedOutputs b key |> Result.toOption)
 
 /// The diagnostic messages a parse+check answer carries. `Aborted` carries none:
 /// a check that did not finish said nothing about any type.
@@ -319,7 +336,7 @@ type CheckPipeline
 
         let upstream = upstreamFingerprints.For(path, options, optionsHash)
 
-        makeCacheKeyWith keyProvider optionsHash upstream path
+        makeCacheKeyWith keyProvider toolchainIdentity optionsHash upstream path
 
     /// The key as the disk stands NOW, bypassing the generation memo. A result is
     /// stored only under a key this still produces after the check, so a check that
@@ -329,7 +346,7 @@ type CheckPipeline
 
         let upstream = upstreamFingerprints.Fresh(path, options)
 
-        makeCacheKeyWith keyProvider (optionsHashOf options) upstream path
+        makeCacheKeyWith keyProvider toolchainIdentity (optionsHashOf options) upstream path
 
     /// A project output as an entry records it: repository-relative, so a sibling
     /// worktree's identical output verifies it too.
@@ -340,9 +357,14 @@ type CheckPipeline
         repoRoot
         |> Option.fold (fun (path: string) root -> path.Replace(RepoRootPlaceholder, Path.GetFullPath root)) name
 
-    /// Whether every output an entry recorded still holds the bytes it was typed against.
-    let outputsHold (outputs: (string * string) list) =
-        outputs |> List.forall (fun (name, hash) -> hashFile (outputPath name) = hash)
+    /// The outputs an entry recorded that no longer hold the bytes it was typed against.
+    let movedOutputs (outputs: (string * string) list) =
+        outputs
+        |> List.filter (fun (name, hash) -> hashFile (outputPath name) <> hash)
+        |> List.map fst
+
+    /// Every lookup and store this pipeline's cache has made, by outcome.
+    let cacheTally = CacheTallyCounter()
 
     /// Report the registered working set to a scoped backend.
     let ensureCacheCoversWorkingSet () =
@@ -372,6 +394,10 @@ type CheckPipeline
     /// How many checks this pipeline has started in FCS, cumulative: one per
     /// `check start` line, whether the check then completed or was cancelled.
     member internal _.CheckStarts: int64 = Volatile.Read &checkStarts
+
+    /// What this pipeline's check-result cache has done, cumulative; `CacheTally.since`
+    /// two of these is one scan's. Empty while no cache is configured.
+    member internal _.CacheTally: CacheTally = cacheTally.Snapshot
 
     /// This pipeline's turn at the slots its checks are admitted by.
     member internal _.Admission: WorkScheduler.Lane = admission
@@ -927,7 +953,17 @@ type CheckPipeline
                     cacheBackend
                     |> Option.bind (fun _ -> makeCacheKeyFast (AbsFilePath.create absPath) options)
 
-                match tryGetCachedFullCheck outputsHold cacheBackend cacheKey with
+                let cached =
+                    match cacheBackend |> Option.map (fun b -> lookupCachedFullCheck movedOutputs b cacheKey) with
+                    | Some(Ok cached) ->
+                        cacheTally.LookedUp CacheLookupOutcome.Hit
+                        Some cached
+                    | Some(Error miss) ->
+                        cacheTally.LookedUp(CacheLookupOutcome.Miss miss)
+                        None
+                    | None -> None
+
+                match cached with
                 | Some cached ->
                     Logging.debug "check" $"Cache hit: %s{Path.GetFileName(absPath)}"
                     return Some cached
@@ -945,6 +981,8 @@ type CheckPipeline
                         | FullCheck results when
                             not (cacheableAnswer (results.Diagnostics |> Seq.map (fun d -> d.Message)))
                             ->
+                            cacheTally.Stored CacheStore.Uncacheable
+
                             Logging.debug
                                 "check"
                                 $"Not caching %s{Path.GetFileName absPath}: its answer declared a type incompatible with itself"
@@ -953,7 +991,11 @@ type CheckPipeline
                                 key
                                 { Result = r
                                   ProjectOutputs = [ for output, hash in outputs -> outputName output, hash ] }
+
+                            cacheTally.Stored CacheStore.Stored
                         | FullCheck _ ->
+                            cacheTally.Stored CacheStore.InputsMoved
+
                             Logging.debug
                                 "check"
                                 $"Not caching %s{Path.GetFileName absPath}: its inputs moved during the check"

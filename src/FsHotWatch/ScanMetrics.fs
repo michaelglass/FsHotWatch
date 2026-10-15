@@ -52,6 +52,13 @@ type ScanSample =
         /// amplification a file count hides: a scan whose model was replaced mid-way, or
         /// whose checks a concurrent batch cancelled, starts files twice.
         CheckStarts: int64
+        /// Check-result cache lookups this scan answered from the cache. Against
+        /// `CheckStarts`, what says an unchanged rescan was served rather than re-checked:
+        /// `FilesChecked` counts a served file as checked. 0 with no cache.
+        CacheHits: int64
+        /// Check-result cache lookups this scan missed, for any reason; the reasons are in
+        /// the scan's `check-result cache:` log line (`CheckCacheTally.describeCacheTally`).
+        CacheMisses: int64
         /// Extra rounds `runChecksWithRetry` needed beyond the first pass,
         /// summed over tiers. 0 on a clean scan; the retry amplification
         /// bounds shows up here.
@@ -138,6 +145,8 @@ let toJsonLine (sample: ScanSample) : string =
            filesDepsGated = sample.FilesDepsGated
            filesUncovered = sample.FilesUncovered
            checkStarts = sample.CheckStarts
+           cacheHits = sample.CacheHits
+           cacheMisses = sample.CacheMisses
            retryRounds = sample.RetryRounds
            rssBytes = sample.RssBytes
            managedBytes = sample.ManagedBytes
@@ -190,6 +199,8 @@ let tryParseLine (line: string) : ScanSample option =
                   FilesDepsGated = optionalInt "filesDepsGated"
                   FilesUncovered = optionalInt "filesUncovered"
                   CheckStarts = optionalInt64 "checkStarts"
+                  CacheHits = optionalInt64 "cacheHits"
+                  CacheMisses = optionalInt64 "cacheMisses"
                   RetryRounds = (field "retryRounds").GetInt32()
                   RssBytes = (field "rssBytes").GetInt64()
                   ManagedBytes = (field "managedBytes").GetInt64()

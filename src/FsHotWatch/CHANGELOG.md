@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- fix!: the check-result cache key names three inputs it used to trust by path. The
+  first is the checker build that computed the result: `CheckCache.toolchainIdentity`,
+  the module version ids of FCS, FSharp.Core and fshw. `makeCacheKeyWith` takes it as a
+  new second argument. The second is the stamp of each non-F# (IL or PE) project
+  reference. The third is the stamp of each `-r:` assembly outside the repository
+  (`fileStampText`: length and last-write time, one stat, no read), so a sibling
+  repository's DLL rebuilt in place no longer replays results typed against its
+  previous build. `upstreamFingerprintsWith` / `upstreamFingerprintWith` take the
+  stamp reader.
+- feat!: the check-result cache says what it did, once per scan. A line such as
+  `check-result cache: 2110 hits, 318 misses — 318 output moved; outputs whose bytes
+  moved: ${repo}/src/Lib/bin/Lib.dll ×318; stored 318` gives the misses by reason (no
+  entry, output moved, parse-only, unreadable) and names the referenced outputs whose
+  bytes moved. `ScanMetrics.ScanSample` gains `CacheHits` and `CacheMisses`
+  (`cacheHits`/`cacheMisses` in `scan-metrics.jsonl`; absent in older lines reads as 0).
+  New `CheckCacheTally` module; `CheckPipeline.lookupCachedFullCheck` returns the miss
+  reason.
 - feat: `WorkScheduler.parallelWithin bound jobs` runs a fan-out with at most `bound`
   jobs started and unfinished at once, results in input order. The daemon's change
   batch and cold-scan tiers now fan out through it, bounded by the pipeline's admission
