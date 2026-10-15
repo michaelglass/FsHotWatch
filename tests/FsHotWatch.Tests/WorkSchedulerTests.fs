@@ -202,3 +202,72 @@ let ``releasing a slot nobody holds is a bug, not a no-op`` () =
 [<Fact(Timeout = 5000)>]
 let ``a scheduler has at least one slot`` () =
     raises<ArgumentOutOfRangeException> <@ Scheduler 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``parallelWithin never has more jobs in flight than its bound, and keeps their order`` () =
+    let gate = obj ()
+    let inFlight = ref 0
+    let peak = ref 0
+
+    let job (i: int) =
+        async {
+            lock gate (fun () ->
+                inFlight.Value <- inFlight.Value + 1
+                peak.Value <- max peak.Value inFlight.Value)
+
+            do! Async.Sleep 30
+            lock gate (fun () -> inFlight.Value <- inFlight.Value - 1)
+            return i
+        }
+
+    let results = parallelWithin 3 [ for i in 1..20 -> job i ] |> Async.RunSynchronously
+
+    test <@ results = [| 1..20 |] @>
+    test <@ peak.Value = 3 @>
+
+[<Fact(Timeout = 5000)>]
+let ``parallelWithin runs one at a time when asked for none`` () =
+    let results =
+        parallelWithin 0 [ async { return 1 }; async { return 2 } ]
+        |> Async.RunSynchronously
+
+    test <@ results = [| 1; 2 |] @>
+
+/// The core library's source, next to this test project.
+let private coreSources () =
+    let dir =
+        IO.Path.GetFullPath(IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "src", "FsHotWatch"))
+
+    IO.Directory.GetFiles(dir, "*.fs")
+
+/// Every code line of `path` that fans out with `Async.Parallel`, as "File.fs:line".
+/// Comments are not code: a line comment's text, and doc comments, are dropped.
+let private parallelSites (path: string) =
+    IO.File.ReadAllLines path
+    |> Array.indexed
+    |> Array.choose (fun (index, line) ->
+        let code =
+            match line.IndexOf "//" with
+            | -1 -> line
+            | at -> line.Substring(0, at)
+
+        if code.Contains "Async.Parallel" then
+            Some($"%s{IO.Path.GetFileName path}:%d{index + 1}", code.Trim())
+        else
+            None)
+
+[<Fact(Timeout = 5000)>]
+let ``no core code fans out with an unbounded Async.Parallel`` () =
+    // A tier or batch of checks fans out through `parallelWithin`, bounded by the
+    // admission slots, so how much one fan-out holds live does not grow with the files.
+    let sites = coreSources () |> Array.collect parallelSites
+
+    test <@ not (Array.isEmpty sites) @>
+
+    let unbounded =
+        sites
+        |> Array.filter (fun (_, code) -> not (code.Contains "maxDegreeOfParallelism"))
+        |> Array.map fst
+        |> List.ofArray
+
+    test <@ List.isEmpty unbounded @>

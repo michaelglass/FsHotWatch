@@ -131,3 +131,13 @@ and [<Sealed>] Lane internal (scheduler: Scheduler, name: string) =
 
     /// Give back a slot this lane's caller holds. It goes to the next lane in turn.
     member _.Release() : unit = scheduler.Release()
+
+/// Run `jobs` with at most `bound` (at least one) of them started and unfinished at
+/// once, results in the order of `jobs`.
+///
+/// Unbounded, a fan-out over every file of a tier or batch starts every job at once,
+/// each holding its closure and a place in the scheduler's queue, so what it holds
+/// grows with the files. Bounded by the slots, the jobs not yet admitted stay unstarted
+/// descriptions.
+let parallelWithin (bound: int) (jobs: Async<'T> seq) : Async<'T array> =
+    Async.Parallel(jobs, maxDegreeOfParallelism = max 1 bound)

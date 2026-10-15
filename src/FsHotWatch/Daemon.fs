@@ -2047,7 +2047,10 @@ let private processBatchAttempt
                             for file in projFiles do
                                 tierChecks.Add(ctx.Pipeline.CheckFile(file, ctx.DaemonCt.Value))
 
-                let! results = tierChecks |> Seq.toList |> Async.Parallel |> CheckCaller.within "change batch"
+                let! results =
+                    tierChecks
+                    |> WorkScheduler.parallelWithin ctx.Pipeline.CheckConcurrencyBound
+                    |> CheckCaller.within "change batch"
 
                 emitResults results
 
@@ -2058,7 +2061,7 @@ let private processBatchAttempt
                 let! results =
                     uncovered
                     |> List.map (fun file -> ctx.Pipeline.CheckFile(file, ctx.DaemonCt.Value))
-                    |> Async.Parallel
+                    |> WorkScheduler.parallelWithin ctx.Pipeline.CheckConcurrencyBound
                     |> CheckCaller.within "change batch"
 
                 emitResults results
@@ -3537,10 +3540,14 @@ let internal freshForTier
 /// `BudgetExhausted` case carries the files and the rounds spent, and the caller
 /// says so in the log instead of looping on in silence.
 ///
+/// At most `maxInFlight` checks of a round are started and unfinished at once (the
+/// pipeline's admission bound), so a tier's live work does not grow with its files.
+///
 /// Pure of FCS and disk: `check` is injected, making the retry/convergence and
 /// honest-completion invariants unit-testable at the narrowest seam.
 let internal runChecksWithRetry
     (maxRetries: int)
+    (maxInFlight: int)
     (check: AbsFilePath -> Async<'r option>)
     (emit: 'r -> unit)
     (files: AbsFilePath list)
@@ -3562,7 +3569,7 @@ let internal runChecksWithRetry
                             return None
                         | None -> return Some file
                     })
-                |> Async.Parallel
+                |> WorkScheduler.parallelWithin maxInFlight
 
             pending <- stillPending |> Array.choose id |> Array.toList
             round <- round + 1
@@ -4001,7 +4008,12 @@ let private performScan
                                     ScanState = Scanning(total, completed, System.DateTime.UtcNow) })
 
                     let! tierOutcome =
-                        runChecksWithRetry scanRetryBudget (fun f -> tierThunks[f]) emitChecked tierFiles
+                        runChecksWithRetry
+                            scanRetryBudget
+                            ctx.Pipeline.CheckConcurrencyBound
+                            (fun f -> tierThunks[f])
+                            emitChecked
+                            tierFiles
                         |> CheckCaller.within "scan"
 
                     match tierOutcome with

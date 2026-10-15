@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: `WorkScheduler.parallelWithin bound jobs` runs a fan-out with at most `bound`
+  jobs started and unfinished at once, results in input order. The daemon's change
+  batch and cold-scan tiers now fan out through it, bounded by the pipeline's admission
+  slots. Before, they started a check for every file of a tier at once, so a 2,000-file
+  tier put 2,000 checks in flight, each holding its closure and a scheduler waiter. Now
+  the rest wait unstarted until a running check finishes. A source-guard test fails on
+  any unbounded `Async.Parallel` in the core library.
+
 ## 0.10.0-alpha.74 - 2026-10-15
 
 - feat: `ProcessHelper.runProcessToStopping` streams a child's output like
