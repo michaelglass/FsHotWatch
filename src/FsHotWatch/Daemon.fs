@@ -4097,6 +4097,7 @@ let private performScan
                 )
 
             let directSpawns, helperSpawns = ProcessHelper.spawnCounts ()
+            let bootstraps = pipeline.FcsBootstraps
 
             let sample: ScanMetrics.ScanSample =
                 { Generation = newGeneration
@@ -4116,6 +4117,8 @@ let private performScan
                   Gen2Collections = reading.Gen2Collections
                   DirectSpawns = directSpawns
                   HelperSpawns = helperSpawns
+                  FcsBootstrapStarts = bootstraps.Started
+                  FcsBootstrapProjects = bootstraps.Projects
                   Scope = ctx.Seams.ResourceScope
                   SampledAt = System.DateTime.UtcNow }
 
@@ -4871,14 +4874,21 @@ module Daemon =
     ///
     /// `cacheSizes` bounds the TransparentCompiler's caches; see
     /// `DefaultCheckerCacheSizeFactor`.
+    ///
+    /// Its project bootstraps are counted from the start (`FcsBootstraps`), so each
+    /// scan's record says how many import graphs the checker has computed.
     let createCheckerWithCacheSizes (cacheSizes: TransparentCompiler.CacheSizes) =
-        FSharpChecker.Create(
-            keepAssemblyContents = true,
-            keepAllBackgroundResolutions = false,
-            parallelReferenceResolution = true,
-            useTransparentCompiler = true,
-            transparentCompilerCacheSizes = cacheSizes
-        )
+        let checker =
+            FSharpChecker.Create(
+                keepAssemblyContents = true,
+                keepAllBackgroundResolutions = false,
+                parallelReferenceResolution = true,
+                useTransparentCompiler = true,
+                transparentCompilerCacheSizes = cacheSizes
+            )
+
+        FcsBootstraps.attach checker
+        checker
 
     /// The checker's cache sizes at `factor`: FCS's own, except that the per-file
     /// type-checks (`TcIntermediate`) are never released while they are current.

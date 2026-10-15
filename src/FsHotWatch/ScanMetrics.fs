@@ -73,6 +73,13 @@ type ScanSample =
         DirectSpawns: int64
         /// Children a spawn helper had started for this process, cumulative.
         HelperSpawns: int64
+        /// Project bootstraps the checker has computed, cumulative at sample time
+        /// (`FcsBootstraps`). Each is an import graph of the project's references. In a
+        /// repository host the checker is shared, so this is the host's count.
+        FcsBootstrapStarts: int64
+        /// Distinct projects those bootstraps were computed for. More starts than
+        /// projects, with no edit in between, is a project imported twice.
+        FcsBootstrapProjects: int
         /// Whose resources `RssBytes` and `ManagedBytes` measure.
         Scope: DaemonHosting.ResourceScope
         /// UTC sample instant, round-trip ("o") format.
@@ -145,6 +152,8 @@ let toJsonLine (sample: ScanSample) : string =
            gen2Collections = sample.Gen2Collections
            directSpawns = sample.DirectSpawns
            helperSpawns = sample.HelperSpawns
+           fcsBootstrapStarts = sample.FcsBootstrapStarts
+           fcsBootstrapProjects = sample.FcsBootstrapProjects
            scope = DaemonHosting.ResourceScope.render sample.Scope
            sampledAt = sample.SampledAt.ToString("o") |}
     )
@@ -197,6 +206,8 @@ let tryParseLine (line: string) : ScanSample option =
                   Gen2Collections = (field "gen2Collections").GetInt32()
                   DirectSpawns = optionalInt64 "directSpawns"
                   HelperSpawns = optionalInt64 "helperSpawns"
+                  FcsBootstrapStarts = optionalInt64 "fcsBootstrapStarts"
+                  FcsBootstrapProjects = optionalInt "fcsBootstrapProjects"
                   Scope =
                     DaemonHosting.ResourceScope.parse (
                         match root.TryGetProperty "scope" with

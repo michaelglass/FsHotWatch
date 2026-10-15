@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: every `scan-metrics.jsonl` record carries `fcsBootstrapStarts` and
+  `fcsBootstrapProjects`, the project bootstraps the checker has computed and the
+  distinct projects they were for (`FcsBootstraps`). A bootstrap is an import graph of
+  a project's references, so more starts than projects with no edit between them is a
+  project imported twice; in a repository host the count is the shared checker's. Each
+  start is also logged at debug. Records written before these fields parse with both at
+  zero.
+
 - feat: `ImportStore.Store` keeps a repository's referenced assemblies by content: one
   path per SHA-256 of a dll's bytes, under the dll's own file name, with a write time
   derived from the hash. FCS identifies a referenced assembly by path and write time, so

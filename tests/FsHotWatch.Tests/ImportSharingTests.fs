@@ -330,3 +330,51 @@ let ``sessions whose reference sets differ hold their own imports, even of ident
         let unitB = unitPlaced place true w.Checker w.Hasher w.B "Vendored"
 
         test <@ not (obj.ReferenceEquals(unitA, unitB)) @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a second identical session under the virtual root starts no second bootstrap`` () =
+    withTempDir "import-sharing-bootstraps-shared" (fun dir ->
+        let checker = Daemon.Daemon.createChecker ()
+        let hasher = CheckCache.FileContentHasher()
+        let framework = frameworkOptions checker dir
+        let virtualRoot = Path.Combine(dir, "virtual")
+        let a = session framework virtualRoot (Path.Combine(dir, "a")) [ external ]
+        let b = session framework virtualRoot (Path.Combine(dir, "b")) [ external ]
+
+        unitOf checker hasher a "Unquote" |> ignore
+        let afterA = FcsBootstraps.countsOf checker
+        unitOf checker hasher b "Unquote" |> ignore
+        let afterB = FcsBootstraps.countsOf checker
+
+        test <@ afterA.Started >= 1L && afterA.Projects = 1 @>
+        test <@ afterB = afterA @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a second session at its own paths starts a second bootstrap, for a second project`` () =
+    // What a host whose sessions do not share would record: one import graph per
+    // session.
+    withTempDir "import-sharing-bootstraps-apart" (fun dir ->
+        let checker = Daemon.Daemon.createChecker ()
+        let hasher = CheckCache.FileContentHasher()
+        let framework = frameworkOptions checker dir
+        let virtualRoot = Path.Combine(dir, "virtual")
+        let a = session framework virtualRoot (Path.Combine(dir, "a")) [ external ]
+        let b = session framework virtualRoot (Path.Combine(dir, "b")) [ external ]
+
+        unitIn false checker hasher a "Unquote" |> ignore
+        let afterA = FcsBootstraps.countsOf checker
+        unitIn false checker hasher b "Unquote" |> ignore
+        let afterB = FcsBootstraps.countsOf checker
+
+        test <@ afterB.Started > afterA.Started @>
+        test <@ afterB.Projects = afterA.Projects + 1 @>)
+
+[<Fact>]
+let ``a checker never attached, or none, counts no bootstraps`` () =
+    let unattached =
+        FSharpChecker.Create(useTransparentCompiler = true)
+
+    test <@ FcsBootstraps.countsOf unattached = { Started = 0L; Projects = 0 } @>
+
+    test
+        <@ FcsBootstraps.countsOf Unchecked.defaultof<FSharpChecker> = { Started = 0L; Projects = 0 } @>

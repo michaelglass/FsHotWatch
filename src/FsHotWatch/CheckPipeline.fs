@@ -378,6 +378,9 @@ type CheckPipeline
     /// This pipeline's turn at the slots its checks are admitted by.
     member internal _.Admission: WorkScheduler.Lane = admission
 
+    /// The project bootstraps this pipeline's checker has computed (`FcsBootstraps`).
+    member internal _.FcsBootstraps: FcsBootstraps.Counts = FcsBootstraps.countsOf checker
+
     /// Where this pipeline's checks read an in-repository reference from.
     member internal _.Imports: ProjectSnapshots.ReferencePlacement = imports
 
