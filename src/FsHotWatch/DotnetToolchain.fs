@@ -56,12 +56,16 @@ let internal answerOf (run: unit -> ProcessOutcome) : string =
 let private askVersion (workDir: string) : string =
     answerOf (fun () -> runProcess "dotnet" "--version" workDir [] (ProcessBounds.silent (TimeSpan.FromSeconds 30.0)))
 
-/// Resolves identities, one `dotnet --version` per SDK selection.
+/// Resolves identities, one `dotnet --version` per SDK selection and environment.
 ///
-/// The environment a daemon spawns its children with is fixed for its lifetime, so
-/// only a different `global.json` can change what they resolve. Answers are keyed by
-/// that file's content, so every checkout without one, or with the same one, pays
-/// for a single `dotnet --version`. `ask` runs it in a directory — supplied, for tests.
+/// A child of this process runs in this process's environment, which is fixed for its
+/// lifetime, unless a repository host's session is in scope: then `ProcessHelper`
+/// replaces the child's whole environment with the session's, PATH and DOTNET_ROOT
+/// included. Answers are keyed by the `global.json` content and by that session
+/// environment, so an answer resolved in one session is never served outside it or in
+/// another. Every checkout without a `global.json`, or with the same one, in the same
+/// environment pays for a single `dotnet --version`. `ask` runs it in a directory —
+/// supplied, for tests.
 type internal Resolver(ask: string -> string) =
     let resolved = ConcurrentDictionary<string, Lazy<string>>()
 
@@ -69,16 +73,29 @@ type internal Resolver(ask: string -> string) =
         let globalJsonPath = tryFindGlobalJson repoRoot
         let globalJson = globalJsonPath |> Option.map File.ReadAllText
 
-        let dotnetRoot = Environment.GetEnvironmentVariable "DOTNET_ROOT" |> Option.ofObj
+        let session =
+            SessionScope.SessionEnvironment.current ()
+            |> Option.map SessionScope.SessionEnvironment.variables
+
+        let dotnetRoot =
+            match session with
+            | Some variables -> Map.tryFind "DOTNET_ROOT" variables
+            | None -> Environment.GetEnvironmentVariable "DOTNET_ROOT" |> Option.ofObj
+
+        // Empty for this process's own environment, which cannot change under it.
+        let environment =
+            session
+            |> Option.map (Map.toList >> List.map (fun (name, value) -> $"%s{name}=%s{value}"))
+            |> Option.defaultValue []
 
         let workDir =
             globalJsonPath
             |> Option.map Path.GetDirectoryName
             |> Option.defaultValue repoRoot
 
-        resolved
-            .GetOrAdd(describe "" dotnetRoot globalJson, fun _ -> lazy (describe (ask workDir) dotnetRoot globalJson))
-            .Value
+        let key = describe "" dotnetRoot globalJson :: environment |> String.concat "\n"
+
+        resolved.GetOrAdd(key, fun _ -> lazy (describe (ask workDir) dotnetRoot globalJson)).Value
 
 let private shared = Resolver(askVersion)
 

@@ -108,6 +108,46 @@ let ``the resolver asks dotnet once per SDK selection, not once per lookup`` () 
         test <@ pinned <> first @>)
 
 [<Fact(Timeout = 15000)>]
+let ``an answer resolved in one session's environment is not served outside it, or in another`` () =
+    withTempDir "toolchain-session" (fun dir ->
+        let mutable asked = 0
+
+        // Answers as `dotnet --version` would: from the environment its child runs in, which
+        // a repository host's session replaces wholesale.
+        let resolver =
+            Resolver(fun _ ->
+                asked <- asked + 1
+
+                match FsHotWatch.SessionScope.SessionEnvironment.current () with
+                | None -> "10.0.400"
+                | Some session ->
+                    match
+                        FsHotWatch.SessionScope.SessionEnvironment.variables session
+                        |> Map.tryFind "PATH"
+                    with
+                    | Some "/sdk/bin:/usr/bin:/bin" -> "10.0.302"
+                    | path -> $"failed: Win32Exception: dotnet: not found on this worktree's PATH (%A{path})")
+
+        let inSession (path: string) =
+            let session =
+                FsHotWatch.SessionScope.SessionEnvironment.create dir (Map.ofList [ "PATH", path ])
+
+            use _scope = FsHotWatch.SessionScope.SessionEnvironment.install session
+            resolver.Identity dir
+
+        let withoutDotnet = inSession "/usr/bin:/bin"
+        let outside = resolver.Identity dir
+        let withDotnet = inSession "/sdk/bin:/usr/bin:/bin"
+        let withoutDotnetAgain = inSession "/usr/bin:/bin"
+
+        test <@ withoutDotnet.Contains "not found" @>
+        test <@ outside.Contains "dotnet --version=10.0.400" @>
+        test <@ withDotnet.Contains "dotnet --version=10.0.302" @>
+        // Still one `dotnet --version` per environment.
+        test <@ withoutDotnetAgain = withoutDotnet @>
+        test <@ asked = 3 @>)
+
+[<Fact(Timeout = 15000)>]
 let ``the identity names the version dotnet resolved, DOTNET_ROOT and global.json`` () =
     test <@ describe "10.0.302" None None <> describe "10.0.400" None None @>
     test <@ describe "10.0.400" (Some "/a") None <> describe "10.0.400" (Some "/b") None @>

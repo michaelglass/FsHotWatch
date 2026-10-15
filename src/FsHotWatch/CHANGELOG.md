@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: the toolchain a task key is scoped to is resolved in the environment the
+  `dotnet --version` child actually runs in. Inside a repository host's session that is
+  the session's environment, which replaces the process's wholesale, but the answer was
+  memoized per process by `global.json` alone. A session whose PATH has no `dotnet`
+  therefore fixed "dotnet: not found" as the identity of every later checkout without a
+  `global.json`, in or out of a session. `DotnetToolchain.Resolver` now keys its answers
+  by the session environment as well, and takes DOTNET_ROOT from it.
 - fix: the daemon no longer stalls in a scan whose checks finish faster than the thread
   pool adds threads. Each check emits its file while holding the discovery lock, and the
   work store used to publish every change from a pool thread. With every pool thread held
