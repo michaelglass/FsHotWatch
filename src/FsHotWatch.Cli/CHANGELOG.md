@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **fix!: `check` and `confirm` scan on behalf of their own run claim, so the test runs
+  their scan sets off stop when they do. `IpcOps.Scan` takes the invocation
+  (`string -> string option -> Async<string>`), and `FsHotWatch.Cli.RunClaim` is now
+  `FsHotWatch.RunClaim` in core.** `fshw scan` still scans for the daemon, which
+  finishes its runs whoever is left.
+
 ## 0.14.0-alpha.102 - 2026-10-16
 
 - fix: `confirm` and `test-rerun` no longer stop the daemon they started when another run

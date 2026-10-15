@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **fix!: an impact-selected test run is cancelled, and its test hosts reaped, once
+  every client whose check set it off has gone. `TestPruneMsg` has a new case,
+  `TestRunWithdrawn`**, so code that matches it exhaustively must handle it. A run the
+  daemon owes (a watcher edit, a scan no client claimed) is never cancelled. A cancelled
+  run ends `Aborted`, reports nothing, leaves no run in flight, and leaves what it would
+  have discharged owed for the next run. A cancelled `run-tests` force-run no longer
+  leaves its run recorded as in flight either.
+
 ## 0.13.0-alpha.74 - 2026-10-16
 
 - **fix!: a test run whose test-host kill timed out no longer wedges the daemon.

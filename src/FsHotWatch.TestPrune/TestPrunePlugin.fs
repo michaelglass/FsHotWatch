@@ -2358,6 +2358,13 @@ type TestPruneMsg =
         owed: Set<string> *
         reply: Tasks.TaskCompletionSource<string> option *
         opened: TestRunStarted option
+    /// The run was cancelled because every client that wanted it has gone. It proves
+    /// nothing, and what it would have discharged stays owed. `owed`, `reply` and `opened`
+    /// as for `TestHostUnavailable`.
+    | TestRunWithdrawn of
+        owed: Set<string> *
+        reply: Tasks.TaskCompletionSource<string> option *
+        opened: TestRunStarted option
     /// A `run-tests` force-run completed. Folded exactly like `TestsFinished`; `reply` is
     /// resolved with `response` once that fold is published.
     | CommandTestsFinished of
@@ -6677,7 +6684,13 @@ let internal createWithQueries
 
         let workFor =
             function
-            | Ready -> PluginWork.resultFirst (workOf tracked)
+            | Ready ->
+                // Cancelled once every client that wanted it has gone (when `workOf` is
+                // cooperative-safe), it folds as withdrawn: it closes the run it opened and
+                // hands back what it consumed, so nothing of it is left in flight.
+                workOf tracked
+                |> PluginWork.onAbandon (fun () -> TestRunWithdrawn(owed, reply, opened.Value))
+                |> PluginWork.resultFirst
             | Invalid reason -> PluginWork.resultFirst (async { return ArtifactsUnavailable(reason, owed, reply) })
 
         // What this launch releases into the shared "build-artifacts" lease, which the
@@ -9064,8 +9077,12 @@ let internal createWithQueries
                     PendingForceRunProjects = Set.union launchState.PendingForceRunProjects fanout }
         else
             match
+                // Cooperative-safe: a run held only by clients is cancelled once they have
+                // all gone. Its test hosts run in its own process scope (reaped), its
+                // result publishes only through the fold it returns, and the run it opened
+                // is closed by its withdrawal fold. A run the daemon owes is never cancelled.
                 runTestHostExclusive ctx fanout None (fun runCtx ->
-                    runTestsWithImpact runCtx configs inputs hasCachedResults fanout)
+                    PluginWork.cooperativeSafe (runTestsWithImpact runCtx configs inputs hasCachedResults fanout))
             with
             | Claimed ->
                 Some
@@ -11288,6 +11305,27 @@ let internal createWithQueries
                     ctx.EmitTestRunCompleted completed
                     let message = $"The test run's result was discarded: %s{reason}"
                     return unavailableRun ctx state message owed reply
+
+                // Nobody is left to read this run, so it reports nothing: the status its
+                // `Running` displaced is already back. It closes what it opened, ends the
+                // run in flight, and hands back the fanout it consumed. The rest of its debt
+                // was never discharged, so whatever next wants a run launches with it.
+                | Custom(TestRunWithdrawn(owed, reply, opened)) ->
+                    let reason = "every client that wanted the run has gone"
+
+                    opened
+                    |> Option.iter (fun started ->
+                        let _, completed = abortedRunLifecycle (Some started) reason
+                        ctx.EmitTestRunCompleted completed)
+
+                    reply
+                    |> Option.iter (fun target ->
+                        target.TrySetResult(JsonSerializer.Serialize {| error = reason |}) |> ignore)
+
+                    return
+                        { endRun false state with
+                            PendingForceRunProjects = Set.union state.PendingForceRunProjects owed
+                            DebtDuringFullRun = Map.empty }
 
                 | Custom(ScopeRequested mode) ->
                     if TestMode.requestsFullSuite mode then

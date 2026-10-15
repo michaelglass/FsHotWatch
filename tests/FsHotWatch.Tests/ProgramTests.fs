@@ -53,7 +53,7 @@ let private fakeConfig: DaemonConfiguration =
 
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
-      Scan = fun _ -> async { return "scan started" }
+      Scan = fun _ _ -> async { return "scan started" }
       ScanStatus = fun _ -> async { return "idle" }
       GetStatus = fun _ -> async { return "{}" }
       GetPluginStatus = fun _ _ -> async { return "{}" }
@@ -1632,7 +1632,7 @@ let private runAgainst daemon command = runAgainstWhile ignore daemon command
 /// Another client attaching while a run is in flight: a `check` in the same workspace that
 /// reused the daemon holds a run claim on the repo for as long as it runs.
 let private anotherCheckAttaches (repoRoot: string) =
-    FsHotWatch.Cli.RunClaim.acquire repoRoot "check" "another-client" |> ignore
+    FsHotWatch.RunClaim.acquire repoRoot "check" "another-client" |> ignore
 
 [<Fact(Timeout = 30000)>]
 let ``confirm stops the daemon it started`` () =

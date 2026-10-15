@@ -52,7 +52,7 @@ let private writeJunkDll (dir: string) (name: string) =
 
 let private noIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "" }
-      Scan = fun _ -> async { return "" }
+      Scan = fun _ _ -> async { return "" }
       ScanStatus = fun _ -> async { return "idle" }
       GetStatus = fun _ -> async { return "{}" }
       GetPluginStatus = fun _ _ -> async { return "{}" }

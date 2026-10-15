@@ -105,6 +105,7 @@
     <Compile Include="RepoIdentity.fs" />
     <Compile Include="CacheResidency.fs" />
     <Compile Include="PluginWorkOwner.fs" />
+    <Compile Include="RunClaim.fs" />
     <Compile Include="SupervisedWork.fs" />
     <Compile Include="DebouncedWork.fs" />
     <Compile Include="PluginFramework.fs" />

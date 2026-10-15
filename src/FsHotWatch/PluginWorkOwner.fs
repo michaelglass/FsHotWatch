@@ -633,7 +633,36 @@ type ConsumerLeases =
     /// Only these clients need it; each token fires when its client goes away. Never empty.
     | HeldByClients of released: CancellationToken list
 
+/// The consumers the dispatch running on this thread acts for, set only for the span of
+/// one synchronous dispatch (`ConsumerLeases.onBehalfOf`). Thread-static, not
+/// async-local, so it never flows into work the dispatch starts.
+type private DispatchConsumers =
+    [<ThreadStatic; DefaultValue>]
+    static val mutable private current: ConsumerLeases option
+
+    static member Current
+        with get () = DispatchConsumers.current
+        and set (value: ConsumerLeases option) = DispatchConsumers.current <- value
+
 module ConsumerLeases =
+    /// Dispatch on behalf of `leases`: every event `dispatch` hands a plugin on this
+    /// thread is held by them, so the work it sets off is theirs too.
+    let onBehalfOf (leases: ConsumerLeases) (dispatch: unit -> 'T) : 'T =
+        let prior = DispatchConsumers.Current
+        DispatchConsumers.Current <- Some leases
+
+        try
+            dispatch ()
+        finally
+            DispatchConsumers.Current <- prior
+
+    /// Who the event being dispatched now is held by: the daemon, unless the dispatch is
+    /// made `onBehalfOf` clients.
+    let ofDispatch () : ConsumerLeases =
+        match DispatchConsumers.Current with
+        | Some leases -> leases
+        | None -> HeldByDaemon
+
     /// The lease of one client, released when `released` fires. A token that can never
     /// fire stands for no client at all, so the daemon holds the work instead.
     let ofClient (released: CancellationToken) =

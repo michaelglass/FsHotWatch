@@ -19,12 +19,11 @@
 /// concurrent checks in one workspace must not be able to release each other's claim,
 /// and with a shared file the second claimant's release would clear the marker while the
 /// first was still running — a hole in exactly the window the marker exists to cover.
-module FsHotWatch.Cli.RunClaim
+module FsHotWatch.RunClaim
 
 open System
 open System.IO
 open System.Text.Json
-open FsHotWatch
 
 /// The wire schema. Versioned like the verdict's, so a future shape change is a
 /// DECLARED break rather than a silent misparse.
@@ -284,3 +283,101 @@ let describe (c: Claim) : string =
     else
         let started = c.StartedAtUtc.ToLocalTime().ToString("HH:mm:ss")
         $"%s{c.Command} (pid %d{c.Pid} on %s{c.Host}, started %s{started})"
+
+// ---------------------------------------------------------------------------------------
+// The claim as a consumer lease
+// ---------------------------------------------------------------------------------------
+
+/// A claim the daemon is watching: the token that fires when it is released, and the
+/// timer that polls for that (held here so it is not collected).
+[<NoComparison; NoEquality>]
+type private Watch =
+    { Released: Threading.CancellationTokenSource
+      Poller: Threading.Timer }
+
+/// One watch per claim file, however many requests the invocation makes.
+let private watches =
+    Collections.Concurrent.ConcurrentDictionary<string, Lazy<Watch>>()
+
+/// An id this module will turn into a file name: no separators, no `..`.
+let private isFileStem (id: string) =
+    not (String.IsNullOrEmpty id)
+    && id |> Seq.forall (fun c -> Char.IsAsciiLetterOrDigit c || c = '-')
+
+/// What the claim file at `path` says now: `None` only when it is provably gone.
+let private readClaim (path: string) : Claim option option =
+    try
+        Some(deserialize (File.ReadAllText path))
+    with
+    | :? FileNotFoundException
+    | :? DirectoryNotFoundException -> None
+    | _ -> Some None
+
+/// Released only by what proves the client gone: its claim file removed, or its process
+/// provably exited. Never by time, so a machine that sleeps and wakes keeps the lease. A
+/// claim it cannot read stays held, like everywhere else in this module.
+let private isReleased (thisHost: string) (isAlive: int -> bool) (path: string) : bool =
+    match readClaim path with
+    | None -> true
+    | Some(Some claim) -> not (isHeld thisHost isAlive claim)
+    | Some None -> false
+
+let private watch (poll: TimeSpan) (thisHost: string) (isAlive: int -> bool) (path: string) : Watch =
+    let released = new Threading.CancellationTokenSource()
+    let polling = ref 0
+    let mutable poller: Threading.Timer = null
+
+    let tick (_: obj) =
+        // A slow probe must not overlap the next tick.
+        if Threading.Interlocked.Exchange(&polling.contents, 1) = 0 then
+            try
+                try
+                    if not released.IsCancellationRequested && isReleased thisHost isAlive path then
+                        Logging.info
+                            "run-claim"
+                            $"%s{Path.GetFileName path}: its client has gone; work held only for it is withdrawn"
+
+                        watches.TryRemove path |> ignore
+                        released.Cancel()
+                        poller.Dispose()
+                with ex ->
+                    Logging.debug "run-claim" $"could not probe %s{Path.GetFileName path}: %s{ex.Message}"
+            finally
+                Threading.Volatile.Write(&polling.contents, 0)
+
+    poller <- new Threading.Timer(Threading.TimerCallback tick, null, Threading.Timeout.Infinite, 0)
+    poller.Change(poll, poll) |> ignore
+    { Released = released; Poller = poller }
+
+/// The consumer lease a request from `invocationId` holds: released once that
+/// invocation's claim is (`isReleased`), checked every `poll`.
+///
+/// Held by the daemon — never released — whenever there is no claim of THIS machine to
+/// watch: no invocation (`fshw scan`, an older client), an id that names no claim, a claim
+/// that cannot be read, or a claim from another host, whose pid is never dead to us.
+let internal leaseWith
+    (poll: TimeSpan)
+    (thisHost: string)
+    (isAlive: int -> bool)
+    (repoRoot: string)
+    (invocationId: string option)
+    : PluginWorkOwner.ConsumerLeases =
+    match invocationId with
+    | Some id when isFileStem id ->
+        let path = claimPath repoRoot id
+
+        match readClaim path with
+        | Some(Some claim) when
+            String.Equals(claim.Host, thisHost, StringComparison.OrdinalIgnoreCase)
+            && isAlive claim.Pid
+            ->
+            let held =
+                watches.GetOrAdd(path, fun _ -> lazy (watch poll thisHost isAlive path)).Value
+
+            PluginWorkOwner.ConsumerLeases.ofClient held.Released.Token
+        | _ -> PluginWorkOwner.HeldByDaemon
+    | _ -> PluginWorkOwner.HeldByDaemon
+
+/// `leaseWith` for this machine, polled every two seconds.
+let internal leaseFor (repoRoot: string) (invocationId: string option) : PluginWorkOwner.ConsumerLeases =
+    leaseWith (TimeSpan.FromSeconds 2.0) Environment.MachineName processAlive repoRoot invocationId

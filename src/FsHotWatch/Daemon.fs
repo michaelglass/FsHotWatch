@@ -1435,7 +1435,7 @@ type private ScanAgentState =
 [<NoComparison; NoEquality>]
 type private ScanRequest =
     /// A scan request and the moment it was admitted (`Stopwatch` ticks).
-    | RunScan of admittedAt: int64
+    | RunScan of admittedAt: int64 * consumers: PluginWorkOwner.ConsumerLeases
     /// Test seam: replace the published scan state.
     | SetScanState of ScanState
 
@@ -1446,10 +1446,10 @@ type ScanAgent = private ScanAgent of SupervisedWork.Queue<ScanAgentState, ScanR
 
 /// Admit a scan request and bind later `WaitForScan` waiters to it. Returns the request's
 /// receipt once the admission is published.
-let private admitScan (ScanAgent(owner, signal)) ct : Async<Task<unit>> =
+let private admitScan (ScanAgent(owner, signal)) consumers ct : Async<Task<unit>> =
     async {
         match!
-            owner.SubmitAsync(RunScan(Diagnostics.Stopwatch.GetTimestamp()), ct)
+            owner.SubmitAsync(RunScan(Diagnostics.Stopwatch.GetTimestamp(), consumers), ct)
             |> Async.AwaitTask
         with
         | Ok receipt ->
@@ -1461,7 +1461,7 @@ let private admitScan (ScanAgent(owner, signal)) ct : Async<Task<unit>> =
 /// Admit a scan and wait for its receipt, raising the scan's own failure.
 let private requestScan scanAgent ct =
     async {
-        let! receipt = admitScan scanAgent ct
+        let! receipt = admitScan scanAgent PluginWorkOwner.HeldByDaemon ct
         let! settled = receipt.ContinueWith(fun (settled: Task<unit>) -> settled) |> Async.AwaitTask
 
         if not settled.IsCompletedSuccessfully then
@@ -3036,8 +3036,9 @@ type Daemon
 
     /// Admit a scan without waiting for it. The result resolves once the request is
     /// published and bound to later `WaitForScan` waiters, and carries its receipt.
-    member internal _.AdmitScan() : Task<Task<unit>> =
-        Async.StartAsTask(admitScan scanAgent CancellationToken.None)
+    member internal _.AdmitScan(?consumers: PluginWorkOwner.ConsumerLeases) : Task<Task<unit>> =
+        let consumers = defaultArg consumers PluginWorkOwner.HeldByDaemon
+        Async.StartAsTask(admitScan scanAgent consumers CancellationToken.None)
 
     /// Run a single full scan in-process without watcher or IPC.
     /// Discovers projects, scans all files, waits for plugins to complete, returns statuses.
@@ -3131,9 +3132,11 @@ type Daemon
             try
                 // Admitted before the `Scan` RPC replies, so the `WaitForScan` a client
                 // sends next is bound to this request rather than to an earlier one
-                // that failed. The scan itself runs on without the caller.
-                let onScan () =
-                    this.AdmitScan()
+                // that failed. The scan itself runs on without the caller; what it sets
+                // off is held through the caller's run claim, when it has one, so test
+                // runs only that caller wanted are cancelled once it has gone.
+                let onScan (invocation: string option) =
+                    this.AdmitScan(RunClaim.leaseFor repoRoot invocation)
                     |> SupervisedWork.waitWithin SupervisedWork.AdmissionBound
                     |> ignore
 
@@ -3707,6 +3710,8 @@ let internal isModelKeptChangingDuringScanMessage (message: string) : bool =
 let private performScan
     (ctx: BatchContext)
     (scanLeases: ScanActivity.ScanLeases)
+    // The clients this scan runs for: what it dispatches is held by them.
+    (consumers: PluginWorkOwner.ConsumerLeases)
     (state: ScanAgentState)
     (ct: CancellationToken)
     // Publishes the scan's progress into its supervisor row while the scan runs.
@@ -3957,7 +3962,7 @@ let private performScan
                 // fingerprint table per project for the whole scan.
                 pipeline.BeginGeneration()
 
-                publishCurrent (fun () -> host.EmitFileChanged(SourceChanged files))
+                publishCurrent (fun () -> host.EmitFileChangedFor(consumers, SourceChanged files))
 
                 // Serialize: BuildPlugin must leave Running BEFORE the FCS check tiers
                 // read the obj/ refs it rewrites. See
@@ -4058,7 +4063,7 @@ let private performScan
                             checkedCount <- checkedCount + 1
                             dispatchedFiles.Add(checkResult.File)
                             checkedSources[AbsFilePath.value checkResult.File] <- sourceHash
-                            host.EmitFileChecked(checkResult)
+                            host.EmitFileCheckedFor(consumers, checkResult)
                             reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
                             completed <- completed + 1
 
@@ -4148,14 +4153,16 @@ let private performScan
             // Without it an analysis-only repository earns no receipt and can never be
             // green, and a plugin waiting for the cohort waits forever.
             publishCurrent (fun () ->
-                host.EmitBatchChecked
+                host.EmitBatchCheckedFor(
+                    consumers,
                     { Trigger = BootScan
                       Files = dispatchedFiles |> List.ofSeq
                       Generation = newGeneration
                       ModelGeneration = modelGeneration
                       Retained = None
                       StartedAt = scanStartedAt
-                      CompletedAt = System.DateTime.UtcNow })
+                      CompletedAt = System.DateTime.UtcNow }
+                ))
 
             // One measurement record per completed scan generation,
             // appended to `.fshw/scan-metrics.jsonl`. A later run reads the same file
@@ -4761,7 +4768,7 @@ module Daemon =
                         async {
                             match request with
                             | SetScanState value -> return { state with ScanState = value }
-                            | RunScan admittedAt ->
+                            | RunScan(admittedAt, consumers) ->
                                 match! answeredByLastScan batchCtx state admittedAt with
                                 | Some(line, completedState) ->
                                     Logging.info "scan" line
@@ -4772,7 +4779,9 @@ module Daemon =
                                 | None ->
                                     // Failure policy lives in `runDaemonStep`.
                                     match!
-                                        runDaemonStep "performScan" (performScan batchCtx scanLeases state ct publish)
+                                        runDaemonStep
+                                            "performScan"
+                                            (performScan batchCtx scanLeases consumers state ct publish)
                                     with
                                     | Ok next -> return next
                                     | Result.Error failure -> return raise failure

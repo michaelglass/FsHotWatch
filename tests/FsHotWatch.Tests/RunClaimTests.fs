@@ -11,7 +11,7 @@ open System
 open System.IO
 open Xunit
 open Swensen.Unquote
-open FsHotWatch.Cli
+open FsHotWatch
 open FsHotWatch.Tests.TestHelpers
 
 let private aClaim =
@@ -170,3 +170,80 @@ let ``describe states no pid, host or time for a claim it could not read`` () =
     test <@ line.Contains "torn.json" @>
     test <@ not (line.Contains "pid") @>
     test <@ not (line.Contains "started") @>
+
+// ---------------------------------------------------------------------------------------
+// The claim as a consumer lease: what the daemon holds a client's scan by.
+// ---------------------------------------------------------------------------------------
+
+let private poll = TimeSpan.FromMilliseconds 50.0
+
+let private writeClaim (root: string) (claim: RunClaim.Claim) =
+    Directory.CreateDirectory(RunClaim.dirPath root) |> ignore
+    File.WriteAllText(Path.Combine(RunClaim.dirPath root, claim.InvocationId + ".json"), RunClaim.serialize claim)
+
+let private heldByDaemon (leases: PluginWorkOwner.ConsumerLeases) =
+    match leases with
+    | PluginWorkOwner.HeldByDaemon -> true
+    | PluginWorkOwner.HeldByClients _ -> false
+
+let private released (leases: PluginWorkOwner.ConsumerLeases) =
+    PluginWorkOwner.ConsumerLeases.allReleased leases
+
+[<Fact>]
+let ``a scan no invocation asked for is held by the daemon`` () =
+    // `fshw scan`, an older client, the in-process run-once: nothing to watch.
+    withTempDir "claim-lease-none" (fun root ->
+        test <@ heldByDaemon (RunClaim.leaseWith poll "some-box" (fun _ -> true) root None) @>)
+
+[<Fact>]
+let ``an invocation that holds no claim is held by the daemon`` () =
+    withTempDir "claim-lease-unclaimed" (fun root ->
+        test <@ heldByDaemon (RunClaim.leaseWith poll "some-box" (fun _ -> false) root (Some "inv-unclaimed")) @>)
+
+[<Fact>]
+let ``a claim from another host is held by the daemon — its pid is never dead to us`` () =
+    withTempDir "claim-lease-foreign" (fun root ->
+        writeClaim root aClaim
+        test <@ heldByDaemon (RunClaim.leaseWith poll "this-box" (fun _ -> false) root (Some aClaim.InvocationId)) @>)
+
+[<Fact>]
+let ``a held claim's lease is released when its file is removed`` () =
+    withTempDir "claim-lease-removed" (fun root ->
+        writeClaim root aClaim
+
+        let leases =
+            RunClaim.leaseWith poll "some-box" (fun _ -> true) root (Some aClaim.InvocationId)
+
+        test <@ not (heldByDaemon leases) @>
+
+        // Many polls with the claim present and its process alive: still held. Nothing
+        // time-based releases it, so a sleep and wake cannot either.
+        test <@ not (waitUntilTrue (fun () -> released leases) 500) @>
+
+        File.Delete(Path.Combine(RunClaim.dirPath root, aClaim.InvocationId + ".json"))
+        test <@ waitUntilTrue (fun () -> released leases) 5000 @>)
+
+[<Fact>]
+let ``a held claim's lease is released when its process is provably gone`` () =
+    withTempDir "claim-lease-dead" (fun root ->
+        writeClaim root aClaim
+        let alive = ref true
+
+        let leases =
+            RunClaim.leaseWith poll "some-box" (fun _ -> alive.Value) root (Some aClaim.InvocationId)
+
+        test <@ not (waitUntilTrue (fun () -> released leases) 300) @>
+
+        alive.Value <- false
+        test <@ waitUntilTrue (fun () -> released leases) 5000 @>)
+
+[<Fact>]
+let ``a claim that becomes unreadable keeps its lease held`` () =
+    withTempDir "claim-lease-torn" (fun root ->
+        writeClaim root aClaim
+
+        let leases =
+            RunClaim.leaseWith poll "some-box" (fun _ -> true) root (Some aClaim.InvocationId)
+
+        File.WriteAllText(Path.Combine(RunClaim.dirPath root, aClaim.InvocationId + ".json"), "{ torn")
+        test <@ not (waitUntilTrue (fun () -> released leases) 500) @>)
