@@ -2350,8 +2350,14 @@ type TestPruneMsg =
     /// The launch found the build artifacts unusable. `owed` is the dependency fanout the
     /// launch consumed and did not run, which stays owed.
     | ArtifactsUnavailable of reason: string * owed: Set<string> * reply: Tasks.TaskCompletionSource<string> option
-    /// The test host could not start. `owed` as for `ArtifactsUnavailable`.
-    | TestHostUnavailable of reason: string * owed: Set<string> * reply: Tasks.TaskCompletionSource<string> option
+    /// The test host could not start, or the run has no result to fold. `owed` as for
+    /// `ArtifactsUnavailable`. `opened` is the run the launch had already started, which
+    /// nothing else will close.
+    | TestHostUnavailable of
+        reason: string *
+        owed: Set<string> *
+        reply: Tasks.TaskCompletionSource<string> option *
+        opened: TestRunStarted option
     /// A `run-tests` force-run completed. Folded exactly like `TestsFinished`; `reply` is
     /// resolved with `response` once that fold is published.
     | CommandTestsFinished of
@@ -6646,11 +6652,32 @@ let internal createWithQueries
         (ctx: PluginCtx<TestPruneMsg>)
         (owed: Set<string>)
         (reply: Tasks.TaskCompletionSource<string> option)
-        work
+        (workOf: PluginCtx<TestPruneMsg> -> Async<TestPruneMsg>)
         =
+        // The run this launch started and has not closed. Its result's fold closes it; a
+        // launch whose result never folds — its work returned, but its test host's
+        // termination could not be established — closes it from its failure instead.
+        // Subscribers track every started run until its completion (Build defers every
+        // build while one is open), so a run left open wedges them for good.
+        let opened = ref None
+
+        let tracked =
+            { ctx with
+                EmitTestRunStarted =
+                    fun started ->
+                        opened.Value <- Some started
+                        ctx.EmitTestRunStarted started
+                EmitTestRunCompleted =
+                    fun completed ->
+                        match opened.Value with
+                        | Some started when started.RunId = completed.RunId -> opened.Value <- None
+                        | _ -> ()
+
+                        ctx.EmitTestRunCompleted completed }
+
         let workFor =
             function
-            | Ready -> PluginWork.resultFirst work
+            | Ready -> PluginWork.resultFirst (workOf tracked)
             | Invalid reason -> PluginWork.resultFirst (async { return ArtifactsUnavailable(reason, owed, reply) })
 
         // What this launch releases into the shared "build-artifacts" lease, which the
@@ -6667,7 +6694,7 @@ let internal createWithQueries
             | _ -> Ready
 
         let failureMessage (ex: exn) =
-            TestHostUnavailable(ex.Message, owed, reply)
+            TestHostUnavailable(ex.Message, owed, reply, opened.Value)
 
         match ctx.RunExclusiveShared "tests" "build-artifacts" workFor classify failureMessage with
         | SharedClaimed
@@ -9037,7 +9064,8 @@ let internal createWithQueries
                     PendingForceRunProjects = Set.union launchState.PendingForceRunProjects fanout }
         else
             match
-                runTestHostExclusive ctx fanout None (runTestsWithImpact ctx configs inputs hasCachedResults fanout)
+                runTestHostExclusive ctx fanout None (fun runCtx ->
+                    runTestsWithImpact runCtx configs inputs hasCachedResults fanout)
             with
             | Claimed ->
                 Some
@@ -9172,10 +9200,10 @@ let internal createWithQueries
     // process scope (reaped), its result publishes only through the fold it returns
     // (never folded when cancelled), and its `finally` closes the run it opened.
     let requestTestRun (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) configs filter reply =
-        let work =
-            PluginWork.cooperativeSafe (commandForceRun ctx state.Mode configs filter reply)
+        let workOf runCtx =
+            PluginWork.cooperativeSafe (commandForceRun runCtx state.Mode configs filter reply)
 
-        match runTestHostExclusive ctx Set.empty (Some reply) work with
+        match runTestHostExclusive ctx Set.empty (Some reply) workOf with
         | Claimed ->
             { state with
                 EvidenceReceipt = None
@@ -11249,8 +11277,16 @@ let internal createWithQueries
 
                     return unavailableRun ctx state message owed reply
 
-                | Custom(TestHostUnavailable(reason, owed, reply)) ->
+                | Custom(TestHostUnavailable(reason, owed, reply, None)) ->
                     let message = $"Tests did not run because the test host could not start: %s{reason}"
+                    return unavailableRun ctx state message owed reply
+
+                // The run started and its result is gone, so it proves nothing: it ends
+                // Aborted, and what it would have discharged stays owed.
+                | Custom(TestHostUnavailable(reason, owed, reply, Some started)) ->
+                    let _, completed = abortedRunLifecycle (Some started) reason
+                    ctx.EmitTestRunCompleted completed
+                    let message = $"The test run's result was discarded: %s{reason}"
                     return unavailableRun ctx state message owed reply
 
                 | Custom(ScopeRequested mode) ->

@@ -145,6 +145,7 @@
     <Compile Include="TestPruneCheckReachSeamTests.fs" />
     <Compile Include="TestPruneSelectionSoundnessTests.fs" />
     <Compile Include="TestPruneRunnerFamilyTests.fs" />
+    <Compile Include="TestPruneKillTimeoutLeaseTests.fs" />
     <Compile Include="TestPruneRatchetTransactionTests.fs" />
     <Compile Include="TestPruneSignatureOccurrenceTests.fs" />
     <Compile Include="TestPruneDebtScopeTests.fs" />

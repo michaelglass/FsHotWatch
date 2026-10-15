@@ -3372,7 +3372,7 @@ let ``unavailable execution revokes a previously earned receipt`` (artifactsUnav
             if artifactsUnavailable then
                 ArtifactsUnavailable("new build artifacts are invalid", Set.empty, None)
             else
-                TestHostUnavailable("new test host could not start", Set.empty, None)
+                TestHostUnavailable("new test host could not start", Set.empty, None, None)
 
         let final = handler.Update ctx earned (Custom failure) |> Async.RunSynchronously
         test <@ final.EvidenceReceipt.IsNone @>
