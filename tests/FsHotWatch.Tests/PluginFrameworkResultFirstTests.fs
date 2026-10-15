@@ -161,10 +161,22 @@ let private harness (resultFirst: bool) (postProgress: bool) : Harness =
 let private changed name =
     DispatchFileChanged(SourceChanged [ name ])
 
+/// How long `launch` may take to commit when the pool has a thread for its fold.
+let private admission = TimeSpan.FromSeconds 5.0
+
+/// How long `launch` may take to commit under `withEveryPoolThreadBusy`. Its fold is a pool
+/// item queued behind the held work the helper queues beyond the pool's threads, so it
+/// runs once the pool has added a thread for each of those, at about two a second.
+let private starvedAdmission = TimeSpan.FromSeconds 90.0
+
 /// Run 1 is live, `slow-1` holds the mailbox, and `behind` are queued after it. Run 1
-/// then finishes, so its result is queued behind all of them.
-let private resultQueuedBehind (h: Harness) (behind: string list) =
-    dispatchAndAwait h.Registration (changed "launch")
+/// then finishes, so its result is queued behind all of them. `launch` commits within
+/// `launchBound`.
+let private resultQueuedBehind (launchBound: TimeSpan) (h: Harness) (behind: string list) =
+    match h.Registration.DispatchTracked(changed "launch") with
+    | Some receipt -> receipt.Wait(launchBound).GetAwaiter().GetResult()
+    | None -> failwith "fixture expected a subscribed event"
+
     h.Registration.Dispatch(changed "slow-1")
     test <@ (h.Started "slow-1").Wait bound @>
 
@@ -176,11 +188,11 @@ let private resultQueuedBehind (h: Harness) (behind: string list) =
 
 let private folds (h: Harness) = h.Folds.ToArray() |> List.ofArray
 
-let private resultFoldsAheadOfTheQueue () =
+let private resultFoldsAheadOfTheQueue (launchBound: TimeSpan) =
     let h = harness true false
 
     try
-        resultQueuedBehind h [ "slow-2"; "slow-3"; "slow-4"; "slow-5" ]
+        resultQueuedBehind launchBound h [ "slow-2"; "slow-3"; "slow-4"; "slow-5" ]
         h.Release "slow-1"
 
         // `slow-2` .. `slow-5` each block until released, and none is: a result that
@@ -205,11 +217,11 @@ let private resultFoldsAheadOfTheQueue () =
 
 [<Fact(Timeout = 30000)>]
 let ``a result-first run's result folds after the fold in flight, not after the events queued behind it`` () =
-    resultFoldsAheadOfTheQueue ()
+    resultFoldsAheadOfTheQueue admission
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = 150000)>]
 let ``a result-first run's result folds ahead of the queue with every pool thread busy`` () =
-    TestHelpers.withEveryPoolThreadBusy resultFoldsAheadOfTheQueue
+    TestHelpers.withEveryPoolThreadBusy (fun () -> resultFoldsAheadOfTheQueue starvedAdmission)
 
 /// The guarantee the reorder must keep: a claim of run N+1 is only ever made by a fold
 /// that runs after run N's result has folded. The events that overtaken still claim, in
@@ -219,7 +231,7 @@ let ``no fold claims the next run before the previous run's result has folded`` 
     let h = harness true false
 
     try
-        resultQueuedBehind h [ "claim-a"; "claim-b"; "claim-c" ]
+        resultQueuedBehind admission h [ "claim-a"; "claim-b"; "claim-c" ]
         h.Release "slow-1"
         test <@ (h.ResultFolded 1).Wait bound @>
         // Run 2 is result-first as well: finishing it before `claim-c` is taken would let
@@ -255,7 +267,7 @@ let ``a message the run posted folds before its result, and both ahead of the di
     let h = harness true true
 
     try
-        resultQueuedBehind h [ "slow-2"; "slow-3" ]
+        resultQueuedBehind admission h [ "slow-2"; "slow-3" ]
         h.Release "slow-1"
         test <@ (h.ResultFolded 1).Wait bound @>
 
@@ -270,7 +282,7 @@ let ``an undeclared run's result still waits behind the events queued before it`
     let h = harness false false
 
     try
-        resultQueuedBehind h [ "slow-2" ]
+        resultQueuedBehind admission h [ "slow-2" ]
         h.Release "slow-1"
         test <@ (h.Started "slow-2").Wait bound @>
         test <@ not (h.ResultFolded 1).IsSet @>

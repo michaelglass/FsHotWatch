@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: the daemon no longer stalls in a scan whose checks finish faster than the thread
+  pool adds threads. Each check emits its file while holding the discovery lock, and the
+  work store used to publish every change from a pool thread. With every pool thread held
+  by a check waiting for that lock, the emit waited for a pool thread that each newly
+  added thread was given to another waiting check instead. A caller that waits for its
+  change synchronously now publishes the queue itself when no writer is running; a change
+  posted asynchronously is still published on the pool. `Store.PendingChanges` counts the
+  changes queued behind the one being published, as before.
+
 ## 0.10.0-alpha.75 - 2026-10-15
 
 - fix!: the check-result cache key names three inputs it used to trust by path. The

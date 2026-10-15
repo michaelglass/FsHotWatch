@@ -326,8 +326,15 @@ type private Mutation =
 /// The single writer. Each change receives a freshly minted `WorkId` it may use for a
 /// new obligation. A change that throws publishes nothing and fails only its own reply.
 ///
-/// Changes run inside the mailbox, so they must be bounded in-memory transitions. A
-/// change that waits on this store deadlocks it.
+/// Changes are bounded in-memory transitions, published one at a time in posting order.
+/// A change that waits on this store deadlocks it.
+///
+/// A caller that waits for its change synchronously publishes the queue itself when no
+/// writer is running, rather than waiting for a pool thread to do it. Such callers can
+/// hold a lock that pool callbacks queue on: the scan emits each checked file under the
+/// discovery lock. A writer that needed a pool thread would wait behind those callbacks
+/// while they wait for it, and the pool gives each thread it adds to the next callback in
+/// the queue. A change posted asynchronously is published by a writer on the pool.
 type Store() =
     let identity = Guid.NewGuid()
 
@@ -342,48 +349,123 @@ type Store() =
           ModelFiles = None
           ModelInputs = None }
 
-    let agent =
-        MailboxProcessor<Mutation>.Start(fun inbox ->
-            let rec loop () =
-                async {
-                    let! (Mutation(change, reply)) = inbox.Receive()
-                    let current = published
-                    let version = current.Published + 1L
+    let queueGate = Lock()
+    let queued = Collections.Generic.Queue<Mutation>()
+    // A writer is publishing the queue. At most one is, so changes publish in order.
+    let mutable writing = false
+    // A pool item that will publish the queue is posted and has not started.
+    let mutable writerPosted = false
 
-                    try
-                        let next, result = change (WorkId(identity, version)) current
-                        Volatile.Write(&published, { next with Published = version })
-                        reply.TrySetResult(result) |> ignore
-                    with failure ->
-                        reply.TrySetException(failure) |> ignore
+    let publish (Mutation(change, reply)) =
+        let current = published
+        let version = current.Published + 1L
 
-                    return! loop ()
-                }
+        try
+            let next, result = change (WorkId(identity, version)) current
+            Volatile.Write(&published, { next with Published = version })
+            reply.TrySetResult(result) |> ignore
+        with failure ->
+            reply.TrySetException(failure) |> ignore
 
-            loop ())
+    // The writer's next change, or `None` once the queue is empty, when it stops being
+    // the writer.
+    let takeNext () =
+        Locking.locked queueGate (fun () ->
+            if queued.Count = 0 then
+                writing <- false
+                None
+            else
+                Some(queued.Dequeue()))
 
-    let changeAsync (change: WorkId -> HostSnapshot -> HostSnapshot * 'Result) : Task<'Result> =
+    // Run by the writer: publish until the queue is empty.
+    let publishQueued () =
+        let mutable next = takeNext ()
+
+        while next.IsSome do
+            publish next.Value
+            next <- takeNext ()
+
+    // A synchronous caller may have become the writer, or published the whole queue,
+    // since this was posted.
+    let writeOnPool () =
+        let claimed =
+            Locking.locked queueGate (fun () ->
+                writerPosted <- false
+
+                if writing then
+                    false
+                else
+                    writing <- true
+                    true)
+
+        if claimed then
+            publishQueued ()
+
+    let post (synchronous: bool) (change: WorkId -> HostSnapshot -> HostSnapshot * 'Result) : Task<obj> =
         let reply =
             TaskCompletionSource<obj>(TaskCreationOptions.RunContinuationsAsynchronously)
 
-        agent.Post(
+        let mutation =
             Mutation(
                 (fun fresh snapshot ->
                     let next, result = change fresh snapshot
                     next, box result),
                 reply
             )
-        )
+
+        let writeHere, postWriter =
+            Locking.locked queueGate (fun () ->
+                queued.Enqueue mutation
+
+                if writing then
+                    false, false
+                elif synchronous then
+                    writing <- true
+                    true, false
+                elif writerPosted then
+                    false, false
+                else
+                    writerPosted <- true
+                    false, true)
+
+        if writeHere then
+            publishQueued ()
+        elif postWriter then
+            // Not the caller's execution context: the writer publishes every caller's change.
+            ThreadPool.UnsafeQueueUserWorkItem(Action<obj>(fun _ -> writeOnPool ()), null, true)
+            |> ignore
+
+        reply.Task
+
+    let changeAsync (change: WorkId -> HostSnapshot -> HostSnapshot * 'Result) : Task<'Result> =
+        let published = post false change
 
         task {
-            let! result = reply.Task
+            let! result = published
             return unbox<'Result> result
         }
 
     // An internal transition waits for its actual publication. A caller that stopped
-    // waiting could not roll the queued change back, and would lose its effects.
-    let change transition =
-        (changeAsync transition).GetAwaiter().GetResult()
+    // waiting could not roll the queued change back, and would lose its effects. It waits
+    // on the reply itself, which a writer that is already running completes: a
+    // continuation would need a pool thread to run.
+    let change (transition: WorkId -> HostSnapshot -> HostSnapshot * 'Result) : 'Result =
+        (post true transition).GetAwaiter().GetResult() |> unbox<'Result>
+
+    let rowChange (handle: RowHandle<'T>) (transition: WorkId -> 'T -> 'T * 'Result) =
+        fun fresh (snapshot: HostSnapshot) ->
+            let next, result = transition fresh (snapshot.Row handle)
+            let row = Map.find handle.Key snapshot.Rows
+
+            { snapshot with
+                Rows =
+                    Map.add
+                        handle.Key
+                        { row with
+                            Value = box next
+                            Status = handle.Project next }
+                        snapshot.Rows },
+            result
 
     member _.Snapshot: HostSnapshot = Volatile.Read(&published)
 
@@ -423,7 +505,7 @@ type Store() =
 
     /// Changes posted but not yet published. A diagnostic, and a witness for tests that
     /// need to know a change is queued behind a held one.
-    member _.PendingChanges = agent.CurrentQueueLength
+    member _.PendingChanges = Locking.locked queueGate (fun () -> queued.Count)
 
     member _.Register<'T>(name: string, initial: 'T, project: 'T -> RowStatus) : RowHandle<'T> =
         change (fun fresh snapshot ->
@@ -442,22 +524,10 @@ type Store() =
 
     /// Resolves once the change is published, independent of any caller's wait bound.
     member _.ChangeAsync(handle: RowHandle<'T>, transition: WorkId -> 'T -> 'T * 'Result) : Task<'Result> =
-        changeAsync (fun fresh snapshot ->
-            let next, result = transition fresh (snapshot.Row handle)
-            let row = Map.find handle.Key snapshot.Rows
+        changeAsync (rowChange handle transition)
 
-            { snapshot with
-                Rows =
-                    Map.add
-                        handle.Key
-                        { row with
-                            Value = box next
-                            Status = handle.Project next }
-                        snapshot.Rows },
-            result)
-
-    member this.Change(handle: RowHandle<'T>, transition: WorkId -> 'T -> 'T * 'Result) : 'Result =
-        this.ChangeAsync(handle, transition).GetAwaiter().GetResult()
+    member _.Change(handle: RowHandle<'T>, transition: WorkId -> 'T -> 'T * 'Result) : 'Result =
+        change (rowChange handle transition)
 
     /// Take a client-observation lease: the host is being watched. The lease inhibits
     /// idle exit and counts as no work at all. Disposing it twice releases it once — a
