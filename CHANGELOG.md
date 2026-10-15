@@ -74,6 +74,20 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### tests: a test run no longer writes into the real `~/.cache/fshw`
+
+- Every daemon a test started wrote its shared task store into the developer's real
+  `~/.cache/fshw/cache/tasks`, one namespace per throwaway repo. On one box that grew past
+  130,000 directories and pinned the directory's link count at the 65,535 limit, which
+  can stop a real repository's namespace from being created. Both test assemblies now
+  point `FSHW_CACHE_HOME` and `FSHW_STATE_HOME` at a per-run temp directory from their
+  xUnit pipeline startup, before any test runs, and delete it when the run stops.
+  Spawned CLIs and daemons inherit the override. A guard test in each assembly fails if
+  a test resolves the real cache or state home. It was red before the fix.
+- Already-leaked namespaces are not removed by this change. They are the throwaway
+  `fshw-*`, `cli-inttest-*`, `r-*` and `repo-*` directories under
+  `~/.cache/fshw/cache/tasks` and are safe to delete by those patterns.
+
 ### cli, test-prune: opt-in test-scoped SQL edges (`tests.selection`)
 
 - **feat: `tests.selection.testScopedSources` names dependency-edge sources the impact

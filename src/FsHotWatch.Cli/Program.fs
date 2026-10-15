@@ -498,26 +498,34 @@ let launchDaemonProcess (exe: string) (toolPrefix: string) (repoRoot: string) (e
 
 /// Injectable IPC operations for testability.
 type IpcOps =
-    { Shutdown: string -> Async<string>
-      Scan: string -> Async<string>
-      ScanStatus: string -> Async<string>
-      GetStatus: string -> Async<string>
-      GetPluginStatus: string -> string -> Async<string>
-      RunCommand: string -> string -> string -> Async<string>
-      GetDiagnostics: string -> string -> Async<string>
-      WaitForScan: string -> int64 -> Async<string>
-      WaitForComplete: string -> int -> Async<string>
-      TriggerBuild: string -> Async<string>
-      FormatAll: string -> Async<string>
-      RerunPlugin: string -> string -> Async<string>
-      Invalidate: string -> Async<string>
-      IsRunning: string -> bool
-      LaunchDaemon: string -> string -> string -> unit }
+    {
+        Shutdown: string -> Async<string>
+        /// Request a scan on `pipe`, held through the run claim of the invocation named,
+        /// if any (`ScanFor`); with none the scan is the daemon's (`Scan`).
+        Scan: string -> string option -> Async<string>
+        ScanStatus: string -> Async<string>
+        GetStatus: string -> Async<string>
+        GetPluginStatus: string -> string -> Async<string>
+        RunCommand: string -> string -> string -> Async<string>
+        GetDiagnostics: string -> string -> Async<string>
+        WaitForScan: string -> int64 -> Async<string>
+        WaitForComplete: string -> int -> Async<string>
+        TriggerBuild: string -> Async<string>
+        FormatAll: string -> Async<string>
+        RerunPlugin: string -> string -> Async<string>
+        Invalidate: string -> Async<string>
+        IsRunning: string -> bool
+        LaunchDaemon: string -> string -> string -> unit
+    }
 
 /// Default IPC operations using the real IpcClient.
 let defaultIpcOps: IpcOps =
     { Shutdown = IpcClient.shutdown
-      Scan = IpcClient.scan
+      Scan =
+        fun pipeName invocation ->
+            match invocation with
+            | Some id -> IpcClient.scanFor pipeName id
+            | None -> IpcClient.scan pipeName
       ScanStatus = IpcClient.scanStatus
       GetStatus = IpcClient.getStatus
       GetPluginStatus = IpcClient.getPluginStatus
@@ -987,8 +995,11 @@ let internal forceFullSuiteRun (ipc: IpcOps) (pipeName: string) : unit =
 /// an optimization, never the source of truth, and `fshw scan` is not a required manual
 /// pre-step. It runs once, before the reading the verdict is decided from — nothing
 /// re-scans afterwards to look for a better answer.
-let internal forceScanAndWait (ipc: IpcOps) (pipeName: string) : string =
-    ipc.Scan pipeName |> Async.RunSynchronously |> ignore
+///
+/// `invocation` is the run whose claim holds the scan: the test runs it sets off are
+/// cancelled once that run has gone and nothing else wants them.
+let internal forceScanAndWait (ipc: IpcOps) (pipeName: string) (invocation: string option) : string =
+    ipc.Scan pipeName invocation |> Async.RunSynchronously |> ignore
     // No client timeout by design: `-1L` is a scan generation, and the daemon's RPC seam deadline bounds this wait.
     ipc.WaitForScan pipeName -1L |> Async.RunSynchronously
 
@@ -1055,7 +1066,7 @@ let private ensureAndQueryErrors
                     noWarnFail
                     // Force a fresh from-disk scan up front — do NOT merely WAIT for one;
                     // see `forceScanAndWait`.
-                    (fun () -> forceScanAndWait ipc pipeName)
+                    (fun () -> forceScanAndWait ipc pipeName (Some invocation.Id))
                     // Authoritative settle: block until the daemon reports its sound
                     // verdict (`waitForVerdict`). `-1` = no client-imposed timeout; the
                     // daemon bounds the wait with its hard verdict deadline
@@ -2606,7 +2617,11 @@ let sessionIpcOps (link: HostLink) : IpcOps =
         }
 
     { Shutdown = fun _ -> call "Shutdown" [||]
-      Scan = fun _ -> call "Scan" [||]
+      Scan =
+        fun _ invocation ->
+            match invocation with
+            | Some id -> call "ScanFor" [| id |]
+            | None -> call "Scan" [||]
       ScanStatus = fun _ -> call "ScanStatus" [||]
       GetStatus = fun _ -> call "GetStatus" [||]
       GetPluginStatus = fun _ plugin -> call "GetPluginStatus" [| plugin |]
@@ -3415,7 +3430,7 @@ let internal executeCommandWatchingConfig
             link.RestartIfStale()
 
             withIpc (fun () ->
-                let result = ipc.Scan pipeName |> Async.RunSynchronously
+                let result = ipc.Scan pipeName None |> Async.RunSynchronously
                 UI.success $"Scan: %s{result}"
                 0)
         | Invalidate ->

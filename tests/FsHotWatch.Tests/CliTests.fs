@@ -820,7 +820,7 @@ let private completedStatusJson =
 
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
-      Scan = fun _ -> async { return "scan started" }
+      Scan = fun _ _ -> async { return "scan started" }
       ScanStatus = fun _ -> async { return "idle" }
       GetStatus = fun _ -> async { return completedStatusJson }
       GetPluginStatus = fun _ _ -> async { return "{}" }
@@ -1082,7 +1082,7 @@ let ``executeCommand Scan calls scan IPC`` () =
     let ipc =
         { fakeIpc () with
             Scan =
-                fun _ ->
+                fun _ _ ->
                     async {
                         called <- true
                         return "scan started"

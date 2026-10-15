@@ -20,11 +20,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- First: registers the xUnit pipeline startup that initialises FSharp.Core's
-         quotation statics on one thread before tests run in parallel. See the file. -->
+    <!-- Before QuotationStaticInit: its pipeline startup points every shared cache /
+         state home at a per-run temp directory, which this defines. See the file. -->
+    <Compile Include="UserHomeIsolation.fs" />
     <!-- Before QuotationStaticInit: its pipeline startup installs the traced-run FCS
          read recorder this defines. -->
     <Compile Include="TraceFcsReads.fs" />
+    <!-- Registers the xUnit pipeline startup that initialises FSharp.Core's
+         quotation statics on one thread before tests run in parallel. See the file. -->
     <Compile Include="QuotationStaticInit.fs" />
     <Compile Include="TestHelpers.fs" />
     <!-- After TestHelpers (uses withTempDir + probeLoop), before every test file
@@ -78,6 +81,7 @@
     <Compile Include="PluginFrameworkQueuedResultTests.fs" />
     <Compile Include="PluginFrameworkResultFirstTests.fs" />
     <Compile Include="PluginFrameworkLeaseTests.fs" />
+    <Compile Include="ClientLeaseLineageTests.fs" />
     <Compile Include="PluginCtxHelpersTests.fs" />
     <Compile Include="JsonTests.fs" />
     <Compile Include="PluginHostTests.fs" />
@@ -148,6 +152,7 @@
     <Compile Include="TestPruneSelectionSoundnessTests.fs" />
     <Compile Include="TestPruneRunnerFamilyTests.fs" />
     <Compile Include="TestPruneKillTimeoutLeaseTests.fs" />
+    <Compile Include="TestPruneClientLeaseTests.fs" />
     <Compile Include="TestPruneRatchetTransactionTests.fs" />
     <Compile Include="TestPruneSignatureOccurrenceTests.fs" />
     <Compile Include="TestPruneDebtScopeTests.fs" />

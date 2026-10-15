@@ -44,6 +44,8 @@ let mutable internal ran = false
 type QuotationStaticInitStartup() =
     interface ITestPipelineStartup with
         member _.StartAsync(_diagnosticMessageSink) =
+            // Before anything a test can start resolves a cache or state home.
+            UserHomeIsolation.install ()
             initialise () |> ignore
             ran <- true
             // The one pipeline startup this assembly may have also installs, in a traced
@@ -51,7 +53,9 @@ type QuotationStaticInitStartup() =
             TraceFcsReads.installIfTraced ()
             ValueTask.CompletedTask
 
-        member _.StopAsync() = ValueTask.CompletedTask
+        member _.StopAsync() =
+            UserHomeIsolation.remove ()
+            ValueTask.CompletedTask
 
 [<assembly: TestPipelineStartup(typeof<QuotationStaticInitStartup>)>]
 do ()

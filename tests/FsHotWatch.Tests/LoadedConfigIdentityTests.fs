@@ -15,7 +15,7 @@ open FsHotWatch.Tests.TestHelpers
 
 let private noIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "" }
-      Scan = fun _ -> async { return "" }
+      Scan = fun _ _ -> async { return "" }
       ScanStatus = fun _ -> async { return "" }
       GetStatus = fun _ -> async { return "{}" }
       GetPluginStatus = fun _ _ -> async { return "" }

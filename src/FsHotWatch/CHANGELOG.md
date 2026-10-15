@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **fix!: a test run a client's check set off is cancelled, and its test hosts reaped,
+  once every client that wanted it has gone. `DaemonRpcConfig.RequestScan` now takes the
+  requesting invocation (`string option`)**, so code that builds the config must accept
+  it. A check's scan used to dispatch its work as the daemon's own, so after the client
+  disconnected or passed its deadline the daemon kept folding the scan and launching
+  test batches for over an hour, holding gigabytes and test hosts nobody would read. The
+  new `ScanFor(invocationId)` RPC holds the scan through that invocation's run claim
+  under `.fshw/in-flight/`; the claim is released when its file is removed or its
+  process is provably gone, never by time. What the scan dispatches, the runs launched
+  from those events, their result folds and the events those folds emit stay held by the
+  same clients, so a cooperative-safe run downstream is cancelled when the last of them
+  goes. A run another live client or the daemon itself (the watcher, `fshw scan`, a scan
+  with no claim, a claim from another host) still wants keeps running. The scan's own
+  checks and folds, and builds, still run to completion: they are the warm state the
+  next check reuses.
+- feat: `RunClaim` moves into core as the public `FsHotWatch.RunClaim` module, so the
+  daemon reads the claims the CLI writes. `PluginWork.onAbandon` declares the fold a
+  cancelled cooperative-safe run delivers in place of its result, so a plugin can close
+  what the run opened; undeclared, an abandoned run folds nothing, as before.
+  `IpcClient.scanFor` sends `ScanFor`.
 - fix: `check` no longer waits out its full hour-long bound on a green tree when no test
   or analysis plugin is configured (for example `{ "lint": true }` with a build and no
   tests). `BuildPlugin`'s state can hold a completed build failure, and that alone counted

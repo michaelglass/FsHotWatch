@@ -987,7 +987,7 @@ let ``check forces a from-disk scan: forceScanAndWait advances the scan generati
         try
             // Drain the startup scan + one forced scan down to a stable baseline
             // generation, so nothing is in flight when we measure below.
-            FsHotWatch.Cli.Program.forceScanAndWait FsHotWatch.Cli.Program.defaultIpcOps pipeName
+            FsHotWatch.Cli.Program.forceScanAndWait FsHotWatch.Cli.Program.defaultIpcOps pipeName None
             |> ignore
 
             waitUntil (fun () -> daemon.GetScanGeneration() >= 1L) 20000
@@ -1012,7 +1012,7 @@ let ``check forces a from-disk scan: forceScanAndWait advances the scan generati
 
             // FIXED behavior — forceScanAndWait forces a fresh from-disk
             // `performScan`, which advances the generation (and re-reads the edit).
-            FsHotWatch.Cli.Program.forceScanAndWait FsHotWatch.Cli.Program.defaultIpcOps pipeName
+            FsHotWatch.Cli.Program.forceScanAndWait FsHotWatch.Cli.Program.defaultIpcOps pipeName None
             |> ignore
 
             waitUntil (fun () -> daemon.GetScanGeneration() > genBaseline) 20000
@@ -4310,7 +4310,7 @@ let ``a forced scan records daemon.scan and daemon.startup phases on the ledger`
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
 
         try
-            FsHotWatch.Cli.Program.forceScanAndWait FsHotWatch.Cli.Program.defaultIpcOps pipeName
+            FsHotWatch.Cli.Program.forceScanAndWait FsHotWatch.Cli.Program.defaultIpcOps pipeName None
             |> ignore
 
             waitUntil (fun () -> daemon.GetScanGeneration() >= 1L) 20000

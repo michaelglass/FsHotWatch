@@ -165,7 +165,9 @@ type DaemonRpcConfig =
     {
         Host: PluginHost
         RequestShutdown: unit -> unit
-        RequestScan: unit -> unit
+        /// Admit a scan for the invocation that asked for it, if it named one: the scan's
+        /// work is held through that invocation's run claim (`RunClaim.leaseFor`).
+        RequestScan: string option -> unit
         GetScanStatus: unit -> string
         GetScanGeneration: unit -> int64
         TriggerBuild: unit -> Async<unit>
@@ -372,10 +374,19 @@ type DaemonRpcTarget
         config.RequestShutdown()
         "shutting down"
 
-    /// Trigger a full scan. Returns the generation counter to pass to WaitForScan.
+    /// Trigger a full scan. Returns the generation counter to pass to WaitForScan. The
+    /// scan is the daemon's: it runs to completion whoever is left to read it.
     member _.Scan() : string =
         let gen = config.GetScanGeneration()
-        config.RequestScan()
+        config.RequestScan None
+        $"scan started:%d{gen}"
+
+    /// `Scan` on behalf of the CLI invocation `invocationId`. Its test runs are cancelled,
+    /// and their hosts reaped, once that invocation's run claim is released, unless
+    /// another client or the daemon itself still wants them.
+    member _.ScanFor(invocationId: string) : string =
+        let gen = config.GetScanGeneration()
+        config.RequestScan(Some invocationId)
         $"scan started:%d{gen}"
 
     /// Get current scan progress without blocking. When the daemon is wedged on
@@ -959,6 +970,10 @@ module IpcClient =
 
     /// Trigger a full scan of all registered files.
     let scan (pipeName: string) : Async<string> = invoke pipeName "Scan" [||]
+
+    /// `scan` held through `invocationId`'s run claim.
+    let scanFor (pipeName: string) (invocationId: string) : Async<string> =
+        invoke pipeName "ScanFor" [| invocationId |]
 
     /// Get current scan progress.
     let scanStatus (pipeName: string) : Async<string> = invoke pipeName "ScanStatus" [||]

@@ -244,7 +244,7 @@ let private drive
     let first = snapshot ()
     File.WriteAllText(Path.Combine(root, "src", "Lib", "Lib.fs"), "module Lib\nlet add a b = b + a\n")
     let before = generation ()
-    config.RequestScan()
+    config.RequestScan None
     config.WaitForScanGeneration(before).Wait()
     settle ()
     [ first; snapshot () ]

@@ -178,6 +178,23 @@ module PluginWork =
         let mutable marker = null
         safe.TryGetValue(work, &marker)
 
+    let private abandonFolds =
+        System.Runtime.CompilerServices.ConditionalWeakTable<obj, obj>()
+
+    /// Declare the fold a cancelled cooperative-safe `work` delivers in place of its
+    /// result: the plugin's own bookkeeping that the run is over (it was in flight, and
+    /// is not now), never a verdict about what it ran. Built when the run retires, so it
+    /// can read what the run opened. Undeclared, an abandoned run folds nothing.
+    let onAbandon (fold: unit -> 'Msg) (work: Async<'Msg>) : Async<'Msg> =
+        abandonFolds.AddOrUpdate(work, box fold)
+        work
+
+    /// The fold declared with `onAbandon` for `work`.
+    let abandonFoldOf (work: Async<'Msg>) : (unit -> 'Msg) option =
+        match abandonFolds.TryGetValue work with
+        | true, fold -> Some(unbox<unit -> 'Msg> fold)
+        | _ -> None
+
     let private resultFirstRuns =
         System.Runtime.CompilerServices.ConditionalWeakTable<obj, obj>()
 
@@ -902,6 +919,7 @@ let internal registerHandlerForOwner
     let finishRun
         (key: string)
         (identity: PluginWorkOwner.WorkId)
+        (leases: PluginWorkOwner.ConsumerLeases)
         (sharedRun: SharedRunLease<'Msg> option)
         (startedAt: DateTime)
         (resultFirst: bool)
@@ -958,6 +976,13 @@ let internal registerHandlerForOwner
             // worker retires and its result is not published.
             match owner.CompleteRun identity with
             | Some fold ->
+                // The result is held by whoever held the event that launched the run, so
+                // the work its fold sets off (an emitted build result, a queued intent)
+                // is theirs too.
+                match leases with
+                | PluginWorkOwner.HeldByClients _ -> clientHeld[fold] <- leases
+                | PluginWorkOwner.HeldByDaemon -> ()
+
                 let subtask = QueuedResult.subtaskKey key
                 queuedResults[fold] <- (subtask, resultFirst)
                 services.StartSubtask handler.Name subtask (QueuedResult.label key)
@@ -979,8 +1004,33 @@ let internal registerHandlerForOwner
         (sharedRun: SharedRunLease<'Msg> option)
         (startedAt: DateTime)
         (displaced: PluginStatus)
+        (abandonFold: (unit -> 'Msg) option)
+        (resultFirst: bool)
         =
         info pluginName $"RunExclusive '%s{key}' cancelled: every client that wanted it has gone; nothing is published"
+
+        // The plugin's declared bookkeeping, if any, folds in place of the result and keeps
+        // the key until it commits, so nothing queued behind the run can launch first.
+        let retire () =
+            let withdrawn =
+                abandonFold
+                |> Option.bind (fun build ->
+                    try
+                        Some(build ())
+                    with failure ->
+                        error pluginName $"Building the abandonment fold of '%s{key}' failed: %s{failure.ToString()}"
+                        None)
+
+            match withdrawn with
+            | Some message ->
+                match owner.CompleteRun identity with
+                | Some fold ->
+                    let subtask = QueuedResult.subtaskKey key
+                    queuedResults[fold] <- (subtask, resultFirst)
+                    services.StartSubtask handler.Name subtask (QueuedResult.label key)
+                    deliver (Custom message, fold)
+                | None -> ()
+            | None -> owner.AbandonRun identity
 
         let released =
             try
@@ -998,7 +1048,7 @@ let internal registerHandlerForOwner
             with failure ->
                 error pluginName $"Reporting the cancellation of '%s{key}' failed: %s{failure.ToString()}"
 
-            owner.AbandonRun identity
+            retire ()
         | Result.Error failure ->
             try
                 reportRunFailure key startedAt "shared release after cancellation failed" failure
@@ -1015,14 +1065,16 @@ let internal registerHandlerForOwner
     let runOne
         (key: string)
         (identity: PluginWorkOwner.WorkId)
+        (leases: PluginWorkOwner.ConsumerLeases)
         (sharedRun: SharedRunLease<'Msg> option)
         (startedAt: DateTime)
         (displaced: PluginStatus)
         (abandoned: (System.Threading.CancellationTokenSource * IDisposable) option)
+        (abandonFold: (unit -> 'Msg) option)
         (resultFirst: bool)
         (work: Async<'Msg>)
         =
-        let finishRun = finishRun key identity sharedRun startedAt resultFirst
+        let finishRun = finishRun key identity leases sharedRun startedAt resultFirst
 
         async {
             match abandoned with
@@ -1059,7 +1111,7 @@ let internal registerHandlerForOwner
                 source.Dispose()
 
                 if cancelled then
-                    retireAbandoned key identity sharedRun startedAt displaced
+                    retireAbandoned key identity sharedRun startedAt displaced abandonFold resultFirst
                 elif settled.IsFaulted then
                     finishRun (Result.Error(settled.Exception.GetBaseException()))
                 elif settled.IsCanceled then
@@ -1099,15 +1151,19 @@ let internal registerHandlerForOwner
     let runExclusive (after: PluginWorkOwner.WorkId) (key: string) (work: Async<'Msg>) : RunClaim =
         match claim after key with
         | Some(identity, startedAt, displaced) ->
+            let leases = leasesOf after
+
             try
                 startOwned (
                     runOne
                         key
                         identity
+                        leases
                         None
                         startedAt
                         displaced
-                        (abandonmentOf (leasesOf after) work)
+                        (abandonmentOf leases work)
+                        (PluginWork.abandonFoldOf work)
                         (PluginWork.isResultFirst work)
                         work
                 )
@@ -1168,6 +1224,7 @@ let internal registerHandlerForOwner
                         runOne
                             key
                             identity
+                            leases
                             (Some
                                 { SharedKey = sharedKey
                                   Classify = classify
@@ -1176,6 +1233,9 @@ let internal registerHandlerForOwner
                             startedAt
                             displaced
                             abandonment
+                            (match produced with
+                             | Result.Ok work -> PluginWork.abandonFoldOf work
+                             | Result.Error _ -> None)
                             (match produced with
                              | Result.Ok work -> PluginWork.isResultFirst work
                              | Result.Error _ -> false)
@@ -1237,15 +1297,22 @@ let internal registerHandlerForOwner
     /// The context `Update` receives for one event. `event` names that event, so a claim
     /// it makes can follow the key's result fold.
     let contextFor (event: PluginWorkOwner.WorkId) : PluginCtx<'Msg> =
+        // Read while the event is folded, which is when its consumers are known: what it
+        // emits, now or from a run it launches, is dispatched on their behalf.
+        let leases = leasesOf event
+
+        let emit (dispatch: 'T -> unit) (value: 'T) =
+            PluginWorkOwner.ConsumerLeases.onBehalfOf leases (fun () -> dispatch value)
+
         { ReportStatus = reportPluginStatus (Some event)
           ReportErrors = fun file entries -> services.ReportErrors handler.Name file entries
           ClearErrors = fun file -> services.ClearErrors handler.Name file
           ClearAllErrors = fun () -> services.ClearPlugin handler.Name
-          EmitBuildCompleted = services.EmitBuildCompleted
-          EmitTestRunStarted = services.EmitTestRunStarted
-          EmitTestProgress = services.EmitTestProgress
-          EmitTestRunCompleted = services.EmitTestRunCompleted
-          EmitCommandCompleted = services.EmitCommandCompleted
+          EmitBuildCompleted = emit services.EmitBuildCompleted
+          EmitTestRunStarted = emit services.EmitTestRunStarted
+          EmitTestProgress = emit services.EmitTestProgress
+          EmitTestRunCompleted = emit services.EmitTestRunCompleted
+          EmitCommandCompleted = emit services.EmitCommandCompleted
           Checker = services.Checker
           RepoRoot = services.RepoRoot
           Post = post
@@ -1973,11 +2040,16 @@ let internal registerHandlerForOwner
         | _ -> ()
 
         let admitted event =
+            let held = PluginWorkOwner.ConsumerLeases.ofDispatch ()
             let identity, completion = admit owner.AdmitTrackedEvent
 
             match event with
             | FileChecked _ -> dispatchedInRun[identity] <- System.Threading.Volatile.Read(&runEpoch)
             | _ -> ()
+
+            match held with
+            | PluginWorkOwner.HeldByClients _ -> clientHeld[identity] <- held
+            | PluginWorkOwner.HeldByDaemon -> ()
 
             deliver (event, identity)
             Some(DispatchReceipt completion)

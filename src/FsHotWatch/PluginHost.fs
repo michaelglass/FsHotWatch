@@ -510,6 +510,19 @@ type PluginHost
     member _.EmitBatchChecked(batch: BatchChecked) =
         dispatchToAll (PluginFramework.DispatchBatchChecked batch)
 
+    /// `EmitFileChanged` on behalf of `consumers`: the work it sets off is theirs, and
+    /// cooperative-safe runs among it are cancelled once all of them have gone.
+    member internal this.EmitFileChangedFor(consumers: PluginWorkOwner.ConsumerLeases, change: FileChangeKind) =
+        PluginWorkOwner.ConsumerLeases.onBehalfOf consumers (fun () -> this.EmitFileChanged change)
+
+    /// `EmitFileChecked` on behalf of `consumers` (see `EmitFileChangedFor`).
+    member internal this.EmitFileCheckedFor(consumers: PluginWorkOwner.ConsumerLeases, result: FileCheckResult) =
+        PluginWorkOwner.ConsumerLeases.onBehalfOf consumers (fun () -> this.EmitFileChecked result)
+
+    /// `EmitBatchChecked` on behalf of `consumers` (see `EmitFileChangedFor`).
+    member internal this.EmitBatchCheckedFor(consumers: PluginWorkOwner.ConsumerLeases, batch: BatchChecked) =
+        PluginWorkOwner.ConsumerLeases.onBehalfOf consumers (fun () -> this.EmitBatchChecked batch)
+
     /// Emit the start of a test run to all registered plugins.
     member _.EmitTestRunStarted(started: TestRunStarted) =
         dispatchToAll (PluginFramework.DispatchTestRunStarted started)

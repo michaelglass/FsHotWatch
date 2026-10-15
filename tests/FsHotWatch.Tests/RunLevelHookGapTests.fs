@@ -68,7 +68,7 @@ let private hooks (before: string option) (after: string option) : DaemonConfigu
 /// exercise (the `confirm` fast path returns before any other IPC call).
 let private dummyIpc (isRunning: string -> bool) : IpcOps =
     { Shutdown = fun _ -> async { return "" }
-      Scan = fun _ -> async { return "" }
+      Scan = fun _ _ -> async { return "" }
       ScanStatus = fun _ -> async { return "" }
       GetStatus = fun _ -> async { return "{}" }
       GetPluginStatus = fun _ _ -> async { return "{}" }

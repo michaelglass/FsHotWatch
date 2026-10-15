@@ -937,7 +937,7 @@ let ``DaemonRpcTarget.Scan returns generation and calls RequestScan`` () =
     let config =
         { defaultRpcConfig host with
             GetScanGeneration = fun () -> 42L
-            RequestScan = fun () -> called <- true }
+            RequestScan = fun _ -> called <- true }
 
     let target = DaemonRpcTarget(config)
 
