@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.47 - 2026-10-15
+
 - fix: an analyzer message that names a referenced assembly read from a repository
   host's import store names it by the worktree path it was given as
   (`FileCheckResult.textToReal`), not by its store path.

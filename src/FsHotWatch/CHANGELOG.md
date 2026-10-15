@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.75 - 2026-10-15
+
 - fix!: the check-result cache key names three inputs it used to trust by path. The
   first is the checker build that computed the result: `CheckCache.toolchainIdentity`,
   the module version ids of FCS, FSharp.Core and fshw. `makeCacheKeyWith` takes it as a
