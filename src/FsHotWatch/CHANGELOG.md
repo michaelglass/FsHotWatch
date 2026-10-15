@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- feat: `ImportStore.Store` keeps a repository's referenced assemblies by content: one
+  path per SHA-256 of a dll's bytes, under the dll's own file name, with a write time
+  derived from the hash. FCS identifies a referenced assembly by path and write time, so
+  equal bytes in two worktrees become one assembly to it, and different bytes never
+  can. Entries are written through a verified temporary file and an atomic rename; one
+  whose bytes no longer match is replaced, never served. `PlaceReference` leaves a type
+  provider where it is. `RepositoryIdentity.repositoryImportStoreDir` is the store's
+  directory in the repository's shared cache.
+- feat!: a hosted session reads each in-repository reference that is not a project's
+  output from where its host places it (`DaemonHosting.hostedWithImports`,
+  `HostingSeams.Imports`, `CheckPipeline`'s `imports`). Two sessions under one virtual
+  root holding the same vendored dll then hold one import of it. `Hosting.Hosted` gains
+  the placement, and `ProjectSnapshots.buildFramedWith` takes a `ReferencePlacement`
+  (`ProjectSnapshots.inPlace` reads every reference where it is). A standalone daemon
+  reads every reference where it is, as before.
+
 ## 0.10.0-alpha.74 - 2026-10-15
 
 - feat: `ProcessHelper.runProcessToStopping` streams a child's output like

@@ -151,6 +151,13 @@ let private referenceOnDisk (hashFile: string -> string) (repoRoot: string optio
 
     { Path = path; LastModified = stamp }
 
+/// Where a referenced assembly inside the repository is read from instead of its own
+/// path: `ImportStore.Store.PlaceReference` in a repository host. `None` keeps the path.
+type ReferencePlacement = string -> string option
+
+/// Every reference read where it is.
+let inPlace: ReferencePlacement = fun _ -> None
+
 /// A snapshot, the frame its project was checked under, and the real-path project
 /// outputs anywhere in its reference tree: the ones FCS may type against, since it
 /// reads such an output whenever it is at least as new as its project's sources.
@@ -270,6 +277,7 @@ let private buildTree
     (hashFile: string -> string)
     (repoRoot: string option)
     (choose: PathFrame.FrameChoice)
+    (place: ReferencePlacement)
     (versionOf: string -> string)
     (fileSnapshot: string -> string -> string -> FSharpFileSnapshot)
     (options: FSharpProjectOptions)
@@ -429,10 +437,22 @@ let private buildTree
                                   LastModified = contentStamp upstream.Closure }
                             // At a real path FCS types against the output whenever it is at
                             // least as new as the upstream's sources: its bytes are an input,
-                            // stamped in `referenceStamps`.
-                            | Some { Frame = None }
-                            | None ->
+                            // stamped in `referenceStamps`. It stays where it is: FCS pairs
+                            // it with the upstream's snapshot by its exact path.
+                            | Some { Frame = None } ->
                                 { Path = path
+                                  LastModified = stamp.Value }
+                            // Any other assembly in the repository is read from where `place`
+                            // puts it, if anywhere: one path for its bytes, whichever worktree
+                            // they are in. Its stamp already names those bytes.
+                            | None ->
+                                let placed =
+                                    if CheckCache.isUnderRoot repoRoot path then
+                                        place path
+                                    else
+                                        None
+
+                                { Path = defaultArg placed path
                                   LastModified = stamp.Value }
 
                         { reference with
@@ -570,6 +590,7 @@ let buildFramedWith
     (hashFile: string -> string)
     (repoRoot: string option)
     (choose: PathFrame.FrameChoice)
+    (place: ReferencePlacement)
     (openFile: OpenFile)
     (options: FSharpProjectOptions)
     : Framed =
@@ -577,7 +598,7 @@ let buildFramedWith
 
     if hashFile openFile.Path = openFile.Version then
         let top =
-            buildTree (Shared memo) generation hashFile repoRoot choose hashFile diskSnapshot options
+            buildTree (Shared memo) generation hashFile repoRoot choose place hashFile diskSnapshot options
 
         { Snapshot = withOpenFile openFile options top
           Frame = top.Frame
@@ -603,6 +624,7 @@ let buildFramedWith
                 hashFile
                 repoRoot
                 choose
+                place
                 versionOf
                 fileSnapshot
                 options
@@ -621,7 +643,7 @@ let buildFramed
     (openFile: OpenFile)
     (options: FSharpProjectOptions)
     : Framed =
-    buildFramedWith (SnapshotMemo()) generation hashFile repoRoot choose openFile options
+    buildFramedWith (SnapshotMemo()) generation hashFile repoRoot choose inPlace openFile options
 
 /// The snapshot for checking `openFile` in `options`, every project at its own paths.
 let build

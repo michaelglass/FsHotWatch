@@ -91,3 +91,11 @@ type Store(root: string, hashFile: string -> string) =
                 // Not kept as a failure: the next ask may find the file readable.
                 entries.TryRemove(KeyValuePair(target, placed)) |> ignore
                 None
+
+    /// `Place`, except for a type provider, which is read where it is: FCS loads its
+    /// design-time assemblies from beside it.
+    member this.PlaceReference(path: string) : string option =
+        if FrameExclusions.isTypeProviderAssembly path then
+            None
+        else
+            this.Place path

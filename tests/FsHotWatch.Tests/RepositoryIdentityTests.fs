@@ -952,3 +952,25 @@ let ``real jj: colocated primary, jj workspace and git worktree are one reposito
         let other = Path.Combine(dir, "other")
         run dir "jj" [ "git"; "init"; "--colocate"; other ]
         test <@ (resolved other).Repository <> ids.Head.Repository @>)
+
+[<Fact(Timeout = 15000)>]
+let ``the import store is per repository, shared by its worktrees, and in its shared cache`` () =
+    withTempDir "rid-imports" (fun dir ->
+        let primary = jjPrimary (mkdir (Path.Combine(dir, "repo")))
+        let secondary = jjSecondary primary (mkdir (Path.Combine(dir, "ws")))
+        let other = jjPrimary (mkdir (Path.Combine(dir, "other")))
+
+        let store root =
+            repositoryImportStoreDir "/c" (resolved root).Repository
+
+        test <@ store primary = store secondary @>
+        test <@ store primary <> store other @>
+
+        test
+            <@
+                (store primary)
+                    .StartsWith(
+                        repositorySharedCacheDir "/c" (resolved primary).Repository
+                        + string Path.DirectorySeparatorChar
+                    )
+            @>)

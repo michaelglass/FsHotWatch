@@ -54,11 +54,13 @@ type Hosting =
     | Standalone
     /// One session of a repository host, watching through the host's shared stream,
     /// checking through its partition's shared checker, each project under the frame
-    /// `frames` gives it, and admitted to check by the host's one scheduler.
+    /// `frames` gives it, its in-repository references read where `imports` places
+    /// them, and admitted to check by the host's one scheduler.
     | Hosted of
         watcherFactory: WatcherFactory *
         checkers: CheckerFactory *
         frames: PathFrame.FrameChoice *
+        imports: (string -> string option) *
         checks: WorkScheduler.Scheduler
 
 /// A per-worktree daemon.
@@ -68,7 +70,7 @@ let standalone () : Hosting = Hosting.Standalone
 /// through the checker `checkers` hands out for its configuration, and admitted to
 /// check by `checks`, the scheduler every session of the host shares.
 let hostedBy (sharedWatcher: WatcherFactory) (checkers: CheckerFactory) (checks: WorkScheduler.Scheduler) : Hosting =
-    Hosting.Hosted(sharedWatcher, checkers, PathFrame.realPaths, checks)
+    Hosting.Hosted(sharedWatcher, checkers, PathFrame.realPaths, (fun _ -> None), checks)
 
 /// `hostedBy`, with each project checked under the frame `frames` gives it.
 let hostedUnderFrames
@@ -77,7 +79,18 @@ let hostedUnderFrames
     (frames: PathFrame.FrameChoice)
     (checks: WorkScheduler.Scheduler)
     : Hosting =
-    Hosting.Hosted(sharedWatcher, checkers, frames, checks)
+    Hosting.Hosted(sharedWatcher, checkers, frames, (fun _ -> None), checks)
+
+/// `hostedUnderFrames`, with each in-repository reference read where `imports` places
+/// it (`ImportStore.Store.PlaceReference`), or where it is when that gives `None`.
+let hostedWithImports
+    (sharedWatcher: WatcherFactory)
+    (checkers: CheckerFactory)
+    (frames: PathFrame.FrameChoice)
+    (imports: string -> string option)
+    (checks: WorkScheduler.Scheduler)
+    : Hosting =
+    Hosting.Hosted(sharedWatcher, checkers, frames, imports, checks)
 
 /// Everything a hosted session does differently from a per-worktree daemon.
 [<NoComparison; NoEquality>]
@@ -94,6 +107,8 @@ type HostingSeams =
         Checker: CheckerFactory -> CheckerFactory
         /// The frame each project is checked under.
         Frames: PathFrame.FrameChoice
+        /// Where an in-repository reference is read from instead of its own path.
+        Imports: string -> string option
         /// The scheduler that admits the daemon's checks, given the one it would build
         /// for itself. A host's sessions share one, so the host's bound holds across
         /// them and a session with a long queue takes turns with the others.
@@ -109,11 +124,13 @@ let seams (hosting: Hosting) : HostingSeams =
           Watcher = id
           Checker = id
           Frames = PathFrame.realPaths
+          Imports = fun _ -> None
           Checks = id }
-    | Hosting.Hosted(sharedWatcher, checkers, frames, checks) ->
+    | Hosting.Hosted(sharedWatcher, checkers, frames, imports, checks) ->
         { ResourceScope = ResourceScope.Host
           MayForceGc = false
           Watcher = fun _ -> sharedWatcher
           Checker = fun _ -> checkers
           Frames = frames
+          Imports = imports
           Checks = fun _ -> checks }

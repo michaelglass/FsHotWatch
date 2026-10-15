@@ -190,6 +190,7 @@ type CheckPipeline
         ?repoRoot: string,
         ?recheckCooldown: TimeSpan,
         ?frames: PathFrame.FrameChoice,
+        ?imports: ProjectSnapshots.ReferencePlacement,
         ?maxConcurrentChecks: int,
         ?admission: WorkScheduler.Lane
     ) =
@@ -234,6 +235,7 @@ type CheckPipeline
     // Which frame each project is checked under: its own paths unless a repository host
     // checks its worktrees under one virtual root.
     let frames = defaultArg frames PathFrame.realPaths
+    let imports = defaultArg imports ProjectSnapshots.inPlace
 
     /// See `FcsDiagnosticFilter.shouldRecheckProject`. Injectable so the
     /// cooldown can be collapsed in tests without waiting five minutes.
@@ -375,6 +377,9 @@ type CheckPipeline
 
     /// This pipeline's turn at the slots its checks are admitted by.
     member internal _.Admission: WorkScheduler.Lane = admission
+
+    /// Where this pipeline's checks read an in-repository reference from.
+    member internal _.Imports: ProjectSnapshots.ReferencePlacement = imports
 
     /// How many checks may run at once (see `maxConcurrentChecks`).
     member internal _.CheckConcurrencyBound: int = maxConcurrentChecks
@@ -759,6 +764,7 @@ type CheckPipeline
                             hashFile
                             repoRoot
                             frames
+                            imports
                             openFile
                             options
 

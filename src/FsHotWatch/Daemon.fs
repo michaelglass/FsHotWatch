@@ -4399,6 +4399,7 @@ module Daemon =
                         activity = fcsSink,
                         repoRoot = repoRoot,
                         frames = seams.Frames,
+                        imports = seams.Imports,
                         admission = checks
                     )
                 | Some b, None ->
@@ -4408,6 +4409,7 @@ module Daemon =
                         activity = fcsSink,
                         repoRoot = repoRoot,
                         frames = seams.Frames,
+                        imports = seams.Imports,
                         admission = checks
                     )
                 | _ ->
@@ -4416,6 +4418,7 @@ module Daemon =
                         activity = fcsSink,
                         repoRoot = repoRoot,
                         frames = seams.Frames,
+                        imports = seams.Imports,
                         admission = checks
                     )
 

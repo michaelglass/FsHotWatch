@@ -567,6 +567,11 @@ let repositoryControlPaths (stateHome: string) (repository: RepositoryId) : Repo
 let repositorySharedCacheDir (cacheHome: string) (repository: RepositoryId) : string =
     Path.Combine(cacheHome, "repositories", repository.Value)
 
+/// The repository's referenced assemblies, stored by content (`ImportStore`). The
+/// version segment changes when the store's layout does, so an old layout is a miss.
+let repositoryImportStoreDir (cacheHome: string) (repository: RepositoryId) : string =
+    Path.Combine(repositorySharedCacheDir cacheHome repository, "imports", "v1")
+
 /// Where results for ONE worktree are materialized: that worktree's own `.fshw`, which
 /// stays useful without a live host.
 let worktreeResultRoot (worktree: ResolvedWorktree) : string = FsHwPaths.root worktree.Root.Value

@@ -58,7 +58,7 @@ let private tree (n: int) =
       Generations = ConcurrentDictionary() }
 
 let private buildWith (memo: SnapshotMemo) (tree: Tree) (file: string) =
-    buildFramedWith memo tree.Generation tree.Hash None PathFrame.realPaths (tree.Open file) tree.B
+    buildFramedWith memo tree.Generation tree.Hash None PathFrame.realPaths inPlace (tree.Open file) tree.B
 
 let private buildFresh (tree: Tree) (file: string) =
     buildFramed tree.Generation tree.Hash None PathFrame.realPaths (tree.Open file) tree.B
@@ -102,7 +102,7 @@ let ``the open file's snapshot serves the text that was read for it`` () =
     let opened = tree.Open file
 
     let built =
-        buildFramedWith memo tree.Generation tree.Hash None PathFrame.realPaths opened tree.B
+        buildFramedWith memo tree.Generation tree.Hash None PathFrame.realPaths inPlace opened tree.B
 
     let source =
         (built.Snapshot.SourceFiles |> List.find (fun f -> f.FileName = file)).GetSource().Result
@@ -173,7 +173,7 @@ let ``an open file read while it moved is checked under its own version`` () =
             Version = "text:moved" }
 
     let built =
-        buildFramedWith memo tree.Generation tree.Hash None PathFrame.realPaths moved tree.B
+        buildFramedWith memo tree.Generation tree.Hash None PathFrame.realPaths inPlace moved tree.B
 
     let version =
         (built.Snapshot.SourceFiles |> List.find (fun f -> f.FileName = file)).Version
@@ -194,7 +194,7 @@ let ``a file checked in a project that does not list it gets the project's own s
         Path.Combine(Path.GetDirectoryName(List.head tree.BFiles), "Elsewhere.fs")
 
     let built =
-        buildFramedWith memo tree.Generation tree.Hash None PathFrame.realPaths (tree.Open stranger) tree.B
+        buildFramedWith memo tree.Generation tree.Hash None PathFrame.realPaths inPlace (tree.Open stranger) tree.B
 
     let fresh = buildFresh tree (List.head tree.BFiles)
 
