@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: a scan restores the projects whose dependencies are stale before it loads their
+  model, not tier by tier while it checks. Each restore used to rewrite an assets file the
+  model had just been loaded from, so a cold scan of a stale tree replaced its model once
+  per restored project, cancelled the checks in flight and started them again (about two
+  check starts per file). The deps gate now runs over the projects in the discovery roots
+  and in the current model first. A project the discovery first reaches outside the roots
+  is restored after that discovery and the model loaded once more, still before any check.
+  A restore that fails before discovery is reported with its output, as before.
+
 ## 0.10.0-alpha.75 - 2026-10-15
 
 - fix!: the check-result cache key names three inputs it used to trust by path. The

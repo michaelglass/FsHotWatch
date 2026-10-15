@@ -5745,6 +5745,91 @@ let ``a daemon restores a project without assets through the injected restore`` 
                 |> List.exists (fun e -> (sprintf "%A" e).Contains "fake restore refused")
             @>)
 
+/// Cold-scan `projectDirs` (each relative to the root, holding `<Name>.fsproj` with one
+/// source and no restore output) through a restore that writes each project's assets.
+/// The projects restored, in order, the loader's load count, and the scan's
+/// `(FilesChecked, CheckStarts)`.
+let private coldScanThroughRestore (projectDirs: string list) =
+    withTempDir "restore-before-discovery" (fun tmpDir ->
+        let projects =
+            projectDirs
+            |> List.map (fun relative ->
+                let directory = Path.Combine(tmpDir, relative)
+                let name = Path.GetFileName directory
+                Directory.CreateDirectory(directory) |> ignore
+                let projectPath = Path.Combine(directory, $"%s{name}.fsproj")
+                let sourcePath = Path.Combine(directory, $"%s{name}.fs")
+                File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+                File.WriteAllText(sourcePath, $"module %s{name}\nlet x = 1\n")
+                projectPath, sourcePath)
+
+        let sourceOf = Map.ofList projects
+
+        let loader =
+            CountingWorkspaceLoader(
+                projects
+                |> List.map (fun (projectPath, sourcePath) ->
+                    { minimalLoadedProject projectPath with
+                        SourceFiles = [ sourcePath ] })
+            )
+
+        let restored = Collections.Concurrent.ConcurrentQueue<string>()
+
+        let fakeRestore (_: string) : DepsFreshness.RestoreRunner =
+            fun project ->
+                restored.Enqueue(Path.GetRelativePath(tmpDir, project).Replace('\\', '/'))
+
+                let assets =
+                    Path.Combine(Path.GetDirectoryName project, "obj", "project.assets.json")
+
+                Directory.CreateDirectory(Path.GetDirectoryName assets) |> ignore
+                File.WriteAllText(assets, assetsJson "Xunit" "restore")
+                ProcessHelper.Succeeded(ProcessHelper.ProcessOutput.Drained "restored")
+
+        use daemon =
+            Daemon.createWithWorkspaceLoader
+                sharedChecker.Value
+                tmpDir
+                { oneShotDaemonOptions with
+                    Restore = fakeRestore }
+                loader
+                (fun loaded ->
+                    loaded
+                    |> List.map (fun p -> makeProjectOptions p.ProjectFileName [ sourceOf[p.ProjectFileName] ] []))
+
+        daemon.ScanAll() |> Async.RunSynchronously
+
+        let scans =
+            FsHotWatch.ScanMetrics.readSeries (FsHotWatch.ScanMetrics.recordPath tmpDir)
+
+        List.ofSeq restored, loader.Loads, scans |> List.map (fun s -> s.FilesChecked, s.CheckStarts))
+
+/// A cold scan of a tree whose projects need a restore restores them before it loads their
+/// model. Restored after, each restore rewrote an assets file the model had been loaded
+/// from: the scan replaced its model once per restored project and checked its files again.
+[<Fact(Timeout = 60000)>]
+let ``a cold scan restores stale projects before it loads their model`` () =
+    let restored, loads, scans = coldScanThroughRestore [ "src/First"; "src/Second" ]
+
+    test <@ List.sort restored = [ "src/First/First.fsproj"; "src/Second/Second.fsproj" ] @>
+    // One discovery, after the restores: no model replaced.
+    test <@ loads = 1 @>
+    // Each file started once.
+    test <@ scans = [ 2, 2L ] @>
+
+/// A project the loader reaches outside the discovery roots cannot be restored before the
+/// first discovery names it. It is restored, and the model loaded again, before any check
+/// starts, so no check is cancelled and none runs twice.
+[<Fact(Timeout = 60000)>]
+let ``a cold scan restores a project found outside the discovery roots before it checks anything`` () =
+    let restored, loads, scans =
+        coldScanThroughRestore [ "src/Inside"; "packages/analyzers/Outside" ]
+
+    test <@ restored = [ "src/Inside/Inside.fsproj"; "packages/analyzers/Outside/Outside.fsproj" ] @>
+    test <@ loads = 2 @>
+    test <@ scans = [ 2, 2L ] @>
+
+
 [<Fact(Timeout = 5000)>]
 let ``the batch line names the changed files that caused it and counts the dependents`` () =
     let triggers = [ for i in 1..12 -> $"/repo/src/F%d{i}.fs" ]
