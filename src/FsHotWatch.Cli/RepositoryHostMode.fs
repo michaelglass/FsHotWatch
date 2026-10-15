@@ -31,6 +31,11 @@ let EnvVar = "FSHW_REPOSITORY_HOST"
 [<Literal>]
 let VirtualRootEnvVar = "FSHW_VIRTUAL_ROOT"
 
+/// `0` in a host's environment reads every in-repository reference where it is instead
+/// of from the repository's import store.
+[<Literal>]
+let ImportStoreEnvVar = "FSHW_IMPORT_STORE"
+
 /// True when `.fshw.json`'s text sets `"repositoryHost": true`.
 let configured (configText: string) : bool =
     try
