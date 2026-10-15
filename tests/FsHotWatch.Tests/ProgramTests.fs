@@ -1591,8 +1591,10 @@ type private FakeDaemon(initiallyRunning: bool) =
                         return "shutting down"
                     } }
 
-/// Run `command` in a temp repo with one project, against `daemon`.
-let private runAgainst (daemon: FakeDaemon) (command: Command) =
+/// Run `command` in a temp repo with one project, against `daemon`. `whileRunning` is
+/// called with the repo root once the command has its daemon, as another client would act
+/// while the command runs.
+let private runAgainstWhile (whileRunning: string -> unit) (daemon: FakeDaemon) (command: Command) =
     withTempDir "prog-gate-daemon" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src")
         Directory.CreateDirectory(srcDir) |> ignore
@@ -1606,10 +1608,17 @@ let private runAgainst (daemon: FakeDaemon) (command: Command) =
             File.WriteAllText(Path.Combine(stateDir, "config.hash"), computeConfigHashWith defaultFileOps tmpDir)
             FsHotWatch.DaemonIdentity.recordCurrent tmpDir
 
+        let ipc =
+            { daemon.Ipc with
+                LaunchDaemon =
+                    fun root args logDir ->
+                        daemon.Ipc.LaunchDaemon root args logDir
+                        whileRunning tmpDir }
+
         executeCommand
             ""
             (fun _ -> Unchecked.defaultof<_>)
-            daemon.Ipc
+            ipc
             tmpDir
             "pipe"
             command
@@ -1617,6 +1626,13 @@ let private runAgainst (daemon: FakeDaemon) (command: Command) =
             fakeConfig
             5.0
         |> ignore)
+
+let private runAgainst daemon command = runAgainstWhile ignore daemon command
+
+/// Another client attaching while a run is in flight: a `check` in the same workspace that
+/// reused the daemon holds a run claim on the repo for as long as it runs.
+let private anotherCheckAttaches (repoRoot: string) =
+    FsHotWatch.Cli.RunClaim.acquire repoRoot "check" "another-client" |> ignore
 
 [<Fact(Timeout = 30000)>]
 let ``confirm stops the daemon it started`` () =
@@ -1662,6 +1678,26 @@ let ``test-rerun leaves a daemon it found running`` () =
 
     test <@ daemon.Launches = 0 @>
     test <@ daemon.Shutdowns = 0 @>
+
+/// The daemon `confirm` started is now another run's daemon too: stopping it would end that
+/// run's daemon under it.
+[<Fact(Timeout = 30000)>]
+let ``confirm leaves the daemon it started when another client attached to it`` () =
+    let daemon = FakeDaemon(false)
+    runAgainstWhile anotherCheckAttaches daemon (Confirm [])
+
+    test <@ daemon.Launches = 1 @>
+    test <@ daemon.Shutdowns = 0 @>
+    test <@ daemon.Running @>
+
+[<Fact(Timeout = 30000)>]
+let ``test-rerun leaves the daemon it started when another client attached to it`` () =
+    let daemon = FakeDaemon(false)
+    runAgainstWhile anotherCheckAttaches daemon (TestRerun [])
+
+    test <@ daemon.Launches = 1 @>
+    test <@ daemon.Shutdowns = 0 @>
+    test <@ daemon.Running @>
 
 [<Fact(Timeout = 30000)>]
 let ``confirm --keep-daemon leaves the daemon it started`` () =

@@ -372,6 +372,18 @@ let internal releasesDaemon (command: Command) (outcome: EnsureOutcome) : bool =
     | TestRerun _, EnsureOutcome.Started -> true
     | _ -> false
 
+/// End the daemon a one-shot verb started, unless another run is in flight on this repo.
+/// A `check` that reused the daemon while this command ran holds a run claim
+/// (`RunClaim`) until it finishes, and releasing would stop its daemon under it; the daemon
+/// is then that run's to keep. This command's own claim is released before this is
+/// reached, so every claim held here is another run's.
+let internal releaseUnlessShared (repoRoot: string) (release: unit -> unit) : unit =
+    match RunClaim.live repoRoot with
+    | [] -> release ()
+    | others ->
+        let users = others |> List.map RunClaim.describe |> String.concat "; "
+        eprintfn $"  Leaving the daemon running: another run is using it (%s{users})."
+
 /// The run mode a command's in-process host is constructed with. `--run-once`
 /// scans, settles and exits, so its host is `OneShot` and constructs no file
 /// watcher; every persistent command keeps `Watching`.
@@ -3509,7 +3521,7 @@ let internal executeCommandWatchingConfig
                             eprintfn "  Waiting for the daemon's full-suite warm-up before stopping it..."
                             ipc.WaitForComplete pipeName -1 |> Async.RunSynchronously |> ignore
                     finally
-                        link.Release()
+                        releaseUnlessShared repoRoot link.Release
 
             let rerun () =
                 try
@@ -3739,7 +3751,7 @@ let internal executeCommandWatchingConfig
                                 queryPluginIn invocation CheckVerdict.Confirmation freshness mode "")
                     finally
                         if releasesDaemon command cameBy.Value then
-                            link.Release()
+                            releaseUnlessShared repoRoot link.Release
 
                 warnUnrecordedTraces repoRoot config startedAt
                 exitCode

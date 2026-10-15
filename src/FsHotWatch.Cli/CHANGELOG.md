@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: `confirm` and `test-rerun` no longer stop the daemon they started when another run
+  is in flight on the repository. A `check` that reused that daemon while they ran holds a
+  run claim under `.fshw/in-flight/`; while one is held, the daemon is left running and
+  the command says which run is using it.
+
 ## 0.14.0-alpha.101 - 2026-10-15
 
 - feat: the repository host reads every in-repository dll from the repository's import
