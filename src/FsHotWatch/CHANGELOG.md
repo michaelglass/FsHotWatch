@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `DotnetToolchain` is a new public module, added with the toolchain-scoped task
+  cache below. `DotnetToolchain.identity repoRoot` gives the toolchain identity a task
+  key is scoped to; `DotnetToolchain.describe` formats one from a `dotnet --version`
+  answer, a DOTNET_ROOT and a `global.json`'s content; `DotnetToolchain.tryFindGlobalJson`
+  finds the `global.json` that selects a directory's SDK. `TaskCache.ToolchainScopedTaskCache`
+  is new and public as well.
 - fix: the toolchain a task key is scoped to is resolved in the environment the
   `dotnet --version` child actually runs in. Inside a repository host's session that is
   the session's environment, which replaces the process's wholesale, but the answer was
