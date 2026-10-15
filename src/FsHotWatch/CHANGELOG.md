@@ -9,6 +9,9 @@
   tier put 2,000 checks in flight, each holding its closure and a scheduler waiter. Now
   the rest wait unstarted until a running check finishes. A source-guard test fails on
   any unbounded `Async.Parallel` in the core library.
+- test: two repository-host sessions that share a project's check through the virtual
+  root keep the shared work when one of them cancels. The surviving session gets the
+  full answer, and the cancelling session's next check is served that same answer.
 
 ## 0.10.0-alpha.74 - 2026-10-15
 
