@@ -648,3 +648,41 @@ let ``a replay records a completed lint for the current model, and nothing else`
     test <@ replay (Some fixtureModelGeneration) (Result.Error "lint failed") |> Map.isEmpty @>
     test <@ replay (Some 2L) completed |> Map.isEmpty @>
     test <@ replay None completed |> Map.isEmpty @>
+
+// A project `fsharplint.json` is loaded by the real FSharpLint, not a stubbed runner, and
+// the lint step settles on it: the plugin reaches a terminal status inside the bound.
+[<Fact(Timeout = 30000)>]
+let ``lint with a project config reaches a terminal status`` () =
+    withTempDir "lint-project-config" (fun dir ->
+        let configPath = System.IO.Path.Combine(dir, "fsharplint.json")
+
+        System.IO.File.WriteAllText(
+            configPath,
+            """{ "maxCharactersOnLine": { "enabled": true, "config": { "maxCharactersOnLine": 20 } } }"""
+        )
+
+        let file = System.IO.Path.Combine(dir, "Long.fs")
+        let source = "module Long\n\nlet aVeryLongIdentifierName = 1\n"
+
+        let parsed =
+            sharedChecker.Value.ParseFile(
+                file,
+                SourceText.ofString source,
+                { FSharp.Compiler.CodeAnalysis.FSharpParsingOptions.Default with
+                    SourceFiles = [| file |] }
+            )
+            |> Async.RunSynchronously
+
+        let host = createModelHost (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(create None (Some configPath) None None)
+
+        host.EmitFileChecked
+            { fakeFileCheckResult file with
+                Source = source
+                ParseResults = parsed }
+
+        waitForTerminalStatus host "lint" 20000
+
+        match host.GetStatus "lint" with
+        | Some(Completed _) -> ()
+        | other -> Assert.Fail($"Expected Completed, got: %A{other}"))

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: `check` no longer waits out its full hour-long bound on a green tree when no test
+  or analysis plugin is configured (for example `{ "lint": true }` with a build and no
+  tests). `BuildPlugin`'s state can hold a completed build failure, and that alone counted
+  as offering evidence. So the host owed a receipt for the current model that only a test
+  run or TestPrune's analysis seal can mint, and a passing build mints none. The verdict
+  wait sat with every plugin at rest and idle CPU, and named what it was waiting for only
+  at debug level. `HostSnapshot.OffersEvidence` now counts only receipt minters. A
+  completed build failure still ends the wait on a host that does owe one, and a
+  build-only host serves no `modelReceipts`, as for any host that mints none.
+
 ## 0.10.0-alpha.76 - 2026-10-16
 
 - feat: `DotnetToolchain` is a new public module, added with the toolchain-scoped task

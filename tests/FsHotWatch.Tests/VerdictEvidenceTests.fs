@@ -432,6 +432,42 @@ let ``a host with no plugins still waits for the work it owns, and names it`` ()
         |> fun waiting -> waiting.GetAwaiter().GetResult())
 
 // ---------------------------------------------------------------------------
+// A plugin that can only report a failed build owes no receipt.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 30000)>]
+let ``a verdict wait over a green build with no receipt-minting plugin resolves at once`` () =
+    withTempDir "verdict-wait-green-build-only" (fun repoRoot ->
+        // A daemon configured with build and lint but no tests: `BuildPlugin` can hold a
+        // completed failure, and nothing here can mint a test or analysis receipt. A green
+        // build mints nothing, so a wait that asked this host for evidence could only end
+        // at its deadline (an hour, from `check`) with every plugin already terminal.
+        let host = pluginFreeHost repoRoot
+
+        host.RegisterHandler
+            { Name = PluginName.create "green-build"
+              Init = { Failure = None }
+              Update = fun _ state _ -> async { return state }
+              Commands = []
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        host.EmitFileChanged(SourceChanged [ "Green.fs" ])
+        waitForQuiescent host 10000
+
+        test <@ not host.WorkSnapshot.IsBusy @>
+        test <@ List.isEmpty host.WorkSnapshot.CompletedFailures @>
+
+        FsHotWatch.Daemon.waitForVerdict host (TimeSpan.FromSeconds 5.0) CancellationToken.None
+        |> fun waiting -> waiting.GetAwaiter().GetResult()
+
+        // Owing nothing, it is asked for nothing — the same rule the CLI's receipt gate
+        // applies to `modelReceipts`.
+        test <@ not host.WorkSnapshot.OffersEvidence @>)
+
+// ---------------------------------------------------------------------------
 // A failure is committed, not resting: it neither ends the wait early nor is lost.
 // ---------------------------------------------------------------------------
 

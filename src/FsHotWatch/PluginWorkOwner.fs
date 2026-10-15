@@ -64,9 +64,10 @@ type RowStatus =
         /// red build earns no receipt of either kind, and is still an answer about the
         /// model it failed under.
         BuildFailure: Events.CompletedBuildFailure option
-        /// Whether this row's state is one that MINTS evidence at all. A host with no such
-        /// row offers no receipts, and a reader must not mistake that for a row that owed
-        /// one and produced nothing.
+        /// Whether this row's state is one that MINTS a receipt (test or analysis) at all.
+        /// A host with no such row offers no receipts, and a reader must not mistake that
+        /// for a row that owed one and produced nothing. A state that can hold only a
+        /// `BuildFailure` mints no receipt, so it offers none.
         OffersEvidence: bool
         /// Is this row's work BOUNDED — run under a finite deadline that will fail it if
         /// it overruns (`SupervisedWork`)? An ordinary event fold is not: nothing will
@@ -1329,11 +1330,15 @@ type Owner<'State>(initialState: 'State, ?store: Store, ?name: string) =
                     match box snapshot.Domain with
                     | :? Events.ICompletedBuildFailureState as holder -> holder.CompletedBuildFailure
                     | _ -> None
+                  // Only a RECEIPT minter offers evidence. A completed build failure ends a
+                  // wait that owes a receipt, but a state that can hold only that mints
+                  // nothing when its build passes: counted here, it made a host with a
+                  // build and no tests owe a receipt nothing could mint, and every verdict
+                  // wait over a green tree ran to its deadline with every plugin at rest.
                   OffersEvidence =
                     match box snapshot.Domain with
                     | :? Events.IEarnedEvidenceState
-                    | :? Events.IAnalysisEvidenceState
-                    | :? Events.ICompletedBuildFailureState -> true
+                    | :? Events.IAnalysisEvidenceState -> true
                     | _ -> false
                   // A plugin's event folds run under no deadline: see `Supervised`.
                   Supervised = false
