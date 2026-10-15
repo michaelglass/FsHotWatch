@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a `RunExclusiveShared` run whose work returned but whose process scope could not
+  establish that its children ended (a kill that did not return in time) no longer
+  releases the shared resource as `Invalid "<plugin> shared work faulted"` and drops its
+  fold. That invalidity was sticky: nothing that runs under the lease could earn it back,
+  so every later claimant was refused until the daemon restarted. The run now folds the
+  plugin's own failure message, and the plugin's classifier decides what the resource
+  carries forward, as it already did for a failure of the work itself.
+
 ## 0.10.0-alpha.75 - 2026-10-15
 
 - fix!: the check-result cache key names three inputs it used to trust by path. The

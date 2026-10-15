@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **fix!: a test run whose test-host kill timed out no longer wedges the daemon.
+  `TestHostUnavailable` has a fourth field, `opened: TestRunStarted option`**, so code
+  that constructs or matches it must supply it. Such a run's result was dropped, which
+  left three things behind: the build-artifacts lease `Invalid` (every later launch
+  was refused with "the preceding build left invalid artifacts"), the run it had started
+  never completed (so the build plugin deferred every build while it waited for it), and
+  a `run-tests` client waiting until its `waitSec` ran out. The run now ends
+  `Aborted`, its client is told why, the lease stays valid, and what it would have
+  discharged stays owed for the next run.
+
 ## 0.13.0-alpha.73 - 2026-10-15
 
 - **fix!: a scan that leaves a checkable file of the project model without a completed
