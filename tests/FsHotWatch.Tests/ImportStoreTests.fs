@@ -101,3 +101,44 @@ let ``concurrent placements of one content agree and leave no temporary file`` (
         test <@ placed.Length = 1 @>
         test <@ File.ReadAllBytes placed[0].Value = bytes @>
         test <@ Directory.GetFiles(root, "*", SearchOption.AllDirectories).Length = 1 @>)
+
+[<Fact>]
+let ``a later host reuses an entry whose bytes match, restoring its write time`` () =
+    withTempDir "import-store-reuse" (fun dir ->
+        let root = Path.Combine(dir, "store")
+        let hash = (hasher ()).Hash
+        let x = writeBytes (Path.Combine(dir, "X.dll")) [| 3uy; 1uy |]
+        let placed = (ImportStore.Store(root, hash).Place x).Value
+        File.SetLastWriteTimeUtc(placed, DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc))
+
+        let again = (ImportStore.Store(root, hash).Place x).Value
+
+        test <@ again = placed @>
+        test <@ File.GetLastWriteTimeUtc again = ImportStore.stampOf (hash x) @>)
+
+[<Fact>]
+let ``bytes that do not match the hash they were placed under are discarded`` () =
+    // The source moved between its hash and its copy.
+    withTempDir "import-store-moved" (fun dir ->
+        let root = Path.Combine(dir, "store")
+        let store = ImportStore.Store(root, fun _ -> String('a', 64))
+        let x = writeBytes (Path.Combine(dir, "X.dll")) [| 6uy |]
+
+        test <@ store.Place x = None @>
+        test <@ Array.isEmpty (Directory.GetFiles(root, "*", SearchOption.AllDirectories)) @>)
+
+[<Fact>]
+let ``a file gone before it is copied is not placed`` () =
+    withTempDir "import-store-gone" (fun dir ->
+        let store = ImportStore.Store(Path.Combine(dir, "store"), fun _ -> String('b', 64))
+        test <@ store.Place(Path.Combine(dir, "Gone.dll")) = None @>)
+
+[<Fact>]
+let ``a type provider is read where it is`` () =
+    withTempDir "import-store-provider" (fun dir ->
+        let store = ImportStore.Store(Path.Combine(dir, "store"), (hasher ()).Hash)
+        let provider = Path.Combine(dir, "FakeProvider.dll")
+        FrameExclusionsTests.writeProviderAssembly provider
+
+        test <@ store.PlaceReference provider = None @>
+        test <@ (store.Place provider).IsSome @>)

@@ -406,3 +406,12 @@ let ``a hosted check names each reference it read from the store by the worktree
         test <@ placedBy w.Store.PlaceReference w.B = Map.ofList [ stored, vendoredOf w.B ] @>
         test <@ placedBy w.Store.PlaceReference w.A = Map.ofList [ stored, vendoredOf w.A ] @>
         test <@ placedBy ProjectSnapshots.inPlace w.A = Map.empty @>)
+
+[<Fact>]
+let ``a checker whose caches cannot be read counts nothing, and attaching none is harmless`` () =
+    // The background compiler has no TransparentCompiler caches to read.
+    let background = FSharpChecker.Create(useTransparentCompiler = false)
+    FcsBootstraps.attach background
+    FcsBootstraps.attach Unchecked.defaultof<FSharpChecker>
+
+    test <@ FcsBootstraps.countsOf background = { Started = 0L; Projects = 0 } @>

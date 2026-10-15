@@ -48,9 +48,8 @@ type Store(root: string, hashFile: string -> string) =
 
         try
             if File.Exists target && hashOf target = hash then
-                if File.GetLastWriteTimeUtc target <> stamp then
-                    File.SetLastWriteTimeUtc(target, stamp)
-
+                // Restored if anything touched it: FCS keys the entry by its write time.
+                File.SetLastWriteTimeUtc(target, stamp)
                 true
             else
                 Directory.CreateDirectory(Path.GetDirectoryName target) |> ignore

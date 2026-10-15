@@ -81,7 +81,7 @@ let ``a project that reads nothing of its location is checked under the virtual 
 
 /// An assembly that declares itself a type provider, the way a real provider does:
 /// FSharp.Core's `TypeProviderAssemblyAttribute`, applied to the assembly.
-let private writeProviderAssembly (path: string) =
+let writeProviderAssembly (path: string) =
     let builder =
         System.Reflection.Emit.PersistedAssemblyBuilder(
             System.Reflection.AssemblyName "FakeProvider",
