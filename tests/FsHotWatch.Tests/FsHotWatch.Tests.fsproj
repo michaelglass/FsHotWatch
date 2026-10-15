@@ -65,6 +65,7 @@
     <Compile Include="StructureFilesTests.fs" />
     <Compile Include="PluginTests.fs" />
     <Compile Include="TaskCacheTests.fs" />
+    <Compile Include="ToolchainScopedTaskCacheTests.fs" />
     <Compile Include="PluginWorkOwnerTests.fs" />
     <Compile Include="SupervisedWorkTests.fs" />
     <Compile Include="DebouncedWorkTests.fs" />

@@ -282,6 +282,61 @@ type InMemoryTaskCache() =
         member _.ClearFile file = clearFile file
         member _.ClearPluginFile plugin file = clearPluginFile plugin file
 
+/// The fingerprint label a toolchain-scoped key names the toolchain under, so a miss
+/// caused by a different SDK says so.
+[<Literal>]
+let ToolchainLabel = "dotnet-toolchain"
+
+/// `key`, scoped to the resolved .NET `toolchain` (`DotnetToolchain.identity`).
+///
+/// Length-prefixed like `merkleCacheKey`, so no toolchain/key split collides with
+/// another. When this process knows the inputs behind `key`, the scoped key records
+/// them plus the toolchain, so a miss can name `ToolchainLabel` as the input that moved.
+let scopeToToolchain (toolchain: string) (key: ContentHash) : ContentHash =
+    let inner = ContentHash.value key
+
+    let hash =
+        FsHotWatch.CheckCache.sha256Hex $"%d{toolchain.Length}:%s{toolchain}|%s{inner}"
+
+    match KeyFingerprints.tryGet inner with
+    | Some inputs -> KeyFingerprints.record hash ((ToolchainLabel, KeyFingerprints.digest toolchain) :: inputs)
+    | None -> ()
+
+    ContentHash.create hash
+
+/// Every task key scoped to the .NET toolchain this process resolves, the same way
+/// `CheckCache.toolchainIdentity` scopes the check-result cache to its checker build.
+///
+/// A task's verdict depends on the SDK its `dotnet` children ran under, and no plugin
+/// key names it: a build that failed because the wrong SDK resolved has the same tree,
+/// and so the same key, as the build that succeeds once the environment is fixed. So
+/// the scope is applied here, once, for every plugin, rather than in each plugin's key.
+/// A hit hands back the result under the key the caller asked with.
+type ToolchainScopedTaskCache(inner: ITaskCache, toolchain: string) =
+    let scope = scopeToToolchain toolchain
+
+    let lookup compositeKey cacheKey =
+        match inner.Lookup compositeKey (scope cacheKey) with
+        | CacheHit result -> CacheHit { result with CacheKey = cacheKey }
+        | miss -> miss
+
+    interface ITaskCache with
+        member _.TryGet compositeKey cacheKey =
+            match lookup compositeKey cacheKey with
+            | CacheHit result -> Some result
+            | CacheMiss _ -> None
+
+        member _.Lookup compositeKey cacheKey = lookup compositeKey cacheKey
+
+        member _.Set compositeKey cacheKey result =
+            let scoped = scope cacheKey
+            inner.Set compositeKey scoped { result with CacheKey = scoped }
+
+        member _.Clear() = inner.Clear()
+        member _.ClearPlugin plugin = inner.ClearPlugin plugin
+        member _.ClearFile file = inner.ClearFile file
+        member _.ClearPluginFile plugin file = inner.ClearPluginFile plugin file
+
 /// Cache key: jj commit_id, salted per-event by `getSalt`. None for Custom events (uncacheable).
 /// Plugins whose cache validity depends on extra state beyond the commit (e.g. a config file
 /// whose edits don't change the commit) should salt the key with a hash of that state.

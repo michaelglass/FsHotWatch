@@ -4386,7 +4386,16 @@ module Daemon =
             // destroyed by the very act this exists to make cheap.
             let stores = FsHotWatch.CacheResidency.openPersistedStores repoRoot
             let sharedTaskCacheDir = FsHotWatch.CacheResidency.sharedStoreDir repoRoot
-            let taskCache = stores.Routed
+            // Scoped to the .NET toolchain this process resolves, so a verdict earned
+            // under one SDK (a "compatible SDK not found" build, say) is never replayed
+            // under another. One `dotnet --version` per process, not per task.
+            let toolchain = FsHotWatch.DotnetToolchain.identity repoRoot
+
+            let taskCache =
+                FsHotWatch.TaskCache.ToolchainScopedTaskCache(stores.Routed, toolchain)
+                :> FsHotWatch.TaskCache.ITaskCache
+
+            Logging.info "task-cache" $"Task keys scoped to toolchain: %s{toolchain.Replace('\n', ' ')}"
             let stats = stores.Local.Stats
             let sharedStats = stores.Shared.Stats
 

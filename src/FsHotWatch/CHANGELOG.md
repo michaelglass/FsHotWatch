@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: the task cache no longer replays a verdict earned under a different .NET SDK.
+  A build that failed with "A compatible .NET SDK was not found" was replayed as
+  `(cached)` after PATH and DOTNET_ROOT were fixed, because no task key named the SDK.
+  The daemon now wraps its task store in `TaskCache.ToolchainScopedTaskCache`, which
+  scopes every key to `DotnetToolchain.identity`: the version `dotnet --version`
+  resolves in the repository, DOTNET_ROOT, and the selecting `global.json`. It runs
+  `dotnet --version` once per process for each `global.json` it sees, never once per
+  task. A miss for this reason reads `inputs-changed:dotnet-toolchain`. Entries
+  written by earlier builds miss once, then are rewritten.
+
 ## 0.10.0-alpha.75 - 2026-10-15
 
 - fix!: the check-result cache key names three inputs it used to trust by path. The
