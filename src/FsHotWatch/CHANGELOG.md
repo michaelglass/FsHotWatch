@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.76 - 2026-10-16
+
 - feat: `DotnetToolchain` is a new public module, added with the toolchain-scoped task
   cache below. `DotnetToolchain.identity repoRoot` gives the toolchain identity a task
   key is scoped to; `DotnetToolchain.describe` formats one from a `dotnet --version`

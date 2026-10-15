@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.74 - 2026-10-16
+
 - **fix!: a test run whose test-host kill timed out no longer wedges the daemon.
   `TestHostUnavailable` has a fourth field, `opened: TestRunStarted option`**, so code
   that constructs or matches it must supply it. Such a run's result was dropped, which

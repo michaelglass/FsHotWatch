@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.102 - 2026-10-16
+
 - fix: `confirm` and `test-rerun` no longer stop the daemon they started when another run
   is in flight on the repository. A `check` that reused that daemon while they ran holds a
   run claim under `.fshw/in-flight/`; while one is held, the daemon is left running and
