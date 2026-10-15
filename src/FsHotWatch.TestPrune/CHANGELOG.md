@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.73 - 2026-10-15
+
 - **fix!: a scan that leaves a checkable file of the project model without a completed
   analysis refuses the green in a repository that configures test projects, naming the
   file. `TestPruneState` has a new field, `CohortSeal: AnalysisEvidence option`**, so

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.100 - 2026-10-15
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.99 - 2026-10-14
 
 - feat: `tests.selection.testScopedSources` (`["sql", "sql-hydra"]`) sets the walk policy

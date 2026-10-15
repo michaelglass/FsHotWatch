@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.74 - 2026-10-15
+
 - feat: `ProcessHelper.runProcessToStopping` streams a child's output like
   `runProcessTo`. When the child overruns, it first asks the process tree to stop as a
   `TreeStop` says: the signal (`StopSignal.Interrupt` = SIGINT or
