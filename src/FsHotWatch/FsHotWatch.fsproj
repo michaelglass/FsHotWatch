@@ -101,6 +101,7 @@
     <Compile Include="Plugin.fs" />
     <Compile Include="TaskCache.fs" />
     <Compile Include="FileTaskCache.fs" />
+    <Compile Include="DotnetToolchain.fs" />
     <Compile Include="RepoIdentity.fs" />
     <Compile Include="CacheResidency.fs" />
     <Compile Include="PluginWorkOwner.fs" />

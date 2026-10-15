@@ -72,6 +72,16 @@ type SharedRunStart =
     | SharedStarted
     | SharedStartFailed of afterRelease: (Result<unit, exn> -> unit)
 
+/// What a run under `RunExclusiveShared` holds of the host-wide resource: the state it
+/// was handed, what its result says about it, and the plugin's failure message for a run
+/// that has no result to say it with.
+[<NoComparison; NoEquality>]
+type private SharedRunLease<'Msg> =
+    { SharedKey: string
+      Classify: 'Msg -> SharedResourceState
+      Handed: SharedResourceState
+      Recover: exn -> 'Msg }
+
 let private finishSharedStartFailure (release: unit -> unit) (afterRelease: Result<unit, exn> -> unit) =
     let outcome =
         try
@@ -256,6 +266,9 @@ type PluginCtx<'Msg> =
         /// Atomically claim a local slot and enter a fair host-wide resource queue.
         /// Both SharedClaimed and SharedQueued mean the framework owns the work;
         /// only LocalSlotBusy requires the caller to retain or merge the debt.
+        /// A run with no result of its own — its work threw, or returned but could not
+        /// establish that its children ended — folds the failure message instead, and
+        /// the classifier decides what the resource carries forward from that message.
         RunExclusiveShared: SharedRunStarter<'Msg>
         /// What holds `key` under `RunExclusive`. Outside the fold that holds the
         /// key, `SlotHolder.Free` is the only case a claim can succeed in: a plugin
@@ -889,7 +902,7 @@ let internal registerHandlerForOwner
     let finishRun
         (key: string)
         (identity: PluginWorkOwner.WorkId)
-        (sharedRun: (string * ('Msg -> SharedResourceState) * SharedResourceState) option)
+        (sharedRun: SharedRunLease<'Msg> option)
         (startedAt: DateTime)
         (resultFirst: bool)
         (outcome: Result<'Msg, exn>)
@@ -897,19 +910,44 @@ let internal registerHandlerForOwner
         let completion =
             match sharedRun with
             | None -> outcome
-            | Some(sharedKey, classify, _) ->
-                let classified, resourceState =
+            | Some lease ->
+                // The guard has already turned a failure of the work itself into the
+                // plugin's failure message. What still fails here is the run's retirement:
+                // the work returned, but its process scope could not establish that its
+                // children ended. That is a fact about processes, not about the resource,
+                // so it folds as the plugin's failure message too, and the plugin's own
+                // classifier decides what the lease carries forward. A hard-coded
+                // `Invalid` here was sticky for the life of the daemon: nothing that runs
+                // under the lease could earn it back, and the run's own fold never came.
+                let recovered =
                     match outcome with
+                    | Result.Ok _ -> outcome
+                    | Result.Error failure ->
+                        error
+                            pluginName
+                            $"RunExclusiveShared '%s{key}' could not retire cleanly: %s{failure.ToString()}"
+
+                        try
+                            Result.Ok(lease.Recover failure)
+                        with recoveryFailure ->
+                            error
+                                pluginName
+                                $"RunExclusiveShared '%s{key}' failure mapper failed: %s{recoveryFailure.ToString()}"
+
+                            outcome
+
+                let classified, resourceState =
+                    match recovered with
                     | Result.Ok message ->
                         try
-                            outcome, classify message
+                            recovered, lease.Classify message
                         with failure ->
                             error pluginName $"RunExclusiveShared '%s{key}' classifier failed: %s{failure.ToString()}"
                             Result.Error failure, Invalid $"%s{pluginName} shared result classifier faulted"
-                    | Result.Error _ -> outcome, Invalid $"%s{pluginName} shared work faulted"
+                    | Result.Error _ -> recovered, Invalid $"%s{pluginName} shared work faulted"
 
                 try
-                    services.ReleaseSharedRun sharedKey resourceState
+                    services.ReleaseSharedRun lease.SharedKey resourceState
                     classified
                 with failure ->
                     Result.Error failure
@@ -938,7 +976,7 @@ let internal registerHandlerForOwner
     let retireAbandoned
         (key: string)
         (identity: PluginWorkOwner.WorkId)
-        (sharedRun: (string * ('Msg -> SharedResourceState) * SharedResourceState) option)
+        (sharedRun: SharedRunLease<'Msg> option)
         (startedAt: DateTime)
         (displaced: PluginStatus)
         =
@@ -947,7 +985,7 @@ let internal registerHandlerForOwner
         let released =
             try
                 sharedRun
-                |> Option.iter (fun (sharedKey, _, handed) -> services.ReleaseSharedRun sharedKey handed)
+                |> Option.iter (fun lease -> services.ReleaseSharedRun lease.SharedKey lease.Handed)
 
                 Result.Ok()
             with failure ->
@@ -977,7 +1015,7 @@ let internal registerHandlerForOwner
     let runOne
         (key: string)
         (identity: PluginWorkOwner.WorkId)
-        (sharedRun: (string * ('Msg -> SharedResourceState) * SharedResourceState) option)
+        (sharedRun: SharedRunLease<'Msg> option)
         (startedAt: DateTime)
         (displaced: PluginStatus)
         (abandoned: (System.Threading.CancellationTokenSource * IDisposable) option)
@@ -1130,7 +1168,11 @@ let internal registerHandlerForOwner
                         runOne
                             key
                             identity
-                            (Some(sharedKey, classify, resourceState))
+                            (Some
+                                { SharedKey = sharedKey
+                                  Classify = classify
+                                  Handed = resourceState
+                                  Recover = failureMessage })
                             startedAt
                             displaced
                             abandonment

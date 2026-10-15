@@ -65,6 +65,7 @@
     <Compile Include="StructureFilesTests.fs" />
     <Compile Include="PluginTests.fs" />
     <Compile Include="TaskCacheTests.fs" />
+    <Compile Include="ToolchainScopedTaskCacheTests.fs" />
     <Compile Include="PluginWorkOwnerTests.fs" />
     <Compile Include="SupervisedWorkTests.fs" />
     <Compile Include="DebouncedWorkTests.fs" />
@@ -146,6 +147,7 @@
     <Compile Include="TestPruneCheckReachSeamTests.fs" />
     <Compile Include="TestPruneSelectionSoundnessTests.fs" />
     <Compile Include="TestPruneRunnerFamilyTests.fs" />
+    <Compile Include="TestPruneKillTimeoutLeaseTests.fs" />
     <Compile Include="TestPruneRatchetTransactionTests.fs" />
     <Compile Include="TestPruneSignatureOccurrenceTests.fs" />
     <Compile Include="TestPruneDebtScopeTests.fs" />

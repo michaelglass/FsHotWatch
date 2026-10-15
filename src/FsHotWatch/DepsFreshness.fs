@@ -461,6 +461,34 @@ let evaluateProject
         Proceed
     | Stale -> handleStale sig_
 
+/// Ask `gate` about each of `projects` before a discovery loads their model; the answers
+/// other than `Proceed`, for the caller to log and pass to `withPreflight`.
+///
+/// A scan used to discover first and let the gate restore each stale project when its
+/// tier came up. Each of those restores rewrote an assets file the model had just been
+/// loaded from, so the scan replaced its model and checked its files again, once per
+/// restored project. Asked here, a restore writes before the loader reads.
+let internal preflight (gate: string -> GateResult) (projects: string list) : Map<string, GateResult> =
+    projects
+    |> List.distinct
+    |> List.choose (fun project ->
+        match gate project with
+        | Proceed -> None
+        | result -> Some(project, result))
+    |> Map.ofList
+
+/// `gate`, answering with the `FailFast` that `preflight` saw for a project when the gate
+/// itself now answers only `SkipAlreadyAttempted`.
+///
+/// The gate tries a restore once per stale state, so asked again after a failed preflight
+/// restore it skips the project without the restore's output. Every other answer is the
+/// gate's own: a project restored by hand since preflight is fresh again.
+let internal withPreflight (preflighted: Map<string, GateResult>) (gate: string -> GateResult) : string -> GateResult =
+    fun project ->
+        match gate project, Map.tryFind project preflighted with
+        | SkipAlreadyAttempted, Some(FailFast _ as failed) -> failed
+        | result, _ -> result
+
 /// Per-step restore timeout. A hung `dotnet`/`paket` restore would otherwise block the
 /// whole scan; bounding each step surfaces it as a `TimedOut` fail-fast instead.
 let restoreStepTimeout = TimeSpan.FromMinutes 5.0

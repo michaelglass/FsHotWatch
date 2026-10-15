@@ -1,0 +1,87 @@
+/// The .NET toolchain a `dotnet` started by this process resolves.
+///
+/// A cached build or test verdict is the answer of the code AND of the SDK that built
+/// it. "A compatible .NET SDK was not found" is a failure of the environment, not of
+/// the tree: once PATH or DOTNET_ROOT is fixed the same tree builds, so a task cache
+/// keyed on the tree alone replays the old failure as `(cached)`. The identity here is
+/// what `TaskCache.ToolchainScopedTaskCache` folds into every task key.
+module FsHotWatch.DotnetToolchain
+
+open System
+open System.Collections.Concurrent
+open System.IO
+open FsHotWatch.ProcessHelper
+
+/// The nearest `global.json` at or above `dir`: the file whose `sdk` section selects
+/// the SDK a `dotnet` started there resolves.
+let tryFindGlobalJson (dir: string) : string option =
+    let rec walk (current: DirectoryInfo) =
+        if isNull current then
+            None
+        else
+            let candidate = Path.Combine(current.FullName, "global.json")
+
+            if File.Exists candidate then
+                Some candidate
+            else
+                walk current.Parent
+
+    walk (DirectoryInfo dir)
+
+/// The identity of a resolved toolchain: what `dotnet --version` answered (its version,
+/// or how it failed), the DOTNET_ROOT it resolved under, and the content of the
+/// `global.json` that selected it.
+let describe (versionAnswer: string) (dotnetRoot: string option) (globalJson: string option) : string =
+    let dotnetRoot = defaultArg dotnetRoot "<unset>"
+    let globalJson = defaultArg globalJson "<none>"
+
+    [ $"dotnet --version=%s{versionAnswer}"
+      $"DOTNET_ROOT=%s{dotnetRoot}"
+      $"global.json=%s{globalJson}" ]
+    |> String.concat "\n"
+
+/// `dotnet --version`, run by `run`, as the answer `describe` records: the version on
+/// success, the exit code and output on failure. A failure is an identity too — it is
+/// the one a fixed environment must not share — and so is a spawn that threw.
+let internal answerOf (run: unit -> ProcessOutcome) : string =
+    try
+        match run () with
+        | Succeeded output -> (renderOutput output).Trim()
+        | Failed(code, output) -> $"failed (exit %d{code}): %s{(renderOutput output).Trim()}"
+        | TimedOut _ as outcome -> $"failed: %s{outputOf outcome}"
+    with ex ->
+        $"failed: %s{ex.GetType().Name}: %s{ex.Message}"
+
+/// `dotnet --version` in `workDir`, which a `global.json` there or above selects for.
+let private askVersion (workDir: string) : string =
+    answerOf (fun () -> runProcess "dotnet" "--version" workDir [] (ProcessBounds.silent (TimeSpan.FromSeconds 30.0)))
+
+/// Resolves identities, one `dotnet --version` per SDK selection.
+///
+/// The environment a daemon spawns its children with is fixed for its lifetime, so
+/// only a different `global.json` can change what they resolve. Answers are keyed by
+/// that file's content, so every checkout without one, or with the same one, pays
+/// for a single `dotnet --version`. `ask` runs it in a directory — supplied, for tests.
+type internal Resolver(ask: string -> string) =
+    let resolved = ConcurrentDictionary<string, Lazy<string>>()
+
+    member _.Identity(repoRoot: string) : string =
+        let globalJsonPath = tryFindGlobalJson repoRoot
+        let globalJson = globalJsonPath |> Option.map File.ReadAllText
+
+        let dotnetRoot = Environment.GetEnvironmentVariable "DOTNET_ROOT" |> Option.ofObj
+
+        let workDir =
+            globalJsonPath
+            |> Option.map Path.GetDirectoryName
+            |> Option.defaultValue repoRoot
+
+        resolved
+            .GetOrAdd(describe "" dotnetRoot globalJson, fun _ -> lazy (describe (ask workDir) dotnetRoot globalJson))
+            .Value
+
+let private shared = Resolver(askVersion)
+
+/// The toolchain a `dotnet` child of this process resolves in `repoRoot`, resolved
+/// once per process (see `Resolver`).
+let identity (repoRoot: string) : string = shared.Identity repoRoot

@@ -677,6 +677,81 @@ let ``evaluateProject: Stale on first sighting (no baseline) still restores`` ()
     test <@ runs = 1 @>
     test <@ result = RecoveredOk @>
 
+// ---- preflight: restore before discovery ----
+
+[<Fact(Timeout = 5000)>]
+let ``preflight asks the gate once per project and keeps every answer but Proceed`` () =
+    let asked = Collections.Generic.List<string>()
+
+    let gate project =
+        asked.Add project
+
+        match project with
+        | "Fresh.fsproj" -> Proceed
+        | "Stale.fsproj" -> RecoveredOk
+        | _ -> FailFast("refused", "detail")
+
+    let answers =
+        preflight gate [ "Fresh.fsproj"; "Stale.fsproj"; "Broken.fsproj"; "Stale.fsproj" ]
+
+    test <@ List.ofSeq asked = [ "Fresh.fsproj"; "Stale.fsproj"; "Broken.fsproj" ] @>
+
+    test <@ answers = Map.ofList [ "Stale.fsproj", RecoveredOk; "Broken.fsproj", FailFast("refused", "detail") ] @>
+
+[<Fact(Timeout = 5000)>]
+let ``withPreflight answers a skip with the restore failure preflight saw`` () =
+    let failed = FailFast("refused", "detail")
+
+    let preflighted =
+        Map.ofList [ "Broken.fsproj", failed; "Stale.fsproj", RecoveredOk ]
+
+    let gate project =
+        match project with
+        | "Fixed.fsproj" -> Proceed
+        | _ -> SkipAlreadyAttempted
+
+    let replayed = withPreflight preflighted gate
+
+    test <@ replayed "Broken.fsproj" = failed @>
+    // Only a failure is replayed; anything else is the gate's own answer.
+    test <@ replayed "Stale.fsproj" = SkipAlreadyAttempted @>
+    test <@ replayed "Other.fsproj" = SkipAlreadyAttempted @>
+
+    // A project fixed since preflight is fresh again, whatever preflight saw.
+    let fixedSince = withPreflight (Map.ofList [ "Fixed.fsproj", failed ]) gate
+
+    test <@ fixedSince "Fixed.fsproj" = Proceed @>
+
+[<Fact(Timeout = 5000)>]
+let ``a restore failure preflight saw is still reported when the scan's gate skips the project`` () =
+    // The production composition: the real gate tries a restore once per stale state, so
+    // the scan's own ask after a failed preflight restore is `SkipAlreadyAttempted`.
+    let mutable runs = 0
+
+    let runner: RestoreRunner =
+        fun _ ->
+            runs <- runs + 1
+            Failed(1, ProcessOutput.Drained "NU1101")
+
+    let tracker = RecoveryTracker()
+
+    let gate =
+        evaluateProject (fun _ -> Stale) (fun _ -> "dep-sig") (fun _ -> false) runner tracker
+
+    let scanGate = withPreflight (preflight gate [ "P.fsproj" ]) gate
+
+    test <@ runs = 1 @>
+    test <@ gate "P.fsproj" = SkipAlreadyAttempted @>
+
+    test
+        <@
+            match scanGate "P.fsproj" with
+            | FailFast(_, detail) -> detail.Contains "NU1101"
+            | _ -> false
+        @>
+
+    test <@ runs = 1 @>
+
 // ---- daemon-level gate wiring: applyDepsGate ----
 
 [<Fact(Timeout = 10000)>]

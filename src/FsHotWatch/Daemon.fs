@@ -3758,38 +3758,94 @@ let private performScan
             let checkedSources =
                 Collections.Concurrent.ConcurrentDictionary<string, string>(StringComparer.Ordinal)
 
-            let restored =
-                restoredSinceDiscovery ctx.ContentTracker (pipeline.GetRegisteredProjects())
+            // Restore what needs it before the discovery below loads the model — see
+            // `DepsFreshness.preflight`. The projects discovery will read, and the ones
+            // the current model holds.
+            let preflightOf (projects: string list) =
+                match ctx.DepsGate with
+                | None -> Map.empty
+                | Some gate ->
+                    let answers = DepsFreshness.preflight gate projects
 
-            if currentFingerprint <> lastFingerprint || not restored.IsEmpty then
-                if currentFingerprint <> lastFingerprint then
-                    Logging.info "daemon" (fingerprintChangeLine ctx.RepoRoot lastFingerprint currentFingerprint)
-                else
-                    Logging.info
-                        "daemon"
-                        $"Scan re-discovery: a restore changed the package graph of %d{restored.Length} project(s) since their model was loaded%s{describeChangedProjects ctx.RepoRoot restored}"
+                    let restoredOk =
+                        answers |> Map.filter (fun _ result -> result = DepsFreshness.RecoveredOk)
 
-                let! completed, _ =
-                    rediscoverAndClearRemoved
-                        ctx.RepoRoot
-                        ctx.Loader
-                        ctx.MapOptions
-                        ctx.Discovery
-                        graph
-                        pipeline
-                        host
-                        "scan"
-                        ctx.ExcludePatterns
-                        ctx.ContentTracker
-                        ctx.DiscoveredFingerprint
-                        true
+                    if not restoredOk.IsEmpty then
+                        Logging.info
+                            "deps"
+                            $"Restored %d{restoredOk.Count} project(s) before discovery%s{describeChangedProjects ctx.RepoRoot (restoredOk |> Map.keys |> List.ofSeq)}"
 
-                // A total loader failure is retryable even when no .fsproj bytes
-                // changed (for example after repairing an app-local assembly). Do
-                // not memoize the failed fingerprint and suppress the next attempt.
-                if totalDiscoveryFailure completed.Discovered completed.Loaded |> Option.isNone then
-                    lastFingerprint <- currentFingerprint
-                    fingerprintMemo.Value <- currentFingerprint
+                    answers
+
+            let preflightedProjects =
+                let isExcluded = PathFilter.isExcludedPath ctx.RepoRoot ctx.ExcludePatterns
+
+                (Discovery.findFsprojFiles ctx.RepoRoot
+                 |> List.filter (fun f -> not (isExcluded f)))
+                @ pipeline.GetRegisteredProjects()
+                |> Set.ofList
+
+            let mutable preflighted = preflightOf (Set.toList preflightedProjects)
+
+            // A second pass only for a project the discovery reached outside its roots
+            // and the preflight could not name, when the gate restored it.
+            let mutable discoveryPasses = 0
+
+            while discoveryPasses < 2 do
+                discoveryPasses <- discoveryPasses + 1
+
+                let restored =
+                    restoredSinceDiscovery ctx.ContentTracker (pipeline.GetRegisteredProjects())
+
+                if currentFingerprint <> lastFingerprint || not restored.IsEmpty then
+                    if currentFingerprint <> lastFingerprint then
+                        Logging.info "daemon" (fingerprintChangeLine ctx.RepoRoot lastFingerprint currentFingerprint)
+                    else
+                        Logging.info
+                            "daemon"
+                            $"Scan re-discovery: a restore changed the package graph of %d{restored.Length} project(s) since their model was loaded%s{describeChangedProjects ctx.RepoRoot restored}"
+
+                    let! completed, _ =
+                        rediscoverAndClearRemoved
+                            ctx.RepoRoot
+                            ctx.Loader
+                            ctx.MapOptions
+                            ctx.Discovery
+                            graph
+                            pipeline
+                            host
+                            "scan"
+                            ctx.ExcludePatterns
+                            ctx.ContentTracker
+                            ctx.DiscoveredFingerprint
+                            true
+
+                    // A total loader failure is retryable even when no .fsproj bytes
+                    // changed (for example after repairing an app-local assembly). Do
+                    // not memoize the failed fingerprint and suppress the next attempt.
+                    if totalDiscoveryFailure completed.Discovered completed.Loaded |> Option.isNone then
+                        lastFingerprint <- currentFingerprint
+                        fingerprintMemo.Value <- currentFingerprint
+
+                if discoveryPasses = 1 then
+                    let outside =
+                        pipeline.GetRegisteredProjects()
+                        |> List.filter (fun project -> not (Set.contains project preflightedProjects))
+
+                    let outsideAnswers = preflightOf outside
+
+                    preflighted <-
+                        Map.fold (fun acc project result -> Map.add project result acc) preflighted outsideAnswers
+
+                    if
+                        not (
+                            outsideAnswers
+                            |> Map.exists (fun _ result -> result = DepsFreshness.RecoveredOk)
+                        )
+                    then
+                        discoveryPasses <- 2
+
+            let depsGate = ctx.DepsGate |> Option.map (DepsFreshness.withPreflight preflighted)
 
             // A fingerprint hit skips OUR discovery, not a concurrent writer's. Capture
             // membership, dependency tiers and options together once no writer is
@@ -3957,7 +4013,7 @@ let private performScan
                             tierCovered.Add claimed |> ignore
 
                         // Deps-freshness gate — see `applyDepsGate`.
-                        if applyDepsGate ctx.DepsGate host projPath then
+                        if applyDepsGate depsGate host projPath then
                             // The build this scan waited on, or the deps gate just now,
                             // may have restored the project after its options were
                             // captured. Re-capturing re-discovers it first.
@@ -4386,7 +4442,16 @@ module Daemon =
             // destroyed by the very act this exists to make cheap.
             let stores = FsHotWatch.CacheResidency.openPersistedStores repoRoot
             let sharedTaskCacheDir = FsHotWatch.CacheResidency.sharedStoreDir repoRoot
-            let taskCache = stores.Routed
+            // Scoped to the .NET toolchain this process resolves, so a verdict earned
+            // under one SDK (a "compatible SDK not found" build, say) is never replayed
+            // under another. One `dotnet --version` per process, not per task.
+            let toolchain = FsHotWatch.DotnetToolchain.identity repoRoot
+
+            let taskCache =
+                FsHotWatch.TaskCache.ToolchainScopedTaskCache(stores.Routed, toolchain)
+                :> FsHotWatch.TaskCache.ITaskCache
+
+            Logging.info "task-cache" $"Task keys scoped to toolchain: %s{toolchain.Replace('\n', ' ')}"
             let stats = stores.Local.Stats
             let sharedStats = stores.Shared.Stats
 
