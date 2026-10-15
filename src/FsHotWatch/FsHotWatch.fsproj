@@ -126,6 +126,7 @@
     <Compile Include="ProjectGraph.fs" />
     <Compile Include="OutputCopyFreshness.fs" />
     <Compile Include="DepsFreshness.fs" />
+    <Compile Include="ImportStore.fs" />
     <Compile Include="ProjectSnapshots.fs" />
     <Compile Include="FrameExclusions.fs" />
     <Compile Include="SessionFrames.fs" />
