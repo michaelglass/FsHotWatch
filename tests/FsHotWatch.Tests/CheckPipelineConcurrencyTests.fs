@@ -189,3 +189,130 @@ let ``a session flooding the checker cannot keep another session's check behind 
         // A's; in arrival order it would wait behind all eight or more queued.
         test <@ aDoneWhenBFinished <= 4 @>
         test <@ flood |> List.forall (fun t -> t.Result |> Option.isSome) @>)
+
+/// An activity sink that counts the checks it sees start.
+type private StartedChecks() =
+    let mutable started = 0
+
+    member _.Started = Volatile.Read &started
+
+    interface PluginActivity.IActivitySink with
+        member _.StartSubtask(_, _) = ()
+        member _.UpdateSubtask(_, _) = ()
+        member _.EndSubtask _ = ()
+
+        member _.Log message =
+            if message.StartsWith "check start" then
+                Interlocked.Increment &started |> ignore
+
+        member _.SetSummary _ = ()
+
+/// A one-file project at `root/src/Lib` whose check takes FCS long enough to cancel
+/// mid-way: a chain of inferred bindings, then a planted type error.
+let private slowProject (checker: FSharpChecker) (root: string) =
+    let dir = Path.Combine(root, "src", "Lib")
+    Directory.CreateDirectory dir |> ignore
+    let file = Path.Combine(dir, "Lib.fs")
+
+    File.WriteAllLines(
+        file,
+        [| yield "module Lib"
+           yield "let f0 (x: int) = [ x ]"
+           for i in 1..800 do
+               yield $"let f%d{i} x = f%d{i - 1} x |> List.map (fun v -> v + %d{i}) |> List.rev"
+           yield "let answer: int = \"no\"" |]
+    )
+
+    let fsproj = Path.Combine(dir, "Lib.fsproj")
+
+    File.WriteAllText(
+        fsproj,
+        """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><Compile Include="Lib.fs" /></ItemGroup></Project>"""
+    )
+
+    let options, _ =
+        checker.GetProjectOptionsFromScript(
+            file,
+            SourceText.ofString (File.ReadAllText file),
+            assumeDotNetFramework = false
+        )
+        |> Async.RunSynchronously
+
+    { options with
+        ProjectFileName = fsproj
+        SourceFiles = [| file |]
+        UseScriptResolutionRules = false },
+    AbsFilePath.create file
+
+[<Fact(Timeout = 300000)>]
+let ``work two sessions share survives one of them cancelling`` () =
+    withTempDir "check-shared-cancel" (fun dir ->
+        // A repository host's two sessions of identical worktrees: one checker, one
+        // scheduler, one registry of canonical projects, each framed under the virtual root.
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let scheduler = WorkScheduler.Scheduler 4
+        let canonical = CanonicalProjects.Registry()
+        let virtualRoot = Path.Combine(dir, "virtual")
+
+        let session name =
+            let root = Path.Combine(dir, name)
+            let sink = StartedChecks()
+
+            let pipeline =
+                CheckPipeline(
+                    checker,
+                    activity = sink,
+                    repoRoot = root,
+                    frames = SessionFrames.choice canonical root virtualRoot ignore,
+                    admission = scheduler.Lane name
+                )
+
+            let options, file = slowProject checker root
+            pipeline.RegisterProject(options.ProjectFileName, options)
+            pipeline, sink, options, file
+
+        let a, aStarted, aOptions, aFile = session "a"
+        let b, bStarted, _, bFile = session "b"
+
+        let waitFor what (condition: unit -> bool) =
+            let deadline = System.DateTime.UtcNow.AddSeconds 60.0
+
+            while not (condition ()) && System.DateTime.UtcNow < deadline do
+                Thread.Sleep 2
+
+            if not (condition ()) then
+                failwith $"timed out waiting for %s{what}"
+
+        let aCheck = a.CheckFile aFile |> Async.StartAsTask
+        waitFor "A's check to start" (fun () -> aStarted.Started = 1)
+        let bCheck = b.CheckFile bFile |> Async.StartAsTask
+        waitFor "B's check to start" (fun () -> bStarted.Started = 1)
+
+        // Session A gives up everything it is checking, as its rediscovery does.
+        a.PrepareForRediscovery()
+        // Otherwise the cancel came too late to prove anything.
+        let bFinishedBeforeCancel = bCheck.IsCompleted
+        test <@ not bFinishedBeforeCancel @>
+
+        test <@ aCheck.Result = None @>
+
+        let fullCheck (result: FileCheckResult option) =
+            match result with
+            | None -> failwith "session B's check was lost when session A cancelled"
+            | Some result ->
+                test <@ result.Frame.IsSome @>
+
+                match result.CheckResults with
+                | FullCheck results -> results
+                | ParseOnly -> failwith "session B's check was aborted when session A cancelled"
+
+        let bResults = fullCheck bCheck.Result
+        test <@ bResults.Diagnostics |> Array.exists (fun d -> d.Message.Contains "string") @>
+
+        // The work was one computation, shared: A, asking again, is handed the very
+        // answer B's check finished.
+        a.RegisterProject(aOptions.ProjectFileName, aOptions)
+        let aAgain = fullCheck (a.CheckFile aFile |> Async.RunSynchronously)
+        test <@ obj.ReferenceEquals(aAgain, bResults) @>
+
+        test <@ scheduler.Running = 0 && scheduler.Queued = 0 @>)

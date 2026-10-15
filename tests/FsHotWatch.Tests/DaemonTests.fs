@@ -1184,7 +1184,7 @@ let ``runChecksWithRetry returns zero unchecked when all files check first pass`
     let check (_: AbsFilePath) = async { return Some 1 }
 
     let outcome =
-        runChecksWithRetry 3 check (fun r -> emitted.Add r) files
+        runChecksWithRetry 3 8 check (fun r -> emitted.Add r) files
         |> Async.RunSynchronously
 
     // A converged scan says so in the type, and reports ZERO
@@ -1213,7 +1213,7 @@ let ``runChecksWithRetry retries a transiently-cancelled file until it converges
     let files = [ "/a.fs"; "/b.fs"; "/c.fs" ] |> List.map AbsFilePath.create
 
     let outcome =
-        runChecksWithRetry 3 check (fun r -> emitted.Add r) files
+        runChecksWithRetry 3 8 check (fun r -> emitted.Add r) files
         |> Async.RunSynchronously
 
     // Converged, but it cost exactly ONE extra round — the number that
@@ -1242,7 +1242,7 @@ let ``runChecksWithRetry reports persistently-cancelled files as unchecked`` () 
     let files = [ "/a.fs"; "/b.fs"; "/c.fs" ] |> List.map AbsFilePath.create
 
     let outcome =
-        runChecksWithRetry 2 check (fun _ -> ()) files |> Async.RunSynchronously
+        runChecksWithRetry 2 8 check (fun _ -> ()) files |> Async.RunSynchronously
 
     // Reaching the bound is a NAMED outcome carrying the files,
     // the rounds spent, and the budget that was exhausted — not an integer
@@ -1272,7 +1272,7 @@ let ``runChecksWithRetry stops at the bound and never exceeds it`` () =
         let files = [ AbsFilePath.create "/never.fs" ]
 
         let outcome =
-            runChecksWithRetry budget check (fun (_: int) -> ()) files
+            runChecksWithRetry budget 8 check (fun (_: int) -> ()) files
             |> Async.RunSynchronously
 
         test <@ attempts["/never.fs"] = budget + 1 @>
@@ -1300,16 +1300,45 @@ let ``runChecksWithRetry emits each result as its check finishes, not when the r
             fastEmitted.Set()
 
     let outcome =
-        runChecksWithRetry 3 check emit ([ "/fast.fs"; "/slow.fs" ] |> List.map AbsFilePath.create)
+        runChecksWithRetry 3 8 check emit ([ "/fast.fs"; "/slow.fs" ] |> List.map AbsFilePath.create)
         |> Async.RunSynchronously
 
     test <@ outcome = ScanCheckOutcome.AllChecked 0 @>
     test <@ slowSawFastEmitted @>
 
 [<Fact(Timeout = 15000)>]
+let ``runChecksWithRetry never has more checks in flight than its bound`` () =
+    // A tier asks for every one of its files at once. Unbounded, every check starts and
+    // queues for an admission slot together. Bounded, a round of twenty has at most two
+    // started and unfinished at once.
+    let gate = obj ()
+    let inFlight = ref 0
+    let peak = ref 0
+
+    let check (_: AbsFilePath) =
+        async {
+            lock gate (fun () ->
+                inFlight.Value <- inFlight.Value + 1
+                peak.Value <- max peak.Value inFlight.Value)
+
+            do! Async.Sleep 30
+            lock gate (fun () -> inFlight.Value <- inFlight.Value - 1)
+            return Some 1
+        }
+
+    let files = [ for i in 1..20 -> AbsFilePath.create $"/f%d{i}.fs" ]
+
+    let outcome =
+        runChecksWithRetry 3 2 check (fun (_: int) -> ()) files
+        |> Async.RunSynchronously
+
+    test <@ outcome = ScanCheckOutcome.AllChecked 0 @>
+    test <@ peak.Value = 2 @>
+
+[<Fact(Timeout = 15000)>]
 let ``runChecksWithRetry on an empty cohort converges with no rounds`` () =
     let outcome =
-        runChecksWithRetry 3 (fun _ -> async { return Some 1 }) (fun (_: int) -> ()) []
+        runChecksWithRetry 3 8 (fun _ -> async { return Some 1 }) (fun (_: int) -> ()) []
         |> Async.RunSynchronously
 
     test <@ outcome = ScanCheckOutcome.AllChecked 0 @>

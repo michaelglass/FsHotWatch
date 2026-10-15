@@ -196,9 +196,9 @@ type CheckPipeline
     ) =
     let activity = defaultArg activity noopSink
 
-    /// How many checks may build their snapshot or run in FCS at once. Every caller
-    /// asks for a whole tier or batch of files at once (`Async.Parallel`, unbounded),
-    /// and a snapshot build blocks its thread, so without a bound here the thread pool
+    /// How many checks may build their snapshot or run in FCS at once. A caller asks
+    /// for a whole tier or batch of files at once (`WorkScheduler.parallelWithin` this
+    /// bound), and a snapshot build blocks its thread, so without a bound here the thread pool
     /// grew by starvation to hundreds of threads, each building snapshots and holding
     /// their garbage live. Waiting for a slot holds no thread.
     ///
