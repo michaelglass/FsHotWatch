@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- fix: a `RunExclusiveShared` run whose work returned but whose process scope could not
+  establish that its children ended (a kill that did not return in time) no longer
+  releases the shared resource as `Invalid "<plugin> shared work faulted"` and drops its
+  fold. That invalidity was sticky: nothing that runs under the lease could earn it back,
+  so every later claimant was refused until the daemon restarted. The run now folds the
+  plugin's own failure message, and the plugin's classifier decides what the resource
+  carries forward, as it already did for a failure of the work itself.
+- fix: a scan restores the projects whose dependencies are stale before it loads their
+  model, not tier by tier while it checks. Each restore used to rewrite an assets file the
+  model had just been loaded from, so a cold scan of a stale tree replaced its model once
+  per restored project, cancelled the checks in flight and started them again (about two
+  check starts per file). The deps gate now runs over the projects in the discovery roots
+  and in the current model first. A project the discovery first reaches outside the roots
+  is restored after that discovery and the model loaded once more, still before any check.
+  A restore that fails before discovery is reported with its output, as before.
 - fix: the task cache no longer replays a verdict earned under a different .NET SDK.
   A build that failed with "A compatible .NET SDK was not found" was replayed as
   `(cached)` after PATH and DOTNET_ROOT were fixed, because no task key named the SDK.

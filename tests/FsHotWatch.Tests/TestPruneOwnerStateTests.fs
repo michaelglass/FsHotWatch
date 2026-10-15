@@ -266,7 +266,7 @@ let ``a failed command receipt acknowledges only its published owner outcome`` (
         if invalidArtifacts then
             ArtifactsUnavailable("fixture refusal", Set.empty, Some reply)
         else
-            TestHostUnavailable("fixture refusal", Set.empty, Some reply)
+            TestHostUnavailable("fixture refusal", Set.empty, Some reply, None)
 
     let candidate = update (recordingCtx ()) handler handler.Init (Custom message)
     Assert.False(reply.Task.IsCompleted, "the command was acknowledged before its outcome was published")
@@ -332,7 +332,7 @@ let ``a confirm launch that could not start keeps the full-suite scope`` (invali
         if invalidArtifacts then
             ArtifactsUnavailable("fixture refusal", Set.empty, None)
         else
-            TestHostUnavailable("fixture refusal", Set.empty, None)
+            TestHostUnavailable("fixture refusal", Set.empty, None, None)
 
     let after =
         update (recordingCtx ()) handler (confirmInFlight handler) (Custom message)
