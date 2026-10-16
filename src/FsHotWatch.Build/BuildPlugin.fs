@@ -119,6 +119,10 @@ type BuildState =
         /// `None` after a build that passed — a green build is not evidence of itself; the
         /// runs it enables earn that.
         BuildFailure: FsHotWatch.Events.CompletedBuildFailure option
+        /// When the most recently launched build started. An input written after that
+        /// moment may have been read by that build BEFORE the write, while its output is
+        /// stamped after it — see `restampEditedSince`.
+        LastBuildStartedAt: DateTime option
     }
 
     interface FsHotWatch.Events.ICompletedBuildFailureState with
@@ -526,6 +530,51 @@ let internal examineArtifact
 /// (and a filesystem) that can move in between.
 let internal examineArtifacts (graph: FsHotWatch.ProjectGraph.IProjectGraphReader) : ArtifactExamination list =
     graph.GetAllProjects() |> List.map (examineArtifact graph)
+
+/// Re-stamp every owed input written at or after `since` — the start of the previous
+/// build — to now, and return the paths re-stamped.
+///
+/// A build that was running when an input changed may have read it BEFORE the write and
+/// still written its output AFTER it. That output is then newer than the source it does
+/// not reflect, so a timestamp up-to-date check (MSBuild's) skips the project on the next
+/// build and the stale assembly survives every build that follows. Re-stamping the input
+/// makes it newer than any output that build wrote, so the next build recompiles it. An
+/// input the previous build happened to read after its write costs one extra compile,
+/// never a wrong one.
+///
+/// It cannot loop: the watcher reports content changes, not touches, so a re-stamp emits
+/// no file event. `None` means no build has run yet, so nothing can have raced one.
+let internal restampEditedSince (since: DateTime option) (owed: FileChangeKind list) : string list =
+    match since with
+    | None -> []
+    | Some since ->
+        let edited =
+            owed
+            |> List.collect (function
+                | SourceChanged files
+                | ProjectChanged files -> files
+                | SolutionChanged -> [])
+            |> List.distinct
+            |> List.filter (fun path -> File.Exists path && File.GetLastWriteTimeUtc path >= since)
+
+        let now = DateTime.UtcNow
+
+        let restamped =
+            edited
+            |> List.filter (fun path ->
+                try
+                    File.SetLastWriteTimeUtc(path, now)
+                    true
+                with ex ->
+                    warn "build" $"could not re-stamp %s{path}, edited during the previous build: %s{ex.Message}"
+                    false)
+
+        if not restamped.IsEmpty then
+            info
+                "build"
+                $"re-stamped %d{restamped.Length} input(s) edited while the previous build ran, so this build recompiles them"
+
+        restamped
 
 /// The stale findings out of a classified walk.
 let internal staleArtifactsOf (examinations: ArtifactExamination list) : StaleArtifact list =
@@ -1496,14 +1545,25 @@ let internal createArmedWith
         | SharedQueued -> ForceRebuildStamp.launched force
         | LocalSlotBusy -> force
 
+    /// When the latest launched build started: a claim the framework accepted launched
+    /// one at `started`; a refused one launched nothing, so the previous start stands.
+    let startedOn (claim: SharedRunClaim) (started: DateTime) (previous: DateTime option) =
+        match claim with
+        | SharedClaimed
+        | SharedQueued -> Some started
+        | LocalSlotBusy -> previous
+
     /// `owed` is the input this build is for. A refused claim keeps it owed: see
-    /// `retainedOn`.
+    /// `retainedOn`. `previousStart` is when the build before this one started; every
+    /// owed input written since then is re-stamped first (`restampEditedSince`).
     let startBuild
         (ctx: PluginCtx<BuildMsg>)
         (idle: Lifecycle<Idle, BuildOutcome option>)
         (force: ForceRebuildStamp)
+        (previousStart: DateTime option)
         (owed: FileChangeKind list)
         =
+        restampEditedSince previousStart owed |> ignore
         let buildStarted = DateTime.UtcNow
         ctx.Log $"Running: %s{buildCommand} %s{buildArgs}"
 
@@ -1626,12 +1686,14 @@ let internal createArmedWith
           ForceRebuild = launchedOn claim force
           // A build that is starting has not completed, so it has earned nothing yet: the
           // previous failure stops being the current answer the moment a new build runs.
-          BuildFailure = None }
+          BuildFailure = None
+          LastBuildStartedAt = startedOn claim buildStarted previousStart }
 
     let startTemplateBuild
         (ctx: PluginCtx<BuildMsg>)
         (idle: Lifecycle<Idle, BuildOutcome option>)
         (force: ForceRebuildStamp)
+        (previousStart: DateTime option)
         (template: string)
         (files: AbsFilePath list)
         (owed: FileChangeKind list)
@@ -1643,8 +1705,9 @@ let internal createArmedWith
         let buildable = affected |> List.filter (fun p -> not (isTestProject p))
 
         if buildable.IsEmpty then
-            startBuild ctx idle force owed
+            startBuild ctx idle force previousStart owed
         else
+            restampEditedSince previousStart owed |> ignore
             let buildableSet = buildable |> Set.ofList
 
             let roots =
@@ -1777,7 +1840,8 @@ let internal createArmedWith
               SatisfiedDeps = Set.empty
               ActiveTestRuns = Set.empty
               ForceRebuild = launchedOn claim force
-              BuildFailure = None }
+              BuildFailure = None
+              LastBuildStartedAt = startedOn claim buildStarted previousStart }
 
     let handleSourceChanged
         (ctx: PluginCtx<BuildMsg>)
@@ -1793,11 +1857,11 @@ let internal createArmedWith
         // change leaves a stale DLL for `--no-build` to run → false green (ADR-012).
         match buildTemplate with
         | Some template ->
-            { (startTemplateBuild ctx idle state.ForceRebuild template files owed) with
+            { (startTemplateBuild ctx idle state.ForceRebuild state.LastBuildStartedAt template files owed) with
                 SatisfiedDeps = state.SatisfiedDeps
                 ActiveTestRuns = state.ActiveTestRuns }
         | None ->
-            { (startBuild ctx idle state.ForceRebuild owed) with
+            { (startBuild ctx idle state.ForceRebuild state.LastBuildStartedAt owed) with
                 SatisfiedDeps = state.SatisfiedDeps
                 ActiveTestRuns = state.ActiveTestRuns }
 
@@ -1807,7 +1871,7 @@ let internal createArmedWith
         (idle: Lifecycle<Idle, BuildOutcome option>)
         (owed: FileChangeKind list)
         =
-        { (startBuild ctx idle state.ForceRebuild owed) with
+        { (startBuild ctx idle state.ForceRebuild state.LastBuildStartedAt owed) with
             SatisfiedDeps = state.SatisfiedDeps
             ActiveTestRuns = state.ActiveTestRuns }
 
@@ -1847,7 +1911,8 @@ let internal createArmedWith
           ForceRebuild = ForceRebuildStamp.none
           // A build that is starting has not completed, so it has earned nothing yet: the
           // previous failure stops being the current answer the moment a new build runs.
-          BuildFailure = None }
+          BuildFailure = None
+          LastBuildStartedAt = None }
       Update =
         fun ctx state event ->
             async {

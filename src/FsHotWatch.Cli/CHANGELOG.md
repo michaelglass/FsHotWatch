@@ -7,6 +7,16 @@
   the parser rejected a second one with "Flag '-p' provided more than once". A test now
   fails when a flag whose help says "repeatable" is not parsed as one.
 
+- **feat!: `.fshw/verdict.json` names where a reused suite's green was earned.
+  `Verdict.SuiteVerdict` has a new field, `ReusedFrom`**, so code that constructs it
+  must supply it. A suite the run filed from the test-evidence store instead of running
+  carries `reusedFrom: { worktree, runId, earnedAt, key }`; a suite the run executed
+  carries no such field, so a verdict that reused nothing is unchanged. `fshw verdict`
+  says how many suites were reused and from which runs.
+- feat: `tests.projects[].evidence` (`reads`, `extra`, `envFiles`) declares how far a
+  test project's runtime reads reach for the test-evidence key. A block that cannot be
+  honoured as written refuses the config load.
+
 ## 0.14.0-alpha.104 - 2026-10-16
 
 - chore: rebuild to bundle updated dependencies

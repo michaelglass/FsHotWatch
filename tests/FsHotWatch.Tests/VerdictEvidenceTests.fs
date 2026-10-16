@@ -790,6 +790,28 @@ let ``a project's input identity moves with its own options and its reference cl
 
     test <@ Map.isEmpty cyclic @>
 
+[<Fact>]
+let ``two checkouts holding the same compile inputs publish the same identities`` () =
+    // The test-evidence key reads these identities, so one that names a checkout's own
+    // path can never match another checkout's: a test project's identity folds in those of
+    // the projects it references, and must name them relatively too.
+    let identities (root: string) =
+        let p (rel: string) = System.IO.Path.Combine(root, rel)
+
+        let references =
+            Map.ofList [ p "tests/T/T.fsproj", [ p "src/Lib/Lib.fsproj" ]; p "src/Lib/Lib.fsproj", [] ]
+
+        FsHotWatch.Daemon.portableProjectInputs
+            root
+            [ p "tests/T/T.fsproj"; p "src/Lib/Lib.fsproj" ]
+            (fun project -> Some("options of " + System.IO.Path.GetRelativePath(root, project)))
+            (fun project -> Map.tryFind project references |> Option.defaultValue [])
+        |> Map.toList
+        |> List.map (fun (project, identity) -> System.IO.Path.GetRelativePath(root, project), identity)
+
+    test <@ identities "/work/ws-a" = identities "/work/ws-b" @>
+    test <@ (identities "/work/ws-a").Length = 2 @>
+
 /// Evidence for `Tests` (and `Other`) earned under generation 1, with their identities.
 let private earnedUnder (expected: string list) (inputs: Map<string, string> option) =
     let results =

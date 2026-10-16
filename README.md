@@ -545,6 +545,7 @@ merge verdict without one.
 | `classJoin` | `string` | `" "` | Separator for joining class names in the filter. |
 | `reportVerificationFormat` | `string` | `"auto"` | How the pass/fail verdict's structured test report is obtained. The report (not the process exit code) decides green/red. `auto` reads `obj/project.assets.json` and injects the matching CTRF switches for a resolved xUnit 3 or 4 runner; missing, malformed, conflicting, and unknown versions receive no report switches. `ctrf` forces report switches, using the detected family when possible and the xUnit 3 names for an unknown custom runner. `off` never injects them and the exit code stays authoritative. |
 | `traces` | `bool` or `object` | `true` | `false` keeps this project out of `tests.traces` recording: it always launches as configured. `{ "weaveTests": "sites" \| "full" }` keeps it in and weaves its test assembly in that mode instead of `tests.traces.weaveTests`. Any other value, or any other key in the object, is a config error. |
+| `evidence` | `object` | `{ "reads": "verdict-tree" }` | How far this project's tests read at run time, for [test evidence across checkouts](#test-evidence-across-checkouts). `reads`: `"verdict-tree"` (the default: any file of the verified tree may affect the outcome, so every one is in the key) or `"closure"` (opt-in: the tests read nothing under the directory of a project outside their `ProjectReference` closure). `extra`: further repo-relative paths or globs the tests read. `envFiles`: files the tests load their environment from (`.env.test`); only their content hash is ever stored. |
 
 **`analyzers` fields:**
 
@@ -708,6 +709,59 @@ Worth knowing before you opt in:
 
 `fshw status --repository` lists every session the host serves; `fshw stop` detaches
 this worktree; `fshw stop --repository` stops the host.
+
+### Test evidence across checkouts
+
+A test project that ran in full and green in one checkout is not run again in another
+checkout of the same repository whose inputs to it are byte-identical. The common case
+is a landing: a workspace merges `main`, gates, and lands, and the default checkout's
+tree is the tree that was gated. Its test projects come back `reused:` instead of
+running again.
+
+Each green is stored once, box-wide, under `$FSHW_CACHE_HOME/cache/evidence/<repository>/v1/`
+(see [the cache home](#cache-directory)), keyed by everything that can change the
+outcome:
+
+- the toolchain: the SDK `global.json` selects, the checker and fshw builds, the OS,
+  architecture and runtime, and the MSBuild-relevant environment;
+- the project's `tests` entry;
+- each project in its `ProjectReference` closure: its compiler options, the packages its
+  restore resolved (`obj/project.assets.json`), and every file under its directory;
+- every verified file under no project directory (`.fshw.json`, `global.json`,
+  `Directory.Build.props`, `.config/dotnet-tools.json`, the declared verdict inputs);
+- every verified file under the other projects' directories, unless the project
+  declares `"evidence": { "reads": "closure" }`;
+- the declared `extra` reads and the content hashes of the declared `envFiles`.
+- any file a closure project's `.fsproj` names by a literal path outside the closure's
+  directories (a linked source).
+
+A project gets **no key** — it simply runs — when any of those inputs cannot be read (an
+unreadable file, a directory the walk cannot enter), when a project file cannot be parsed,
+or, under `"reads": "closure"`, when a closure project names an item by a glob or an
+MSBuild property the key cannot resolve (declare what it reads in `extra` instead).
+
+The rules only ever widen what runs:
+
+- Evidence is consulted after impact selection, only for projects about to launch, and
+  never for one with an outstanding failure.
+- A checkout that has not earned a full-suite baseline (a brand-new workspace, or one
+  whose `tests.projects` grew) runs its suite for real first: a green is graded relative
+  to that baseline, and only running earns one. The common landing — a long-lived default
+  checkout moving to a gated tree — already has one.
+- Each key is computed before the run builds anything and again when it completes. A
+  reused project whose key moved in between is withdrawn: it reports a deferral, the run
+  cannot go green on it, and the next run launches it.
+- A green is published only when the whole project ran unfiltered, every test passed on
+  its first attempt, its CTRF report (and, when coverage is graded, its coverage report)
+  exists, and the key held still for the whole run. Failures are never stored.
+- `confirm` publishes but never looks anything up. A run that reused anything never
+  earns a full-suite baseline.
+- `FSHW_TEST_EVIDENCE=0` turns reuse and publishing off entirely.
+
+A reused project's stored CTRF report is filed in the reusing run's directory, so
+`.fshw/verdict.json` grades the same rows, and its suite entry carries `reusedFrom`:
+the checkout, run and time the green was earned. Entries expire after 72 hours, and the
+store keeps at most 512 MB, evicting the oldest first.
 
 ### Cache directory
 

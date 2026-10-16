@@ -1044,12 +1044,33 @@ let internal resolveAffectedProjects (knownProjects: string list) (changedPaths:
 /// Returns the set of removed files.
 /// Every registered project's compile-input identity under the model the pipeline holds
 /// now: its options hash folded with the identities of the projects it references.
-let internal registeredProjectInputs (pipeline: CheckPipeline) (graph: ProjectGraph) : Map<string, string> =
-    ProjectModel.ProjectInputs.compute
+///
+/// The options hash names paths inside the repository RELATIVELY, so two checkouts of one
+/// repository holding the same compile inputs publish the same identity — what lets a
+/// green earned in one be recognised in another (`TestEvidenceKey`). Within one checkout
+/// the relative spelling is as distinguishing as the absolute one.
+/// Per-project compile-input identities that name every in-repository path relatively —
+/// a project's own options (by the caller's `ownHash`) and the projects it references —
+/// so two checkouts holding the same compile inputs publish the same identities.
+let internal portableProjectInputs
+    (repoRoot: string)
+    (projects: string list)
+    (ownHash: string -> string option)
+    (references: string -> string list)
+    : Map<string, string> =
+    ProjectModel.ProjectInputs.computeLabelled (CachePathIdentity.keyOf (Some repoRoot)) projects ownHash references
+
+let internal registeredProjectInputs
+    (repoRoot: string)
+    (pipeline: CheckPipeline)
+    (graph: ProjectGraph)
+    : Map<string, string> =
+    portableProjectInputs
+        repoRoot
         (pipeline.GetRegisteredProjects())
         (fun project ->
             pipeline.GetProjectOptions project
-            |> Option.map CheckCache.getProjectOptionsHash)
+            |> Option.map (CheckCache.getProjectOptionsHashRelativeTo (Some repoRoot)))
         (fun project ->
             graph.GetReferences(AbsProjectPath.create project)
             |> List.map AbsProjectPath.value)
@@ -4665,7 +4686,8 @@ module Daemon =
                             // re-discovered has none to publish.
                             let inputs =
                                 match observation with
-                                | ProjectModel.Observation.Available _ -> Some(registeredProjectInputs pipeline graph)
+                                | ProjectModel.Observation.Available _ ->
+                                    Some(registeredProjectInputs repoRoot pipeline graph)
                                 | ProjectModel.Observation.Unobserved
                                 | ProjectModel.Observation.Rediscovering _
                                 | ProjectModel.Observation.Unavailable _ -> None

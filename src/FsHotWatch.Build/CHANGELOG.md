@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: an edit made while a build is running is recompiled by the next build. That build may
+  have read the file before the edit and still written its output after it, so the output
+  looked newer than the source and MSBuild skipped the project on every later build, leaving
+  an assembly compiled from code no longer on disk. Before launching a build, the plugin now
+  re-stamps every owed input written since the previous build started, so MSBuild recompiles
+  it. The re-stamp changes no content, so it raises no file event.
+
 ## 0.7.0-alpha.45 - 2026-10-05
 
 - fix: an overrunning build's report names the process tree it killed on a loaded box. The
