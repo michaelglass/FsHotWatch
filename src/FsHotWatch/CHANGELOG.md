@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: the analysis evidence a receipt is graded from no longer refuses a green over an
+  error whose code the file's own `#nowarn` (or the configured `fcsSuppressedCodes`)
+  silences. The ledger and TestPrune's cache-poisoning gate already applied that filter;
+  the evidence read raw Error severity. Under `--warnaserror`, FCS reports a suppressed
+  code at Error severity when a change batch re-checks a file downstream of an edit, but
+  not on a cold scan, so a green scan turned red after an edit.
+  - **BREAKING**: `FcsDiagnosticFilter.parseNowarnCodes` and `allSuppressedCodes` moved
+    to the new `FcsSuppression` module, beside `blockingErrors`, the one filter every
+    reader of a check's diagnostics now goes through.
+  - **BREAKING**: `IFileReplayState.Replayed` takes the host's configured suppressed
+    codes as its first argument. A state that does not grade diagnostics ignores it.
 - perf: a comment, whitespace or body edit no longer re-checks every later file of its
   project and every file of every project downstream of it. Each check now records its
   file's API signature: every declaration at every accessibility, with attributes and

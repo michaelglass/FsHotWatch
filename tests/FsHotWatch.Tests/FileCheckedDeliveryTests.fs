@@ -97,8 +97,10 @@ type private Fixture =
         Seals: unit -> BatchChecked list
     }
 
-let private withFixtureCaching
+/// `appFlags` are compiler flags App is checked with beyond the framework's.
+let private withFixtureOf
     (checkCache: FsHotWatch.InMemoryCheckCache.CheckCacheSetup)
+    (appFlags: string list)
     (name: string)
     (body: Fixture -> unit)
     =
@@ -149,20 +151,29 @@ let private withFixtureCaching
         let frameworkOptions =
             baseOptions.OtherOptions |> Array.filter (fun o -> not (o.EndsWith ".fsx"))
 
-        let fcsProject (project: string) (sources: string list) (refs: (string * FSharpProjectOptions) list) =
+        let fcsProject
+            (project: string)
+            (sources: string list)
+            (refs: (string * FSharpProjectOptions) list)
+            (flags: string list)
+            =
             { baseOptions with
                 ProjectFileName = project
                 SourceFiles = Array.ofList sources
-                OtherOptions = Array.append frameworkOptions [| for out, _ in refs -> $"-r:%s{out}" |]
+                OtherOptions =
+                    Array.concat
+                        [ frameworkOptions
+                          [| for out, _ in refs -> $"-r:%s{out}" |]
+                          Array.ofList flags ]
                 ReferencedProjects = [| for out, o in refs -> FSharpReferencedProject.FSharpReference(out, o) |]
                 UseScriptResolutionRules = false
                 ProjectId = None
                 Stamp = None }
 
-        let libOptions = fcsProject libProject [ early; middle; late ] []
+        let libOptions = fcsProject libProject [ early; middle; late ] [] []
 
         let appOptions =
-            fcsProject appProject [ usage ] [ Path.ChangeExtension(libProject, ".dll"), libOptions ]
+            fcsProject appProject [ usage ] [ Path.ChangeExtension(libProject, ".dll"), libOptions ] appFlags
 
         let loader =
             FixedWorkspaceLoader(
@@ -236,14 +247,13 @@ let private withFixtureCaching
               SetPhase = fun name -> Volatile.Write(&phase.contents, name)
               Seals = fun () -> seals.ToArray() |> List.ofArray })
 
-let private withFixture =
-    withFixtureCaching (
-        FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(
-            FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(1000),
-            None,
-            None
-        )
-    )
+let private withFixtureCaching checkCache = withFixtureOf checkCache []
+
+let private inMemoryCache () =
+    FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(1000), None, None)
+
+let private withFixture name body =
+    withFixtureCaching (inMemoryCache ()) name body
 
 let private settle (fixture: Fixture) =
     Assert.True(
@@ -431,6 +441,69 @@ let ``a signature change in a referenced project re-checks its dependents, and a
 
         Assert.Equal<Set<string>>(set [ "Late.fs"; "Use.fs" ], retyped |> Map.keys |> Set.ofSeq)
         Assert.True(retyped["Use.fs"] > 0, $"Use must be red after the batch: %A{retyped}"))
+
+[<Fact(Timeout = 300000)>]
+let ``a #nowarn file a change batch re-checks leaves no refusal in the analysis receipt or the ledger`` () =
+    // App is built with --warnaserror+ and Use.fs silences FS0057 with #nowarn, so FCS
+    // reports the experimental use at Error severity anyway (dotnet/fsharp#9796). What
+    // reaches the receipt must be filtered exactly as what reaches the ledger is,
+    // whichever cohort delivered the result.
+    withFixtureOf (inMemoryCache ()) [ "--warnaserror+" ] "batch-nowarn-receipt" (fun fixture ->
+        File.WriteAllText(fixture.Late, "module Late\n[<Experimental(\"try\")>]\nlet tripled = Middle.doubled * 3\n")
+
+        File.WriteAllText(fixture.Use, "#nowarn \"57\"\nmodule Use\nlet total : int = Late.tripled + 1\n")
+
+        fixture.Daemon.RegisterHandler(
+            FsHotWatch.TestPrune.TestPrunePlugin.create
+                (Path.Combine(fixture.Root, "test-impact.db"))
+                fixture.Root
+                None
+                None
+                None
+                None
+                None
+                []
+        )
+
+        fixture.Daemon.ScanAll() |> Async.RunSynchronously
+        settle fixture
+
+        // Only a receipt that covers the file can vouch for it: an absent one would
+        // hold no refusal either.
+        let refusalsFor (file: string) =
+            let covering =
+                fixture.Daemon.Host.WorkSnapshot.AnalysisEvidence
+                |> List.filter (fun receipt -> receipt.CheckedFiles.Contains(AbsFilePath.create file))
+
+            Assert.NotEmpty covering
+
+            covering
+            |> List.collect (fun receipt -> receipt.FailureReasons)
+            |> List.filter (fun reason -> reason.StartsWith(file: string))
+
+        let ledgerFor (file: string) =
+            fixture.Daemon.Host.GetErrorsByPlugin(PluginActivity.FcsPluginName)
+            |> Map.tryFind file
+            |> Option.defaultValue []
+
+        Assert.Empty(refusalsFor fixture.Use)
+        Assert.Empty(ledgerFor fixture.Use)
+
+        // A signature change to Late: the batch re-checks Use as a dependent.
+        let batch =
+            changeBatchAfter
+                fixture
+                "late signature"
+                fixture.Late
+                "module Late\n[<Experimental(\"try\")>]\nlet tripled = Middle.doubled * 3\nlet extra = 0\n"
+
+        // Positive control: the batch delivered Use, and FCS really did report the
+        // suppressed code at Error severity in it.
+        Assert.True(batch.ContainsKey "Use.fs", $"the batch must re-check Use: %A{batch}")
+        Assert.True(batch["Use.fs"] > 0, $"Use must carry the #nowarn-suppressed error: %A{batch}")
+
+        Assert.Empty(refusalsFor fixture.Use)
+        Assert.Empty(ledgerFor fixture.Use))
 
 [<Fact(Timeout = 300000)>]
 let ``a rescan starts no check unless a file's own inputs moved`` () =

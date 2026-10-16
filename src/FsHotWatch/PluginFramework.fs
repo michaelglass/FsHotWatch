@@ -295,7 +295,7 @@ type PluginCtx<'Msg> =
         SlotHolder: string -> SlotHolder
         /// Caller-configured FCS warning codes the host has been told to
         /// treat as noise. Plugins must merge this with per-file `#nowarn`
-        /// directives (`FcsDiagnosticFilter.allSuppressedCodes`) before any
+        /// directives (`FcsSuppression`) before any
         /// gate or report decision so the user-visible error stream and any
         /// cache-poisoning gates agree on what counts as an error.
         FcsSuppressedCodes: Set<int>
@@ -555,9 +555,16 @@ type PreparedCommit = { Finalize: Async<unit> }
 ///
 /// A state that keeps per-file results and does not implement this keeps none for a
 /// replayed file: the ledger holds the replayed findings, the state does not.
+///
+/// `suppressedCodes` are the host's configured FCS codes (`PluginCtx.FcsSuppressedCodes`),
+/// for a state that grades the result's diagnostics as a live fold would.
 type IFileReplayState<'State> =
     abstract Replayed:
-        currentModel: int64 option -> result: FileCheckResult -> analysis: Result<ErrorEntry list, string> -> 'State
+        suppressedCodes: Set<int> ->
+        currentModel: int64 option ->
+        result: FileCheckResult ->
+        analysis: Result<ErrorEntry list, string> ->
+            'State
 
 /// Declarative plugin definition.
 [<NoComparison; NoEquality>]
@@ -1606,7 +1613,7 @@ let internal registerHandlerForOwner
                                 | TaskCache.CachedFileFailed(err, _)
                                 | TaskCache.CachedRunFailed(err, _) -> Result.Error err
 
-                            holder.Replayed currentModel result analysis
+                            holder.Replayed services.FcsSuppressedCodes currentModel result analysis
                         | _ -> state
 
                     /// Force a terminal `Failed` for a fault the plugin could not report

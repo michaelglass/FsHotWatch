@@ -15,6 +15,7 @@ open FsHotWatch.CheckPipeline
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.FcsDiagnosticFilter
+open FsHotWatch.FcsSuppression
 open FsHotWatch.Ipc
 open FsHotWatch.Logging
 open FsHotWatch.Plugin
@@ -129,9 +130,10 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
     | FullCheck checkResults ->
         // Merge global suppressed codes with per-file #nowarn directives.
         // Workaround for https://github.com/dotnet/fsharp/issues/9796.
-        // Shared with TestPrunePlugin's `hasFcsErrors` cache-poisoning gate
-        // via `FcsDiagnosticFilter.allSuppressedCodes` so the user-visible
-        // diagnostic stream and the gate agree on which codes are noise.
+        // Shared with TestPrunePlugin's `hasFcsErrors` cache-poisoning gate and
+        // the analysis evidence a receipt is graded from, through `FcsSuppression`,
+        // so the user-visible diagnostic stream, the gate and the receipt agree on
+        // which codes are noise.
         //
         // The self-incompatible guard is deliberately NOT shared with that gate.
         // The gate's job is to REFUSE to trust a check that looks wrong, and a

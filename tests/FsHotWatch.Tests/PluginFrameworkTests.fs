@@ -2955,7 +2955,7 @@ type private ReplayLog =
     { Replays: (string * int64 option * Result<string list, string>) list }
 
     interface IFileReplayState<ReplayLog> with
-        member this.Replayed currentModel result analysis =
+        member this.Replayed _ currentModel result analysis =
             let findings = analysis |> Result.map (List.map _.Message)
             { Replays = this.Replays @ [ AbsFilePath.value result.File, currentModel, findings ] }
 

@@ -225,7 +225,7 @@ let ``a host with a published model refuses a result or seal that names no model
 let ``analysis proof refuses missing stale and failed file outcomes`` () =
     withCheckedSource (fun _ result ->
         let files = Set.singleton result.File
-        let good = AnalysisFileEvidence.fromResult result (Ok())
+        let good = AnalysisFileEvidence.fromResult Set.empty result (Ok())
         let outcomes = Map.ofList [ result.File, good ]
 
         let proof entries =
@@ -238,6 +238,7 @@ let ``analysis proof refuses missing stale and failed file outcomes`` () =
 
         let foreign =
             AnalysisFileEvidence.fromResult
+                Set.empty
                 { result with
                     File =
                         AbsFilePath.create (
@@ -249,6 +250,7 @@ let ``analysis proof refuses missing stale and failed file outcomes`` () =
 
         let stale =
             AnalysisFileEvidence.fromResult
+                Set.empty
                 { result with
                     ModelGeneration = Some 0L }
                 (Ok())
@@ -256,12 +258,12 @@ let ``analysis proof refuses missing stale and failed file outcomes`` () =
         Assert.NotEmpty((proof (Map.ofList [ result.File, stale ])).FailureReasons)
 
         let failed =
-            AnalysisFileEvidence.fromResult result (Error "symbol persistence failed")
+            AnalysisFileEvidence.fromResult Set.empty result (Error "symbol persistence failed")
 
         Assert.NotEmpty((proof (Map.ofList [ result.File, failed ])).FailureReasons)
 
         let parseOnly =
-            AnalysisFileEvidence.fromResult { result with CheckResults = ParseOnly } (Ok())
+            AnalysisFileEvidence.fromResult Set.empty { result with CheckResults = ParseOnly } (Ok())
 
         Assert.NotEmpty((proof (Map.ofList [ result.File, parseOnly ])).FailureReasons)
         // No model, or an invalid generation: no analysis claim.
@@ -276,6 +278,7 @@ let ``a seal carries only the retained outcomes of the model it names as unchang
 
             file,
             AnalysisFileEvidence.fromResult
+                Set.empty
                 { result with
                     File = file
                     ModelGeneration = Some generation }
@@ -319,7 +322,7 @@ let ``a replayed FileChecked records the cached run's outcome only for the curre
 
         let replay currentModel analysis =
             let state =
-                (handler.Init :> IFileReplayState<TestPruneState>).Replayed currentModel result analysis
+                (handler.Init :> IFileReplayState<TestPruneState>).Replayed Set.empty currentModel result analysis
 
             (AnalysisEvidence.fromCompleted (Some 1L) files state.AnalysisFiles |> Option.get).FailureReasons
 
@@ -343,7 +346,7 @@ let ``completed analysis distinguishes compiler warnings from missing or failed 
             )
         | ParseOnly -> Assert.Fail "the fixture requires an actual completed type check"
 
-        let outcome = AnalysisFileEvidence.fromResult result (Ok())
+        let outcome = AnalysisFileEvidence.fromResult Set.empty result (Ok())
 
         let proof =
             AnalysisEvidence.fromCompleted (Some 1L) (Set.singleton result.File) (Map.ofList [ result.File, outcome ])

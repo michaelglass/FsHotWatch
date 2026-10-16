@@ -639,7 +639,11 @@ let ``a replay records a completed lint for the current model, and nothing else`
     let result = fakeFileCheckResult "/tmp/test/Replayed.fs"
 
     let replay currentModel analysis =
-        ((handler.Init :> FsHotWatch.PluginFramework.IFileReplayState<LintState>).Replayed currentModel result analysis)
+        ((handler.Init :> FsHotWatch.PluginFramework.IFileReplayState<LintState>).Replayed
+            Set.empty
+            currentModel
+            result
+            analysis)
             .WarningsByFile
 
     let completed = Result.Ok [ ErrorEntry.warningWithDetail "w1" "d" ]

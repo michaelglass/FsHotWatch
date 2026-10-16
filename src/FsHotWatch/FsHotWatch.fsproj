@@ -72,6 +72,7 @@
     <Compile Include="ProjectModel.fs" />
     <Compile Include="ProjectModelWire.fs" />
     <Compile Include="PathFrame.fs" />
+    <Compile Include="FcsSuppression.fs" />
     <Compile Include="Events.fs" />
     <Compile Include="CachePathIdentity.fs" />
     <Compile Include="PathFilter.fs" />

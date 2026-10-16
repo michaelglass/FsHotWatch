@@ -11,7 +11,7 @@ open System.Xml.Linq
 open FSharp.Compiler.Diagnostics
 open FsHotWatch.Events
 open FsHotWatch
-open FsHotWatch.FcsDiagnosticFilter
+open FsHotWatch.FcsSuppression
 open FsHotWatch.Logging
 open FsHotWatch.ProcessHelper
 open FsHotWatch.PluginActivity
@@ -2058,7 +2058,7 @@ type TestPruneState =
     // A replayed `FileChecked` is recorded by the rule a live fold applies: only a result
     // published against the model published now describes it (see `notCurrent`).
     interface IFileReplayState<TestPruneState> with
-        member this.Replayed currentModel result analysis =
+        member this.Replayed suppressedCodes currentModel result analysis =
             if result.ModelGeneration.IsNone || result.ModelGeneration <> currentModel then
                 this
             else
@@ -2066,7 +2066,7 @@ type TestPruneState =
                     AnalysisFiles =
                         Map.add
                             result.File
-                            (AnalysisFileEvidence.fromResult result (Result.map ignore analysis))
+                            (AnalysisFileEvidence.fromResult suppressedCodes result (Result.map ignore analysis))
                             this.AnalysisFiles }
 
 /// The slice of `TestPruneState` a test RUN reads — and nothing else.
@@ -6115,6 +6115,14 @@ let private executeTests
         return testResults, started, completed, boundTree, testHostStartedAt
     }
 
+/// Count of Error-severity diagnostics not suppressed (`FcsSuppression.blockingErrors`) —
+/// used only for the skip-log message so operators have a number to correlate against the
+/// FCS-error stream. `hasFcsErrors` is defined by it, so the count matches the gate.
+let internal fcsErrorCount (suppressedCodes: Set<int>) (source: string) (state: FileCheckState) : int =
+    match state with
+    | FullCheck cr -> (blockingErrors suppressedCodes source cr.Diagnostics).Length
+    | ParseOnly -> 0
+
 /// FCS cache-poisoning gate. A `FileChecked` whose FCS result reports any
 /// Error-severity diagnostic is untrustworthy: cold-start FCS sometimes returns
 /// "expected type X but here has type X" for files that compile cleanly once warm, and
@@ -6123,38 +6131,14 @@ let private executeTests
 /// are handled identically — both hold the prior DB row. `ParseOnly` (check aborted)
 /// counts as "no observable errors".
 ///
-/// `suppressedCodes` is merged with per-file `#nowarn` directives via
-/// `FcsDiagnosticFilter.allSuppressedCodes` so the gate applies the same filter as the
-/// user-visible error stream in `Daemon.reportFcsDiagnostics`. Without that symmetry the
+/// `suppressedCodes` is merged with per-file `#nowarn` directives by
+/// `FcsSuppression.blockingErrors`, so the gate applies the same filter as the
+/// user-visible error stream in `Daemon.reportFcsDiagnostics` and the analysis evidence. Without that symmetry the
 /// gate trips on codes the user has already silenced (e.g. FS1182 promoted to Error by
 /// `<TreatWarningsAsErrors>` but suppressed via `#nowarn "1182"`), killing cache-replay
 /// across daemon restarts on every cold scan.
 let internal hasFcsErrors (suppressedCodes: Set<int>) (source: string) (state: FileCheckState) : bool =
-    match state with
-    | FullCheck cr ->
-        let allSuppressed = allSuppressedCodes suppressedCodes source
-
-        cr.Diagnostics
-        |> Array.exists (fun d ->
-            d.Severity = FSharpDiagnosticSeverity.Error
-            && not (allSuppressed.Contains d.ErrorNumber))
-    | ParseOnly -> false
-
-/// Count of Error-severity diagnostics not in the effective suppression set —
-/// used only for the skip-log message so operators have a number to
-/// correlate against the FCS-error stream. Must apply the same filter as
-/// `hasFcsErrors` so the count matches what the gate decided on.
-let internal fcsErrorCount (suppressedCodes: Set<int>) (source: string) (state: FileCheckState) : int =
-    match state with
-    | FullCheck cr ->
-        let allSuppressed = allSuppressedCodes suppressedCodes source
-
-        cr.Diagnostics
-        |> Array.filter (fun d ->
-            d.Severity = FSharpDiagnosticSeverity.Error
-            && not (allSuppressed.Contains d.ErrorNumber))
-        |> Array.length
-    | ParseOnly -> 0
+    fcsErrorCount suppressedCodes source state > 0
 
 /// The label the test-impact DB write declares over itself: how much it writes and where,
 /// so a wait or wedge line names the database rather than the plugin alone.
@@ -9560,7 +9544,7 @@ let internal createWithQueries
                                 AnalysisFiles =
                                     Map.add
                                         result.File
-                                        (AnalysisFileEvidence.fromResult result (Error detail))
+                                        (AnalysisFileEvidence.fromResult ctx.FcsSuppressedCodes result (Error detail))
                                         state.AnalysisFiles
                                 UnanalyzableFiles =
                                     Map.add
@@ -9801,7 +9785,7 @@ let internal createWithQueries
                                     AnalysisFiles =
                                         Map.add
                                             result.File
-                                            (AnalysisFileEvidence.fromResult result (Ok()))
+                                            (AnalysisFileEvidence.fromResult ctx.FcsSuppressedCodes result (Ok()))
                                             state.AnalysisFiles
                                     ChangedSymbols = newChangedSymbols
                                     TestClassFiles = newClassFiles

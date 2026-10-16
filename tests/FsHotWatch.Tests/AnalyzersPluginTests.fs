@@ -2161,6 +2161,7 @@ let ``a replay records a completed analysis for the current model, and nothing e
     let replay currentModel analysis =
         let state =
             (handler.Init :> FsHotWatch.PluginFramework.IFileReplayState<AnalyzersState>).Replayed
+                Set.empty
                 currentModel
                 result
                 analysis

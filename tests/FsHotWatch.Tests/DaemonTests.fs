@@ -17,6 +17,7 @@ open FsHotWatch.ProjectModel
 open FsHotWatch.Build
 open FsHotWatch.Daemon
 open FsHotWatch.FcsDiagnosticFilter
+open FsHotWatch.FcsSuppression
 open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open FsHotWatch.Tests.TestHelpers
