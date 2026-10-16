@@ -349,15 +349,47 @@ type CheckPipeline
 
         makeCacheKeyWith keyProvider toolchainIdentity optionsHash upstream path
 
-    /// The key as the disk stands NOW, bypassing the generation memo. A result is
-    /// stored only under a key this still produces after the check, so a check that
-    /// ran against an upstream edited mid-generation is never written.
-    let makeCacheKeyFresh (filePath: AbsFilePath) (options: FSharpProjectOptions) : CacheKey option =
+    /// The key by API signature: the upstream named by the earlier files' recorded
+    /// signatures (`CheckCache.apiUpstreamFingerprintsWith`). Results are stored under
+    /// `makeCacheKeyFast`'s content key; `apiIndex` maps this key to it.
+    let makeApiCacheKey (filePath: AbsFilePath) (options: FSharpProjectOptions) : CacheKey option =
         let path = AbsFilePath.value filePath
+        let optionsHash = optionsHashOf options
+        let upstream = upstreamFingerprints.ForApi(path, options, optionsHash)
+        makeCacheKeyWith keyProvider toolchainIdentity optionsHash ("api:" + upstream) path
 
-        let upstream = upstreamFingerprints.Fresh(path, options)
+    /// For each (file, project) slot, the API key its stored entry answers for and the
+    /// content key it is stored under. Refreshed on every store and every content-key hit,
+    /// so an entry stored before the signatures above it were recorded is found by them
+    /// from the next lookup on. One per slot, as the cache holds one entry per slot.
+    let apiIndex =
+        ConcurrentDictionary<struct (string * string), struct (CacheKey * CacheKey)>()
 
-        makeCacheKeyWith keyProvider toolchainIdentity (optionsHashOf options) upstream path
+    /// The slots indexed since the last `SettleApiIndex`, with the options they were for.
+    let indexedSinceSettle =
+        ConcurrentDictionary<struct (string * string), FSharpProjectOptions>()
+
+    /// Record the API signature a check of `absPath` declared, unless a record for exactly
+    /// these inputs is already held. `contentHash` is the hash of the bytes checked.
+    let recordSignature
+        (absPath: string)
+        (options: FSharpProjectOptions)
+        (contentHash: string)
+        (result: FileCheckResult)
+        =
+        let optionsHash = optionsHashOf options
+        let apiUpstream = upstreamFingerprints.ForApi(absPath, options, optionsHash)
+        let contentUpstream = upstreamFingerprints.For(absPath, options, optionsHash)
+
+        if not (upstreamFingerprints.HasSignatureFor(absPath, options, contentHash, apiUpstream, contentUpstream)) then
+            upstreamFingerprints.RecordSignature(
+                absPath,
+                options,
+                contentHash,
+                apiUpstream,
+                contentUpstream,
+                ApiSignature.ofCheck result.Source result.CheckResults
+            )
 
     /// A project output as an entry records it: repository-relative, so a sibling
     /// worktree's identical output verifies it too.
@@ -405,6 +437,46 @@ type CheckPipeline
     /// How many checks this pipeline has started in FCS, cumulative: one per
     /// `check start` line, whether the check then completed or was cancelled.
     member internal _.CheckStarts: int64 = Volatile.Read &checkStarts
+
+    /// Re-key the slots indexed since the last call by the signatures recorded since.
+    ///
+    /// A file is keyed when its check starts, and the files before it in the same cohort
+    /// are often still being checked then: its API key names them by content, while the
+    /// next lookup, after their signatures are recorded, names them by signature. Called
+    /// once the cohort is done (a change batch, a scan), this moves each such slot to the
+    /// key its next lookup will compute, provided its entry still describes the files on
+    /// disk: the content key must not have moved. A slot whose inputs moved since keeps
+    /// its old key, which can only cost a check.
+    member internal _.SettleApiIndex() =
+        match cacheBackend with
+        | None -> indexedSinceSettle.Clear()
+        | Some _ ->
+            // Fresh tables, from every signature recorded so far.
+            upstreamFingerprints.BeginGeneration()
+
+            for KeyValue(slot, options) in List.ofSeq indexedSinceSettle do
+                indexedSinceSettle.TryRemove slot |> ignore
+                let struct (path, _) = slot
+                let file = AbsFilePath.create path
+
+                match apiIndex.TryGetValue slot, makeCacheKeyFast file options, makeApiCacheKey file options with
+                | (true, struct (_, stored)), Some content, Some api when stored = content ->
+                    apiIndex[slot] <- struct (api, content)
+                | _ -> ()
+
+    /// The API signature last recorded for `file` in `projectFile`, with the content hash
+    /// it was recorded for: see `CheckCache.UpstreamFingerprints.LastSignature`.
+    member internal _.LastSignature(file: AbsFilePath, projectFile: string) =
+        upstreamFingerprints.LastSignature(AbsFilePath.value file, projectFile)
+
+    /// The API signature recorded for `file` in `projectFile` when that record is for the
+    /// bytes on disk now; None when there is none, or the file declares no signature of its own.
+    member internal _.SettledSignature(file: AbsFilePath, projectFile: string) : string option =
+        let path = AbsFilePath.value file
+
+        match upstreamFingerprints.LastSignature(path, projectFile) with
+        | Some(content, signature) when content = hashFile path -> signature
+        | _ -> None
 
     /// What this pipeline's check-result cache has done, cumulative; `CacheTally.since`
     /// two of these is one scan's. Empty while no cache is configured.
@@ -488,6 +560,9 @@ type CheckPipeline
             match projectOptionsByFile.TryGetValue(filePath) with
             | true, optionsList ->
                 for options in optionsList do
+                    apiIndex.TryRemove(struct (AbsFilePath.value filePath, options.ProjectFileName))
+                    |> ignore
+
                     match makeCacheKeyFast filePath options with
                     | Some key -> backend.Invalidate(key)
                     | None ->
@@ -957,6 +1032,12 @@ type CheckPipeline
 
     /// Cache-aware wrapper: looks up the cache, on miss reads disk and calls
     /// CheckFileCore, then stores FullCheck results back into the cache.
+    ///
+    /// The lookup tries the content key first and the API-signature key second (through
+    /// `apiIndex`): the API key is the one that survives a comment or body edit upstream.
+    /// Every result, served or checked, records the API signature it declares
+    /// (`ApiSignature.ofCheck`), so the files after it can be keyed by it, with or without
+    /// a cache.
     member private this.CheckFileCached
         (absPath: string, options: FSharpProjectOptions, ct: CancellationToken, ticket: int64)
         : Async<FileCheckResult option> =
@@ -966,17 +1047,51 @@ type CheckPipeline
                 return None
             else
 
+                let filePath = AbsFilePath.create absPath
                 let cacheBackend = backendFor options
+                // What the signature record and the stored entry are taken against: read
+                // before the check, and held only if the disk still reads the same after it.
+                let contentHash = hashFile absPath
+
+                let contentUpstream =
+                    upstreamFingerprints.For(absPath, options, optionsHashOf options)
+
+                let slot = struct (absPath, options.ProjectFileName)
+
+                let apiKey = cacheBackend |> Option.bind (fun _ -> makeApiCacheKey filePath options)
 
                 let cacheKey =
-                    cacheBackend
-                    |> Option.bind (fun _ -> makeCacheKeyFast (AbsFilePath.create absPath) options)
+                    cacheBackend |> Option.bind (fun _ -> makeCacheKeyFast filePath options)
+
+                let index () =
+                    match apiKey, cacheKey with
+                    | Some api, Some content ->
+                        apiIndex[slot] <- struct (api, content)
+                        indexedSinceSettle[slot] <- options
+                    | _ -> ()
+
+                // By content first; failing that, by API signature, through the content key
+                // the slot's entry is stored under. The API key names the file's own bytes
+                // and options too, so an index hit is a result for exactly this file.
+                let cached =
+                    match cacheBackend with
+                    | Some b ->
+                        match lookupCachedFullCheck movedOutputs b cacheKey with
+                        | Ok cached ->
+                            index ()
+                            Ok cached
+                        | Error miss ->
+                            match apiKey, apiIndex.TryGetValue slot with
+                            | Some api, (true, struct (indexed, stored)) when indexed = api ->
+                                match lookupCachedFullCheck movedOutputs b (Some stored) with
+                                | Ok cached -> Ok cached
+                                | Error _ -> Error miss
+                            | _ -> Error miss
+                        |> Some
+                    | None -> None
 
                 let cached =
-                    match
-                        cacheBackend
-                        |> Option.map (fun b -> lookupCachedFullCheck movedOutputs b cacheKey)
-                    with
+                    match cached with
                     | Some(Ok cached) ->
                         cacheTally.LookedUp CacheLookupOutcome.Hit
                         Some cached
@@ -988,41 +1103,56 @@ type CheckPipeline
                 match cached with
                 | Some cached ->
                     Logging.debug "check" $"Cache hit: %s{Path.GetFileName(absPath)}"
+                    recordSignature absPath options contentHash cached
                     return Some cached
                 | None ->
                     let openFile = ProjectSnapshots.readOpenFile hashFile absPath
                     let! result = this.CheckFileCore(openFile, options, ct, ticket)
 
-                    match result, cacheBackend, cacheKey with
-                    | Some(r, outputs), Some backend, Some key ->
-                        let inputsHeld =
-                            makeCacheKeyFresh (AbsFilePath.create absPath) options = Some key
-                            && outputs |> List.forall (fun (output, hash) -> hashFile output = hash)
+                    // The check read the bytes `contentHash` names, against the upstream it
+                    // was keyed by: nothing it depends on moved while it ran.
+                    let inputsHeld (outputs: (string * string) list) =
+                        openFile.Version = contentHash
+                        && hashFile absPath = contentHash
+                        && upstreamFingerprints.Fresh(absPath, options) = contentUpstream
+                        && outputs |> List.forall (fun (output, hash) -> hashFile output = hash)
+
+                    match result with
+                    | Some(r, outputs) ->
+                        let held = inputsHeld outputs
 
                         match r.CheckResults with
                         | FullCheck results when
                             not (cacheableAnswer (results.Diagnostics |> Seq.map (fun d -> d.Message)))
                             ->
-                            cacheTally.Stored CacheStore.Uncacheable
+                            if cacheBackend.IsSome then
+                                cacheTally.Stored CacheStore.Uncacheable
 
                             Logging.debug
                                 "check"
                                 $"Not caching %s{Path.GetFileName absPath}: its answer declared a type incompatible with itself"
-                        | FullCheck _ when inputsHeld ->
-                            backend.Set
-                                key
-                                { Result = r
-                                  ProjectOutputs = [ for output, hash in outputs -> outputName output, hash ] }
+                        | FullCheck _ when held ->
+                            recordSignature absPath options contentHash r
 
-                            cacheTally.Stored CacheStore.Stored
+                            match cacheBackend, cacheKey with
+                            | Some backend, Some key ->
+                                backend.Set
+                                    key
+                                    { Result = r
+                                      ProjectOutputs = [ for output, hash in outputs -> outputName output, hash ] }
+
+                                index ()
+                                cacheTally.Stored CacheStore.Stored
+                            | _ -> ()
                         | FullCheck _ ->
-                            cacheTally.Stored CacheStore.InputsMoved
+                            if cacheBackend.IsSome then
+                                cacheTally.Stored CacheStore.InputsMoved
 
                             Logging.debug
                                 "check"
                                 $"Not caching %s{Path.GetFileName absPath}: its inputs moved during the check"
                         | ParseOnly -> ()
-                    | _ -> ()
+                    | None -> ()
 
                     return result |> Option.map fst
         }

@@ -1959,37 +1959,115 @@ let private processBatchAttempt
 
             let absSourceFiles = allSourceFiles |> List.map AbsFilePath.create
 
-            let changedProjects =
-                absSourceFiles
-                |> List.collect (fun f -> ctx.Graph.GetProjectsForFile(f))
-                |> List.distinct
+            // What each changed file declared before this batch: the cascade below reaches
+            // past a changed file only when its check declares something else.
+            let signaturesBefore =
+                [ for file in absSourceFiles do
+                      for project in ctx.Graph.GetProjectsForFile file do
+                          let projectFile = AbsProjectPath.value project
+                          (file, project), ctx.Pipeline.LastSignature(file, projectFile) |> Option.bind snd ]
 
-            let changedProjectSet = Set.ofList changedProjects
+            let tiers = ctx.Graph.GetParallelTiers()
+            let mutable checkedFiles = Set.empty
+            // One deps-gate decision per project per batch, whichever cohort reaches it first.
+            let gated = System.Collections.Generic.Dictionary<string, bool>()
+
+            let depsAllow projPath =
+                match gated.TryGetValue projPath with
+                | true, allowed -> allowed
+                | false, _ ->
+                    let allowed = applyDepsGate ctx.DepsGate ctx.Host projPath
+                    gated[projPath] <- allowed
+                    allowed
+
+            // Check `cohort` tier by tier, returning the results unpublished.
+            let checkCohort (cohort: Set<AbsFilePath>) =
+                async {
+                    let results = ResizeArray<FileCheckResult option array>()
+
+                    for tier in tiers do
+                        let tierChecks = ResizeArray<Async<FileCheckResult option>>()
+
+                        for proj in tier do
+                            let projPath = AbsProjectPath.value proj
+
+                            let projFiles = ctx.Graph.GetSourceFiles(proj) |> List.filter cohort.Contains
+
+                            checkedFiles <- Set.union checkedFiles (Set.ofList projFiles)
+
+                            // Deps-freshness gate — see `applyDepsGate`.
+                            if not projFiles.IsEmpty && depsAllow projPath then
+                                match ctx.Pipeline.GetProjectOptions(projPath) with
+                                | Some options ->
+                                    for file in projFiles do
+                                        tierChecks.Add(
+                                            ctx.Pipeline.CheckFileWithOptions(file, options, ctx.DaemonCt.Value)
+                                        )
+                                | None ->
+                                    for file in projFiles do
+                                        tierChecks.Add(ctx.Pipeline.CheckFile(file, ctx.DaemonCt.Value))
+
+                        if tierChecks.Count > 0 then
+                            let! tierResults =
+                                tierChecks
+                                |> WorkScheduler.parallelWithin ctx.Pipeline.CheckConcurrencyBound
+                                |> CheckCaller.within "change batch"
+
+                            results.Add tierResults
+
+                    return List.ofSeq results
+                }
+
+            // The changed files first: their checks record what each now declares.
+            let changedSet = Set.ofList absSourceFiles
+            let! changedResults = checkCohort changedSet
+
+            // A changed file whose declarations moved — or whose check did not finish, or
+            // that declares no signature of its own — reaches every later file of its
+            // projects and every project downstream. One whose declarations did not move
+            // reaches nothing: no later file can type-check differently against it. A
+            // batch that changed a project or the solution can move a dependent's options
+            // with no declaration moving, so there every changed file reaches as before.
+            let structural = not projFilesChanged.IsEmpty || hasSolution
+
+            let moved =
+                signaturesBefore
+                |> List.filter (fun ((file, project), before) ->
+                    let after = ctx.Pipeline.SettledSignature(file, AbsProjectPath.value project)
+                    structural || before.IsNone || after.IsNone || before <> after)
+                |> List.map fst
+
+            let movedFiles = moved |> List.map fst |> List.distinct
+            let movedProjects = moved |> List.map snd |> List.distinct
 
             let laterFiles =
                 laterFilesInOwnProjects
                     (ctx.Graph.GetSourceFiles >> List.map AbsFilePath.value)
                     ctx.Graph.GetProjectsForFile
-                    absSourceFiles
+                    movedFiles
 
+            // A project is its own first transitive dependent; its later files are above.
+            // A moved project downstream of another moved one is re-checked in full.
             let dependentProjectFiles =
-                changedProjects
-                |> List.collect (fun p -> ctx.Graph.GetTransitiveDependents(p))
+                movedProjects
+                |> List.collect (fun p -> ctx.Graph.GetTransitiveDependents(p) |> List.filter ((<>) p))
                 |> List.distinct
-                |> List.filter (fun p -> not (Set.contains p changedProjectSet))
                 |> List.collect (fun proj -> ctx.Graph.GetSourceFiles(proj))
                 |> List.map AbsFilePath.value
 
-            let allFilesToCheck =
-                (allSourceFiles @ laterFiles @ dependentProjectFiles)
+            // The changed files were checked above.
+            let cascade =
+                (laterFiles @ dependentProjectFiles)
                 |> List.map AbsFilePath.create
+                |> List.filter (not << changedSet.Contains)
                 |> List.distinct
+
+            let allFilesToCheck = absSourceFiles @ cascade |> List.distinct
 
             publishCurrent (fun () ->
                 ctx.Host.EmitFileChanged(SourceChanged(allFilesToCheck |> List.map AbsFilePath.value)))
 
             Logging.info "daemon" (checkingAfterChangeLine ctx.RepoRoot allSourceFiles allFilesToCheck.Length)
-            let mutable checkedFiles = Set.empty
             let filesToCheckSet = allFilesToCheck |> Set.ofList
 
             // A file this cohort checks is not carried, even if its check never completes:
@@ -1999,8 +2077,6 @@ let private processBatchAttempt
                 |> Option.map (fun carried ->
                     { carried with
                         Files = Set.difference carried.Files filesToCheckSet })
-
-            let tiers = ctx.Graph.GetParallelTiers()
 
             let emitResults (results: FileCheckResult option array) =
                 for result in results do
@@ -2027,33 +2103,13 @@ let private processBatchAttempt
                     // later event, which is why the retry lives there, not here.
                     | None -> ()
 
-            for tier in tiers do
-                let tierChecks = ResizeArray<Async<FileCheckResult option>>()
+            changedResults |> List.iter emitResults
 
-                for proj in tier do
-                    let projPath = AbsProjectPath.value proj
-
-                    let projFiles =
-                        ctx.Graph.GetSourceFiles(proj) |> List.filter filesToCheckSet.Contains
-
-                    checkedFiles <- Set.union checkedFiles (Set.ofList projFiles)
-
-                    // Deps-freshness gate — see `applyDepsGate`.
-                    if applyDepsGate ctx.DepsGate ctx.Host projPath then
-                        match ctx.Pipeline.GetProjectOptions(projPath) with
-                        | Some options ->
-                            for file in projFiles do
-                                tierChecks.Add(ctx.Pipeline.CheckFileWithOptions(file, options, ctx.DaemonCt.Value))
-                        | None ->
-                            for file in projFiles do
-                                tierChecks.Add(ctx.Pipeline.CheckFile(file, ctx.DaemonCt.Value))
-
-                let! results =
-                    tierChecks
-                    |> WorkScheduler.parallelWithin ctx.Pipeline.CheckConcurrencyBound
-                    |> CheckCaller.within "change batch"
-
-                emitResults results
+            if not cascade.IsEmpty then
+                // A new generation, so the cascade is keyed by the signatures just recorded.
+                ctx.Pipeline.BeginGeneration()
+                let! cascadeResults = checkCohort (Set.ofList cascade)
+                cascadeResults |> List.iter emitResults
 
             // Check files not belonging to any project (e.g. standalone .fsx files)
             let uncovered = Set.difference filesToCheckSet checkedFiles |> Set.toList
@@ -2071,6 +2127,7 @@ let private processBatchAttempt
             // results from the pipeline) skip the emit — there's nothing to
             // "flush and decide" against.
             if dispatchedFiles.Count > 0 then
+                ctx.Pipeline.SettleApiIndex()
                 seal ()
 
             batchPhase.Complete(Some $"change batch: %d{dispatchedFiles.Count} file(s) checked")
@@ -4152,6 +4209,8 @@ let private performScan
             // model with no checkable files has that answer just as much as one with 2,000.
             // Without it an analysis-only repository earns no receipt and can never be
             // green, and a plugin waiting for the cohort waits forever.
+            pipeline.SettleApiIndex()
+
             publishCurrent (fun () ->
                 host.EmitBatchCheckedFor(
                     consumers,

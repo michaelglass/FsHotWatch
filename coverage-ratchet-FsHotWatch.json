@@ -1,5 +1,12 @@
 {
   "overrides": {
+    "ApiSignature.fs": [
+      {
+        "line": 98,
+        "branch": 93,
+        "reason": "new file. Measured 2026-10-16 on macOS by ApiSignatureTests + FileCheckedDeliveryTests + CheckCacheTests with coverage: line 98.9% (177/179), branch 93.3% (70/75). The two uncovered lines cannot be reached from a checked file's own declarations: the non-text arm of docText (only a referenced assembly's symbol points at an XML doc file), and the refusal for member, defaults-to and simple-choice constraints (a member constraint needs an inline member, which already refuses, and the other two occur only in FSharp.Core). Everything reachable is covered, including the catch for a check FCS cannot describe. Platform-neutral, so no platform tag. Do NOT auto-ratchet upward: the remainder is unreachable, not merely untested."
+      }
+    ],
     "TimeoutMarker.fs": [
       {
         "line": 100,

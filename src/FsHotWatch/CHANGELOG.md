@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- perf: a comment, whitespace or body edit no longer re-checks every later file of its
+  project and every file of every project downstream of it. Each check now records its
+  file's API signature: every declaration at every accessibility, with attributes and
+  their arguments, literal values, union cases, fields, members, generic constraints,
+  extension members and XML docs, but no bodies, comments or positions. A file with an
+  `inline` member, an `assembly:` attribute or a type error has no signature, and its
+  content stands in for it.
+  - A change batch now checks the changed files first, then re-checks the later files and
+    dependent projects only when a changed file's signature moved.
+  - The check-result cache also keys a file by the signatures of the files before it, so
+    a rescan after such an edit serves those files from the cache.
+  - Measured on the delivery fixture (three files in one project, one in a dependent
+    project, cache on): a comment or body edit to the first file went from 4 FCS checks
+    and 4 `FileChecked` deliveries per plugin to 1 and 1. The rescan after it starts no
+    check, before and after. A signature edit still re-checks all four.
+  - A batch that changes files in two projects now re-checks every file of a project
+    downstream of a moved one. Before, only the files after its own changed file were
+    re-checked.
 - **fix!: a test run a client's check set off is cancelled, and its test hosts reaped,
   once every client that wanted it has gone. `DaemonRpcConfig.RequestScan` now takes the
   requesting invocation (`string option`)**, so code that builds the config must accept

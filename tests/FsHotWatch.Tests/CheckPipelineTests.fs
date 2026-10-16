@@ -898,10 +898,12 @@ let ``nothing in the daemon reads symbol uses, so background resolutions stay of
           "GetSemanticClassification" ]
 
     // A foreground check result answers `GetAllUsesOfAllSymbolsInFile` for its own file
-    // with the flag off: the analyzers key reads it there (`CacheInputs.usedShapes`),
-    // and AnalyzerCacheKeyTests' used-signatures MISS tests run on the daemon's checker
-    // and would hit if those uses came back empty.
-    let foregroundReaders = set [ "CacheInputs.fs" ]
+    // with the flag off: the analyzers key reads it there (`CacheInputs.usedShapes`), and
+    // so does the check pipeline's API signature of each checked file
+    // (`ApiSignature.signatureText`). AnalyzerCacheKeyTests' used-signatures MISS tests and
+    // ApiSignatureTests run on the daemon's checker and would fail if those uses came
+    // back empty.
+    let foregroundReaders = set [ "CacheInputs.fs"; "ApiSignature.fs" ]
 
     let callers =
         sources

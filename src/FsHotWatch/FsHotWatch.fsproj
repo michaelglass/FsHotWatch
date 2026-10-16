@@ -91,6 +91,7 @@
     <Compile Include="WatchRouter.fs" />
     <Compile Include="CheckCache.fs" />
     <Compile Include="CacheInputs.fs" />
+    <Compile Include="ApiSignature.fs" />
     <Compile Include="StructureFiles.fs" />
     <Compile Include="InMemoryCheckCache.fs" />
     <Compile Include="CheckCacheTally.fs" />

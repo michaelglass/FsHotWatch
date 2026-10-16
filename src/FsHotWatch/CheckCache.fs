@@ -279,6 +279,36 @@ let internal isUnderRoot (repoRoot: string option) (path: string) =
 ///
 /// Without this a cached result survives a change to a file it was type-checked
 /// against, and the cache serves diagnostics FCS would no longer produce.
+/// The `-r:` assemblies of `opts` that are not a referenced F# project's output, and its
+/// non-F# project references, as upstream-fingerprint parts: see `upstreamFingerprintsWith`.
+let private addAssemblyParts
+    (parts: System.Collections.Generic.List<string>)
+    (hashFile: string -> string)
+    (stampFile: string -> string)
+    (repoRoot: string option)
+    (opts: FSharpProjectOptions)
+    =
+    let relativize = relativizeOption repoRoot
+
+    let projectOutputs =
+        opts.ReferencedProjects |> Array.map (fun r -> r.OutputFile) |> Set.ofArray
+
+    for opt in opts.OtherOptions do
+        if opt.StartsWith("-r:", StringComparison.Ordinal) then
+            let path = opt.Substring 3
+
+            if projectOutputs.Contains path then
+                ()
+            elif isUnderRoot repoRoot path then
+                parts.Add $"ref:%s{relativize path}=%s{hashFile path}"
+            else
+                parts.Add $"outside-ref:%s{path}@%s{stampFile path}"
+
+/// A non-F# project reference (IL or PE) as an upstream-fingerprint part: its output and
+/// the stamp FCS re-reads it on.
+let private otherReferencePart (repoRoot: string option) (output: string) (stamp: DateTime) =
+    $"other-ref:%s{relativizeOption repoRoot output}@%d{stamp.Ticks}"
+
 let upstreamFingerprintsWith
     (hashFile: string -> string)
     (stampFile: string -> string)
@@ -290,19 +320,7 @@ let upstreamFingerprintsWith
     let visited = System.Collections.Generic.HashSet<string>()
 
     let hashAssemblyRefs (opts: FSharpProjectOptions) =
-        let projectOutputs =
-            opts.ReferencedProjects |> Array.map (fun r -> r.OutputFile) |> Set.ofArray
-
-        for opt in opts.OtherOptions do
-            if opt.StartsWith("-r:", StringComparison.Ordinal) then
-                let path = opt.Substring 3
-
-                if projectOutputs.Contains path then
-                    ()
-                elif isUnderRoot repoRoot path then
-                    parts.Add $"ref:%s{relativize path}=%s{hashFile path}"
-                else
-                    parts.Add $"outside-ref:%s{path}@%s{stampFile path}"
+        addAssemblyParts parts hashFile stampFile repoRoot opts
 
     let rec addProject (opts: FSharpProjectOptions) =
         if visited.Add opts.ProjectFileName then
@@ -319,9 +337,9 @@ let upstreamFingerprintsWith
             match reference with
             | FSharpReferencedProject.FSharpReference(_, referenced) -> addProject referenced
             | FSharpReferencedProject.PEReference(getStamp, _) ->
-                parts.Add $"other-ref:%s{relativize reference.OutputFile}@%d{getStamp().Ticks}"
+                parts.Add(otherReferencePart repoRoot reference.OutputFile (getStamp ()))
             | FSharpReferencedProject.ILModuleReference(output, getStamp, _) ->
-                parts.Add $"other-ref:%s{relativize output}@%d{getStamp().Ticks}"
+                parts.Add(otherReferencePart repoRoot output (getStamp ()))
 
     visited.Add options.ProjectFileName |> ignore
     hashAssemblyRefs options
@@ -376,6 +394,89 @@ let upstreamFingerprint
     : string =
     upstreamFingerprintWith hashFile fileStampText repoRoot filePath options
 
+/// A file's recorded API signature (`ApiSignature.ofCheck`) when it holds for these
+/// inputs: `signatureOf project file contentHash apiUpstream contentUpstream`, where the
+/// upstreams are the file's own `apiUpstreamFingerprintsWith` and `upstreamFingerprintsWith`
+/// entries. A record holds when its bytes are these and EITHER upstream is the one it was
+/// recorded against: equal content upstream means nothing before the file changed at all,
+/// and equal API upstream means nothing it can see did. None when no record holds, or the
+/// file has no signature of its own.
+type internal SignatureLookup = string -> string -> string -> string -> string -> string option
+
+/// `upstreamFingerprintsWith` with each earlier file named by its API SIGNATURE instead of
+/// its content, wherever `signatureOf` has one for it: what decides a file's check result
+/// is what the files before it declare, not their comments or bodies. A file with no
+/// recorded signature is named by its content, as before, so a missing record can only
+/// cost a check, never skip one.
+///
+/// A referenced F# project contributes its whole chain (the value after its last file,
+/// which covers its own references in turn) and its options, in place of every source of
+/// its transitive closure. The assembly references and the non-F# project references are
+/// the same parts `upstreamFingerprintsWith` names. Each project's chain starts from its
+/// own options, so an edit to its defines moves every signature recorded under it.
+///
+/// Sound by induction over the compile order: a file's entry equals another's only when,
+/// for each file before it, either the bytes are equal or a check of those bytes against
+/// an equal entry declared an equal signature.
+let internal apiUpstreamFingerprintsWith
+    (hashFile: string -> string)
+    (stampFile: string -> string)
+    (contentTableOf: FSharpProjectOptions -> System.Collections.Generic.IReadOnlyDictionary<string, string> * string)
+    (signatureOf: SignatureLookup)
+    (repoRoot: string option)
+    (options: FSharpProjectOptions)
+    : System.Collections.Generic.IReadOnlyDictionary<string, string> * string =
+    let relativize = relativizeOption repoRoot
+    let wholes = System.Collections.Generic.Dictionary<string, string>()
+
+    let rec chain (opts: FSharpProjectOptions) =
+        let parts = System.Collections.Generic.List<string>()
+        parts.Add $"options:%s{getProjectOptionsHashRelativeTo repoRoot opts}"
+        addAssemblyParts parts hashFile stampFile repoRoot opts
+
+        for reference in opts.ReferencedProjects do
+            match reference with
+            | FSharpReferencedProject.FSharpReference(_, referenced) ->
+                parts.Add $"project:%s{relativize referenced.ProjectFileName}=%s{wholeOf referenced}"
+            | FSharpReferencedProject.PEReference(getStamp, _) ->
+                parts.Add(otherReferencePart repoRoot reference.OutputFile (getStamp ()))
+            | FSharpReferencedProject.ILModuleReference(output, getStamp, _) ->
+                parts.Add(otherReferencePart repoRoot output (getStamp ()))
+
+        let table = System.Collections.Generic.Dictionary<string, string>()
+        let mutable running = sha256Hex (String.concat "\n" parts)
+        let contentTable = lazy (contentTableOf opts)
+
+        for source in opts.SourceFiles do
+            if not (table.ContainsKey source) then
+                table[source] <- running
+
+            let content = hashFile source
+            let contentUpstream = fingerprintIn contentTable.Value source
+
+            let part =
+                match signatureOf opts.ProjectFileName source content running contentUpstream with
+                | Some signature -> "api:" + signature
+                | None -> "content:" + content
+
+            running <- sha256Hex $"%s{running}\n%s{relativize source}=%s{part}"
+
+        table, running
+
+    and wholeOf (opts: FSharpProjectOptions) =
+        match wholes.TryGetValue opts.ProjectFileName with
+        | true, whole -> whole
+        | false, _ ->
+            // Marked before the walk, so a reference cycle names the project instead of
+            // recursing without end.
+            wholes[opts.ProjectFileName] <- $"cycle:%s{relativize opts.ProjectFileName}"
+            let _, whole = chain opts
+            wholes[opts.ProjectFileName] <- whole
+            whole
+
+    let table, whole = chain options
+    table :> System.Collections.Generic.IReadOnlyDictionary<string, string>, whole
+
 /// `upstreamFingerprints`, computed once per project per GENERATION and reused.
 ///
 /// Per lookup, the fingerprint stats every file in the project's closure: for a scan
@@ -398,7 +499,48 @@ type UpstreamFingerprints(repoRoot: string option) =
             Lazy<System.Collections.Generic.IReadOnlyDictionary<string, string> * string>
          >()
 
-    let mutable generations = false
+    let mutable generationsDeclared = false
+
+    let apiMemo =
+        System.Collections.Concurrent.ConcurrentDictionary<
+            string,
+            Lazy<System.Collections.Generic.IReadOnlyDictionary<string, string> * string>
+         >()
+
+    /// The last API signature recorded for each (project, file), with the inputs it was
+    /// declared under: (content hash, `apiUpstreamFingerprintsWith` entry,
+    /// `upstreamFingerprintsWith` entry, signature).
+    let signatures =
+        System.Collections.Concurrent.ConcurrentDictionary<
+            struct (string * string),
+            struct (string * string * string * string option)
+         >()
+
+    let signatureOf: SignatureLookup =
+        fun project file content apiUpstream contentUpstream ->
+            match signatures.TryGetValue(struct (project, file)) with
+            | true, struct (recordedContent, recordedApi, recordedUpstream, signature) when
+                recordedContent = content
+                && (recordedApi = apiUpstream || recordedUpstream = contentUpstream)
+                ->
+                signature
+            | _ -> None
+
+    /// A project's content table, from this generation's memo once generations are declared.
+    let contentTableOf (options: FSharpProjectOptions) =
+        let build () =
+            upstreamFingerprints hasher.Hash repoRoot options
+
+        if System.Threading.Volatile.Read(&generationsDeclared) then
+            memo
+                .GetOrAdd(
+                    $"%s{options.ProjectFileName}|%s{getProjectOptionsHashRelativeTo repoRoot options}",
+                    fun _ -> lazy (build ())
+                )
+                .Value
+        else
+            build ()
+
 
     /// The content hash of one file, from the same memo the tables are built from.
     member _.HashFile(path: string) : string = hasher.Hash path
@@ -406,12 +548,66 @@ type UpstreamFingerprints(repoRoot: string option) =
     /// Drop every memoized table; the next lookup per project rebuilds it.
     member _.BeginGeneration() =
         memo.Clear()
-        System.Threading.Volatile.Write(&generations, true)
+        apiMemo.Clear()
+        System.Threading.Volatile.Write(&generationsDeclared, true)
+
+    /// Record what a check of `filePath` declared: `signature` (`ApiSignature.ofCheck`)
+    /// for the bytes hashing to `contentHash`, checked against `upstream` (its `ForApi`
+    /// entry). Supersedes the file's previous record in that project.
+    member internal _.RecordSignature
+        (
+            filePath: string,
+            options: FSharpProjectOptions,
+            contentHash: string,
+            apiUpstream: string,
+            contentUpstream: string,
+            signature: string option
+        ) =
+        signatures[struct (options.ProjectFileName, filePath)] <-
+            struct (contentHash, apiUpstream, contentUpstream, signature)
+
+    /// Whether `filePath`'s record in `options`' project is for exactly these inputs.
+    member internal _.HasSignatureFor
+        (
+            filePath: string,
+            options: FSharpProjectOptions,
+            contentHash: string,
+            apiUpstream: string,
+            contentUpstream: string
+        ) =
+        match signatures.TryGetValue(struct (options.ProjectFileName, filePath)) with
+        | true, struct (recordedContent, recordedApi, recordedUpstream, _) ->
+            recordedContent = contentHash
+            && recordedApi = apiUpstream
+            && recordedUpstream = contentUpstream
+        | false, _ -> false
+
+    /// The signature last recorded for `filePath` in `projectFile`, and the content hash
+    /// it was recorded for; None when the file was never recorded there.
+    member internal _.LastSignature(filePath: string, projectFile: string) : (string * string option) option =
+        match signatures.TryGetValue(struct (projectFile, filePath)) with
+        | true, struct (content, _, _, signature) -> Some(content, signature)
+        | false, _ -> None
+
+    /// `For`, by API signature: `filePath`'s `apiUpstreamFingerprintsWith` entry, from
+    /// this generation's table for its project. Built at the project's first lookup in the
+    /// generation, from the signatures recorded by then.
+    member internal _.ForApi(filePath: string, options: FSharpProjectOptions, optionsHash: string) : string =
+        let build () =
+            apiUpstreamFingerprintsWith hasher.Hash fileStampText contentTableOf signatureOf repoRoot options
+
+        let table =
+            if System.Threading.Volatile.Read(&generationsDeclared) then
+                apiMemo.GetOrAdd($"%s{options.ProjectFileName}|%s{optionsHash}", fun _ -> lazy (build ())).Value
+            else
+                build ()
+
+        fingerprintIn table filePath
 
     /// Fingerprint for `filePath`, from this generation's table for its project.
     /// `optionsHash` distinguishes two option sets for one project file.
     member this.For(filePath: string, options: FSharpProjectOptions, optionsHash: string) : string =
-        if System.Threading.Volatile.Read(&generations) then
+        if System.Threading.Volatile.Read(&generationsDeclared) then
             let table =
                 memo.GetOrAdd(
                     $"%s{options.ProjectFileName}|%s{optionsHash}",

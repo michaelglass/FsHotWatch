@@ -65,6 +65,7 @@
     <Compile Include="FileStampTests.fs" />
     <Compile Include="CheckCacheTests.fs" />
     <Compile Include="CacheInputsTests.fs" />
+    <Compile Include="ApiSignatureTests.fs" />
     <Compile Include="StructureFilesTests.fs" />
     <Compile Include="PluginTests.fs" />
     <Compile Include="TaskCacheTests.fs" />

@@ -701,6 +701,35 @@ let checkDownstream (root: string) (layout: UpstreamLayout) (upSource: string) (
       Placed = Map.empty },
     check
 
+/// Check `root/<name>` (`source`) as the only file of a project, through the daemon's
+/// checker: the file's own declarations, as a later file or a dependent project sees them.
+let checkAlone (root: string) (name: string) (source: string) =
+    let file = Path.Combine(root, name)
+    File.WriteAllText(file, source)
+    let baseOptions, sdk = sdkProjectOptions.Value
+
+    let options =
+        { baseOptions with
+            ProjectFileName = Path.Combine(root, "Alone.fsproj")
+            SourceFiles = [| file |]
+            OtherOptions = sdk
+            UseScriptResolutionRules = false
+            ProjectId = None
+            Stamp = None }
+
+    let _, answer =
+        daemonChecker.Value.ParseAndCheckFileInProject(
+            file,
+            0,
+            FSharp.Compiler.Text.SourceText.ofString source,
+            options
+        )
+        |> Async.RunSynchronously
+
+    match answer with
+    | FSharpCheckFileAnswer.Succeeded r -> r
+    | FSharpCheckFileAnswer.Aborted -> failwith "check aborted"
+
 /// Write a minimal `.fsproj` with a `<TargetFramework>` and the given `<Compile Include="…">`
 /// items, for tests that need `RegisterFromFsproj` to record both TFM and source files
 /// (e.g. anything exercising canonical-DLL path lookup).
