@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.79 - 2026-10-16
+
 - fix!: a file's `#nowarn` no longer silences a genuine compiler error. The real compiler's
   `#nowarn` silences warnings, including those `--warnaserror` promotes, and never an error
   in its own right. fshw dropped any Error-severity diagnostic whose code a `#nowarn` named,

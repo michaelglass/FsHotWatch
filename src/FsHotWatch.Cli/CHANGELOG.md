@@ -15,6 +15,8 @@
   pooled checkout's daemons can make them hold without changing the shared config. An
   unknown value, in either place, refuses the config load.
 
+## 0.14.0-alpha.105 - 2026-10-16
+
 - fix: `test-rerun` accepts `-p`/`--project`, `--filter-class` and `--filter-trait` more than
   once, and `dead-code` accepts `--entry` more than once. Their help said "repeatable", but
   the parser rejected a second one with "Flag '-p' provided more than once". A test now
