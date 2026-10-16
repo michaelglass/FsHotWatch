@@ -74,6 +74,15 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core, test-prune: `#nowarn` no longer hides a genuine compiler error
+
+- `#nowarn "1"` above a real FS0001 type mismatch made fshw report the file clean, while
+  `dotnet build` failed on it. `#nowarn` silences warnings, including ones `--warnaserror`
+  promotes, never an error in its own right. fshw now silences an Error under `#nowarn` only
+  when the file's compiler flags promote that code. Under a global `--warnaserror+` it still
+  cannot tell a promoted warning from a genuine error with the same code; that one case is
+  pinned by a test.
+
 ### core, test-prune: a `#nowarn` file no longer turns a check red after an edit
 
 - After an edit, `check` could exit 2 with "the evidence receipt ... refuses a green",

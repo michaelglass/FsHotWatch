@@ -4987,7 +4987,7 @@ let ``a self-incompatible type diagnostic never becomes a ledger entry`` () =
         )
 
     let reportable, selfIncompatible =
-        Daemon.classifyFcsDiagnostics Set.empty [| diagnostic |]
+        Daemon.classifyFcsDiagnostics Suppression.none [| diagnostic |]
 
     test <@ List.isEmpty reportable @>
     test <@ selfIncompatible |> List.map _.RenderedType = [ "Intelligence.Domain.BriefEntryEditV3.Edit" ] @>
@@ -4997,7 +4997,7 @@ let ``NEGATIVE CONTROL - a genuine int-vs-string mismatch still reddens`` () =
     let diagnostic = fcsError (expectedButHasMessage "int" "string")
 
     let reportable, selfIncompatible =
-        Daemon.classifyFcsDiagnostics Set.empty [| diagnostic |]
+        Daemon.classifyFcsDiagnostics Suppression.none [| diagnostic |]
 
     test <@ List.isEmpty selfIncompatible @>
     test <@ reportable |> List.map _.Severity = [ ErrorLedger.DiagnosticSeverity.Error ] @>
@@ -5017,7 +5017,7 @@ let ``NEGATIVE CONTROL - two same-named types from different assemblies still re
         )
 
     let reportable, selfIncompatible =
-        Daemon.classifyFcsDiagnostics Set.empty [| diagnostic |]
+        Daemon.classifyFcsDiagnostics Suppression.none [| diagnostic |]
 
     test <@ List.isEmpty selfIncompatible @>
     test <@ reportable |> List.length = 1 @>
@@ -5028,7 +5028,7 @@ let ``a self-incompatible diagnostic is dropped without taking real errors with 
     let real = fcsError (expectedButHasMessage "int" "string")
 
     let reportable, selfIncompatible =
-        Daemon.classifyFcsDiagnostics Set.empty [| phantom; real; phantom |]
+        Daemon.classifyFcsDiagnostics Suppression.none [| phantom; real; phantom |]
 
     test <@ reportable |> List.length = 1 @>
     test <@ selfIncompatible |> List.length = 2 @>
@@ -5041,7 +5041,10 @@ let ``suppression wins over the self-incompatible classification`` () =
     let diagnostic = fcsError (expectedButHasMessage "Foo.Bar" "Foo.Bar")
 
     let reportable, selfIncompatible =
-        Daemon.classifyFcsDiagnostics (Set.ofList [ 1 ]) [| diagnostic |]
+        Daemon.classifyFcsDiagnostics
+            { Suppression.none with
+                Configured = Set.ofList [ 1 ] }
+            [| diagnostic |]
 
     test <@ List.isEmpty reportable @>
     test <@ List.isEmpty selfIncompatible @>

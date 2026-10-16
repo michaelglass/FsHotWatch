@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- fix!: a file's `#nowarn` no longer silences a genuine compiler error. The real compiler's
+  `#nowarn` silences warnings, including those `--warnaserror` promotes, and never an error
+  in its own right. fshw dropped any Error-severity diagnostic whose code a `#nowarn` named,
+  so `#nowarn "1"` above an FS0001 type mismatch read as clean in the ledger, TestPrune's
+  cache-poisoning gate and the evidence receipt, while `dotnet build` failed. An Error is
+  now silenced by `#nowarn` only when the file's compiler flags promote its code
+  (`--warnaserror[+]`, `--warnaserror[+]:N`, less `--warnaserror-:N`). Configured
+  `fcsSuppressedCodes` still apply at any severity.
+  - Known gap, pinned by a test: under a global `--warnaserror+` (`<TreatWarningsAsErrors>`),
+    FCS does not say whether an Error was promoted, so a genuine error whose own code the file
+    names in `#nowarn` is still silenced. The real compiler fails that build.
+  - **BREAKING**: `FcsSuppression.blockingErrors` takes a `Suppression` (built by
+    `Suppression.forFile`, or `FileCheckResult.suppression` for a check result) in place of
+    the configured codes and source. `allSuppressedCodes` is removed: a set of codes cannot
+    say whether an Error is silenced. `FcsDiagnosticFilter.classifyDiagnostic` takes whether
+    the diagnostic is suppressed (`Suppression.silences`) in place of a code set and the
+    error number.
 - fix: the analysis evidence a receipt is graded from no longer refuses a green over an
   error whose code the file's own `#nowarn` (or the configured `fcsSuppressedCodes`)
   silences. The ledger and TestPrune's cache-poisoning gate already applied that filter;

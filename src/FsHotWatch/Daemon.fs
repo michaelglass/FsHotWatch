@@ -44,15 +44,17 @@ let internal mapFcsSeverity =
 /// `FcsDiagnosticClass.SelfIncompatible` carries a `SelfIncompatibleDiagnostic`
 /// and there is no function anywhere that produces an `ErrorEntry` from one.
 let internal classifyFcsDiagnostics
-    (allSuppressed: Set<int>)
+    (suppression: Suppression)
     (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[])
     : ErrorEntry list * FcsDiagnosticFilter.SelfIncompatibleDiagnostic list =
     let classified =
         diagnostics
         |> Array.map (fun d ->
             classifyDiagnostic
-                allSuppressed
-                d.ErrorNumber
+                (Suppression.silences
+                    suppression
+                    (d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                    d.ErrorNumber)
                 d.Message
                 (mapFcsSeverity d.Severity)
                 d.StartLine
@@ -95,12 +97,12 @@ type internal FcsLedgerWrites =
 /// `FcsDiagnosticFilter.suspectCheckEntries` for why at its own severity, and never
 /// as `Info`), so `Findings` is empty for it.
 let internal fcsLedgerWrites
-    (allSuppressed: Set<int>)
+    (suppression: Suppression)
     (toReal: string -> string)
     (project: string)
     (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[])
     : FcsLedgerWrites =
-    let reportable, selfIncompatible = classifyFcsDiagnostics allSuppressed diagnostics
+    let reportable, selfIncompatible = classifyFcsDiagnostics suppression diagnostics
 
     // Checked under a virtual root, or against a reference read from the import store,
     // a diagnostic can name a path in its text: the reader gets the worktree's
@@ -144,12 +146,12 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
         // matters more now than when it was written — with the cause unknown,
         // this guard is the only thing between those diagnostics and a red gate,
         // so the conservative side must stay conservative.
-        let allSuppressed = allSuppressedCodes suppressedCodes checkResult.Source
+        let suppression = FileCheckResult.suppression suppressedCodes checkResult
         let fileName = AbsFilePath.value checkResult.File
         let project = Path.GetFileName checkResult.ProjectOptions.ProjectFileName
 
         let writes =
-            fcsLedgerWrites allSuppressed (FileCheckResult.textToReal checkResult) project checkResults.Diagnostics
+            fcsLedgerWrites suppression (FileCheckResult.textToReal checkResult) project checkResults.Diagnostics
 
         // A self-incompatible diagnostic still here is a fault in THIS process. The
         // check that produced it may have been re-checked once in `CheckPipeline`, or

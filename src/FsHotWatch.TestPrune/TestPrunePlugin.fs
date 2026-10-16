@@ -6118,9 +6118,9 @@ let private executeTests
 /// Count of Error-severity diagnostics not suppressed (`FcsSuppression.blockingErrors`) —
 /// used only for the skip-log message so operators have a number to correlate against the
 /// FCS-error stream. `hasFcsErrors` is defined by it, so the count matches the gate.
-let internal fcsErrorCount (suppressedCodes: Set<int>) (source: string) (state: FileCheckState) : int =
+let internal fcsErrorCount (suppression: Suppression) (state: FileCheckState) : int =
     match state with
-    | FullCheck cr -> (blockingErrors suppressedCodes source cr.Diagnostics).Length
+    | FullCheck cr -> (blockingErrors suppression cr.Diagnostics).Length
     | ParseOnly -> 0
 
 /// FCS cache-poisoning gate. A `FileChecked` whose FCS result reports any
@@ -6131,14 +6131,14 @@ let internal fcsErrorCount (suppressedCodes: Set<int>) (source: string) (state: 
 /// are handled identically — both hold the prior DB row. `ParseOnly` (check aborted)
 /// counts as "no observable errors".
 ///
-/// `suppressedCodes` is merged with per-file `#nowarn` directives by
+/// `suppression` (`FileCheckResult.suppression`) is applied by
 /// `FcsSuppression.blockingErrors`, so the gate applies the same filter as the
 /// user-visible error stream in `Daemon.reportFcsDiagnostics` and the analysis evidence. Without that symmetry the
 /// gate trips on codes the user has already silenced (e.g. FS1182 promoted to Error by
 /// `<TreatWarningsAsErrors>` but suppressed via `#nowarn "1182"`), killing cache-replay
 /// across daemon restarts on every cold scan.
-let internal hasFcsErrors (suppressedCodes: Set<int>) (source: string) (state: FileCheckState) : bool =
-    fcsErrorCount suppressedCodes source state > 0
+let internal hasFcsErrors (suppression: Suppression) (state: FileCheckState) : bool =
+    fcsErrorCount suppression state > 0
 
 /// The label the test-impact DB write declares over itself: how much it writes and where,
 /// so a wait or wedge line names the database rather than the plugin alone.
@@ -9582,7 +9582,11 @@ let internal createWithQueries
                         // as untrusted-for-diff. The next clean recheck overwrites the
                         // rows and flips the sidecar back.
                         let currentClean =
-                            not (hasFcsErrors ctx.FcsSuppressedCodes result.Source result.CheckResults)
+                            not (
+                                hasFcsErrors
+                                    (FileCheckResult.suppression ctx.FcsSuppressedCodes result)
+                                    result.CheckResults
+                            )
 
                         let storedFreshness =
                             let store = Volatile.Read(&freshnessRef)
@@ -9590,7 +9594,9 @@ let internal createWithQueries
 
                         if not currentClean then
                             let errCount =
-                                fcsErrorCount ctx.FcsSuppressedCodes result.Source result.CheckResults
+                                fcsErrorCount
+                                    (FileCheckResult.suppression ctx.FcsSuppressedCodes result)
+                                    result.CheckResults
 
                             Logging.warn
                                 "test-prune"

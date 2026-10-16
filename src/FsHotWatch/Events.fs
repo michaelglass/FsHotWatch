@@ -137,6 +137,17 @@ type FileCheckResult =
     }
 
 module FileCheckResult =
+    /// What suppresses `result`'s diagnostics: `configured` codes, the file's `#nowarn`,
+    /// read against the compiler flags it was checked under (`FcsSuppression`). An aborted
+    /// check may carry no project options; it is read as checked under no flags.
+    let suppression (configured: Set<int>) (result: FileCheckResult) : FcsSuppression.Suppression =
+        let flags =
+            match box result.ProjectOptions with
+            | null -> Array.empty
+            | _ -> result.ProjectOptions.OtherOptions
+
+        FcsSuppression.Suppression.forFile configured flags result.Source
+
     /// `text` from `result`'s check (a diagnostic's message) as the worktree reads it:
     /// its virtual paths made real, and each store path of a placed reference replaced
     /// by the worktree path that reference was given as.
@@ -940,15 +951,17 @@ type AnalysisFileEvidence =
 
 module internal AnalysisFileEvidence =
     /// A result plus what the analysis of it concluded. Compiler errors and a failed
-    /// symbol analysis are refusals; warnings are not, and neither is an error whose code
-    /// `suppressedCodes` or the file's own `#nowarn` silences (`FcsSuppression`).
+    /// symbol analysis are refusals; warnings are not, and neither is an error that
+    /// `suppressedCodes` or the file's own `#nowarn` silences (`FcsSuppression.Suppression.silences`).
     let fromResult (suppressedCodes: Set<int>) (result: FileCheckResult) (symbolAnalysis: Result<unit, string>) =
         let refusals =
             [ match result.CheckResults with
               | ParseOnly -> yield "type checking did not complete"
               | FullCheck checkedResult ->
                   for diagnostic in
-                      FcsSuppression.blockingErrors suppressedCodes result.Source checkedResult.Diagnostics do
+                      FcsSuppression.blockingErrors
+                          (FileCheckResult.suppression suppressedCodes result)
+                          checkedResult.Diagnostics do
                       yield diagnostic.Message
 
               match symbolAnalysis with

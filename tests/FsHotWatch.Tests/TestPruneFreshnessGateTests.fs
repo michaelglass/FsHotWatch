@@ -138,7 +138,8 @@ let ``FileChecked analyzes its existing FCS payload without re-entering the chec
 
 [<Fact(Timeout = 15000)>]
 let ``hasFcsErrors returns false for ParseOnly`` () =
-    test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty "" ParseOnly) @>
+    test
+        <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors FsHotWatch.FcsSuppression.Suppression.none ParseOnly) @>
 
 [<Fact(Timeout = 30000)>]
 let ``hasFcsErrors returns true for source with type error`` () =
@@ -153,7 +154,12 @@ let x : int = "not an int"
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        test <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults @>)
+        test
+            <@
+                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    (FileCheckResult.suppression Set.empty result)
+                    result.CheckResults
+            @>)
 
 [<Fact(Timeout = 30000)>]
 let ``hasFcsErrors returns false for clean source`` () =
@@ -168,7 +174,14 @@ let answer = 42
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>)
+        test
+            <@
+                not (
+                    FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                        (FileCheckResult.suppression Set.empty result)
+                        result.CheckResults
+                )
+            @>)
 
 [<Fact(Timeout = 30000)>]
 let ``hasFcsErrors returns false for warning-only source`` () =
@@ -200,18 +213,25 @@ let f x =
                 |> Array.forall (fun d -> d.Severity <> FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
             @>
 
-        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>)
+        test
+            <@
+                not (
+                    FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                        (FileCheckResult.suppression Set.empty result)
+                        result.CheckResults
+                )
+            @>)
 
 // =============================================================================
-// `hasFcsErrors` must apply the same suppression filter (parseNowarnCodes plus
-// FcsSuppressedCodes) that `Daemon.reportFcsDiagnostics` applies to the user-visible
+// `hasFcsErrors` must apply the same suppression filter (`FcsSuppression`: per-file
+// #nowarn for promoted warnings, plus FcsSuppressedCodes) that `Daemon.reportFcsDiagnostics` applies to the user-visible
 // error stream. Without it the gate trips on codes the user has already silenced — e.g.
 // FS1182 promoted to Error by `<TreatWarningsAsErrors>` alongside `#nowarn` — killing
 // cache replay across daemon restarts on cold scans.
 // =============================================================================
 
 [<Fact(Timeout = 30000)>]
-let ``hasFcsErrors respects per-file #nowarn directives`` () =
+let ``hasFcsErrors does not let #nowarn suppress a genuine error`` () =
     withTempDir "tp-poisoning-nowarn" (fun tmpDir ->
         let source =
             """#nowarn "1"
@@ -224,8 +244,9 @@ let x : int = "not-an-int"
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        // `#nowarn` does not suppress upstream FCS errors — FCS still reports FS0001 at
-        // Severity = Error, and the gate's own suppression filter is what must drop it.
+        // FCS reports FS0001 at Error severity whatever the #nowarn says, and so does the real
+        // compiler: #nowarn silences warnings, and nothing promotes code 1 here. A promoted
+        // warning under #nowarn is the case the filter drops (`FcsSuppressionTests`).
         let hasErrorDiagnostic =
             match result.CheckResults with
             | FullCheck cr ->
@@ -237,7 +258,12 @@ let x : int = "not-an-int"
 
         test <@ hasErrorDiagnostic @>
 
-        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>)
+        test
+            <@
+                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    (FileCheckResult.suppression Set.empty result)
+                    result.CheckResults
+            @>)
 
 [<Fact(Timeout = 30000)>]
 let ``hasFcsErrors respects configured FcsSuppressedCodes`` () =
@@ -265,8 +291,7 @@ let x : int = "not-an-int"
             <@
                 not (
                     FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
-                        (Set.singleton 1)
-                        result.Source
+                        (FileCheckResult.suppression (Set.singleton 1) result)
                         result.CheckResults
                 )
             @>)
@@ -286,11 +311,20 @@ let x : int = "not-an-int"
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        test <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults @>
+        test
+            <@
+                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    (FileCheckResult.suppression Set.empty result)
+                    result.CheckResults
+            @>
 
         // Suppressing an unrelated code must NOT mask the real FS0001.
         test
-            <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors (Set.singleton 9999) result.Source result.CheckResults @>)
+            <@
+                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    (FileCheckResult.suppression (Set.singleton 9999) result)
+                    result.CheckResults
+            @>)
 
 [<Fact(Timeout = 30000)>]
 let ``FileChecked with FCS errors persists symbols to DB and stamps sidecar dirty`` () =
@@ -342,7 +376,12 @@ let badTypeUse : int = "not-an-int"
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
         // Sanity: the result really is poisoned.
-        test <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults @>
+        test
+            <@
+                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    (FileCheckResult.suppression Set.empty result)
+                    result.CheckResults
+            @>
 
         host.EmitFileChecked(stampFixture result)
         waitForPluginTerminal host "test-prune" 10.0
@@ -393,7 +432,13 @@ let ``a changed file FCS reported errors for is named in test-scope as not selec
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
         let dirty = check "module Broken\nlet badTypeUse : int = \"not-an-int\"\n"
-        test <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty dirty.Source dirty.CheckResults @>
+
+        test
+            <@
+                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    (FileCheckResult.suppression Set.empty dirty)
+                    dirty.CheckResults
+            @>
 
         // Nothing is withheld before the dirty check arrives, and the reply says so.
         test <@ notSelected () = Some [] @>
@@ -448,7 +493,14 @@ let cleanTest () = ()
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>
+        test
+            <@
+                not (
+                    FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                        (FileCheckResult.suppression Set.empty result)
+                        result.CheckResults
+                )
+            @>
 
         emitBuildAndWaitTerminal host
 
@@ -631,8 +683,7 @@ let badTypeUse : int = "wrong-type"
         test
             <@
                 FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
-                    Set.empty
-                    brokenResult.Source
+                    (FileCheckResult.suppression Set.empty brokenResult)
                     brokenResult.CheckResults
             @>
 
@@ -737,7 +788,14 @@ let phaseBTest () = ()
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
         // Sanity: this is a clean check.
-        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>
+        test
+            <@
+                not (
+                    FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                        (FileCheckResult.suppression Set.empty result)
+                        result.CheckResults
+                )
+            @>
 
         emitBuildAndWaitTerminal host
 
@@ -830,7 +888,14 @@ let ``Item 3: pre-BuildCompleted clean FileChecked → sidecar stays dirty`` () 
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>
+        test
+            <@
+                not (
+                    FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                        (FileCheckResult.suppression Set.empty result)
+                        result.CheckResults
+                )
+            @>
 
         // Deliberately NOT emitBuildAndWaitTerminal first.
         host.EmitFileChecked(stampFixture result)
@@ -927,7 +992,11 @@ let bad : int = "not-an-int"
             |> Option.defaultWith (fun () -> failwith "CheckFile None (dirty)")
 
         test
-            <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty dirtyResult.Source dirtyResult.CheckResults @>
+            <@
+                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    (FileCheckResult.suppression Set.empty dirtyResult)
+                    dirtyResult.CheckResults
+            @>
 
         emitFileAndQuiesce host dirtyResult
 
@@ -950,8 +1019,7 @@ let bad : int = "not-an-int"
             <@
                 not (
                     FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
-                        Set.empty
-                        cleanResult.Source
+                        (FileCheckResult.suppression Set.empty cleanResult)
                         cleanResult.CheckResults
                 )
             @>

@@ -15,6 +15,7 @@ open Swensen.Unquote
 open FsHotWatch
 open FsHotWatch.ErrorLedger
 open FsHotWatch.FcsDiagnosticFilter
+open FsHotWatch.FcsSuppression
 open FsHotWatch.Cli
 open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Tests.TestHelpers
@@ -226,7 +227,8 @@ let private withFiles (names: string list) (body: string list -> 'a) : 'a =
 
 [<Fact>]
 let ``a self-incompatible diagnostic makes every error of its file a checker fault, never a finding`` () =
-    let writes = Daemon.fcsLedgerWrites Set.empty id "App.fsproj" suspectDiagnostics
+    let writes =
+        Daemon.fcsLedgerWrites Suppression.none id "App.fsproj" suspectDiagnostics
 
     test <@ List.isEmpty writes.Findings @>
     test <@ writes.SelfIncompatible |> List.length = 1 @>
@@ -249,10 +251,11 @@ let ``a self-incompatible diagnostic makes every error of its file a checker fau
 let ``a genuine error beside a suspect file still reddens the run`` () =
     // POSITIVE CONTROL: suspicion is per FILE, and only moves that file's errors out
     // of "your code is broken"; a real error anywhere else is still a red.
-    let suspect = Daemon.fcsLedgerWrites Set.empty id "App.fsproj" suspectDiagnostics
+    let suspect =
+        Daemon.fcsLedgerWrites Suppression.none id "App.fsproj" suspectDiagnostics
 
     let genuine =
-        Daemon.fcsLedgerWrites Set.empty id "App.fsproj" [| error (expectedButHas "int" "string") |]
+        Daemon.fcsLedgerWrites Suppression.none id "App.fsproj" [| error (expectedButHas "int" "string") |]
 
     test <@ genuine.Findings |> List.length = 1 @>
     test <@ List.isEmpty genuine.Internal @>
@@ -334,7 +337,7 @@ let private checkConcurrently (checker: FakeChecker) (files: string list) =
                     (fun () -> checker.Check(file, checker.Generation, true))
                     first
 
-            return file, Daemon.fcsLedgerWrites Set.empty id "App.fsproj" answer, outcome
+            return file, Daemon.fcsLedgerWrites Suppression.none id "App.fsproj" answer, outcome
         }
 
     let all =
@@ -418,7 +421,8 @@ let private analyzerCrash =
 let ``an analyzer crash and findings on a suspect file are checker faults, so the run has no verdict`` () =
     // The analyzers ran on the same poisoned check results the FCS errors came from, so
     // what they said about the file is no more a finding than those errors are.
-    let suspect = Daemon.fcsLedgerWrites Set.empty id "App.fsproj" suspectDiagnostics
+    let suspect =
+        Daemon.fcsLedgerWrites Suppression.none id "App.fsproj" suspectDiagnostics
 
     let finding = ErrorEntry.error "wrapper rendered without its renderer"
 
@@ -443,8 +447,10 @@ let ``an analyzer crash and findings on a suspect file are checker faults, so th
 let ``an analyzer crash on a file whose check was clean still reddens the run`` () =
     // POSITIVE CONTROL: only the suspect FILE's analyzer results move. A crash beside a
     // clean check is about this tree — the analyzer is broken, or the code breaks it.
-    let clean = Daemon.fcsLedgerWrites Set.empty id "App.fsproj" [||]
-    let suspect = Daemon.fcsLedgerWrites Set.empty id "App.fsproj" suspectDiagnostics
+    let clean = Daemon.fcsLedgerWrites Suppression.none id "App.fsproj" [||]
+
+    let suspect =
+        Daemon.fcsLedgerWrites Suppression.none id "App.fsproj" suspectDiagnostics
 
     withFiles [ "Clean.fs"; "Jobs.fs" ] (fun paths ->
         let cleanFile, suspectFile = paths.[0], paths.[1]

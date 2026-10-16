@@ -273,19 +273,20 @@ type FcsDiagnosticClass =
 /// whole decision is testable without a compiler: callers project
 /// `FSharpDiagnostic` onto these five fields.
 ///
+/// `suppressed` is `FcsSuppression.Suppression.silences` for this diagnostic.
+///
 /// Order matters. Suppression is checked FIRST so a code the operator has
 /// already silenced is reported as silenced rather than as an internal fault,
 /// which keeps the self-incompatible counter a measure of real cache
 /// corruption instead of a mix.
 let classifyDiagnostic
-    (suppressedCodes: Set<int>)
-    (errorNumber: int)
+    (suppressed: bool)
     (message: string)
     (severity: DiagnosticSeverity)
     (line: int)
     (column: int)
     : FcsDiagnosticClass =
-    if suppressedCodes.Contains errorNumber then
+    if suppressed then
         FcsDiagnosticClass.Suppressed
     else
         match trySelfIncompatibleType message with
