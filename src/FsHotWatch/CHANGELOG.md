@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.77 - 2026-10-16
+
 - deps: pin `MessagePack` 2.5.303. `StreamJsonRpc` 2.25.29, still the latest, floors it at
   2.5.302, which GHSA-qhrr-8q5h-9q3h (2026-10-15) affects, so every restore failed under
   `NU1902`. 2.5.303 is the patched release on the 2.x line StreamJsonRpc targets, so consumers

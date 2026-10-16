@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.103 - 2026-10-16
+
 - feat: `check` and `confirm` print the daemon's scan progress every 15 s while they wait
   for their scan, e.g. `scanning: 120/800 files (15%), 6m 12s elapsed, cache 0 hit /
   120 miss`. Before, a cold scan showed only `Scanning...` for minutes. A failed progress
