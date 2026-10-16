@@ -158,6 +158,10 @@
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
     <PackageReference Include="FSharp.Data.Adaptive" Version="1.2.26" />
     <PackageReference Include="StreamJsonRpc" Version="2.25.29" />
+    <!-- StreamJsonRpc 2.25.29 (the latest) floors MessagePack at 2.5.302, which GHSA-qhrr-8q5h-9q3h
+         affects; 2.5.303 is the patched 2.x release on the line StreamJsonRpc targets. Drop this pin
+         once a StreamJsonRpc release floors MessagePack at or above 2.5.303. -->
+    <PackageReference Include="MessagePack" Version="2.5.303" />
     <PackageReference Include="FSharp.Compiler.Service" Version="43.*" />
     <PackageReference Include="Ionide.ProjInfo" Version="0.74.2" />
     <PackageReference Include="Ionide.ProjInfo.FCS" Version="0.74.2" />
