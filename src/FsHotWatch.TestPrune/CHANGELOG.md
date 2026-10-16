@@ -19,6 +19,11 @@
   it reuses anything. `FSHW_TEST_EVIDENCE=0` turns the whole mechanism off. A
   run logs `test evidence: reused N, moved N, missed N, written N`.
 
+## 0.13.0-alpha.76 - 2026-10-16
+
+- fix!: a #nowarn file no longer turns the evidence receipt red after an edit
+
+
 ## 0.13.0-alpha.75 - 2026-10-16
 
 - **fix!: an impact-selected test run is cancelled, and its test hosts reaped, once
