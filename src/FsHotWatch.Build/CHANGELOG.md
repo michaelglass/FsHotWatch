@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.46 - 2026-10-16
+
 - fix: an edit made while a build is running is recompiled by the next build. That build may
   have read the file before the edit and still written its output after it, so the output
   looked newer than the source and MSBuild skipped the project on every later build, leaving

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.77 - 2026-10-16
+
 - **feat!: a test project whose inputs are byte-identical to a green another checkout
   earned is not launched again. `TestRunLaunch` has a new field, `Reused`**, so code
   that constructs it must supply it (`Map.empty` for a run that reused nothing). After
