@@ -10043,8 +10043,8 @@ let internal createWithQueries
                         // build, before the running/idle split, so the prior
                         // fingerprint always advances and a mid-run dependency
                         // change is never lost). Fingerprint each test project from
-                        // its referenced-project DLL hashes + own package versions
-                        // (DependencyFanout). A project whose fingerprint moved
+                        // its referenced projects' non-symbol inputs + own package
+                        // versions (DependencyFanout). A project whose fingerprint moved
                         // since the last build had a dependency/binary change the
                         // symbol diff can't see → force-run it. An empty graph
                         // (tests / no graph wired) yields no fanout, so the
@@ -10057,12 +10057,13 @@ let internal createWithQueries
                         let currentFingerprints =
                             match testConfigs with
                             | Some configs ->
+                                let fingerprint = DependencyFanout.fingerprinter ctx.ProjectGraph
+
                                 configs
                                 |> List.choose (fun c ->
                                     Map.tryFind c.Project fsprojByName
                                     |> Option.map (fun fsproj -> c.Project, fsproj))
-                                |> List.map (fun (name, fsproj) ->
-                                    name, DependencyFanout.computeProjectFingerprint ctx.ProjectGraph fsproj)
+                                |> List.map (fun (name, fsproj) -> name, fingerprint fsproj)
                                 |> Map.ofList
                             | None -> Map.empty
 

@@ -9,6 +9,19 @@
   run ends `Aborted`, reports nothing, leaves no run in flight, and leaves what it would
   have discharged owed for the next run. A cancelled `run-tests` force-run no longer
   leaves its run recorded as in flight either.
+- **fix: a source edit in a referenced project no longer force-runs every dependent
+  test project in full.** The dependency-fanout fingerprint hashed each referenced
+  project's built DLL, and the rebuilt bytes move with any edit, so every edit under
+  `src/` ran the whole of each dependent test project (on FsHotWatch itself, all
+  5,420 unit tests, about 290 s) however precise the symbol-diff selection was. The
+  fingerprint now hashes only what the symbol diff cannot see: the restored package
+  graph (`obj/project.assets.json`), every non-compiled file in the project's
+  directory (its `.fsproj`, embedded resources, content, C# sources, props and
+  targets) and the `Directory.Build.*` / `Directory.Packages.props` files above it. A
+  project with no restore output falls back to its DLL's bytes, a directory that
+  cannot be read counts as unhashable rather than absent, and with no project model
+  every source counts as an input. An edit that changes no symbol at all (a comment)
+  still runs each runnable project in full once, to earn evidence for the edited tree.
 
 ## 0.13.0-alpha.74 - 2026-10-16
 

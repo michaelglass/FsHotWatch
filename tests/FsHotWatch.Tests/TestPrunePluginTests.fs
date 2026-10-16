@@ -2296,9 +2296,9 @@ let ``skip tests when 0 affected classes and not cold start`` () =
 
 // ── Dependency-fanout (DependencyFanout + PluginCtx.ProjectGraph) ─────────────
 // A dependency/PackageReference change flips a test project's dependency fingerprint (its
-// referenced-project DLL content) without changing any F# symbol, so it must force-run
-// that project past the zero-affected skip gate — while a build with no dependency change
-// still skips.
+// referenced projects' restored package graph) without changing any F# symbol, so it must
+// force-run that project past the zero-affected skip gate — while a build with no dependency
+// change still skips, and so does a rebuild whose only cause is a source edit.
 
 /// Emit a BuildSucceeded and fully serialize: catch THIS build's terminal transition, then
 /// wait for idle so the async run (and any rerun it queues) has drained. The fanout tests
@@ -2331,11 +2331,14 @@ let ``dependency-fingerprint change force-runs the dependent test project`` () =
         let testProjFsproj = Path.Combine(tmpDir, "TestProj", "TestProj.fsproj")
         let opsFsproj = Path.Combine(tmpDir, "Ops", "Ops.fsproj")
         let opsDll = Path.Combine(tmpDir, "Ops", "bin", "Debug", "net10.0", "Ops.dll")
+        let opsAssets = Path.Combine(tmpDir, "Ops", "obj", "project.assets.json")
         Directory.CreateDirectory(Path.GetDirectoryName testProjFsproj) |> ignore
         Directory.CreateDirectory(Path.GetDirectoryName opsDll) |> ignore
+        Directory.CreateDirectory(Path.GetDirectoryName opsAssets) |> ignore
         File.WriteAllText(testProjFsproj, "<Project></Project>")
         File.WriteAllText(opsFsproj, "<Project></Project>")
-        // Initial referenced DLL (as if built against CommandTree 0.6.3).
+        // Ops restored and built against CommandTree 0.6.3.
+        File.WriteAllText(opsAssets, """{ "libraries": { "CommandTree/0.6.3": {} } }""")
         File.WriteAllBytes(opsDll, Text.Encoding.UTF8.GetBytes "ops-binary-v063")
 
         let configs =
@@ -2365,11 +2368,58 @@ let ``dependency-fingerprint change force-runs the dependent test project`` () =
         emitBuildAndSettle host
         test <@ runCount = 1 @>
 
-        // Ops rebuilt against a new CommandTree: no F# symbol in TestProj changed, but its
-        // dependency fingerprint flips.
+        // Ops restored and rebuilt against a new CommandTree: no F# symbol in TestProj
+        // changed, but its dependency fingerprint flips.
+        File.WriteAllText(opsAssets, """{ "libraries": { "CommandTree/0.7.0": {} } }""")
         File.WriteAllBytes(opsDll, Text.Encoding.UTF8.GetBytes "ops-binary-v070-DIFFERENT")
         emitBuildAndSettle host
         test <@ runCount = 2 @>)
+
+[<Fact(Timeout = 20000)>]
+let ``a rebuild of a referenced project whose package graph did not move does not force-run`` () =
+    // A comment edit in Ops rebuilds Ops.dll, and the rebuilt bytes differ (the embedded
+    // PDB id moves with the source). That is the symbol diff's to judge: hashing the DLL
+    // made every source edit force-run every dependent test project in full.
+    withTempDir "tp-fanout-rebuild" (fun tmpDir ->
+        let mutable runCount = 0
+
+        let testProjFsproj = Path.Combine(tmpDir, "TestProj", "TestProj.fsproj")
+        let opsFsproj = Path.Combine(tmpDir, "Ops", "Ops.fsproj")
+        let opsDll = Path.Combine(tmpDir, "Ops", "bin", "Debug", "net10.0", "Ops.dll")
+        let opsAssets = Path.Combine(tmpDir, "Ops", "obj", "project.assets.json")
+        Directory.CreateDirectory(Path.GetDirectoryName testProjFsproj) |> ignore
+        Directory.CreateDirectory(Path.GetDirectoryName opsDll) |> ignore
+        Directory.CreateDirectory(Path.GetDirectoryName opsAssets) |> ignore
+        File.WriteAllText(testProjFsproj, "<Project></Project>")
+        File.WriteAllText(opsFsproj, "<Project></Project>")
+        File.WriteAllText(opsAssets, """{ "libraries": { "CommandTree/0.6.3": {} } }""")
+        File.WriteAllBytes(opsDll, Text.Encoding.UTF8.GetBytes "ops-build-1")
+
+        let configs =
+            [ { Project = "TestProj"
+                Command = "echo"
+                Args = "ran"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
+
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
+        host.SetProjectGraph(fanoutGraph testProjFsproj opsFsproj opsDll)
+
+        let handler =
+            create ":memory:" tmpDir (Some configs) None None (Some(fun _ -> runCount <- runCount + 1)) None []
+
+        host.RegisterHandler(handler)
+
+        emitBuildAndSettle host
+        test <@ runCount = 1 @>
+
+        File.WriteAllBytes(opsDll, Text.Encoding.UTF8.GetBytes "ops-build-2-new-pdb-id")
+        emitBuildAndSettle host
+        test <@ runCount = 1 @>)
 
 [<Fact(Timeout = 20000)>]
 let ``no dependency change and no symbol change still skips (no regression)`` () =
