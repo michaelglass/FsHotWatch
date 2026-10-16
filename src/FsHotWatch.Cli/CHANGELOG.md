@@ -10,6 +10,10 @@
 - fix: deleting `.fshw.json` no longer stops the daemon as a config change. Two config
   looks that overlapped on a busy box could keep their stamps out of order, so a look
   that read the file before the deletion read as a change after one that saw it gone.
+- fix: a command that finds a daemon starting (it holds the singleton lock and has written
+  its pidfile, but does not listen yet) waits for it, within the startup timeout, instead
+  of killing it as stale and launching a second. Only a daemon whose pipe never comes up
+  is replaced.
 
 ## 0.14.0-alpha.102 - 2026-10-16
 

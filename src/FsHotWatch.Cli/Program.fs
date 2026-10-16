@@ -1291,7 +1291,10 @@ let internal tryInvalidateWithoutDaemon (repoRoot: string) : bool =
             ((CacheResidency.openPersistedStores repoRoot).Routed :> TaskCache.ITaskCache).Clear()
             true
 
-let private ensureDaemon
+/// Make sure a daemon serves `repoRoot` (injectable file and process operations).
+let internal ensureDaemonWith
+    (fileOps: FileOps)
+    (processOps: ProcessOps)
     (ipc: IpcOps)
     (repoRoot: string)
     (pipeName: string)
@@ -1303,10 +1306,54 @@ let private ensureDaemon
     let hashPath = Path.Combine(stateDir, "config.hash")
     let currentHash = computeConfigHash repoRoot
 
-    if not (ipc.IsRunning pipeName) then
-        killStaleDaemon repoRoot
+    // A daemon takes the singleton lock and writes its pidfile before it loads its
+    // plugins, and listens only after. One that holds the lock but does not answer yet is
+    // starting, not stale: killing it as stale would end a live daemon and launch a second.
+    // Wait for its pipe instead, within the startup timeout, while the process its pidfile
+    // names is alive. Only one that never comes up is replaced.
+    let awaitStartingDaemon () =
+        let starting =
+            match tryAcquireSingletonLock repoRoot with
+            | Some lockStream ->
+                lockStream.Dispose()
+                false
+            | None -> true
 
-        startFreshDaemon ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
+        let pidPath = Path.Combine(stateDir, "daemon.pid")
+
+        // Alive unless provably gone: the lock is taken a moment before the pidfile is
+        // written, so a missing or unreadable one is a daemon still starting.
+        let alive () =
+            let recorded =
+                if fileOps.FileExists pidPath then
+                    fileOps.ReadAllText pidPath
+                else
+                    ""
+
+            match Int32.TryParse(recorded.Trim()) with
+            | false, _ -> true
+            | true, pid ->
+                try
+                    not (processOps.GetProcessById pid).HasExited
+                with :? ArgumentException ->
+                    false
+
+        let deadline = DateTime.UtcNow.AddSeconds startupTimeoutSeconds
+        let mutable isUp = false
+
+        if starting && alive () then
+            eprintfn "Waiting for the daemon that is starting..."
+
+            while not isUp && DateTime.UtcNow < deadline && alive () do
+                Thread.Sleep(100)
+                isUp <- ipc.IsRunning pipeName
+
+        isUp
+
+    if not (ipc.IsRunning pipeName || awaitStartingDaemon ()) then
+        killStaleDaemonWith fileOps processOps repoRoot
+
+        startFreshDaemonWith fileOps ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
         |> EnsureOutcome.ofStart
     else
         let storedHash =
@@ -1332,10 +1379,13 @@ let private ensureDaemon
             with ex ->
                 eprintfn "  Shutdown request failed: %s" ex.Message
 
-            killStaleDaemon repoRoot
+            killStaleDaemonWith fileOps processOps repoRoot
 
-            startFreshDaemon ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
+            startFreshDaemonWith fileOps ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
             |> EnsureOutcome.ofStart
+
+let private ensureDaemon ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds =
+    ensureDaemonWith defaultFileOps defaultProcessOps ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
 
 // ----------------------------------------------------------------------------
 // Daemon readiness gate.

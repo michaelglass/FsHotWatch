@@ -82,17 +82,26 @@ type private Delivery =
 /// Two projects: `Lib` compiles Early.fs, Middle.fs, Late.fs in that order, each using
 /// the one before it; `App` references `Lib` and uses Late.
 type private Fixture =
-    { Early: string
-      Middle: string
-      Late: string
-      Use: string
-      Daemon: Daemon.Daemon
-      Deliver: FileChangeKind -> unit
-      Deliveries: unit -> Delivery list
-      SetPhase: string -> unit
-      Seals: unit -> BatchChecked list }
+    {
+        Root: string
+        /// Lib's output, which App's `-r:` names. The fixture does not create it.
+        LibOutput: string
+        Early: string
+        Middle: string
+        Late: string
+        Use: string
+        Daemon: Daemon.Daemon
+        Deliver: FileChangeKind -> unit
+        Deliveries: unit -> Delivery list
+        SetPhase: string -> unit
+        Seals: unit -> BatchChecked list
+    }
 
-let private withFixture (name: string) (body: Fixture -> unit) =
+let private withFixtureCaching
+    (checkCache: FsHotWatch.InMemoryCheckCache.CheckCacheSetup)
+    (name: string)
+    (body: Fixture -> unit)
+    =
     withTempDir name (fun root ->
         let checker = Daemon.createChecker ()
 
@@ -175,12 +184,7 @@ let private withFixture (name: string) (body: Fixture -> unit) =
                 checker
                 root
                 { watchingDaemonOptions with
-                    CheckCache =
-                        FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(
-                            FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(1000),
-                            None,
-                            None
-                        ) }
+                    CheckCache = checkCache }
                 loader
                 (fun _ -> [ libOptions; appOptions ])
                 watcher
@@ -220,7 +224,9 @@ let private withFixture (name: string) (body: Fixture -> unit) =
               Teardown = None }
 
         body
-            { Early = early
+            { Root = root
+              LibOutput = Path.ChangeExtension(libProject, ".dll")
+              Early = early
               Middle = middle
               Late = late
               Use = usage
@@ -229,6 +235,15 @@ let private withFixture (name: string) (body: Fixture -> unit) =
               Deliveries = fun () -> deliveries.ToArray() |> List.ofArray
               SetPhase = fun name -> Volatile.Write(&phase.contents, name)
               Seals = fun () -> seals.ToArray() |> List.ofArray })
+
+let private withFixture =
+    withFixtureCaching (
+        FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(
+            FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(1000),
+            None,
+            None
+        )
+    )
 
 let private settle (fixture: Fixture) =
     Assert.True(
@@ -303,6 +318,66 @@ let ``a change batch re-checks only what follows the edited file`` () =
             changeBatchAfter fixture "last-file edit" fixture.Use "module Use\nlet total = 1\n"
 
         Assert.Equal<Set<string>>(set [ "Use.fs" ], lastFileEdit |> Map.keys |> Set.ofSeq))
+
+/// Lib's output, at `year`: older than every source, like a build that predates the edits.
+let private writeLibOutput (fixture: Fixture) (year: int) (bytes: byte[]) =
+    File.WriteAllBytes(fixture.LibOutput, bytes)
+    File.SetLastWriteTimeUtc(fixture.LibOutput, DateTime(year, 1, 1, 0, 0, 0, DateTimeKind.Utc))
+
+/// Scan the whole tree and return the scan's record.
+let private rescan (fixture: Fixture) =
+    fixture.Daemon.ScanAll() |> Async.RunSynchronously
+    settle fixture
+
+    FsHotWatch.ScanMetrics.readSeries (FsHotWatch.ScanMetrics.recordPath fixture.Root)
+    |> List.last
+
+[<Fact(Timeout = 300000)>]
+let ``a rescan starts no check unless a file's own inputs moved`` () =
+    // An unchanged rescan is answered from the check-result cache, file by file, so the
+    // checker is asked nothing. A no-op rebuild that rewrites a referenced output with
+    // its own bytes is still unchanged. The last rescan is the positive control: the
+    // counter reads a check where one runs, so its zeros are not a counter that never
+    // moves.
+    withFixture "rescan-starts-nothing" (fun fixture ->
+        writeLibOutput fixture 2020 [| 1uy; 2uy; 3uy |]
+
+        let startsAndHits () =
+            let sample = rescan fixture
+            sample.CheckStarts, sample.CacheHits
+
+        let coldStarts, _ = startsAndHits ()
+        Assert.Equal(4L, coldStarts)
+
+        Assert.Equal((0L, 4L), startsAndHits ())
+
+        writeLibOutput fixture 2021 [| 1uy; 2uy; 3uy |]
+        Assert.Equal((0L, 4L), startsAndHits ())
+
+        // Only Use.fs types against Lib's output.
+        writeLibOutput fixture 2021 [| 4uy; 5uy; 6uy |]
+        Assert.Equal((1L, 3L), startsAndHits ()))
+
+[<Fact(Timeout = 300000)>]
+let ``with no check-result cache a rescan after a byte-identical rebuild imports nothing again`` () =
+    // Without the cache every rescan asks the checker for every file, and what keeps that
+    // cheap is the checker's own state: a project whose inputs are unchanged keeps its
+    // import of its references. An in-repository reference is stamped by its bytes, so an
+    // output a no-op rebuild rewrote with its own bytes leaves App's import standing. New
+    // bytes are the positive control: App imports Lib's output again.
+    withFixtureCaching FsHotWatch.InMemoryCheckCache.CheckCacheSetup.Off "rescan-imports-nothing" (fun fixture ->
+        writeLibOutput fixture 2020 [| 1uy; 2uy; 3uy |]
+        rescan fixture |> ignore
+        let warm = rescan fixture
+        Assert.Equal(4L, warm.CheckStarts)
+
+        writeLibOutput fixture 2021 [| 1uy; 2uy; 3uy |]
+        let sameBytes = rescan fixture
+        Assert.Equal(warm.FcsBootstrapStarts, sameBytes.FcsBootstrapStarts)
+
+        writeLibOutput fixture 2021 [| 4uy; 5uy; 6uy |]
+        let newBytes = rescan fixture
+        Assert.True(newBytes.FcsBootstrapStarts > sameBytes.FcsBootstrapStarts, $"%A{newBytes}"))
 
 [<Fact>]
 let ``laterFilesInOwnProjects follows every project that compiles the file, skipping generated files`` () =
