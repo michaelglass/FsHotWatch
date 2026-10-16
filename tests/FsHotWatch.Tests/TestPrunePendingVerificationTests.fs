@@ -412,26 +412,29 @@ let ``partial failure: symbols whose only covering project passed commit; symbol
         test <@ not (queue.Contains("Lib.symA")) @>
         test <@ queue.Contains("Lib.symB") @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``mid-run change: a green run commits only its launch set; a symbol that arrives mid-run stays queued and triggers a rerun``
     ()
     =
-    // Run 1 launches against {Lib.foo} and sleeps ~1.5s. Mid-flight a real FCS FileChecked
-    // changes `bar`, which the plugin enqueues through the genuine write-through path, and
-    // a BuildCompleted queues a rerun. Run 1's launch SNAPSHOT was {Lib.foo}, so its
-    // green completion commits only that; `bar` survives and the rerun covers it. No
+    // Run 1 launches against {Lib.foo} and is held at a release gate. Mid-flight a real FCS
+    // FileChecked changes `bar`, which the plugin enqueues through the genuine write-through
+    // path, and a BuildCompleted queues a rerun. Run 1's launch SNAPSHOT was {Lib.foo}, so
+    // its green completion commits only that; `bar` survives and the rerun covers it. No
     // file-rewrite simulation: the snapshot is captured at dispatch and the commit is
-    // launch-set-scoped.
+    // launch-set-scoped. The gate, not a sleep, makes the arrival mid-run: a sleep is a
+    // window that a real check on a loaded box can outlast.
     withTempDir "tp-midrun" (fun tmpDir ->
-        let dbPath = Path.Combine(tmpDir, "tp.db")
-        let libFile = Path.Combine(tmpDir, "Lib.fsx")
-        let testsFile = Path.Combine(tmpDir, "Tests.fsx")
+        withReleaseGate tmpDir "midrun" (fun release ->
+            let dbPath = Path.Combine(tmpDir, "tp.db")
+            let libFile = Path.Combine(tmpDir, "Lib.fsx")
+            let testsFile = Path.Combine(tmpDir, "Tests.fsx")
+            let started = Path.Combine(tmpDir, "started")
 
-        // One test per exported function, so a change to either selects its own test.
-        let libSource1 = "module Lib\nlet foo (x: int) = x + 1\nlet bar (x: int) = x + 1\n"
+            // One test per exported function, so a change to either selects its own test.
+            let libSource1 = "module Lib\nlet foo (x: int) = x + 1\nlet bar (x: int) = x + 1\n"
 
-        let testsSource =
-            """module Tests
+            let testsSource =
+                """module Tests
 open Lib
 
 type FactAttribute() = inherit System.Attribute()
@@ -443,101 +446,106 @@ let fooTest () = assert (foo 1 = 2)
 let barTest () = assert (bar 1 = 2)
 """
 
-        File.WriteAllText(libFile, libSource1)
-        File.WriteAllText(testsFile, testsSource)
+            File.WriteAllText(libFile, libSource1)
+            File.WriteAllText(testsFile, testsSource)
 
-        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
-        let pipeline = CheckPipeline(checker)
-        let host = createModelHost checker tmpDir
+            let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+            let pipeline = CheckPipeline(checker)
+            let host = createModelHost checker tmpDir
 
-        // The sleep is the window the mid-run injection needs.
-        let configs =
-            [ { Project = "Lib"
-                Command = "sh"
-                Args = "-c \"sleep 1.5; exit 0\""
-                Group = "default"
-                Environment = []
-                FilterTemplate = None
-                ClassJoin = " "
-                TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+            // Every run marks its start, then waits while the gate is closed. The gate is
+            // open until run 1. 6000 polls at 20ms is past this test's cap; see `gatedWait`.
+            File.WriteAllText(release, "")
 
-        let handler = create dbPath tmpDir (Some configs) None None None None []
-        host.RegisterHandler(handler)
+            let configs =
+                [ { Project = "Lib"
+                    Command = "sh"
+                    Args = "-c \"touch '" + started + "'; " + gatedWait tmpDir release 6000 + "\""
+                    Group = "default"
+                    Environment = []
+                    FilterTemplate = None
+                    ClassJoin = " "
+                    TimeoutSec = None
+                    ReportVerificationFormat = AutoDetect } ]
 
-        let libOptions =
-            getScriptOptions checker libFile libSource1 |> Async.RunSynchronously
+            let handler = create dbPath tmpDir (Some configs) None None None None []
+            host.RegisterHandler(handler)
 
-        let projOptions =
-            { libOptions with
-                SourceFiles = [| libFile; testsFile |] }
+            let libOptions =
+                getScriptOptions checker libFile libSource1 |> Async.RunSynchronously
 
-        pipeline.RegisterProject(libFile, projOptions)
+            let projOptions =
+                { libOptions with
+                    SourceFiles = [| libFile; testsFile |] }
 
-        emitBuildAndWaitTerminal host
+            pipeline.RegisterProject(libFile, projOptions)
 
-        for f in [ libFile; testsFile ] do
-            match pipeline.CheckFile(AbsFilePath.create f) |> Async.RunSynchronously with
+            emitBuildAndWaitTerminal host
+
+            for f in [ libFile; testsFile ] do
+                match pipeline.CheckFile(AbsFilePath.create f) |> Async.RunSynchronously with
+                | Some r -> host.EmitFileChecked(stampFixture r)
+                | None -> failwith $"CheckFile failed for {f}"
+
+            waitForPluginIdle host "test-prune" (float RealCheckWaitMs / 1000.0)
+            emitBatchAndQuiesce host [ libFile; testsFile ]
+
+            // Change `foo`'s body, so `fooTest` is the affected test.
+            let libSource2 = "module Lib\nlet foo (x: int) = x + 2\nlet bar (x: int) = x + 1\n"
+            File.WriteAllText(libFile, libSource2)
+
+            match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
             | Some r -> host.EmitFileChecked(stampFixture r)
-            | None -> failwith $"CheckFile failed for {f}"
+            | None -> failwith "lib CheckFile (foo change) failed"
 
-        waitForPluginIdle host "test-prune" 10.0
-        emitBatchAndQuiesce host [ libFile; testsFile ]
+            waitForPluginIdle host "test-prune" (float RealCheckWaitMs / 1000.0)
 
-        // Change `foo`'s body, so `fooTest` is the affected test.
-        let libSource2 = "module Lib\nlet foo (x: int) = x + 2\nlet bar (x: int) = x + 1\n"
-        File.WriteAllText(libFile, libSource2)
+            // Run 1 covers fooTest, and is held until the mid-run change has been folded.
+            File.Delete release
+            File.Delete started
+            host.EmitBuildCompleted(BuildSucceeded)
+            waitUntilOr "run 1 starting" (fun () -> File.Exists started) RealCheckWaitMs
 
-        match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
-        | Some r -> host.EmitFileChecked(stampFixture r)
-        | None -> failwith "lib CheckFile (foo change) failed"
+            // Mid-run, while run 1 is held: change `bar`'s body, so a real FileChecked
+            // enqueues it, then a BuildCompleted queues a rerun. The FileChecked's own commit
+            // is the witness that `bar` arrived during run 1.
+            let libSource3 = "module Lib\nlet foo (x: int) = x + 2\nlet bar (x: int) = x + 99\n"
+            File.WriteAllText(libFile, libSource3)
 
-        waitForPluginIdle host "test-prune" 10.0
+            let committedBefore = committedBy host "test-prune"
 
-        // Run 1 covers fooTest, and sleeps 1.5s.
-        host.EmitBuildCompleted(BuildSucceeded)
+            match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
+            | Some r -> host.EmitFileChecked(stampFixture r)
+            | None -> failwith "lib CheckFile (bar change) failed"
 
-        waitUntil
-            (fun () ->
-                match host.GetStatus("test-prune") with
-                | Some(Running _) -> true
-                | _ -> false)
-            5000
+            test <@ waitForCommitted host "test-prune" committedBefore 1L RealCheckWaitMs @>
+            host.EmitBuildCompleted(BuildSucceeded)
+            File.WriteAllText(release, "")
 
-        // Mid-run, while run 1 is still sleeping: change `bar`'s body, so a real
-        // FileChecked enqueues it, then a BuildCompleted queues a rerun.
-        let libSource3 = "module Lib\nlet foo (x: int) = x + 2\nlet bar (x: int) = x + 99\n"
-        File.WriteAllText(libFile, libSource3)
+            // Wait for the CONVERGED state — empty queue AND Completed — not a single terminal
+            // transition: the rerun re-enters Running between run 1's completion and the final
+            // settle, so a one-shot terminal wait races it. The invariant that makes
+            // convergence possible is that `bar` is not committed by run 1: had run 1
+            // committed its non-launch-set arrival, the rerun would never have re-tested it.
+            let converged () =
+                let q = PendingQueueHelpers.loadQueue tmpDir
 
-        match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
-        | Some r -> host.EmitFileChecked(stampFixture r)
-        | None -> failwith "lib CheckFile (bar change) failed"
+                let green =
+                    match host.GetStatus("test-prune") with
+                    | Some(Completed _) -> true
+                    | _ -> false
 
-        host.EmitBuildCompleted(BuildSucceeded)
+                Set.isEmpty q && green
 
-        // Wait for the CONVERGED state — empty queue AND Completed — not a single terminal
-        // transition: the rerun re-enters Running between run 1's completion and the final
-        // settle, so a one-shot terminal wait races it. The invariant that makes
-        // convergence possible is that `bar` is not committed by run 1: had run 1
-        // committed its non-launch-set arrival, the rerun would never have re-tested it.
-        let converged () =
-            let q = PendingQueueHelpers.loadQueue tmpDir
+            waitUntil converged RealCheckWaitMs
 
-            let green =
-                match host.GetStatus("test-prune") with
-                | Some(Completed _) -> true
-                | _ -> false
+            let queueFinal = PendingQueueHelpers.loadQueue tmpDir
+            test <@ Set.isEmpty queueFinal @>
 
-            Set.isEmpty q && green
-
-        waitUntil converged 20000
-
-        let queueFinal = PendingQueueHelpers.loadQueue tmpDir
-        test <@ Set.isEmpty queueFinal @>
-
-        match host.GetStatus("test-prune") with
-        | Some(Completed _) -> ()
-        | other -> Assert.Fail($"expected Completed after launch-set commit + rerun drained the queue, got %A{other}"))
+            match host.GetStatus("test-prune") with
+            | Some(Completed _) -> ()
+            | other ->
+                Assert.Fail($"expected Completed after launch-set commit + rerun drained the queue, got %A{other}")))
 
 [<Fact(Timeout = 30000)>]
 let ``a rerun queued for debt the active run clears preserves that run's evidence`` () =
@@ -663,22 +671,22 @@ let fooTest () = assert (foo 1 = 2)
             let configs =
                 [ { Project = "Lib"
                     Command = "sh"
-                    // 3000 polls at 20ms is ~60s: twice the 30s xUnit budget of every Fact
-                    // backed by this scenario, so a slow-but-correct run can never reach the
-                    // cap. See `gatedWait`.
+                    // The run is held while the test makes real checks, so neither its own
+                    // bound nor the gate's poll cap (7500 polls at 20ms, ~150s) may end it
+                    // before this scenario's xUnit cap does. See `gatedWait`.
                     Args =
                       "-c \"printf 'run\\n' >> '"
                       + runMarker
                       + "'; touch '"
                       + started
                       + "'; "
-                      + gatedWait tmpDir release 3000
+                      + gatedWait tmpDir release 7500
                       + $"; exit {testExitCode}\""
                     Group = "default"
                     Environment = []
                     FilterTemplate = None
                     ClassJoin = " "
-                    TimeoutSec = Some 15
+                    TimeoutSec = Some(RealCheckTestCapMs / 1000)
                     ReportVerificationFormat = AutoDetect } ]
 
             let host = createModelHost checker tmpDir
@@ -693,13 +701,13 @@ let fooTest () = assert (foo 1 = 2)
 
             File.WriteAllText(libFile, libSource2)
             host.EmitBuildCompleted(BuildSucceeded)
-            waitUntil (fun () -> File.Exists started) 10000
+            waitUntil (fun () -> File.Exists started) RealCheckWaitMs
 
             match seal with
             | DuringRun -> ()
             | AfterRunFolded ->
                 File.WriteAllText(release, "")
-                waitForQuiescent host 20000
+                waitForQuiescent host RealCheckWaitMs
 
             let committedBefore = committedBy host "test-prune"
 
@@ -714,7 +722,7 @@ let fooTest () = assert (foo 1 = 2)
 
             // Under `DuringRun` the run is held until the cohort seal has committed, so a
             // loaded runner cannot finish the run first and turn this into `AfterRunFolded`.
-            test <@ waitForCommitted host "test-prune" committedBefore 2L 10000 @>
+            test <@ waitForCommitted host "test-prune" committedBefore 2L RealCheckWaitMs @>
 
             // The cohort is sealed and the full run is still held. Edit the symbol again
             // (and optionally restore the sealed bytes); each edit waits until test-prune has
@@ -733,11 +741,11 @@ let fooTest () = assert (foo 1 = 2)
                     | Some result -> host.EmitFileChecked(stampFixture result)
                     | None -> failwith "post-seal changed-file check failed"
 
-                    test <@ waitForCommitted host "test-prune" committedBeforeEdit 1L 10000 @>
+                    test <@ waitForCommitted host "test-prune" committedBeforeEdit 1L RealCheckWaitMs @>
 
             File.WriteAllText(release, "")
 
-            waitForQuiescent host 20000
+            waitForQuiescent host RealCheckWaitMs
 
             { RunCount = File.ReadAllLines(runMarker).Length
               Queue = PendingQueueHelpers.loadQueue tmpDir
@@ -745,7 +753,7 @@ let fooTest () = assert (foo 1 = 2)
 
 let private runCohortScenario = runCohortScenarioWith (Some "full") DuringRun
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``boot-scan symbols discovered during a green full run are covered without a second run`` () =
     // The production change this catches is treating `BootScan` like `InSessionBatch`
     // when its cohort seal arrives during the full run that a cold confirm launched.
@@ -759,7 +767,7 @@ let ``boot-scan symbols discovered during a green full run are covered without a
     | Some(Completed _) -> ()
     | other -> Assert.Fail($"expected the one full run to complete green, got %A{other}")
 
-[<Theory(Timeout = 30000)>]
+[<Theory(Timeout = RealCheckTestCapMs)>]
 [<InlineData("check")>]
 [<InlineData("confirm")>]
 let ``a boot-scan cohort sealed after the green cold full run has folded is covered without a second run``
@@ -782,7 +790,7 @@ let ``a boot-scan cohort sealed after the green cold full run has folded is cove
     | Some(Completed _) -> ()
     | other -> Assert.Fail($"expected the one full run to stay green, got %A{other}")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``an in-session cohort discovered during a confirm's full run joins it`` () =
     // Under `set-scope full` no run may follow the full run, so every cohort attaches to
     // it. The tree did not move, so the one green run covers it. That `check` still
@@ -797,7 +805,7 @@ let ``an in-session cohort discovered during a confirm's full run joins it`` () 
     | Some(Completed _) -> ()
     | other -> Assert.Fail($"expected the one full run to complete green, got %A{other}")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``a failing full run cannot discharge boot-scan debt`` () =
     // Mutation caught: absorbing boot debt on the requested scope rather than the
     // completed run's actual green evidence would erase work that no passing test proved.
@@ -809,7 +817,7 @@ let ``a failing full run cannot discharge boot-scan debt`` () =
     | Some(Failed _) -> ()
     | other -> Assert.Fail($"expected the failed full run to stay red, got %A{other}")
 
-[<Theory(Timeout = 30000)>]
+[<Theory(Timeout = RealCheckTestCapMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``a source edit after a boot cohort seal cannot borrow the held full run`` restoreAfterEdit =
