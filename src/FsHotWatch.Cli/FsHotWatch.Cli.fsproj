@@ -67,6 +67,7 @@
         <Compile Include="ConfirmTraces.fs" />
         <Compile Include="ProgressRenderer.fs" />
         <Compile Include="IpcOutput.fs" />
+        <Compile Include="ScanHeartbeat.fs" />
         <Compile Include="SourceRef.fs" />
         <Compile Include="RunOnceCheck.fs" />
         <Compile Include="DeadCode.fs" />
