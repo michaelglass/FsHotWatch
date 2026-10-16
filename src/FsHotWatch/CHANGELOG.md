@@ -31,6 +31,14 @@
   at debug level. `HostSnapshot.OffersEvidence` now counts only receipt minters. A
   completed build failure still ends the wait on a host that does owe one, and a
   build-only host serves no `modelReceipts`, as for any host that mints none.
+- test: a daemon rescan of an unchanged tree starts no check when the check-result
+  cache is on. That still holds after a referenced output is rewritten with its own
+  bytes, as a no-op rebuild does. Only the file that types against an output whose
+  bytes changed is checked again. With the cache off, every file is asked again, but
+  the byte-identical rewrite still costs the checker no new import of its references.
+  Measured on this repository with the cache off: an unchanged rescan re-asks all 352
+  files in 5.7 s (cold 20.6 s) with no new import. With the cache on it asks none, in
+  0.3 s.
 
 ## 0.10.0-alpha.76 - 2026-10-16
 
