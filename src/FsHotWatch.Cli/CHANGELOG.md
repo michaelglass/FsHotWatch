@@ -7,6 +7,10 @@
   (`string -> string option -> Async<string>`), and `FsHotWatch.Cli.RunClaim` is now
   `FsHotWatch.RunClaim` in core.** `fshw scan` still scans for the daemon, which
   finishes its runs whoever is left.
+- fix: a command that finds a daemon starting (it holds the singleton lock and has written
+  its pidfile, but does not listen yet) waits for it, within the startup timeout, instead
+  of killing it as stale and launching a second. Only a daemon whose pipe never comes up
+  is replaced.
 
 ## 0.14.0-alpha.102 - 2026-10-16
 

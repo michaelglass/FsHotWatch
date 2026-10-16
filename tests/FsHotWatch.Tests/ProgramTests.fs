@@ -301,6 +301,99 @@ let ``killStaleDaemonWith handles missing PID file gracefully`` () =
         // Should not throw when PID file doesn't exist
         killStaleDaemonWith defaultFileOps defaultProcessOps tmpDir)
 
+// --- ensureDaemonWith: a daemon that is still starting ---
+
+/// A worktree whose daemon is mid-startup: it holds the singleton lock and has written
+/// its pidfile, identity and config hash, but its pipe does not listen yet.
+let private startingDaemonState (tmpDir: string) =
+    File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), "{}")
+    let lock = (tryAcquireSingletonLock tmpDir).Value
+    let stateDir = Path.Combine(tmpDir, ".fshw")
+    File.WriteAllText(Path.Combine(stateDir, "daemon.pid"), string Environment.ProcessId)
+    FsHotWatch.DaemonIdentity.recordCurrent tmpDir
+    File.WriteAllText(Path.Combine(stateDir, "config.hash"), computeConfigHashWith defaultFileOps tmpDir)
+    lock
+
+let private recordingKills () =
+    let killed = ref false
+
+    let processOps =
+        { defaultProcessOps with
+            KillProcess = fun _ -> killed.Value <- true
+            WaitForExit = fun _ _ -> true }
+
+    killed, processOps
+
+[<Fact(Timeout = 15000)>]
+let ``ensureDaemonWith waits for a daemon that holds the lock and is not listening yet, and never kills it`` () =
+    withTempDir "prog-ensure-starting" (fun tmpDir ->
+        use _lock = startingDaemonState tmpDir
+        let killed, processOps = recordingKills ()
+        let mutable probes = 0
+        let mutable launched = false
+
+        let ipc =
+            { fakeIpc () with
+                // The pipe comes up on the third probe, as a starting daemon's does.
+                IsRunning =
+                    fun _ ->
+                        probes <- probes + 1
+                        probes >= 3
+                LaunchDaemon = fun _ _ _ -> launched <- true }
+
+        let outcome =
+            ensureDaemonWith defaultFileOps processOps ipc tmpDir "pipe" "" "logs" 10.0
+
+        test <@ not killed.Value @>
+        test <@ not launched @>
+        test <@ outcome = EnsureOutcome.Reused @>
+        test <@ File.Exists(Path.Combine(tmpDir, ".fshw", "daemon.pid")) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``ensureDaemonWith replaces a lock holder whose pipe never comes up within the startup timeout`` () =
+    withTempDir "prog-ensure-wedged" (fun tmpDir ->
+        use _lock = startingDaemonState tmpDir
+        let killed, processOps = recordingKills ()
+        let mutable launched = false
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> false
+                LaunchDaemon = fun _ _ _ -> launched <- true }
+
+        let outcome =
+            ensureDaemonWith defaultFileOps processOps ipc tmpDir "pipe" "" "logs" 0.3
+
+        test <@ killed.Value @>
+        test <@ launched @>
+        test <@ outcome = EnsureOutcome.Failed @>)
+
+[<Fact(Timeout = 15000)>]
+let ``ensureDaemonWith kills a stale pidfile's process at once when no daemon holds the lock`` () =
+    withTempDir "prog-ensure-stale" (fun tmpDir ->
+        (startingDaemonState tmpDir).Dispose()
+        let killed, processOps = recordingKills ()
+        let mutable probesBeforeLaunch = 0
+        let mutable launched = false
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning =
+                    fun _ ->
+                        if not launched then
+                            probesBeforeLaunch <- probesBeforeLaunch + 1
+
+                        launched
+                LaunchDaemon = fun _ _ _ -> launched <- true }
+
+        let outcome =
+            ensureDaemonWith defaultFileOps processOps ipc tmpDir "pipe" "" "logs" 10.0
+
+        test <@ killed.Value @>
+        test <@ outcome = EnsureOutcome.Started @>
+        // Nothing was starting, so nothing was waited for before the replacement launched.
+        test <@ probesBeforeLaunch = 1 @>)
+
 // --- startFreshDaemonWith ---
 
 [<Fact(Timeout = 15000)>]
