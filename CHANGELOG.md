@@ -74,6 +74,14 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### tests: the watchdog suspension test no longer fails on a busy box
+
+- "Watchdog logs a host suspension once" moved its fake wall and awake clocks with two
+  separate writes while the watchdog ticked every 20 ms. A tick between them saw the wall
+  clock jump with no awake time and logged a suspension that never happened, so a loaded
+  `confirm` failed it. Both clocks now move in one write. Forcing a pause between the old
+  two writes reproduced the failure every time.
+
 ### core, test-prune: `#nowarn` no longer hides a genuine compiler error
 
 - `#nowarn "1"` above a real FS0001 type mismatch made fshw report the file clean, while

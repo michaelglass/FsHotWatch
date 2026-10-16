@@ -554,17 +554,28 @@ let ``compactingCollect runs a full blocking collection`` () =
 [<Fact(Timeout = 10000)>]
 let ``Watchdog logs a host suspension once, when the wall clock outruns the awake clock`` () =
     let logged = System.Collections.Concurrent.ConcurrentQueue<string>()
-    let wall = ref t0
-    let awake = ref (TimeSpan.FromSeconds 1000.0)
+
+    // Both fake clocks move in ONE write: a tick between two separate writes would see the
+    // wall clock jump without the awake clock and log a suspension that never happened.
+    // A tick reads `now` and then `awake`, so `now` pins the snapshot `awake` answers from.
+    let clocks: FsHotWatch.HostClock.Reading ref =
+        ref
+            { Wall = t0
+              Awake = TimeSpan.FromSeconds 1000.0 }
+
+    let pinned = ref clocks.Value
 
     use _w =
         new Watchdog(
             threshold,
             heartbeatEvery = TimeSpan.FromHours(1.0),
-            now = (fun () -> wall.Value),
+            now =
+                (fun () ->
+                    pinned.Value <- clocks.Value
+                    pinned.Value.Wall),
             log = logged.Enqueue,
             tick = TimeSpan.FromMilliseconds(20.0),
-            awake = (fun () -> awake.Value)
+            awake = (fun () -> pinned.Value.Awake)
         )
 
     let suspensions () =
@@ -573,14 +584,18 @@ let ``Watchdog logs a host suspension once, when the wall clock outruns the awak
         |> List.ofSeq
 
     // Awake time keeping pace with the wall clock is not a suspension.
-    wall.Value <- t0.AddSeconds 30.0
-    awake.Value <- TimeSpan.FromSeconds 1030.0
+    clocks.Value <-
+        { Wall = t0.AddSeconds 30.0
+          Awake = TimeSpan.FromSeconds 1030.0 }
+
     Thread.Sleep 200
     test <@ List.isEmpty (suspensions ()) @>
 
     // The lid closes: 394s of wall clock pass, 2s of them awake.
-    wall.Value <- t0.AddSeconds 424.0
-    awake.Value <- TimeSpan.FromSeconds 1032.0
+    clocks.Value <-
+        { Wall = t0.AddSeconds 424.0
+          Awake = TimeSpan.FromSeconds 1032.0 }
+
     waitUntil (fun () -> not (List.isEmpty (suspensions ()))) 5000
     Thread.Sleep 200
 
