@@ -105,11 +105,17 @@ module ProjectInputs =
             .ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes text))
             .ToLowerInvariant()
 
-    /// Identities keyed by project path. `ownHash` is `None` for a project whose options
+    /// Identities keyed by project path, each referenced project folded in under `label`
+    /// of its path (`id`, or a repo-relative spelling so two checkouts agree). `ownHash` is `None` for a project whose options
     /// are not known: it has no identity, and nor does anything that references it,
     /// because an input nobody can name cannot be shown unchanged. A reference cycle
     /// (which MSBuild refuses) has no identity either.
-    let compute (projects: string list) (ownHash: string -> string option) (references: string -> string list) =
+    let computeLabelled
+        (label: string -> string)
+        (projects: string list)
+        (ownHash: string -> string option)
+        (references: string -> string list)
+        =
         let memo = System.Collections.Generic.Dictionary<string, string option>()
 
         let rec identity (visiting: Set<string>) (project: string) : string option =
@@ -130,7 +136,7 @@ module ProjectInputs =
                             None
                         else
                             referenced
-                            |> List.map (fun (reference, id) -> reference + "=" + Option.get id)
+                            |> List.map (fun (reference, id) -> label reference + "=" + Option.get id)
                             |> String.concat "\n"
                             |> fun closure -> Some(sha256Hex (own + "\n" + closure)))
 
@@ -140,3 +146,7 @@ module ProjectInputs =
         projects
         |> List.choose (fun project -> identity Set.empty project |> Option.map (fun id -> project, id))
         |> Map.ofList
+
+    /// `computeLabelled` naming each referenced project by its path as given.
+    let compute (projects: string list) (ownHash: string -> string option) (references: string -> string list) =
+        computeLabelled id projects ownHash references

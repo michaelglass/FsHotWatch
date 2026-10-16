@@ -1047,12 +1047,24 @@ let internal resolveAffectedProjects (knownProjects: string list) (changedPaths:
 /// repository holding the same compile inputs publish the same identity — what lets a
 /// green earned in one be recognised in another (`TestEvidenceKey`). Within one checkout
 /// the relative spelling is as distinguishing as the absolute one.
+/// Per-project compile-input identities that name every in-repository path relatively —
+/// a project's own options (by the caller's `ownHash`) and the projects it references —
+/// so two checkouts holding the same compile inputs publish the same identities.
+let internal portableProjectInputs
+    (repoRoot: string)
+    (projects: string list)
+    (ownHash: string -> string option)
+    (references: string -> string list)
+    : Map<string, string> =
+    ProjectModel.ProjectInputs.computeLabelled (CachePathIdentity.keyOf (Some repoRoot)) projects ownHash references
+
 let internal registeredProjectInputs
     (repoRoot: string)
     (pipeline: CheckPipeline)
     (graph: ProjectGraph)
     : Map<string, string> =
-    ProjectModel.ProjectInputs.compute
+    portableProjectInputs
+        repoRoot
         (pipeline.GetRegisteredProjects())
         (fun project ->
             pipeline.GetProjectOptions project
