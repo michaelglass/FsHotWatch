@@ -21,6 +21,7 @@
   daemon reads the claims the CLI writes. `PluginWork.onAbandon` declares the fold a
   cancelled cooperative-safe run delivers in place of its result, so a plugin can close
   what the run opened; undeclared, an abandoned run folds nothing, as before.
+  `PluginWork.abandonFoldOf` reads back the fold `onAbandon` declared for a run.
   `IpcClient.scanFor` sends `ScanFor`.
 - fix: `check` no longer waits out its full hour-long bound on a green tree when no test
   or analysis plugin is configured (for example `{ "lint": true }` with a build and no
