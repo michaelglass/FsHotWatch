@@ -41,6 +41,21 @@ let private realRun: HangEvidence.Runner =
         | ProcessHelper.Succeeded output -> Ok(ProcessHelper.ProcessOutput.text output)
         | other -> Error $"%A{other}"
 
+/// `realRun`, with the real process listing narrowed to `pid`. In a parallel suite this
+/// process's tree also holds other tests' children, and the capture takes stacks for only
+/// the first `MaxStacked` of them: with enough of those listed ahead of this test's child,
+/// its stacks were never taken.
+let private realRunListing (pid: int) : HangEvidence.Runner =
+    fun command args ->
+        match command, realRun command args with
+        | "ps", Ok text ->
+            HangEvidence.parsePs text
+            |> List.filter (fun (listed, _, _) -> listed = pid)
+            |> List.map (fun (_, _, line) -> line)
+            |> String.concat "\n"
+            |> Ok
+        | _, result -> result
+
 [<Fact(Timeout = 60000)>]
 let ``a capture lists a live child, takes its stacks, and keeps the named logs`` () =
     withTempDir "hang-evidence" (fun dir ->
@@ -54,7 +69,12 @@ let ``a capture lists a live child, takes its stacks, and keeps the named logs``
             let out = Path.Combine(dir, "evidence")
 
             let errors =
-                HangEvidence.captureTo realRun alive out Environment.ProcessId [ Path.Combine(dir, "w") ]
+                HangEvidence.captureTo
+                    (realRunListing child.Id)
+                    alive
+                    out
+                    Environment.ProcessId
+                    [ Path.Combine(dir, "w") ]
 
             let tree = File.ReadAllText(Path.Combine(out, "tree.txt"))
             let kept = Directory.GetFiles out |> Array.map Path.GetFileName
@@ -67,12 +87,11 @@ let ``a capture lists a live child, takes its stacks, and keeps the named logs``
                     |> Array.exists (fun f -> f.EndsWith("Lib.Tests.output.log", StringComparison.Ordinal))
                 @>
 
+            // Before the sample file, so a stack step that failed for this child says why.
+            test <@ errors |> List.forall (fun e -> not (e.Contains $" %d{child.Id}:")) @>
+
             if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
                 test <@ File.Exists(Path.Combine(out, $"sample-%d{child.Id}.txt")) @>
-
-            // Only this test's own child is asserted on: in a parallel suite the tree also
-            // holds other tests' children, which come and go during the capture.
-            test <@ errors |> List.forall (fun e -> not (e.Contains $" %d{child.Id}:")) @>
         finally
             child.Kill()
             child.WaitForExit())
