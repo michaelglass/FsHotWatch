@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- deps: pin `MessagePack` 2.5.303. `StreamJsonRpc` 2.25.29, still the latest, floors it at
+  2.5.302, which GHSA-qhrr-8q5h-9q3h (2026-10-15) affects, so every restore failed under
+  `NU1902`. 2.5.303 is the patched release on the 2.x line StreamJsonRpc targets, so consumers
+  are not pushed onto the 3.x rewrite. FsHotWatch never executes MessagePack: its IPC uses
+  StreamJsonRpc's JSON formatter. The pin goes once a StreamJsonRpc release floors
+  MessagePack at 2.5.303 or higher.
 - perf: a comment, whitespace or body edit no longer re-checks every later file of its
   project and every file of every project downstream of it. Each check now records its
   file's API signature: every declaration at every accessibility, with attributes and
