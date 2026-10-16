@@ -459,6 +459,15 @@ module Attribution =
         attribution.RefusedEvidence
         @ derivedReasons attribution.ObservedElapsedMs attribution.TimingSpans
 
+/// Where a REUSED suite's green was earned: the test-evidence entry a run filed instead
+/// of launching the project, as its report records it. Named in the verdict so a green
+/// that rests on another checkout's run says whose run that was.
+type ReusedFrom =
+    { Worktree: string
+      RunId: string
+      EarnedAt: string
+      Key: string }
+
 /// A pointer to one test project's CTRF report, plus the counts it carries, so "how
 /// many ran? how many failed?" is answered without opening a second file while the
 /// deeper questions still have somewhere to go.
@@ -471,6 +480,9 @@ type SuiteVerdict =
         Passed: int
         Failed: int
         Skipped: int
+        /// `Some` when this run did not launch the project and filed another run's
+        /// evidence for it instead; `None` for a suite this run executed.
+        ReusedFrom: ReusedFrom option
     }
 
 /// ONE test run — one `.fshw/test-runs/<runId>/` directory — and the reports it
@@ -2055,14 +2067,29 @@ let private jsonOptions = JsonSerializerOptions(WriteIndented = true)
 
 /// One suite entry on the wire. ONE renderer, used by both `runs[].suites` and the
 /// flattened `suites`, so the two spellings of the same report cannot differ.
+///
+/// `reusedFrom` is written only for a reused suite, so a verdict with none reads
+/// exactly as it did before evidence could be reused.
 let private suiteJson (s: SuiteVerdict) : obj =
-    {| project = s.Project
-       ctrf = s.Ctrf
-       total = s.Total
-       passed = s.Passed
-       failed = s.Failed
-       skipped = s.Skipped |}
-    :> obj
+    let entry = Collections.Generic.Dictionary<string, obj>()
+    entry["project"] <- box s.Project
+    entry["ctrf"] <- box s.Ctrf
+    entry["total"] <- box s.Total
+    entry["passed"] <- box s.Passed
+    entry["failed"] <- box s.Failed
+    entry["skipped"] <- box s.Skipped
+
+    match s.ReusedFrom with
+    | Some r ->
+        entry["reusedFrom"] <-
+            box
+                {| worktree = r.Worktree
+                   runId = r.RunId
+                   earnedAt = r.EarnedAt
+                   key = r.Key |}
+    | None -> ()
+
+    entry :> obj
 
 /// Render the verdict as JSON. Pure, so the contract is testable without a disk.
 let serialize (v: Verdict) : string =
@@ -2934,7 +2961,15 @@ let private parseSuites (root: JsonElement) : Result<SuiteVerdict list, string> 
                                   Total = total
                                   Passed = passed
                                   Failed = failed
-                                  Skipped = skipped }
+                                  Skipped = skipped
+                                  ReusedFrom =
+                                    tryProp el "reusedFrom"
+                                    |> Option.filter (fun r -> r.ValueKind = JsonValueKind.Object)
+                                    |> Option.map (fun r ->
+                                        { Worktree = tryString r "worktree" |> Option.defaultValue ""
+                                          RunId = tryString r "runId" |> Option.defaultValue ""
+                                          EarnedAt = tryString r "earnedAt" |> Option.defaultValue ""
+                                          Key = tryString r "key" |> Option.defaultValue "" }) }
                                 :: xs
                             )
                         | Error e, _, _, _
@@ -3458,9 +3493,24 @@ let describeStillApplies (v: Verdict) (covered: TreeHash.Coverage) : string =
             // because then the total counts test EXECUTIONS — a project that ran in two
             // batches is counted in both — and an unexplained number larger than the
             // suite's own report is a number a reader stops trusting.
-            match List.length v.Runs with
-            | n when n > 1 -> $"%s{suite}, %d{passed} passed across %d{n} runs"
-            | _ -> $"%s{suite}, %d{passed} passed"
+            let counted =
+                match List.length v.Runs with
+                | n when n > 1 -> $"%s{suite}, %d{passed} passed across %d{n} runs"
+                | _ -> $"%s{suite}, %d{passed} passed"
+
+            // A green that rests on another checkout's run says so, and whose.
+            match
+                suites
+                |> List.choose (fun s -> s.ReusedFrom |> Option.map (fun r -> s.Project, r))
+            with
+            | [] -> counted
+            | reused ->
+                let named =
+                    reused
+                    |> List.map (fun (project, r) -> $"%s{project} from run %s{r.RunId} in %s{r.Worktree}")
+                    |> String.concat ", "
+
+                $"%s{counted}; %d{List.length reused} reused: %s{named}"
 
     // The baseline is what makes this green auditable as a claim about
     // the whole suite, so it is printed with the evidence. `isFullSuiteGreen` is the only
@@ -3605,6 +3655,34 @@ let pluginVerdicts
 /// that can evaporate. For the same reason only VERDICT evidence is copied
 /// (`Ctrf.verdictReportsForRun`): once inline, a summary its rows never accounted for
 /// would outlive the file as passes nobody observed.
+/// The provenance a reused report carries (`TestEvidenceRun.ReusedFromField`), or `None`
+/// for a report its own run wrote — or one that cannot be read, which then names nobody.
+let reusedFromReport (path: string) : ReusedFrom option =
+    try
+        match System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText path) with
+        | :? System.Text.Json.Nodes.JsonObject as top ->
+            match top[FsHotWatch.TestPrune.TestEvidenceRun.ReusedFromField] with
+            | :? System.Text.Json.Nodes.JsonObject as p ->
+                let field (name: string) =
+                    match p[name] with
+                    | :? System.Text.Json.Nodes.JsonValue as v ->
+                        match v.TryGetValue<string>() with
+                        | true, text -> text
+                        | _ -> ""
+                    | _ -> ""
+
+                Some
+                    { Worktree = field "worktree"
+                      RunId = field "runId"
+                      EarnedAt = field "earnedAt"
+                      Key = field "key" }
+            | _ -> None
+        | _ -> None
+    with
+    | :? IOException
+    | :? UnauthorizedAccessException
+    | :? JsonException -> None
+
 let suiteVerdicts (repoRoot: string) (runId: Guid option) : SuiteVerdict list =
     match runId with
     | None -> []
@@ -3616,7 +3694,8 @@ let suiteVerdicts (repoRoot: string) (runId: Guid option) : SuiteVerdict list =
               Total = r.Summary.Total
               Passed = r.Summary.Passed
               Failed = r.Summary.Failed
-              Skipped = r.Summary.Skipped })
+              Skipped = r.Summary.Skipped
+              ReusedFrom = reusedFromReport r.Path })
 
 /// EVERY batch this check has evidence from, each with the reports it
 /// wrote — the record `create` is handed, and the ONLY way one is built.

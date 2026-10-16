@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **feat!: a test project whose inputs are byte-identical to a green another checkout
+  earned is not launched again. `TestRunLaunch` has a new field, `Reused`**, so code
+  that constructs it must supply it (`Map.empty` for a run that reused nothing). After
+  impact selection, each project about to launch is keyed (`TestEvidenceKey`) before
+  the run builds anything; a project with no outstanding failure whose key matches an
+  entry in the box-wide evidence store is not launched, its stored CTRF report and
+  coverage are filed in this run's directory, and it reports `reused: earned by run …
+  in …`. At completion every key is computed again: a reuse whose key moved is
+  withdrawn as a deferral and runs next, and a project that really ran publishes its
+  green only when it ran unfiltered, passed every test on the first attempt, wrote every
+  report the gate grades, and its key held still for the whole run. `confirm` and
+  `run-tests` force runs never reuse, a run that reused anything never earns a
+  full-suite baseline, and a run that is owed one (or owes a full suite to an
+  unreadable ledger) consults no evidence, so a fresh checkout runs its suite once before
+  it reuses anything. `FSHW_TEST_EVIDENCE=0` turns the whole mechanism off. A
+  run logs `test evidence: reused N, moved N, missed N, written N`.
+
 - **fix!: an impact-selected test run is cancelled, and its test hosts reaped, once
   every client whose check set it off has gone. `TestPruneMsg` has a new case,
   `TestRunWithdrawn`**, so code that matches it exhaustively must handle it. A run the

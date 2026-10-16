@@ -1090,6 +1090,42 @@ type TestConfig =
         ReportVerificationFormat: ReportVerificationFormat
     }
 
+/// A test project's configuration as one canonical JSON document: every field, in a fixed
+/// order, written out in full (`%A` elides long lists, and a key over an elided list
+/// cannot tell two configurations apart). The test-evidence key hashes it.
+let internal canonicalTestConfig (c: TestConfig) : string =
+    let o = System.Text.Json.Nodes.JsonObject()
+    o["project"] <- c.Project
+    o["command"] <- c.Command
+    o["args"] <- c.Args
+    o["group"] <- c.Group
+    let environment = System.Text.Json.Nodes.JsonArray()
+
+    for (name, value) in c.Environment do
+        environment.Add(
+            System.Text.Json.Nodes.JsonArray(
+                System.Text.Json.Nodes.JsonValue.Create name,
+                System.Text.Json.Nodes.JsonValue.Create value
+            )
+        )
+
+    o["environment"] <- environment
+
+    o["filterTemplate"] <-
+        (c.FilterTemplate
+         |> Option.map System.Text.Json.Nodes.JsonValue.Create
+         |> Option.toObj)
+
+    o["classJoin"] <- c.ClassJoin
+
+    o["timeoutSec"] <-
+        (c.TimeoutSec
+         |> Option.map (fun t -> System.Text.Json.Nodes.JsonValue.Create t)
+         |> Option.toObj)
+
+    o["reportVerificationFormat"] <- sprintf "%A" c.ReportVerificationFormat
+    o.ToJsonString()
+
 /// Why runtime evidence could not safely exclude a configured project.
 type RuntimeCoverageWideningReason =
     | MissingBaseline
@@ -2212,6 +2248,11 @@ type TestRunLaunch =
         /// When the test host started: after `beforeRun`, so a write stamped at or after
         /// it was made while the tests ran. `None` until the run reaches the host.
         TestHostStartedAt: DateTime option
+        /// The projects this run did not launch because the test-evidence store held a
+        /// green another run earned under byte-identical inputs, and where each came from.
+        /// Only reuses whose key still held at completion are here. A run that reused
+        /// anything never earns a full-suite baseline.
+        Reused: Map<string, TestEvidenceRun.Provenance>
     }
 
     /// The launch tree's identity: what a receipt binds to.
@@ -5191,6 +5232,10 @@ let private executeTests
     (configs: TestConfig list)
     (affectedClassesByProject: Map<string, string list>)
     (rawFilter: string option)
+    // The test-evidence plan made at launch (`TestEvidenceRun.plan`): the projects this
+    // run reuses instead of launching, and every key it publishes against. `None` runs
+    // every selected project exactly as it would without a store.
+    (evidence: TestEvidenceRun.Plan option)
     =
     async {
         Logging.info "test-prune" $"executeTests starting with %d{configs.Length} configs"
@@ -5369,6 +5414,73 @@ let private executeTests
         // whose origin exists on disk), re-verifies the bytes afterwards, and records
         // every repair to a durable ledger that trips a circuit breaker on repetition.
         // See `StaleArtifactPreflight` for why exactly one stale case is healed.
+        // TEST EVIDENCE. A project the plan reuses is not launched: its stored CTRF report
+        // is filed in this run's directory, its stored coverage where the run would have
+        // written it, and it reports a green that names where it was earned. A project
+        // whose coverage the gate grades is reused only when the entry carries it.
+        let reusable: Map<string, TestEvidenceStore.Entry> =
+            match evidence with
+            | None -> Map.empty
+            | Some plan ->
+                plan.Reused
+                |> Map.filter (fun project entry ->
+                    configs |> List.exists (fun c -> c.Project = project && not (skipProjectOf c))
+                    && (not (coveragePathsByProject.ContainsKey project) || Option.isSome entry.Coverage))
+
+        let mutable materialized: Map<string, TestEvidenceStore.Entry> = Map.empty
+        let materializedLock = obj ()
+
+        /// File `entry` as this run's evidence for `config`; `false` when it could not be
+        /// filed, and then the project is launched like any other. A filed project reports
+        /// NOTHING until the completion re-check has confirmed it (`TestEvidenceRun.reconcile`):
+        /// no progress subscriber may see a green the re-check could still withdraw.
+        let tryReuse (config: TestConfig) : bool =
+            Map.tryFind config.Project reusable
+            |> Option.exists (fun entry ->
+                try
+                    Directory.CreateDirectory runDir |> ignore
+
+                    File.WriteAllText(
+                        Path.Combine(runDir, config.Project + Ctrf.ReportSuffix),
+                        TestEvidenceRun.reusedReport repoRoot entry
+                    )
+
+                    match Map.tryFind config.Project coveragePathsByProject, entry.Coverage with
+                    | Some paths, Some blob ->
+                        let content = TestEvidenceStore.rebind repoRoot blob.Content
+                        // Where a launch would have written it; a fresh checkout has no
+                        // such directory until something writes there.
+                        Directory.CreateDirectory(Path.GetDirectoryName paths.Baseline) |> ignore
+                        File.WriteAllText(paths.Baseline, content)
+                        File.WriteAllText(runCoveragePath runDir config.Project, content)
+
+                        lock coverageRawPathsLock (fun () ->
+                            coverageInputs <-
+                                coverageInput config.Project paths.IncludeInRatchet paths.Baseline
+                                :: coverageInputs)
+                    | _ -> ()
+
+                    lock materializedLock (fun () -> materialized <- Map.add config.Project entry materialized)
+
+                    let line =
+                        $"%s{config.Project}: %s{TestEvidenceRun.Provenance.describe (TestEvidenceRun.Provenance.ofEntry entry)}"
+
+                    Logging.info "test-prune" line
+                    logToCtx line
+                    true
+                with
+                | :? IOException
+                | :? UnauthorizedAccessException
+                | :? System.Text.Json.JsonException as ex ->
+                    Logging.warn
+                        "test-prune"
+                        $"%s{config.Project}: could not file reused evidence (%s{ex.Message}) — launching it instead"
+
+                    TestEvidenceRun.deleteQuietly (Path.Combine(runDir, config.Project + Ctrf.ReportSuffix))
+                    false)
+
+        // Every project that may launch is preflighted, a reusable one included: its filing
+        // can still fail, and then it launches like any other.
         let runnableConfigs = configs |> List.filter (fun c -> not (skipProjectOf c))
 
         let preflightTargets =
@@ -5481,10 +5593,13 @@ let private executeTests
                         // Template-based class filter (from impact analysis). When the map is
                         // non-empty but has no classes for this project, skip the project
                         // entirely (impact analysis found no relevant tests).
+                        let filed = not (skipProjectOf config) && tryReuse config
+
                         match skipProjectOf config with
                         | true ->
                             Logging.info "test-prune" $"Skipping %s{config.Project} — no affected classes"
                             results <- skippedResultOf config :: results
+                        | false when filed -> ()
                         | false ->
                             let filterArgs = buildFilterArgs config affectedClassesByProject
 
@@ -6001,6 +6116,50 @@ let private executeTests
         // canonical run-wide aggregate.
         groupResults |> ignore
 
+        // TEST EVIDENCE, at completion. One fresh walk keys every candidate again. A reuse
+        // whose key moved while the run was in flight no longer describes this tree: its
+        // filed report and coverage are withdrawn and it reports a deferral, so this run
+        // cannot go green on it and the next one launches it. A project that really ran
+        // publishes its green only when it qualifies (`TestEvidenceRun.qualifies`).
+        let reusedNow = lock materializedLock (fun () -> materialized)
+
+        let reconciled =
+            evidence
+            |> Option.map (fun plan -> plan, TestEvidenceRun.reconcile plan repoRoot reusedNow)
+
+        // A withdrawn reuse takes back everything it filed and reports a deferral; a held one
+        // reports its green now, and only now.
+        reconciled
+        |> Option.iter (fun (_, r) ->
+            for (project, reason) in r.Withdrawn do
+                Logging.warn "test-prune" $"%s{project}: %s{reason}"
+                logToCtx $"{project}: {reason}"
+                TestEvidenceRun.deleteQuietly (Path.Combine(runDir, project + Ctrf.ReportSuffix))
+
+                lock coverageRawPathsLock (fun () ->
+                    coverageInputs <- coverageInputs |> List.filter (fun i -> i.Project <> project))
+
+            let reported =
+                (r.Withdrawn |> List.map (fun (project, reason) -> project, TestsDeferred reason))
+                @ (r.Held
+                   |> Map.toList
+                   |> List.map (fun (project, entry) ->
+                       project,
+                       TestsPassed(
+                           TestEvidenceRun.Provenance.describe (TestEvidenceRun.Provenance.ofEntry entry),
+                           false,
+                           TimeSpan.Zero
+                       )))
+
+            lock accumulatorLock (fun () ->
+                for (project, result) in reported do
+                    cumulative <- Map.add project result cumulative))
+
+        let evidenceHeld: Map<string, TestEvidenceRun.Provenance> =
+            reconciled
+            |> Option.map (fun (_, r) -> r.Held |> Map.map (fun _ entry -> TestEvidenceRun.Provenance.ofEntry entry))
+            |> Option.defaultValue Map.empty
+
         // Coverage: now that ALL projects have finished, serially ingest each
         // project's raw runner cobertura into the TestPrune DB (max-merged,
         // symbol-relative) and emit the FULL DB ONCE to the single shared
@@ -6036,6 +6195,39 @@ let private executeTests
                 coverageIngestFailed failure
 
             lock accumulatorLock (fun () -> cumulative <- applyCoverageIngestFailures coverageFailures cumulative)
+
+        // TEST EVIDENCE: publish. Only now are this run's own results final — a project
+        // whose coverage did not ingest is no longer green — so only now may a green leave
+        // this checkout.
+        reconciled
+        |> Option.iter (fun (plan, r) ->
+            let finalNow = lock accumulatorLock (fun () -> cumulative)
+
+            let runOf (candidate: TestEvidenceRun.Candidate) : TestEvidenceRun.ProducedRun option =
+                Map.tryFind candidate.Project finalNow
+                |> Option.map (fun result ->
+                    let coveragePath = runCoveragePath runDir candidate.Project
+
+                    { Project = candidate.Project
+                      Result = result
+                      Report =
+                        TestEvidenceRun.readIfPresent (Path.Combine(runDir, candidate.Project + Ctrf.ReportSuffix))
+                      CoverageRequired = coveragePathsByProject.ContainsKey candidate.Project
+                      Coverage =
+                        TestEvidenceRun.readIfPresent coveragePath
+                        |> Option.map (fun text -> coveragePath, text) })
+
+            let producer: TestEvidenceStore.Producer =
+                { Worktree = Path.GetFullPath repoRoot
+                  RunId = runId.ToString("N")
+                  TreeHash = launchTree |> Option.map _.Identity |> Option.defaultValue "unbound"
+                  ProducerHash = plan.Wiring.ProducerHash
+                  EarnedAt = DateTimeOffset.UtcNow }
+
+            let written = TestEvidenceRun.publish plan repoRoot r reusedNow runOf producer
+            let tally = TestEvidenceRun.tally plan r written
+            Logging.info "test-prune" tally
+            logToCtx tally)
 
         // Flakiness: ONE parse + ONE rewrite of the history file for the whole run,
         // with every project's records — not one per project, and not racing itself
@@ -6112,7 +6304,7 @@ let private executeTests
             "test-prune"
             $"Tests complete: %d{testResults.Results.Count} projects, %.1f{testResults.Elapsed.TotalSeconds}s"
 
-        return testResults, started, completed, boundTree, testHostStartedAt
+        return testResults, started, completed, boundTree, testHostStartedAt, evidenceHeld
     }
 
 /// FCS cache-poisoning gate. A `FileChecked` whose FCS result reports any
@@ -6575,7 +6767,10 @@ module internal ImpactQueries =
 /// queries against — structurally prevents the caller from wiring an extension
 /// to a different DB than the plugin's. `queriesOf` builds the impact queries over that
 /// same DB.
-let internal createWithQueries
+let internal createWithEvidenceAndQueries
+    // The box-wide test-evidence store this plugin reuses from and publishes to;
+    // `None` (the kill switch, or no store) runs exactly as without one.
+    (evidence: TestEvidenceRun.Wiring option)
     (queriesOf: Database -> ImpactQueries)
     (launchDeadline: TimeSpan)
     // The declared exclusions: indexed test-project name -> written reason. Called once
@@ -7691,6 +7886,50 @@ let internal createWithQueries
     let observeTestInputs (ctx: PluginCtx<TestPruneMsg>) =
         ObservedModel.testInputs ctx.ProjectGraph (defaultArg testConfigs [] |> List.map _.Project)
 
+    /// The test-evidence plan of a run about to launch `configs`: every project the model
+    /// can key, and a lookup for each one `launching` admits that has no outstanding
+    /// failure, when `lookups` allows any. `None` without a store, or without the
+    /// model's compile-input identities (nothing can be keyed without them).
+    let evidencePlanFor
+        (ctx: PluginCtx<TestPruneMsg>)
+        (configs: TestConfig list)
+        (launching: string -> bool)
+        (lookups: bool)
+        (outstanding: OutstandingFailure list)
+        : TestEvidenceRun.Plan option =
+        evidence
+        |> Option.bind (fun wiring ->
+            match ObservedModel.inputs ctx.ProjectGraph with
+            | None ->
+                Logging.info "test-prune" "test evidence: the project model publishes no identities — nothing keyed"
+                None
+            | Some identities ->
+                let files = ObservedModel.projectFiles ctx.ProjectGraph
+                let failing = outstanding |> List.map _.Project |> Set.ofList
+
+                let candidates: TestEvidenceRun.Candidate list =
+                    configs
+                    |> List.choose (fun config ->
+                        Map.tryFind config.Project files
+                        |> Option.map (fun fsproj ->
+                            { Project = config.Project
+                              ProjectFile = fsproj
+                              Closure = TestEvidenceRun.closureOf ctx.ProjectGraph.GetProjectReferences fsproj
+                              TestConfig = canonicalTestConfig config }))
+
+                let plan =
+                    TestEvidenceRun.plan
+                        wiring
+                        repoRoot
+                        (fun fsproj -> Map.tryFind fsproj identities)
+                        candidates
+                        (fun project -> lookups && launching project && not (failing.Contains project))
+
+                for KeyValue(project, why) in plan.Misses do
+                    Logging.info "test-prune" $"%s{project}: launching — %s{why}"
+
+                Some plan)
+
     /// Hold a launch while the host discovers its project model (`ObservedModel.awaitDiscovery`),
     /// so the run is launched under the model it completes under. Called inside the launch's
     /// exclusive work, before anything about the model is read.
@@ -7966,6 +8205,26 @@ let internal createWithQueries
                     forceRunProjects
                     |> Set.fold (fun acc proj -> Map.add proj [] acc) quarantinedAffectedByProject
 
+                // TEST EVIDENCE, at launch: AFTER selection, so it can only take away
+                // launches the selector chose, never add a green it did not. Keyed now,
+                // before `beforeRun` touches anything. Every run keys (so its greens can be
+                // published); only a run that owes nothing a reuse cannot pay looks
+                // anything up. `confirm` owes a run of everything. A run owed a
+                // full-suite baseline owes one only running can earn: a green is graded
+                // relative to it, so a checkout that reused instead would answer "no
+                // verdict" for as long as the evidence lasted. An unreadable ledger is
+                // owed a full suite that passed.
+                let evidenceLookups =
+                    not scopeIsFullSuite && not ledgerUnreadable && Option.isNone baselineInvalid
+
+                let evidencePlan =
+                    evidencePlanFor
+                        ctx
+                        configs
+                        (fun project -> Map.isEmpty affectedByProject || Map.containsKey project affectedByProject)
+                        evidenceLookups
+                        inputs.OutstandingFailures
+
                 /// The run's SCOPE, in the same shape `executeTests`
                 /// will actually honour, captured on the launch so the completion
                 /// handler knows what this run is entitled to clear.
@@ -8016,6 +8275,7 @@ let internal createWithQueries
                       RuntimeProjectsByFile = launchedRuntimeObligations
                       Selection = selection
                       WouldHaveRun = wouldHaveRun
+                      Reused = Map.empty
                       Seeds = inputs.Seeds
                       ZeroSelection = ZeroSelection.NotAZero
                       FullSuiteCause = fullSuiteCause }
@@ -8118,6 +8378,7 @@ let internal createWithQueries
                                 // Executed nothing, so it neither covers nor projects
                                 // anything.
                                 WouldHaveRun = None
+                                Reused = Map.empty
                                 ZeroSelection =
                                     (match inputs.ChangedSymbolsAllUncovered with
                                      | UncoveredChanges.AllUncovered(symbols, unrunnable) ->
@@ -8198,7 +8459,7 @@ let internal createWithQueries
                           %d{unfilteredProjects} of them UNFILTERED (whole-project), \
                           %d{totalClasses} class(es) named in total"
 
-                    let! results, started, completed, boundTree, testHostStartedAt =
+                    let! results, started, completed, boundTree, testHostStartedAt, evidenceHeld =
                         executeTests
                             db
                             (Some ctx)
@@ -8217,6 +8478,7 @@ let internal createWithQueries
                             configs
                             affectedByProject
                             None
+                            evidencePlan
 
                     // `executeTests` emits Started before launching the host and still
                     // emits per-group TestProgress live; the synchronous handler captures
@@ -8229,7 +8491,8 @@ let internal createWithQueries
                             completed,
                             { launch with
                                 InputTree = boundTree
-                                TestHostStartedAt = Some testHostStartedAt }
+                                TestHostStartedAt = Some testHostStartedAt
+                                Reused = evidenceHeld }
                         )
             with ex ->
                 Logging.error "test-prune" $"runTests failed: %s{ex.Message}"
@@ -8262,6 +8525,7 @@ let internal createWithQueries
                       RuntimeProjectsByFile = launchedRuntimeObligations
                       Selection = Map.empty
                       WouldHaveRun = None
+                      Reused = Map.empty
                       Seeds = inputs.Seeds
                       ZeroSelection = ZeroSelection.NotAZero
                       FullSuiteCause = fullSuiteCause }
@@ -8317,6 +8581,7 @@ let internal createWithQueries
               // ESCALATING `confirm`'s path, and it already carries an EXECUTED
               // impact-scoped reading taken before the escalation.
               WouldHaveRun = None
+              Reused = Map.empty
               Seeds = []
               ZeroSelection = ZeroSelection.NotAZero
               FullSuiteCause = FullSuiteCause.ForceRun }
@@ -8342,7 +8607,7 @@ let internal createWithQueries
 
             try
                 try
-                    let! results, started, completed, boundTree, testHostStartedAt =
+                    let! results, started, completed, boundTree, testHostStartedAt, _ =
                         executeTests
                             db
                             None
@@ -8361,6 +8626,9 @@ let internal createWithQueries
                             configs
                             Map.empty
                             filter
+                            // A `run-tests` force run is an explicit request to run: it
+                            // neither reuses nor publishes evidence.
+                            None
 
                     // The counts come from the CTRF reports THIS RUN wrote, located by
                     // the run id the daemon just handed back — declared membership, never
@@ -10722,7 +10990,12 @@ let internal createWithQueries
                         projectPassed proj
                         || outstandingFailures |> List.exists (fun f -> f.Project = proj)
 
-                    let earnsBaseline = executedFullSuite && runnableProjects |> Set.forall accountedFor
+                    // A run that reused evidence ran less than the suite here; its greens
+                    // stand, but a full-suite baseline is only ever earned by running.
+                    let earnsBaseline =
+                        executedFullSuite
+                        && Map.isEmpty launch.Reused
+                        && runnableProjects |> Set.forall accountedFor
 
                     let debt =
                         if earnsBaseline then
@@ -11514,6 +11787,52 @@ let internal createWithQueries
       Teardown = None }
 
 /// `createWithQueries` over the plugin's own index.
+/// The test-evidence wiring a daemon gets for `repoRoot`: the repository's box-wide store,
+/// its projects' `evidence` blocks and this process's toolchain. `None` when
+/// `FSHW_TEST_EVIDENCE=0`, or when the config cannot be read (loudly).
+let internal evidenceWiringWhen (enabled: bool) (repoRoot: string) : TestEvidenceRun.Wiring option =
+    if not enabled then
+        Logging.info "test-prune" $"test evidence: off (%s{TestEvidenceStore.KillSwitchEnvVar}=0)"
+        None
+    else
+        match TestEvidenceKey.configsOf repoRoot with
+        | Error reason ->
+            Logging.warn "test-prune" $"test evidence: off — %s{reason}"
+            None
+        | Ok configs ->
+            try
+                Some
+                    { Store = TestEvidenceStore.openFor repoRoot (Logging.info "test-prune")
+                      Configs = configs
+                      Toolchain = lazy (TestEvidenceKey.toolchainOf repoRoot)
+                      ProducerHash = ContentHash.ofText CheckCache.toolchainIdentity
+                      ExcludePatterns = [] }
+            with ex ->
+                Logging.warn "test-prune" $"test evidence: off — the store could not be opened: %s{ex.Message}"
+                None
+
+/// The test-evidence wiring a daemon gets for `repoRoot`, unless `FSHW_TEST_EVIDENCE=0`.
+let internal defaultEvidenceWiring (repoRoot: string) =
+    evidenceWiringWhen (TestEvidenceStore.enabled ()) repoRoot
+
+/// `createWithEvidenceAndQueries` with the daemon's default test-evidence wiring.
+let internal createWithQueries
+    (queriesOf: Database -> ImpactQueries)
+    (launchDeadline: TimeSpan)
+    (resolveExcludedProjects: unit -> Map<string, string>)
+    (dbPath: string)
+    (walkPolicy: TestPrune.Domain.WalkPolicy)
+    (repoRoot: string)
+    =
+    createWithEvidenceAndQueries
+        (defaultEvidenceWiring repoRoot)
+        queriesOf
+        launchDeadline
+        resolveExcludedProjects
+        dbPath
+        walkPolicy
+        repoRoot
+
 let internal createWithLaunchDeadline
     (launchDeadline: TimeSpan)
     (resolveExcludedProjects: unit -> Map<string, string>)

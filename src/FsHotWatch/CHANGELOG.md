@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **feat: a box-wide, content-addressed store of test greens** (`TestEvidenceKey`,
+  `TestEvidenceStore`), beside the shared task store under
+  `$FSHW_CACHE_HOME/cache/evidence/<repository>/v1/`. A key names the toolchain, the
+  project's test configuration, the options, resolved packages and every file of each
+  project in its `ProjectReference` closure, every verified file under no project
+  directory, and — unless the project opts into `"reads": "closure"` — every verified
+  file under the other projects; each input is a labelled digest, so a miss names what
+  moved. Entries are written to a temp file and renamed, carry a checksum, and expire
+  after 72 hours; a torn, corrupt or unknown-schema entry is a miss and is moved to
+  `quarantine/`, and the store keeps at most 512 MB, logging each eviction.
+- fix: the per-project compile-input identities a daemon publishes name in-repository
+  paths relatively, so two checkouts holding the same compile inputs publish the same
+  identity. Within one checkout nothing changes.
+
 - **fix!: a test run a client's check set off is cancelled, and its test hosts reaped,
   once every client that wanted it has gone. `DaemonRpcConfig.RequestScan` now takes the
   requesting invocation (`string option`)**, so code that builds the config must accept

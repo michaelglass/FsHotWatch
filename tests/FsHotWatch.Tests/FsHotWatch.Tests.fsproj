@@ -61,6 +61,8 @@
     <Compile Include="EventTests.fs" />
     <Compile Include="CachePathIdentityTests.fs" />
     <Compile Include="CrossWorkspaceCacheTests.fs" />
+    <Compile Include="TestEvidenceKeyTests.fs" />
+    <Compile Include="TestEvidenceStoreTests.fs" />
     <Compile Include="AnalyzerCacheKeyTests.fs" />
     <Compile Include="FileStampTests.fs" />
     <Compile Include="CheckCacheTests.fs" />
@@ -135,6 +137,8 @@
          analysis at all). The support module holds the harness helpers the parts share
          and MUST stay first: F# is order-dependent. -->
     <Compile Include="TestPrunePluginTestSupport.fs" />
+    <Compile Include="TestEvidenceProducerTests.fs" />
+    <Compile Include="TestEvidenceRunTests.fs" />
     <Compile Include="TestPrunePluginTests.fs" />
     <Compile Include="TestPruneNamedDispatchTests.fs" />
     <Compile Include="TestPruneFreshnessGateTests.fs" />

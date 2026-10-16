@@ -1097,6 +1097,29 @@ let ``parseConfig tests reportVerificationFormat unknown value is a ConfigError 
             && ex.message.Contains "off"
         @>
 
+[<Theory(Timeout = 15000)>]
+[<InlineData("""{ "reads": "everywhere" }""", "reads")>]
+[<InlineData("""{ "extra": "data/x.json" }""", "extra")>]
+[<InlineData("""{ "envFiles": ["../secrets.env"] }""", "inside the repository")>]
+let ``parseConfig tests evidence block that cannot be honoured is a ConfigError naming the project``
+    (evidence: string, named: string)
+    =
+    // Read by TestPrune at runtime (`TestEvidenceKey.configsOf`), refused HERE at load:
+    // a narrowing nobody can honour must not degrade to the default silently.
+    let json =
+        """{"tests": {"projects": [{"project": "T", "evidence": __E__}]}}""".Replace("__E__", evidence)
+
+    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    test <@ ex.message.Contains "tests.projects[T].evidence" @>
+    test <@ ex.message.Contains named @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig tests accepts a well-formed evidence block`` () =
+    let json =
+        """{"tests": {"projects": [{"project": "T", "evidence": { "reads": "closure", "extra": ["data/**"], "envFiles": [".env.test"] }}]}}"""
+
+    test <@ (parseConfig json defaults).Tests.Value.Projects.[0].Project = "T" @>
+
 // --- parseConfig: fileCommands ---
 
 [<Fact(Timeout = 15000)>]

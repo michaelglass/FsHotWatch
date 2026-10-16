@@ -43,6 +43,7 @@ let emptyLaunch: TestRunLaunch =
       RuntimeProjectsByFile = Map.empty
       Selection = Map.empty
       WouldHaveRun = None
+      Reused = Map.empty
       Seeds = []
       ZeroSelection = ZeroSelection.NotAZero
       FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject }
@@ -61,6 +62,7 @@ let fullSuiteLaunch (projects: string list) : TestRunLaunch =
       RuntimeProjectsByFile = Map.empty
       Selection = projects |> List.map (fun p -> p, ProjectInFull) |> Map.ofList
       WouldHaveRun = None
+      Reused = Map.empty
       Seeds = []
       ZeroSelection = ZeroSelection.NotAZero
       FullSuiteCause = FullSuiteCause.Requested }
@@ -82,6 +84,7 @@ let filteredLaunch (selection: (string * string list) list) : TestRunLaunch =
         |> List.map (fun (p, classes) -> p, ProjectClasses(Set.ofList classes))
         |> Map.ofList
       WouldHaveRun = None
+      Reused = Map.empty
       Seeds = []
       ZeroSelection = ZeroSelection.NotAZero
       FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject }

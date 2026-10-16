@@ -637,7 +637,8 @@ let ``verdict round-trips through the file — the CLI reads what it wrote`` () 
                             Total = 63
                             Passed = 60
                             Failed = 3
-                            Skipped = 0 } ] }
+                            Skipped = 0
+                            ReusedFrom = None } ] }
 
         Verdict.write root written
 
@@ -649,6 +650,56 @@ let ``verdict round-trips through the file — the CLI reads what it wrote`` () 
             // produced reports, and goes looking for them itself.
             test <@ v = written @>
         | other -> failwith $"expected a readable verdict, got %A{other}")
+
+[<Fact>]
+let ``a reused suite round-trips naming the run that earned it, and an executed one carries no field`` () =
+    withTempDir "verdict-reused" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+
+        let reused: Verdict.ReusedFrom =
+            { Worktree = "/work/ws-a"
+              RunId = "0123456789abcdef0123456789abcdef"
+              EarnedAt = "2026-10-16T12:00:00.0000000+00:00"
+              Key = "ab".PadRight(64, 'c') }
+
+        let suite (project: string) (from: Verdict.ReusedFrom option) : Verdict.SuiteVerdict =
+            { Project = project
+              Ctrf = $".fshw/test-runs/r/%s{project}.ctrf.json"
+              Total = 3
+              Passed = 3
+              Failed = 0
+              Skipped = 0
+              ReusedFrom = from }
+
+        let written =
+            build
+                { greenVerdict tree.Hash tree.FileCount with
+                    Suites = [ suite "Run.Tests" None; suite "Reused.Tests" (Some reused) ] }
+
+        Verdict.write root written
+        let json = File.ReadAllText(Verdict.path root)
+        test <@ json.Contains "\"reusedFrom\"" @>
+        test <@ json.Contains "/work/ws-a" @>
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v ->
+            test <@ v = written @>
+
+            test
+                <@
+                    v.Suites |> List.map (fun s -> s.Project, Option.isSome s.ReusedFrom) = [ "Run.Tests", false
+                                                                                              "Reused.Tests", true ]
+                @>
+        | other -> failwith $"expected a readable verdict, got %A{other}"
+
+        // A verdict with nothing reused is byte-for-byte the shape it always had.
+        let plain =
+            build
+                { greenVerdict tree.Hash tree.FileCount with
+                    Suites = [ suite "Run.Tests" None ] }
+
+        test <@ not ((Verdict.serialize plain).Contains "reusedFrom") @>)
 
 [<Fact>]
 let ``a confirm verdict round-trips as a CONFIRM — the writer and the reader agree on the token`` () =
@@ -1087,7 +1138,8 @@ let private reportedVerdict (runs: (Guid option * string list) list) =
                               Total = 3
                               Passed = 3
                               Failed = 0
-                              Skipped = 0 }) }) }
+                              Skipped = 0
+                              ReusedFrom = None }) }) }
 
 [<Fact>]
 let ``a verdict naming reports in an ABSENT run directory says they are missing, not where they are`` () =
@@ -1570,13 +1622,15 @@ let ``the agent hint names the verdict file and THIS run's real CTRF paths`` () 
                     Total = 5136
                     Passed = 5136
                     Failed = 0
-                    Skipped = 0 }
+                    Skipped = 0
+                    ReusedFrom = None }
                   { Project = "Intelligence.Tests.Integration"
                     Ctrf = ".fshw/test-runs/Intelligence.Tests.Integration-7134d9cfbee943df9cdf24d622dc31ca.ctrf.json"
                     Total = 210
                     Passed = 210
                     Failed = 0
-                    Skipped = 0 } ] }
+                    Skipped = 0
+                    ReusedFrom = None } ] }
 
     let lines = hintsFor v
     let text = String.concat "\n" lines
@@ -1716,7 +1770,8 @@ let ``a no-suite run names the prior verdict that DID verify this same tree`` ()
                         Total = 63
                         Passed = 63
                         Failed = 0
-                        Skipped = 0 } ] }
+                        Skipped = 0
+                        ReusedFrom = None } ] }
 
     // THIS run selected nothing, over the SAME tree.
     let current =
@@ -1747,7 +1802,8 @@ let ``a no-suite run does NOT name a prior verdict from a different tree`` () =
                         Total = 63
                         Passed = 63
                         Failed = 0
-                        Skipped = 0 } ] }
+                        Skipped = 0
+                        ReusedFrom = None } ] }
 
     let current =
         build
@@ -1776,7 +1832,8 @@ let ``a no-suite run names the CHANGE that triggered the prior run`` () =
                         Total = 63
                         Passed = 63
                         Failed = 0
-                        Skipped = 0 } ]
+                        Skipped = 0
+                        ReusedFrom = None } ]
                 Seeds = [ "Lib.Config.deployVars" ] }
 
     let current =
@@ -1806,7 +1863,8 @@ let ``a truncated trigger says how many seeds it is not showing`` () =
                         Total = 4
                         Passed = 4
                         Failed = 0
-                        Skipped = 0 } ]
+                        Skipped = 0
+                        ReusedFrom = None } ]
                 Seeds = [ "Lib.A.one"; "Lib.B.two" ]
                 SeedTotal = 5 }
 
@@ -3132,7 +3190,8 @@ let ``a confirm that ran the full suite is told nothing extra — the hint is a 
                     Total = 10
                     Passed = 10
                     Failed = 0
-                    Skipped = 0 } ] }
+                    Skipped = 0
+                    ReusedFrom = None } ] }
 
     let lines = hintsFor v
     let text = String.concat "\n" lines
@@ -3642,7 +3701,8 @@ let ``a full-suite green over THIS tree, from THIS binary, still applies`` () =
                         Total = 1965
                         Passed = 1965
                         Failed = 0
-                        Skipped = 0 } ] }
+                        Skipped = 0
+                        ReusedFrom = None } ] }
 
         match Verdict.priorConfirmation root [] with
         | Verdict.PriorConfirmation.StillApplies(v, covered) ->
@@ -3950,13 +4010,15 @@ let private allSuitesGreen: Verdict.SuiteVerdict list =
         Total = 5559
         Passed = 5559
         Failed = 0
-        Skipped = 0 }
+        Skipped = 0
+        ReusedFrom = None }
       { Project = "Intelligence.Tests.Integration"
         Ctrf = ".fshw/test-runs/x/Intelligence.Tests.Integration.ctrf.json"
         Total = 575
         Passed = 575
         Failed = 0
-        Skipped = 0 } ]
+        Skipped = 0
+        ReusedFrom = None } ]
 
 [<Fact>]
 let ``a red run with every suite green NAMES the failing plugin — the test table alone reads as a pass`` () =

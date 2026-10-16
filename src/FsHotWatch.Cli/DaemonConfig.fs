@@ -943,6 +943,19 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                                     (describeValue t)
                                     [ "true"; "false"; "{ \"weaveTests\": \"sites\" | \"full\" }" ]
 
+                        // `evidence`: how far this project's runtime reads reach, for the
+                        // test-evidence key. TestPrune reads it itself
+                        // (`TestEvidenceKey.configsOf`); refused HERE, at load, so a narrowing
+                        // nobody can honour is never silently the default.
+                        let evidence =
+                            match p.TryGetProperty("evidence") with
+                            | true, e -> Some e
+                            | false, _ -> None
+
+                        match FsHotWatch.TestEvidenceKey.parseConfig evidence with
+                        | Result.Ok _ -> ()
+                        | Result.Error e -> raise (ConfigError $"tests.projects[%s{project}].%s{e}")
+
                         { Project = project
                           Command = command
                           Args = args

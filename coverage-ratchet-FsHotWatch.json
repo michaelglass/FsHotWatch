@@ -1,5 +1,26 @@
 {
   "overrides": {
+    "TestEvidenceStore.fs": [
+      {
+        "line": 99,
+        "branch": 90,
+        "reason": "new file (the box-wide test-evidence store). Floor = the measured value rounded down. Measured 2026-10-16 on macOS by the unit suite (mise run test-direct): line 99.2%, branch 90.4% (85/94). Uncovered: the IOException/UnauthorizedAccessException guard around FileInfo.LinkTarget in `physical` (its two lines), which macOS never reaches because LinkTarget answers null for a path it cannot stat; it stays because a throw there would abort the run whose report is being relativised. The other uncovered edges are not behaviour a test can choose: the compiler-generated loop edges of the two list comprehensions in `Prune`, one edge of the `| _ -> Decoded.Corrupt \"no payload\"` or-pattern, the `else None` edge of `lastKeyInputs` for an index naming another project at the same 128-bit file name, and one exception-class edge of `decode`'s filter. Every miss reason, quarantine, retention, TTL, symlink spelling and concurrent-writer path is tested in TestEvidenceStoreTests. Platform-neutral."
+      }
+    ],
+    "TestEvidenceKey.fs": [
+      {
+        "line": 100,
+        "branch": 92,
+        "reason": "new file (the test-evidence key). Floor = the measured value rounded down. Measured 2026-10-16 on macOS by the unit suite (mise run test-direct): line 100%, branch 92.97% (119/128). The nine uncovered edges: the plain IOException arms of `configsOf`, `resolvedPackages` and `linkedItems` (only a permission denial can be provoked deterministically, and it is: both are tested unreadable), the null-value edge of `string e.Value` while enumerating the process environment (an enumerated variable's value is never null), and compiler-generated edges of the two `List.fold`s (in `configsOf` and over the closure's linked items), of the `libraries` guard in `resolvedPackages`, and of the reads-closure guard in `inputsFor`. Every key input's miss is pinned by a test in TestEvidenceKeyTests, each shown red against a mutant. Platform-neutral."
+      }
+    ],
+    "TestEvidenceRun.fs": [
+      {
+        "line": 100,
+        "branch": 96,
+        "reason": "new file (one run's dealings with the test-evidence store). Floor = the measured value rounded down. Measured 2026-10-16 on macOS by the unit suite (mise run test-direct): line 100%, branch 96.8% (92/95). The three uncovered edges: the plain IOException arms of `readIfPresent` and `deleteQuietly` (only a permission denial can be provoked deterministically, and both are tested with one), and one edge of the `when atLaunch.Value = atCompletion.Value` guard in `qualifies` that the compiler splits from the pattern. The producer, the re-check and the plan are covered end to end by TestEvidenceRunTests and unit by TestEvidenceProducerTests. Platform-neutral."
+      }
+    ],
     "TimeoutMarker.fs": [
       {
         "line": 100,

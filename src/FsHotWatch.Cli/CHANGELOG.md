@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **feat!: `.fshw/verdict.json` names where a reused suite's green was earned.
+  `Verdict.SuiteVerdict` has a new field, `ReusedFrom`**, so code that constructs it
+  must supply it. A suite the run filed from the test-evidence store instead of running
+  carries `reusedFrom: { worktree, runId, earnedAt, key }`; a suite the run executed
+  carries no such field, so a verdict that reused nothing is unchanged. `fshw verdict`
+  says how many suites were reused and from which runs.
+- feat: `tests.projects[].evidence` (`reads`, `extra`, `envFiles`) declares how far a
+  test project's runtime reads reach for the test-evidence key. A block that cannot be
+  honoured as written refuses the config load.
+
 - **fix!: `check` and `confirm` scan on behalf of their own run claim, so the test runs
   their scan sets off stop when they do. `IpcOps.Scan` takes the invocation
   (`string -> string option -> Async<string>`), and `FsHotWatch.Cli.RunClaim` is now
