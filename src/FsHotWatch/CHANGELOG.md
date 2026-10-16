@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- feat: the `ScanStatus` answer for a running scan says how long the scan has run and what
+  the check-result cache has done for it: `scanning: 120/800 files (15%), 6m 12s elapsed,
+  cache 0 hit / 120 miss`. While discovery has registered no file yet it reads
+  `scanning: discovering projects, 12s elapsed` instead of `0/0 files (0%)`. The
+  `scanning:` prefix is unchanged. Each per-file progress update used to overwrite the
+  scan's start time with its own timestamp; the start now holds for the whole scan.
+- fix: `CheckPipeline.CheckFileWithOptions` no longer checks an MSBuild-generated compile
+  item (a path under `obj/` or `bin/`, such as `obj/Debug/net10.0/X.AssemblyInfo.fs`) on
+  its own. It returns `None`, as `CheckFile` already did. A source edit re-checks the
+  files of every dependent project, and that list included those generated items. In a
+  workspace that had not been built yet, each one logged
+  `Failed to check …: Unable to find file …` as an error.
+- fix: a started check that ends cancelled is logged at info, and the line names what
+  cancelled it and what that does to the verdict. There are three cases: cancelled by the
+  caller (`scan`, `change batch`, …), gave way to a newer check, or superseded by a newer
+  check of a different snapshot. It used to be logged as an error reading
+  `Failed to check <file>: The operation was canceled.`
+
 - **fix!: a test run a client's check set off is cancelled, and its test hosts reaped,
   once every client that wanted it has gone. `DaemonRpcConfig.RequestScan` now takes the
   requesting invocation (`string option`)**, so code that builds the config must accept

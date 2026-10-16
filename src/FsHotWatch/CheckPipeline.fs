@@ -173,6 +173,29 @@ type internal CheckDecision =
     /// Start a check, superseding the running one (a different snapshot) if any.
     | Start of started: RunningCheck * superseded: RunningCheck option
 
+/// Why a check that had started returned no answer.
+[<RequireQualifiedAccess>]
+type internal CheckCancellation =
+    /// The caller's own token was cancelled: a superseded scan, a shut-down daemon.
+    | ByCaller of caller: string
+    /// A newer call had already started a check of the file, so this one gave way.
+    | GaveWay
+    /// The running check this call waited on was cancelled by a newer check of a
+    /// different snapshot of the file.
+    | Superseded
+
+/// The line logged when a started check returns no answer: who cancelled it, and what that
+/// does to the verdict. A bare "The operation was canceled." read as a defect, and said
+/// neither.
+let internal cancellationLine (absPath: string) (cancellation: CheckCancellation) : string =
+    match cancellation with
+    | CheckCancellation.ByCaller caller ->
+        $"Check of %s{absPath} cancelled by %s{caller} before it finished; no answer. Verdict: a scan re-runs the file and counts it unchecked if it never finishes; a change batch leaves it to the file's next check."
+    | CheckCancellation.GaveWay ->
+        $"Check of %s{absPath} gave way to a newer check of the same file; that check's answer replaces this one. Verdict: unaffected."
+    | CheckCancellation.Superseded ->
+        $"Check of %s{absPath} was superseded by a newer check of the same file; that check's answer replaces this one. Verdict: unaffected."
+
 /// The line logged when a check call joins the identical running check of its file.
 let internal joinLine (fileName: string) (runningCaller: string) (joiningCaller: string) (origin: string) : string =
     $"joining the in-flight check of %s{fileName} (%s{origin}) started by %s{runningCaller}, for %s{joiningCaller}: same snapshot, one FCS check"
@@ -323,10 +346,12 @@ type CheckPipeline
     let logCanceled (absPath: string) =
         Logging.debug "check" $"Cancelled: %s{Path.GetFileName absPath}"
 
-    /// A check canceled inside CheckFileCore's guarded body is reported like any other
-    /// failure there: an error naming the file and the cancellation.
-    let logCanceledAsFailure (absPath: string) (ct: CancellationToken) =
-        Logging.error "check" $"Failed to check %s{absPath}: %s{OperationCanceledException(ct).Message}"
+    /// A check canceled inside CheckFileCore's guarded body: logged at info, naming what
+    /// cancelled it and what that does to the verdict (`cancellationLine`). Not an error:
+    /// a cancelled check is a decision some caller made, and the scan's own accounting of
+    /// unchecked files is what can redden a verdict.
+    let logCancellation (absPath: string) (cancellation: CheckCancellation) =
+        Logging.info "check" (cancellationLine absPath cancellation)
 
     let mutable lastFitWarning: string option = None
 
@@ -900,7 +925,7 @@ type CheckPipeline
                         Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
                         return None
                     | Ok(_, GiveWay) ->
-                        logCanceledAsFailure absPath ct
+                        logCancellation absPath CheckCancellation.GaveWay
                         return None
                     | Ok(_, Join r) ->
                         let line = joinLine fileName r.Caller caller (originText projectName r.Origin)
@@ -948,8 +973,11 @@ type CheckPipeline
                 | true, current when obj.ReferenceEquals(current, r) -> running.TryRemove checkedFile |> ignore
                 | _ -> ())
 
-            if ct.IsCancellationRequested || r.Cts.IsCancellationRequested then
-                logCanceledAsFailure absPath ct
+            if ct.IsCancellationRequested then
+                logCancellation absPath (CheckCancellation.ByCaller(CheckCaller.current ()))
+                return None
+            elif r.Cts.IsCancellationRequested then
+                logCancellation absPath CheckCancellation.Superseded
                 return None
             else
                 return result
@@ -1070,6 +1098,14 @@ type CheckPipeline
             try
                 if fileToken.IsCancellationRequested then
                     logCanceled absPath
+                    return None
+                elif PathFilter.isGeneratedPath absPath then
+                    // MSBuild's generated compile items (obj/…AssemblyInfo.fs and the like)
+                    // are compiled with their project and never checked on their own — the
+                    // same rule `RegisterProject` applies, which this explicit-options
+                    // entry point bypasses. In a fresh workspace they do not exist yet, and
+                    // checking one logged "Unable to find file" as a failure.
+                    Logging.debug "check" $"Not checked on its own (a generated compile item): %s{absPath}"
                     return None
                 else
                     return! this.CheckFileCached(absPath, options, fileToken, ticket)

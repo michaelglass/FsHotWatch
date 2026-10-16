@@ -1430,6 +1430,9 @@ type private ScanAgentState =
         LastFingerprint: Set<string * string>
         /// Answers the requests admitted while it ran — see `answeredByLastScan`.
         LastScan: LastScan option
+        /// The check-result cache's tally when the running (or last) scan began, so a
+        /// progress answer counts that scan's hits and misses only.
+        CacheAtScanStart: CheckCacheTally.CacheTally
     }
 
 [<NoComparison; NoEquality>]
@@ -1471,6 +1474,8 @@ let private requestScan scanAgent ct =
 let private getScanGeneration (ScanAgent(owner, _)) = owner.State.Generation
 
 let private getScanStatus (ScanAgent(owner, _)) = owner.State.ScanState
+
+let private getScanRow (ScanAgent(owner, _)) = owner.State
 
 let private setScanStatus (ScanAgent(owner, _)) state =
     owner.Submit(SetScanState state, CancellationToken.None)
@@ -2757,18 +2762,51 @@ let internal waitForPluginTerminalIfRunning
     : Async<unit> =
     waitForPluginTerminalIfRunningWith host.GetStatus pluginName timeout
 
+/// The scan state a progress update publishes: the new counts, and the start of the scan
+/// `prior` describes. A scan that is already running keeps its start, so the elapsed time
+/// a reader is shown spans the whole scan, discovery included.
+let internal scanProgress (prior: ScanState) (total: int) (completed: int) (now: System.DateTime) : ScanState =
+    match prior with
+    | Scanning(_, _, startedAt) -> Scanning(total, completed, startedAt)
+    | ScanIdle
+    | ScanComplete _ -> Scanning(total, completed, now)
+
+/// "42s" under a minute, "6m 12s" from there.
+let private describeElapsed (elapsed: System.TimeSpan) : string =
+    let seconds = max 0 (int elapsed.TotalSeconds)
+
+    if seconds < 60 then
+        $"%d{seconds}s"
+    else
+        let minutes, rest = Math.DivRem(seconds, 60)
+        $"%d{minutes}m %d{rest}s"
+
 /// Render a scan-state line from a LIVE completeness reading. `registered` and
 /// `unchecked` come from the host's coverage set at read time (registered minus
 /// currently-checked), so the rendered `complete:`/`incomplete:` numbers never
-/// rot after incremental edits. The exact string formats are load-bearing:
+/// rot after incremental edits. A running scan also says how long it has run (read
+/// against `now`) and what the check-result cache has done for it (`cache`, counted
+/// from the scan's start). The line prefixes are load-bearing:
 /// `status`/`WaitForScan`/external tooling greps `complete:`/`incomplete:`/
-/// `scanning:` — only the SOURCE of the numbers changed, not the shapes.
-let internal formatScanStatusWith (registered: int) (unchecked: int) (scanState: ScanState) : string =
+/// `scanning:`.
+let internal formatScanStatusWith
+    (registered: int)
+    (unchecked: int)
+    (now: System.DateTime)
+    (cache: CheckCacheTally.CacheTally)
+    (scanState: ScanState)
+    : string =
     match scanState with
     | ScanIdle -> "idle"
-    | Scanning(total, completed, _) ->
+    | Scanning(0, 0, startedAt) ->
+        // No file is registered until discovery finishes: "0/0 files" would read as an
+        // empty tree.
+        $"scanning: discovering projects, %s{describeElapsed (now - startedAt)} elapsed"
+    | Scanning(total, completed, startedAt) ->
         let pct = if total > 0 then completed * 100 / total else 0
-        $"scanning: %d{completed}/%d{total} files (%d{pct}%%)"
+        let misses = CheckCacheTally.CacheTally.misses cache
+
+        $"scanning: %d{completed}/%d{total} files (%d{pct}%%), %s{describeElapsed (now - startedAt)} elapsed, cache %d{cache.Hits} hit / %d{misses} miss"
     | ScanComplete elapsed ->
         if unchecked > 0 then
             // Non-ok: a truncated or stale-incomplete scan must not present as
@@ -3107,7 +3145,14 @@ type Daemon
     /// edits — only the scan marker comes from the scan supervisor's published row.
     member _.FormatScanStatus() =
         let (registered, unchecked) = liveCoverage ()
-        formatScanStatusWith registered unchecked (getScanStatus scanAgent)
+        let row = getScanRow scanAgent
+
+        formatScanStatusWith
+            registered
+            unchecked
+            System.DateTime.UtcNow
+            (CheckCacheTally.CacheTally.since row.CacheAtScanStart pipeline.CacheTally)
+            row.ScanState
 
     /// Run the daemon with IPC server on the given pipe name.
     /// Discovers projects, performs initial scan, then watches for changes.
@@ -3922,9 +3967,14 @@ let private performScan
             let sw = System.Diagnostics.Stopwatch.StartNew()
             let scanStartedAt = System.DateTime.UtcNow
 
-            publish
+            // Every progress publish below carries the scan's cache baseline and keeps the
+            // start the scan was admitted at (see `scanProgress`).
+            let scanning =
                 { state with
-                    ScanState = Scanning(total, 0, scanStartedAt) }
+                    ScanState = scanProgress state.ScanState total 0 scanStartedAt
+                    CacheAtScanStart = cacheTallyAtScanStart.Value }
+
+            publish scanning
 
             let dispatchedFiles = ResizeArray<AbsFilePath>()
             // Files whose check never returned Some, even after the bounded
@@ -4068,8 +4118,8 @@ let private performScan
                             completed <- completed + 1
 
                             publish
-                                { state with
-                                    ScanState = Scanning(total, completed, System.DateTime.UtcNow) })
+                                { scanning with
+                                    ScanState = scanProgress scanning.ScanState total completed System.DateTime.UtcNow })
 
                     let! tierOutcome =
                         runChecksWithRetry
@@ -4216,6 +4266,7 @@ let private performScan
                 { ScanState = finalScanState
                   Generation = newGeneration
                   LastFingerprint = lastFingerprint
+                  CacheAtScanStart = cacheTallyAtScanStart.Value
                   LastScan =
                     match readFrom with
                     | Some started when uncheckedCount = 0 ->
@@ -4753,7 +4804,8 @@ module Daemon =
                     { ScanState = ScanIdle
                       Generation = 0L
                       LastFingerprint = Set.empty
-                      LastScan = None },
+                      LastScan = None
+                      CacheAtScanStart = CheckCacheTally.CacheTally.empty },
                     Ipc.ambientRpcDeadline (),
                     (fun state request ->
                         match request with

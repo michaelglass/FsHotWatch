@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `check` and `confirm` print the daemon's scan progress every 15 s while they wait
+  for their scan, e.g. `scanning: 120/800 files (15%), 6m 12s elapsed, cache 0 hit /
+  120 miss`. Before, a cold scan showed only `Scanning...` for minutes. A failed progress
+  read is skipped and never affects the wait. New: `ScanHeartbeat.waitReporting`.
+
 - **fix!: `check` and `confirm` scan on behalf of their own run claim, so the test runs
   their scan sets off stop when they do. `IpcOps.Scan` takes the invocation
   (`string -> string option -> Async<string>`), and `FsHotWatch.Cli.RunClaim` is now
