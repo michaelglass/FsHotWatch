@@ -91,7 +91,9 @@ let ``loaded configuration identity retains the parsed snapshot across later fil
         Assert.Equal(configContentHash original, identity)
         Assert.NotEqual<string>(computeConfigHashWith defaultFileOps root, identity))
 
-[<Fact(Timeout = 30000)>]
+// Three waits on the in-process daemon (serving twice, then stopping), each with the
+// startup hang guard, under one cap above them all.
+[<Fact(Timeout = 4 * DaemonStartupWaitMs)>]
 let ``direct Start publishes its loaded identity and stops on a later config edit`` () =
     withTempDir "cli-start-config-lifecycle" (fun root ->
         Directory.CreateDirectory(Path.Combine(root, "src")) |> ignore
@@ -147,17 +149,9 @@ let ``direct Start publishes its loaded identity and stops on a later config edi
                     5.0)
 
         try
-            Assert.True(
-                waitUntilTrue
-                    (fun () ->
-                        try
-                            Async.RunSynchronously(IpcClient.getStatus pipe, 1000) |> ignore
-                            true
-                        with _ ->
-                            false)
-                    10000,
-                "positive control: the directly started daemon must serve IPC"
-            )
+            // Positive control: the directly started daemon serves IPC. A startup that
+            // ends first fails here naming how it ended.
+            awaitServing pipe (daemonStopped run)
 
             Assert.False(run.IsCompleted)
             Assert.Equal(identity, File.ReadAllText receipt)
@@ -174,24 +168,15 @@ let ``direct Start publishes its loaded identity and stops on a later config edi
             Assert.False(configEventStops (computeConfigHashWith defaultFileOps root) identity)
             onChange (configChangeReason configPath config)
 
-            Assert.True(
-                waitUntilTrue
-                    (fun () ->
-                        try
-                            Async.RunSynchronously(IpcClient.getStatus pipe, 1000) |> ignore
-                            true
-                        with _ ->
-                            false)
-                    10000,
-                "an unchanged config must leave the daemon serving"
-            )
+            // An unchanged config leaves the daemon serving.
+            awaitServing pipe (daemonStopped run)
 
             Assert.False(run.IsCompleted, "an unchanged config must not stop the daemon")
 
             File.WriteAllText(configPath, """{"build":false,"format":false,"lint":false,"timeoutSec":42}""")
             Assert.True(configEventStops (computeConfigHashWith defaultFileOps root) identity)
             onChange (configChangeReason configPath config)
-            Assert.True(run.Wait(TimeSpan.FromSeconds 10.0), "a config edit must stop the daemon it owns")
+            Assert.True(run.Wait DaemonStartupWaitMs, "a config edit must stop the daemon it owns")
             Assert.Equal(0, run.Result)
             Assert.False(IpcClient.isRunning pipe)
             Assert.False(File.Exists pidFile)

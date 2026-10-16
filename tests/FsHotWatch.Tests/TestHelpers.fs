@@ -168,6 +168,55 @@ let waitUntilOr (what: string) (condition: unit -> bool) (timeoutMs: int) =
 let waitUntil (condition: unit -> bool) (timeoutMs: int) =
     waitUntilOr "the awaited condition" condition timeoutMs
 
+/// The hang guard on a daemon started in this process coming up to serve IPC. Startup
+/// loads the config, subscribes its watchers and binds the pipe, and none of that has a
+/// product bound, so this only ends a startup that never finishes.
+[<Literal>]
+let DaemonStartupWaitMs = 60_000
+
+/// Why the daemon running as `run` can no longer serve, or `None` while it still runs.
+let daemonStopped (run: Tasks.Task<'T>) () : string option =
+    if run.IsFaulted then
+        Some $"its run faulted: %s{run.Exception.GetBaseException().Message}"
+    elif run.IsCanceled then
+        Some "its run was cancelled"
+    elif run.IsCompleted then
+        Some $"its run returned %A{run.Result}"
+    else
+        None
+
+/// Wait until a daemon started in this process answers a status request on `pipe`.
+/// A daemon that stops first (`stopped` names why) fails the wait at once with that
+/// reason, so a real startup failure is reported as itself. Only a daemon still
+/// starting meets the hang guard, and its failure says it was still starting.
+let awaitServing (pipe: string) (stopped: unit -> string option) : unit =
+    let answers () =
+        try
+            Async.RunSynchronously(FsHotWatch.Ipc.IpcClient.getStatus pipe, 1000) |> ignore
+            true
+        with _ ->
+            false
+
+    let mutable reason = None
+
+    // A stopped daemon cannot serve, so ask that first: the stopped case then ends
+    // without a status request, which on a loaded box can take its whole second.
+    let ready =
+        waitUntilTrue
+            (fun () ->
+                reason <- stopped ()
+                reason.IsSome || answers ())
+            DaemonStartupWaitMs
+
+    match reason with
+    | Some why -> failwith $"the daemon stopped before it served IPC on %s{pipe}: %s{why}"
+    | None when not ready ->
+        raise (
+            TimeoutException
+                $"the daemon was still starting after %d{DaemonStartupWaitMs} ms: nothing answered a status request on %s{pipe}"
+        )
+    | None -> ()
+
 /// Run `write` every 2s until `hasEvent` returns true or timeout expires.
 /// Repeated writes mean a write that races watcher setup cannot lose the event,
 /// so the test never depends on one fixed delay being long enough. The timeout

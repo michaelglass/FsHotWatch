@@ -180,3 +180,65 @@ let ``waitUntil returns once its condition holds`` () =
         5000
 
     test <@ polls = 3 @>
+
+// ---------------------------------------------------------------------------
+// A wait for a daemon started in this process to serve IPC.
+//
+// Daemon startup (config load, watcher subscription, binding the pipe) has no product
+// bound, so a fixed short poll for it measures the box: a 10 s one failed two loaded
+// release gates while the daemon was still starting. `awaitServing` waits up to
+// `DaemonStartupWaitMs` and ends at once, naming why, when the daemon stopped instead.
+// ---------------------------------------------------------------------------
+
+// "At once" is the message, not a clock: a wait that ignored the stopped run would meet
+// the hang guard and say the daemon was still starting. The cap sits above that guard.
+[<Fact(Timeout = 2 * DaemonStartupWaitMs)>]
+let ``awaitServing fails at once, naming why, when the daemon stopped before serving`` () =
+    let pipe = $"fshw-never-served-{Guid.NewGuid():N}"
+    let stopped = Tasks.Task.FromResult 3
+
+    let ex = Assert.ThrowsAny<exn>(fun () -> awaitServing pipe (daemonStopped stopped))
+
+    test
+        <@
+            ex.Message.Contains "stopped before it served IPC"
+            && ex.Message.Contains "returned 3"
+        @>
+
+[<Fact(Timeout = 20000)>]
+let ``every wait for a daemon to serve IPC goes through awaitServing`` () =
+    // A `waitUntil…` whose condition probes the IPC client is a readiness poll with its
+    // own budget. The one exception is a bare `IpcServer` started by its own test, which
+    // binds one pipe and loads nothing.
+    // Spelled in halves so this guard is not itself a match for what it looks for.
+    let probe = "IpcClient" + "."
+    let poll = "wait" + "Until"
+    let allowed = set [ "TestHelpers.fs"; "IpcTests.fs" ]
+
+    // A wait's condition: its own line through the line before its budget, which the
+    // formatter puts on a line of its own (a literal or a `…Ms` name) in a multi-line call.
+    let isBudget (line: string) =
+        Text.RegularExpressions.Regex.IsMatch(line.Trim(), @"^(\d[\d_]*|[A-Z]\w*Ms)\)*,?$")
+
+    let condition (lines: string[]) i =
+        let last = min (lines.Length - 1) (i + 12)
+
+        let budget =
+            [ i + 1 .. last ]
+            |> List.tryFind (fun j -> isBudget lines[j])
+            |> Option.defaultValue (i + 1)
+
+        lines[i .. budget - 1]
+
+    let offenders =
+        testProjectSources ()
+        |> Array.filter (fun (name, _) -> not (allowed.Contains name))
+        |> Array.collect (fun (name, lines) ->
+            lines
+            |> Array.mapi (fun i line -> i, line)
+            |> Array.filter (fun (_, line) -> not ((line.TrimStart()).StartsWith "//") && line.Contains poll)
+            |> Array.filter (fun (i, _) -> condition lines i |> Array.exists (fun l -> l.Contains probe))
+            |> Array.map (fun (i, _) -> $"%s{name}:%d{i + 1}"))
+        |> List.ofArray
+
+    Assert.True(List.isEmpty offenders, $"these waits poll a daemon's IPC with their own budget: %A{offenders}")
