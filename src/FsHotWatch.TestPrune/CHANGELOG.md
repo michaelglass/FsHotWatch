@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.76 - 2026-10-16
+
+- fix!: a #nowarn file no longer turns the evidence receipt red after an edit
+
+
 ## 0.13.0-alpha.75 - 2026-10-16
 
 - **fix!: an impact-selected test run is cancelled, and its test hosts reaped, once
