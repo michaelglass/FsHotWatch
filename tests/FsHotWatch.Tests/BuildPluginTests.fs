@@ -649,6 +649,84 @@ let ``file changes observed during a test host defer the build until that run co
             test <@ System.IO.File.Exists marker @>
             test <@ (committed ()).PendingFiles.IsEmpty @>))
 
+/// An edit that lands while a build is in flight must not leave that build's output
+/// standing. The build read the OLD bytes, but it writes its output AFTER the edit, so the
+/// output's mtime postdates the edited source and a timestamp up-to-date check — MSBuild's
+/// — skips the project on the buffered rebuild: the assembly on disk was compiled from code
+/// that is no longer there, and nothing downstream can tell.
+///
+/// The build here is a shell stand-in for exactly that check: it skips when its output is
+/// newer than its source, otherwise it snapshots the source, waits on a gate (the first
+/// time only), and writes the snapshot.
+[<Fact(Timeout = 20000)>]
+let ``an edit during an in-flight build is rebuilt, not trusted to a newer stale output`` () =
+    withTempDir "edit-during-build" (fun tmpDir ->
+        let source = System.IO.Path.Combine(tmpDir, "Lib.fs")
+        let output = System.IO.Path.Combine(tmpDir, "Lib.dll")
+        let started = System.IO.Path.Combine(tmpDir, "build-started")
+        let firstDone = System.IO.Path.Combine(tmpDir, "first-build-done")
+        let script = System.IO.Path.Combine(tmpDir, "build.sh")
+        System.IO.File.WriteAllText(source, "let v = 1\n")
+
+        withReleaseGate tmpDir "build" (fun release ->
+            System.IO.File.WriteAllText(
+                script,
+                $"if [ -f '{output}' ] && [ '{output}' -nt '{source}' ]; then exit 0; fi\n"
+                + $"snapshot=$(cat '{source}')\n"
+                + $"touch '{started}'\n"
+                + $"if [ ! -f '{firstDone}' ]; then {gatedWait tmpDir release 750}; touch '{firstDone}'; fi\n"
+                + $"printf '%%s\\n' \"$snapshot\" > '{output}'\n"
+            )
+
+            let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+            let build = BuildPlugin.create "sh" script [] (ProjectGraph()) [] None [] None
+            let committed = registerBuildObserver host build
+
+            host.EmitFileChanged(SourceChanged [ source ])
+            Assert.True(waitUntilTrue (fun () -> System.IO.File.Exists started) 10000, "the first build must start")
+
+            // The edit, while the first build holds the bytes it read before it.
+            System.IO.File.WriteAllText(source, "let v = 2\n")
+            let edit = SourceChanged [ source ]
+            host.EmitFileChanged edit
+
+            Assert.True(
+                waitUntilTrue (fun () -> (committed ()).PendingFiles = [ edit ]) 10000,
+                "the edit must be buffered behind the in-flight build"
+            )
+
+            // Clear any whole-second mtime granularity, so the stale output is unambiguously
+            // NEWER than the edited source when the first build writes it.
+            System.Threading.Thread.Sleep 1100
+            System.IO.File.WriteAllText(release, "")
+
+            Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 15000, "the host must come to rest")
+            test <@ System.IO.File.ReadAllText output = "let v = 2\n" @>))
+
+[<Fact>]
+let ``only inputs written since the previous build started are re-stamped`` () =
+    withTempDir "restamp-since" (fun tmpDir ->
+        let since = DateTime.UtcNow.AddMinutes -10.0
+        let before = System.IO.Path.Combine(tmpDir, "Before.fs")
+        let after = System.IO.Path.Combine(tmpDir, "After.fsproj")
+        let gone = System.IO.Path.Combine(tmpDir, "Gone.fs")
+        System.IO.File.WriteAllText(before, "")
+        System.IO.File.WriteAllText(after, "")
+        let beforeStamp = since.AddMinutes -1.0
+        System.IO.File.SetLastWriteTimeUtc(before, beforeStamp)
+        let afterStamp = since.AddMinutes 1.0
+        System.IO.File.SetLastWriteTimeUtc(after, afterStamp)
+
+        let owed =
+            [ SourceChanged [ before; gone ]; ProjectChanged [ after ]; SolutionChanged ]
+
+        test <@ List.isEmpty (restampEditedSince None owed) @>
+        test <@ System.IO.File.GetLastWriteTimeUtc after = afterStamp @>
+
+        test <@ restampEditedSince (Some since) owed = [ after ] @>
+        test <@ System.IO.File.GetLastWriteTimeUtc after > afterStamp @>
+        test <@ System.IO.File.GetLastWriteTimeUtc before = beforeStamp @>)
+
 /// A force-run cancelled after its `TestRunStarted` must still close the run: Build keeps
 /// every started run in `ActiveTestRuns` until its `TestRunCompleted`, and defers every
 /// later build while any is there. A cancelled run that emitted no completion would leave
