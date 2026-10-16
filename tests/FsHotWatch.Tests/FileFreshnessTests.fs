@@ -291,7 +291,7 @@ let ``a schema recreate empties the index but the freshness sidecar survives say
         let (_, store) = afterFaithfulRecreate tmpDir
         test <@ classify "src/Lib.fs" store = Clean @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a Clean stamp over an emptied index must still WIDEN — every current symbol reads as new`` () =
     // THE ASSERTION this fix EXISTS FOR. The sidecar says "the stored rows for
     // this file are a complete extraction, safe to diff". After a recreate there are
@@ -315,7 +315,7 @@ let ``a Clean stamp over an emptied index must still WIDEN — every current sym
         let (changes, _) = detectChanges [ libFoo ] stored
         test <@ not (List.isEmpty changes) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``PositiveControl: a Clean stamp over an index that still HAS the rows stays a real diff`` () =
     // The mirror of the test above, and the reason it is not vacuous. "Is invalidated
     // after a recreate" passes trivially if the mechanism invalidates everything; this

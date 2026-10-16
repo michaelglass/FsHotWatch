@@ -1649,7 +1649,7 @@ let ``stripConfig preserves the run-level hooks (run-once must honor them)`` () 
     test <@ stripped.AfterRun = Some "release-lock" @>
     test <@ stripped.RunHookTimeoutSec = Some 45 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``registerPlugins with build config registers build plugin`` () =
     withTempDir "cfg-build-reg" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -1664,7 +1664,7 @@ let ``registerPlugins with build config registers build plugin`` () =
         let statuses = daemon.Host.GetAllStatuses()
         test <@ statuses.ContainsKey("build") @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``registerPlugins with stripped config does not register build plugin`` () =
     withTempDir "cfg-build-noreg" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -1676,7 +1676,7 @@ let ``registerPlugins with stripped config does not register build plugin`` () =
         let statuses = daemon.Host.GetAllStatuses()
         test <@ not (statuses.ContainsKey("build")) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``registerPlugins stores FileCommand pattern on host`` () =
     withTempDir "cfg-fc-register" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -1702,7 +1702,7 @@ let ``registerPlugins stores FileCommand pattern on host`` () =
                 )
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``registerPlugins raises ConfigError when configured analyzers load zero`` () =
     // A non-existent dir is the actual CI bug (bin built in the wrong config). The
     // alternative to raising is registering a do-nothing plugin that lets the gate pass.
@@ -1725,7 +1725,7 @@ let ``registerPlugins raises ConfigError when configured analyzers load zero`` (
         Assert.Contains("no-such-analyzer-bin-dir", ex.Message)
         test <@ not (daemon.Host.GetAllStatuses().ContainsKey("analyzers")) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``registerPlugins with unconfigured analyzers does not raise or register`` () =
     // No analyzers requested ⇒ the guard never fires (no misconfiguration).
     withTempDir "cfg-analyzers-none" (fun tmpDir ->
@@ -1739,7 +1739,7 @@ let ``registerPlugins with unconfigured analyzers does not raise or register`` (
         registerPlugins daemon tmpDir config
         test <@ not (daemon.Host.GetAllStatuses().ContainsKey("analyzers")) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``registerPlugins with afterTests-only plugin does not register pattern`` () =
     withTempDir "cfg-fc-aftertests-only" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -2582,7 +2582,7 @@ let ``parseConfig preprocessors refuses a malformed entry`` (json: string, expec
     let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
     test <@ ex.Message.Contains expected @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``registerPlugins registers configured preprocessors, in order, and the formatter last`` () =
     withTempDir "cfg-preprocessors-reg" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -2606,7 +2606,7 @@ let ``registerPlugins registers configured preprocessors, in order, and the form
         registerPlugins daemon tmpDir config
         test <@ daemon.Host.PreprocessorNames() = [ "gen-a"; "gen-b"; "format" ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``registerPlugins with no preprocessors registers only the formatter`` () =
     withTempDir "cfg-preprocessors-none" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore

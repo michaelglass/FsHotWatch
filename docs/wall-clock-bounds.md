@@ -32,7 +32,7 @@ A bound is one of three things.
 
 The literals that encode rule 2 live in `tests/FsHotWatch.Tests/TestHelpers.fs`
 (`FantomasRunBudgetMs`, `FantomasRunWaitMs`, `RealFantomasTestCapMs`, `RealCheckWaitMs`,
-`RealCheckTestCapMs`, `DaemonStartupWaitMs`). `FormatCheckPluginTests` pins `FantomasRunBudgetMs` to the
+`RealCheckTestCapMs`, `DaemonStartupWaitMs`, `SyncHangBackstopMs`). `FormatCheckPluginTests` pins `FantomasRunBudgetMs` to the
 product's `FormatTimeoutDefaultSec`, so raising the product bound without the caps goes
 red.
 
@@ -79,6 +79,8 @@ own named waits decided.
 | `CacheInputsTests` "every upstream shape change…" and "upstream edits a downstream file cannot observe…" | 14 and 8 sequential real checks on the shared daemon checker under 120 s; in a full run each queues behind other tests' checks | CAN-FLAKE (cancelled at 120 s; about 1 s alone) | one `RealCheckWaitMs` per check: `14 * RealCheckWaitMs` and `8 * RealCheckWaitMs` |
 | `LoadedConfigIdentityTests` "direct Start publishes its loaded identity…" | a fixed 10 s poll of the in-process daemon's IPC under a 30 s cap; daemon startup has no product bound | CAN-FLAKE (red in two loaded release gates) | `awaitServing` waits `DaemonStartupWaitMs` (60 s) and fails at once, naming why, when the daemon's run ended first. The cap is `4 * DaemonStartupWaitMs`. `TestHelpersTests` flags any other `waitUntil` that polls `IpcClient` |
 | `TestPrunePendingVerificationTests` "mid-run change…" and the five boot-cohort facts | real checks under 30 s caps, with 10–20 s waits after them | CAN-FLAKE (cancelled at 30 s in loaded runs; the mid-run test once alone) | caps `RealCheckTestCapMs`, waits after real checks `RealCheckWaitMs` |
+| `DaemonConfigTests` registerPlugins (8 facts), `FileFreshnessTests` "a Clean stamp over an emptied index must still WIDEN" and its positive control, `RepositoryIdentityTests` "control state is keyed by repository…" | 15 s caps over synchronous in-process work on temp files | CAN-FLAKE (cancelled at 15 s in one loaded full run while taking milliseconds alone) | `SyncHangBackstopMs` (60 s): the cap only reports a hang |
+| `RepositoryIdentityTests` "real git…" and "real jj…" | 3 and 5 real commands, each bounded at 10 s, under a 30 s cap: the cap sat below its own bounds | CAN-FLAKE (cancelled at 30 s) | each command `RealCommandMs` (20 s); caps `4 * RealCommandMs` and `6 * RealCommandMs` |
 
 ## Product bounds that decided the claim
 
@@ -94,6 +96,7 @@ that meets rule 2.
 | `TestPrunePendingVerificationTests` boot-cohort scenario | the held run had `TimeoutSec = 15` and a 60 s gate while the test made real checks, so a slow check could end a correct run before its release | CAN-FLAKE | **Fixed.** The held run's bound is the test's cap (`RealCheckTestCapMs / 1000`) and the gate polls about 150 s, past it |
 | `TestPrunePendingVerificationTests` "mid-run change…" | a `sleep 1.5` was the window for a real check of the mid-run edit to arrive in | CAN-FLAKE (13–30 s alone against a 30 s cap) | **Fixed.** Run 1 is held at a release gate, and the mid-run `FileChecked`'s own commit is awaited before the release |
 | `PluginFrameworkOwnershipTests` "durable commit failures fault the actual receipt…" | the receipt's own `Wait(5 s)` and a race against `Task.Delay 5000`; a commit slower than 5 s failed with `TimeoutException`, not the asserted failure | CAN-FLAKE | **Fixed.** The receipt is awaited with no bound; the xUnit cap reports a hang |
+| `TestPruneRunnerFamilyTests` "run-tests invokes the real xUnit 4 runner…" | `TimeoutSec = 30` over a real `dotnet run` (MSBuild evaluation and a test host) under a 60 s cap; the assertion is the CTRF verification | CAN-FLAKE (red 3 times in loaded full gates; about 1.4 s alone, even under 24 CPU burners) | **Fixed.** `TimeoutSec = 240` only ends a hang, under a 300 s cap |
 
 ## Hang caps (fail-safe, excluded from the tables)
 

@@ -915,6 +915,12 @@ let FantomasRunWaitMs = 75_000
 [<Literal>]
 let RealFantomasTestCapMs = 360_000
 
+/// The xUnit cap for a synchronous test: one that waits on nothing real (in-process work
+/// over temp files or a fixture), so its cap can only report a hang. A short one there
+/// measures the box: a full run on a loaded box stalls such tests for 15 s and more.
+[<Literal>]
+let SyncHangBackstopMs = 60_000
+
 /// A wait whose event follows a real FCS type-check or lint pass. FCS has no product
 /// bound to sit above, so this is the margin for a check slowed by a saturated box.
 [<Literal>]

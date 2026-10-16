@@ -304,7 +304,11 @@ let ``run-tests gives an xUnit 4 runner its v4 flags and reads the report from t
         Assert.Equal("passed", project.GetProperty("status").GetString())
         Assert.Equal(2, project.GetProperty("counts").GetProperty("total").GetInt32()))
 
-[<Fact(Timeout = 60000)>]
+// A real `dotnet run` of the fixture: MSBuild evaluation, then a test host, and a loaded box
+// slows both. The test asserts the CTRF verification, not a duration, so the project's
+// `TimeoutSec` only ends a hang (it was 30 s, and a slow start was failed as TimedOut), and
+// the cap sits above it.
+[<Fact(Timeout = 300_000)>]
 let ``run-tests invokes the real xUnit 4 runner and verifies its CTRF report`` () =
     let repoRoot = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../.."))
 
@@ -319,7 +323,7 @@ let ``run-tests invokes the real xUnit 4 runner and verifies its CTRF report`` (
             Environment = []
             FilterTemplate = None
             ClassJoin = " "
-            TimeoutSec = Some 30
+            TimeoutSec = Some 240
             ReportVerificationFormat = AutoDetect } ]
 
     // The plugin's OWN root is isolated: over `repoRoot` it would write this repository's

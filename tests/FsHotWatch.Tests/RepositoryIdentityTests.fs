@@ -677,7 +677,7 @@ let ``the state home reads the process environment through the same precedence``
 
     test <@ FsHwPaths.stateHome () = expected @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``control state is keyed by repository, shared by its worktrees, and outside every worktree`` () =
     withTempDir "rid-control" (fun dir ->
         let stateHome = Path.Combine(dir, "state")
@@ -879,6 +879,11 @@ let private onPath (tool: string) =
     (Environment.GetEnvironmentVariable "PATH").Split(Path.PathSeparator)
     |> Array.exists (fun d -> File.Exists(Path.Combine(d, tool)))
 
+/// The bound on one real `git` or `jj` command: it ends a command that hangs. Each fact
+/// that makes real commands is capped above the bounds of all of them.
+[<Literal>]
+let private RealCommandMs = 20_000
+
 let private run (cwd: string) (exe: string) (args: string list) =
     let psi = ProcessStartInfo(exe, args, WorkingDirectory = cwd)
     psi.RedirectStandardOutput <- true
@@ -891,14 +896,15 @@ let private run (cwd: string) (exe: string) (args: string list) =
     let stdout = p.StandardOutput.ReadToEndAsync()
     let stderr = p.StandardError.ReadToEndAsync()
 
-    if not (p.WaitForExit 10000) then
+    if not (p.WaitForExit RealCommandMs) then
         p.Kill true
         failwith $"%s{exe} %A{args} timed out"
 
     if p.ExitCode <> 0 then
         failwith $"%s{exe} %A{args} exited %d{p.ExitCode}: %s{stdout.Result}%s{stderr.Result}"
 
-[<Fact(Timeout = 30000)>]
+// Three real commands.
+[<Fact(Timeout = 4 * RealCommandMs)>]
 let ``real git: a main checkout and a git worktree share a repository`` () =
     if not (onPath "git") then
         Assert.Skip "git is not on PATH"
@@ -928,7 +934,8 @@ let ``real git: a main checkout and a git worktree share a repository`` () =
         test <@ w.Repository = m.Repository @>
         test <@ w.Worktree <> m.Worktree @>)
 
-[<Fact(Timeout = 30000)>]
+// Five real commands.
+[<Fact(Timeout = 6 * RealCommandMs)>]
 let ``real jj: colocated primary, jj workspace and git worktree are one repository`` () =
     if not (onPath "jj" && onPath "git") then
         Assert.Skip "jj and git are not both on PATH"
