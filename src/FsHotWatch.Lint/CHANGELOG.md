@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.30 - 2026-10-16
+
+- fix!: a #nowarn file no longer turns the evidence receipt red after an edit
+
+
 ## 0.7.0-alpha.29 - 2026-10-13
 
 - fix: a lint result replayed from the task cache fills `WarningsByFile` like a fresh

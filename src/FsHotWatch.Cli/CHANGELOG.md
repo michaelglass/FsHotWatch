@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.104 - 2026-10-16
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.103 - 2026-10-16
 
 - feat: `check` and `confirm` print the daemon's scan progress every 15 s while they wait

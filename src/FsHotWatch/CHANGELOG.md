@@ -19,6 +19,9 @@
     say whether an Error is silenced. `FcsDiagnosticFilter.classifyDiagnostic` takes whether
     the diagnostic is suppressed (`Suppression.silences`) in place of a code set and the
     error number.
+
+## 0.10.0-alpha.78 - 2026-10-16
+
 - fix: the analysis evidence a receipt is graded from no longer refuses a green over an
   error whose code the file's own `#nowarn` (or the configured `fcsSuppressedCodes`)
   silences. The ledger and TestPrune's cache-poisoning gate already applied that filter;
