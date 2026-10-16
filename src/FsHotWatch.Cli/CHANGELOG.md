@@ -7,6 +7,9 @@
   (`string -> string option -> Async<string>`), and `FsHotWatch.Cli.RunClaim` is now
   `FsHotWatch.RunClaim` in core.** `fshw scan` still scans for the daemon, which
   finishes its runs whoever is left.
+- fix: deleting `.fshw.json` no longer stops the daemon as a config change. Two config
+  looks that overlapped on a busy box could keep their stamps out of order, so a look
+  that read the file before the deletion read as a change after one that saw it gone.
 
 ## 0.14.0-alpha.102 - 2026-10-16
 

@@ -1699,6 +1699,29 @@ let internal configStamp (configPath: string) : (DateTime * int64) option =
     | :? IOException
     | :? UnauthorizedAccessException -> None
 
+/// One look of the config poller: read the stamp, compare it with the last one and keep
+/// it. True when the look saw a write, creation or rename into place. An empty file is
+/// skipped and compared on the next look, and a missing one is never a change.
+///
+/// The read is under the lock that keeps it. Looks are Timer callbacks, and one that
+/// outlasts the interval runs beside the next: read outside the lock, a look that read
+/// the file before a deletion could keep its stamp after a later look kept "gone", and
+/// that stale stamp then read as a change.
+let internal configLook
+    (readStamp: unit -> (DateTime * int64) option)
+    (stampGate: obj)
+    (lastStamp: (DateTime * int64) option ref)
+    : bool =
+    lock stampGate (fun () ->
+        let current = readStamp ()
+
+        match current with
+        | Some(_, 0L) -> false
+        | _ ->
+            let changed = current <> lastStamp.Value
+            lastStamp.Value <- current
+            changed && current.IsSome)
+
 /// Look at `configPath` every `interval` and invoke the callback with a
 /// human-readable reason when it was written, created or renamed into place since
 /// the last look. Re-parses the file to distinguish "config changed" from "config
@@ -1718,21 +1741,10 @@ let internal watchConfigFileEvery (interval: TimeSpan) (configPath: string) (onC
     let gate = obj ()
     let window = TimeSpan.FromMilliseconds(200.0)
     let stampGate = obj ()
-    let mutable lastStamp = configStamp configPath
+    let lastStamp = ref (configStamp configPath)
 
     let look _ =
-        let current = configStamp configPath
-
-        let changed =
-            lock stampGate (fun () ->
-                match current with
-                | Some(_, 0L) -> false
-                | _ ->
-                    let changed = current <> lastStamp
-                    lastStamp <- current
-                    changed)
-
-        if changed && current.IsSome then
+        if configLook (fun () -> configStamp configPath) stampGate lastStamp then
             onConfigFsEvent
                 gate
                 lastFire

@@ -1942,6 +1942,50 @@ let ``the config poller stays silent for an untouched or deleted .fshw.json`` ()
         System.Threading.Thread.Sleep 200
         test <@ calls = 0 @>)
 
+[<Fact(Timeout = 15000)>]
+let ``a look that read the config before its deletion cannot report it after a later look saw it gone`` () =
+    // The poller's looks are Timer callbacks, and a look that outlasts the interval runs
+    // beside the next one. Here the earlier look has read the file as it was before the
+    // deletion and is held there; the later look reads it gone. Committed in that order,
+    // the earlier look's stale stamp differs from the newer "gone" one and reads as a
+    // config change, which is how a deletion under load reported one.
+    let saved =
+        Some(System.DateTime(2026, 10, 16, 0, 0, 0, System.DateTimeKind.Utc), 2L)
+
+    let lastStamp = ref saved
+    let stampGate = obj ()
+    use earlierRead = new System.Threading.ManualResetEventSlim(false)
+    use releaseEarlier = new System.Threading.ManualResetEventSlim(false)
+
+    let readBeforeDeletion () =
+        earlierRead.Set()
+        Assert.True(releaseEarlier.Wait(System.TimeSpan.FromSeconds 10.0), "the fixture must release the earlier look")
+        saved
+
+    let look readStamp =
+        System.Threading.Tasks.Task.Factory.StartNew(
+            (fun () -> configLook readStamp stampGate lastStamp),
+            System.Threading.Tasks.TaskCreationOptions.LongRunning
+        )
+
+    let earlier = look readBeforeDeletion
+    Assert.True(earlierRead.Wait(System.TimeSpan.FromSeconds 10.0), "the earlier look never read the stamp")
+    let later = look (fun () -> None)
+
+    // The later look's chance to commit first. A look that waits for the earlier one
+    // finishes after it instead.
+    later.Wait(System.TimeSpan.FromMilliseconds 500.0) |> ignore
+    releaseEarlier.Set()
+
+    test
+        <@
+            earlier.Wait(System.TimeSpan.FromSeconds 10.0)
+            && later.Wait(System.TimeSpan.FromSeconds 10.0)
+        @>
+
+    test <@ not earlier.Result && not later.Result @>
+    test <@ lastStamp.Value = None @>
+
 // --- debounceShouldFire / configChangeReason / onConfigFsEvent ---
 // Injected clocks so BOTH arms of every watcher branch are covered deterministically.
 // The poller reaches the suppressed-debounce arm only when it looks more often than
