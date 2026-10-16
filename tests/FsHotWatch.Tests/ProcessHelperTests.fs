@@ -258,6 +258,10 @@ let ``an expired deadline keeps its token source alive through a late registrati
     let outcome, completion =
         runWithCancellableDeadline (fun _ -> false) (TimeSpan.FromMilliseconds 20.0) (fun ct ->
             Assert.True(expired.Wait(TimeSpan.FromSeconds 10.0), "the fixture must release the work")
+            // A registration on a cancelled token runs its callback at once and never
+            // throws, even when the source is disposed. The token's wait handle does
+            // throw then, so a source disposed at the timeout always fails this work.
+            ct.WaitHandle |> ignore
             use _registration = ct.Register(fun () -> registered.Set())
             registered.Set())
 

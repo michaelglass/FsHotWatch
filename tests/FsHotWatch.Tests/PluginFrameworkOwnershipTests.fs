@@ -372,15 +372,13 @@ let ``durable commit failures fault the actual receipt and retain the appropriat
     let registration =
         registerWith handler (Some(fun (_, command) -> readCommand <- Some command))
 
+    // No bound on the receipt: only the event's own failure can end this wait, and a
+    // receipt that never settles is a hang the xUnit cap reports.
     let receipt =
         registration
             .DispatchTracked(DispatchFileChanged(SourceChanged [ "/tmp/repo/Commit.fs" ]))
-            .Value.Wait(System.TimeSpan.FromSeconds 5.0)
+            .Value.Wait(System.Threading.Timeout.InfiniteTimeSpan)
 
-    let winner =
-        System.Threading.Tasks.Task.WhenAny(receipt, System.Threading.Tasks.Task.Delay(5000)).GetAwaiter().GetResult()
-
-    Assert.Same(receipt, winner)
     Assert.Same(failure, Assert.Throws<System.IO.IOException>(fun () -> receipt.GetAwaiter().GetResult()))
     Assert.Same(failure, registration.Fault().Value)
     Assert.Equal((if failFinalize then "5" else "4"), readCommand.Value [||] |> Async.RunSynchronously)
