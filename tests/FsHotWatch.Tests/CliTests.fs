@@ -93,6 +93,72 @@ let ``parse test-rerun --filter-trait returns TestRerun FilterTrait`` () =
         @>
 
 [<Fact(Timeout = 15000)>]
+let ``parse test-rerun accepts a repeated project and filter-class flag`` () =
+    test
+        <@
+            CommandTree.parse
+                tree
+                [| "test-rerun"
+                   "-p"
+                   "A"
+                   "-p"
+                   "B"
+                   "--filter-class"
+                   "X"
+                   "--filter-class"
+                   "Y" |] = Ok(TestRerun [ Project "A"; Project "B"; FilterClass "X"; FilterClass "Y" ])
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``parse test-rerun accepts a repeated filter-trait flag`` () =
+    test
+        <@
+            CommandTree.parse tree [| "test-rerun"; "--filter-trait"; "A=1"; "--filter-trait"; "B=2" |] = Ok(
+                TestRerun [ FilterTrait "A=1"; FilterTrait "B=2" ]
+            )
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``parse dead-code accepts a repeated entry flag`` () =
+    test
+        <@
+            CommandTree.parse tree [| "dead-code"; "--entry"; "*.main"; "--entry"; "*.Jobs.*" |] = Ok(
+                DeadCode [ Entry "*.main"; Entry "*.Jobs.*" ]
+            )
+        @>
+
+/// Every `CmdFlag` case in the CLI assembly with its attribute, by `Union.Case`.
+let private cmdFlagCases () =
+    let all =
+        System.Reflection.BindingFlags.Public
+        ||| System.Reflection.BindingFlags.NonPublic
+
+    typeof<RerunFlag>.Assembly.GetTypes()
+    |> Array.filter (fun t -> Microsoft.FSharp.Reflection.FSharpType.IsUnion(t, all))
+    |> Array.collect (fun t -> Microsoft.FSharp.Reflection.FSharpType.GetUnionCases(t, all))
+    |> Array.choose (fun case ->
+        case.GetCustomAttributes(typeof<CmdFlagAttribute>)
+        |> Array.tryHead
+        |> Option.map (fun attr -> $"%s{case.DeclaringType.Name}.%s{case.Name}", (attr :?> CmdFlagAttribute)))
+    |> Array.distinctBy fst
+
+[<Fact(Timeout = 15000)>]
+let ``every flag whose help says repeatable is parsed as repeatable`` () =
+    let says =
+        cmdFlagCases ()
+        |> Array.filter (fun (_, attr) ->
+            not (isNull attr.Description)
+            && attr.Description.Contains("repeatable", StringComparison.OrdinalIgnoreCase))
+
+    // Positive control: the guard is about real flags, not an empty set.
+    Assert.Contains("RerunFlag.Project", says |> Array.map fst)
+
+    let drifted =
+        says |> Array.filter (fun (_, attr) -> not attr.Repeatable) |> Array.map fst
+
+    Assert.Empty drifted
+
+[<Fact(Timeout = 15000)>]
 let ``parse test-rerun --wait-sec returns TestRerun WaitSec`` () =
     test <@ CommandTree.parse tree [| "test-rerun"; "--wait-sec"; "300" |] = Ok(TestRerun [ WaitSec 300 ]) @>
 

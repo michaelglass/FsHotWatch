@@ -29,12 +29,13 @@ type ConfirmFlag =
 /// a change by design. `test-rerun` is the explicit investigation verb that
 /// slices what just ran (or what you ask for) via xUnit v3's --filter-* args.
 type RerunFlag =
-    | [<CmdFlag(Description = "Pass --filter-class <pattern> to the underlying test runner (xUnit v3)")>] FilterClass of
-        string
-    | [<CmdFlag(Description = "Pass --filter-trait <name=value> to the underlying test runner (xUnit v3)")>] FilterTrait of
-        string
-    | [<CmdFlag(Description = "Limit the rerun to this test project (repeatable; matches the project name in your test config). Without it the filter is fanned out across EVERY configured test project, so a class living in one of them makes all the others report zero matches.")>] Project of
-        string
+    | [<CmdFlag(Description = "Pass --filter-class <pattern> to the underlying test runner (xUnit v3; repeatable)",
+                Repeatable = true)>] FilterClass of string
+    | [<CmdFlag(Description = "Pass --filter-trait <name=value> to the underlying test runner (xUnit v3; repeatable)",
+                Repeatable = true)>] FilterTrait of string
+    | [<CmdFlag(Description =
+                    "Limit the rerun to this test project (repeatable; matches the project name in your test config). Without it the filter is fanned out across EVERY configured test project, so a class living in one of them makes all the others report zero matches.",
+                Repeatable = true)>] Project of string
     | [<CmdFlag(Description = "Seconds to wait for an in-flight background test run to release the slot before reporting busy (default 600). Raise it above a long tests.beforeRun chain so an explicit rerun isn't defeated.")>] WaitSec of
         int
     | [<CmdFlag(Description =
@@ -225,8 +226,9 @@ type CoverageCommand =
 /// CLI's existing GLOBAL `-v/--verbose` flag — CommandTree rejects a command
 /// flag that collides with a global, and the global already means "more detail".
 type DeadCodeFlag =
-    | [<CmdFlag(Description = "Entry-point name pattern (repeatable; replaces the defaults: *.main, *.Program.*, *.Routes.*, *.Scheduler.*)")>] Entry of
-        string
+    | [<CmdFlag(Description =
+                    "Entry-point name pattern (repeatable; replaces the defaults: *.main, *.Program.*, *.Routes.*, *.Scheduler.*)",
+                Repeatable = true)>] Entry of string
     | [<CmdFlag(Description = "Include symbols from test files in the report", Name = "include-tests")>] IncludeTests
 
 /// `--repository`: act on the repository host and every worktree it serves.

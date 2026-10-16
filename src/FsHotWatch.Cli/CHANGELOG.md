@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: `test-rerun` accepts `-p`/`--project`, `--filter-class` and `--filter-trait` more than
+  once, and `dead-code` accepts `--entry` more than once. Their help said "repeatable", but
+  the parser rejected a second one with "Flag '-p' provided more than once". A test now
+  fails when a flag whose help says "repeatable" is not parsed as one.
+
 ## 0.14.0-alpha.104 - 2026-10-16
 
 - chore: rebuild to bundle updated dependencies
