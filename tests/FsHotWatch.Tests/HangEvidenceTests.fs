@@ -120,7 +120,22 @@ let ``a child that exits between the listing and its stacks is a skip, not an er
 
             test <@ List.isEmpty errors @>
             test <@ not (File.Exists(Path.Combine(out, "capture-errors.txt"))) @>
-            test <@ File.ReadAllText(Path.Combine(out, "capture-skips.txt")).Contains $"%d{gone} exited" @>
+
+            // This once failed on Linux with the skips file missing and nothing else wrong,
+            // which this deterministic capture cannot produce by itself. Say which branch
+            // failed and what the capture left, so the next one names its state.
+            let skips = Path.Combine(out, "capture-skips.txt")
+
+            if not (File.Exists skips) then
+                let left =
+                    if Directory.Exists out then
+                        Directory.GetFiles out |> Array.map Path.GetFileName |> String.concat ", "
+                    else
+                        "(the evidence directory is gone)"
+
+                Assert.Fail $"onMac=%b{onMac}: capture-skips.txt was not there; %s{out} holds: %s{left}"
+
+            test <@ File.ReadAllText(skips).Contains $"%d{gone} exited" @>
 
             // A child still alive whose stacks could not be taken is a real failure.
             let stillThere =
