@@ -19,6 +19,8 @@
   it reuses anything. `FSHW_TEST_EVIDENCE=0` turns the whole mechanism off. A
   run logs `test evidence: reused N, moved N, missed N, written N`.
 
+## 0.13.0-alpha.75 - 2026-10-16
+
 - **fix!: an impact-selected test run is cancelled, and its test hosts reaped, once
   every client whose check set it off has gone. `TestPruneMsg` has a new case,
   `TestRunWithdrawn`**, so code that matches it exhaustively must handle it. A run the

@@ -425,10 +425,16 @@ let ``a newer edit mid-scan costs its own checks and one build, and the scan pub
               Build = WritesOutput
               NewerEdit = Some("B.fs", editedSource) }
 
-    // The edit's change batch checks B and its dependent C, and the scan then checks
-    // every file once: two starts more than the cohort, and no retry. The edit's build is
-    // the generation's only one; the scan's own build request replays it.
-    test <@ outcome.Costs = steadyCosts 5L 3 id "completed" @>
+    // The edit's change batch checks B, and the scan then checks every file once, with no
+    // retry. The edit changes B's body, not its declarations, so C is checked again only
+    // in the first generation, while B has no signature recorded to compare against: one
+    // start more than the cohort there, and two in the first. The edit's build is the
+    // generation's only one; the scan's own build request replays it.
+    let expected =
+        steadyCosts 4L 3 id "completed"
+        |> List.mapi (fun i costs -> if i = 0 then { costs with CheckStarts = 5L } else costs)
+
+    test <@ outcome.Costs = expected @>
 
     // Newer-edit ordering: the last result the scan published for B is the edit's.
     test <@ outcome.LastEditedSources = [ for generation in 1..generations -> editedSource generation ] @>

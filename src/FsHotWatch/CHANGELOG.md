@@ -16,6 +16,62 @@
   paths relatively, so two checkouts holding the same compile inputs publish the same
   identity. Within one checkout nothing changes.
 
+- fix: the analysis evidence a receipt is graded from no longer refuses a green over an
+  error whose code the file's own `#nowarn` (or the configured `fcsSuppressedCodes`)
+  silences. The ledger and TestPrune's cache-poisoning gate already applied that filter;
+  the evidence read raw Error severity. Under `--warnaserror`, FCS reports a suppressed
+  code at Error severity when a change batch re-checks a file downstream of an edit, but
+  not on a cold scan, so a green scan turned red after an edit.
+  - **BREAKING**: `FcsDiagnosticFilter.parseNowarnCodes` and `allSuppressedCodes` moved
+    to the new `FcsSuppression` module, beside `blockingErrors`, the one filter every
+    reader of a check's diagnostics now goes through.
+  - **BREAKING**: `IFileReplayState.Replayed` takes the host's configured suppressed
+    codes as its first argument. A state that does not grade diagnostics ignores it.
+
+## 0.10.0-alpha.77 - 2026-10-16
+
+- deps: pin `MessagePack` 2.5.303. `StreamJsonRpc` 2.25.29, still the latest, floors it at
+  2.5.302, which GHSA-qhrr-8q5h-9q3h (2026-10-15) affects, so every restore failed under
+  `NU1902`. 2.5.303 is the patched release on the 2.x line StreamJsonRpc targets, so consumers
+  are not pushed onto the 3.x rewrite. FsHotWatch never executes MessagePack: its IPC uses
+  StreamJsonRpc's JSON formatter. The pin goes once a StreamJsonRpc release floors
+  MessagePack at 2.5.303 or higher.
+- perf: a comment, whitespace or body edit no longer re-checks every later file of its
+  project and every file of every project downstream of it. Each check now records its
+  file's API signature: every declaration at every accessibility, with attributes and
+  their arguments, literal values, union cases, fields, members, generic constraints,
+  extension members and XML docs, but no bodies, comments or positions. A file with an
+  `inline` member, an `assembly:` attribute or a type error has no signature, and its
+  content stands in for it.
+  - A change batch now checks the changed files first, then re-checks the later files and
+    dependent projects only when a changed file's signature moved.
+  - The check-result cache also keys a file by the signatures of the files before it, so
+    a rescan after such an edit serves those files from the cache.
+  - Measured on the delivery fixture (three files in one project, one in a dependent
+    project, cache on): a comment or body edit to the first file went from 4 FCS checks
+    and 4 `FileChecked` deliveries per plugin to 1 and 1. The rescan after it starts no
+    check, before and after. A signature edit still re-checks all four.
+  - A batch that changes files in two projects now re-checks every file of a project
+    downstream of a moved one. Before, only the files after its own changed file were
+    re-checked.
+- feat: the `ScanStatus` answer for a running scan says how long the scan has run and what
+  the check-result cache has done for it: `scanning: 120/800 files (15%), 6m 12s elapsed,
+  cache 0 hit / 120 miss`. While discovery has registered no file yet it reads
+  `scanning: discovering projects, 12s elapsed` instead of `0/0 files (0%)`. The
+  `scanning:` prefix is unchanged. Each per-file progress update used to overwrite the
+  scan's start time with its own timestamp; the start now holds for the whole scan.
+- fix: `CheckPipeline.CheckFileWithOptions` no longer checks an MSBuild-generated compile
+  item (a path under `obj/` or `bin/`, such as `obj/Debug/net10.0/X.AssemblyInfo.fs`) on
+  its own. It returns `None`, as `CheckFile` already did. A source edit re-checks the
+  files of every dependent project, and that list included those generated items. In a
+  workspace that had not been built yet, each one logged
+  `Failed to check …: Unable to find file …` as an error.
+- fix: a started check that ends cancelled is logged at info, and the line names what
+  cancelled it and what that does to the verdict. There are three cases: cancelled by the
+  caller (`scan`, `change batch`, …), gave way to a newer check, or superseded by a newer
+  check of a different snapshot. It used to be logged as an error reading
+  `Failed to check <file>: The operation was canceled.`
+
 - **fix!: a test run a client's check set off is cancelled, and its test hosts reaped,
   once every client that wanted it has gone. `DaemonRpcConfig.RequestScan` now takes the
   requesting invocation (`string option`)**, so code that builds the config must accept

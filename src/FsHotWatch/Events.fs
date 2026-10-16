@@ -940,15 +940,16 @@ type AnalysisFileEvidence =
 
 module internal AnalysisFileEvidence =
     /// A result plus what the analysis of it concluded. Compiler errors and a failed
-    /// symbol analysis are refusals; warnings are not.
-    let fromResult (result: FileCheckResult) (symbolAnalysis: Result<unit, string>) =
+    /// symbol analysis are refusals; warnings are not, and neither is an error whose code
+    /// `suppressedCodes` or the file's own `#nowarn` silences (`FcsSuppression`).
+    let fromResult (suppressedCodes: Set<int>) (result: FileCheckResult) (symbolAnalysis: Result<unit, string>) =
         let refusals =
             [ match result.CheckResults with
               | ParseOnly -> yield "type checking did not complete"
               | FullCheck checkedResult ->
-                  for diagnostic in checkedResult.Diagnostics do
-                      if diagnostic.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error then
-                          yield diagnostic.Message
+                  for diagnostic in
+                      FcsSuppression.blockingErrors suppressedCodes result.Source checkedResult.Diagnostics do
+                      yield diagnostic.Message
 
               match symbolAnalysis with
               | Ok() -> ()

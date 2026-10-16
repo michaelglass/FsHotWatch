@@ -1,34 +1,11 @@
-/// Shared FCS diagnostic suppression helpers used by both the user-visible
-/// error-reporting path (`FsHotWatch.Daemon.reportFcsDiagnostics`) and the
-/// TestPrune cache-poisoning gate (`FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors`).
+/// How the reporting path reads FCS diagnostics. Which codes are suppressed is decided
+/// in `FcsSuppression`, shared with every other reader of a check's diagnostics.
 ///
-/// Keeping these in one module guarantees the two paths agree on which codes are
-/// considered "noise": an asymmetry between them trips the gate on phantom errors in
-/// projects that rely on `<TreatWarningsAsErrors>` + `#nowarn` directives.
-///
-/// It also owns the SELF-INCOMPATIBLE type guard (see the block comment further
+/// This module owns the SELF-INCOMPATIBLE type guard (see the block comment further
 /// down): the decision that a diagnostic claiming a type is incompatible with
 /// ITSELF is a fault in our own checking and never code feedback. That decision is
 /// deliberately NOT shared with `hasFcsErrors` — see `classifyDiagnostic`.
 module FsHotWatch.FcsDiagnosticFilter
-
-/// Parse `#nowarn` directives from F# source text, returning the set of suppressed
-/// warning codes. Workaround for https://github.com/dotnet/fsharp/issues/9796 —
-/// FCS TransparentCompiler ignores `#nowarn` directives for warnaserror codes.
-/// When that issue is resolved this function and its callers can be removed.
-let parseNowarnCodes (source: string) : Set<int> =
-    source.Split('\n')
-    |> Array.filter (fun line -> line.TrimStart().StartsWith("#nowarn"))
-    |> Array.collect (fun line -> line.TrimStart().Split('"'))
-    |> Array.choose (fun part ->
-        match System.Int32.TryParse(part) with
-        | true, code -> Some code
-        | _ -> None)
-    |> Set.ofArray
-
-/// Effective suppression set: caller-configured codes ∪ per-file `#nowarn`.
-let allSuppressedCodes (configured: Set<int>) (source: string) : Set<int> =
-    Set.union configured (parseNowarnCodes source)
 
 // ---------------------------------------------------------------------------
 // Self-incompatible type diagnostics

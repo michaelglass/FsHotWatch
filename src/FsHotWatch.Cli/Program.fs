@@ -1065,8 +1065,13 @@ let private ensureAndQueryErrors
                     (renderLines mode (not noWarnFail))
                     noWarnFail
                     // Force a fresh from-disk scan up front — do NOT merely WAIT for one;
-                    // see `forceScanAndWait`.
-                    (fun () -> forceScanAndWait ipc pipeName (Some invocation.Id))
+                    // see `forceScanAndWait`. Its progress is reported while it runs.
+                    (fun () ->
+                        ScanHeartbeat.waitReporting
+                            ScanHeartbeat.interval
+                            (fun () -> ipc.ScanStatus pipeName |> Async.RunSynchronously)
+                            ScanHeartbeat.emitLine
+                            (fun () -> forceScanAndWait ipc pipeName (Some invocation.Id)))
                     // Authoritative settle: block until the daemon reports its sound
                     // verdict (`waitForVerdict`). `-1` = no client-imposed timeout; the
                     // daemon bounds the wait with its hard verdict deadline

@@ -21,7 +21,7 @@ type LintState =
     // against the model published now is linted (see `notCurrent`), and a completed lint
     // replaces the file's warnings with the ones it reported. A failed one leaves them.
     interface IFileReplayState<LintState> with
-        member this.Replayed currentModel result analysis =
+        member this.Replayed _ currentModel result analysis =
             match analysis with
             | Result.Ok findings when result.ModelGeneration.IsSome && result.ModelGeneration = currentModel ->
                 { WarningsByFile = this.WarningsByFile |> Map.add result.File (findings |> List.map _.Message) }

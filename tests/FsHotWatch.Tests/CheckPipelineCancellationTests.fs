@@ -88,7 +88,10 @@ let private cancellationLines (lines: string list) =
     lines
     |> List.filter (fun line ->
         line.Contains "[check]"
-        && (line.Contains "Cancelled" || line.Contains "canceled"))
+        && (line.Contains "Cancelled"
+            || line.Contains "canceled"
+            || line.Contains "cancelled"
+            || line.Contains "superseded"))
     |> List.map (fun line ->
         // Drop the timestamp: `  [check] <ts> <message>`.
         let afterTag = line.Substring(line.IndexOf "] " + 2)
@@ -176,7 +179,9 @@ let ``a check with explicit options canceled before FCS returns None, logs Cance
         test <@ throws = 0 @>)
 
 [<Fact(Timeout = 60000)>]
-let ``a check canceled while FCS runs returns None after it, is logged as before, caches nothing and throws nothing``
+// "Failed to check …: The operation was canceled." read as a defect. The line names who
+// cancelled the check and what that does to the verdict.
+let ``a check canceled while FCS runs returns None after it, names its canceller and the verdict effect, caches nothing and throws nothing``
     ()
     =
     withTempDir "cancel-after-fcs" (fun tmpDir ->
@@ -185,13 +190,25 @@ let ``a check canceled while FCS runs returns None after it, is logged as before
 
         let (result, lines), throws =
             countingCanceledThrows (fun () ->
-                capturingLogs (fun () -> pipeline.CheckFile(file, cts.Token) |> Async.RunSynchronously))
+                capturingLogs (fun () ->
+                    pipeline.CheckFile(file, cts.Token)
+                    |> CheckCaller.within "scan"
+                    |> Async.RunSynchronously))
 
         test <@ cts.IsCancellationRequested @>
         test <@ result = None @>
 
         test
-            <@ cancellationLines lines = [ $"Failed to check %s{AbsFilePath.value file}: The operation was canceled." ] @>
+            <@
+                cancellationLines lines = [ $"Check of %s{AbsFilePath.value file} cancelled by scan before it finished; no answer. Verdict: a scan re-runs the file and counts it unchecked if it never finishes; a change batch leaves it to the file's next check." ]
+            @>
+
+        test
+            <@
+                lines
+                |> List.exists (fun l -> l.Contains "[check]" && l.Contains "Failed to check")
+                |> not
+            @>
 
         test <@ cache.Count = 0 @>
         test <@ throws = 0 @>)
@@ -300,7 +317,8 @@ let ``a newer check of a changed file still supersedes the running one`` () =
         let file = AbsFilePath.create sourceFile.Value
         startSecond <- fun () -> Async.StartAsTask(pipeline.CheckFile file)
 
-        let first = pipeline.CheckFile file |> Async.RunSynchronously
+        let first, lines =
+            capturingLogs (fun () -> pipeline.CheckFile file |> Async.RunSynchronously)
 
         let latest =
             second.Value.WaitAsync(TimeSpan.FromSeconds 30.0).GetAwaiter().GetResult()
@@ -308,4 +326,44 @@ let ``a newer check of a changed file still supersedes the running one`` () =
         test <@ starts.Value = 2 @>
         test <@ first = None @>
         test <@ latest.IsSome @>
-        test <@ latest.Value.Source.Contains "let x = 2" @>)
+        test <@ latest.Value.Source.Contains "let x = 2" @>
+
+        test
+            <@
+                cancellationLines lines
+                |> List.contains
+                    $"Check of %s{AbsFilePath.value file} was superseded by a newer check of the same file; that check's answer replaces this one. Verdict: unaffected."
+            @>)
+
+// A project's options list MSBuild's generated compile items (obj/…AssemblyInfo.fs). In a
+// fresh workspace they do not exist yet, and every change batch that reached a dependent
+// project checked them on their own and logged "Failed to check …: Unable to find file …"
+// for each. They are compiled with the project, never checked on their own.
+[<Fact(Timeout = 60000)>]
+let ``a generated obj file is never checked on its own, so a missing one logs no failure`` () =
+    withTempDir "generated-obj" (fun tmpDir ->
+        let pipeline, cache, _ = scriptPipeline tmpDir None
+        let options = (pipeline.GetProjectOptions(Path.Combine(tmpDir, "Mod.fsproj"))).Value
+
+        let generated =
+            Path.GetFullPath(Path.Combine(tmpDir, "obj", "Debug", "net10.0", "Mod.AssemblyInfo.fs"))
+
+        let options =
+            { options with
+                SourceFiles = Array.append [| generated |] options.SourceFiles }
+
+        let result, lines =
+            capturingLogs (fun () ->
+                pipeline.CheckFileWithOptions(AbsFilePath.create generated, options)
+                |> Async.RunSynchronously)
+
+        test <@ result = None @>
+        test <@ lines |> List.exists (fun l -> l.Contains "Failed to check") |> not @>
+
+        test
+            <@
+                lines
+                |> List.exists (fun l -> l.Contains "generated" && l.Contains "Mod.AssemblyInfo.fs")
+            @>
+
+        test <@ cache.Count = 0 @>)

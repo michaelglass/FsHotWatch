@@ -1184,3 +1184,143 @@ let ``a PE reference's stamp is part of the fingerprint`` () =
 
     Assert.Equal(fp (DateTime(2020, 1, 1)), fp (DateTime(2020, 1, 1)))
     Assert.NotEqual<string>(fp (DateTime(2020, 1, 1)), fp (DateTime(2020, 1, 2)))
+
+// =============================================================================
+// The upstream by API signature
+// =============================================================================
+
+/// `apiUpstreamFingerprintsWith` over `contents`, with `signatures` keyed by
+/// (file, content): the recorded signature holds for any upstream.
+let private apiTable (contents: Map<string, string>) (signatures: Map<string * string, string>) options =
+    let hash = fakeHasher contents
+
+    apiUpstreamFingerprintsWith
+        hash
+        (fun _ -> "stamp")
+        (fun opts -> upstreamFingerprints hash None opts)
+        (fun _ file content _ _ -> signatures |> Map.tryFind (file, content))
+        None
+        options
+
+[<Fact(Timeout = 15000)>]
+let ``an earlier file is named by its signature where one is recorded, and by its content where not`` () =
+    let entry contents signatures =
+        let table, _ = apiTable contents signatures twoFileOptions
+        table["/repo/C.fs"]
+
+    let before = Map [ "/repo/A.fs", "a1"; "/repo/B.fs", "b"; "/repo/C.fs", "c" ]
+    let after = before |> Map.add "/repo/A.fs" "a2"
+    let signed = Map [ ("/repo/A.fs", "a1"), "api"; ("/repo/A.fs", "a2"), "api" ]
+
+    // A's bytes moved and its signature did not: C's entry stands.
+    Assert.Equal(entry before signed, entry after signed)
+    // With no signature recorded, A's bytes name it.
+    Assert.NotEqual<string>(entry before Map.empty, entry after Map.empty)
+    // A moved signature moves the entry.
+    Assert.NotEqual<string>(entry before signed, entry after (signed |> Map.add ("/repo/A.fs", "a2") "api2"))
+
+[<Fact(Timeout = 15000)>]
+let ``a file listed twice keeps its first position in the signature chain`` () =
+    // Checked at its first position, A sees nothing of B: an entry from its second would.
+    let options =
+        makeProjectOptions "/repo/P.fsproj" [ "/repo/A.fs"; "/repo/B.fs"; "/repo/A.fs" ] []
+
+    let entry bContent =
+        let table, _ =
+            apiTable (Map [ "/repo/A.fs", "a"; "/repo/B.fs", bContent ]) Map.empty options
+
+        table["/repo/A.fs"]
+
+    Assert.Equal(entry "b1", entry "b2")
+
+[<Fact(Timeout = 15000)>]
+let ``a referenced project contributes its whole chain, once however often it is reached`` () =
+    // App references B and C, which both reference A: A's chain is walked once and both
+    // paths name the same value. A's signature, not its bytes, reaches App.
+    let a = makeProjectOptions "/repo/A.fsproj" [ "/repo/A.fs" ] []
+
+    let referencing name file =
+        { makeProjectOptions $"/repo/%s{name}.fsproj" [ file ] [ "-r:/repo/obj/A.dll" ] with
+            ReferencedProjects =
+                [| FSharp.Compiler.CodeAnalysis.FSharpReferencedProject.FSharpReference("/repo/obj/A.dll", a) |] }
+
+    let b = referencing "B" "/repo/B.fs"
+    let c = referencing "C" "/repo/C.fs"
+
+    let app =
+        { makeProjectOptions "/repo/App.fsproj" [ "/repo/App.fs" ] [ "-r:/repo/obj/B.dll"; "-r:/repo/obj/C.dll" ] with
+            ReferencedProjects =
+                [| FSharp.Compiler.CodeAnalysis.FSharpReferencedProject.FSharpReference("/repo/obj/B.dll", b)
+                   FSharp.Compiler.CodeAnalysis.FSharpReferencedProject.FSharpReference("/repo/obj/C.dll", c) |] }
+
+    let entry aContent aSignature =
+        let contents =
+            Map
+                [ "/repo/A.fs", aContent
+                  "/repo/B.fs", "b"
+                  "/repo/C.fs", "c"
+                  "/repo/App.fs", "app" ]
+
+        let table, _ = apiTable contents (Map [ ("/repo/A.fs", aContent), aSignature ]) app
+        table["/repo/App.fs"]
+
+    Assert.Equal(entry "a1" "api", entry "a2" "api")
+    Assert.NotEqual<string>(entry "a1" "api", entry "a1" "api2")
+
+[<Fact(Timeout = 15000)>]
+let ``a non-F# reference reaches the signature chain by its stamp`` () =
+    let withReference (reference: FSharp.Compiler.CodeAnalysis.FSharpReferencedProject) =
+        { makeProjectOptions "/repo/App.fsproj" [ "/repo/App.fs" ] [] with
+            ReferencedProjects = [| reference |] }
+
+    let il stamp =
+        FSharp.Compiler.CodeAnalysis.FSharpReferencedProject.ILModuleReference(
+            "/repo/obj/Cs.dll",
+            (fun () -> stamp),
+            fun () -> failwith "a fingerprint never reads the module"
+        )
+
+    let pe stamp =
+        FSharp.Compiler.CodeAnalysis.FSharpReferencedProject.PEReference(
+            (fun () -> stamp),
+            FSharp.Compiler.CodeAnalysis.DelayedILModuleReader(
+                "/repo/obj/Pe.dll",
+                fun _ -> failwith "a fingerprint never reads the module"
+            )
+        )
+
+    let entry reference =
+        let table, _ =
+            apiTable (Map [ "/repo/App.fs", "app" ]) Map.empty (withReference reference)
+
+        table["/repo/App.fs"]
+
+    let day1, day2 = DateTime(2020, 1, 1), DateTime(2020, 1, 2)
+    Assert.NotEqual<string>(entry (il day1), entry (il day2))
+    Assert.NotEqual<string>(entry (pe day1), entry (pe day2))
+
+[<Fact(Timeout = 15000)>]
+let ``UpstreamFingerprints names an earlier file by the signature recorded for its bytes`` () =
+    withTempDir "fp-api" (fun dir ->
+        let a = Path.Combine(dir, "A.fs")
+        let b = Path.Combine(dir, "B.fs")
+        File.WriteAllText(a, "module A")
+        File.WriteAllText(b, "module B")
+        let opts = makeProjectOptions (Path.Combine(dir, "P.fsproj")) [ a; b ] []
+        let fps = UpstreamFingerprints(None)
+        let content = fps.HashFile a
+        let byContent = fps.ForApi(b, opts, "h")
+        let apiUpstream, contentUpstream = fps.ForApi(a, opts, "h"), fps.For(a, opts, "h")
+
+        test <@ not (fps.HasSignatureFor(a, opts, content, apiUpstream, contentUpstream)) @>
+        fps.RecordSignature(a, opts, content, apiUpstream, contentUpstream, Some "api")
+        test <@ fps.HasSignatureFor(a, opts, content, apiUpstream, contentUpstream) @>
+        test <@ fps.LastSignature(a, opts.ProjectFileName) = Some(content, Some "api") @>
+        test <@ fps.LastSignature(b, opts.ProjectFileName) = None @>
+
+        let bySignature = fps.ForApi(b, opts, "h")
+        test <@ bySignature <> byContent @>
+
+        // New bytes: the record no longer holds, and A is named by its content again.
+        File.WriteAllText(a, "module A // edited")
+        test <@ fps.ForApi(b, opts, "h") <> bySignature @>)

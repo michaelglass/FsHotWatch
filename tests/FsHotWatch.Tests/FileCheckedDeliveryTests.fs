@@ -97,8 +97,10 @@ type private Fixture =
         Seals: unit -> BatchChecked list
     }
 
-let private withFixtureCaching
+/// `appFlags` are compiler flags App is checked with beyond the framework's.
+let private withFixtureOf
     (checkCache: FsHotWatch.InMemoryCheckCache.CheckCacheSetup)
+    (appFlags: string list)
     (name: string)
     (body: Fixture -> unit)
     =
@@ -149,20 +151,29 @@ let private withFixtureCaching
         let frameworkOptions =
             baseOptions.OtherOptions |> Array.filter (fun o -> not (o.EndsWith ".fsx"))
 
-        let fcsProject (project: string) (sources: string list) (refs: (string * FSharpProjectOptions) list) =
+        let fcsProject
+            (project: string)
+            (sources: string list)
+            (refs: (string * FSharpProjectOptions) list)
+            (flags: string list)
+            =
             { baseOptions with
                 ProjectFileName = project
                 SourceFiles = Array.ofList sources
-                OtherOptions = Array.append frameworkOptions [| for out, _ in refs -> $"-r:%s{out}" |]
+                OtherOptions =
+                    Array.concat
+                        [ frameworkOptions
+                          [| for out, _ in refs -> $"-r:%s{out}" |]
+                          Array.ofList flags ]
                 ReferencedProjects = [| for out, o in refs -> FSharpReferencedProject.FSharpReference(out, o) |]
                 UseScriptResolutionRules = false
                 ProjectId = None
                 Stamp = None }
 
-        let libOptions = fcsProject libProject [ early; middle; late ] []
+        let libOptions = fcsProject libProject [ early; middle; late ] [] []
 
         let appOptions =
-            fcsProject appProject [ usage ] [ Path.ChangeExtension(libProject, ".dll"), libOptions ]
+            fcsProject appProject [ usage ] [ Path.ChangeExtension(libProject, ".dll"), libOptions ] appFlags
 
         let loader =
             FixedWorkspaceLoader(
@@ -236,14 +247,13 @@ let private withFixtureCaching
               SetPhase = fun name -> Volatile.Write(&phase.contents, name)
               Seals = fun () -> seals.ToArray() |> List.ofArray })
 
-let private withFixture =
-    withFixtureCaching (
-        FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(
-            FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(1000),
-            None,
-            None
-        )
-    )
+let private withFixtureCaching checkCache = withFixtureOf checkCache []
+
+let private inMemoryCache () =
+    FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(1000), None, None)
+
+let private withFixture name body =
+    withFixtureCaching (inMemoryCache ()) name body
 
 let private settle (fixture: Fixture) =
     Assert.True(
@@ -302,15 +312,15 @@ let ``a change batch re-checks the later files of the edited file's own project`
 
 [<Fact(Timeout = 300000)>]
 let ``a change batch re-checks only what follows the edited file`` () =
-    // Files before the edit cannot see it: an edit to Late re-checks Late and its
-    // dependent project, never Early or Middle, and an edit to the last file of a
+    // Files before the edit cannot see it: a signature edit to Late re-checks Late and
+    // its dependent project, never Early or Middle, and an edit to the last file of a
     // project nothing references re-checks that file alone.
     withFixture "batch-later-files-only" (fun fixture ->
         fixture.Daemon.ScanAll() |> Async.RunSynchronously
         settle fixture
 
         let lateEdit =
-            changeBatchAfter fixture "late edit" fixture.Late "module Late\nlet tripled = Middle.doubled * 4\n"
+            changeBatchAfter fixture "late edit" fixture.Late "module Late\nlet tripled = int64 Middle.doubled * 3L\n"
 
         Assert.Equal<Set<string>>(set [ "Late.fs"; "Use.fs" ], lateEdit |> Map.keys |> Set.ofSeq)
 
@@ -331,6 +341,169 @@ let private rescan (fixture: Fixture) =
 
     FsHotWatch.ScanMetrics.readSeries (FsHotWatch.ScanMetrics.recordPath fixture.Root)
     |> List.last
+
+/// The FCS checks the daemon has started so far.
+let private starts (fixture: Fixture) = fixture.Daemon.Pipeline.CheckStarts
+
+/// `changeBatchAfter`, returning the files the batch delivered and the FCS checks it started.
+let private deliveredAndStarted (fixture: Fixture) (label: string) (file: string) (text: string) =
+    let before = starts fixture
+    let delivered = changeBatchAfter fixture label file text |> Map.keys |> Set.ofSeq
+    delivered, starts fixture - before
+
+/// Early, with a declaration of each kind a later file can observe.
+let private earlyApi =
+    String.concat
+        "\n"
+        [ "module Early"
+          "type internal Hidden = { H: int }"
+          "type Shape = | Circle of float"
+          "[<System.Obsolete(\"a\")>]"
+          "let old = 0"
+          "[<Literal>]"
+          "let Limit = 1"
+          "let value = 1"
+          "" ]
+
+/// `earlyApi` with `before` replaced by `after`.
+let private earlyWith (before: string) (after: string) =
+    Assert.Contains(before, earlyApi)
+    earlyApi.Replace(before, after)
+
+[<Fact(Timeout = 300000)>]
+let ``a signature change to an early file re-checks every file after it and every dependent project`` () =
+    // Each edit changes something Middle, Late or Use could type-check against, so each
+    // batch must re-check all of them. A signature hash that missed one of these edits
+    // would leave them standing, and this fact red.
+    withFixture "batch-signature-changes" (fun fixture ->
+        fixture.Daemon.ScanAll() |> Async.RunSynchronously
+        settle fixture
+
+        let everything = set [ "Early.fs"; "Middle.fs"; "Late.fs"; "Use.fs" ]
+
+        let edits =
+            [ "new declarations", earlyApi
+              "internal member type", earlyWith "{ H: int }" "{ H: int64 }"
+              "attribute argument", earlyWith "Obsolete(\"a\")" "Obsolete(\"b\")"
+              "literal value", earlyWith "let Limit = 1" "let Limit = 2"
+              "union case", earlyWith "| Circle of float" "| Circle of float | Square of float"
+              "inline member", earlyApi + "let inline twice (x: int) = x + x\n"
+              "inline body", earlyApi + "let inline twice (x: int) = x * 2\n"
+              // Content stands in for a file with an inline member, so even a comment moves it.
+              "comment beside an inline member", earlyApi + "// note\nlet inline twice (x: int) = x * 2\n" ]
+
+        for label, text in edits do
+            let delivered, _ = deliveredAndStarted fixture label fixture.Early text
+            Assert.True((delivered = everything), $"%s{label}: the batch delivered %A{delivered}"))
+
+[<Fact(Timeout = 300000)>]
+let ``a comment, whitespace or body edit to an early file re-checks that file alone`` () =
+    // Nothing after Early can tell these edits apart: its declarations are unchanged. The
+    // edited file is still checked (its own diagnostics may move), and nothing else is,
+    // in the batch or in the scan that follows.
+    withFixture "batch-signature-unchanged" (fun fixture ->
+        fixture.Daemon.ScanAll() |> Async.RunSynchronously
+        settle fixture
+
+        // Positive control: a declaration edit cascades, so the cuts below are not a
+        // batch that never reaches past the edited file.
+        let declared, _ = deliveredAndStarted fixture "declarations" fixture.Early earlyApi
+        Assert.Equal<Set<string>>(set [ "Early.fs"; "Middle.fs"; "Late.fs"; "Use.fs" ], declared)
+
+        let edits =
+            [ "comment", "// a comment moves every declaration down a line\n" + earlyApi
+              "whitespace", earlyApi.Replace("let value = 1", "let value =   1\n\n")
+              "body", earlyApi.Replace("let old = 0", "let old = 0 + 0") ]
+
+        for label, text in edits do
+            let delivered, started = deliveredAndStarted fixture label fixture.Early text
+            Assert.True((delivered = set [ "Early.fs" ]), $"%s{label}: the batch delivered %A{delivered}")
+            Assert.True((started = 1L), $"%s{label}: the batch started %d{started} checks")
+
+        let before = starts fixture
+        let sample = rescan fixture
+        Assert.Equal(0L, starts fixture - before)
+        Assert.Equal(4L, sample.CacheHits))
+
+[<Fact(Timeout = 300000)>]
+let ``a signature change in a referenced project re-checks its dependents, and a body edit does not`` () =
+    withFixture "batch-referenced-signature" (fun fixture ->
+        fixture.Daemon.ScanAll() |> Async.RunSynchronously
+        settle fixture
+
+        let body, _ =
+            deliveredAndStarted fixture "late body" fixture.Late "module Late\nlet tripled = Middle.doubled * 4\n"
+
+        Assert.Equal<Set<string>>(set [ "Late.fs" ], body)
+
+        let retyped =
+            changeBatchAfter fixture "late signature" fixture.Late "module Late\nlet tripled = float Middle.doubled\n"
+
+        Assert.Equal<Set<string>>(set [ "Late.fs"; "Use.fs" ], retyped |> Map.keys |> Set.ofSeq)
+        Assert.True(retyped["Use.fs"] > 0, $"Use must be red after the batch: %A{retyped}"))
+
+[<Fact(Timeout = 300000)>]
+let ``a #nowarn file a change batch re-checks leaves no refusal in the analysis receipt or the ledger`` () =
+    // App is built with --warnaserror+ and Use.fs silences FS0057 with #nowarn, so FCS
+    // reports the experimental use at Error severity anyway (dotnet/fsharp#9796). What
+    // reaches the receipt must be filtered exactly as what reaches the ledger is,
+    // whichever cohort delivered the result.
+    withFixtureOf (inMemoryCache ()) [ "--warnaserror+" ] "batch-nowarn-receipt" (fun fixture ->
+        File.WriteAllText(fixture.Late, "module Late\n[<Experimental(\"try\")>]\nlet tripled = Middle.doubled * 3\n")
+
+        File.WriteAllText(fixture.Use, "#nowarn \"57\"\nmodule Use\nlet total : int = Late.tripled + 1\n")
+
+        fixture.Daemon.RegisterHandler(
+            FsHotWatch.TestPrune.TestPrunePlugin.create
+                (Path.Combine(fixture.Root, "test-impact.db"))
+                fixture.Root
+                None
+                None
+                None
+                None
+                None
+                []
+        )
+
+        fixture.Daemon.ScanAll() |> Async.RunSynchronously
+        settle fixture
+
+        // Only a receipt that covers the file can vouch for it: an absent one would
+        // hold no refusal either.
+        let refusalsFor (file: string) =
+            let covering =
+                fixture.Daemon.Host.WorkSnapshot.AnalysisEvidence
+                |> List.filter (fun receipt -> receipt.CheckedFiles.Contains(AbsFilePath.create file))
+
+            Assert.NotEmpty covering
+
+            covering
+            |> List.collect (fun receipt -> receipt.FailureReasons)
+            |> List.filter (fun reason -> reason.StartsWith(file: string))
+
+        let ledgerFor (file: string) =
+            fixture.Daemon.Host.GetErrorsByPlugin(PluginActivity.FcsPluginName)
+            |> Map.tryFind file
+            |> Option.defaultValue []
+
+        Assert.Empty(refusalsFor fixture.Use)
+        Assert.Empty(ledgerFor fixture.Use)
+
+        // A signature change to Late: the batch re-checks Use as a dependent.
+        let batch =
+            changeBatchAfter
+                fixture
+                "late signature"
+                fixture.Late
+                "module Late\n[<Experimental(\"try\")>]\nlet tripled = Middle.doubled * 3\nlet extra = 0\n"
+
+        // Positive control: the batch delivered Use, and FCS really did report the
+        // suppressed code at Error severity in it.
+        Assert.True(batch.ContainsKey "Use.fs", $"the batch must re-check Use: %A{batch}")
+        Assert.True(batch["Use.fs"] > 0, $"Use must carry the #nowarn-suppressed error: %A{batch}")
+
+        Assert.Empty(refusalsFor fixture.Use)
+        Assert.Empty(ledgerFor fixture.Use))
 
 [<Fact(Timeout = 300000)>]
 let ``a rescan starts no check unless a file's own inputs moved`` () =

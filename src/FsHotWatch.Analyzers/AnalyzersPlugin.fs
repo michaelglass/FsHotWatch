@@ -87,7 +87,7 @@ type AnalyzersState =
     // completed analysis replaces the file's entries and crashes with the ones it
     // reported. `RunAnalyzed` counts what this handler analyzed, so a replay leaves it.
     interface IFileReplayState<AnalyzersState> with
-        member this.Replayed currentModel result analysis =
+        member this.Replayed _ currentModel result analysis =
             match analysis with
             | Result.Ok entries when result.ModelGeneration.IsSome && result.ModelGeneration = currentModel ->
                 { this with

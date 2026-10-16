@@ -74,6 +74,18 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core, test-prune: a `#nowarn` file no longer turns a check red after an edit
+
+- After an edit, `check` could exit 2 with "the evidence receipt ... refuses a green",
+  naming warnings in files whose source silences them with `#nowarn` (seen as FS0057
+  and FS3536 under `<TreatWarningsAsErrors>`). The same tree checked green before the
+  edit. FCS reports a `#nowarn`-suppressed code at Error severity when a change batch
+  re-checks a file downstream of an edit, but not on a cold scan. The ledger and the
+  test-impact gate dropped it; the analysis evidence the receipt is graded from did not.
+  All three now go through one filter (`FcsSuppression.blockingErrors`). A test checks
+  a `#nowarn` file in a dependent project and asserts the receipt holds no refusal for
+  it after the batch. It was red before the fix.
+
 ### tests: a test run no longer writes into the real `~/.cache/fshw`
 
 - Every daemon a test started wrote its shared task store into the developer's real

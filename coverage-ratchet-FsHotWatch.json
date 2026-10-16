@@ -21,6 +21,13 @@
         "reason": "new file (one run's dealings with the test-evidence store). Floor = the measured value rounded down. Measured 2026-10-16 on macOS by the unit suite (mise run test-direct): line 100%, branch 96.8% (92/95). The three uncovered edges: the plain IOException arms of `readIfPresent` and `deleteQuietly` (only a permission denial can be provoked deterministically, and both are tested with one), and one edge of the `when atLaunch.Value = atCompletion.Value` guard in `qualifies` that the compiler splits from the pattern. The producer, the re-check and the plan are covered end to end by TestEvidenceRunTests and unit by TestEvidenceProducerTests. Platform-neutral."
       }
     ],
+    "ApiSignature.fs": [
+      {
+        "line": 98,
+        "branch": 93,
+        "reason": "new file. Measured 2026-10-16 on macOS by ApiSignatureTests + FileCheckedDeliveryTests + CheckCacheTests with coverage: line 98.9% (177/179), branch 93.3% (70/75). The two uncovered lines cannot be reached from a checked file's own declarations: the non-text arm of docText (only a referenced assembly's symbol points at an XML doc file), and the refusal for member, defaults-to and simple-choice constraints (a member constraint needs an inline member, which already refuses, and the other two occur only in FSharp.Core). Everything reachable is covered, including the catch for a check FCS cannot describe. Platform-neutral, so no platform tag. Do NOT auto-ratchet upward: the remainder is unreachable, not merely untested."
+      }
+    ],
     "TimeoutMarker.fs": [
       {
         "line": 100,
