@@ -262,7 +262,7 @@ let runOnceAndReport
     | None ->
 
         let daemon = createDaemon repoRoot
-        DaemonConfig.registerPlugins daemon repoRoot config
+        DaemonConfig.registerRunOncePlugins daemon repoRoot config
         let statuses = runOnceWithProgress daemon
         daemon.Host.PruneVanishedErrors(System.IO.File.Exists) |> ignore
 

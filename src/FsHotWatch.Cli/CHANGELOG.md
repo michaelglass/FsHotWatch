@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- feat: `tests.runOn: "request"` makes a daemon launch no test run until a command asks
+  for one. Its builds still record what they leave owed; the run is held until `check`
+  (which now sends `set-scope {"scope":"owed"}` before its scan), `confirm` or
+  `test-rerun` asks, and the daemon holds again once that run has executed. Without it,
+  a daemon with no full-suite baseline (or no whole-project run under its project model)
+  widened the first run an edit provoked to every configured project, unasked. The
+  default, `"change"`, is unchanged; `--run-once` sessions always launch. An older
+  daemon answers `check`'s request with an unknown-scope error and is otherwise
+  unaffected. `FSHW_TESTS_RUN_ON` (`"change"` or `"request"`), read when the daemon
+  starts, overrides `tests.runOn` for that daemon alone, so the process that starts a
+  pooled checkout's daemons can make them hold without changing the shared config. An
+  unknown value, in either place, refuses the config load.
+
 - fix: `test-rerun` accepts `-p`/`--project`, `--filter-class` and `--filter-trait` more than
   once, and `dead-code` accepts `--entry` more than once. Their help said "repeatable", but
   the parser rejected a second one with "Flag '-p' provided more than once". A test now

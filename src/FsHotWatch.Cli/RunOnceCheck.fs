@@ -190,7 +190,7 @@ let private runOnceAndVerdictIn
     | None ->
 
         let daemon = createDaemon repoRoot
-        registerPlugins daemon repoRoot config
+        registerRunOncePlugins daemon repoRoot config
 
         // BEFORE the scan — the run it provokes must already be unfiltered.
         if checkMode = CheckVerdict.Confirmation then

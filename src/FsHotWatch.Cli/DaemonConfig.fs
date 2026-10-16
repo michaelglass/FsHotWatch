@@ -280,6 +280,17 @@ type TestExtensionConfig =
     /// registrations and `[<DispatchTemplate>]` shapes declared in the tree.
     | NamedDispatchExtension
 
+/// `tests.runOn`: when a daemon launches the test runs its builds leave owed.
+[<RequireQualifiedAccess>]
+type TestRunTrigger =
+    /// On every change: each build launches the run it leaves owed (the default).
+    | OnChange
+    /// Only when a command asks — `check`, `confirm`, `test-rerun`. A build still
+    /// records what it leaves owed; the run is held until then. For daemons in shared or
+    /// pooled workspaces, where a run nobody asked for (a cold daemon's full-suite
+    /// widening, say) competes with the work that was asked for.
+    | OnRequest
+
 /// Format mode configuration.
 type FormatMode =
     /// No format plugin
@@ -350,7 +361,8 @@ type DaemonConfiguration =
                Solution: string option
                CoverageDir: string
                DependsOn: string list
-               Traces: FsHotWatch.TestPrune.TraceSettings option |} option
+               Traces: FsHotWatch.TestPrune.TraceSettings option
+               RunOn: TestRunTrigger |} option
         FileCommands:
             {| PluginName: string
                Pattern: string option
@@ -1055,6 +1067,16 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     Some settings
                 | _ -> None
 
+            // `tests.runOn`: an unknown value is refused, not read as the default — a typo
+            // would otherwise launch the runs the setting exists to hold.
+            let runOn =
+                match v.TryGetProperty("runOn") with
+                | false, _ -> TestRunTrigger.OnChange
+                | true, r when r.ValueKind = JsonValueKind.String && r.GetString() = "change" -> TestRunTrigger.OnChange
+                | true, r when r.ValueKind = JsonValueKind.String && r.GetString() = "request" ->
+                    TestRunTrigger.OnRequest
+                | true, r -> refuseUnknown "tests.runOn" (describeValue r) (jsonStrings [ "change"; "request" ])
+
             if projects.IsEmpty then
                 None
             else
@@ -1067,7 +1089,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                        Solution = solution
                        CoverageDir = coverageDir
                        DependsOn = dependsOn
-                       Traces = traces |}
+                       Traces = traces
+                       RunOn = runOn |}
         | _ -> None
 
     let fileCommands =
@@ -2522,6 +2545,41 @@ let registerPluginsIn
         daemon.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.createWith absConfigPath reports)
     | None -> ()
 
+/// The environment variable that overrides `tests.runOn` for one daemon: `"change"` or
+/// `"request"`, read when the daemon starts. Whatever starts a daemon sets it — a worker
+/// pool, say — so one checkout's daemons can hold their runs while the shared
+/// `.fshw.json` keeps every other checkout's default. Unset or empty, the config decides.
+[<Literal>]
+let TestsRunOnEnvVar = "FSHW_TESTS_RUN_ON"
+
+/// `tests.runOn`, overridden by `env` (`TestsRunOnEnvVar`'s value). An unknown value is
+/// refused, not read as the default: a typo would launch the runs the override exists to hold.
+let resolveTestRunTrigger (env: string option) (configured: TestRunTrigger) : TestRunTrigger =
+    match env |> Option.map (fun value -> value.Trim()) with
+    | None
+    | Some "" -> configured
+    | Some "change" -> TestRunTrigger.OnChange
+    | Some "request" -> TestRunTrigger.OnRequest
+    | Some other -> refuseUnknown TestsRunOnEnvVar other (jsonStrings [ "change"; "request" ])
+
+/// The mode a daemon session's test runs start in, given `env` (`TestsRunOnEnvVar`'s
+/// value): `tests.runOn` or its override says whether its builds launch the runs they
+/// leave owed (`TestMode.initial`), or only a command does.
+let daemonTestModeWith (env: string option) (config: DaemonConfiguration) : FsHotWatch.TestPrune.TestMode =
+    match config.Tests with
+    | Some t when resolveTestRunTrigger env t.RunOn = TestRunTrigger.OnRequest ->
+        FsHotWatch.TestPrune.TestMode.startingWith false
+    | _ -> FsHotWatch.TestPrune.TestMode.initial
+
+/// `daemonTestModeWith` this process's `TestsRunOnEnvVar`.
+let daemonTestMode (config: DaemonConfiguration) : FsHotWatch.TestPrune.TestMode =
+    daemonTestModeWith (Environment.GetEnvironmentVariable TestsRunOnEnvVar |> Option.ofObj) config
+
 /// Register plugins on the daemon based on the loaded configuration, for a daemon session.
 let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
+    registerPluginsIn (daemonTestMode config) daemon repoRoot config
+
+/// Register plugins for a `--run-once` session. The command that runs it asked for its
+/// runs, so its builds launch them whatever `tests.runOn` says.
+let registerRunOncePlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
     registerPluginsIn FsHotWatch.TestPrune.TestMode.initial daemon repoRoot config

@@ -438,6 +438,12 @@ let RunTestsCommand = "run-tests"
 [<Literal>]
 let FullSuiteScopeArgs = """{"scope":"full"}"""
 
+/// The `set-scope` payload `check` sends for the run its daemon owes. A daemon whose
+/// `tests.runOn` is `"request"` holds that run until asked; any other daemon already
+/// launches it, and is left as it is.
+[<Literal>]
+let OwedRunScopeArgs = """{"scope":"owed"}"""
+
 /// The `force-rebuild` command: make the NEXT build a real one, never a cache
 /// replay.
 ///

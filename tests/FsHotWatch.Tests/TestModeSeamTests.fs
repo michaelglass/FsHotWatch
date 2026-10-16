@@ -163,3 +163,46 @@ let ``a requested-only session skips nothing, records no full-run traces, and ou
     test <@ FsHotWatch.TestPrune.TestMode.afterRun requestedOnly true requestedOnly = requestedOnly @>
     // `set-scope` names only `check`'s and `confirm`'s modes: no request reaches this one.
     test <@ FsHotWatch.TestPrune.TestMode.launchesOwedRuns (FsHotWatch.TestPrune.TestMode.ofScope "requested-only") @>
+
+// --- runOn "request": a daemon that launches only the runs a command asks for ---
+
+[<Fact>]
+let ``an owed-run request arms a requested-only session and leaves check's and confirm's modes alone`` () =
+    let arm = FsHotWatch.TestPrune.TestMode.armOwedRun
+    let requestedOnly = FsHotWatch.TestPrune.TestMode.startingWith false
+    let impact = FsHotWatch.TestPrune.ImpactSelection
+    let passThrough = FsHotWatch.TestPrune.PassThrough
+    test <@ arm requestedOnly = impact @>
+    test <@ arm impact = impact @>
+    // A confirm's pending full-suite scope is not narrowed by a check asking for its run.
+    test <@ arm passThrough = passThrough @>
+
+[<Fact>]
+let ``a run that executed returns a requested-only session to holding`` () =
+    let afterRunIn = FsHotWatch.TestPrune.TestMode.afterRunIn
+    let home = FsHotWatch.TestPrune.TestMode.startingWith false
+    let impact = FsHotWatch.TestPrune.ImpactSelection
+    let passThrough = FsHotWatch.TestPrune.PassThrough
+    test <@ afterRunIn home impact true impact = home @>
+    test <@ afterRunIn home passThrough true passThrough = home @>
+    // A run that executed nothing has not run what was asked: the request stands.
+    test <@ afterRunIn home impact false impact = impact @>
+    test <@ afterRunIn home passThrough false passThrough = passThrough @>
+    // `set-scope full` arrived while the check's run was in flight: that run does not spend it.
+    test <@ afterRunIn home impact true passThrough = passThrough @>
+
+[<Fact>]
+let ``afterRun is afterRunIn a daemon's starting mode`` () =
+    let initial = FsHotWatch.TestPrune.TestMode.initial
+
+    for launched in [ FsHotWatch.TestPrune.ImpactSelection; FsHotWatch.TestPrune.PassThrough ] do
+        for current in [ FsHotWatch.TestPrune.ImpactSelection; FsHotWatch.TestPrune.PassThrough ] do
+            for executed in [ true; false ] do
+                test
+                    <@
+                        FsHotWatch.TestPrune.TestMode.afterRun launched executed current = FsHotWatch.TestPrune.TestMode.afterRunIn
+                            initial
+                            launched
+                            executed
+                            current
+                    @>

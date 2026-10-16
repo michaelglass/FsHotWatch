@@ -156,6 +156,7 @@
     <Compile Include="VerdictEvidenceTests.fs" />
     <Compile Include="TestPruneCheckReachSeamTests.fs" />
     <Compile Include="TestPruneSelectionSoundnessTests.fs" />
+    <Compile Include="TestPruneRunOnRequestTests.fs" />
     <Compile Include="TestPruneRunnerFamilyTests.fs" />
     <Compile Include="TestPruneKillTimeoutLeaseTests.fs" />
     <Compile Include="TestPruneClientLeaseTests.fs" />

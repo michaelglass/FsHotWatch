@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: a session that launches only requested runs (`RequestedOnly`) can be asked for
+  the run it owes. `set-scope {"scope":"owed"}` arms it (`TestMode.armOwedRun`) and
+  launches the run its builds held, applying every widening a build's run would; with
+  nothing held yet, the next build's run launches. Once a requested run has executed,
+  the session returns to the mode it started in (`TestMode.afterRunIn`; `afterRun` is
+  `afterRunIn TestMode.initial`), so a daemon started `RequestedOnly` holds again.
+
 - **feat!: a test project whose inputs are byte-identical to a green another checkout
   earned is not launched again. `TestRunLaunch` has a new field, `Reused`**, so code
   that constructs it must supply it (`Map.empty` for a run that reused nothing). After

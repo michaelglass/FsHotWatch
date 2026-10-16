@@ -1839,7 +1839,8 @@ let ``countPlugins counts build lint analyzers tests and fileCommands`` () =
                        Solution = None
                        CoverageDir = "coverage"
                        DependsOn = []
-                       Traces = None |}
+                       Traces = None
+                       RunOn = TestRunTrigger.OnChange |}
             FileCommands =
                 [ {| PluginName = "a"
                      Pattern = Some "*.md"
@@ -2818,3 +2819,79 @@ let ``parseConfig an unknown tests.traces.weaveTests is a ConfigError`` (value: 
         Assert.Throws<ConfigError>(fun () -> tracesOf $"""{{"weaveTests": %s{value}}}""" |> ignore)
 
     test <@ ex.message.Contains "tests.traces.weaveTests" && ex.message.Contains named @>
+
+// --- parseConfig: tests.runOn ---
+// When a daemon's test runs launch: on every change (the default), or only on request.
+
+let private runOnOf (runOn: string) =
+    let json =
+        """{"tests": {"runOn": __R__, "projects": [{"project": "T"}]}}""".Replace("__R__", runOn)
+
+    (parseConfig json defaults).Tests.Value.RunOn
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig without tests.runOn launches runs on change`` () =
+    let config = parseConfig """{"tests": {"projects": [{"project": "T"}]}}""" defaults
+    test <@ config.Tests.Value.RunOn = TestRunTrigger.OnChange @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig tests.runOn reads change and request`` () =
+    test <@ runOnOf "\"change\"" = TestRunTrigger.OnChange @>
+    test <@ runOnOf "\"request\"" = TestRunTrigger.OnRequest @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig refuses an unknown tests.runOn rather than launching runs unasked`` () =
+    let ex = Assert.Throws<ConfigError>(fun () -> runOnOf "\"requested\"" |> ignore)
+    test <@ ex.message.Contains "tests.runOn" @>
+    Assert.Throws<ConfigError>(fun () -> runOnOf "false" |> ignore) |> ignore
+
+[<Fact(Timeout = 15000)>]
+let ``a daemon session starts in the mode tests.runOn names`` () =
+    let modeOf (json: string) =
+        daemonTestModeWith None (parseConfig json defaults)
+
+    test <@ modeOf """{"tests": {"projects": [{"project": "T"}]}}""" = FsHotWatch.TestPrune.TestMode.initial @>
+
+    test
+        <@
+            modeOf """{"tests": {"runOn": "request", "projects": [{"project": "T"}]}}""" = FsHotWatch.TestPrune.TestMode.startingWith
+                false
+        @>
+
+    test <@ modeOf "{}" = FsHotWatch.TestPrune.TestMode.initial @>
+
+// --- FSHW_TESTS_RUN_ON: a per-daemon override of tests.runOn ---
+// Set by whatever starts the daemon (a worker pool, say), so one checkout's daemons can
+// hold their runs without changing the shared `.fshw.json` every checkout reads.
+
+let private onChange = """{"tests": {"projects": [{"project": "T"}]}}"""
+
+let private onRequest =
+    """{"tests": {"runOn": "request", "projects": [{"project": "T"}]}}"""
+
+[<Fact(Timeout = 15000)>]
+let ``FSHW_TESTS_RUN_ON wins over tests.runOn in both directions`` () =
+    let modeOf (env: string option) (json: string) =
+        daemonTestModeWith env (parseConfig json defaults)
+
+    let held = FsHotWatch.TestPrune.TestMode.startingWith false
+    let eager = FsHotWatch.TestPrune.TestMode.initial
+    test <@ modeOf (Some "request") onChange = held @>
+    test <@ modeOf (Some "change") onRequest = eager @>
+    // Unset or empty: the config decides.
+    test <@ modeOf None onRequest = held @>
+    test <@ modeOf (Some "") onChange = eager @>
+    test <@ modeOf (Some " request ") onChange = held @>
+
+[<Fact(Timeout = 15000)>]
+let ``an unknown FSHW_TESTS_RUN_ON is refused rather than read as the default`` () =
+    let ex =
+        Assert.Throws<ConfigError>(fun () ->
+            daemonTestModeWith (Some "requested") (parseConfig onChange defaults) |> ignore)
+
+    test <@ ex.message.Contains(TestsRunOnEnvVar: string) @>
+    test <@ ex.message.Contains "requested" @>
+
+[<Fact(Timeout = 15000)>]
+let ``the override is read from FSHW_TESTS_RUN_ON`` () =
+    test <@ TestsRunOnEnvVar = "FSHW_TESTS_RUN_ON" @>

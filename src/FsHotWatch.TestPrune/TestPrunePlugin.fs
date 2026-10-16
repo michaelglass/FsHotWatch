@@ -1919,6 +1919,10 @@ type TestPruneState =
         /// A build's launch held back for its tree's check results (`DiffWait`). Cleared
         /// by the next `BatchChecked`, by any launch, or by its expiry.
         AwaitingDiff: AwaitedDiff option
+        /// A launch this session's mode held back since a command last asked for one: the
+        /// session launches only requested runs (`TestMode.launchesOwedRuns`), and a build
+        /// left a run owed. `OwedRunRequested` launches it.
+        OwedRunHeld: bool
         /// Every run this session completed, newest first, bounded at
         /// `SessionRunLedger`. `test-scope` declares them so a check can name each batch
         /// it ran.
@@ -2421,6 +2425,10 @@ type TestPruneMsg =
     | DiffWaitExpired of id: Guid
     /// `set-scope`: the mode every later launch runs under.
     | ScopeRequested of TestMode
+    /// `set-scope owed`: a command (`check`) asks for the run this session owes. Arms a
+    /// session that launches only requested runs (`TestMode.armOwedRun`), and launches the
+    /// run it held, if any.
+    | OwedRunRequested
     /// A run could not ingest its runtime coverage receipt. Its durable recovery marker is
     /// already written; this makes the debt unknown in owner state too.
     | RuntimeCoverageFailed of project: string
@@ -7827,6 +7835,7 @@ let internal createWithEvidenceAndQueries
           InFlight = None
           SealedTree = None
           AwaitingDiff = None
+          OwedRunHeld = false
           CompletedRuns = []
           CheckReach = None
           Replies = []
@@ -8782,6 +8791,9 @@ let internal createWithEvidenceAndQueries
                                 "impact"
 
                         match requested with
+                        | "owed" ->
+                            do! ctx.EnqueueExclusiveIntent "scope" None OwedRunRequested |> Async.AwaitTask
+                            return JsonSerializer.Serialize({| scope = requested |})
                         | "full"
                         | "impact" ->
                             // Its own intent key: a scope change queued behind a running
@@ -8794,7 +8806,7 @@ let internal createWithEvidenceAndQueries
                         | other ->
                             return
                                 JsonSerializer.Serialize(
-                                    {| error = $"unknown scope '%s{other}' (expected 'full' or 'impact')" |}
+                                    {| error = $"unknown scope '%s{other}' (expected 'full', 'impact' or 'owed')" |}
                                 )
                     })
 
@@ -9326,6 +9338,7 @@ let internal createWithEvidenceAndQueries
             Some
                 { launchState with
                     AwaitingDiff = None
+                    OwedRunHeld = true
                     PendingForceRunProjects = Set.union launchState.PendingForceRunProjects fanout }
         else
             match
@@ -9419,7 +9432,7 @@ let internal createWithEvidenceAndQueries
     let endRun (executedAny: bool) (state: TestPruneState) =
         let mode =
             match state.InFlight with
-            | Some run -> TestMode.afterRun run.Mode executedAny state.Mode
+            | Some run -> TestMode.afterRunIn initialMode run.Mode executedAny state.Mode
             | None -> state.Mode
 
         // Said out loud: a later launch in the same session is impact-selected again, and
@@ -9428,6 +9441,10 @@ let internal createWithEvidenceAndQueries
             Logging.info
                 "test-prune"
                 "Scope back to IMPACT-FILTERED: the full-suite run the scope was set for has concluded; later launches in this session are impact-selected"
+        elif TestMode.launchesOwedRuns state.Mode && not (TestMode.launchesOwedRuns mode) then
+            Logging.info
+                "test-prune"
+                "Holding test runs again: the run a command asked for has concluded; later builds launch none until a command (check, confirm, test-rerun) asks"
         elif
             not executedAny
             && state.InFlight |> Option.exists (fun run -> TestMode.requestsFullSuite run.Mode)
@@ -9533,6 +9550,46 @@ let internal createWithEvidenceAndQueries
                 | None ->
                     enqueueImpactRun ctx
                     rerunState
+        | _ -> state
+
+    /// Launch the run a session that launches only requested runs held back, now that a
+    /// command has asked for it. `state` is already armed (`TestMode.armOwedRun`). Flushed
+    /// first, like a build's launch, so changes folded since the hold are selected; the
+    /// launch then applies every widening a build's would — the missing baseline, the
+    /// evidence gap, quarantined reds.
+    let launchRequested (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
+        match testConfigs with
+        | Some configs when not configs.IsEmpty ->
+            match
+                (try
+                    Ok(flushAndQueryAffectedBounded ctx state)
+                 with ex ->
+                     Error ex)
+            with
+            | Error ex ->
+                Logging.error "test-prune" $"flushAndQueryAffected (requested run) failed: %s{ex.Message}"
+                tryRepairSchemaDrift ex
+
+                ctx.ReportStatus(
+                    PluginStatus.failedNow ex.Message $"requested run flush failed: %s{ex.Message}" TimeSpan.Zero
+                )
+
+                state
+            | Ok flushed ->
+                Logging.info "test-prune" "A command asked for the owed test run: launching the run this session held"
+                let fanout = flushed.PendingForceRunProjects
+
+                let launchState =
+                    { flushed with
+                        PendingForceRunProjects = Set.empty
+                        OwedRunHeld = false }
+
+                match launchImpactRun ctx configs launchState flushed.LastResults.IsSome fanout with
+                | Some launched -> launched
+                | None when joinsFullRun flushed false -> attachToFullRun { flushed with OwedRunHeld = false }
+                | None ->
+                    enqueueImpactRun ctx
+                    { flushed with OwedRunHeld = false }
         | _ -> state
 
     /// Hold a build's launch for its tree's check results (`DiffWait`), and post its
@@ -11590,6 +11647,23 @@ let internal createWithEvidenceAndQueries
                         { endRun false state with
                             PendingForceRunProjects = Set.union state.PendingForceRunProjects owed
                             DebtDuringFullRun = Map.empty }
+
+                | Custom OwedRunRequested ->
+                    if TestMode.launchesOwedRuns state.Mode then
+                        return state
+                    else
+                        let armed =
+                            { state with
+                                Mode = TestMode.armOwedRun state.Mode }
+
+                        if state.OwedRunHeld then
+                            return launchRequested ctx armed
+                        else
+                            Logging.info
+                                "test-prune"
+                                "A command asked for the owed test run: none is held yet, so the next build's run launches"
+
+                            return armed
 
                 | Custom(ScopeRequested mode) ->
                     if TestMode.requestsFullSuite mode then

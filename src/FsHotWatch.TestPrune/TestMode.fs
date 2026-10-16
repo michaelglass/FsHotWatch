@@ -73,12 +73,35 @@ module TestMode =
     /// project-model move, an aborted setup, a launch that found no artifacts or test
     /// host) has not run the suite the scope asked for, so the scope stands and the next
     /// launch is the confirm's.
+    ///
+    /// `home` is the mode the session started in, and the one a request's run returns it
+    /// to: a daemon that runs tests only on request (`RequestedOnly`) was armed by the
+    /// request (`armOwedRun`, or `set-scope full`), and a run that executed something has
+    /// answered it, so the session holds again. A run that executed nothing leaves the
+    /// request standing, as it leaves confirm's scope. A scope set while the run was in
+    /// flight is not spent by it.
+    let afterRunIn (home: TestMode) (launchedUnder: TestMode) (executedAny: bool) (current: TestMode) =
+        match launchedUnder, current with
+        | PassThrough, _ when executedAny -> home
+        | ImpactSelection, ImpactSelection when executedAny -> home
+        | PassThrough, _
+        | ImpactSelection, _
+        | RequestedOnly, _ -> current
+
+    /// `afterRunIn` a daemon session's starting mode, `initial`.
     let afterRun (launchedUnder: TestMode) (executedAny: bool) (current: TestMode) =
-        match launchedUnder with
-        | PassThrough when executedAny -> ImpactSelection
-        | PassThrough
+        afterRunIn initial launchedUnder executedAny current
+
+    /// The mode once a command asks for the run a session owes (`set-scope owed`, which
+    /// `check` sends). It arms a session that launches only requested runs, so the owed
+    /// run launches under `check`'s mode, and leaves the other modes as they are: a
+    /// session already launching owed runs needs no arming, and a confirm's pending
+    /// full-suite scope is not narrowed by a check asking for its run.
+    let armOwedRun (current: TestMode) =
+        match current with
+        | RequestedOnly -> ImpactSelection
         | ImpactSelection
-        | RequestedOnly -> current
+        | PassThrough -> current
 
     /// Whether every launch runs every configured project in full, unfiltered.
     let requestsFullSuite (mode: TestMode) =

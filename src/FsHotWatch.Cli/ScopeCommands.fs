@@ -113,6 +113,21 @@ let requestFullSuiteScope (send: Send) : unit =
             $"fshw confirm: could not disable impact filtering (%s{ex.Message}). \
                The tests will run impact-filtered, and the verdict will be refused."
 
+/// Ask for the run the daemon owes, BEFORE the scan: `check`'s counterpart to
+/// `requestFullSuiteScope`. A daemon under `tests.runOn: "request"` launches the run it
+/// held, or the one the scan's build leaves owed; any other daemon is unchanged, and one
+/// that predates the request answers with an unknown-scope error.
+///
+/// Never fatal, and never evidence: what ran is read back from `test-scope`, and a run
+/// that never launched reads as nothing verified, never as green.
+let requestOwedRun (send: Send) : unit =
+    try
+        match send SetScopeCommand OwedRunScopeArgs with
+        | None -> Logging.debug "cli-check" $"there is no `%s{SetScopeCommand}` command (no test projects configured)"
+        | Some reply -> Logging.debug "cli-check" $"set-scope owed reply: %s{reply}"
+    with ex ->
+        Logging.warn "cli-check" $"could not ask the daemon for its owed test run: %s{ex.Message}"
+
 /// Ask the host to run EVERY configured test project, now — `run-tests` with no filter
 /// and no project selection. `confirm`'s teeth: `set-scope full` only makes the NEXT
 /// run unfiltered, and on a warm host whose impact DB says nothing changed there is no

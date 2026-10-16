@@ -958,6 +958,10 @@ let internal readCheckReach (ipc: IpcOps) (pipeName: string) : IpcParsing.CheckR
 let internal requestFullSuiteScope (ipc: IpcOps) (pipeName: string) : unit =
     ScopeCommands.requestFullSuiteScope (scopeSend ipc pipeName)
 
+/// `ScopeCommands.requestOwedRun` over the daemon.
+let internal requestOwedRun (ipc: IpcOps) (pipeName: string) : unit =
+    ScopeCommands.requestOwedRun (scopeSend ipc pipeName)
+
 /// Tell the build plugin the next build must be REAL, not a cache replay (see
 /// `IpcParsing.ForceRebuildCommand`). Best-effort and non-fatal by design, exactly like
 /// `forceFullSuiteRun`: a daemon without the command (no build plugin configured) must
@@ -1055,6 +1059,10 @@ let private ensureAndQueryErrors
                 // its cache key. A forced scan alone does not help — it re-reads the same
                 // bytes, so the source merkle is unchanged and the cache hits again.
                 forceRealBuild ipc pipeName
+            else
+                // `check` asks for the run the daemon owes, before the scan that may
+                // provoke it: a daemon under `tests.runOn: "request"` launches none unasked.
+                requestOwedRun ipc pipeName
 
             withCheckIpc forceRestart (fun () ->
                 IpcOutput.pollAndRenderForInvocation

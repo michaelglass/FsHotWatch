@@ -256,7 +256,8 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
                            Solution = None
                            CoverageDir = covDir
                            DependsOn = []
-                           Traces = None |} }
+                           Traces = None
+                           RunOn = TestRunTrigger.OnChange |} }
 
         let deleted = FsHotWatch.Cli.Program.refreshCoverageBaseline tmp config
         // 4 files total: 2 projects × (baseline + partial)
@@ -3362,6 +3363,32 @@ let ``requestFullSuiteScope sends set-scope with a PARSEABLE {"scope":"full"} pa
 
         use doc = System.Text.Json.JsonDocument.Parse(args)
         test <@ doc.RootElement.GetProperty("scope").GetString() = "full" @>
+    | other -> failwith $"expected exactly one set-scope call, got %A{other}"
+
+[<Fact(Timeout = 15000)>]
+let ``requestOwedRun sends set-scope with a PARSEABLE {"scope":"owed"} payload`` () =
+    // `check`'s request for the run its daemon owes: under `tests.runOn: "request"` that
+    // run launches only when asked. An older daemon answers with an unknown-scope error,
+    // which changes nothing there.
+    let mutable seen: (string * string) list = []
+
+    let ipc =
+        { fakeIpc () with
+            RunCommand =
+                fun _ name args ->
+                    async {
+                        seen <- (name, args) :: seen
+                        return """{"scope":"owed"}"""
+                    } }
+
+    requestOwedRun ipc "pipe"
+
+    match seen with
+    | [ (name, args) ] ->
+        test <@ name = "set-scope" @>
+
+        use doc = System.Text.Json.JsonDocument.Parse(args)
+        test <@ doc.RootElement.GetProperty("scope").GetString() = "owed" @>
     | other -> failwith $"expected exactly one set-scope call, got %A{other}"
 
 /// Run `f`, capturing BOTH streams, and return (output, result).
