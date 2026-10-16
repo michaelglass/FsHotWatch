@@ -101,14 +101,14 @@ let private analysisContext root generation : PluginCtx<TestPruneMsg> =
 let private analysisHandler root name =
     create (Path.Combine(root, name + ".db")) root None None None None None []
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``queued old-model FileChecked cannot enter a newer analysis owner`` () =
     withCheckedSource (fun root result ->
         let update generation name =
             let handler = analysisHandler root name
 
             handler.Update (analysisContext root generation) handler.Init (FileChecked result)
-            |> fun work -> Async.RunSynchronously(work, timeout = 5000)
+            |> fun work -> Async.RunSynchronously(work, timeout = RealCheckWaitMs)
 
         // Positive control: the analysis folds the actual FCS result under its own model.
         let current = update 1L "current"
@@ -121,7 +121,7 @@ let ``queued old-model FileChecked cannot enter a newer analysis owner`` () =
         Assert.True(stale.ChangedSymbols.IsEmpty)
         Assert.True(stale.TestClassFiles.IsEmpty))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``new-model BuildCompleted cannot persist accepted old-model pending analysis`` () =
     let persistedNames afterGeneration =
         withCheckedSource (fun root result ->
@@ -129,14 +129,14 @@ let ``new-model BuildCompleted cannot persist accepted old-model pending analysi
 
             let accepted =
                 handler.Update (analysisContext root 1L) handler.Init (FileChecked result)
-                |> fun work -> Async.RunSynchronously(work, timeout = 5000)
+                |> fun work -> Async.RunSynchronously(work, timeout = RealCheckWaitMs)
 
             Assert.False(accepted.PendingAnalysis.IsEmpty)
             let db = TestPrune.Database.Database.create (Path.Combine(root, "pending.db"))
             Assert.Empty(db.GetAllSymbolNames())
 
             handler.Update (analysisContext root afterGeneration) accepted (BuildCompleted BuildSucceeded)
-            |> fun work -> Async.RunSynchronously(work, timeout = 5000)
+            |> fun work -> Async.RunSynchronously(work, timeout = RealCheckWaitMs)
             |> ignore
 
             db.GetAllSymbolNames())
@@ -147,7 +147,7 @@ let ``new-model BuildCompleted cannot persist accepted old-model pending analysi
     // model's pending analysis must be retired before that build can flush it.
     Assert.Empty(persistedNames 2L)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``an unstamped FileChecked or BatchChecked cannot enter the analysis owner`` () =
     withCheckedSource (fun root result ->
         let handler = analysisHandler root "unstamped"
@@ -155,7 +155,7 @@ let ``an unstamped FileChecked or BatchChecked cannot enter the analysis owner``
 
         let fold state event =
             handler.Update ctx state event
-            |> fun work -> Async.RunSynchronously(work, timeout = 5000)
+            |> fun work -> Async.RunSynchronously(work, timeout = RealCheckWaitMs)
 
         let unstamped = { result with ModelGeneration = None }
         let refused = fold handler.Init (FileChecked unstamped)
@@ -194,11 +194,11 @@ let private persistedThroughHost (fileStamp: int64 option) (sealStamp: int64 opt
             { fakeBatchChecked [ AbsFilePath.value result.File ] with
                 ModelGeneration = sealStamp }
 
-        waitForQuiescent host 10000
+        waitForQuiescent host RealCheckWaitMs
         let db = TestPrune.Database.Database.create (Path.Combine(root, "host.db"))
         db.GetAllSymbolNames())
 
-[<Theory(Timeout = 60000)>]
+[<Theory(Timeout = RealCheckTestCapMs)>]
 [<InlineData("file", "none")>]
 [<InlineData("file", "other")>]
 [<InlineData("seal", "none")>]
@@ -221,7 +221,7 @@ let ``a host with a published model refuses a result or seal that names no model
 
     Assert.Empty persisted
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``analysis proof refuses missing stale and failed file outcomes`` () =
     withCheckedSource (fun _ result ->
         let files = Set.singleton result.File
@@ -268,7 +268,7 @@ let ``analysis proof refuses missing stale and failed file outcomes`` () =
         Assert.True((AnalysisEvidence.fromCompleted None files outcomes).IsNone)
         Assert.True((AnalysisEvidence.fromCompleted (Some -1L) files outcomes).IsNone))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``a seal carries only the retained outcomes of the model it names as unchanged`` () =
     withCheckedSource (fun root result ->
         let sibling name generation =
@@ -311,7 +311,7 @@ let ``a seal carries only the retained outcomes of the model it names as unchang
             refused (AnalysisFileEvidence.carryInto 2L retained outcomes)
         ))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``a replayed FileChecked records the cached run's outcome only for the current model`` () =
     withCheckedSource (fun root result ->
         let handler = analysisHandler root "replay"
@@ -331,7 +331,7 @@ let ``a replayed FileChecked records the cached run's outcome only for the curre
         Assert.NotEmpty(replay (Some 2L) (Ok []))
         Assert.NotEmpty(replay None (Ok [])))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``completed analysis distinguishes compiler warnings from missing or failed checking`` () =
     withCheckedText "module Lib\nlet choose value = match value with | true -> 1\n" (fun _ result ->
         // Positive control: this source really does produce an incomplete-match WARNING.
@@ -374,7 +374,7 @@ let ``available empty model earns no-suite analysis only after its actual batch 
         // An analysis-only daemon makes no test claim.
         Assert.Empty host.WorkSnapshot.Evidence)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``a daemon that runs tests seals every checkable file without publishing an analysis receipt`` () =
     withCheckedSource (fun root result ->
         let config: TestConfig =
@@ -405,7 +405,7 @@ let ``a daemon that runs tests seals every checkable file without publishing an 
 
             let fold state event =
                 handler.Update ctx state event
-                |> fun work -> Async.RunSynchronously(work, timeout = 5000)
+                |> fun work -> Async.RunSynchronously(work, timeout = RealCheckWaitMs)
 
             let checkedState = fold handler.Init (FileChecked result)
 

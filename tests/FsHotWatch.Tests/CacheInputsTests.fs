@@ -243,7 +243,10 @@ let private shapesAcross (edits: (string * string) list) =
         let baseline = shapesOf root EarlierFile upstream
         baseline, [ for e in edits -> e, shapesOf root EarlierFile (edit e) ])
 
-[<Fact(Timeout = 120000)>]
+// A synchronous body of 14 real checks (the baseline and 13 edits) on the shared daemon
+// checker, which in a full run queue behind every other test's checks: one
+// `RealCheckWaitMs` for each, as a hang backstop. Alone the whole fact takes about a second.
+[<Fact(Timeout = 14 * RealCheckWaitMs)>]
 let ``every upstream shape change a downstream file can observe moves its used shapes`` () =
     let baseline, edited =
         shapesAcross
@@ -267,7 +270,8 @@ let ``every upstream shape change a downstream file can observe moves its used s
 
     test <@ List.isEmpty unchanged @>
 
-[<Fact(Timeout = 120000)>]
+// 8 real checks (the baseline and 7 edits), each under its own `RealCheckWaitMs`.
+[<Fact(Timeout = 8 * RealCheckWaitMs)>]
 let ``upstream edits a downstream file cannot observe leave its used shapes alone`` () =
     let baseline, edited =
         shapesAcross
