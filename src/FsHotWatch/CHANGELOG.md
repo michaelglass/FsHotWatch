@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.80 - 2026-10-17
+
+- fix: overlapping project evaluations no longer strand the process in a deleted directory
+
+
 ## 0.10.0-alpha.79 - 2026-10-16
 
 - fix!: a file's `#nowarn` no longer silences a genuine compiler error. The real compiler's

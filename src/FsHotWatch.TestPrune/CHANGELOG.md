@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.80 - 2026-10-17
+
+- fix(test-prune): an unfiltered in-flight run absorbs triggers it already satisfies
+
+
 ## 0.13.0-alpha.79 - 2026-10-17
 
 - fix: a console line counts as a failing test only in the runner's result shape,
