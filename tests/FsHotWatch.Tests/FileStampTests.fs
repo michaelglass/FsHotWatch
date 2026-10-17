@@ -57,6 +57,30 @@ let ``orNone reads a call that throws as no stamp`` () =
     test <@ orNone throws "/f" = ValueNone @>
     test <@ orNone (fun _ -> ValueSome expected) "/f" = ValueSome expected @>
 
+/// A reader that stamps every path with `expected` shifted by `id`, so a test can tell
+/// which reader `selectReader` picked.
+let private stampingAs (id: uint64) (_: string) : Stamp voption = ValueSome { expected with FileId = id }
+
+let private throwing (_: string) : Stamp voption =
+    raise (EntryPointNotFoundException "native")
+
+[<Fact(Timeout = 15000)>]
+let ``selectReader reads with the macOS reader on macOS`` () =
+    test <@ selectReader true false (stampingAs 1UL) (stampingAs 2UL) "/f" = stampingAs 1UL "/f" @>
+
+[<Fact(Timeout = 15000)>]
+let ``selectReader reads with the Linux reader on Linux`` () =
+    test <@ selectReader false true (stampingAs 1UL) (stampingAs 2UL) "/f" = stampingAs 2UL "/f" @>
+
+[<Fact(Timeout = 15000)>]
+let ``selectReader has no stamp on any other platform`` () =
+    test <@ selectReader false false (stampingAs 1UL) (stampingAs 2UL) "/f" = ValueNone @>
+
+[<Fact(Timeout = 15000)>]
+let ``selectReader reads a platform reader that throws as no stamp`` () =
+    test <@ selectReader true false throwing (stampingAs 2UL) "/f" = ValueNone @>
+    test <@ selectReader false true (stampingAs 1UL) throwing "/f" = ValueNone @>
+
 [<Fact(Timeout = 15000)>]
 let ``read stamps an existing file with its last status change and none for a missing one`` () =
     withTempDir "filestamp" (fun dir ->
