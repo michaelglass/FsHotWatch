@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.83 - 2026-10-17
+
 - feat!: the test-evidence key covers the environment the daemon started with. A tests
   entry's `evidence.env` names variables whose values join the key as digests (an unset
   variable differs from an empty one); no value is stored or logged. Each declared

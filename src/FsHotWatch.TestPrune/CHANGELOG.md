@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.82 - 2026-10-17
+
 - feat!: `TestEvidenceRun.Wiring` gains `Loaded`, the environment and env-file hashes the daemon
   started with, captured once when it wires evidence and passed to every key. The daemon logs
   each captured variable by name and set/unset only.
