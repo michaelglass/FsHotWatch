@@ -1798,6 +1798,110 @@ module UnverifiedTree =
         | UnverifiedTree.Revoked reason -> "evidence-revoked", Some reason
         | UnverifiedTree.CoversNothing -> "covers-nothing", None
 
+/// What an edit the symbol diff saw as changing nothing still owes, once a green's
+/// evidence is bound to an earlier tree (`ZeroAffectedWidening.UnverifiedTree`).
+///
+/// The tests whose outcome a symbol-free edit to `F` can change are the tests that execute
+/// code from `F`: a moved line number, a caller-info argument, stack-trace text, a body the
+/// diff hashed the same. Each of those covers one of `F`'s symbols, so running every class
+/// that covers ANY symbol of every edited file earns evidence for the edited tree, at the
+/// standard every symbol edit's own impact selection is held to. Anything that is not
+/// exactly that shape keeps the whole-project run.
+[<RequireQualifiedAccess>]
+type SymbolFreeEdit =
+    /// Every edited file is a compiled F# source file the symbol diff has run over, and
+    /// these classes, by project, cover its symbols.
+    | Covering of files: string list * seeds: string list * classes: Map<string, string list>
+    /// Why the edit is not narrowed: the run stays every project in full.
+    | Refused of reason: string
+
+module internal SymbolFreeEdit =
+    /// The impact index, as far as the narrowing reads it.
+    type Index =
+        {
+            /// The full names of the symbols the index holds for a repo-relative file.
+            SymbolsIn: string -> string list
+            /// The test methods the index holds as declared in a repo-relative file.
+            TestsIn: string -> TestMethodInfo list
+            /// The tests a set of seed symbols selects (`QueryAffectedTests`).
+            Affected: string list -> TestMethodInfo list
+        }
+
+    let private isFSharpSource (rel: string) =
+        String.Equals(Path.GetExtension rel, ".fs", StringComparison.OrdinalIgnoreCase)
+
+    /// Decide the narrowing for a launch whose evidence is bound to `evidence` and whose
+    /// tree is now `current`. `sealedTree` is the tree the last `BatchChecked` folded
+    /// its check results over; `compiled` says whether the current model compiles a
+    /// repo-relative path (`None` when no model publishes its files).
+    let select
+        (evidence: ReceiptTree option)
+        (current: ReceiptTree option)
+        (sealedTree: string option)
+        (compiled: (string -> bool) option)
+        (runnable: string -> bool)
+        (index: Index)
+        : SymbolFreeEdit =
+        match evidence, current, compiled with
+        | None, _, _ ->
+            SymbolFreeEdit.Refused
+                "the manifest of the tree the evidence is bound to is not held, so what moved cannot be named"
+        | _, None, _ -> SymbolFreeEdit.Refused "the current tree could not be read"
+        | _, _, None -> SymbolFreeEdit.Refused "no project model publishes the files it compiles"
+        | Some _, Some after, _ when not (ReceiptInputTree.matches sealedTree (Some after.Identity)) ->
+            SymbolFreeEdit.Refused "the symbol diff has not folded the current tree"
+        | Some before, Some after, Some compiled ->
+            let delta = ReceiptInputTree.delta before.Entries after.Entries
+
+            let outside =
+                delta.Changed
+                |> List.filter (fun rel -> not (isFSharpSource rel && compiled rel))
+
+            if not (List.isEmpty delta.Added && List.isEmpty delta.Removed && List.isEmpty outside) then
+                SymbolFreeEdit.Refused(
+                    "a path other than an edited F# source file the model compiles moved — "
+                    + ReceiptInputTree.describeDelta { delta with Changed = outside }
+                )
+            elif List.isEmpty delta.Changed then
+                SymbolFreeEdit.Refused "no path moved"
+            else
+                let perFile =
+                    delta.Changed
+                    |> List.map (fun rel ->
+                        let seeds = index.SymbolsIn rel
+
+                        let tests =
+                            if List.isEmpty seeds then
+                                []
+                            else
+                                index.Affected seeds @ index.TestsIn rel
+                                |> List.filter (fun t -> runnable t.TestProject)
+
+                        rel, seeds, tests)
+
+                match perFile |> List.tryFind (fun (_, seeds, _) -> List.isEmpty seeds) with
+                | Some(rel, _, _) -> SymbolFreeEdit.Refused $"the impact index holds no symbol for %s{rel}"
+                | None ->
+                    match perFile |> List.tryFind (fun (_, _, tests) -> List.isEmpty tests) with
+                    | Some(rel, _, _) -> SymbolFreeEdit.Refused $"no runnable test covers a symbol of %s{rel}"
+                    | None ->
+                        let classes =
+                            perFile
+                            |> List.collect (fun (_, _, tests) -> tests)
+                            |> List.groupBy _.TestProject
+                            |> List.map (fun (project, tests) ->
+                                project, tests |> List.map _.TestClass |> List.distinct |> List.sort)
+                            |> Map.ofList
+
+                        SymbolFreeEdit.Covering(
+                            delta.Changed,
+                            perFile
+                            |> List.collect (fun (_, seeds, _) -> seeds)
+                            |> List.distinct
+                            |> List.sort,
+                            classes
+                        )
+
 /// What is still owed before a green is test-equivalent to the last full suite. It is
 /// published with the run results it depends on, so a reader of one snapshot reads one
 /// consistent answer, and a completion whose fold failed leaves it unchanged.
@@ -2079,6 +2183,10 @@ type TestPruneState =
         /// status and failure state, but cannot split or downgrade a full-suite receipt
         /// earned earlier in the same top-level verification episode.
         EvidenceReceipt: TestEvidenceReceipt option
+        /// The tree the receipt was earned on, entries and all, so a later launch can name
+        /// what moved since (`SymbolFreeEdit`). Read only while its identity is the
+        /// receipt's `InputTreeHash`.
+        EvidenceManifest: ReceiptTree option
         /// Why the receipt was last taken away, while none has been earned or kept since.
         /// `test-scope` says it when it has no evidence to serve.
         ReceiptRevoked: string option
@@ -2161,6 +2269,11 @@ type TestRunInputs =
         /// The input tree the held test-evidence receipt is bound to; `None` when there
         /// is none. A launch over any other tree has nothing it may skip on.
         EvidenceTree: string option
+        /// The entries of `EvidenceTree`, when they are held.
+        EvidenceManifest: ReceiptTree option
+        /// The tree the last `BatchChecked` folded its check results over: the symbol
+        /// diff has run over this tree.
+        SealedTree: string option
     }
 
 module TestRunInputs =
@@ -2178,7 +2291,14 @@ module TestRunInputs =
           ChangedFiles = state.ChangedFiles
           Seeds = state.LastSeeds
           Earned = state.Earned
-          EvidenceTree = state.EvidenceReceipt |> Option.bind (fun receipt -> receipt.InputTreeHash) }
+          EvidenceTree = state.EvidenceReceipt |> Option.bind (fun receipt -> receipt.InputTreeHash)
+          EvidenceManifest =
+            state.EvidenceManifest
+            |> Option.filter (fun manifest ->
+                state.EvidenceReceipt
+                |> Option.exists (fun receipt ->
+                    ReceiptInputTree.matches receipt.InputTreeHash (Some manifest.Identity)))
+          SealedTree = state.SealedTree }
 
 /// Custom message posted from the async test runner back to the synchronous Custom
 /// handler. Carries the completed lifecycle event so the handler can emit it inside the
@@ -7953,6 +8073,7 @@ let internal createWithEvidenceAndQueries
           LastCoverage = RunCoverage.none
           LastZeroSelection = ZeroSelection.NotAZero
           EvidenceReceipt = None
+          EvidenceManifest = None
           ReceiptRevoked = None
           Earned = None }
 
@@ -8283,6 +8404,68 @@ let internal createWithEvidenceAndQueries
                     forceRunProjects
                     |> Set.fold (fun acc proj -> Map.add proj [] acc) quarantinedAffectedByProject
 
+                // The skip gate counts symbol-affected classes only. A pure
+                // dependency-fanout (force-run projects, zero symbol classes) must
+                // NOT be counted as "0 affected" and skipped — so the gate below
+                // also checks `forceRunProjects` is empty.
+                let totalClasses =
+                    quarantinedAffectedByProject |> Map.values |> Seq.sumBy List.length
+
+                let inputTree = ReceiptInputTree.readTree repoRoot
+
+                // Nothing is owed and nothing was selected, but the tree moved since the
+                // evidence was earned, by an edit the symbol diff saw as changing no
+                // symbol. Running every project in full is what a non-source edit costs;
+                // an edit confined to compiled F# source files costs the classes covering
+                // their symbols (`SymbolFreeEdit`). `None` when this is not that launch.
+                let symbolFreeEdit =
+                    let unverified =
+                        not (ReceiptInputTree.matches inputs.EvidenceTree (inputTree |> Option.map _.Identity))
+
+                    if
+                        unverified
+                        && hasCachedResults
+                        && not scopeIsFullSuite
+                        && nothingOwed inputs.Debt
+                        && totalClasses = 0
+                        && Set.isEmpty forceRunProjects
+                        && List.isEmpty inputs.OutstandingFailures
+                        && not (UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered)
+                    then
+                        let compiled =
+                            ctx.ProjectGraph.ObserveCheckableFiles()
+                            |> Option.map (fun (_, files) ->
+                                fun (rel: string) -> files.Contains(AbsFilePath.create (Path.Combine(repoRoot, rel))))
+
+                        let index: SymbolFreeEdit.Index =
+                            { SymbolsIn = fun rel -> db.GetSymbolsInFile rel |> List.map _.FullName |> List.distinct
+                              TestsIn = db.GetTestMethodsInFile
+                              Affected = queries.AffectedTests }
+
+                        SymbolFreeEdit.select
+                            inputs.EvidenceManifest
+                            inputTree
+                            inputs.SealedTree
+                            compiled
+                            (fun project -> Set.isEmpty runnableProjects || Set.contains project runnableProjects)
+                            index
+                        |> Some
+                    else
+                        None
+
+                let affectedByProject, narrowedSeeds =
+                    match symbolFreeEdit with
+                    | Some(SymbolFreeEdit.Covering(files, seeds, classes)) ->
+                        let classCount = classes |> Map.values |> Seq.sumBy List.length
+
+                        Logging.info
+                            "test-prune"
+                            $"No affected classes, and the tree moved since the evidence was earned only by an edit to %d{List.length files} compiled F# source file(s) the symbol diff saw as changing no symbol (%s{describeAll files}); running the %d{classCount} class(es) covering their %d{List.length seeds} symbol(s) instead of every project in full"
+
+                        classes, Some seeds
+                    | Some(SymbolFreeEdit.Refused _)
+                    | None -> affectedByProject, None
+
                 // TEST EVIDENCE, at launch: AFTER selection, so it can only take away
                 // launches the selector chose, never add a green it did not. Keyed now,
                 // before `beforeRun` touches anything. Every run keys (so its greens can be
@@ -8342,7 +8525,7 @@ let internal createWithEvidenceAndQueries
                         |> Some
 
                 let launch =
-                    { InputTree = ReceiptInputTree.readTree repoRoot
+                    { InputTree = inputTree
                       ModelGeneration = observeModelGeneration ctx
                       ProjectInputs = observeTestInputs ctx
                       Symbols = launchedSymbols
@@ -8354,18 +8537,11 @@ let internal createWithEvidenceAndQueries
                       Selection = selection
                       WouldHaveRun = wouldHaveRun
                       Reused = Map.empty
-                      Seeds = inputs.Seeds
+                      Seeds = narrowedSeeds |> Option.defaultValue inputs.Seeds
                       ZeroSelection = ZeroSelection.NotAZero
                       FullSuiteCause = fullSuiteCause }
 
                 logLaunch "impact" inputs.Mode launch
-
-                // The skip gate counts symbol-affected classes only. A pure
-                // dependency-fanout (force-run projects, zero symbol classes) must
-                // NOT be counted as "0 affected" and skipped — so the gate below
-                // also checks `forceRunProjects` is empty.
-                let totalClasses =
-                    quarantinedAffectedByProject |> Map.values |> Seq.sumBy List.length
 
                 let hasQuarantinedFailures = not (List.isEmpty inputs.OutstandingFailures)
 
@@ -8464,7 +8640,7 @@ let internal createWithEvidenceAndQueries
                                      | UncoveredChanges.No -> ZeroSelection.AlreadyVerified) }
                         )
                 else
-                    if totalClasses = 0 then
+                    if totalClasses = 0 && narrowedSeeds.IsNone then
                         // NAME the debt that refused the zero-affected
                         // skip, and say what will actually run. Both halves were wrong
                         // before: the cause was hard-coded to two of five possibilities,
@@ -8506,10 +8682,16 @@ let internal createWithEvidenceAndQueries
                                   debt is being reported as outstanding while naming nothing that can select or discharge \
                                   it."
                         | causes ->
+                            let notNarrowed =
+                                match symbolFreeEdit with
+                                | Some(SymbolFreeEdit.Refused reason) ->
+                                    $" (not narrowed to the edited files' covering classes: %s{reason})"
+                                | _ -> ""
+
                             Logging.info
                                 "test-prune"
                                 $"No affected classes, but the zero-affected skip is refused — \
-                                  %s{ZeroAffectedWidening.describeMany causes}; running %s{willRun}"
+                                  %s{ZeroAffectedWidening.describeMany causes}; running %s{willRun}%s{notNarrowed}"
                     else
                         for (proj, classes) in affectedByProject |> Map.toList do
                             // Never `%A` here: it caps the list at 100, so a
@@ -8535,7 +8717,7 @@ let internal createWithEvidenceAndQueries
                         "test-prune"
                         $"Selectivity: %d{affectedByProject.Count} project(s) selected, \
                           %d{unfilteredProjects} of them UNFILTERED (whole-project), \
-                          %d{totalClasses} class(es) named in total"
+                          %d{affectedByProject |> Map.values |> Seq.sumBy List.length} class(es) named in total"
 
                     let! results, started, completed, boundTree, testHostStartedAt, evidenceHeld =
                         executeTests
@@ -10925,6 +11107,12 @@ let internal createWithEvidenceAndQueries
                             LastCoverage = coverage
                             LastZeroSelection = launch.ZeroSelection
                             EvidenceReceipt = evidenceReceipt
+                            EvidenceManifest =
+                                match receiptTransition with
+                                | ReceiptTransition.Earned _ -> currentTree
+                                | ReceiptTransition.Revoked _ -> None
+                                | ReceiptTransition.Noop
+                                | ReceiptTransition.Narrower -> state.EvidenceManifest
                             ReceiptRevoked =
                                 match receiptTransition with
                                 | ReceiptTransition.Revoked reason -> Some reason
