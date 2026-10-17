@@ -133,6 +133,24 @@ let ``a redirected-stderr sink names the file its launcher redirected into`` () 
 
         test <@ Logging.logPointer () = "/repo/logs/daemon.log" @>)
 
+[<Fact>]
+let ``a redirected-stderr sink writes only stderr, never the file it names`` () =
+    withTempDir "stderr-into" (fun dir ->
+        let path = Path.Combine(dir, "logs", "daemon.log")
+        (Logging.stderrInto path Logging.LogLevel.Info).Write "redirected line"
+        test <@ not (File.Exists path) @>)
+
+[<Fact>]
+let ``a sink that holds no file points at stderr`` () =
+    isolated (fun () ->
+        use _ =
+            Logging.installSink
+                { Write = ignore
+                  Level = Logging.LogLevel.Info
+                  File = None }
+
+        test <@ Logging.logPointer () = "stderr above" @>)
+
 // --- Daemon: the wedge messages name the log they were actually given ---
 
 [<Fact(Timeout = 60_000)>]
@@ -340,4 +358,4 @@ let ``no source outside the resolver spells out a daemon log path`` () =
         |> List.filter (fun (relative, text) -> relative <> resolver && text.Contains "logs/daemon.log")
         |> List.map fst
 
-    test <@ offenders = [] @>
+    test <@ List.isEmpty offenders @>
