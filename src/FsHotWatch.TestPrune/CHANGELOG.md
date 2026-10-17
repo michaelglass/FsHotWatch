@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.78 - 2026-10-17
+
 - feat: a session that launches only requested runs (`RequestedOnly`) can be asked for
   the run it owes. `set-scope {"scope":"owed"}` arms it (`TestMode.armOwedRun`) and
   launches the run its builds held, applying every widening a build's run would; with

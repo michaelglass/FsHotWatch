@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.106 - 2026-10-17
+
 - feat: `tests.runOn: "request"` makes a daemon launch no test run until a command asks
   for one. Its builds still record what they leave owed; the run is held until `check`
   (which now sends `set-scope {"scope":"owed"}` before its scan), `confirm` or
