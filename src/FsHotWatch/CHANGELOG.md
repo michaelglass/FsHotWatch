@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: a process tree whose kill does not return within the teardown budget is escalated
+  instead of only being recorded as LEAKED. SIGTERM, then SIGKILL, goes to the root and to the
+  descendants the process table links to it, each followed by a bounded liveness poll.
+  Ownership is checked by pid and start time, both recorded when the child is launched: a pid
+  that now belongs to another process is never signalled, and neither is a process whose start
+  time cannot be read. A zombie counts as exited. A tree that is gone reports `Killed` and is
+  not booked as leaked. Each member still running after SIGKILL, or whose ownership or state
+  cannot be established, is logged at ERROR and booked as leaked under its own pid with the
+  reason, and the outcome stays `KillTimedOut`. A kill that returns never escalates. Registry
+  shutdown still names leaked trees and still does not chase their pids.
+
 - feat!: the test-evidence key covers the environment the daemon started with. A tests
   entry's `evidence.env` names variables whose values join the key as digests (an unset
   variable differs from an empty one); no value is stored or logged. Each declared
