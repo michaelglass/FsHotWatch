@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.79 - 2026-10-17
+
 - fix: a console line counts as a failing test only in the runner's result shape,
   `failed [(qualifier)] <name> (<duration>)` (`isFailedTestLine`). Prose that starts
   with "failed" no longer files a red under a test that does not exist. A class-scoped

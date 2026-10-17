@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.107 - 2026-10-17
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.106 - 2026-10-17
 
 - feat: `tests.runOn: "request"` makes a daemon launch no test run until a command asks
