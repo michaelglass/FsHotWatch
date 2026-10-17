@@ -110,7 +110,14 @@ let private mkFileResult (fileName: string) (linePct: float) (lineThreshold: flo
 let ``gateVerdict: full-suite shortfall gates (Failed)`` () =
     let below = [ mkFileResult "OutOfDiff.fs" 0.0 100.0 ]
 
-    match Judgement.gateVerdict RunScope.FullSuite (Some { Files = below; Counts = [] }) with
+    match
+        Judgement.gateVerdict
+            RunScope.FullSuite
+            (Some
+                { Files = below
+                  Counts = []
+                  Unmeasured = [] })
+    with
     | Judgement.Failed failures -> test <@ failures.Files.Length = 1 @>
     | other -> Assert.Fail $"Expected Failed, got {other}"
 
@@ -120,7 +127,14 @@ let ``gateVerdict: filtered shortfall does NOT gate (NotGatedFiltered)`` () =
         [ mkFileResult "OutOfDiff1.fs" 0.0 100.0
           mkFileResult "OutOfDiff2.fs" 0.0 100.0 ]
 
-    match Judgement.gateVerdict RunScope.Partial (Some { Files = below; Counts = [] }) with
+    match
+        Judgement.gateVerdict
+            RunScope.Partial
+            (Some
+                { Files = below
+                  Counts = []
+                  Unmeasured = [] })
+    with
     | Judgement.NotGatedFiltered count -> test <@ count = 2 @>
     | other -> Assert.Fail $"Expected NotGatedFiltered, got {other}"
 
@@ -195,7 +209,14 @@ let ``regression: repeated impact-filtered evaluations of an unchanged commit ar
 
     let verdicts =
         [ for _ in 1..10 ->
-              match Judgement.gateVerdict RunScope.Partial (Some { Files = belowFloor; Counts = [] }) with
+              match
+                  Judgement.gateVerdict
+                      RunScope.Partial
+                      (Some
+                          { Files = belowFloor
+                            Counts = []
+                            Unmeasured = [] })
+              with
               | Judgement.NotGatedFiltered n -> Some n
               | Judgement.Failed _
               | Judgement.Unreadable _ -> None
@@ -1211,6 +1232,69 @@ let ``every floor a file misses is named in one detail, percentage floors first`
             detailsUnder (countFloorsJson 100 100 4 3) = [ "MyModule.fs",
                                                            "line=75.0% < min 100.0%, branch=50.0% < min 100.0%, covered lines 3 < 4, covered branches 2 < 3" ]
         @>
+
+/// Floors for `MyModule.fs` (which the report below measures) and for `Gone.fs` (which
+/// it does not): a percentage floor, a count floor, or both, on `Gone.fs`.
+let private floorsWithAbsentFile (percentage: bool) (count: bool) =
+    let overrides =
+        [ "\"MyModule.fs\": { \"line\": 0, \"branch\": 0 }"
+          if percentage then
+              "\"Gone.fs\": { \"line\": 50, \"branch\": 0 }" ]
+        |> String.concat ", "
+
+    let counts =
+        if count then
+            """, "countFloors": { "Gone.fs": [ { "coveredLines": 1, "coveredBranches": 0, "reason": "test" } ] }"""
+        else
+            ""
+
+    $"""{{ "overrides": {{ %s{overrides} }}%s{counts} }}"""
+
+/// Judge a report that measures only `MyModule.fs` against `floors`, as a run of `scope`
+/// that found it under its search directory (the shape whose scope is judged at all
+/// for a filtered run: `Named` reports skip one).
+let private judgeMyModuleOnly (scope: RunScope) (floors: string) =
+    withTempDir "coverage-unmeasured" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 1) ])
+        File.WriteAllText(configPath, floors)
+
+        Judgement.judge
+            configPath
+            (Judgement.CoverageReports.SearchUnder dir)
+            scope
+            (DateTime.UtcNow.AddMinutes -1.0)
+            [ xmlPath ])
+
+[<Theory(Timeout = 15000)>]
+[<InlineData(true, false, "percentage floor")>]
+[<InlineData(false, true, "count floor")>]
+[<InlineData(true, true, "percentage + count floor")>]
+let ``a full-suite report with no row for a floored file fails, naming that file``
+    (percentage: bool, count: bool, kind: string)
+    =
+    // A file absent from the report used to be graded by nobody: the report decided the
+    // file set, so a report written by another process, covering fewer assemblies,
+    // passed as if every floor held. `coverageratchet check` already exits 2 on this
+    // ("UNMEASURED floors"); the daemon's check must not be the weaker gate.
+    match judgeMyModuleOnly RunScope.FullSuite (floorsWithAbsentFile percentage count) with
+    | Judgement.Judged(Judgement.Failed failures) ->
+        test <@ Judgement.FloorFailures.details failures = [ "Gone.fs", $"no row in the coverage report (%s{kind})" ] @>
+    | other -> failwith $"expected Failed, got %A{other}"
+
+[<Fact(Timeout = 15000)>]
+let ``a full-suite report with a row for every floored file passes`` () =
+    // Positive control for the test above: the same floors, with nothing absent.
+    test <@ pluginVerdict (judgeMyModuleOnly RunScope.FullSuite (floorsWithAbsentFile false false)) = Some([], []) @>
+
+[<Fact(Timeout = 15000)>]
+let ``an impact-filtered run missing a floored file is a notice, not a gate`` () =
+    // A filtered run measures only what it ran, so an absent file is expected there; the
+    // next full-suite run is the one that must speak to every floor.
+    match judgeMyModuleOnly RunScope.Partial (floorsWithAbsentFile true true) with
+    | Judgement.Judged(Judgement.NotGatedFiltered 1) -> ()
+    | other -> failwith $"expected NotGatedFiltered 1, got %A{other}"
 
 [<Fact(Timeout = 5000)>]
 let ``the status line names the first files below threshold and counts the rest`` () =

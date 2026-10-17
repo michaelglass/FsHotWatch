@@ -172,3 +172,44 @@ let ``every coverageratchet task reads only the report test-direct writes`` () =
         |> List.filter (fun (_, line) -> not (Regex.IsMatch(line, Regex.Escape required + @"(\s|""|'|$)")))
 
     test <@ List.isEmpty unscoped @>
+
+/// Whether one repo-relative directory is the other or sits inside it, compared by path
+/// segment, so `coverage-direct` is not mistaken for a child of `coverage`.
+let private overlaps (a: string) (b: string) =
+    let segments (path: string) =
+        path.Split([| '/'; '\\' |], System.StringSplitOptions.RemoveEmptyEntries)
+        |> Array.filter ((<>) ".")
+        |> Array.toList
+
+    let rec isPrefix xs ys =
+        match xs, ys with
+        | [], _ -> true
+        | x :: xs', y :: ys' when x = y -> isPrefix xs' ys'
+        | _ -> false
+
+    let sa, sb = segments a, segments b
+    isPrefix sa sb || isPrefix sb sa
+
+[<Fact>]
+let ``test-direct writes its report where the daemon never writes`` () =
+    // The daemon's TestPrune emits a shared coverage.cobertura.xml under `tests.coverageDir`
+    // after EVERY test run it makes, including the impact-filtered ones. When test-direct
+    // wrote to that same directory, a daemon still alive from an earlier gate rewrote the
+    // report between test-direct and coverage-check: measured 2026-10-16, the check graded
+    // 113 files instead of 134, every FsHotWatch.Cli file absent, and passed. A report the
+    // gate reads must be one only the gate wrote.
+    let root = repoRoot ()
+    let mise = miseToml root
+    let reportDir = testDirectReportDir mise
+    let daemonDir = daemonCoverageDir root
+
+    test <@ reportDir.IsSome @>
+    test <@ not (overlaps reportDir.Value daemonDir) @>
+
+    // And test-direct's own cleanup wipes only its own directory, never the daemon's.
+    let removed =
+        Regex.Matches(commandLines mise "test-direct", @"rm\s+-rf\s+""?([^\s""]+)")
+        |> Seq.map (fun m -> m.Groups[1].Value)
+        |> Seq.toList
+
+    test <@ removed = [ reportDir.Value ] @>

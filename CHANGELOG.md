@@ -74,6 +74,21 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### coverage: a full-suite check fails when a floored file has no row in the report
+
+- The daemon's coverage check took its file set from the report, so a file with a floor
+  that the report did not mention was graded by nobody and the check passed.
+  `coverageratchet check` already refuses this ("UNMEASURED floors", exit 2); the plugin
+  now does too. A full-suite run whose report has no row for a file in `overrides` or
+  `countFloors` fails, and the error names each such file and which kind of floor went
+  unmeasured. An impact-filtered run still only notes it. **If your floor file still lists
+  a file you deleted, the first full-suite check after upgrading fails on it: delete the
+  entry.**
+- Repository: `mise run test-direct` writes its report to `coverage-direct/` instead of
+  `coverage/`, where the daemon re-emits its own shared `coverage.cobertura.xml` after
+  every test run. A daemon left running from an earlier gate overwrote the report between
+  `test-direct` and `coverage-check`, and the check graded 113 of 134 files and passed.
+
 ### core: overlapping project evaluations no longer strand the process in a deleted directory
 
 - MSBuild evaluating in process stands the process in each project it evaluates, then

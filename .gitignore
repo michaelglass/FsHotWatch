@@ -49,6 +49,7 @@ TestResults/
 
 # Coverage
 coverage/
+coverage-direct/
 *.coverage
 *.coveragexml
 # `*.coverage`'s bare glob also matches the "FsHotWatch.Coverage" path component,
