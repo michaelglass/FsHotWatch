@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.83 - 2026-10-17
+
 - perf: after a green, an edit the symbol diff sees as changing no symbol (a comment, a moved
   line) to compiled F# source files no longer runs every test project in full. The run is
   narrowed to the classes covering every symbol the edited files hold, plus the tests they
