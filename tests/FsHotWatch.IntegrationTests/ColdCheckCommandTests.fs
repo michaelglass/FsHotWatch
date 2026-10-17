@@ -197,7 +197,7 @@ let ``same-tree check retains filtered receipts and a changed failing tree canno
             assertSuite "ColdA" 0 1 failed))
 
 [<Fact(Timeout = 900000)>]
-let ``an edit no symbol diff sees still runs every project in full once its check results are folded`` () =
+let ``a symbol-free edit to a compiled source file runs only its covering classes and earns the edited tree`` () =
     let clock = budget ()
 
     withTempDir "fshw-unseen-edit-check-command" (fun root ->
@@ -209,10 +209,50 @@ let ``an edit no symbol diff sees still runs every project in full once its chec
             let _, _, full = baseline
             assertScope "full" 2 2 full
 
-            let priorRunIds = snapshotRunIds root
-            // New bytes, no changed symbol: the folded diff selects nothing, and no
-            // evidence is bound to this tree, so nothing may be skipped.
+            // Remove only the fixture's untracked execution markers. Recreating A's
+            // proves this receipt came from a new A execution, and B's staying absent
+            // proves B was not executed again.
+            File.Delete(markerPath root "ColdA")
+            File.Delete(markerPath root "ColdB")
+            // New bytes, no changed symbol, in a compiled .fs file: no evidence is bound
+            // to this tree, so the skip is refused. The classes covering the file's
+            // symbols are what the edit owes, not every project in full.
             File.AppendAllText(Path.Combine(root, "tests", "ColdA", "Value.fs"), "// moves the bytes only\n")
+            let unseen = check clock root cli
+            assertGreen unseen
+            let _, _, verdict = unseen
+            assertOnlyA verdict
+            Assert.Equal("observed 2", File.ReadAllText(markerPath root "ColdA"))
+            Assert.False(File.Exists(markerPath root "ColdB"), "the narrowed run executed ColdB")
+
+            Assert.NotEqual<string>(
+                full.GetProperty("treeHash").GetString(),
+                verdict.GetProperty("treeHash").GetString()
+            )
+
+            // The receipt applies to the edited tree as it is on disk.
+            let code, text = run clock root "dotnet" [ cli; "verdict" ]
+            Assert.True((code = 0), $"the narrowed verdict does not apply to the edited tree:\n{text}")))
+
+[<Fact(Timeout = 900000)>]
+let ``an edit no symbol diff sees outside compiled source still runs every project in full`` () =
+    let clock = budget ()
+
+    withTempDir "fshw-unseen-content-check-command" (fun root ->
+        preparePair clock root
+        // A content file under a discovery root is in the tree hash, but no project
+        // compiles it, so a symbol-free edit to it is not narrowed.
+        let fixture = Path.Combine(root, "tests", "ColdA", "fixture.txt")
+        File.WriteAllText(fixture, "one\n")
+
+        withDaemon clock root (fun cli ->
+            let baseline = check clock root cli
+            assertGreen baseline
+            let _, _, full = baseline
+            assertScope "full" 2 2 full
+
+            let priorRunIds = snapshotRunIds root
+            File.AppendAllText(fixture, "two\n")
             let unseen = check clock root cli
             assertGreen unseen
             let _, _, verdict = unseen
