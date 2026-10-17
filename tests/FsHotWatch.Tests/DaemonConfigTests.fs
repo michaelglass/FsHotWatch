@@ -1841,7 +1841,8 @@ let ``countPlugins counts build lint analyzers tests and fileCommands`` () =
                        CoverageDir = "coverage"
                        DependsOn = []
                        Traces = None
-                       RunOn = TestRunTrigger.OnChange |}
+                       RunOn = TestRunTrigger.OnChange
+                       MaxParallelProjects = None |}
             FileCommands =
                 [ {| PluginName = "a"
                      Pattern = Some "*.md"
@@ -2845,6 +2846,36 @@ let ``parseConfig refuses an unknown tests.runOn rather than launching runs unas
     let ex = Assert.Throws<ConfigError>(fun () -> runOnOf "\"requested\"" |> ignore)
     test <@ ex.message.Contains "tests.runOn" @>
     Assert.Throws<ConfigError>(fun () -> runOnOf "false" |> ignore) |> ignore
+
+// --- parseConfig: tests.maxParallelProjects ---
+// How many test groups may run at once. Absent: all of them, as before the option.
+
+let private maxParallelOf (value: string) =
+    let json =
+        """{"tests": {"maxParallelProjects": __V__, "projects": [{"project": "T"}]}}""".Replace("__V__", value)
+
+    (parseConfig json defaults).Tests.Value.MaxParallelProjects
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig without tests.maxParallelProjects leaves every group unbounded`` () =
+    let config = parseConfig """{"tests": {"projects": [{"project": "T"}]}}""" defaults
+    test <@ config.Tests.Value.MaxParallelProjects = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig reads tests.maxParallelProjects as a whole number of groups`` () =
+    test <@ maxParallelOf "3" = Some 3 @>
+    test <@ maxParallelOf "1" = Some 1 @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("0")>]
+[<InlineData("-2")>]
+[<InlineData("1.5")>]
+[<InlineData("\"3\"")>]
+[<InlineData("null")>]
+[<InlineData("true")>]
+let ``parseConfig refuses a tests.maxParallelProjects that is not a positive whole number`` (value: string) =
+    let ex = Assert.Throws<ConfigError>(fun () -> maxParallelOf value |> ignore)
+    test <@ ex.message.Contains "tests.maxParallelProjects" && ex.message.Contains value @>
 
 [<Fact(Timeout = 15000)>]
 let ``a daemon session starts in the mode tests.runOn names`` () =

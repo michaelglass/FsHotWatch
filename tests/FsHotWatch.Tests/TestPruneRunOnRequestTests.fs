@@ -71,6 +71,7 @@ let private onRequestSession (tmpDir: string) (dbPath: string) (configs: TestCon
         createWithTracesIn
             (TestMode.startingWith false)
             None
+            None
             Set.empty
             Map.empty
             (fun () -> Map.empty)
@@ -209,6 +210,7 @@ let ``a requested run whose impact selection fails reports the failure and launc
             createWithQueries
                 queries
                 (TimeSpan.FromMinutes 5.0)
+                None
                 (fun () -> Map.empty)
                 dbPath
                 TestPrune.Domain.WalkPolicy.FollowAll

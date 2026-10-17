@@ -313,7 +313,8 @@ let ``serializeConfig with empty test projects omits tests section`` () =
                        CoverageDir = "coverage"
                        DependsOn = []
                        Traces = None
-                       RunOn = TestRunTrigger.OnChange |} }
+                       RunOn = TestRunTrigger.OnChange
+                       MaxParallelProjects = None |} }
 
 
     let json = serializeConfig config
@@ -349,7 +350,8 @@ let ``serializeConfig test project without filterTemplate omits it`` () =
                        CoverageDir = "coverage"
                        DependsOn = []
                        Traces = None
-                       RunOn = TestRunTrigger.OnChange |} }
+                       RunOn = TestRunTrigger.OnChange
+                       MaxParallelProjects = None |} }
 
 
     let json = serializeConfig config

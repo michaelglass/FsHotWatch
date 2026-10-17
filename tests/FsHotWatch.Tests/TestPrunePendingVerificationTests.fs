@@ -309,6 +309,7 @@ let ``incident: a test child that never becomes a live process drives the run to
         let handler =
             createWithLaunchDeadline
                 (TimeSpan.FromSeconds 1.0)
+                None
                 (fun () -> Map.empty)
                 ":memory:"
                 TestPrune.Domain.WalkPolicy.FollowAll

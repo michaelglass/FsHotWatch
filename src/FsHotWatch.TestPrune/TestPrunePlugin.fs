@@ -5422,6 +5422,9 @@ let private executeTests
     (emitStarted: TestRunStarted -> unit)
     (repoRoot: string)
     (launchDeadline: TimeSpan)
+    // `tests.maxParallelProjects`: at most this many groups in flight, longest-expected
+    // first; `None` launches every group at once.
+    (maxParallelProjects: int option)
     // `tests.traces`, resolved for this run's mode, with the plugin's activity log (which
     // a force run's `ctx = None` would otherwise lose); `None` when not configured, which
     // leaves every launch exactly as it is without traces.
@@ -5780,10 +5783,28 @@ let private executeTests
                 return [| results |]
             }
 
+        // `tests.maxParallelProjects`: with a cap, groups launch longest expected wall first
+        // (from the retained CTRF reports), so the long ones are not left for last. Without
+        // one every group launches at once and the order is moot, so no history is read.
+        let scheduledGroups =
+            match maxParallelProjects with
+            | None -> groups
+            | Some cap ->
+                let ordered =
+                    GroupSchedule.longestFirst
+                        (fun (_, groupConfigs: TestConfig list) -> groupConfigs |> List.map (fun c -> c.Project))
+                        (GroupSchedule.expectedWalls repoRoot)
+                        groups
+
+                let order = ordered |> List.map fst |> String.concat ", "
+                Logging.info "test-prune" $"launching at most %d{cap} test group(s) at once, in order: %s{order}"
+                ordered
+
         /// The normal path: every target certified fresh, so the groups launch in
-        /// parallel and fold their results into the shared accumulator as they finish.
+        /// parallel (at most `maxParallelProjects` at a time) and fold their results into
+        /// the shared accumulator as they finish, in whatever order that is.
         let runAllGroups () =
-            groups
+            scheduledGroups
             |> List.map (fun (_, groupConfigs) ->
                 async {
                     // The run's token: trace preparation (weave + JIT verification) stops
@@ -6316,7 +6337,7 @@ let private executeTests
                     foldAndEmit results
                     return results
                 })
-            |> Async.Parallel
+            |> GroupSchedule.run maxParallelProjects
 
         let! groupResults =
             if List.isEmpty preflight.Refusals then
@@ -6970,6 +6991,8 @@ let internal createWithEvidenceAndQueries
     (evidence: TestEvidenceRun.Wiring option)
     (queriesOf: Database -> ImpactQueries)
     (launchDeadline: TimeSpan)
+    // `tests.maxParallelProjects`: at most this many test groups in flight; `None` for all.
+    (maxParallelProjects: int option)
     // The declared exclusions: indexed test-project name -> written reason. Called once
     // per debt classification (flush, launch, completion), so a caller can re-resolve
     // them against the current project inventory. A throw is a refusal to classify, and
@@ -8726,6 +8749,7 @@ let internal createWithEvidenceAndQueries
                             emitStarted
                             repoRoot
                             launchDeadline
+                            maxParallelProjects
                             (tracesFor ctx inputs.Mode)
                             launch.InputTree
                             (compileInputsOf ctx)
@@ -8874,6 +8898,7 @@ let internal createWithEvidenceAndQueries
                             emitStarted
                             repoRoot
                             launchDeadline
+                            maxParallelProjects
                             (tracesFor ctx mode)
                             commandLaunch.InputTree
                             (compileInputsOf ctx)
@@ -12205,6 +12230,7 @@ let internal defaultEvidenceWiring (repoRoot: string) =
 let internal createWithQueries
     (queriesOf: Database -> ImpactQueries)
     (launchDeadline: TimeSpan)
+    (maxParallelProjects: int option)
     (resolveExcludedProjects: unit -> Map<string, string>)
     (dbPath: string)
     (walkPolicy: TestPrune.Domain.WalkPolicy)
@@ -12214,6 +12240,7 @@ let internal createWithQueries
         (defaultEvidenceWiring repoRoot)
         queriesOf
         launchDeadline
+        maxParallelProjects
         resolveExcludedProjects
         dbPath
         walkPolicy
@@ -12221,6 +12248,7 @@ let internal createWithQueries
 
 let internal createWithLaunchDeadline
     (launchDeadline: TimeSpan)
+    (maxParallelProjects: int option)
     (resolveExcludedProjects: unit -> Map<string, string>)
     (dbPath: string)
     // The edges the impact walk follows (`tests.selection`). `WalkPolicy.FollowAll`
@@ -12239,6 +12267,7 @@ let internal createWithLaunchDeadline
     createWithQueries
         ImpactQueries.ofDatabase
         launchDeadline
+        maxParallelProjects
         resolveExcludedProjects
         dbPath
         walkPolicy
@@ -12267,6 +12296,9 @@ let internal createWithLaunchDeadline
 /// `createWithScope` for `resolveExcludedProjects` and the launch policy.
 let createWithTracesIn
     (initialMode: TestMode)
+    // `tests.maxParallelProjects`: at most this many test groups run at once, longest
+    // expected wall first; `None` launches every group at once.
+    (maxParallelProjects: int option)
     (traces: TraceSettings option)
     (untracedProjects: Set<string>)
     (weaveOverrides: Map<string, TraceWeaveTests>)
@@ -12290,6 +12322,7 @@ let createWithTracesIn
 
     createWithLaunchDeadline
         launchDeadline
+        maxParallelProjects
         resolveExcludedProjects
         dbPath
         walkPolicy
@@ -12325,6 +12358,7 @@ let createWithTraces
     =
     createWithTracesIn
         TestMode.initial
+        None
         traces
         untracedProjects
         weaveOverrides
