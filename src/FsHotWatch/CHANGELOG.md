@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.84 - 2026-10-17
+
 - fix: the toolchain identity every task-cache key is scoped to is the version line
   `dotnet --version` printed, not everything it printed. Its stdout and stderr arrive merged,
   and a `dotnet` child sometimes writes a diagnostic of its own beside the version

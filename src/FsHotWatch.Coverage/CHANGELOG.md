@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.30 - 2026-10-17
+
 - **fix!: a full-suite check fails when a file with a configured floor has no row in the
   report** (`Thresholds.unmeasuredFloors`), as `coverageratchet check` does. The check took
   its file set from the report, so a report covering fewer assemblies passed as if every
