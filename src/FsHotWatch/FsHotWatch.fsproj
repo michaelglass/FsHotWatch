@@ -21,7 +21,7 @@
 
     <!-- Package metadata -->
     <PackageId>FsHotWatch</PackageId>
-    <Version>0.10.0-alpha.82</Version>
+    <Version>0.10.0-alpha.83</Version>
     <Authors>Michael Glass</Authors>
     <Description>F# file watcher daemon — keeps FSharpChecker warm for instant re-analysis</Description>
     <PackageTags>fsharp;file-watcher;fsharp-compiler-service;incremental;analysis</PackageTags>
@@ -63,6 +63,7 @@
 
   <ItemGroup>
     <Compile Include="Locking.fs" />
+    <Compile Include="DrainedTimer.fs" />
     <Compile Include="Logging.fs" />
     <Compile Include="Json.fs" />
     <Compile Include="SessionScope.fs" />

@@ -11,6 +11,41 @@
   the same tree under the same SDK differently, and every task-cache entry missed across modes.
   Output with no version line in it is still kept whole.
 
+- fix!: a daemon no longer crashes its process when a vanished-root, idle-exit or
+  plugin-wedge tick runs across teardown. Disposing `System.Threading.Timer` does not wait
+  for a tick already running, so a tick could cancel the daemon's `CancellationTokenSource`
+  after its owner had disposed it; the `ObjectDisposedException` was thrown on a timer
+  thread, where nothing caught it (the idle-exit and wedge ticks caught and logged it).
+  These timers now return once no tick is running and none will start, so the owner may
+  then dispose what their shutdown action uses.
+  - Breaking: `IdleExit.createTimer` returns `IDisposable` instead of `Timer`.
+  - New: `IdleExit.createTimerWith` (an explicit tick period).
+
+- fix: a process tree whose kill does not return within the teardown budget is escalated
+  instead of only being recorded as LEAKED. SIGTERM, then SIGKILL, goes to the root and to the
+  descendants the process table links to it, each followed by a bounded liveness poll.
+  Ownership is checked by pid and start time, both recorded when the child is launched: a pid
+  that now belongs to another process is never signalled, and neither is a process whose start
+  time cannot be read. A zombie counts as exited. A tree that is gone reports `Killed` and is
+  not booked as leaked. Each member still running after SIGKILL, or whose ownership or state
+  cannot be established, is logged at ERROR and booked as leaked under its own pid with the
+  reason, and the outcome stays `KillTimedOut`. A kill that returns never escalates. Registry
+  shutdown still names leaked trees and still does not chase their pids.
+
+## 0.10.0-alpha.83 - 2026-10-17
+
+- feat!: the test-evidence key covers the environment the daemon started with. A tests
+  entry's `evidence.env` names variables whose values join the key as digests (an unset
+  variable differs from an empty one); no value is stored or logged. Each declared
+  `evidence.envFiles` file is now keyed both as it is on disk and as it was when the daemon
+  started, so a daemon started before an edit to the file, which still runs its tests with the
+  old values, no longer matches evidence from one started after it. `TestEvidenceKey.Version`
+  is now `test-evidence-v2`, so no earlier entry matches.
+  - New: `TestEvidenceKey.LoadedEnvironment` (captured once when the daemon wires evidence,
+    with `capture`, `ofProcess`, `digestOf` and `describe`), `Config.Env`, `Inputs.Env`,
+    `Inputs.EnvFilesLoaded` and `Request.Loaded`; key labels `env` and `envFilesLoaded`.
+    A declaration the capture does not hold makes no key.
+
 ## 0.10.0-alpha.82 - 2026-10-17
 
 - fix: a directory or glob named in `verdictInputs` or `evidence.extra` resolves to the files

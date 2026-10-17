@@ -105,6 +105,19 @@ let analyzerProjectFor root (analyzerPath: string) =
     | [| project |] -> $"%s{projectDir}/%s{Path.GetFileName project}"
     | projects -> failwith $"expected exactly one project under %s{projectDir}, found %d{projects.Length}"
 
+/// The directory the daemon writes its coverage artifacts under (`tests.coverageDir` in
+/// `.fshw.json`, repo-relative), including the shared `coverage.cobertura.xml` TestPrune
+/// emits after every test run. `"coverage"` when unset, as `DaemonConfig` defaults it.
+let daemonCoverageDir root =
+    use config = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, ".fshw.json")))
+
+    match config.RootElement.TryGetProperty "tests" with
+    | true, tests ->
+        match tests.TryGetProperty "coverageDir" with
+        | true, dir when dir.ValueKind = JsonValueKind.String -> dir.GetString()
+        | _ -> "coverage"
+    | _ -> "coverage"
+
 /// The repo-relative paths declared in `.fshw.json` `verdictInputs.hashed` — the
 /// gate-deciding files the discovery walk does not reach, which the tree hash a
 /// verdict is addressed by therefore includes. Empty list when the repo declares none.

@@ -224,6 +224,7 @@ let private wiring (store: TestEvidenceStore.Store) (toolchain: Lazy<string>) : 
     { Store = store
       Configs = Map.empty
       Toolchain = toolchain
+      Loaded = TestEvidenceKey.LoadedEnvironment.empty
       ProducerHash = "p"
       ExcludePatterns = [] }
 

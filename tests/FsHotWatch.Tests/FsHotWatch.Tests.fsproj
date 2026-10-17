@@ -47,6 +47,7 @@
     <Compile Include="LockingTests.fs" />
     <Compile Include="ProjectModelTests.fs" />
     <Compile Include="ProcessHelperTests.fs" />
+    <Compile Include="KillEscalationTests.fs" />
     <Compile Include="ProcessOwnershipTests.fs" />
     <Compile Include="SpawnHelperTests.fs" />
     <Compile Include="SpawnHelperModeTests.fs" />
@@ -118,6 +119,7 @@
     <Compile Include="ScanActivityTests.fs" />
     <Compile Include="DaemonPhasesTests.fs" />
     <Compile Include="ScanMetricsTests.fs" />
+    <Compile Include="DrainedTimerTests.fs" />
     <Compile Include="IdleExitTests.fs" />
     <Compile Include="VanishedRootTests.fs" />
     <Compile Include="HeartbeatTests.fs" />

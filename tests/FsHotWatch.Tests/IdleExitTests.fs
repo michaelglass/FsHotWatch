@@ -510,3 +510,25 @@ let ``a forced scan inhibits idle-exit exactly as a cold one does`` () =
         @>
 
     test <@ shutdownCalls.Value = 0 @>
+
+[<Fact(Timeout = 30000)>]
+let ``a tick in flight when the timer is disposed shuts down before the daemon's source is disposed`` () =
+    let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
+
+    let seen =
+        TestHelpers.cancelAcrossTeardown (fun hold shutdown ->
+            createTimerWith
+                (TimeSpan.FromMilliseconds 100.0)
+                { BaseThresholdMin = 1
+                  PressureFloorMin = None
+                  Pressure = fun () -> false
+                  Now = fun () -> now
+                  Inhibitors =
+                    fun () ->
+                        hold ()
+                        []
+                  LastActivityAt = fun () -> now - TimeSpan.FromHours 1.0
+                  Shutdown = shutdown
+                  Log = ignore })
+
+    test <@ seen = None @>

@@ -50,7 +50,8 @@ module ProcessOutput =
 /// order. Equality still holds, which is all any call site asks of it.
 [<RequireQualifiedAccess; NoComparison>]
 type KillOutcome =
-    /// `Kill(entireProcessTree = true)` returned: the tree is dead.
+    /// `Kill(entireProcessTree = true)` returned: the tree is dead. Also the outcome of a
+    /// kill that did not return when escalation then established every member is gone.
     | Killed
     /// The child had ALREADY exited when the kill landed — the documented race
     /// between the timeout firing and the child's natural exit
@@ -371,56 +372,6 @@ let internal classifyKill (call: KillCall) : KillOutcome =
     | KillCall.Threw ex -> KillOutcome.KillFailed ex
     | KillCall.DidNotReturn budget -> KillOutcome.KillTimedOut budget
 
-/// Tear down a child's process tree WITHIN `budget` and SAY what happened — the whole
-/// of the kill policy, with the actual `Process.Kill` injected.
-///
-/// `kill` is a parameter because the two arms that matter are the one where the OS
-/// refuses us and the one where it never answers, and no test can conjure a process
-/// that is unkillable — or slow to kill — reliably on every platform.
-///
-/// `pid` is passed as data as well as appearing inside `describe ()`: a tree we could
-/// not account for is registered with `ProcessRegistry` so shutdown can name it, and
-/// a pid buried in prose cannot be registered.
-///
-/// Instrumented at both ends. The begin line is what the original report's evidence was
-/// missing: with only "the project timed out" retained, a run that stopped inside the
-/// teardown is indistinguishable from one that stopped before reaching it, and the
-/// blocked project cannot be named from the log after the fact.
-let internal killTreeWith (budget: TimeSpan) (pid: int) (describe: unit -> string) (kill: unit -> unit) : KillOutcome =
-    let what = describe ()
-
-    Logging.info "process" $"killing process tree for %s{what} (teardown budget %s{renderBudget budget})"
-
-    let clock = Stopwatch.StartNew()
-    let outcome = classifyKill (callKillWithin budget kill)
-    let took = int clock.ElapsedMilliseconds
-
-    // The returned value carries the outcome to the caller; these lines are so it
-    // also reaches a human who is only reading stderr — and so the DURATION of the
-    // teardown survives in the log whether or not the run produced a verdict.
-    match outcome with
-    | KillOutcome.Killed -> Logging.info "process" $"killed the process tree for %s{what} in %d{took}ms"
-    | KillOutcome.AlreadyExited ->
-        Logging.info "process" $"process tree for %s{what} had already exited (%d{took}ms) — nothing to kill"
-    | KillOutcome.KillFailed reason ->
-        Logging.error
-            "process"
-            $"FAILED to kill the process tree for %s{what} after %d{took}ms: %s{reason.GetType().Name}: \
-              %s{reason.Message}. The child and any grandchildren it spawned are STILL RUNNING, and we are about to \
-              stop tracking them — they may hold a lock, a port or a pipe. Kill them by hand."
-
-        ProcessRegistry.reportLeak pid what $"the kill was refused (%s{reason.GetType().Name}: %s{reason.Message})"
-    | KillOutcome.KillTimedOut _ ->
-        Logging.error
-            "process"
-            $"TIMED OUT killing the process tree for %s{what}: the kill did not return within \
-              %s{renderBudget budget}. We are no longer waiting on it, so this run can still report a verdict, \
-              but we never established that the child or its grandchildren are dead — assume they are STILL RUNNING. \
-              They may hold a lock, a port or a pipe. Kill them by hand."
-
-        ProcessRegistry.reportLeak pid what $"the kill did not return within %s{renderBudget budget}"
-
-    outcome
 
 /// One row of the OS process table, as `ps -A -o pid=,ppid=,stat=,command=` prints it.
 ///
@@ -473,6 +424,339 @@ let internal treeOf (rootPid: int) (rows: ProcessRow list) : ProcessRow list =
     let root = rows |> List.filter (fun r -> r.Pid = rootPid)
     // A zombie has already exited: nothing to aim a kill at, nothing that can leak.
     root @ below rootPid |> List.filter (fun r -> not r.Zombie)
+
+/// A process we own, named by the identity that survives pid recycling: the pid AND the
+/// moment the OS started it. A pid alone is a number the OS hands out again; a pid whose
+/// start time has changed is somebody else's process, and is never signalled.
+[<NoComparison>]
+type internal OwnedPid = { Pid: int; StartedAt: DateTime }
+
+/// What escalating a tree whose kill did not return established. `Survivors` empty means
+/// every member we could find is gone (exited, or a zombie: exited, holding nothing).
+[<NoComparison>]
+type internal Escalation =
+    {
+        Root: int
+        /// Every signal sent, in order: pid, signal name, and whether it was delivered.
+        Sent: (int * string * Result<unit, string>) list
+        /// Members gone by the end: absent from the process table, or zombies.
+        Exited: int list
+        /// Pids that now belong to a different process. Left alone, never signalled.
+        Recycled: int list
+        /// Members still running and still ours after SIGKILL, or whose state or
+        /// ownership could not be established, with why. These stay LEAKED.
+        Survivors: (int * string) list
+    }
+
+/// The OS operations escalation needs, injected so the hang, the refusal and the recycled
+/// pid are all deterministic in tests.
+[<NoComparison; NoEquality>]
+type internal EscalationOps =
+    {
+        ReadTable: unit -> Result<ProcessRow list, string>
+        /// The start time of the process that holds `pid` NOW.
+        StartTimeOf: int -> Result<DateTime, string>
+        /// Send signal `signum` to `pid`.
+        Signal: int -> int -> Result<unit, string>
+        Pause: unit -> unit
+        /// Liveness polls per signal before escalating (or giving up).
+        Attempts: int
+    }
+
+/// A member escalation follows: its pid, and the start time recorded for it (or why none
+/// could be).
+[<NoComparison>]
+type private Tracked =
+    { Pid: int
+      Identity: Result<DateTime, string> }
+
+/// One member's state in one process-table read.
+[<RequireQualifiedAccess>]
+type private MemberState =
+    /// Absent from the table, or a zombie: exited, and holding nothing. Its parent (or,
+    /// once the parent dies, init) reaps it; a pid we did not start is not ours to wait on.
+    | Gone
+    /// Running, and its start time still matches the one we recorded.
+    | Ours
+    /// Running, but the pid now belongs to a process started at another time.
+    | Recycled
+    /// Running (as far as we can tell), but nothing proves it is ours. Never signalled,
+    /// and polled again: a member that exited between two reads resolves to `Gone`.
+    | Unproven of reason: string
+
+let private stateIn (ops: EscalationOps) (rows: ProcessRow list) (m: Tracked) : MemberState =
+    match rows |> List.tryFind (fun r -> r.Pid = m.Pid) with
+    | None -> MemberState.Gone
+    | Some r when r.Zombie -> MemberState.Gone
+    | Some _ ->
+        match m.Identity with
+        | Error reason ->
+            MemberState.Unproven
+                $"its ownership could not be established: its start time could not be read when the tree was \
+                  recorded (%s{reason})"
+        | Ok recorded ->
+            match ops.StartTimeOf m.Pid with
+            | Ok startedAt when startedAt = recorded -> MemberState.Ours
+            | Ok _ -> MemberState.Recycled
+            | Error reason ->
+                MemberState.Unproven
+                    $"its ownership could not be re-established: its start time could not be read (%s{reason})"
+
+/// Everything escalation has established so far, newest first in each list.
+[<NoComparison>]
+type private Ledger =
+    { Sent: (int * string * Result<unit, string>) list
+      Exited: int list
+      Recycled: int list }
+
+/// The members one sweep found still running: ours, and unproven with why.
+[<NoComparison>]
+type private Sweep =
+    { Ours: Tracked list
+      Unproven: (Tracked * string) list }
+
+let private pendingIn (s: Sweep) : Tracked list = s.Ours @ List.map fst s.Unproven
+
+/// File `members` by their state in one fresh table read. `Gone` and `Recycled` are final
+/// and go to the ledger; the rest are returned to be polled again.
+let private sweep (ops: EscalationOps) (members: Tracked list) (ledger: Ledger) : Sweep * Ledger =
+    match ops.ReadTable() with
+    | Error reason ->
+        let why =
+            $"the process table could not be read (%s{reason}), so its state is unknown"
+
+        { Ours = []
+          Unproven = members |> List.map (fun m -> m, why) },
+        ledger
+    | Ok rows ->
+        let s, l =
+            members
+            |> List.fold
+                (fun (s: Sweep, l: Ledger) m ->
+                    match stateIn ops rows m with
+                    | MemberState.Ours -> { s with Ours = m :: s.Ours }, l
+                    | MemberState.Unproven reason ->
+                        { s with
+                            Unproven = (m, reason) :: s.Unproven },
+                        l
+                    | MemberState.Gone -> s, { l with Exited = m.Pid :: l.Exited }
+                    | MemberState.Recycled ->
+                        s,
+                        { l with
+                            Recycled = m.Pid :: l.Recycled })
+                ({ Ours = []; Unproven = [] }, ledger)
+
+        { Ours = List.rev s.Ours
+          Unproven = List.rev s.Unproven },
+        l
+
+/// Send `signal` to every member a fresh sweep proves is still ours, then poll until
+/// nothing is left running or the attempts run out.
+let private signalRound
+    (ops: EscalationOps)
+    (signum: int, name: string)
+    (members: Tracked list)
+    (ledger: Ledger)
+    : Sweep * Ledger =
+    let before, ledger = sweep ops members ledger
+    let sent = before.Ours |> List.map (fun m -> m.Pid, name, ops.Signal m.Pid signum)
+
+    let ledger =
+        { ledger with
+            Sent = List.rev sent @ ledger.Sent }
+
+    let rec poll attempt (left: Tracked list) (l: Ledger) =
+        let s, l = sweep ops left l
+
+        if List.isEmpty (pendingIn s) || attempt >= ops.Attempts then
+            s, l
+        else
+            ops.Pause()
+            poll (attempt + 1) (pendingIn s) l
+
+    poll 1 (pendingIn before) ledger
+
+/// Escalate a tree whose kill did not return: SIGTERM, then SIGKILL, to every member still
+/// running AND still ours, each followed by a bounded liveness poll.
+///
+/// Ownership is the recorded identity, never a name or a path: the root must still have
+/// the start time recorded when we launched it, and its descendants are the processes the
+/// table links to it at that moment, each recorded with its own start time. Every signal is
+/// preceded by a fresh check, so a pid the OS hands to somebody else mid-escalation is
+/// dropped, not signalled. A member whose start time cannot be read is never signalled; it
+/// is polled until it is gone, and stays a survivor if it is not.
+///
+/// A descendant re-parented away before the escalation's snapshot (a double fork, or a
+/// child orphaned when its parent died) is not linked to the root any more, so it is not
+/// found here.
+let internal escalateWith (ops: EscalationOps) (root: OwnedPid) : Escalation =
+    let ledger =
+        { Sent = []
+          Exited = []
+          Recycled = [] }
+
+    let rootTracked =
+        { Pid = root.Pid
+          Identity = Ok root.StartedAt }
+
+    let tracked, ledger =
+        match ops.ReadTable() with
+        | Error _ -> [ rootTracked ], ledger
+        | Ok rows ->
+            match stateIn ops rows rootTracked with
+            | MemberState.Gone -> [], { ledger with Exited = [ root.Pid ] }
+            | MemberState.Recycled -> [], { ledger with Recycled = [ root.Pid ] }
+            | MemberState.Unproven _ -> [ rootTracked ], ledger
+            | MemberState.Ours ->
+                let descendants =
+                    treeOf root.Pid rows
+                    |> List.filter (fun r -> r.Pid <> root.Pid)
+                    |> List.map (fun r ->
+                        { Pid = r.Pid
+                          Identity = ops.StartTimeOf r.Pid })
+
+                rootTracked :: descendants, ledger
+
+    let final, ledger =
+        if List.isEmpty tracked then
+            { Ours = []; Unproven = [] }, ledger
+        else
+            let afterTerm, ledger = signalRound ops (15, "SIGTERM") tracked ledger
+
+            match pendingIn afterTerm with
+            | [] -> afterTerm, ledger
+            | left -> signalRound ops (9, "SIGKILL") left ledger
+
+    let refusals pid =
+        ledger.Sent
+        |> List.rev
+        |> List.choose (fun (p, name, r) ->
+            match r with
+            | Error reason when p = pid -> Some $"%s{name} refused: %s{reason}"
+            | _ -> None)
+
+    let survivors =
+        (final.Ours
+         |> List.map (fun m -> m.Pid, String.concat "; " ("still running after SIGKILL" :: refusals m.Pid)))
+        @ (final.Unproven |> List.map (fun (m, why) -> m.Pid, why))
+
+    { Root = root.Pid
+      Sent = List.rev ledger.Sent
+      Exited = List.rev ledger.Exited
+      Recycled = List.rev ledger.Recycled
+      Survivors = survivors }
+
+/// Tear down a child's process tree WITHIN `budget` and SAY what happened — the whole
+/// of the kill policy, with the actual `Process.Kill` injected.
+///
+/// `kill` is a parameter because the two arms that matter are the one where the OS
+/// refuses us and the one where it never answers, and no test can conjure a process
+/// that is unkillable — or slow to kill — reliably on every platform.
+///
+/// `pid` is passed as data as well as appearing inside `describe ()`: a tree we could
+/// not account for is registered with `ProcessRegistry` so shutdown can name it, and
+/// a pid buried in prose cannot be registered.
+///
+/// Instrumented at both ends. The begin line is what the original report's evidence was
+/// missing: with only "the project timed out" retained, a run that stopped inside the
+/// teardown is indistinguishable from one that stopped before reaching it, and the
+/// blocked project cannot be named from the log after the fact.
+///
+/// `escalate` is what to do when the kill call does not return: `None` books the tree
+/// as leaked, `Some` escalates against the recorded identity first (`escalateWith`). A
+/// tree the escalation saw leave reports `Killed`; every member it left running, or
+/// could not prove ours or gone, is booked as leaked by its own pid and the outcome
+/// stays `KillTimedOut`. A kill that returns never escalates.
+let internal killTreeEscalatingWith
+    (budget: TimeSpan)
+    (pid: int)
+    (describe: unit -> string)
+    (kill: unit -> unit)
+    (escalate: (unit -> Escalation) option)
+    : KillOutcome =
+    let what = describe ()
+
+    Logging.info "process" $"killing process tree for %s{what} (teardown budget %s{renderBudget budget})"
+
+    let clock = Stopwatch.StartNew()
+    let outcome = classifyKill (callKillWithin budget kill)
+    let took = int clock.ElapsedMilliseconds
+
+    // The returned value carries the outcome to the caller; these lines are so it
+    // also reaches a human who is only reading stderr — and so the DURATION of the
+    // teardown survives in the log whether or not the run produced a verdict.
+    match outcome with
+    | KillOutcome.Killed ->
+        Logging.info "process" $"killed the process tree for %s{what} in %d{took}ms"
+        outcome
+    | KillOutcome.AlreadyExited ->
+        Logging.info "process" $"process tree for %s{what} had already exited (%d{took}ms) — nothing to kill"
+        outcome
+    | KillOutcome.KillFailed reason ->
+        Logging.error
+            "process"
+            $"FAILED to kill the process tree for %s{what} after %d{took}ms: %s{reason.GetType().Name}: \
+              %s{reason.Message}. The child and any grandchildren it spawned are STILL RUNNING, and we are about to \
+              stop tracking them — they may hold a lock, a port or a pipe. Kill them by hand."
+
+        ProcessRegistry.reportLeak pid what $"the kill was refused (%s{reason.GetType().Name}: %s{reason.Message})"
+        outcome
+    | KillOutcome.KillTimedOut _ ->
+        match escalate with
+        | None ->
+            Logging.error
+                "process"
+                $"TIMED OUT killing the process tree for %s{what}: the kill did not return within \
+                  %s{renderBudget budget}. We are no longer waiting on it, so this run can still report a verdict, \
+                  but we never established that the child or its grandchildren are dead — assume they are STILL RUNNING. \
+                  They may hold a lock, a port or a pipe. Kill them by hand."
+
+            ProcessRegistry.reportLeak pid what $"the kill did not return within %s{renderBudget budget}"
+            outcome
+        | Some escalateNow ->
+            Logging.warn
+                "process"
+                $"TIMED OUT killing the process tree for %s{what}: the kill did not return within \
+                  %s{renderBudget budget}. Escalating: SIGTERM, then SIGKILL, to every member still running and \
+                  still ours (pid and start time)."
+
+            let e = escalateNow ()
+
+            let pids (xs: int list) =
+                xs |> List.map string |> String.concat ", "
+
+            let sent =
+                e.Sent |> List.map (fun (p, name, _) -> $"%s{name}→%d{p}") |> String.concat ", "
+
+            if List.isEmpty e.Survivors then
+                Logging.warn
+                    "process"
+                    $"ESCALATED the process tree for %s{what}: it is gone. Sent [%s{sent}]; exited [%s{pids e.Exited}]; \
+                      recycled, left alone [%s{pids e.Recycled}]."
+
+                KillOutcome.Killed
+            else
+                let named =
+                    e.Survivors
+                    |> List.map (fun (p, why) -> $"pid %d{p} (%s{why})")
+                    |> String.concat "; "
+
+                Logging.error
+                    "process"
+                    $"process tree for %s{what} SURVIVED escalation: %s{named}. Sent [%s{sent}]. These are STILL \
+                      RUNNING and no longer watched — they may hold a lock, a port or a pipe. Kill them by hand."
+
+                for p, why in e.Survivors do
+                    ProcessRegistry.reportLeak
+                        p
+                        $"pid %d{p}, in the tree of %s{what}"
+                        $"the kill did not return within %s{renderBudget budget}, and escalation left it: %s{why}"
+
+                outcome
+
+/// `killTreeEscalatingWith` with no escalation: a kill that does not return is booked as leaked.
+let internal killTreeWith (budget: TimeSpan) (pid: int) (describe: unit -> string) (kill: unit -> unit) : KillOutcome =
+    killTreeEscalatingWith budget pid describe kill None
 
 /// What asking a timed-out tree to stop (a stop signal to every member) established
 /// before it was killed. An orderly stop lets a child do what it only does on shutdown —
@@ -1026,6 +1310,56 @@ let internal SettlePause = TimeSpan.FromMilliseconds 50.0
 /// first liveness poll (a zombie its parent had not yet reaped), so whether it ever
 /// executed was a race — and so was its coverage. Here it is testable directly.
 let internal settlePause () = Thread.Sleep SettlePause
+
+/// `kill(pid, signum)`: deliver one signal to one pid.
+let internal signalPid (pid: int) (signum: int) : Result<unit, string> =
+    try
+        if Libc.kill (pid, signum) = 0 then
+            Ok()
+        else
+            Error
+                $"kill(%d{pid}, %d{signum}) failed with errno %d{System.Runtime.InteropServices.Marshal.GetLastPInvokeError()}"
+    with ex ->
+        Error $"kill(2) is unavailable: %s{ex.GetType().Name}: %s{ex.Message}"
+
+/// When the OS started the process that holds `pid` now (UTC). With the pid, this is the
+/// identity escalation re-checks before every signal (`OwnedPid`).
+let internal processStartTime (pid: int) : Result<DateTime, string> =
+    try
+        use p = Process.GetProcessById pid
+        Ok(p.StartTime.ToUniversalTime())
+    with ex ->
+        Error $"%s{ex.GetType().Name}: %s{ex.Message}"
+
+/// Record `pid` with its start time, while it is certainly ours: just after we started it.
+let internal recordOwnedPid (pid: int) : Result<OwnedPid, string> =
+    processStartTime pid
+    |> Result.map (fun startedAt -> { Pid = pid; StartedAt = startedAt })
+
+/// Polls per escalation signal, and the pause between them: ~2s for a tree to answer
+/// SIGTERM, and again for SIGKILL. Each poll reads the process table once, so they are
+/// fewer and further apart than the settle poll's.
+let internal EscalationAttempts = 10
+let internal EscalationPause = TimeSpan.FromMilliseconds 200.0
+
+/// The bound on one process-table read during escalation. Shorter than `TeardownBudget`:
+/// escalation runs after that budget is already spent.
+let internal EscalationTableBudget = TimeSpan.FromSeconds 2.0
+
+/// The real OS behind `escalateWith`.
+let internal liveEscalationOps: EscalationOps =
+    { ReadTable = fun () -> readProcessTableWithin EscalationTableBudget
+      StartTimeOf = processStartTime
+      Signal = signalPid
+      Pause = fun () -> Thread.Sleep EscalationPause
+      Attempts = EscalationAttempts }
+
+/// The escalation for a child recorded at launch, or `None` when its identity could not
+/// be recorded: without it, no signal could be proven to reach OUR process.
+let internal escalationFor (owned: Result<OwnedPid, string>) : (unit -> Escalation) option =
+    match owned with
+    | Ok root -> Some(fun () -> escalateWith liveEscalationOps root)
+    | Error _ -> None
 
 /// Classify the bounded post-exit drain. The capture is the child's COMPLETE output
 /// only if the wait returned inside the window AND both pumps ended at EOF; anything
@@ -1816,6 +2150,10 @@ let internal runProcessCore
     // path where everything else about the child has gone wrong.
     let pid = child.Pid
 
+    // The identity escalation re-checks before it signals anything (`OwnedPid`), recorded
+    // while the child is certainly ours: it was started a moment ago.
+    let owned = recordOwnedPid pid
+
     try
         recordSpawn helper.IsSome command pid
 
@@ -1885,7 +2223,7 @@ let internal runProcessCore
     let describe () = $"`%s{command} %s{args}` (pid %d{pid})"
 
     let plainKill () : KillOutcome =
-        killTreeWith TeardownBudget pid describe child.KillTree
+        killTreeEscalatingWith TeardownBudget pid describe child.KillTree (escalationFor owned)
 
     let teardown: TreeTeardown option ref = ref None
 

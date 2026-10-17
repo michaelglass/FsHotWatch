@@ -1101,6 +1101,7 @@ let ``parseConfig tests reportVerificationFormat unknown value is a ConfigError 
 [<InlineData("""{ "reads": "everywhere" }""", "reads")>]
 [<InlineData("""{ "extra": "data/x.json" }""", "extra")>]
 [<InlineData("""{ "envFiles": ["../secrets.env"] }""", "inside the repository")>]
+[<InlineData("""{ "env": ["A=B"] }""", "env")>]
 let ``parseConfig tests evidence block that cannot be honoured is a ConfigError naming the project``
     (evidence: string, named: string)
     =
@@ -1116,7 +1117,7 @@ let ``parseConfig tests evidence block that cannot be honoured is a ConfigError 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig tests accepts a well-formed evidence block`` () =
     let json =
-        """{"tests": {"projects": [{"project": "T", "evidence": { "reads": "closure", "extra": ["data/**"], "envFiles": [".env.test"] }}]}}"""
+        """{"tests": {"projects": [{"project": "T", "evidence": { "reads": "closure", "extra": ["data/**"], "envFiles": [".env.test"], "env": ["DATABASE_URL"] }}]}}"""
 
     test <@ (parseConfig json defaults).Tests.Value.Projects.[0].Project = "T" @>
 

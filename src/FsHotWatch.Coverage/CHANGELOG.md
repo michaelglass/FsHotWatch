@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **fix!: a full-suite check fails when a file with a configured floor has no row in the
+  report** (`Thresholds.unmeasuredFloors`), as `coverageratchet check` does. The check took
+  its file set from the report, so a report covering fewer assemblies passed as if every
+  floor held. `FloorFailures` gains `Unmeasured: UnmeasuredFloor list`;
+  `FloorFailures.details` names each such file with "no row in the coverage report
+  (percentage floor | count floor | percentage + count floor)". An impact-filtered run
+  counts them in its `NotGatedFiltered` notice and does not gate.
+
 ## 0.7.0-alpha.29 - 2026-09-30
 
 - feat: a failed coverage check names the files below their floors. The status summary reads

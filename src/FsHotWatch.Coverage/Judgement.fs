@@ -22,6 +22,10 @@ type FloorFailures =
         Files: FileResult list
         /// Files below a covered-lines or covered-branches count floor.
         Counts: CountResult list
+        /// Files that carry a configured floor but have no row in the report. Nobody
+        /// graded them, so the run cannot say they held: a report written by another
+        /// process, or one that covered fewer assemblies, must not pass as a full one.
+        Unmeasured: UnmeasuredFloor list
     }
 
 /// The gated coverage verdict for a cycle, after applying the impact-filter
@@ -71,11 +75,24 @@ module FloorFailures =
           if not (CountResult.branchesPassed r) then
               $"covered branches %d{r.File.BranchesCovered} < %d{r.Floor.CoveredBranches}" ]
 
+    /// The ratchet's text for a floor the report has no row for, naming which kinds of
+    /// floor went unmeasured as `coverageratchet check` does.
+    let private unmeasuredDetail (u: UnmeasuredFloor) =
+        let kind =
+            match u.HasPercentageFloor, u.HasCountFloor with
+            | true, true -> "percentage + count floor"
+            | true, false -> "percentage floor"
+            | false, _ -> "count floor"
+
+        [ $"no row in the coverage report (%s{kind})" ]
+
     /// Each failing file once, with every floor it fell below joined into one detail:
-    /// percentage floors first, then count floors, as the ratchet reports them.
+    /// percentage floors first, then count floors, as the ratchet reports them; then each
+    /// floored file the report has no row for.
     let details (failures: FloorFailures) : (string * string) list =
         (failures.Files |> List.map (fun r -> r.File.FileName, percentDetail r))
         @ (failures.Counts |> List.map (fun r -> r.File.FileName, countDetail r))
+        @ (failures.Unmeasured |> List.map (fun u -> u.File, unmeasuredDetail u))
         |> List.groupBy fst
         |> List.map (fun (file, parts) -> file, parts |> List.collect snd |> String.concat ", ")
 
@@ -93,8 +110,9 @@ module FloorFailures =
 
         $"%d{details.Length} file(s) below threshold: %s{names}%s{more}"
 
-/// The floor check the `coverageratchet check` CLI makes: percentage floors, then count
-/// floors. `None` when every floor holds.
+/// The floor check the `coverageratchet check` CLI makes: percentage floors, count
+/// floors, and every configured floor the report cannot speak to. `None` only when the
+/// report measured every floored file and every floor held.
 let internal floorCheck (config: Config) (coverage: FileCoverage list) : FloorFailures option =
     let files =
         match check config coverage with
@@ -106,10 +124,15 @@ let internal floorCheck (config: Config) (coverage: FileCoverage list) : FloorFa
         | CountsAllPassed -> []
         | CountsFailed results -> results
 
-    if List.isEmpty files && List.isEmpty counts then
+    let unmeasured = unmeasuredFloors config coverage
+
+    if List.isEmpty files && List.isEmpty counts && List.isEmpty unmeasured then
         None
     else
-        Some { Files = files; Counts = counts }
+        Some
+            { Files = files
+              Counts = counts
+              Unmeasured = unmeasured }
 
 /// Decide the gated verdict from a raw floor check and what the run established. Pure,
 /// so the gating policy is unit-testable without spinning a daemon.
@@ -127,6 +150,7 @@ let internal gateVerdict (scope: RunScope) (failures: FloorFailures option) : Co
         let files =
             (failures.Files |> List.map _.File.FileName)
             @ (failures.Counts |> List.map _.File.FileName)
+            @ (failures.Unmeasured |> List.map _.File)
             |> List.distinct
 
         NotGatedFiltered files.Length

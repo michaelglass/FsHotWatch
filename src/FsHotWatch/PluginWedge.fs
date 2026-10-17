@@ -394,12 +394,12 @@ let runTick (deps: MonitorDeps) (latch: IdleExit.FireLatch) (buckets: Map<string
         false
 
 /// Create the live monitor timer with an explicit period. The caller owns
-/// disposal. All effects come through `deps`.
+/// disposal; once it returns, no tick is running and none will, so the caller may
+/// then dispose what `deps.OnWedged` uses. All effects come through `deps`.
 let createMonitorWith (period: TimeSpan) (deps: MonitorDeps) : IDisposable =
     let latch = IdleExit.FireLatch.create ()
     let buckets = ref Map.empty
-    let onTick (_: obj) = runTick deps latch buckets |> ignore
-    new System.Threading.Timer(System.Threading.TimerCallback(onTick), null, period, period) :> IDisposable
+    DrainedTimer.every period (fun () -> runTick deps latch buckets |> ignore)
 
 /// Create the live monitor timer (period 30s).
 let createMonitor (deps: MonitorDeps) : IDisposable =

@@ -134,6 +134,56 @@ let waitUntilTrue (condition: unit -> bool) (timeoutMs: int) : bool =
 
     ok
 
+/// What a timer's tick saw when it cancelled the daemon's `CancellationTokenSource`
+/// across its owner's teardown: `None` when the cancel went through, the exception
+/// when it found the source already disposed.
+///
+/// `start hold shutdown` starts the timer under test with `hold ()` called inside
+/// every tick before it decides to shut down, and `shutdown` as its shutdown action.
+/// Every tick is held until a tick is in flight; then the owner tears down in the
+/// daemon's order — dispose the timer, then the source — and only after that, or
+/// after half a second if disposing the timer waits for the tick, are the ticks let go.
+let cancelAcrossTeardown (start: (unit -> unit) -> (unit -> unit) -> IDisposable) : exn option =
+    // Not disposed: a tick the timer queued before it stopped may still reach them.
+    let entered = new ManualResetEventSlim()
+    let release = new ManualResetEventSlim()
+    let cts = new CancellationTokenSource()
+
+    let outcome =
+        Tasks.TaskCompletionSource<exn option>(Tasks.TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let hold () =
+        entered.Set()
+        release.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+    let shutdown () =
+        try
+            cts.Cancel()
+            outcome.TrySetResult None |> ignore
+        with ex ->
+            outcome.TrySetResult(Some ex) |> ignore
+
+    let timer = start hold shutdown
+
+    if not (entered.Wait(TimeSpan.FromSeconds 10.0)) then
+        failwith "no tick reached the hold"
+
+    let teardown =
+        Tasks.Task.Run(fun () ->
+            timer.Dispose()
+            cts.Dispose())
+
+    teardown.Wait(TimeSpan.FromMilliseconds 500.0) |> ignore
+    release.Set()
+
+    if not (teardown.Wait(TimeSpan.FromSeconds 10.0)) then
+        failwith "the owner's teardown never finished"
+
+    if not (outcome.Task.Wait(TimeSpan.FromSeconds 10.0)) then
+        failwith "no tick shut down"
+
+    outcome.Task.Result
+
 /// Run `body` while every thread pool thread is held, then let them go. Process-wide:
 /// a test class using it belongs to the serialized `LogGlobalCollectionName` collection.
 let withEveryPoolThreadBusy (body: unit -> 'T) : 'T =
@@ -967,6 +1017,21 @@ let RealFantomasTestCapMs = 360_000
 /// measures the box: a full run on a loaded box stalls such tests for 15 s and more.
 [<Literal>]
 let SyncHangBackstopMs = 60_000
+
+/// A wait, inside a test capped at `SyncHangBackstopMs`, for in-process work or one
+/// trivial child (`echo`, `false`, `sh -c true`) to reach the state it awaits. Neither
+/// has a product bound to sit above. Alone they finish in under a second; a loaded full
+/// run stalled them past 5 s and 10 s waits. This only ends work that never finishes.
+[<Literal>]
+let HangWaitMs = 30_000
+
+/// The xUnit cap for a test whose daemon discovers a real `.fsproj`. Discovery is an
+/// in-process MSBuild evaluation with no product bound, and a process runs one
+/// evaluation at a time (`Daemon.evaluateInProcess`), so in a full run each queues
+/// behind every other test's. One project's evaluation takes about a second alone and
+/// took 59.5 s in a loaded full run; this cap is five times that.
+[<Literal>]
+let InProcessEvaluationTestCapMs = 300_000
 
 /// A wait whose event follows a real FCS type-check or lint pass. FCS has no product
 /// bound to sit above, so this is the margin for a check slowed by a saturated box.

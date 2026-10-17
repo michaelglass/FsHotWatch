@@ -160,6 +160,7 @@ let private wiringFor (store: TestEvidenceStore.Store) : TestEvidenceRun.Wiring 
                 Reads = TestEvidenceKey.Reads.Closure })
         |> Map.ofList
       Toolchain = lazy "test-toolchain"
+      Loaded = TestEvidenceKey.LoadedEnvironment.empty
       ProducerHash = "test-producer"
       ExcludePatterns = [] }
 

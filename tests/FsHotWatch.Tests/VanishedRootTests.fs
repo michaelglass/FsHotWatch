@@ -63,3 +63,39 @@ let ``a root that cannot be marked is logged, and always reads as present`` () =
         test <@ present () @>
         test <@ logged |> Seq.exists (fun l -> l.Contains "cannot mark") @>
         test <@ not (Directory.Exists missing) @>)
+
+[<Fact(Timeout = 30000)>]
+let ``a tick in flight when the watch is disposed shuts down before the daemon's source is disposed`` () =
+    // The daemon disposes this watch, then its CancellationTokenSource. A tick still
+    // running past the watch's disposal would cancel a disposed source, on a timer
+    // thread where nothing catches it, and take the whole process down.
+    let seen =
+        cancelAcrossTeardown (fun hold shutdown ->
+            VanishedRoot.watch
+                (TimeSpan.FromMilliseconds 100.0)
+                (fun () ->
+                    hold ()
+                    false)
+                shutdown
+                ignore)
+
+    test <@ seen = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``a root that goes missing while the daemon runs cancels its source`` () =
+    use cts = new CancellationTokenSource()
+    let exists = ref true
+
+    use _ =
+        VanishedRoot.watch
+            (TimeSpan.FromMilliseconds 20.0)
+            (fun () -> Volatile.Read &exists.contents)
+            (fun () -> cts.Cancel())
+            ignore
+
+    // FSHW-WAIT-001 ok: asserting a NEGATIVE — no cancel across ~5 ticks (20 ms period) while the root still exists
+    Thread.Sleep 100
+    test <@ not cts.IsCancellationRequested @>
+
+    Volatile.Write(&exists.contents, false)
+    test <@ cts.Token.WaitHandle.WaitOne(TimeSpan.FromSeconds 10.0) @>

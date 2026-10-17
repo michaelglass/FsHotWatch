@@ -48,13 +48,12 @@ let mark (root: string) (log: string -> unit) : unit -> bool =
         fun () -> true
 
 /// Every `every`, ask `present`; the first time it says the root is gone, log and call
-/// `shutdown`, once. The caller owns the returned timer.
+/// `shutdown`, once. The caller owns the returned timer; once its disposal returns, no
+/// tick is running and none will, so the caller may then dispose what `shutdown` uses.
 let watch (every: TimeSpan) (present: unit -> bool) (shutdown: unit -> unit) (log: string -> unit) : IDisposable =
     let fired = ref 0
 
-    let tick (_: obj) =
+    DrainedTimer.every every (fun () ->
         if not (present ()) && Interlocked.Exchange(&fired.contents, 1) = 0 then
             log "the worktree root this daemon started in is gone; shutting down"
-            shutdown ()
-
-    new Timer(TimerCallback tick, null, every, every) :> IDisposable
+            shutdown ())

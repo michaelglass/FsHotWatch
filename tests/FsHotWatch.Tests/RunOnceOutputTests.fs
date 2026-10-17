@@ -614,7 +614,7 @@ let private runOnceIn (checkMode: FsHotWatch.Cli.CheckVerdict.CheckMode) (repoRo
         repoRoot
         (noTestProjectsConfig ())
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``runOnceAndReport renders the statuses of the plugins the run registered`` () =
     withProjectOnlyRepo "run-once-report-summary" (fun repoRoot ->
         let createDaemon (root: string) =
@@ -656,7 +656,7 @@ let private hostFor (command: FsHotWatch.Cli.Program.Command) (root: string) =
             RunMode = FsHotWatch.Cli.Program.runModeFor command }
         throwingWatcherFactory
 
-[<Theory(Timeout = 60000)>]
+[<Theory(Timeout = InProcessEvaluationTestCapMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``check and confirm --run-once complete without constructing a file watcher`` (confirm: bool) =
@@ -684,7 +684,7 @@ let ``check and confirm --run-once complete without constructing a file watcher`
         let expected = if confirm then 3 else 0
         test <@ exitCode = expected @>)
 
-[<Theory(Timeout = 60000)>]
+[<Theory(Timeout = InProcessEvaluationTestCapMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``check and confirm --run-once with no plugins registered return a verdict`` (confirm: bool) =
@@ -715,7 +715,7 @@ let ``check and confirm --run-once with no plugins registered return a verdict``
         let expected = if confirm then 3 else 0
         test <@ exitCode = expected @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``format --run-once completes without constructing a file watcher`` () =
     withProjectOnlyRepo "runonce-format-no-watcher" (fun repoRoot ->
         let exitCode =
@@ -737,7 +737,7 @@ let private daemonWithLateVanishedDiagnostic (root: string) =
     daemon.Host.ReportErrors("test-prune", "RenamedAway.fs", [ ErrorEntry.error "late old-path finding" ])
     daemon
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``generic run-once report prunes a late vanished diagnostic before grading`` () =
     withProjectOnlyRepo "runonce-report-rename" (fun repoRoot ->
         let exitCode =
@@ -751,7 +751,7 @@ let ``generic run-once report prunes a late vanished diagnostic before grading``
 
         test <@ exitCode = 0 @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``check run-once prunes a late vanished diagnostic before grading`` () =
     withProjectOnlyRepo "runonce-check-rename" (fun repoRoot ->
         let exitCode =
@@ -765,7 +765,7 @@ let ``check run-once prunes a late vanished diagnostic before grading`` () =
 
         test <@ exitCode = 0 @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``run-once grades the one scan it ran: an unchecked file is Incomplete, with no second scan`` () =
     withProjectOnlyRepo "runonce-retained-command" (fun repoRoot ->
         let sourcePath = System.IO.Path.Combine(repoRoot, "src", "Library.fs")
@@ -1022,7 +1022,7 @@ let ``run-once waits for an initial discovery still inside the real loader`` () 
 // surfacing total discovery failure` above, which drives an empty loader through the same
 // path and asserts the same refusal.
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``confirm one-shot accepts full evidence from its initial scan without a second scan`` () =
     withProjectOnlyRepo "confirm-runonce-exactly-once" (fun repoRoot ->
         let mutable scanCount = 0
@@ -1074,7 +1074,7 @@ let ``confirm one-shot accepts full evidence from its initial scan without a sec
         test <@ exitCode = 0 @>
         test <@ scanCount = 1 @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``confirm --run-once REFUSES a verdict it has no full-suite evidence for`` () =
     // No test-prune plugin ⇒ no `test-scope` command ⇒ `ScopeUnknown`, which is not
     // full-suite and so cannot reach green. Exit 3 = UnearnedScope: nothing reported broken,
@@ -1083,7 +1083,7 @@ let ``confirm --run-once REFUSES a verdict it has no full-suite evidence for`` (
         let exitCode = runOnceIn FsHotWatch.Cli.CheckVerdict.Confirmation repoRoot
         test <@ exitCode = 3 @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``check --run-once tolerates an unknown scope`` () =
     // Same driver, same tree, DIFFERENT mode — this pins that the mode is what decides.
     //
@@ -1132,7 +1132,7 @@ let private runOnceWithFaultingScope (checkMode: FsHotWatch.Cli.CheckVerdict.Che
         repoRoot
         (noTestProjectsConfig ())
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``check --run-once REFUSES a scope read that faulted — and records WHY on disk`` () =
     // The trap: a throwing scope read used to produce the same `ScopeUnknown` as the test
     // above, which the inner loop tolerates — so `check` exited 0 having verified nothing.
@@ -1158,7 +1158,7 @@ let ``check --run-once REFUSES a scope read that faulted — and records WHY on 
             | other -> failwithf "expected ScopeUnreadable carrying the fault on disk, got %A" other
         | other -> failwithf "expected a published verdict, got %A" other)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``run-once publishes a verdict file that agrees with its exit code`` () =
     // The run-once path once wrote NO verdict at all, so `fshw verdict` after a CI run
     // reported "no verdict on disk". File and exit code are two renderings
@@ -1223,7 +1223,7 @@ let private runOnceWithCrashedPlugin (checkMode: FsHotWatch.Cli.CheckVerdict.Che
         repoRoot
         (noTestProjectsConfig ())
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``check --run-once goes RED on a plugin that FAILED without writing a diagnostic`` () =
     // The ledger is spotless — the plugin never reached `ReportErrors`, it threw. Exit 0
     // here would be a green stamped over a check that did not run.
@@ -1233,7 +1233,7 @@ let ``check --run-once goes RED on a plugin that FAILED without writing a diagno
 
         test <@ exitCode = 1 @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``the verdict file can NEVER say green while a plugin says fail`` () =
     // The contradiction asserted on the artifact itself: `{"outcome":"green",
     // "plugins":[{"outcome":"fail"}]}`. Whatever the exit code, the FILE cannot state both.
@@ -1571,7 +1571,7 @@ let private verdictOnDisk (repoRoot: string) : FsHotWatch.Cli.Verdict.Verdict =
     | FsHotWatch.Cli.Verdict.Reading.Found v -> v
     | other -> failwithf "expected a published verdict, got %A" other
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``run-once: a tree that moves mid-check exits 2 AND records incomplete`` () =
     withProjectOnlyRepo "runonce-167-tree-moved" (fun repoRoot ->
         // The code CI gates on...
@@ -1586,7 +1586,7 @@ let ``run-once: a tree that moves mid-check exits 2 AND records incomplete`` () 
         | FsHotWatch.Cli.Verdict.Incomplete reason -> test <@ reason.Contains "working tree changed" @>
         | other -> failwithf "a tree that moved under the check must record INCOMPLETE, got %A" other)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``run-once: the same drive over a tree that HOLDS STILL is green — 0 in both renderings`` () =
     // The control: same driver, same repo, same config — the ONLY variable is whether the
     // tracked file was rewritten inside the window.
@@ -1630,7 +1630,7 @@ let private runOnceWithAnalysisOnlyTestPrune (repoRoot: string) : int =
         repoRoot
         (noTestProjectsConfig ())
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``check --run-once accepts completed analysis without a test suite`` () =
     // A repository with no test projects still has to EARN its green: the analysis-only
     // receipt is what vouches for it, and a scan that seals nothing leaves it unearned.
