@@ -37,6 +37,7 @@ let ``the plugin opens its index under the policy it is given`` (scoped: bool) =
         createWithQueries
             queriesOf
             (TimeSpan.FromMinutes 1.0)
+            None
             (fun () -> Map.empty)
             (Path.Combine(tmpDir, "tp.db"))
             policy

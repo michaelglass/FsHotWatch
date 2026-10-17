@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat!: `tests.maxParallelProjects` support. `createWithTracesIn` takes `maxParallelProjects: int option`
+  after `initialMode`: `Some n` runs at most `n` test groups at once, longest expected wall first
+  (`GroupSchedule.expectedWalls`: each project's longest wall in the retained CTRF reports of runs that ran tests; a group
+  with any project lacking history goes first, in configured order), and a group still queued when
+  the run is cancelled never starts. `None` launches every group at once, as before.
+
 ## 0.13.0-alpha.82 - 2026-10-17
 
 - feat!: `TestEvidenceRun.Wiring` gains `Loaded`, the environment and env-file hashes the daemon

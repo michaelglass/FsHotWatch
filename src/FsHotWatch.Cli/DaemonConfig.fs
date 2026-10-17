@@ -362,7 +362,8 @@ type DaemonConfiguration =
                CoverageDir: string
                DependsOn: string list
                Traces: FsHotWatch.TestPrune.TraceSettings option
-               RunOn: TestRunTrigger |} option
+               RunOn: TestRunTrigger
+               MaxParallelProjects: int option |} option
         FileCommands:
             {| PluginName: string
                Pattern: string option
@@ -1077,6 +1078,25 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     TestRunTrigger.OnRequest
                 | true, r -> refuseUnknown "tests.runOn" (describeValue r) (jsonStrings [ "change"; "request" ])
 
+            // `tests.maxParallelProjects`: at most this many test groups run at once,
+            // longest-expected first. Absent → every group at once, as before the option.
+            // Anything but a positive whole number is refused: read as "unbounded", a
+            // typo would silently bring back the load the setting exists to cap.
+            let maxParallelProjects =
+                let refuse (n: JsonElement) =
+                    raise (
+                        ConfigError
+                            $"tests.maxParallelProjects must be a whole number of at least 1, got %s{n.GetRawText()}"
+                    )
+
+                match v.TryGetProperty("maxParallelProjects") with
+                | false, _ -> None
+                | true, n when n.ValueKind = JsonValueKind.Number ->
+                    match n.TryGetInt32() with
+                    | true, cap when cap >= 1 -> Some cap
+                    | _ -> refuse n
+                | true, n -> refuse n
+
             if projects.IsEmpty then
                 None
             else
@@ -1090,7 +1110,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                        CoverageDir = coverageDir
                        DependsOn = dependsOn
                        Traces = traces
-                       RunOn = runOn |}
+                       RunOn = runOn
+                       MaxParallelProjects = maxParallelProjects |}
         | _ -> None
 
     let fileCommands =
@@ -2472,6 +2493,7 @@ let registerPluginsIn
         let handler =
             createWithTracesIn
                 testMode
+                t.MaxParallelProjects
                 t.Traces
                 untracedProjects
                 weaveOverrides

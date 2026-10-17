@@ -1,5 +1,12 @@
 {
   "overrides": {
+    "GroupSchedule.fs": [
+      {
+        "line": 100,
+        "branch": 90,
+        "reason": "new file (tests.maxParallelProjects scheduling). Floor = the measured value rounded down. Measured 2026-10-17 on macOS by GroupScheduleTests with coverage: line 100%, branch 90.9% (40/44). The uncovered edges are not behaviour a test can choose: the rethrow edge of wallOf's typed exception filter (an exception of another type), and compiler-generated join edges of the start/stop match whose every arm (no summary, start only, neither, backwards, string-typed, forward) is exercised. Platform-neutral."
+      }
+    ],
     "TestEvidenceStore.fs": [
       {
         "line": 99,

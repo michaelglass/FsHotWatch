@@ -368,6 +368,7 @@ let private runScenario (root: string) (setup: Setup) =
             createWithQueries
                 recorded.Queries
                 (TimeSpan.FromMinutes 5.0)
+                None
                 (fun () -> Map.empty)
                 dbPath
                 TestPrune.Domain.WalkPolicy.FollowAll

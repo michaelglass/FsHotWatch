@@ -132,6 +132,7 @@ let private runTests (root: string) (configs: TestConfig list) (traces: TraceWir
     host.RegisterHandler(
         createWithLaunchDeadline
             (TimeSpan.FromMinutes 2.0)
+            None
             (fun () -> Map.empty)
             (Path.Combine(root, "tp.db"))
             TestPrune.Domain.WalkPolicy.FollowAll
@@ -300,6 +301,7 @@ let ``a filtered run that full-runs does not record stays silent and stores noth
         host.RegisterHandler(
             createWithLaunchDeadline
                 (TimeSpan.FromMinutes 2.0)
+                None
                 (fun () -> Map.empty)
                 (Path.Combine(root, "tp.db"))
                 TestPrune.Domain.WalkPolicy.FollowAll
@@ -446,6 +448,7 @@ let ``a traced run joins against the analysis admitted while it ran, however far
         host.RegisterHandler(
             createWithLaunchDeadline
                 (TimeSpan.FromMinutes 2.0)
+                None
                 (fun () -> Map.empty)
                 (Path.Combine(root, "tp.db"))
                 TestPrune.Domain.WalkPolicy.FollowAll

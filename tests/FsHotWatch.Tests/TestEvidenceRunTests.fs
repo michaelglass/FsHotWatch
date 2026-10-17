@@ -190,6 +190,7 @@ let private checkoutFull
             evidence
             ImpactQueries.ofDatabase
             (TimeSpan.FromMinutes 5.0)
+            None
             (fun () -> Map.empty)
             (Path.Combine(root, "test-prune.db"))
             TestPrune.Domain.WalkPolicy.FollowAll

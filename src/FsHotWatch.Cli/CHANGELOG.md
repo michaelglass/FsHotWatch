@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `tests.maxParallelProjects` caps how many test groups run at once (absent: all of them, as
+  before). Queued groups start longest expected wall first, from the retained CTRF reports of runs that ran tests. With one
+  group per project it caps concurrent test hosts without hand-balanced groups. A value that is not a
+  whole number of at least 1 is a config error naming the field.
+
 ## 0.14.0-alpha.111 - 2026-10-17
 
 - chore: rebuild to bundle updated dependencies
