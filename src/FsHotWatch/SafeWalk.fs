@@ -189,8 +189,8 @@ let subdirectories (dir: string) : Result<string[], SkippedDir> =
         | None -> Ok [||]
 
 /// Lazily yields every entry under `root` (recursive, root included): each file matching
-/// `searchPattern`, and each directory the walk could not see. Directories whose LEAF
-/// NAME is in `excludedDirNames` are not walked and are not skips — they were never in
+/// `searchPattern`, and each directory the walk could not see. Directories below the root
+/// that `pruned` answers true for are not walked and are not skips — they were never in
 /// scope. Symlinked directories likewise. Empty for a missing root; a root that could
 /// not be LOOKED UP (its parent is not traversable) is not missing, and is yielded as a
 /// `Skipped` of its own.
@@ -198,13 +198,13 @@ let subdirectories (dir: string) : Result<string[], SkippedDir> =
 /// `searchPattern` carries the same glob semantics as `DirectoryInfo.GetFiles` but is
 /// applied per-directory, since we own the recursion. Lazy, so callers that only need
 /// existence (`Seq.exists`) can stop early.
-let enumerateEntries (excludedDirNames: Set<string>) (searchPattern: string) (root: string) : seq<WalkEntry> =
+let enumerateEntriesPruning (pruned: DirectoryInfo -> bool) (searchPattern: string) (root: string) : seq<WalkEntry> =
     // A symlinked directory is a portal out of the tree, and possibly into a
     // cycle. Every caller wants the REAL tree under the root, so reparse points
     // are skipped wholesale — cheaper and more predictable than cycle-detecting
     // via an inode set.
     let inScope (d: DirectoryInfo) =
-        not (excludedDirNames.Contains d.Name)
+        not (pruned d)
         && (d.Attributes &&& FileAttributes.ReparsePoint) = enum<FileAttributes> 0
 
     let rec walkDir (dir: DirectoryInfo) (depth: int) : seq<WalkEntry> =
@@ -252,6 +252,11 @@ let enumerateEntries (excludedDirNames: Set<string>) (searchPattern: string) (ro
         |> Option.toList
         |> Seq.ofList
 
+/// `enumerateEntriesPruning` over a set of directory LEAF NAMES: a directory whose name is
+/// in `excludedDirNames` is never walked.
+let enumerateEntries (excludedDirNames: Set<string>) (searchPattern: string) (root: string) : seq<WalkEntry> =
+    enumerateEntriesPruning (fun d -> excludedDirNames.Contains d.Name) searchPattern root
+
 /// The COMPLETE answer for `root`: every file, and every directory the walk could not
 /// see. For callers whose question is only sound over a tree they fully saw — the
 /// content address of the tree (`TreeHash`), the `--no-build` freshness gate — and who
@@ -291,3 +296,12 @@ let bestEffortFiles (excludedDirNames: Set<string>) (root: string) : seq<FileInf
 let bestEffortFilePaths (excludedDirNames: Set<string>) (searchPattern: string) (root: string) : seq<string> =
     bestEffortFilesMatching excludedDirNames searchPattern root
     |> Seq.map (fun f -> f.FullName)
+
+/// Full paths of every file matching `searchPattern` under `root`, never descending into
+/// a directory `pruned` answers true for. The root itself is always walked. Best-effort,
+/// as `bestEffortFilePaths`.
+let bestEffortFilePathsPruning (pruned: DirectoryInfo -> bool) (searchPattern: string) (root: string) : seq<string> =
+    enumerateEntriesPruning pruned searchPattern root
+    |> Seq.choose (function
+        | Found f -> Some f.FullName
+        | Skipped _ -> None)

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- fix: a directory or glob named in `verdictInputs` or `evidence.extra` resolves to the files
+  the repository's `.gitignore` files leave in, instead of everything under it. A publish
+  directory, a restore cache or a metrics log under a listed directory moved the tree hash and
+  the test-evidence key on every write, so evidence reuse missed with no test input changed,
+  and every key computation hashed the build output. Ignore rules are read from the
+  `.gitignore` files in the tree, root and nested, the way git reads them: deeper and later
+  rules win, negation re-includes, and nothing under an ignored directory is walked.
+  `.git/info/exclude` and global excludes are not read, so the answer is the same for every
+  clone and for a repository jj manages without git. A declared file, or a declared directory
+  that is itself ignored, is still taken as named.
+  - New: `PathFilter.GitIgnores` (the matcher), `SafeWalk.enumerateEntriesPruning` and
+    `SafeWalk.bestEffortFilePathsPruning` (a walk that prunes by predicate rather than by
+    directory name).
+
 ## 0.10.0-alpha.81 - 2026-10-17
 
 - fix!: the WEDGED, DEAD and OVERRAN wait failures name the log their lines were actually

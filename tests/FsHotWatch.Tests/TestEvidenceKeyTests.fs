@@ -261,6 +261,31 @@ let ``a declared extra read is keyed and an absent one is a sentinel`` () =
         let kb = keyOf b config id
         test <@ moved ka.Labels kb.Labels = [ "declared" ] @>)
 
+[<Fact>]
+let ``an ignored file under a declared extra directory does not move the key and a tracked one does`` () =
+    // A directory taken whole is the files the repository tracks there. Build output a
+    // publish leaves beside them, or a log a session appends to, is not a test input,
+    // and keying it would make every such write a miss.
+    withTwin (fun a b ->
+        for root in [ a; b ] do
+            write root ".gitignore" "infra/publish/\n*.jsonl\n"
+            write root "infra/template.yaml" "Resources: {}\n"
+
+        write b "infra/publish/app.dll" "built"
+        write b "infra/metrics.jsonl" "{}\n"
+
+        let config =
+            { closureConfig with
+                Extra = [ "infra" ] }
+
+        let ka = keyOf a config id
+        test <@ ka.Value = (keyOf b config id).Value @>
+
+        // Positive control: the tracked file in the same directory is still keyed.
+        write b "infra/template.yaml" "Resources: { Bucket: {} }\n"
+        let kb = keyOf b config id
+        test <@ moved ka.Labels kb.Labels = [ "declared" ] @>)
+
 let private parse (json: string) =
     use doc = JsonDocument.Parse json
     parseConfig (Some(doc.RootElement.Clone()))

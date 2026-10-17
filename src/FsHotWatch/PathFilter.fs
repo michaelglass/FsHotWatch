@@ -75,6 +75,125 @@ let loadIgnoreFile (repoRoot: string) (ignoreFilePath: string) : (string -> bool
     | :? FileNotFoundException
     | :? DirectoryNotFoundException -> fun _ -> false
 
+/// One line of the `.gitignore` in repo-relative directory `dir` ("" for the root),
+/// rewritten as a pattern relative to the repository root, so every `.gitignore` in the
+/// tree can be read by one matcher. `None` for a blank line or a comment.
+///
+/// Git anchors a pattern holding a slash (other than a trailing one) to the directory of
+/// its `.gitignore`, and lets any other pattern match at any depth below it:
+/// `/build` in `sub/.gitignore` is `sub/build`, and `*.log` is `sub/**/*.log`.
+let internal rebaseIgnoreLine (dir: string) (line: string) : string option =
+    let line =
+        if line.EndsWith("\\ ", System.StringComparison.Ordinal) then
+            line
+        else
+            line.TrimEnd()
+
+    if line = "" || line.StartsWith("#", System.StringComparison.Ordinal) then
+        None
+    elif dir = "" then
+        Some line
+    else
+        let negated = line.StartsWith("!", System.StringComparison.Ordinal)
+        let body = if negated then line.Substring 1 else line
+        let anchored = body.TrimEnd('/').Contains "/"
+
+        let rebased =
+            if anchored then
+                dir + "/" + body.TrimStart('/')
+            else
+                dir + "/**/" + body
+
+        Some((if negated then "!" else "") + rebased)
+
+/// The repository's `.gitignore` files under `repoRoot`, read the way git reads them:
+/// each applies below its own directory, and a deeper or later rule wins over a
+/// shallower or earlier one. Files are read lazily, once per directory asked about, so a
+/// walk pays only for the directories it visits.
+///
+/// Only the files in the tree are read — not `.git/info/exclude` or a user's global
+/// excludes — so the answer is a function of the checkout's bytes, the same for every
+/// clone and for a repository jj manages without git. Not thread-safe: build one per walk.
+///
+/// A DIRECTORY is matched by a second matcher, over the same rules with any trailing `/`
+/// dropped and the path asked without one. `Ignore` reads a query `d/` as `d/` plus an
+/// empty name, so `packages/*` would match `packages/` itself, where git matches only
+/// what is inside it.
+type GitIgnores(repoRoot: string) =
+    let root = Path.GetFullPath(repoRoot).TrimEnd(Path.DirectorySeparatorChar)
+
+    let rulesByDir =
+        System.Collections.Generic.Dictionary<string, string list * Ignore * Ignore>()
+
+    let matcher (lines: string list) =
+        (Ignore(), lines) ||> List.fold (fun (ig: Ignore) l -> ig.Add l)
+
+    let relative (abs: string) =
+        Path.GetRelativePath(root, abs).Replace('\\', '/')
+
+    let ownLines (dir: string) =
+        let file = Path.Combine(dir, ".gitignore")
+
+        if File.Exists file then
+            try
+                let rel = if dir = root then "" else relative dir
+                File.ReadAllLines file |> Array.choose (rebaseIgnoreLine rel) |> List.ofArray
+            with
+            | :? IOException
+            | :? System.UnauthorizedAccessException -> []
+        else
+            []
+
+    let rec rulesFor (dir: string) : string list * Ignore * Ignore =
+        match rulesByDir.TryGetValue dir with
+        | true, rules -> rules
+        | _ ->
+            let inherited =
+                if dir = root then
+                    [], Ignore(), Ignore()
+                else
+                    rulesFor (Path.GetDirectoryName dir)
+
+            let rules =
+                match ownLines dir with
+                | [] -> inherited
+                | own ->
+                    let lines, _, _ = inherited
+                    let lines = lines @ own
+
+                    let directoryLines =
+                        lines
+                        |> List.map (fun l -> l.TrimEnd('/'))
+                        |> List.filter (fun l -> l <> "" && l <> "!")
+
+                    lines, matcher lines, matcher directoryLines
+
+            rulesByDir[dir] <- rules
+            rules
+
+    /// Whether the rules in force at `absolutePath`'s directory ignore it. A path outside
+    /// the repository, or the root itself, is never ignored.
+    member _.IsIgnored(absolutePath: string, isDirectory: bool) : bool =
+        let abs = Path.GetFullPath absolutePath
+
+        if abs = root || isOutsideRepo root abs then
+            false
+        else
+            let _, files, directories = rulesFor (Path.GetDirectoryName abs)
+            (if isDirectory then directories else files).IsIgnored(relative abs)
+
+    /// Whether the directory `absoluteDir`, or any directory between it and the root, is
+    /// ignored. Git never looks inside an ignored directory, so nothing under one is
+    /// tracked however a later rule reads.
+    member this.IsUnderIgnored(absoluteDir: string) : bool =
+        let rec check (dir: string) =
+            not (isNull dir)
+            && dir <> root
+            && not (isOutsideRepo root dir)
+            && (this.IsIgnored(dir, true) || check (Path.GetDirectoryName dir))
+
+        check (Path.GetFullPath(absoluteDir).TrimEnd(Path.DirectorySeparatorChar))
+
 /// Collect ignore rules from .gitignore and .fantomasignore in the given directory.
 /// Returns a predicate that returns true if a file should be ignored by either.
 let collectIgnoreRules (repoRoot: string) : (string -> bool) =

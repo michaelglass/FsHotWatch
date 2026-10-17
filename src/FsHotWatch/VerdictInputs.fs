@@ -328,8 +328,30 @@ let internal globWalkPrefix (pattern: string) : string =
 /// root it was handed. One rule: you may point at build output, you may not sweep
 /// into it. A glob that would have to descend (`analyzers/**/*.dll`) matches nothing
 /// and is reported ABSENT — loudly wrong rather than quietly narrow.
+///
+/// The same rule holds for what the repository IGNORES. A directory or glob resolves to
+/// the files its `.gitignore` files leave in (`PathFilter.GitIgnores`): a publish
+/// directory, a restore cache or a metrics log under `infra/` is not what `infra` means,
+/// and keying it would move the hash on every build. A declared file, or a directory that
+/// is itself ignored, is taken as named.
 let resolve (repoRoot: string) (declaration: Declaration) : Resolution =
     let root = Path.GetFullPath repoRoot
+    let ignores = PathFilter.GitIgnores root
+
+    // Every file a walk from `dir` sweeps into that the repository does not ignore. A
+    // walk handed an ignored directory takes it whole, as one handed `bin/` does.
+    let walkTracked (dir: string) : string list =
+        if ignores.IsUnderIgnored dir then
+            SafeWalk.bestEffortFilePaths SafeWalk.SourceExcludedDirs "*" dir |> List.ofSeq
+        else
+            SafeWalk.bestEffortFilePathsPruning
+                (fun d ->
+                    SafeWalk.SourceExcludedDirs.Contains d.Name
+                    || ignores.IsIgnored(d.FullName, true))
+                "*"
+                dir
+            |> Seq.filter (fun f -> not (ignores.IsIgnored(f, false)))
+            |> List.ofSeq
 
     let relativeTo (abs: string) =
         normalizeSlashes (Path.GetRelativePath(root, abs))
@@ -345,12 +367,9 @@ let resolve (repoRoot: string) (declaration: Declaration) : Resolution =
         |> List.map (fun rel ->
             let abs = Path.GetFullPath(Path.Combine(root, rel))
 
-            if File.Exists abs then
-                rel, [ abs ]
-            elif Directory.Exists abs then
-                rel, SafeWalk.bestEffortFilePaths SafeWalk.SourceExcludedDirs "*" abs |> List.ofSeq
-            else
-                rel, [])
+            if File.Exists abs then rel, [ abs ]
+            elif Directory.Exists abs then rel, walkTracked abs
+            else rel, [])
 
     // --- globs: ONE walk per distinct prefix, ONE combined matcher -----------
     // Matching every pattern against every file would be O(patterns x files) with
@@ -374,7 +393,7 @@ let resolve (repoRoot: string) (declaration: Declaration) : Resolution =
 
             let candidates =
                 walkRoots
-                |> List.collect (fun r -> SafeWalk.bestEffortFilePaths SafeWalk.SourceExcludedDirs "*" r |> List.ofSeq)
+                |> List.collect walkTracked
                 |> List.distinct
                 |> List.filter (fun abs -> combined.IsIgnored(relativeTo abs))
 
