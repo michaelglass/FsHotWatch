@@ -2607,6 +2607,8 @@ let ``parseFailedTests reads the coloured, cancelled and multi-unit-duration sha
           $"{esc}[31mfailed (canceled){esc}[m A.B.d {esc}[90m(1ms){esc}[m"
           "failed (canceled) A.B.e (2m 3s 4ms)"
           "  failed A.B.f (7ms)"
+          // No duration: not the runner's result line, so not a test (prose can open
+          // with "failed" too).
           "failed A.B.g"
           $"{esc}[31mTest run summary: Failed!{esc}[90m - {esc}[m/x/T.dll (net10.0|x64)"
           $"{esc}[m  total: 5"
@@ -2615,7 +2617,7 @@ let ``parseFailedTests reads the coloured, cancelled and multi-unit-duration sha
 
     let parsed = parseFailedTests output
 
-    let expected = [ "A.B", "c"; "A.B", "d"; "A.B", "e"; "A.B", "f"; "A.B", "g" ]
+    let expected = [ "A.B", "c"; "A.B", "d"; "A.B", "e"; "A.B", "f" ]
 
     test <@ parsed |> List.map (fun (c, m, _) -> c, m) = expected @>
 

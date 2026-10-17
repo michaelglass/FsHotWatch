@@ -74,6 +74,23 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### test-prune: prose that starts with "failed" is no longer filed as a failing test
+
+- test-prune read any console line starting with `failed ` as a failing test. A test
+  project whose preflight printed "failed twice. Pin the version
+  obj/project.assets.json resolves today, then run" beside an unrelated red got a ledger
+  entry for a test named "twice. Pin the version obj/project.assets". No run could select
+  that test, so every later `check` reported one red still outstanding. Now a line counts
+  only when it has the runner's result shape, `failed [(qualifier)] <name> (<duration>)`.
+  A bare `failed A.B.g` with no duration is no longer read as a test. If a red run
+  prints no result line and its CTRF report names no failed test, the red is
+  project-level and the next full run of that project clears it.
+- A red that names a class the project does not have now clears itself. When a run
+  selects the class and the project passes with a complete CTRF report that has no row
+  for the class, in any outcome, the red is retired and logged. Workspaces already
+  holding such an entry are cleaned up on that project's next green run. Skipped rows
+  still count as rows, and an incomplete report retires nothing.
+
 ### tests: the watchdog suspension test no longer fails on a busy box
 
 - "Watchdog logs a host suspension once" moved its fake wall and awake clocks with two

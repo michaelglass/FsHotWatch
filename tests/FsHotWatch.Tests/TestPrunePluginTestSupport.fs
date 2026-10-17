@@ -350,3 +350,40 @@ let testConfigNamed (project: string) : TestConfig =
       ClassJoin = " "
       TimeoutSec = None
       ReportVerificationFormat = AutoDetect }
+
+/// Recording ctx over the plugin: captures terminal statuses and models the shared error
+/// ledger, where ClearAllErrors wipes the plugin's whole slice exactly as
+/// `PluginFramework` does via `ClearPlugin`.
+let makeTestPruneRecordingCtx () =
+    let statuses = System.Collections.Generic.List<PluginStatus>()
+
+    let ledger =
+        System.Collections.Generic.Dictionary<string, FsHotWatch.ErrorLedger.ErrorEntry list>()
+
+    let ctx: FsHotWatch.PluginFramework.PluginCtx<TestPruneMsg> =
+        { ReportStatus = fun s -> statuses.Add s
+          ReportErrors = fun file entries -> ledger.[file] <- entries
+          ClearErrors = fun file -> ledger.Remove(file) |> ignore
+          ClearAllErrors = fun () -> ledger.Clear()
+          EmitBuildCompleted = fun _ -> ()
+          EmitTestRunStarted = fun _ -> ()
+          EmitTestProgress = fun _ -> ()
+          EmitTestRunCompleted = fun _ -> ()
+          EmitCommandCompleted = fun _ -> ()
+          Checker = Unchecked.defaultof<_>
+          RepoRoot = ""
+          Post = fun _ -> ()
+          EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
+          StartSubtask = fun _ _ -> ()
+          UpdateSubtask = fun _ _ -> ()
+          EndSubtask = fun _ -> ()
+          Log = fun _ -> ()
+          CompleteWithTimeout = fun _ -> ()
+          RunExclusive = fun _ _ -> FsHotWatch.PluginFramework.Claimed
+          RunExclusiveShared = fun _ _ _ _ _ -> FsHotWatch.PluginFramework.SharedClaimed
+          SlotHolder = fun _ -> SlotHolder.Free
+          DeclareBoundedWork = FsHotWatch.PluginFramework.BoundedWork.undeclared
+          FcsSuppressedCodes = Set.empty
+          ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+
+    ctx, statuses, ledger

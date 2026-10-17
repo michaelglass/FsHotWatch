@@ -3593,6 +3593,30 @@ module internal OutstandingFailure =
     let private identity (f: OutstandingFailure) =
         f.Project, f.Class, f.Method, f.File, f.Entry.Message
 
+    /// Split `prior` into the reds that name a class the project does NOT have, and the
+    /// rest. Such a red can never be retired by a pass, because no run will ever execute
+    /// it; left alone it is carried forever, and nothing can re-run it.
+    ///
+    /// A red is ABSENT only on this run's own evidence, all three at once:
+    ///   * the run SELECTED its class (`coverage` holds it, or the whole project);
+    ///   * the project PASSED with a complete CTRF report (`classesRun` holds it — see
+    ///     `classesRunOfPassedProjects`);
+    ///   * that report has no row of the class at all, in any outcome.
+    /// A skipped row is a row: the class exists, and its red waits for a pass. A
+    /// project-level red names no class and stays the whole-project run's to clear.
+    let partitionAbsent
+        (coverage: RunCoverage)
+        (classesRun: Map<string, Set<string>>)
+        (prior: OutstandingFailure list)
+        : OutstandingFailure list * OutstandingFailure list =
+        prior
+        |> List.partition (fun failure ->
+            match failure.Class, Map.tryFind failure.Project classesRun with
+            | Some cls, Some ran ->
+                RunCoverage.covers failure.Project (Some cls) coverage
+                && not (Set.contains cls ran)
+            | _ -> false)
+
     /// The reds a run CARRIES: prior failures it did not cover, and so cannot speak
     /// for. A filtered class selection covers an exact prior method only when this
     /// run's complete CTRF receipt contains that method passing; a sibling green is
@@ -4033,6 +4057,27 @@ module FailureCause =
     /// The sentence. Total; never empty by construction.
     let render (FailureCause s) : string = s
 
+/// The runner's result line for a failing test: `failed <name> (<duration>)`, with an
+/// optional parenthesised qualifier before the name (`failed (canceled) <name> (1ms)`)
+/// and a duration of one or more units (`(27ms)`, `(10s 112ms)`, `(2m 3s 4ms)`).
+let private failedTestLineShape =
+    System.Text.RegularExpressions.Regex(
+        @"^failed (\([^)]*\) )?\S.* \((\d+(\.\d+)?(ms|s|m|h|d) ?)+\)$",
+        System.Text.RegularExpressions.RegexOptions.Compiled
+    )
+
+/// Is `line` the runner reporting a failing test? Only the result-line SHAPE counts.
+///
+/// The captured output is not the runner's alone: a project's preflight, a gate or a test
+/// that prints shares the stream, and prose may open with the word `failed`. A package
+/// gate's report once wrapped "…the release confirm / failed twice. Pin the version
+/// obj/project.assets.json resolves today, then run": read by its prefix alone, that
+/// line filed a red for a test named "twice. Pin the version obj/project.assets", which
+/// no run could ever select, so it stayed outstanding forever. The runner always ends a
+/// result line with the test's duration; prose does not.
+let internal isFailedTestLine (line: string) : bool =
+    failedTestLineShape.IsMatch((ConsoleText.stripAnsi line).Trim())
+
 /// Build the human-readable error lines for a FAILED test project run, parsed
 /// from the runner's captured `output`. The header line plus the per-test
 /// `failed ...` lines plus the MTP summary lines (`total:`/`failed:`/
@@ -4079,9 +4124,7 @@ let internal formatFailureReport
     : string list =
     let lines = ConsoleText.lines output
 
-    let isFailedLine (l: string) = l.TrimStart().StartsWith("failed ")
-
-    let failedTests = lines |> Array.filter isFailedLine |> Array.toList
+    let failedTests = lines |> Array.filter isFailedTestLine |> Array.toList
 
     // The runner's own summary lines, by their leading word: a daemon-log line that
     // happens to CONTAIN `failed:` (`P: 0 test(s) failed:`) is not one of them.
@@ -4602,8 +4645,7 @@ let internal looksLikeApphostMissing (output: string) : bool =
         let looksLikeRealTestFailure =
             lower.Contains("test run summary")
             || lower.Contains("failed:")
-            || (output.Split('\n')
-                |> Array.exists (fun l -> l.TrimStart().StartsWith("failed ")))
+            || (ConsoleText.lines output |> Array.exists isFailedTestLine)
 
         hasStartProcessFailure && not looksLikeRealTestFailure
 
@@ -4652,12 +4694,14 @@ let internal splitTestName (classes: Set<string>) (name: string) : string * stri
 /// `failed (canceled) <name> (Xms)` and a multi-unit duration `(10s 112ms)` included.
 /// Returns (className, methodName, fullLine) tuples; `fullLine` is the line as words.
 /// Each name is split against `classes` (`splitTestName`).
+/// Only a line in the runner's result shape is read (`isFailedTestLine`): prose that opens
+/// with `failed` names no test.
 let internal parseFailedTestsAgainst (classes: Set<string>) (output: string) : (string * string * string) list =
     ConsoleText.lines output
     |> Array.choose (fun line ->
         let trimmed = line.Trim()
 
-        if trimmed.StartsWith("failed ") then
+        if isFailedTestLine trimmed then
             // Strip the "failed " prefix, a parenthesised qualifier such as
             // "(canceled)" that MTP puts before the name, and the trailing duration.
             let rest =
@@ -4765,6 +4809,47 @@ let internal passedClassesOfReport (json: string) : Set<string> =
 
                 if anyPassed && not anyUnvindicated then Some cls else None)
             |> Set.ofList
+
+/// Every class ONE project's CTRF report has a row for, in any outcome — skipped
+/// included — when the report is complete: a parseable summary and a per-test array that
+/// accounts for every test in it. `None` otherwise, because an incomplete report cannot
+/// say a class is ABSENT, only that some rows are missing.
+let internal classesRunOfReport (json: string) : Set<string> option =
+    match Ctrf.trySummary json with
+    | None -> None
+    | Some summary ->
+        let records = Flakiness.parseCtrfTests json
+
+        if records.IsEmpty || records.Length <> summary.Total then
+            None
+        else
+            let classes = Flakiness.parseCtrfDeclaredClasses json
+
+            records
+            |> List.map (fun r -> fst (splitTestName classes r.Name))
+            |> Set.ofList
+            |> Some
+
+/// Per project that PASSED in this run, the classes its complete CTRF report ran
+/// (`classesRunOfReport`). A project that failed, timed out, matched nothing, or wrote
+/// no complete report is absent: nothing is known about which classes it has.
+let internal classesRunOfPassedProjects
+    (repoRoot: string)
+    (runId: Guid)
+    (results: Map<string, TestResult>)
+    : Map<string, Set<string>> =
+    Ctrf.reportsForRun repoRoot runId
+    |> List.choose (fun report ->
+        match Map.tryFind report.Project results with
+        | Some(TestsPassed _) ->
+            try
+                classesRunOfReport (File.ReadAllText report.Path)
+                |> Option.map (fun classes -> report.Project, classes)
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException -> None
+        | _ -> None)
+    |> Map.ofList
 
 /// The per-project passed-class evidence for a completed run, read back from the CTRF
 /// reports THAT RUN wrote (`.fshw/test-runs/<runId>/<Project>.ctrf.json`).
@@ -10727,16 +10812,25 @@ let internal createWithEvidenceAndQueries
                     // selection retained at its launch. Nothing extra runs and nothing is
                     // re-read: both inputs are already in hand.
 
+                    // A prior red naming a class this run selected, in a project that then
+                    // passed with a complete report holding no row of that class, names no
+                    // test the project has. No pass can ever retire it, so it goes now.
+                    let absentFailures, priorFailures =
+                        OutstandingFailure.partitionAbsent
+                            coverage
+                            (classesRunOfPassedProjects repoRoot completed.RunId completed.Results)
+                            state.OutstandingFailures
+
+                    if not absentFailures.IsEmpty then
+                        Logging.info
+                            "test-prune"
+                            $"%d{absentFailures.Length} failure(s) from an earlier run name a test class this run selected and its project does not have (%s{OutstandingFailure.summarize absentFailures}) — retired, since no run can ever execute them"
+
                     let carriedFailures =
-                        OutstandingFailure.carriedOver runnableProjects coverage passedTests state.OutstandingFailures
+                        OutstandingFailure.carriedOver runnableProjects coverage passedTests priorFailures
 
                     let outstandingFailures =
-                        OutstandingFailure.carry
-                            runnableProjects
-                            coverage
-                            passedTests
-                            foundFailures
-                            state.OutstandingFailures
+                        OutstandingFailure.carry runnableProjects coverage passedTests foundFailures priorFailures
 
                     if not carriedFailures.IsEmpty then
                         Logging.info

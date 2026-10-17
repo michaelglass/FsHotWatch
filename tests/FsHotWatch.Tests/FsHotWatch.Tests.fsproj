@@ -147,6 +147,7 @@
     <Compile Include="TestPrunePendingVerificationTests.fs" />
     <Compile Include="TestPruneRunScopeTests.fs" />
     <Compile Include="TestPruneTestNameTests.fs" />
+    <Compile Include="TestPruneFailedLineTests.fs" />
     <Compile Include="TestPruneDiscoveryWaitTests.fs" />
     <Compile Include="TestPruneOwnerStateTests.fs" />
     <Compile Include="TestPruneSettlingTests.fs" />

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a console line counts as a failing test only in the runner's result shape,
+  `failed [(qualifier)] <name> (<duration>)` (`isFailedTestLine`). Prose that starts
+  with "failed" no longer files a red under a test that does not exist. A class-scoped
+  red whose class a run selected, in a project that then passed with a complete CTRF
+  report that has no row for that class, is retired (`OutstandingFailure.partitionAbsent`,
+  `classesRunOfReport`).
+
 ## 0.13.0-alpha.78 - 2026-10-17
 
 - feat: a session that launches only requested runs (`RequestedOnly`) can be asked for
