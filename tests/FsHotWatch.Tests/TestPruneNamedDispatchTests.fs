@@ -90,9 +90,13 @@ let private affectedAfterHandlerEdit (tmpDir: string) (extensions: ITestPruneExt
     emitBuildAndWaitTerminal host
     checkAndEmit libFile
     checkAndEmit testsFile
-    waitForPluginIdle host "test-prune" 10.0
+    // Each wait below follows real checks of both scripts: test-prune folds their symbol
+    // results into the impact index, work with no product bound short of
+    // `ImpactSelectionDeadline`, so the waits take the real-check margin.
+    waitForPluginIdle host "test-prune" (float RealCheckWaitMs / 1000.0)
     // The batch flush indexes both files; the extension refreshes against that index.
-    emitBatchAndQuiesce host [ libFile; testsFile ]
+    host.EmitBatchChecked(fakeBatchChecked [ libFile; testsFile ])
+    waitForQuiescent host RealCheckWaitMs
 
     File.WriteAllText(libFile, libSource "2")
     checkAndEmit libFile
@@ -100,13 +104,13 @@ let private affectedAfterHandlerEdit (tmpDir: string) (extensions: ITestPruneExt
     // The edit's FileChecked has committed, so `affected-tests` answers from its changes.
     // Both the positive case and the negative control read that same settled state, so
     // the control's absence is not a wait that gave up early.
-    waitForQuiescent host 10000
+    waitForQuiescent host RealCheckWaitMs
 
     host.RunCommand("affected-tests", [||])
     |> Async.RunSynchronously
     |> Option.defaultValue ""
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``a configured named-dispatch extension selects the test that dispatches an edited handler`` () =
     withTempDir "tp-named-dispatch" (fun tmpDir ->
         let affected =
@@ -116,7 +120,7 @@ let ``a configured named-dispatch extension selects the test that dispatches an 
 
 /// The negative control: the same tree and edit with no extension selects nothing, so the
 /// positive result above is the extension's edge and not an AST path.
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``without the extension the dispatching test is not selected`` () =
     withTempDir "tp-named-dispatch-none" (fun tmpDir ->
         let affected = affectedAfterHandlerEdit tmpDir []

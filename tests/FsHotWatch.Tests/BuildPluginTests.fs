@@ -1148,7 +1148,7 @@ let ``queued template build preserves changes for a second project root`` () =
         let builtRoots = System.IO.File.ReadAllLines(buildLog) |> Set.ofArray
         test <@ builtRoots = Set.ofList [ firstProject; secondProject ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build-status command returns passed true after successful build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1159,16 +1159,16 @@ let ``build-status command returns passed true after successful build`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitForTerminalStatus host "build" 5000
+    waitForTerminalStatus host "build" HangWaitMs
 
-    waitForQuiescent host 30000
+    waitForQuiescent host HangWaitMs
 
     let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
     let doc = JsonDocument.Parse(result.Value)
     Assert.Equal("passed", doc.RootElement.GetProperty("status").GetString())
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build-status command returns failed after failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1177,9 +1177,9 @@ let ``build-status command returns failed after failed build`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitForTerminalStatus host "build" 5000
+    waitForTerminalStatus host "build" HangWaitMs
 
-    waitForQuiescent host 30000
+    waitForQuiescent host HangWaitMs
 
     let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
