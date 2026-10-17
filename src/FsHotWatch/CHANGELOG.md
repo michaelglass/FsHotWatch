@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- feat!: the test-evidence key covers the environment the daemon started with. A tests
+  entry's `evidence.env` names variables whose values join the key as digests (an unset
+  variable differs from an empty one); no value is stored or logged. Each declared
+  `evidence.envFiles` file is now keyed both as it is on disk and as it was when the daemon
+  started, so a daemon started before an edit to the file, which still runs its tests with the
+  old values, no longer matches evidence from one started after it. `TestEvidenceKey.Version`
+  is now `test-evidence-v2`, so no earlier entry matches.
+  - New: `TestEvidenceKey.LoadedEnvironment` (captured once when the daemon wires evidence,
+    with `capture`, `ofProcess`, `digestOf` and `describe`), `Config.Env`, `Inputs.Env`,
+    `Inputs.EnvFilesLoaded` and `Request.Loaded`; key labels `env` and `envFilesLoaded`.
+    A declaration the capture does not hold makes no key.
+
 ## 0.10.0-alpha.82 - 2026-10-17
 
 - fix: a directory or glob named in `verdictInputs` or `evidence.extra` resolves to the files

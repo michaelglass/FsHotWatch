@@ -11992,11 +11992,17 @@ let internal evidenceWiringWhen (enabled: bool) (repoRoot: string) : TestEvidenc
             Logging.warn "test-prune" $"test evidence: off — %s{reason}"
             None
         | Ok configs ->
+            // Eager: the environment and env files as THIS daemon loaded them, not as a
+            // later keying finds them on disk.
+            let loaded = TestEvidenceKey.LoadedEnvironment.ofProcess repoRoot configs.Values
+            Logging.info "test-prune" $"test evidence: keyed %s{TestEvidenceKey.LoadedEnvironment.describe loaded}"
+
             try
                 Some
                     { Store = TestEvidenceStore.openFor repoRoot (Logging.info "test-prune")
                       Configs = configs
                       Toolchain = lazy (TestEvidenceKey.toolchainOf repoRoot)
+                      Loaded = loaded
                       ProducerHash = ContentHash.ofText CheckCache.toolchainIdentity
                       ExcludePatterns = [] }
             with ex ->

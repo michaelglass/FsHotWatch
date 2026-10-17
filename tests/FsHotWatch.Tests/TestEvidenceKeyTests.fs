@@ -53,7 +53,8 @@ let private requestFor (root: string) (config: Config) : Request =
       Config = config
       TestConfig = """{"project":"TA","command":"dotnet"}"""
       Toolchain = "sdk 10.0.100 / fcs 1 / osx-arm64"
-      OptionsHash = fun p -> Some("opts:" + Path.GetRelativePath(root, p).Replace('\\', '/')) }
+      OptionsHash = fun p -> Some("opts:" + Path.GetRelativePath(root, p).Replace('\\', '/'))
+      Loaded = LoadedEnvironment.capture root (fun _ -> None) [ config ] }
 
 let private keyOf (root: string) (config: Config) (adjust: Request -> Request) =
     let snap = snapshot root []
@@ -235,7 +236,8 @@ let ``env file content that differs is a miss and only its hash is an input`` ()
         write b ".env.test" "SECRET=other-value\n"
         let ka = keyOf a config id
         let kb = keyOf b config id
-        test <@ moved ka.Labels kb.Labels = [ "envFiles" ] @>
+        // Each daemon loaded its own file, so both the bytes and the load moved.
+        test <@ moved ka.Labels kb.Labels = [ "envFiles"; "envFilesLoaded" ] @>
 
         let snap = snapshot a []
 
@@ -299,7 +301,8 @@ let ``config parses reads, extra and envFiles and refuses what it cannot honour`
             parse """{ "reads": "closure", "extra": ["data/**"], "envFiles": [".env.test"] }""" = Ok
                 { Reads = Reads.Closure
                   Extra = [ "data/**" ]
-                  EnvFiles = [ ".env.test" ] }
+                  EnvFiles = [ ".env.test" ]
+                  Env = [] }
         @>
 
     test <@ Result.isError (parse """{ "reads": "everything" }""") @>
@@ -525,7 +528,7 @@ let ``a declared env file that is absent is an entry of its own`` () =
             { defaultConfig with
                 EnvFiles = [ ".env.test" ] }
 
-        test <@ moved (keyOf a config id).Labels (keyOf b config id).Labels = [ "envFiles" ] @>)
+        test <@ moved (keyOf a config id).Labels (keyOf b config id).Labels = [ "envFiles"; "envFilesLoaded" ] @>)
 
 [<Fact>]
 let ``the toolchain names the checker build and the platform`` () =
@@ -539,6 +542,147 @@ let ``the toolchain names the checker build and the platform`` () =
                 && toolchain.Contains "arch="
                 && toolchain.Contains "runtime="
             @>)
+
+/// A daemon started over `root` with `environment` as its process environment.
+let private startedWith (root: string) (config: Config) (environment: (string * string) list) (r: Request) =
+    { r with
+        Loaded =
+            LoadedEnvironment.capture
+                root
+                (fun name -> List.tryFind (fst >> (=) name) environment |> Option.map snd)
+                [ config ] }
+
+let private envConfig =
+    { defaultConfig with
+        Env = [ "FSHW_EV_DATABASE" ] }
+
+[<Fact>]
+let ``a declared env value that differs is a miss that names env`` () =
+    withTwin (fun a b ->
+        let ka = keyOf a envConfig (startedWith a envConfig [ "FSHW_EV_DATABASE", "one" ])
+        // Positive control: the same value at another root is the same key.
+        test <@ ka.Value = (keyOf b envConfig (startedWith b envConfig [ "FSHW_EV_DATABASE", "one" ])).Value @>
+        let kb = keyOf b envConfig (startedWith b envConfig [ "FSHW_EV_DATABASE", "two" ])
+        test <@ moved ka.Labels kb.Labels = [ "env" ] @>)
+
+[<Fact>]
+let ``an undeclared env var does not move the key`` () =
+    withTwin (fun a b ->
+        let ka =
+            keyOf a envConfig (startedWith a envConfig [ "FSHW_EV_DATABASE", "one"; "FSHW_EV_UNRELATED", "x" ])
+
+        let kb =
+            keyOf b envConfig (startedWith b envConfig [ "FSHW_EV_DATABASE", "one"; "FSHW_EV_UNRELATED", "y" ])
+
+        test <@ ka.Value = kb.Value @>
+        // Positive control: declaring it makes the same difference a miss.
+        let both =
+            { defaultConfig with
+                Env = [ "FSHW_EV_DATABASE"; "FSHW_EV_UNRELATED" ] }
+
+        let wa =
+            keyOf a both (startedWith a both [ "FSHW_EV_DATABASE", "one"; "FSHW_EV_UNRELATED", "x" ])
+
+        let wb =
+            keyOf b both (startedWith b both [ "FSHW_EV_DATABASE", "one"; "FSHW_EV_UNRELATED", "y" ])
+
+        test <@ moved wa.Labels wb.Labels = [ "env" ] @>)
+
+[<Fact>]
+let ``an unset variable is not an empty one`` () =
+    withTwin (fun a b ->
+        let unset = keyOf a envConfig (startedWith a envConfig [])
+        let empty = keyOf b envConfig (startedWith b envConfig [ "FSHW_EV_DATABASE", "" ])
+        test <@ moved unset.Labels empty.Labels = [ "env" ] @>
+        // Positive control: unset in both is a hit.
+        test <@ unset.Value = (keyOf b envConfig (startedWith b envConfig [])).Value @>)
+
+[<Fact>]
+let ``an env value is in no key, input or log line, only its effect`` () =
+    withTwin (fun a _ ->
+        let sentinel = "pg-hunter2-sentinel"
+
+        let request =
+            startedWith a envConfig [ "FSHW_EV_DATABASE", sentinel ] (requestFor a envConfig)
+
+        let inputs =
+            match inputsFor (snapshot a []) request with
+            | Ok(inputs, _) -> inputs
+            | Error e -> failwith e
+
+        let key = compute inputs
+
+        let rendered =
+            [ sprintf "%A" inputs
+              sprintf "%A" key
+              sprintf "%A" request.Loaded
+              LoadedEnvironment.describe request.Loaded ]
+            |> String.concat "\n"
+
+        test <@ not (rendered.Contains sentinel) @>
+        // The log line names the variable and that it was set.
+        test <@ (LoadedEnvironment.describe request.Loaded).Contains "FSHW_EV_DATABASE (set)" @>
+        // Positive control: the value did reach the key, as a digest.
+        test <@ key.Value <> (keyOf a envConfig (startedWith a envConfig [])).Value @>)
+
+[<Fact>]
+let ``a daemon that loaded the old env file keys differently from one that loaded the new`` () =
+    // fshw never parses an env file: the shell that started the daemon did, and the
+    // daemon keeps those values. Both trees hold the NEW file when they are keyed.
+    withTwin (fun a b ->
+        let config =
+            { defaultConfig with
+                EnvFiles = [ ".env.test" ] }
+
+        let staleDaemon = LoadedEnvironment.capture a (fun _ -> None) [ config ]
+        write a ".env.test" "SECRET=rotated\n"
+        write b ".env.test" "SECRET=rotated\n"
+        let freshDaemon = LoadedEnvironment.capture b (fun _ -> None) [ config ]
+
+        let stale = keyOf a config (fun r -> { r with Loaded = staleDaemon })
+        let fresh = keyOf b config (fun r -> { r with Loaded = freshDaemon })
+        test <@ moved stale.Labels fresh.Labels = [ "envFilesLoaded" ] @>
+        // Positive control: once the stale daemon restarts it loads the new file and hits.
+        let restarted = LoadedEnvironment.capture a (fun _ -> None) [ config ]
+        test <@ (keyOf a config (fun r -> { r with Loaded = restarted })).Value = fresh.Value @>)
+
+[<Fact>]
+let ``a declaration the daemon did not capture at start makes no key`` () =
+    withTempDir "evkey-uncaptured" (fun root ->
+        populate root
+
+        let config =
+            { envConfig with
+                EnvFiles = [ ".env.test" ] }
+
+        let keyed (loaded: LoadedEnvironment) =
+            inputsFor
+                (snapshot root [])
+                { requestFor root config with
+                    Loaded = loaded }
+
+        test
+            <@
+                match keyed LoadedEnvironment.empty with
+                | Error e -> e.Contains "FSHW_EV_DATABASE" && e.Contains ".env.test"
+                | Ok _ -> false
+            @>
+        // Positive control: the same request over a capture of its own config keys.
+        test <@ Result.isOk (keyed (LoadedEnvironment.capture root (fun _ -> None) [ config ])) @>)
+
+[<Fact>]
+let ``config parses env names and refuses one that cannot be a variable`` () =
+    test
+        <@
+            parse """{ "env": ["DATABASE_URL", "A\\B"] }""" = Ok
+                { defaultConfig with
+                    Env = [ "DATABASE_URL"; "A\\B" ] }
+        @>
+
+    test <@ Result.isError (parse """{ "env": "DATABASE_URL" }""") @>
+    test <@ Result.isError (parse """{ "env": ["A=B"] }""") @>
+    test <@ Result.isError (parse """{ "env": [" A"] }""") @>
+    test <@ Result.isError (parse """{ "env": [""] }""") @>
 
 [<Fact>]
 let ``config refuses an envFiles that is not a list`` () =

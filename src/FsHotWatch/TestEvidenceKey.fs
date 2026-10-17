@@ -21,7 +21,7 @@ open System.Text.Json
 
 /// Bumped whenever WHAT is hashed or HOW changes, so an old entry can never match.
 [<Literal>]
-let Version = "test-evidence-v1"
+let Version = "test-evidence-v2"
 
 /// How far a test project's runtime reads are assumed to reach.
 [<RequireQualifiedAccess>]
@@ -42,12 +42,17 @@ type Config =
         /// Files the tests read for their environment (`.env.test`). Only their content
         /// HASH enters the key or the store, never their content.
         EnvFiles: string list
+        /// Environment variables the tests' outcome depends on. Only a digest of each
+        /// VALUE enters the key, never the value, and an unset variable differs from an
+        /// empty one.
+        Env: string list
     }
 
 let defaultConfig =
     { Reads = Reads.VerdictTree
       Extra = []
-      EnvFiles = [] }
+      EnvFiles = []
+      Env = [] }
 
 let private readsToken =
     function
@@ -57,7 +62,7 @@ let private readsToken =
 /// Parse a tests entry's optional `evidence` element. An absent element is the default;
 /// a present one that cannot be honoured as written is an error, never a silent default.
 let parseConfig (element: JsonElement option) : Result<Config, string> =
-    let stringList (el: JsonElement) (name: string) =
+    let strings (normalise: string -> string) (el: JsonElement) (name: string) =
         match Json.tryProp el name with
         | None -> Ok []
         | Some arr when arr.ValueKind = JsonValueKind.Array ->
@@ -69,10 +74,12 @@ let parseConfig (element: JsonElement option) : Result<Config, string> =
                     i.ValueKind = JsonValueKind.String
                     && not (String.IsNullOrWhiteSpace(i.GetString())))
             then
-                Ok(items |> List.map (fun i -> i.GetString().Replace('\\', '/')))
+                Ok(items |> List.map (fun i -> normalise (i.GetString())))
             else
                 Error $"evidence.%s{name} must be an array of non-empty strings"
         | Some _ -> Error $"evidence.%s{name} must be an array of non-empty strings"
+
+    let stringList = strings (fun p -> p.Replace('\\', '/'))
 
     let escapes (path: string) =
         Path.IsPathRooted path || path.Split('/') |> Array.contains ".."
@@ -88,18 +95,28 @@ let parseConfig (element: JsonElement option) : Result<Config, string> =
             | Some r when r.ValueKind = JsonValueKind.String && r.GetString() = "closure" -> Ok Reads.Closure
             | Some _ -> Error "evidence.reads must be \"verdict-tree\" or \"closure\""
 
-        match reads, stringList el "extra", stringList el "envFiles" with
-        | Ok reads, Ok extra, Ok envFiles ->
+        // A variable name is taken as written: no path normalisation.
+        let env =
+            strings id el "env"
+            |> Result.bind (fun names ->
+                match names |> List.filter (fun n -> n.Contains '=' || n.Trim() <> n) with
+                | [] -> Ok names
+                | bad -> Error $"""evidence.env names a variable that cannot exist: %s{String.concat ", " bad}""")
+
+        match reads, stringList el "extra", stringList el "envFiles", env with
+        | Ok reads, Ok extra, Ok envFiles, Ok env ->
             match (extra @ envFiles) |> List.filter escapes with
             | [] ->
                 Ok
                     { Reads = reads
                       Extra = extra
-                      EnvFiles = envFiles }
+                      EnvFiles = envFiles
+                      Env = env }
             | bad -> Error $"""evidence paths must stay inside the repository: %s{String.concat ", " bad}"""
-        | Error e, _, _
-        | _, Error e, _
-        | _, _, Error e -> Error e
+        | Error e, _, _, _
+        | _, Error e, _, _
+        | _, _, Error e, _
+        | _, _, _, Error e -> Error e
 
 /// Every `tests.projects[]` entry's `evidence` block in `repoRoot`'s `.fshw.json`, by
 /// project name. A project without one takes `defaultConfig`; a block that cannot be
@@ -139,6 +156,83 @@ let configsOf (repoRoot: string) : Result<Map<string, Config>, string> =
         | :? IOException
         | :? UnauthorizedAccessException as ex -> Error $"%s{path}: %s{ex.Message}"
 
+/// The environment this daemon was started with, as the evidence key sees it: captured
+/// ONCE, when the daemon wires evidence, and the only owner of what a key says about it.
+///
+/// fshw does not parse an env file itself: the shell that started the daemon loaded it,
+/// and the daemon — and every test process it launches — keeps those values until it
+/// restarts. So the hash that names what the tests run under is the file's content AT
+/// START, not at keying time; a daemon started before an edit must not match one started
+/// after it. Variable VALUES are digested at capture and dropped: no value is held, keyed
+/// as text, stored or logged.
+type LoadedEnvironment =
+    {
+        /// Variable name -> `unset`, or `set:` and the digest of its value.
+        Variables: Map<string, string>
+        /// Repo-relative env file -> its content hash at capture (or the absent sentinel).
+        EnvFiles: Map<string, string>
+    }
+
+module LoadedEnvironment =
+    /// Nothing captured: for a wiring whose configs declare no `env` or `envFiles`.
+    let empty =
+        { Variables = Map.empty
+          EnvFiles = Map.empty }
+
+    /// What a variable contributes to a key. Unset and empty are distinct.
+    let digestOf (value: string option) =
+        match value with
+        | None -> "unset"
+        | Some v -> "set:sha256:" + ContentHash.ofText v
+
+    /// Capture every variable and env file any of `configs` declares, from `lookup` (the
+    /// process environment, in a daemon) and `repoRoot`.
+    let capture (repoRoot: string) (lookup: string -> string option) (configs: Config seq) : LoadedEnvironment =
+        let configs = Seq.toList configs
+
+        { Variables =
+            configs
+            |> List.collect _.Env
+            |> List.distinct
+            |> List.map (fun name -> name, digestOf (lookup name))
+            |> Map.ofList
+          EnvFiles =
+            configs
+            |> List.collect _.EnvFiles
+            |> List.distinct
+            |> List.map (fun rel ->
+                let abs = Path.Combine(repoRoot, rel)
+
+                rel,
+                (if File.Exists abs then
+                     ContentHash.ofFile abs
+                 else
+                     VerdictInputs.AbsentDeclaration))
+            |> Map.ofList }
+
+    /// A log line for a capture: each variable's NAME and whether it was set, and the env
+    /// files by path. Never a value, never a digest.
+    let describe (loaded: LoadedEnvironment) =
+        let variables =
+            loaded.Variables
+            |> Map.toList
+            |> List.map (fun (name, digest) ->
+                if digest = "unset" then
+                    $"%s{name} (unset)"
+                else
+                    $"%s{name} (set)")
+
+        let files = loaded.EnvFiles |> Map.toList |> List.map fst
+
+        $"""env %s{if List.isEmpty variables then
+                       "-"
+                   else
+                       String.concat ", " variables}; env files %s{if List.isEmpty files then "-" else String.concat ", " files}"""
+
+    /// The daemon's own capture: this process's environment, now.
+    let ofProcess (repoRoot: string) (configs: Config seq) : LoadedEnvironment =
+        capture repoRoot (Environment.GetEnvironmentVariable >> Option.ofObj) configs
+
 /// Every input of one test project's key, as named entries. Paths are repo-relative with
 /// `/` separators, so two checkouts holding the same bytes produce the same inputs.
 type Inputs =
@@ -160,8 +254,13 @@ type Inputs =
         OtherProjects: (string * string) list
         /// (path, content hash) of the declared extra runtime reads.
         Declared: (string * string) list
-        /// (path, content hash) of the declared env files.
+        /// (path, content hash) of the declared env files, as they are at keying time.
         EnvFiles: (string * string) list
+        /// (path, content hash) of the declared env files as the daemon LOADED them at
+        /// start (`LoadedEnvironment`).
+        EnvFilesLoaded: (string * string) list
+        /// (variable, `LoadedEnvironment.digestOf` its value) of the declared variables.
+        Env: (string * string) list
         /// What a hit asserts was run, and under which reads assumption.
         Scope: string
     }
@@ -188,6 +287,8 @@ let labels (inputs: Inputs) : (string * string) list =
       "otherProjects", digestEntries inputs.OtherProjects
       "declared", digestEntries inputs.Declared
       "envFiles", digestEntries inputs.EnvFiles
+      "envFilesLoaded", digestEntries inputs.EnvFilesLoaded
+      "env", digestEntries inputs.Env
       "scope", "sha256:" + ContentHash.ofText inputs.Scope ]
 
 /// Fold labelled digests into a key value.
@@ -370,6 +471,8 @@ type Request =
         Toolchain: string
         /// The relativised options hash of a project, when the model knows it.
         OptionsHash: string -> string option
+        /// The environment the daemon started with.
+        Loaded: LoadedEnvironment
     }
 
 /// The items a project file names by a literal path outside its own directory —
@@ -544,6 +647,22 @@ let inputsFor (snap: Snapshot) (request: Request) : Result<Inputs * int64, strin
                 @ (resolution.Absent
                    |> List.map (fun p -> VerdictInputs.SentinelPrefix + p, VerdictInputs.AbsentDeclaration))
 
+        // What the daemon loaded at start. A declaration the capture does not hold (a
+        // wiring built from other configs) is an input that cannot be named.
+        let fromLoaded (loaded: Map<string, string>) (names: string list) =
+            names |> List.map (fun n -> n, Map.tryFind n loaded)
+
+        let envFilesLoaded = fromLoaded request.Loaded.EnvFiles request.Config.EnvFiles
+        let envLoaded = fromLoaded request.Loaded.Variables request.Config.Env
+
+        let uncaptured =
+            envFilesLoaded @ envLoaded |> List.filter (snd >> Option.isNone) |> List.map fst
+
+        let envFilesLoaded =
+            envFilesLoaded |> List.choose (fun (p, h) -> h |> Option.map (fun h -> p, h))
+
+        let env = envLoaded |> List.choose (fun (n, d) -> d |> Option.map (fun d -> n, d))
+
         let inputs =
             { Toolchain = request.Toolchain
               TestConfig = request.TestConfig
@@ -559,6 +678,8 @@ let inputsFor (snap: Snapshot) (request: Request) : Result<Inputs * int64, strin
                 | Reads.Closure -> []
               Declared = declared
               EnvFiles = hashListed request.Config.EnvFiles
+              EnvFilesLoaded = envFilesLoaded
+              Env = env
               Scope = $"full-project;reads=%s{readsToken request.Config.Reads}" }
 
         let unreadable =
@@ -566,12 +687,15 @@ let inputsFor (snap: Snapshot) (request: Request) : Result<Inputs * int64, strin
               inputs.Shared
               inputs.OtherProjects
               inputs.Declared
-              inputs.EnvFiles ]
+              inputs.EnvFiles
+              inputs.EnvFilesLoaded ]
             |> List.concat
             |> List.filter (snd >> ContentHash.isReadable >> not)
             |> List.map fst
 
         match linked, unreadable with
+        | _ when not (List.isEmpty uncaptured) ->
+            Error $"""not captured when the daemon started: %s{String.concat ", " uncaptured}"""
         | Error reason, _ -> Error $"a closure project file cannot be read: %s{reason}"
         | Ok(_, true), _ when request.Config.Reads = Reads.Closure ->
             Error

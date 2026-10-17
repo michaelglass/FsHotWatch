@@ -255,15 +255,18 @@ let ``a secret in an env file never reaches the store's bytes`` () =
         Directory.CreateDirectory(Path.Combine(root, "tests/T")) |> ignore
         File.WriteAllText(Path.Combine(root, "tests/T/T.fsproj"), "<Project />")
 
+        let config =
+            { TestEvidenceKey.defaultConfig with
+                EnvFiles = [ ".env.test" ] }
+
         let request: TestEvidenceKey.Request =
             { Project = Path.Combine(root, "tests/T/T.fsproj")
               Closure = []
-              Config =
-                { TestEvidenceKey.defaultConfig with
-                    EnvFiles = [ ".env.test" ] }
+              Config = config
               TestConfig = "{}"
               Toolchain = "t"
-              OptionsHash = fun _ -> Some "o" }
+              OptionsHash = fun _ -> Some "o"
+              Loaded = TestEvidenceKey.LoadedEnvironment.capture root (fun _ -> None) [ config ] }
 
         let key =
             match TestEvidenceKey.inputsFor (TestEvidenceKey.snapshot root []) request with
@@ -275,6 +278,49 @@ let ``a secret in an env file never reaches the store's bytes`` () =
 
             for f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories) do
                 test <@ not ((File.ReadAllText f).Contains "hunter2") @>))
+
+[<Fact>]
+let ``an env value never reaches the store's bytes or its log`` () =
+    withTempDir "evstore-env" (fun root ->
+        Directory.CreateDirectory(Path.Combine(root, "tests/T")) |> ignore
+        File.WriteAllText(Path.Combine(root, "tests/T/T.fsproj"), "<Project />")
+        let sentinel = "pg-hunter2-sentinel"
+
+        let config =
+            { TestEvidenceKey.defaultConfig with
+                Env = [ "FSHW_EV_DATABASE" ] }
+
+        let keyWith (value: string option) =
+            let request: TestEvidenceKey.Request =
+                { Project = Path.Combine(root, "tests/T/T.fsproj")
+                  Closure = []
+                  Config = config
+                  TestConfig = "{}"
+                  Toolchain = "t"
+                  OptionsHash = fun _ -> Some "o"
+                  Loaded = TestEvidenceKey.LoadedEnvironment.capture root (fun _ -> value) [ config ] }
+
+            match TestEvidenceKey.inputsFor (TestEvidenceKey.snapshot root []) request with
+            | Ok(inputs, _) -> TestEvidenceKey.compute inputs
+            | Error e -> failwith e
+
+        let key = keyWith (Some sentinel)
+        // Positive control: the value reached the key.
+        test <@ key.Value <> (keyWith None).Value @>
+
+        withStore (fun dir _ logLines store ->
+            store.Write(entryFor "tests/T/T.fsproj" key t0) |> ignore
+            store.Lookup("tests/T/T.fsproj", keyWith None) |> ignore
+
+            let files =
+                Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories) |> Seq.toList
+            // Positive control: there is a record to scan.
+            test <@ not (List.isEmpty files) @>
+
+            for f in files do
+                test <@ not ((File.ReadAllText f).Contains sentinel) @>
+
+            test <@ logLines () |> List.forall (fun l -> not (l.Contains sentinel)) @>))
 
 [<Fact>]
 let ``every miss reads as a reason`` () =

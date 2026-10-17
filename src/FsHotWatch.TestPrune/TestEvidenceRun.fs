@@ -24,6 +24,8 @@ type Wiring =
         /// Each test project's `evidence` block; a project absent here takes the default.
         Configs: Map<string, TestEvidenceKey.Config>
         Toolchain: Lazy<string>
+        /// The environment the daemon started with, captured once when it wired evidence.
+        Loaded: TestEvidenceKey.LoadedEnvironment
         /// The fshw build producing entries, recorded as provenance.
         ProducerHash: string
         /// Patterns the verdict-tree walk leaves out. The daemon passes none — the widest
@@ -98,7 +100,8 @@ let keysOf
                             |> Option.defaultValue TestEvidenceKey.defaultConfig
                           TestConfig = c.TestConfig
                           Toolchain = wiring.Toolchain.Value
-                          OptionsHash = optionsHash }
+                          OptionsHash = optionsHash
+                          Loaded = wiring.Loaded }
 
                     c.Project,
                     (TestEvidenceKey.inputsFor snap request

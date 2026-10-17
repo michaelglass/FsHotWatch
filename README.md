@@ -546,7 +546,7 @@ merge verdict without one.
 | `classJoin` | `string` | `" "` | Separator for joining class names in the filter. |
 | `reportVerificationFormat` | `string` | `"auto"` | How the pass/fail verdict's structured test report is obtained. The report (not the process exit code) decides green/red. `auto` reads `obj/project.assets.json` and injects the matching CTRF switches for a resolved xUnit 3 or 4 runner; missing, malformed, conflicting, and unknown versions receive no report switches. `ctrf` forces report switches, using the detected family when possible and the xUnit 3 names for an unknown custom runner. `off` never injects them and the exit code stays authoritative. |
 | `traces` | `bool` or `object` | `true` | `false` keeps this project out of `tests.traces` recording: it always launches as configured. `{ "weaveTests": "sites" \| "full" }` keeps it in and weaves its test assembly in that mode instead of `tests.traces.weaveTests`. Any other value, or any other key in the object, is a config error. |
-| `evidence` | `object` | `{ "reads": "verdict-tree" }` | How far this project's tests read at run time, for [test evidence across checkouts](#test-evidence-across-checkouts). `reads`: `"verdict-tree"` (the default: any file of the verified tree may affect the outcome, so every one is in the key) or `"closure"` (opt-in: the tests read nothing under the directory of a project outside their `ProjectReference` closure). `extra`: further repo-relative paths or globs the tests read. `envFiles`: files the tests load their environment from (`.env.test`); only their content hash is ever stored. |
+| `evidence` | `object` | `{ "reads": "verdict-tree" }` | How far this project's tests read at run time, for [test evidence across checkouts](#test-evidence-across-checkouts). `reads`: `"verdict-tree"` (the default: any file of the verified tree may affect the outcome, so every one is in the key) or `"closure"` (opt-in: the tests read nothing under the directory of a project outside their `ProjectReference` closure). `extra`: further repo-relative paths or globs the tests read. `envFiles`: files the tests load their environment from (`.env.test`); only their content hash is ever stored. `env`: names of environment variables the outcome depends on (`["DATABASE_URL"]`); only a digest of each value enters the key, and no value is stored or logged. |
 
 **`analyzers` fields:**
 
@@ -732,7 +732,12 @@ outcome:
   `Directory.Build.props`, `.config/dotnet-tools.json`, the declared verdict inputs);
 - every verified file under the other projects' directories, unless the project
   declares `"evidence": { "reads": "closure" }`;
-- the declared `extra` reads and the content hashes of the declared `envFiles`.
+- the declared `extra` reads and the content hashes of the declared `envFiles`, both as they
+  are on disk and as they were when the daemon started: the shell that started the daemon
+  loaded them, and the daemon keeps those values until it restarts, so a daemon started
+  before an edit to `.env.test` does not match one started after it;
+- a digest of the value of each variable named in `evidence.env`, as the daemon started
+  with it (unset and empty differ). Only the digest is keyed; no value is stored or logged;
 - any file a closure project's `.fsproj` names by a literal path outside the closure's
   directories (a linked source).
 
