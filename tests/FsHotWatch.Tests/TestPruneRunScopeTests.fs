@@ -5233,3 +5233,110 @@ let ``a completion warns when its receipt and its evidence name different runs``
             receiptEvidenceMismatch (Some 7L) (Some receipt) None = Some
                 "the receipt grades run a0000000120040008000000000000001 but the model evidence names no run; a check graded from this state refuses its green"
         @>
+
+// ---------------------------------------------------------------------------
+// A trigger an in-flight run already satisfies is absorbed, not re-run.
+//
+// The shape: a run launches with a project UNFILTERED, then — while it runs — a scan
+// re-derives the same runtime-coverage obligation for that project (a newer generation)
+// and a late build's dependency fanout queues a force-run of it. Neither moved the input
+// tree, so the run executed exactly the tests those triggers would ask for, over the
+// tree they were raised against. Its green must discharge them; otherwise the queued
+// re-run executes the whole project a second time.
+//
+// A filtered run that did not name the classes, a red, and an edit after launch (the tree
+// moved) discharge nothing: the re-run still owes them.
+// ---------------------------------------------------------------------------
+
+[<Theory(Timeout = 20000)>]
+[<InlineData("unfiltered-green-over-the-launch-tree", true)>]
+[<InlineData("filtered-run-missing-the-classes", false)>]
+[<InlineData("covering-project-failed", false)>]
+[<InlineData("edited-after-launch", false)>]
+let ``a trigger raised during an unfiltered run of its project is absorbed by that run's green``
+    (shape: string, absorbed: bool)
+    =
+    withReceiptSource (fun repoRoot source ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        // Launched at generation 1; re-derived mid-run by a scan, so now at generation 2.
+        let launchedObligations = Map.ofList [ "src/Value.fs", Map.ofList [ "ProjA", 1L ] ]
+        let rederived = Map.ofList [ "src/Value.fs", Map.ofList [ "ProjA", 2L ] ]
+
+        let prior =
+            { handler.Init with
+                Debt =
+                    { handler.Init.Debt with
+                        RuntimeObligations = rederived }
+                PendingForceRunProjects = Set.ofList [ "ProjA" ] }
+
+        let projA =
+            match shape with
+            | "filtered-run-missing-the-classes" -> ProjectClasses(Set.ofList [ "ProjATests" ])
+            | _ -> ProjectInFull
+
+        // ProjB ran filtered, so the run is NOT the whole suite: only ProjA's own scope
+        // can absorb anything.
+        let launch =
+            { filteredLaunch [ "ProjB", [ "ProjBTests" ] ] with
+                RuntimeProjectsByFile = launchedObligations }
+            |> fun launch ->
+                { launch with
+                    Selection = Map.add "ProjA" projA launch.Selection }
+            |> bindReceiptTree repoRoot
+
+        if shape = "edited-after-launch" then
+            File.WriteAllText(source, "module Value\nlet answer = 2\n")
+
+        let results =
+            match shape with
+            | "covering-project-failed" -> [ "ProjA", failedProjA; "ProjB", passed true ]
+            | "filtered-run-missing-the-classes" -> [ "ProjA", passed true; "ProjB", passed true ]
+            | _ -> [ "ProjA", passed false; "ProjB", passed true ]
+
+        let ctx, _, _ = makeTestPruneRecordingCtx ()
+
+        let after =
+            handler.Update ctx prior (testsFinishedEvent results launch)
+            |> Async.RunSynchronously
+
+        if absorbed then
+            test <@ Map.isEmpty after.Debt.RuntimeObligations @>
+            test <@ Set.isEmpty after.PendingForceRunProjects @>
+        else
+            test <@ after.Debt.RuntimeObligations = rederived @>
+            test <@ after.PendingForceRunProjects = Set.ofList [ "ProjA" ] @>)
+
+[<Fact(Timeout = 20000)>]
+let ``an unfiltered run absorbs only its own project's triggers`` () =
+    withReceiptSource (fun repoRoot _ ->
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
+
+        // ProjB's obligation and fanout ask for MORE than this run executed for ProjB (a
+        // class filter), so they still owe a run.
+        let owed = Map.ofList [ "src/Value.fs", Map.ofList [ "ProjA", 2L; "ProjB", 1L ] ]
+
+        let prior =
+            { handler.Init with
+                Debt =
+                    { handler.Init.Debt with
+                        RuntimeObligations = owed }
+                PendingForceRunProjects = Set.ofList [ "ProjA"; "ProjB" ] }
+
+        let launch =
+            filteredLaunch [ "ProjB", [ "ProjBTests" ] ]
+            |> fun launch ->
+                { launch with
+                    Selection = Map.add "ProjA" ProjectInFull launch.Selection }
+            |> bindReceiptTree repoRoot
+
+        let ctx, _, _ = makeTestPruneRecordingCtx ()
+
+        let after =
+            handler.Update ctx prior (testsFinishedEvent [ "ProjA", passed false; "ProjB", passed true ] launch)
+            |> Async.RunSynchronously
+
+        test <@ after.Debt.RuntimeObligations = Map.ofList [ "src/Value.fs", Map.ofList [ "ProjB", 1L ] ] @>
+        test <@ after.PendingForceRunProjects = Set.ofList [ "ProjB" ] @>)

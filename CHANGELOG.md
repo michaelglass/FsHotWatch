@@ -74,6 +74,19 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### test-prune: a project already running unfiltered is no longer run in full a second time
+
+- A trigger raised while a run was in flight queued a second run of the same project,
+  even when the in-flight run was already executing that project unfiltered over the same
+  tree. Two triggers did this: a scan re-deriving an existing runtime-coverage obligation
+  (a newer generation over unchanged bytes), and a dependency fanout from a build of that
+  tree. On a large test project, one edit paid for the full project twice.
+- Now, when a run passes a project it launched unfiltered, and the input tree has not
+  moved since launch, the run discharges that project's runtime-coverage obligations and
+  pending fanout. The queued re-run then finds nothing owed and does not launch. A
+  filtered or reused project, a red, an aborted run, or an edit after launch discharges
+  nothing, so those triggers still re-run.
+
 ### test-prune: prose that starts with "failed" is no longer filed as a failing test
 
 - test-prune read any console line starting with `failed ` as a failing test. A test
