@@ -508,6 +508,8 @@ type internal HelperChild(id: int64, kill: int64 -> HelperFailure option, releas
 
         member this.KillTree() = this.KillTree()
         member this.WaitForExit milliseconds = this.WaitForExit milliseconds |> ignore
+        // The launcher records the identity escalation needs (`ProcessRegistry.escalatingWith`).
+        member _.Escalate() = None
 
 /// How long a start request may wait for the helper's answer. A small process starts a
 /// child in milliseconds; a helper that has not answered in this long is not coming

@@ -1361,6 +1361,13 @@ let internal escalationFor (owned: Result<OwnedPid, string>) : (unit -> Escalati
     | Ok root -> Some(fun () -> escalateWith liveEscalationOps root)
     | Error _ -> None
 
+/// What the registry runs when a shutdown's kill of this child does not return
+/// (`ProcessRegistry.IOwnedChild.Escalate`): the escalation's survivors. `None` without a
+/// recorded identity, exactly as for `escalationFor`.
+let internal shutdownEscalationFor (owned: Result<OwnedPid, string>) : (unit -> (int * string) list) option =
+    escalationFor owned
+    |> Option.map (fun escalate -> fun () -> (escalate ()).Survivors)
+
 /// Classify the bounded post-exit drain. The capture is the child's COMPLETE output
 /// only if the wait returned inside the window AND both pumps ended at EOF; anything
 /// else is a capture we cannot vouch for.
@@ -2160,7 +2167,12 @@ let internal runProcessCore
         // Register so shutdown can tear down in-flight children. A scope that shut down
         // while this child was starting refuses it here, and reaps it before the
         // reservation is released.
-        ProcessRegistry.admitChildOrRefuse child.Key child.Owned $"`%s{command} %s{args}` (pid %d{pid})"
+        // Admitted with its identity, so a shutdown whose kill of it hangs escalates
+        // against the same pid and start time this run's own teardown would.
+        ProcessRegistry.admitChildOrRefuse
+            child.Key
+            (ProcessRegistry.escalatingWith (shutdownEscalationFor owned) child.Owned)
+            $"`%s{command} %s{args}` (pid %d{pid})"
     finally
         launch.Dispose()
 
