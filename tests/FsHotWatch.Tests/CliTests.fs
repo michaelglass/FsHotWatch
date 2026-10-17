@@ -1059,7 +1059,7 @@ let ``executePluginCommand proxies a recognized command to IPC`` () =
                     } }
 
     let result =
-        executePluginCommand ipc "pipe" defaultGlobalOptions "warnings" "--verbose x"
+        executePluginCommand "the-daemon-log" ipc "pipe" defaultGlobalOptions "warnings" "--verbose x"
 
     test <@ result = Handled 0 @>
     test <@ cmdName = "warnings" @>
@@ -1073,7 +1073,9 @@ let ``executePluginCommand reports NotRecognized when daemon returns unknown-com
         { fakeIpc () with
             RunCommand = fun _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name } }
 
-    let result = executePluginCommand ipc "pipe" defaultGlobalOptions "bogus" ""
+    let result =
+        executePluginCommand "the-daemon-log" ipc "pipe" defaultGlobalOptions "bogus" ""
+
     test <@ result = NotRecognized @>
 
 [<Fact(Timeout = 15000)>]
@@ -1084,7 +1086,9 @@ let ``executePluginCommand reports DaemonUnavailable when IPC throws (with hint)
         { fakeIpc () with
             RunCommand = fun _ _ _ -> async { return raise (TimeoutException("no daemon")) } }
 
-    let result = executePluginCommand ipc "pipe" defaultGlobalOptions "bogus" ""
+    let result =
+        executePluginCommand "the-daemon-log" ipc "pipe" defaultGlobalOptions "bogus" ""
+
     test <@ result = DaemonUnavailable @>
 
 [<Fact(Timeout = 15000)>]
@@ -1094,7 +1098,9 @@ let ``executePluginCommand reports DaemonUnavailable when IPC throws (no hint)``
         { fakeIpc () with
             RunCommand = fun _ _ _ -> async { return raise (InvalidOperationException("pipe gone")) } }
 
-    let result = executePluginCommand ipc "pipe" defaultGlobalOptions "bogus" ""
+    let result =
+        executePluginCommand "the-daemon-log" ipc "pipe" defaultGlobalOptions "bogus" ""
+
     test <@ result = DaemonUnavailable @>
 
 [<Fact(Timeout = 15000)>]
@@ -1106,7 +1112,7 @@ let ``forwardRootUnknownCommand returns the daemon exit code when handled`` () =
     let mutable renderCalled = false
 
     let result =
-        forwardRootUnknownCommand ipc "pipe" defaultGlobalOptions "plugin-cmd" "" (fun () ->
+        forwardRootUnknownCommand "the-daemon-log" ipc "pipe" defaultGlobalOptions "plugin-cmd" "" (fun () ->
             renderCalled <- true
             99)
 
@@ -1124,7 +1130,7 @@ let ``forwardRootUnknownCommand fails hard via renderErr when daemon does not re
     // The not-recognized path must invoke renderErr — which prints the canonical error+help
     // and returns the non-zero exit code — so garbage never silently succeeds.
     let result =
-        forwardRootUnknownCommand ipc "pipe" defaultGlobalOptions "bogus" "" (fun () ->
+        forwardRootUnknownCommand "the-daemon-log" ipc "pipe" defaultGlobalOptions "bogus" "" (fun () ->
             renderCalled <- true
             7)
 
@@ -1138,7 +1144,7 @@ let ``forwardRootUnknownCommand returns 1 when the daemon is unavailable`` () =
             RunCommand = fun _ _ _ -> async { return raise (TimeoutException("no daemon")) } }
 
     let result =
-        forwardRootUnknownCommand ipc "pipe" defaultGlobalOptions "bogus" "" (fun () -> 7)
+        forwardRootUnknownCommand "the-daemon-log" ipc "pipe" defaultGlobalOptions "bogus" "" (fun () -> 7)
 
     test <@ result = 1 @>
 

@@ -526,7 +526,7 @@ let ``the discovery-failure message names the load failure and the log that carr
 
     // Where the actual reason is, in the words the daemon logs it under.
     test <@ message.Contains("LoadProject FAILED") @>
-    test <@ message.Contains("logs/daemon.log") @>
+    test <@ message.Contains(FsHotWatch.Logging.logPointer ()) @>
     // The counts, so the sentence stands alone in a log without its neighbours.
     test <@ message.Contains("0 of 18") @>
     // And the explicit disavowal of the three red herrings.

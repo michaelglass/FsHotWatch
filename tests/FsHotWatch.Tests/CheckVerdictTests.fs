@@ -1267,12 +1267,18 @@ let ``POSITIVE CONTROL: an empty selection on a HEALTHY model still says nothing
         test <@ exitCode outcome = 3 @>
 
         let explanation =
-            FsHotWatch.Cli.Verdict.CheckProse.explainOutcome outcome
+            FsHotWatch.Cli.Verdict.CheckProse.explainOutcome
+                (FsHotWatch.Cli.DaemonConfig.DaemonLog.under FsHotWatch.Cli.DaemonConfig.DefaultLogDir)
+                outcome
             |> Option.defaultValue ""
 
         test <@ not (explanation.Contains "PROJECT MODEL") @>
 
-        match FsHotWatch.Cli.Verdict.outcomeOfCheck outcome with
+        match
+            FsHotWatch.Cli.Verdict.outcomeOfCheck
+                (FsHotWatch.Cli.DaemonConfig.DaemonLog.under FsHotWatch.Cli.DaemonConfig.DefaultLogDir)
+                outcome
+        with
         | FsHotWatch.Cli.Verdict.Incomplete reason -> test <@ reason.Contains "nothing needed re-verifying" @>
         | other -> failwith $"a healthy empty selection must keep its own reading, got %A{other}"
 
@@ -1289,14 +1295,20 @@ let ``a model-unavailable outcome is explained in its own words and recorded as 
         let outcome = CheckOutcome.ModelUnavailable model
 
         let explanation =
-            FsHotWatch.Cli.Verdict.CheckProse.explainOutcome outcome
+            FsHotWatch.Cli.Verdict.CheckProse.explainOutcome
+                (FsHotWatch.Cli.DaemonConfig.DaemonLog.under FsHotWatch.Cli.DaemonConfig.DefaultLogDir)
+                outcome
             |> Option.defaultValue ""
 
         test <@ explanation.StartsWith("NO VERDICT — PROJECT ", StringComparison.Ordinal) @>
         test <@ explanation.Contains "not an empty test selection" @>
         test <@ not (explanation.Contains "NO TESTS RAN") @>
 
-        match FsHotWatch.Cli.Verdict.outcomeOfCheck outcome with
+        match
+            FsHotWatch.Cli.Verdict.outcomeOfCheck
+                (FsHotWatch.Cli.DaemonConfig.DaemonLog.under FsHotWatch.Cli.DaemonConfig.DefaultLogDir)
+                outcome
+        with
         | FsHotWatch.Cli.Verdict.ModelUnavailable reason as recorded ->
             test <@ reason = explanation @>
             test <@ FsHotWatch.Cli.Verdict.Outcome.tag recorded = "model-unavailable" @>

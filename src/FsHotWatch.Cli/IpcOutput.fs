@@ -1206,7 +1206,10 @@ let private publishVerdictWithReason
                     Verdict.Incomplete reason,
                     CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1),
                     [ downgradeCause "receipt" reason ]
-                | _ -> Verdict.outcomeOfCheck outcome, CheckVerdict.exitCode outcome, []
+                | _ ->
+                    Verdict.outcomeOfCheck (DaemonConfig.DaemonLog.forRepo repoRoot) outcome,
+                    CheckVerdict.exitCode outcome,
+                    []
 
         let command = Verdict.Command.ofCheckMode checkMode
 
@@ -1793,7 +1796,7 @@ let pollAndRenderForInvocation
         // re-scans, they cannot differ in what they have to report either. `Some` only
         // where there is something to say: `Clean` and `FailuresFound` are already
         // explained by the plugin lines and the red causes above.
-        match Verdict.CheckProse.explainOutcome outcome with
+        match Verdict.CheckProse.explainOutcome (DaemonConfig.DaemonLog.forRepo repoRoot) outcome with
         | Some explanation -> UI.fail explanation
         | None -> ()
 
@@ -1908,7 +1911,7 @@ let pollAndRenderForInvocation
                 (CheckVerdict.CheckOutcome.Incomplete -1)
 
         UI.fail
-            $"Check aborted: %s{ex.Message}\nA plugin overran the verdict deadline and is likely wedged — inspect logs/daemon.log, then `fshw stop` to reclaim the daemon. If the suite legitimately needs longer, raise FSHW_VERDICT_DEADLINE_SEC."
+            $"Check aborted: %s{ex.Message}\nA plugin overran the verdict deadline and is likely wedged — inspect %s{DaemonConfig.DaemonLog.forRepo repoRoot}, then `fshw stop` to reclaim the daemon. If the suite legitimately needs longer, raise FSHW_VERDICT_DEADLINE_SEC."
 
         abortExitCode
     | ex when isDaemonShutdownDuringWait ex ->
@@ -1942,7 +1945,7 @@ let pollAndRenderForInvocation
         // A daemon squeezed out by machine memory pressure dies exactly here, and
         // the message above names the SYMPTOM. Naming the pressure turns "the
         // daemon shut down" — which reads as an fshw bug and sends the reader to
-        // logs/daemon.log — into the cause, which is usually that the tree needs
+        // the daemon log — into the cause, which is usually that the tree needs
         // more memory than the machine has. Measured 2026-09-20: a 37 GB
         // phys_footprint on a 32 GB box, on a tree that has grown from 745 files
         // (when this was last benchmarked at 3 GB settled) to 2047.

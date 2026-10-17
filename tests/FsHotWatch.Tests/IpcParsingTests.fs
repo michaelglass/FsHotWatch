@@ -688,7 +688,7 @@ let ``every unavailable model reading is explained with a cause AND a remedy; an
               OptionsMapped = 0
               Registered = 0 }
 
-    let explain = ProjectModelReading.describeUnavailable
+    let explain = ProjectModelReading.describeUnavailable "the-daemon-log"
 
     test <@ explain ProjectModelFixtures.available = None @>
 
@@ -704,7 +704,7 @@ let ``every unavailable model reading is explained with a cause AND a remedy; an
         |> Option.defaultValue ""
 
     test <@ unobserved.Contains "no completed discovery" @>
-    test <@ unobserved.Contains "logs/daemon.log" @>
+    test <@ unobserved.Contains "the-daemon-log" @>
 
     let failed =
         explain (ProjectModelReading.Observed loadingFailed) |> Option.defaultValue ""

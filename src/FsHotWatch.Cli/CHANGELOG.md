@@ -6,6 +6,11 @@
   builds its own host) write the same `daemon.log` a daemon would, at the configured `logDir`,
   as well as stderr. A launched daemon is told which file its stderr is redirected into, so its
   wait failures name it. `DaemonConfig.DaemonLog.file` is the one resolution of that path.
+- fix: the IPC hints, startup and readiness failures, launch failure, verdict-deadline abort,
+  `confirm --fresh` no-new-run and project-model-unavailable verdict prose name the repo's
+  configured daemon log instead of a hard-coded `logs/daemon.log`. `DaemonLog.forRepo` now
+  resolves through `DaemonLog.file` (an absolute path); the prose builders take the log as a
+  parameter. A source test fails on any spelled-out daemon log path outside `DaemonConfig`.
 
 ## 0.14.0-alpha.108 - 2026-10-17
 

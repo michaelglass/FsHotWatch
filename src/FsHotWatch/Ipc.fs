@@ -289,7 +289,7 @@ type DaemonRpcTarget
                         raise (
                             TimeoutException(
                                 $"%s{name} exceeded its %d{int d.TotalSeconds}s deadline — the daemon is wedged on this \
-                                  operation. %s{OperationWatchdog.RecoveryAction}"
+                                  operation. %s{OperationWatchdog.recoveryAction ()}"
                             )
                         )
                 else

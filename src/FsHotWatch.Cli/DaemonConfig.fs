@@ -1530,9 +1530,10 @@ module DaemonLog =
     [<Literal>]
     let LaunchedEnvVar = "FSHW_DAEMON_LOG"
 
-    /// The log file of one repo, read from that repo's own `.fshw.json` — through
-    /// `parseConfig`, the same parser the daemon loads with, so there is no second reading
-    /// of the key to drift.
+    /// The log file of one repo, resolved by `file` from the `logDir` in that repo's own
+    /// `.fshw.json` — read through `parseConfig`, the same parser the daemon loads with, so
+    /// there is no second reading of the key to drift. For a caller with no configuration
+    /// in hand; one that has it calls `file` directly.
     ///
     /// Deliberately NOT `loadConfig`: naming a log file must not validate a configuration,
     /// log a line, or throw. A repo whose config cannot be read gets the default, because
@@ -1543,11 +1544,11 @@ module DaemonLog =
             let configPath = Path.Combine(repoRoot, ".fshw.json")
 
             if File.Exists configPath then
-                under (parseConfig (File.ReadAllText configPath) (defaultConfigFor repoRoot)).LogDir
+                file repoRoot (parseConfig (File.ReadAllText configPath) (defaultConfigFor repoRoot)).LogDir
             else
-                under DefaultLogDir
+                file repoRoot DefaultLogDir
         with _ ->
-            under DefaultLogDir
+            file repoRoot DefaultLogDir
 
 /// Strip a config down to a minimal base for run-once subcommands.
 /// Disables all plugins except format preprocessor. Caller overrides specific fields.

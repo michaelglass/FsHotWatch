@@ -73,22 +73,23 @@ module ProjectModelReading =
     ///
     /// The remedies differ, which is why the reading is a value and not a bool: a model
     /// mid-rediscovery settles on its own; a failed one does not.
-    let describeUnavailable (reading: ProjectModelReading) : string option =
+    ///
+    /// `daemonLog` is the daemon log holding the discovery lines (`DaemonConfig.DaemonLog`).
+    let describeUnavailable (daemonLog: string) (reading: ProjectModelReading) : string option =
         match reading with
         | ProjectModelReading.Observed(Observation.Available _) -> None
         | ProjectModelReading.Observed(Observation.Rediscovering _ as observation) ->
-            failure observation
+            failure daemonLog observation
             |> Option.map (fun cause ->
                 $"%s{cause} The daemon is re-discovering projects (a project file changed): nothing was verified \
                    against a settled model. Wait for discovery to settle and re-run.")
         | ProjectModelReading.Observed(Observation.Unobserved as observation) ->
-            failure observation
-            |> Option.map (fun cause ->
-                $"%s{cause} Re-run; if it repeats, read the discovery lines in logs/daemon.log.")
+            failure daemonLog observation
+            |> Option.map (fun cause -> $"%s{cause} Re-run; if it repeats, read the discovery lines in %s{daemonLog}.")
         | ProjectModelReading.Observed(Observation.Unavailable _ as observation) ->
-            failure observation
+            failure daemonLog observation
             |> Option.map (fun cause ->
-                $"%s{cause} Re-running will not clear this: read logs/daemon.log for the discovery stage that \
+                $"%s{cause} Re-running will not clear this: read %s{daemonLog} for the discovery stage that \
                    produced nothing.")
         | ProjectModelReading.NotReported reason ->
             Some

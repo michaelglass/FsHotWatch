@@ -3884,7 +3884,7 @@ let internal isZeroTestsUnderFilter (wasFiltered: bool) (outcome: ProcessOutcome
 ///
 /// A run refused by the shard-pool guard ("Test shard pool '…' is already in use by
 /// PID 6862 …") printed its cause as line 1 of a 351-byte output. That line reached
-/// `logs/daemon.log` and the run's `.output.log`; the ledger entry — and so the verdict's
+/// the daemon log and the run's `.output.log`; the ledger entry — and so the verdict's
 /// `reddenedBy`, the surface agents are told to read — said only "Tests failed in X", and
 /// a reader of it concluded a wedged daemon and reaped daemons that were fine. The tool
 /// knew the cause and told the reader where to look instead of what it knew.

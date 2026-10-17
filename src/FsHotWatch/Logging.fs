@@ -97,7 +97,7 @@ let isEnabled level =
 /// Log a message at the given level, with a component tag and timestamp.
 let log (level: LogLevel) (tag: string) (msg: string) =
     if isEnabled level then
-        // Dated, and explicitly UTC. `logs/daemon.log` is not rotated per run or per
+        // Dated, and explicitly UTC. The daemon log is not rotated per run or per
         // day — an 11 MB file spanning several days is ordinary — so a time-only stamp
         // cannot place a line on a day, and "did this happen before or after the
         // version bump" is the first question asked of it. The `Z` is not decoration:

@@ -379,7 +379,7 @@ let private runOnceAndVerdictIn
                 checkScoped
                 finalStatuses.Value
                 (IpcParsing.DaemonEvidence.ofHost daemon.Host)
-                (redCauses (DaemonConfig.DaemonLog.under config.LogDir) daemon noWarnFail)
+                (redCauses (DaemonConfig.DaemonLog.file repoRoot config.LogDir) daemon noWarnFail)
                 finalModel.Value
                 settledTree.Value
                 outcome
@@ -387,7 +387,7 @@ let private runOnceAndVerdictIn
         // `Verdict.CheckProse.explainOutcome`, the very call the daemon path makes:
         // `--run-once` differs in HOW the check ran, never in what it means. Neither path
         // re-scans, so neither has attempts to report.
-        match Verdict.CheckProse.explainOutcome outcome with
+        match Verdict.CheckProse.explainOutcome (DaemonConfig.DaemonLog.file repoRoot config.LogDir) outcome with
         | Some explanation -> UI.fail explanation
         | None -> ()
 

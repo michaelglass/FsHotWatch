@@ -70,7 +70,7 @@ let ``wedgeReport Some with WEDGED prefix, stuck op, elapsed, and inline recover
         test <@ msg.Contains("exceeded 120s threshold") @>
         // Inline recovery action so the consumer needn't look it up.
         test <@ msg.Contains("fshw stop") @>
-        test <@ msg.Contains(RecoveryAction) @>
+        test <@ msg.Contains(recoveryAction ()) @>
 
 [<Fact(Timeout = 5000)>]
 let ``heartbeatLine reports idle when nothing in flight`` () =

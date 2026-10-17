@@ -56,8 +56,9 @@ let tryRead (repoRoot: string) : string option =
         Logging.debug "startup" $"could not read the startup failure: %s{ex.GetType().Name}: %s{ex.Message}"
         None
 
-/// What the CLI prints when the daemon it launched never came up.
-let describeLaunchFailure (recorded: string option) : string =
+/// What the CLI prints when the daemon it launched never came up. `daemonLog` is the
+/// log that daemon wrote (`DaemonConfig.DaemonLog`).
+let describeLaunchFailure (daemonLog: string) (recorded: string option) : string =
     match recorded with
     | Some message -> $"Failed to start daemon — the check could not run. The daemon refused to start:\n%s{message}"
-    | None -> "Failed to start daemon — the check could not run. See logs/daemon.log."
+    | None -> $"Failed to start daemon — the check could not run. See %s{daemonLog}."

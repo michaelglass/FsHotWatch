@@ -497,9 +497,8 @@ let internal totalDiscoveryFailure (fsprojFilesFound: int) (projectsLoaded: int)
             $"PROJECT LOADING FAILED: MSBuild evaluation loaded 0 of %d{fsprojFilesFound} discovered project(s). \
               Nothing is registered, so no plugin can report and no test can run. This is NOT a \
               coverage, quiescence or wedged-plugin problem, whatever a later verdict says. \
-              Read the per-project reason from the `LoadProject FAILED` lines — in \
-              `logs/daemon.log`, or on stderr just above this line under `--run-once`, \
-              which has no daemon. A silently downgraded app-local MSBuild support \
+              Read the per-project reason from the `LoadProject FAILED` lines in \
+              %s{Logging.logPointer ()}. A silently downgraded app-local MSBuild support \
               assembly is one known cause."
     else
         None
@@ -3865,7 +3864,7 @@ type internal ModelKeptChangingDuringScanException(attempts: int) =
               so no scan could publish results about the model it had checked. Nothing was published and no \
               results are being withheld. Something rewrote project files throughout the scan — a build, \
               restore or code generator running alongside the check is the usual cause; the `Rediscovering` \
-              lines in `logs/daemon.log` name each replacement and what triggered it."
+              lines in %s{Logging.logPointer ()} name each replacement and what triggered it."
         )
 
 /// Recognize the terminal across the JSON-RPC exception boundary, which does not

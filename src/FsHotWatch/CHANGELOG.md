@@ -7,6 +7,11 @@
   did not exist for in-process hosts. `Logging.LogSink` gains `File: string option`, read back
   by the new `Logging.logPointer ()` (`stderr above` when no file holds the lines). New sinks:
   `teeSink` (stderr and a file) and `stderrInto` (stderr a launcher redirected into a file).
+- fix!: every other sentence that sent a reader to the log names `Logging.logPointer ()` too: the
+  total discovery failure, the scan-model-kept-changing failure, the operation watchdog's
+  recovery action (`OperationWatchdog.RecoveryAction` is now `recoveryAction ()`) and heap-valve
+  report, and the project-loading-failed prose. `ProjectModel.describeUnavailable` and
+  `ProjectModel.failure` take the log to name as their first argument.
 
 ## 0.10.0-alpha.80 - 2026-10-17
 

@@ -2493,7 +2493,11 @@ let ``an unrepairable stale tree reaches the CLI as StaleOutput, not as a build-
                 )
             )
 
-        match FsHotWatch.Cli.Verdict.outcomeOfCheck outcome with
+        match
+            FsHotWatch.Cli.Verdict.outcomeOfCheck
+                (FsHotWatch.Cli.DaemonConfig.DaemonLog.under FsHotWatch.Cli.DaemonConfig.DefaultLogDir)
+                outcome
+        with
         | FsHotWatch.Cli.Verdict.Incomplete reason ->
             // Names the affected project, and the command that actually repairs it.
             test <@ reason.Contains "P2" @>

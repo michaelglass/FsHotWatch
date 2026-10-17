@@ -327,8 +327,8 @@ let ``a launch clears a refusal recorded by an earlier launch`` () =
 
         test
             <@
-                DaemonStartupFailure.describeLaunchFailure None
-                |> fun s -> s.Contains("logs/daemon.log")
+                DaemonStartupFailure.describeLaunchFailure "the-daemon-log" None
+                |> fun s -> s.Contains("See the-daemon-log.")
             @>)
 
 // --- the startup-failure record's own I/O arms ---
@@ -353,7 +353,9 @@ let ``a blank record reads as none and falls back to the log pointer`` () =
         let recorded = DaemonStartupFailure.tryRead root
 
         test <@ recorded = None @>
-        test <@ (DaemonStartupFailure.describeLaunchFailure recorded).EndsWith("See logs/daemon.log.") @>)
+
+        test
+            <@ (DaemonStartupFailure.describeLaunchFailure "the-daemon-log" recorded).EndsWith("See the-daemon-log.") @>)
 
 [<Fact(Timeout = 5000)>]
 let ``a recorded refusal round-trips trimmed and is printed in full`` () =
@@ -366,7 +368,7 @@ let ``a recorded refusal round-trips trimmed and is printed in full`` () =
 
         test
             <@
-                (DaemonStartupFailure.describeLaunchFailure recorded)
+                (DaemonStartupFailure.describeLaunchFailure "the-daemon-log" recorded)
                     .EndsWith("refused to start:\nfirst line\nsecond line")
             @>
 

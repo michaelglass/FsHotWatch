@@ -773,22 +773,23 @@ let classifyIpcFault (inner: exn) : IpcFault =
 /// A corrupted-frame fault only reaches its hint AFTER `runIpcWithSelfHeal`
 /// already tried the automatic restart-and-retry. A client OOM deliberately
 /// takes the no-restart path and says so.
-let ipcErrorHint (inner: exn) : string =
+/// `daemonLog` is the daemon log to send the reader to (`DaemonConfig.DaemonLog`).
+let ipcErrorHint (daemonLog: string) (inner: exn) : string =
     match classifyIpcFault inner with
     | IpcFault.CorruptedFrame _ ->
-        "The IPC pipe returned a corrupted or oversized frame. fshw already restarted \
-         the daemon and retried; since it recurred, check `logs/daemon.log` for a \
+        $"The IPC pipe returned a corrupted or oversized frame. fshw already restarted \
+         the daemon and retried; since it recurred, check %s{daemonLog} for a \
          second daemon, a crash loop, or runaway memory growth."
     | IpcFault.ClientOutOfMemory _ ->
-        "The fshw CLI ran out of memory while handling the IPC call. The daemon was not \
+        $"The fshw CLI ran out of memory while handling the IPC call. The daemon was not \
          restarted because this failure carries no evidence of a corrupted frame; \
          inspect the client process memory limit and reduce concurrent work."
     | IpcFault.DaemonOutOfMemory _ ->
-        "The DAEMON ran out of memory building this reply — the failure is on that side, so \
+        $"The DAEMON ran out of memory building this reply — the failure is on that side, so \
          the client's memory limit and the box's free memory are not the lever. The usual \
          cause is a reply whose size is a PRODUCT rather than a sum: a broadly red suite \
          whose per-failure diagnostics each carry the whole run's output. Check the ledger \
-         size in `logs/daemon.log`, and see `.fshw/test-runs/` — the run's own evidence is \
+         size in %s{daemonLog}, and see `.fshw/test-runs/` — the run's own evidence is \
          written by the daemon and survives this."
     | IpcFault.TimedOut _ ->
         // Every connect failure arrives here too, not just a slow reply: on Unix
@@ -797,27 +798,27 @@ let ipcErrorHint (inner: exn) : string =
         // surfaces all three as the SAME `TimeoutException` once the bound expires
         // (measured against .NET 10 on macOS). So the hint has to name that whole set —
         // "busy or hung" alone sends the reader to look at a daemon that is not there.
-        "Daemon did not respond in time — it may be busy or hung, or there may be no daemon \
+        $"Daemon did not respond in time — it may be busy or hung, or there may be no daemon \
          listening at all (a dead daemon's stale socket, or one this user cannot open, fails \
-         the same way). Check `logs/daemon.log` and `fshw status`; `fshw stop` clears a stale \
+         the same way). Check %s{daemonLog} and `fshw status`; `fshw stop` clears a stale \
          socket, and the next fshw command starts a fresh daemon."
     | IpcFault.ConnectionLost _ ->
-        "The daemon dropped the connection mid-call, which means it EXITED while serving this \
+        $"The daemon dropped the connection mid-call, which means it EXITED while serving this \
          request — a crash, an out-of-memory kill, or a `fshw stop` from another shell. The \
-         last lines of `logs/daemon.log` are from just before it died. Re-run the command: the \
+         last lines of %s{daemonLog} are from just before it died. Re-run the command: the \
          next one starts a fresh daemon."
     | IpcFault.DaemonMethodMissing _ ->
-        "The running daemon does not have the method this CLI called — it was started from a \
+        $"The running daemon does not have the method this CLI called — it was started from a \
          DIFFERENT fshw build, so the two no longer agree on the RPC surface. Run `fshw stop` \
          and re-run the command; the next one starts a daemon from this binary."
     | IpcFault.DaemonThrew _ ->
-        "The daemon answered and its own call failed, so the pipe is healthy and restarting the \
+        $"The daemon answered and its own call failed, so the pipe is healthy and restarting the \
          daemon will not change the outcome. The daemon-side stack trace is in \
-         `logs/daemon.log`."
+         %s{daemonLog}."
     | IpcFault.Other _ ->
-        "fshw has no recovery story for this fault — it is not a timeout, a lost connection, a \
+        $"fshw has no recovery story for this fault — it is not a timeout, a lost connection, a \
          corrupted frame, an out-of-memory, or an error the daemon reported. Check \
-         `logs/daemon.log` for what the daemon was doing; if it is wedged, `fshw stop` and \
+         %s{daemonLog} for what the daemon was doing; if it is wedged, `fshw stop` and \
          re-run (the next command starts a fresh one)."
 
 /// The first line of an IPC failure must name the process whose failure is known.
@@ -861,10 +862,10 @@ let ipcErrorHeadline (inner: exn) : string =
 /// Render a failed IPC call to stderr: a process-accurate headline plus the
 /// unwrapped error's recovery hint (if any). Shared by every IPC entry point so
 /// the message and hint stay identical across the CLI.
-let reportDaemonError (ex: exn) : unit =
+let reportDaemonError (daemonLog: string) (ex: exn) : unit =
     let inner = unwrapIpcException ex
     eprintfn "%s" (ipcErrorHeadline inner)
-    eprintfn "  hint: %s" (ipcErrorHint inner)
+    eprintfn "  hint: %s" (ipcErrorHint daemonLog inner)
 
 /// Run one IPC action with corrupted-pipe self-healing.
 /// A corrupted-pipe fault means the daemon (or a rogue sibling sharing the
@@ -915,21 +916,21 @@ let internal runIpcWithSelfHeal (forceRestart: unit -> bool) (onFailure: exn -> 
 
 /// Wrap an IPC call with connection error handling and corrupted-pipe
 /// self-healing (`forceRestart` is the executeCommand-scoped restart).
-let private withIpc (forceRestart: unit -> bool) (action: unit -> int) : int =
+let private withIpc (daemonLog: string) (forceRestart: unit -> bool) (action: unit -> int) : int =
     runIpcWithSelfHeal
         forceRestart
         (fun ex ->
-            reportDaemonError ex
+            reportDaemonError daemonLog ex
             1)
         action
 
 /// Like `withIpc` but with NO self-heal — for `stop`, where restarting a
 /// daemon in order to stop it would be absurd.
-let private withIpcNoHeal (action: unit -> int) : int =
+let private withIpcNoHeal (daemonLog: string) (action: unit -> int) : int =
     try
         action ()
     with ex ->
-        reportDaemonError ex
+        reportDaemonError daemonLog ex
         1
 
 /// Whether the daemon is answering RPCs, as decided by the readiness gate before
@@ -951,12 +952,12 @@ type DaemonReadiness =
 /// plus a pointer to the daemon log so the failure is actionable, never a bare
 /// non-zero that an autonomous loop misreads as diagnostics. Corrupted-pipe
 /// faults get the same self-heal-and-retry as `withIpc` before failing.
-let private withCheckIpc (forceRestart: unit -> bool) (action: unit -> int) : int =
+let private withCheckIpc (daemonLog: string) (forceRestart: unit -> bool) (action: unit -> int) : int =
     runIpcWithSelfHeal
         forceRestart
         (fun ex ->
-            reportDaemonError ex
-            eprintfn "  The check could not complete — see logs/daemon.log."
+            reportDaemonError daemonLog ex
+            eprintfn "  The check could not complete — see %s." daemonLog
             2)
         action
 
@@ -1051,21 +1052,25 @@ let private ensureAndQueryErrors
     // `withCheckIpc`. This closes the startup-race hole where an RPC issued while
     // the daemon was still cold-scanning timed out and poisoned the verdict as
     // exit 1 ("failures found") for an autonomous loop.
+    let daemonLog = DaemonConfig.DaemonLog.forRepo repoRoot
+
     if not (ensureDaemon ()) then
-        eprintfn "%s" (DaemonStartupFailure.describeLaunchFailure (DaemonStartupFailure.tryRead repoRoot))
+        eprintfn "%s" (DaemonStartupFailure.describeLaunchFailure daemonLog (DaemonStartupFailure.tryRead repoRoot))
         2
     else
         match waitReady () with
         | DaemonReadiness.Crashed ->
             eprintfn
                 "The daemon stopped responding during startup (it appears to have exited). \
-                 Nothing was checked — see logs/daemon.log, then re-run `fshw check`."
+                 Nothing was checked — see %s, then re-run `fshw check`."
+                daemonLog
 
             2
         | DaemonReadiness.TimedOut ->
             eprintfn
                 "The daemon did not become ready in time — it may be wedged mid-startup. \
-                 Nothing was checked — see logs/daemon.log."
+                 Nothing was checked — see %s."
+                daemonLog
 
             2
         | DaemonReadiness.Ready ->
@@ -1084,7 +1089,7 @@ let private ensureAndQueryErrors
                 // provoke it: a daemon under `tests.runOn: "request"` launches none unasked.
                 requestOwedRun ipc pipeName
 
-            withCheckIpc forceRestart (fun () ->
+            withCheckIpc daemonLog forceRestart (fun () ->
                 IpcOutput.pollAndRenderForInvocation
                     invocation
                     mode
@@ -3261,7 +3266,8 @@ let internal executeCommandWatchingConfig
 
         // Shadow the module-level wrapper with the heal-capable one so every
         // IPC call site in this scope self-heals a corrupted pipe.
-        let withIpc = withIpc forceRestartDaemon
+        let daemonLog = DaemonConfig.DaemonLog.file repoRoot config.LogDir
+        let withIpc = withIpc daemonLog forceRestartDaemon
 
         let queryPluginIn
             (invocation: Verdict.Invocation)
@@ -3495,7 +3501,7 @@ let internal executeCommandWatchingConfig
             // No corrupted-pipe self-heal here: restarting a daemon in order
             // to stop it would defeat the command.
             link.Stop(fun () ->
-                withIpcNoHeal (fun () ->
+                withIpcNoHeal daemonLog (fun () ->
                     stopDaemonWith ipc defaultFileOps defaultStopOps repoRoot pipeName
                     |> reportStopOutcome))
         | Scan ->
@@ -4036,6 +4042,7 @@ type PluginCommandOutcome =
 /// Distinguishes a genuinely-unknown command (daemon returned the unknown-command
 /// sentinel) from a real plugin result so the caller can fail hard on the former.
 let executePluginCommand
+    (daemonLog: string)
     (ipc: IpcOps)
     (pipeName: string)
     (opts: GlobalOptions)
@@ -4052,7 +4059,7 @@ let executePluginCommand
         else
             Handled(IpcOutput.renderIpcResult mode (renderLines mode true) false result)
     with ex ->
-        reportDaemonError ex
+        reportDaemonError daemonLog ex
         DaemonUnavailable
 
 /// Resolve a ROOT-level unknown command to an exit code: forward it to the daemon as a
@@ -4061,6 +4068,7 @@ let executePluginCommand
 /// silently succeeds. Pure wrt. its injected `ipc`, so it's unit-testable without the
 /// `[<EntryPoint>]` and repo-root plumbing.
 let forwardRootUnknownCommand
+    (daemonLog: string)
     (ipc: IpcOps)
     (pipeName: string)
     (opts: GlobalOptions)
@@ -4068,7 +4076,7 @@ let forwardRootUnknownCommand
     (argsStr: string)
     (renderErr: unit -> int)
     : int =
-    match executePluginCommand ipc pipeName opts cmd argsStr with
+    match executePluginCommand daemonLog ipc pipeName opts cmd argsStr with
     | Handled exitCode -> exitCode
     | NotRecognized -> renderErr ()
     | DaemonUnavailable -> 1
@@ -4392,7 +4400,14 @@ let private runCli (args: string array) : int =
                             repoRoot
                     )
 
-                forwardRootUnknownCommand ipc pipeName opts input argsStr (fun () -> reportParseError err)
+                forwardRootUnknownCommand
+                    (DaemonConfig.DaemonLog.forRepo repoRoot)
+                    ipc
+                    pipeName
+                    opts
+                    input
+                    argsStr
+                    (fun () -> reportParseError err)
             // RepoIndependent is fully handled above before the repo-root lookup.
             | RepoIndependent exitCode -> exitCode
 

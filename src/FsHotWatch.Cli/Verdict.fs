@@ -535,7 +535,7 @@ module RunSuites =
 ///
 /// A reader who found a `reddenedBy` entry with no usable message beside
 /// a red concluded a wedged daemon and reaped daemons that were fine; the cause had been
-/// in `logs/daemon.log` the whole time. "Unexplained" and "explained elsewhere" are
+/// in the daemon log the whole time. "Unexplained" and "explained elsewhere" are
 /// different facts, and an empty string states neither. So the message is a TYPE that
 /// cannot be constructed empty: the constructor is private, and its only two builders
 /// each yield a sentence — the ledger's own text when there is one, and otherwise a
@@ -554,7 +554,7 @@ module RedCauseMessage =
     ///
     /// `daemonLog` is that repo's log file — `DaemonConfig.DaemonLog.forRepo` or
     /// `.under` a configuration in hand — never a literal here. A pointer is only worth
-    /// printing if it can be FOLLOWED, and this one shipped naming `.fshw/logs/daemon.log`,
+    /// printing if it can be FOLLOWED, and this one shipped naming a `.fshw/logs/` file,
     /// which is not where any repo's daemon log is: `logDir` is configurable and its
     /// default is `logs`. The reader this sentence exists for is the one who has nothing
     /// else, so sending them to an empty directory costs exactly the incident the
@@ -907,18 +907,18 @@ module CheckProse =
 
     /// `confirm --fresh` graded a run it did not launch. The words name the flag, because
     /// the remedy is its opposite: a plain `confirm` would have accepted this evidence.
-    let noNewRun (reason: string) =
+    let noNewRun (daemonLog: string) (reason: string) =
         $"NO VERDICT — `confirm --fresh` must grade a full-suite run it launched, and %s{reason}.\nThe forced \
            run was refused, faulted or never reported back. Nothing is reported broken and nothing is reported \
-           sound; see logs/daemon.log for why the run did not start, then re-run `fshw confirm --fresh`."
+           sound; see %s{daemonLog} for why the run did not start, then re-run `fshw confirm --fresh`."
 
     /// A reading taken without an available project model, in its own
     /// words — the cause and the remedy both come from the reading, because a model
     /// mid-rediscovery settles on its own and a failed one does not. The sentence that
     /// does the work is the second: this is NOT "no tests needed to run".
-    let modelUnavailable (reading: IpcParsing.ProjectModelReading) =
+    let modelUnavailable (daemonLog: string) (reading: IpcParsing.ProjectModelReading) =
         let detail =
-            IpcParsing.ProjectModelReading.describeUnavailable reading
+            IpcParsing.ProjectModelReading.describeUnavailable daemonLog reading
             |> Option.defaultValue "PROJECT MODEL UNAVAILABLE."
 
         $"NO VERDICT — %s{detail}\nThis is not an empty test selection: nothing was checked against a settled \
@@ -962,7 +962,9 @@ module CheckProse =
     /// reader is looking at — the plugin lines, the red causes — and a sentence here would
     /// only repeat it. Exhaustive with NO wildcard, so a new `CheckOutcome` case has to be
     /// given words rather than silently inheriting "say nothing".
-    let explainOutcome (outcome: CheckVerdict.CheckOutcome) : string option =
+    ///
+    /// `daemonLog` is the daemon log the words send the reader to (`DaemonConfig.DaemonLog`).
+    let explainOutcome (daemonLog: string) (outcome: CheckVerdict.CheckOutcome) : string option =
         match outcome with
         | CheckVerdict.CheckOutcome.Incomplete n ->
             // No re-scan count to report any more, and no parameter to carry one: both
@@ -1014,14 +1016,14 @@ module CheckProse =
         | CheckVerdict.CheckOutcome.ResultUnreceived reason -> Some(resultUnreceived reason)
         // Never borrows the "NO TESTS RAN" words: those describe a model
         // that selected nothing, and this model was never there to select from.
-        | CheckVerdict.CheckOutcome.ModelUnavailable reading -> Some(modelUnavailable reading)
-        | CheckVerdict.CheckOutcome.NoNewRun reason -> Some(noNewRun reason)
+        | CheckVerdict.CheckOutcome.ModelUnavailable reading -> Some(modelUnavailable daemonLog reading)
+        | CheckVerdict.CheckOutcome.NoNewRun reason -> Some(noNewRun daemonLog reason)
         | CheckVerdict.CheckOutcome.Clean _
         | CheckVerdict.CheckOutcome.FailuresFound -> None
 
 /// Derive the file's outcome from the check's — the SAME value the exit code is
-/// derived from, so the two can never disagree.
-let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
+/// derived from, so the two can never disagree. `daemonLog` as for `explainOutcome`.
+let outcomeOfCheck (daemonLog: string) (outcome: CheckVerdict.CheckOutcome) : Outcome =
     match outcome with
     | CheckVerdict.CheckOutcome.Clean baseline -> Green baseline
     // `incomplete`, never `green`, and the reason names the missing
@@ -1080,10 +1082,11 @@ let outcomeOfCheck (outcome: CheckVerdict.CheckOutcome) : Outcome =
     | CheckVerdict.CheckOutcome.ResultUnreceived reason -> Incomplete(CheckProse.resultUnreceived reason)
     // Its own `outcome.kind`, so a consumer of `verdict.json` can branch
     // on "wait for the model" without parsing prose — and exit 2 beside it.
-    | CheckVerdict.CheckOutcome.ModelUnavailable reading -> ModelUnavailable(CheckProse.modelUnavailable reading)
+    | CheckVerdict.CheckOutcome.ModelUnavailable reading ->
+        ModelUnavailable(CheckProse.modelUnavailable daemonLog reading)
     // `incomplete`, the class of an unearned scope: the evidence asked for was not
     // produced, and nothing failed.
-    | CheckVerdict.CheckOutcome.NoNewRun reason -> Incomplete(CheckProse.noNewRun reason)
+    | CheckVerdict.CheckOutcome.NoNewRun reason -> Incomplete(CheckProse.noNewRun daemonLog reason)
 
 // ---------------------------------------------------------------------------
 // The check-vs-confirm sample every `confirm` already had
@@ -3732,7 +3735,8 @@ let runSuites (repoRoot: string) (runReport: TestRunReport) : RunSuites list =
 /// escalating-`confirm` path only. Nothing is re-run: the reading itself was in memory.
 let impactScopedRun (repoRoot: string) (runReport: TestRunReport) (inputs: CheckVerdict.CheckInputs) : ImpactScopedRun =
     { Scope = runReport.Scope
-      Outcome = outcomeOfCheck (CheckVerdict.verdict CheckVerdict.InnerLoop inputs)
+      Outcome =
+        outcomeOfCheck (DaemonConfig.DaemonLog.forRepo repoRoot) (CheckVerdict.verdict CheckVerdict.InnerLoop inputs)
       FailingSuites =
         suiteVerdicts repoRoot runReport.RunId
         |> List.filter (fun s -> s.Failed > 0)

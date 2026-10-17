@@ -955,7 +955,7 @@ let ``OOM without frame-reader evidence is a genuine client OOM`` () =
     | IpcFault.ClientOutOfMemory actual -> test <@ obj.ReferenceEquals(actual, oom) @>
     | actual -> failwithf "expected ClientOutOfMemory, got %A" actual
 
-    let hint = ipcErrorHint oom
+    let hint = ipcErrorHint "the-daemon-log" oom
     test <@ hint.Contains("CLI ran out of memory") @>
     test <@ hint.Contains("was not restarted") @>
 
@@ -978,12 +978,12 @@ let ``overflow without frame-reader evidence is not classified as corruption`` (
     | actual -> failwithf "expected Other, got %A" actual
 
     // Unclassified is not silent: the reader still gets the generic recovery steps.
-    test <@ (ipcErrorHint ex).Contains "logs/daemon.log" @>
+    test <@ (ipcErrorHint "the-daemon-log" ex).Contains "the-daemon-log" @>
 
 [<Fact(Timeout = 15000)>]
 let ``ipcErrorHint maps TimeoutException to busy-or-hung-or-absent hint`` () =
     let ex = TimeoutException("daemon unresponsive") :> exn
-    let hint = ipcErrorHint ex
+    let hint = ipcErrorHint "the-daemon-log" ex
     test <@ hint.Contains("hung") || hint.Contains("busy") @>
     // A daemon that is not there at all times out identically (ConnectAsync retries every
     // connect error), so the hint must not send the reader looking only at a live daemon.
@@ -994,9 +994,9 @@ let ``ipcErrorHint answers even for an exception it cannot classify`` () =
     // The old contract returned None here, and `reportDaemonError` printed a bare
     // exception with no guidance — the whole point of making the hint total.
     let ex = InvalidOperationException("something else") :> exn
-    let hint = ipcErrorHint ex
+    let hint = ipcErrorHint "the-daemon-log" ex
     test <@ hint <> "" @>
-    test <@ hint.Contains "logs/daemon.log" @>
+    test <@ hint.Contains "the-daemon-log" @>
     test <@ hint.Contains "fshw stop" @>
 
 // --- classifyIpcFault: a fault that happened DAEMON-side arrives wrapped in
@@ -1082,7 +1082,7 @@ let ``a daemon-side corrupted-frame OOM reaches the SAME self-heal hint as a loc
             "Insufficient memory to continue the execution of the program."
             "at StreamJsonRpc.HeaderDelimitedMessageHandler.ReadCoreAsync()"
 
-    let hint = ipcErrorHint remote
+    let hint = ipcErrorHint "the-daemon-log" remote
     test <@ hint.Contains("corrupted") @>
 
 [<Fact(Timeout = 15000)>]
@@ -1148,7 +1148,7 @@ let ``a daemon-side OOM outside the frame reader is the DAEMON's, not this CLI's
     test <@ headline.Contains "DAEMON" @>
     test <@ not (headline.Contains "CLI ran out of memory") @>
 
-    let hint = ipcErrorHint remote
+    let hint = ipcErrorHint "the-daemon-log" remote
     test <@ hint.Contains "on that side" @>
     // The lever that IS available — the run's evidence survives on disk.
     test <@ hint.Contains ".fshw/test-runs/" @>
@@ -1571,7 +1571,7 @@ let ``a version-mismatched daemon is named as one, with the fshw stop remedy`` (
         test <@ not (headline.Contains "Could not connect to daemon") @>
         test <@ headline.Contains "different fshw build" @>
 
-        let hint = ipcErrorHint fault
+        let hint = ipcErrorHint "the-daemon-log" fault
         test <@ hint.Contains "fshw stop" @>
         test <@ hint.Contains "DIFFERENT fshw build" @>
     finally
@@ -1590,9 +1590,9 @@ let ``a daemon that dies mid-call is named as one, not left unclassified`` () =
         | IpcFault.ConnectionLost actual -> test <@ obj.ReferenceEquals(actual, fault) @>
         | actual -> failwithf "expected ConnectionLost, got %A" actual
 
-        let hint = ipcErrorHint fault
+        let hint = ipcErrorHint "the-daemon-log" fault
         test <@ hint.Contains "EXITED" @>
-        test <@ hint.Contains "logs/daemon.log" @>
+        test <@ hint.Contains "the-daemon-log" @>
     finally
         server.Wait(TimeSpan.FromSeconds 5.0) |> ignore
 
@@ -1648,7 +1648,7 @@ let ``every IpcFault case yields a non-empty hint`` () =
           InvalidOperationException "nothing known about this" ]
 
     for sample in samples do
-        let hint = ipcErrorHint sample
+        let hint = ipcErrorHint "the-daemon-log" sample
         test <@ hint.Length > 0 @>
         test <@ not (hint.Contains "None") @>
 

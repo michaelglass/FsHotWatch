@@ -35,7 +35,7 @@ let ``unavailable model retains stage counts and a distinct machine reason``
 
         test
             <@
-                failure observation
+                failure "the-daemon-log" observation
                 |> Option.exists (fun message -> message.Contains(expectedReason))
             @>
     | other -> failwithf "Expected unavailable observation, got %A" other
@@ -50,12 +50,12 @@ let ``available model preserves its epoch and all discovery stage counts`` () =
 
     let observation = ofCompleted 19L counts
     test <@ observation = Observation.Available { Generation = 19L; Counts = counts } @>
-    test <@ failure observation = None @>
+    test <@ failure "the-daemon-log" observation = None @>
 
 [<Fact>]
 let ``unknown and in-progress models cannot certify availability`` () =
-    test <@ failure Observation.Unobserved |> Option.isSome @>
-    test <@ failure (Observation.Rediscovering 23L) |> Option.isSome @>
+    test <@ failure "the-daemon-log" Observation.Unobserved |> Option.isSome @>
+    test <@ failure "the-daemon-log" (Observation.Rediscovering 23L) |> Option.isSome @>
 
 [<Fact>]
 let ``invalid discovery generation cannot certify an otherwise populated model`` () =
@@ -109,7 +109,7 @@ let ``versioned wire preserves completed and transient observations without clai
         let refusal = UnavailableException observation
         Assert.Equal(observation, refusal.Observation)
 
-        match failure observation with
+        match failure (FsHotWatch.Logging.logPointer ()) observation with
         | Some reason -> Assert.Equal(reason, refusal.Message)
         | None -> Assert.Contains("requested model could not be observed", refusal.Message)
 

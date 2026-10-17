@@ -763,7 +763,7 @@ let ``an UnearnedScope confirm is INCOMPLETE in the file, never green`` () =
     // An impact-filtered run cannot establish the requested full-suite claim.
     // That evidence limit must survive the trip to disk.
     let outcome =
-        Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.UnearnedScope(ImpactFiltered(2, 6)))
+        Verdict.outcomeOfCheck daemonLog (CheckVerdict.CheckOutcome.UnearnedScope(ImpactFiltered(2, 6)))
 
     match outcome with
     | Verdict.Incomplete reason -> test <@ reason.Contains "not the full suite" @>
@@ -772,7 +772,7 @@ let ``an UnearnedScope confirm is INCOMPLETE in the file, never green`` () =
 [<Fact>]
 let ``an unearned full-suite verdict reports missing evidence without prescribing merge policy`` () =
     let outcome =
-        Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.UnearnedScope(ImpactFiltered(2, 6)))
+        Verdict.outcomeOfCheck daemonLog (CheckVerdict.CheckOutcome.UnearnedScope(ImpactFiltered(2, 6)))
 
     match outcome with
     | Verdict.Incomplete reason ->
@@ -785,7 +785,7 @@ let ``an unearned full-suite verdict reports missing evidence without prescribin
 [<Fact>]
 let ``console scope refusal describes evidence without prescribing merge policy`` () =
     let text =
-        Verdict.CheckProse.explainOutcome (CheckVerdict.CheckOutcome.UnearnedScope(ImpactFiltered(2, 6)))
+        Verdict.CheckProse.explainOutcome daemonLog (CheckVerdict.CheckOutcome.UnearnedScope(ImpactFiltered(2, 6)))
         |> Option.get
 
     test <@ text.Contains "NO VERDICT" @>
@@ -795,9 +795,9 @@ let ``console scope refusal describes evidence without prescribing merge policy`
 [<Fact>]
 let ``console zero-test refusal does not misidentify check as confirm`` () =
     let text =
-        Verdict.CheckProse.explainOutcome (
-            CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified)
-        )
+        Verdict.CheckProse.explainOutcome
+            daemonLog
+            (CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified))
         |> Option.get
 
     test <@ text.Contains "NO VERDICT" @>
@@ -814,7 +814,7 @@ let ``console zero-test refusal is its own sentence and says what the verdict fi
 
     for reason in reasons do
         let outcome = CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun reason)
-        let text = Verdict.CheckProse.explainOutcome outcome |> Option.get
+        let text = Verdict.CheckProse.explainOutcome daemonLog outcome |> Option.get
 
         // The generic narrow-scope template interpolated the scope's description, which
         // for this case already begins "no tests ran", so the terminal printed
@@ -824,19 +824,23 @@ let ``console zero-test refusal is its own sentence and says what the verdict fi
         test <@ text.Contains(NoTestsReason.describe reason) @>
 
         // The terminal and `.fshw/verdict.json` describe the same value in the same words.
-        match Verdict.outcomeOfCheck outcome with
+        match Verdict.outcomeOfCheck daemonLog outcome with
         | Verdict.Incomplete recorded -> test <@ text.Contains recorded @>
         | other -> failwith $"a zero-test run must be recorded incomplete, got %A{other}"
 
 [<Fact>]
 let ``every check outcome maps to a file outcome — and only Clean is green`` () =
     test
-        <@ BaselineFixtures.isGreen (Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)) @>
+        <@
+            BaselineFixtures.isGreen (
+                Verdict.outcomeOfCheck daemonLog (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
+            )
+        @>
 
-    test <@ Verdict.outcomeOfCheck CheckVerdict.CheckOutcome.FailuresFound = Verdict.Red @>
+    test <@ Verdict.outcomeOfCheck daemonLog CheckVerdict.CheckOutcome.FailuresFound = Verdict.Red @>
 
     let incomplete o =
-        match Verdict.outcomeOfCheck o with
+        match Verdict.outcomeOfCheck daemonLog o with
         | Verdict.Incomplete _ -> true
         | _ -> false
 
@@ -848,13 +852,13 @@ let ``every check outcome maps to a file outcome — and only Clean is green`` (
 
     test
         <@
-            Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.WaitingOnBuild [])
+            Verdict.outcomeOfCheck daemonLog (CheckVerdict.CheckOutcome.WaitingOnBuild [])
             <> Verdict.Red
         @>
 
     test
         <@
-            Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.WaitingOnBuild [])
+            Verdict.outcomeOfCheck daemonLog (CheckVerdict.CheckOutcome.WaitingOnBuild [])
             |> BaselineFixtures.isGreen
             |> not
         @>
@@ -874,7 +878,7 @@ let ``a killed host serializes as incomplete with an ABORT reason, never red`` (
     let aborts =
         [ "FsHotWatch.Tests: aborted — test host was KILLED by SIGKILL (exit 137)" ]
 
-    match Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.RunnerAborted aborts) with
+    match Verdict.outcomeOfCheck daemonLog (CheckVerdict.CheckOutcome.RunnerAborted aborts) with
     | Verdict.Incomplete reason ->
         test <@ reason.ToUpperInvariant().Contains "NO VERDICT" @>
         test <@ reason.ToUpperInvariant().Contains "KILLED" @>
@@ -888,24 +892,26 @@ let ``a killed host serializes as incomplete with an ABORT reason, never red`` (
 
     test
         <@
-            Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.RunnerAborted aborts)
+            Verdict.outcomeOfCheck daemonLog (CheckVerdict.CheckOutcome.RunnerAborted aborts)
             <> Verdict.Red
         @>
 
     test
         <@
-            Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.RunnerAborted aborts)
+            Verdict.outcomeOfCheck daemonLog (CheckVerdict.CheckOutcome.RunnerAborted aborts)
             |> BaselineFixtures.isGreen
             |> not
         @>
 
     test
-        <@ Verdict.Outcome.tag (Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.RunnerAborted aborts)) = "incomplete" @>
+        <@
+            Verdict.Outcome.tag (Verdict.outcomeOfCheck daemonLog (CheckVerdict.CheckOutcome.RunnerAborted aborts)) = "incomplete"
+        @>
 
     // THE OTHER DIRECTION, on the surface a consumer actually reads: a genuine failure
     // still tags `red`, so this cannot have turned every regression into "the box was
     // busy".
-    test <@ Verdict.Outcome.tag (Verdict.outcomeOfCheck CheckVerdict.CheckOutcome.FailuresFound) = "red" @>
+    test <@ Verdict.Outcome.tag (Verdict.outcomeOfCheck daemonLog CheckVerdict.CheckOutcome.FailuresFound) = "red" @>
     test <@ CheckVerdict.exitCode (CheckVerdict.CheckOutcome.RunnerAborted aborts) = 2 @>
     test <@ CheckVerdict.exitCode CheckVerdict.CheckOutcome.FailuresFound = 1 @>
 
@@ -914,7 +920,8 @@ let ``waiting on build persists as a DISTINCT incomplete verdict (exit 2), never
     // The deploy preflight reads the STRUCTURED outcome, never the prose. A build-ordering
     // deferral must serialize as `outcome.kind = "incomplete"` with a "waiting on build"
     // reason — distinct from the `red` a real test failure earns — and carry exit 2.
-    let outcome = Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.WaitingOnBuild [])
+    let outcome =
+        Verdict.outcomeOfCheck daemonLog (CheckVerdict.CheckOutcome.WaitingOnBuild [])
 
     match outcome with
     | Verdict.Incomplete reason -> test <@ reason.ToLowerInvariant().Contains "waiting on build" @>
@@ -3508,7 +3515,7 @@ let ``every Report case has its own exit code, and none of them is a silent 0`` 
 [<Fact>]
 let ``a verdict that says NO TESTS RAN is incomplete, and says so in words`` () =
     let outcome =
-        Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.Unstated))
+        Verdict.outcomeOfCheck daemonLog (CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.Unstated))
 
     match outcome with
     | Verdict.Incomplete reason ->
@@ -3664,7 +3671,9 @@ let ``a "no tests ran" scope states NO counts rather than a fabricated zero`` ()
     // ...and it is still never green.
     test
         <@
-            Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.Unstated))
+            Verdict.outcomeOfCheck
+                daemonLog
+                (CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.Unstated))
             |> BaselineFixtures.isGreen
             |> not
         @>
@@ -4347,7 +4356,7 @@ let ``AC5: the stale-state outcome is INCOMPLETE and names the remedy`` () =
     // daemon is stale" must route to a restart, not to "tests failed". The daemon has
     // already re-checked the suspect answers once before grading, so the reader is told
     // that, and `stop` is named as what is left for the ones that survived it.
-    match Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.StaleDaemonState 51) with
+    match Verdict.outcomeOfCheck daemonLog (CheckVerdict.CheckOutcome.StaleDaemonState 51) with
     | Verdict.Incomplete reason ->
         test <@ reason.Contains "51" @>
         test <@ reason.Contains "already re-checked" @>
@@ -4356,7 +4365,7 @@ let ``AC5: the stale-state outcome is INCOMPLETE and names the remedy`` () =
     | other -> failwithf "stale daemon state must be INCOMPLETE, got %A" other
 
     // THE CONTROL: the same function still calls a real failure a red.
-    test <@ Verdict.outcomeOfCheck CheckVerdict.CheckOutcome.FailuresFound = Verdict.Red @>
+    test <@ Verdict.outcomeOfCheck daemonLog CheckVerdict.CheckOutcome.FailuresFound = Verdict.Red @>
 
 // ---------------------------------------------------------------------------
 // the message an operator reads LAST, and acts on.
@@ -4414,7 +4423,7 @@ let ``the stale-output message states the remedy and rules out the ones that can
 /// message would be a regression wearing a fix's clothes.
 [<Fact>]
 let ``a build-ordering defer keeps the words that are true for IT`` () =
-    match Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.WaitingOnBuild []) with
+    match Verdict.outcomeOfCheck daemonLog (CheckVerdict.CheckOutcome.WaitingOnBuild []) with
     | Verdict.Incomplete reason ->
         test <@ reason.Contains "was not produced" @>
         test <@ reason.Contains "re-run once the build settles" @>
@@ -4428,7 +4437,7 @@ let ``a build-ordering defer keeps the words that are true for IT`` () =
 let ``the verdict file's reason carries the stale-output remedy`` () =
     let deferral = "P: waiting on build — stale build output — /a.dll differs"
 
-    match Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.WaitingOnBuild [ deferral ]) with
+    match Verdict.outcomeOfCheck daemonLog (CheckVerdict.CheckOutcome.WaitingOnBuild [ deferral ]) with
     | Verdict.Incomplete reason ->
         test <@ reason.Contains deferral @>
         test <@ reason.Contains "dotnet build" @>
@@ -6383,7 +6392,7 @@ let ``create refuses a no-test-suite green beside a scope that says tests ran`` 
 [<Fact>]
 let ``a missing baseline reaches the verdict file as INCOMPLETE naming the baseline, never as red or green`` () =
     let outcome =
-        Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.NoBaseline "none earned yet")
+        Verdict.outcomeOfCheck daemonLog (CheckVerdict.CheckOutcome.NoBaseline "none earned yet")
 
     match outcome with
     | Verdict.Incomplete reason ->
@@ -6392,7 +6401,7 @@ let ``a missing baseline reaches the verdict file as INCOMPLETE naming the basel
 
     test <@ CheckVerdict.exitCode (CheckVerdict.CheckOutcome.NoBaseline "x") = 3 @>
 
-    match Verdict.CheckProse.explainOutcome (CheckVerdict.CheckOutcome.NoBaseline "none earned yet") with
+    match Verdict.CheckProse.explainOutcome daemonLog (CheckVerdict.CheckOutcome.NoBaseline "none earned yet") with
     | Some text -> test <@ text.Contains "fshw confirm" @>
     | None -> failwith "a missing baseline must be explained at the terminal"
 

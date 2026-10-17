@@ -65,10 +65,10 @@ let overrunLogRecord (now: DateTime) (threshold: TimeSpan) (op: InFlightOp) : st
     let elapsed = now - op.StartedAt
     $"operation exceeded %d{int threshold.TotalSeconds}s: %s{op.Name} running %d{int elapsed.TotalSeconds}s"
 
-/// The inline recovery action printed in every wedge report.
-[<Literal>]
-let RecoveryAction =
-    "recover with `fshw stop` then re-run (the next command auto-restarts the daemon); check logs/daemon.log for the stuck op"
+/// The inline recovery action printed in every wedge report, naming the log this
+/// context writes to (`Logging.logPointer`).
+let recoveryAction () =
+    $"recover with `fshw stop` then re-run (the next command auto-restarts the daemon); check %s{Logging.logPointer ()} for the stuck op"
 
 /// Wedge-aware `status` line. `None` when nothing is in flight or every in-flight
 /// op is still within threshold (the caller renders normal status). `Some message`
@@ -81,7 +81,7 @@ let wedgeReport (now: DateTime) (state: WatchdogState) : string option =
         let elapsed = now - op.StartedAt
 
         Some
-            $"WEDGED: %s{op.Name} running %d{int elapsed.TotalSeconds}s, exceeded %d{int state.Threshold.TotalSeconds}s threshold — %s{RecoveryAction}"
+            $"WEDGED: %s{op.Name} running %d{int elapsed.TotalSeconds}s, exceeded %d{int state.Threshold.TotalSeconds}s threshold — %s{recoveryAction ()}"
     | None -> None
 
 /// Heartbeat line: the default-on periodic diagnostic. Names the longest-running
@@ -240,7 +240,7 @@ let heapValveLogLine (policy: HeapValvePolicy) (firing: HeapValveFiring) : strin
 let heapValveReport (firing: HeapValveFiring) : string =
     let at = firing.At.ToString("yyyy-MM-ddTHH:mm:ssZ")
 
-    $"HEAP VALVE: fired %d{firing.Count} time(s), last at %s{at} (heap %.2f{gb firing.HeapBefore} GB -> %.2f{gb firing.HeapAfter} GB) — the daemon's allocation has regressed; see logs/daemon.log"
+    $"HEAP VALVE: fired %d{firing.Count} time(s), last at %s{at} (heap %.2f{gb firing.HeapBefore} GB -> %.2f{gb firing.HeapAfter} GB) — the daemon's allocation has regressed; see %s{Logging.logPointer ()}"
 
 /// One blocking, compacting collection of every generation, the large-object heap included.
 let compactingCollect () : unit =

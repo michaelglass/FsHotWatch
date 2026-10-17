@@ -256,3 +256,88 @@ let ``the daemon launch line tells the daemon which file its stderr is redirecte
     let line = DetachedLaunch.daemonShellCommand "/bin/fshw" "" "" "/logs/a b.log"
 
     test <@ line.StartsWith $"%s{DaemonConfig.DaemonLog.LaunchedEnvVar}='/logs/a b.log' nohup " @>
+
+// --- Every other sentence that sends a reader to the log ---
+
+[<Fact>]
+let ``the core log pointers name the installed log file`` () =
+    withTempDir "core-pointers" (fun dir ->
+        let path = Path.Combine(dir, "elsewhere", "daemon.log")
+
+        let firing: OperationWatchdog.HeapValveFiring =
+            { Count = 1
+              At = DateTime.UtcNow
+              HeapBefore = 0L
+              HeapAfter = 0L
+              QuietFor = TimeSpan.Zero }
+
+        let loadingFailed =
+            ProjectModel.ofCompleted
+                2L
+                { Discovered = 4
+                  Loaded = 0
+                  OptionsMapped = 0
+                  Registered = 0 }
+
+        let messages =
+            isolated (fun () ->
+                use _ = Logging.installSink (Logging.fileSink path Logging.LogLevel.Info)
+
+                [ Daemon.totalDiscoveryFailure 3 0 |> Option.defaultValue ""
+                  OperationWatchdog.recoveryAction ()
+                  OperationWatchdog.heapValveReport firing
+                  (ProjectModel.UnavailableException loadingFailed).Message ])
+
+        for message in messages do
+            test <@ message.Contains path @>)
+
+[<Fact>]
+let ``the CLI pointers name the daemon log they are given`` () =
+    let given = "/configured/daemon.log"
+
+    let messages =
+        [ DaemonStartupFailure.describeLaunchFailure given None
+          ipcErrorHint given (TimeoutException "slow")
+          Verdict.CheckProse.noNewRun given "the run was refused"
+          (IpcParsing.ProjectModelReading.describeUnavailable
+              given
+              (IpcParsing.ProjectModelReading.Observed ProjectModel.Observation.Unobserved)
+           |> Option.defaultValue "") ]
+
+    for message in messages do
+        test <@ message.Contains given @>
+
+[<Fact>]
+let ``a repo's daemon log resolves through the configured logDir`` () =
+    withTempDir "for-repo-log" (fun root ->
+        File.WriteAllText(Path.Combine(root, ".fshw.json"), """{ "logDir": "var/fshw" }""")
+        test <@ DaemonConfig.DaemonLog.forRepo root = DaemonConfig.DaemonLog.file root "var/fshw" @>)
+
+/// Every `.fs` file under `src/`, as (path relative to the repo, text).
+let private sourceFiles () =
+    let repo = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "..", ".."))
+    let src = Path.Combine(repo, "src")
+
+    Directory.EnumerateFiles(src, "*.fs", SearchOption.AllDirectories)
+    |> Seq.map (fun path -> Path.GetRelativePath(repo, path).Replace('\\', '/'), path)
+    |> Seq.filter (fun (relative, _) -> not (relative.Contains "/bin/" || relative.Contains "/obj/"))
+    |> Seq.map (fun (relative, path) -> relative, File.ReadAllText path)
+    |> Seq.toList
+
+[<Fact>]
+let ``no source outside the resolver spells out a daemon log path`` () =
+    // A sentence that hard-codes where the log is guesses at someone else's `logDir`,
+    // and names a file that does not exist wherever no daemon wrote one. The path has
+    // one owner: `DaemonConfig.DaemonLog` in the CLI, `Logging.logPointer` in core.
+    let resolver = "src/FsHotWatch.Cli/DaemonConfig.fs"
+    let files = sourceFiles ()
+
+    // The scan saw the tree, so an empty result means something.
+    test <@ files |> List.exists (fun (relative, _) -> relative = resolver) @>
+
+    let offenders =
+        files
+        |> List.filter (fun (relative, text) -> relative <> resolver && text.Contains "logs/daemon.log")
+        |> List.map fst
+
+    test <@ offenders = [] @>

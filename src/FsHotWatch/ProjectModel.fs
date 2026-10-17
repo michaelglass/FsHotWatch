@@ -64,20 +64,23 @@ let reasonCode =
     | UnavailableReason.MappingFailed -> "mapping-failed"
     | UnavailableReason.RegistrationFailed -> "registration-failed"
 
-let describeUnavailable (snapshot: Snapshot) (reason: UnavailableReason) =
+/// `log` is where the reader finds the daemon's discovery lines: `Logging.logPointer`
+/// in the process that logged them, the configured daemon log in a client.
+let describeUnavailable (log: string) (snapshot: Snapshot) (reason: UnavailableReason) =
     let counts = snapshot.Counts
 
     let loaderPrefix =
         if reason = UnavailableReason.LoadingFailed then
-            "PROJECT LOADING FAILED: read the per-project LoadProject FAILED reasons in logs/daemon.log. "
+            $"PROJECT LOADING FAILED: read the per-project LoadProject FAILED reasons in %s{log}. "
         else
             ""
 
     $"{loaderPrefix}PROJECT MODEL UNAVAILABLE: {reasonCode reason} at discovery generation {snapshot.Generation} ({counts.Discovered} discovered, {counts.Loaded} loaded, {counts.OptionsMapped} mapped, {counts.Registered} registered). No available project model was observed; this is not an empty test selection."
 
-let failure =
+/// Why `observation` is not an available model; `log` as for `describeUnavailable`.
+let failure (log: string) =
     function
-    | Observation.Unavailable(snapshot, reason) -> Some(describeUnavailable snapshot reason)
+    | Observation.Unavailable(snapshot, reason) -> Some(describeUnavailable log snapshot reason)
     | Observation.Unobserved -> Some "PROJECT MODEL UNAVAILABLE: no completed discovery has been observed."
     | Observation.Rediscovering generation ->
         Some $"PROJECT MODEL UNAVAILABLE: discovery generation {generation} is still in progress."
@@ -88,7 +91,7 @@ let failure =
 type UnavailableException(observation: Observation) =
     inherit
         System.InvalidOperationException(
-            failure observation
+            failure (Logging.logPointer ()) observation
             |> Option.defaultValue "PROJECT MODEL UNAVAILABLE: the requested model could not be observed."
         )
 
