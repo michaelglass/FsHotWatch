@@ -11066,6 +11066,39 @@ let internal createWithEvidenceAndQueries
                                         retiredRuntime
                                         projectPassed }
 
+                    // A project this run executed UNFILTERED and passed, over the input
+                    // tree it launched against, ran every test a trigger raised for it
+                    // during the run could ask for: a scan re-deriving its runtime
+                    // obligation (a newer generation over the same bytes) or a dependency
+                    // fanout from a build of that tree. Those triggers are absorbed here,
+                    // per project, as `coveredByConstruction` absorbs them for the whole
+                    // suite; otherwise the queued re-run executes the project in full
+                    // again. A filtered or reused project, a red, an abort, or a tree that
+                    // moved since launch absorbs nothing.
+                    let absorbedProjects =
+                        if aborted || not (ReceiptInputTree.matches launch.InputTreeHash currentInputTree) then
+                            Set.empty
+                        else
+                            launch.Selection
+                            |> Map.filter (fun project selection ->
+                                selection = ProjectInFull
+                                && not (Map.containsKey project launch.Reused)
+                                && projectPassed project)
+                            |> Map.keys
+                            |> Set.ofSeq
+
+                    let debt =
+                        if Set.isEmpty absorbedProjects then
+                            debt
+                        else
+                            { debt with
+                                RuntimeObligations =
+                                    debt.RuntimeObligations
+                                    |> Map.map (fun _ projects ->
+                                        projects
+                                        |> Map.filter (fun project _ -> not (Set.contains project absorbedProjects)))
+                                    |> Map.filter (fun _ projects -> not (Map.isEmpty projects)) }
+
                     // Discharge an UNREADABLE ledger's debt.
                     //
                     // The debt is owed in FULL, because its membership is unknown: the only
@@ -11266,6 +11299,7 @@ let internal createWithEvidenceAndQueries
                         { state with
                             Debt = debt
                             Earned = earned
+                            PendingForceRunProjects = Set.difference state.PendingForceRunProjects absorbedProjects
                             CoveredFullSuite =
                                 match launch.InputTree with
                                 | Some tree when coveredByConstruction -> Some(tree, currentModelGeneration)
