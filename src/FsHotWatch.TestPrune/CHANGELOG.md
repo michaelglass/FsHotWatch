@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.84 - 2026-10-18
+
+- feat(test-prune): optional tests.maxParallelProjects caps concurrent test groups
+- Merge: optional tests.maxParallelProjects caps concurrent test groups, longest first
+
+
 ## 0.13.0-alpha.83 - 2026-10-17
 
 - perf: after a green, an edit the symbol diff sees as changing no symbol (a comment, a moved

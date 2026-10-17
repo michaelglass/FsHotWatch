@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.85 - 2026-10-18
+
 - fix: registry shutdown escalates a tracked child whose kill does not return, the same way a
   run's own teardown does, instead of only recording it as LEAKED. The escalation goes through
   the child (`IOwnedChild.Escalate`), against the pid and start time recorded when the child
