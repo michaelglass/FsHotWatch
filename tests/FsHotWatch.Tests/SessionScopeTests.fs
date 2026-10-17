@@ -67,7 +67,8 @@ let ``each session's log lines land in its own sink only`` () =
             use _ =
                 installSink
                     { Write = sink.Enqueue
-                      Level = LogLevel.Info }
+                      Level = LogLevel.Info
+                      File = None }
 
             info "session" message)
 
@@ -90,7 +91,8 @@ let ``a sink carries its own level`` () =
         use _ =
             installSink
                 { Write = lines.Enqueue
-                  Level = LogLevel.Warning }
+                  Level = LogLevel.Warning
+                  File = None }
 
         test <@ isEnabled LogLevel.Warning && not (isEnabled LogLevel.Info) @>
         info "t" "dropped"
@@ -113,12 +115,14 @@ let ``disposing a sink restores the one it replaced`` () =
         use _ =
             installSink
                 { Write = outer.Enqueue
-                  Level = LogLevel.Info }
+                  Level = LogLevel.Info
+                  File = None }
 
         (using
             (installSink
                 { Write = inner.Enqueue
-                  Level = LogLevel.Info })
+                  Level = LogLevel.Info
+                  File = None })
             (fun _ -> info "t" "inner"))
 
         info "t" "outer")

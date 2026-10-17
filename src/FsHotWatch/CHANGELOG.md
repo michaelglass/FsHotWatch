@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix!: the WEDGED, DEAD and OVERRAN wait failures name the log their lines were actually
+  written to, instead of a hard-coded `logs/daemon.log` that ignored a configured `logDir` and
+  did not exist for in-process hosts. `Logging.LogSink` gains `File: string option`, read back
+  by the new `Logging.logPointer ()` (`stderr above` when no file holds the lines). New sinks:
+  `teeSink` (stderr and a file) and `stderrInto` (stderr a launcher redirected into a file).
+
 ## 0.10.0-alpha.80 - 2026-10-17
 
 - fix: overlapping project evaluations no longer strand the process in a deleted directory

@@ -1513,6 +1513,23 @@ module DaemonLog =
 
         if dir = "" then FileName else $"%s{dir}/%s{FileName}"
 
+    /// The log file a process under `root` writes, as a path to open: `logDir` taken
+    /// relative to `root` unless it is rooted. The one resolution the launcher's
+    /// redirect, a repository-host session's sink and an in-process host's sink share.
+    let file (root: string) (logDir: string) : string =
+        let dir =
+            if Path.IsPathRooted logDir then
+                logDir
+            else
+                Path.Combine(root, logDir)
+
+        Path.Combine(dir, FileName)
+
+    /// Set by the launcher on a daemon it starts, naming the file it redirected the
+    /// daemon's stderr into, so the daemon can name its own log without a second guess.
+    [<Literal>]
+    let LaunchedEnvVar = "FSHW_DAEMON_LOG"
+
     /// The log file of one repo, read from that repo's own `.fshw.json` — through
     /// `parseConfig`, the same parser the daemon loads with, so there is no second reading
     /// of the key to drift.

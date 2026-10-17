@@ -174,7 +174,8 @@ let ``a command called on a daemon's own pipe spawns and logs in the daemon's sc
                 isolated (fun () ->
                     Logging.installSink
                         { Write = lines.Enqueue
-                          Level = Logging.LogLevel.Info }
+                          Level = Logging.LogLevel.Info
+                          File = None }
                     |> ignore
 
                     let daemon = Daemon.createWith nullChecker dir oneShotDaemonOptions
@@ -234,7 +235,8 @@ let ``a command called through a repository host spawns and logs in its session'
                   SinkFor =
                     fun _ ->
                         { Write = lines.Enqueue
-                          Level = Logging.LogLevel.Info }
+                          Level = Logging.LogLevel.Info
+                          File = None }
                   WatchConfig =
                     fun _ _ ->
                         { new IDisposable with

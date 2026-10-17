@@ -54,7 +54,8 @@ let ``a run-level hook runs inside a process scope`` () =
                 use _ =
                     Logging.installSink
                         { Write = lines.Enqueue
-                          Level = Logging.LogLevel.Debug }
+                          Level = Logging.LogLevel.Debug
+                          File = None }
 
                 withRunHooksCommandUsingSignals
                     (capturingSignals (ref None))

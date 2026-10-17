@@ -1430,7 +1430,8 @@ let ``analyzers refuse a FileChecked captured against a superseded model`` () =
     use _sink =
         FsHotWatch.Logging.installSink
             { Write = logged.Enqueue
-              Level = FsHotWatch.Logging.LogLevel.Info }
+              Level = FsHotWatch.Logging.LogLevel.Info
+              File = None }
 
     host.RegisterHandler(handler)
 

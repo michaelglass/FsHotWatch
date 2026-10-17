@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: in-process hosts (`check --run-once`, `confirm --run-once`, and a `test-rerun` that
+  builds its own host) write the same `daemon.log` a daemon would, at the configured `logDir`,
+  as well as stderr. A launched daemon is told which file its stderr is redirected into, so its
+  wait failures name it. `DaemonConfig.DaemonLog.file` is the one resolution of that path.
+
 ## 0.14.0-alpha.108 - 2026-10-17
 
 - chore: rebuild to bundle updated dependencies

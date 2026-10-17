@@ -273,7 +273,8 @@ let private openOnce
             use _ =
                 FsHotWatch.Logging.installSink
                     { Write = logged.Enqueue
-                      Level = FsHotWatch.Logging.LogLevel.Debug }
+                      Level = FsHotWatch.Logging.LogLevel.Debug
+                      File = None }
 
             use watchdog =
                 new FsHotWatch.OperationWatchdog.Watchdog(

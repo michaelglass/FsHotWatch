@@ -24,7 +24,8 @@ let ``test-prune logs its refusal of a superseded model's results at info`` () =
         use _sink =
             FsHotWatch.Logging.installSink
                 { Write = logged.Enqueue
-                  Level = FsHotWatch.Logging.LogLevel.Info }
+                  Level = FsHotWatch.Logging.LogLevel.Info
+                  File = None }
 
         // Publishes the fixture model (generation 1), the one both results are stamped with.
         let host = createModelHost (Unchecked.defaultof<_>) repoRoot

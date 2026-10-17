@@ -78,7 +78,8 @@ let private capturingLogs (action: unit -> 'a) : 'a * string list =
         using
             (Logging.installSink
                 { Write = lines.Enqueue
-                  Level = Logging.LogLevel.Debug })
+                  Level = Logging.LogLevel.Debug
+                  File = None })
             (fun _ -> action ())
 
     result, List.ofSeq lines

@@ -35,7 +35,8 @@ let openScope () : Scope =
             fun line ->
                 lines.Enqueue line
                 eprintfn "%s" line
-          Level = max Logging.logLevel Logging.LogLevel.Warning }
+          Level = max Logging.logLevel Logging.LogLevel.Warning
+          File = None }
 
     let logInstall = Logging.installSink sink
     let registryInstall = ProcessRegistry.install registry

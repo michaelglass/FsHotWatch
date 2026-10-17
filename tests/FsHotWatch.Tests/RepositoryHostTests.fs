@@ -79,7 +79,8 @@ let private settingsFor (fx: Fixture) : HostSettings =
       SinkFor =
         fun _ ->
             { Write = ignore
-              Level = Logging.LogLevel.Info }
+              Level = Logging.LogLevel.Info
+              File = None }
       WatchConfig = fun _ _ -> noop
       SessionResources = fun _ -> []
       Describe = fun () -> JsonObject() }

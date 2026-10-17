@@ -93,7 +93,7 @@ let ``daemon launch line quotes paths and keeps the rendered tool prefix and ext
         DetachedLaunch.daemonShellCommand "/opt/it's here/dotnet" "\"/x/fshw.dll\" " "--verbose " "/logs/a b.log"
 
     Assert.Equal(
-        "nohup '/opt/it'\\''s here/dotnet' \"/x/fshw.dll\" --verbose start >> '/logs/a b.log' 2>&1 < /dev/null &",
+        "FSHW_DAEMON_LOG='/logs/a b.log' nohup '/opt/it'\\''s here/dotnet' \"/x/fshw.dll\" --verbose start >> '/logs/a b.log' 2>&1 < /dev/null &",
         line
     )
 

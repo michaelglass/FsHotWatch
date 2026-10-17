@@ -1098,7 +1098,8 @@ let private scanStatusAnswered (state: ScanState) : string * string list =
         use _sink =
             Logging.installSink
                 { Write = logged.Enqueue
-                  Level = Logging.LogLevel.Info }
+                  Level = Logging.LogLevel.Info
+                  File = None }
 
         let target =
             Ipc.DaemonRpcTarget(
@@ -2466,7 +2467,8 @@ let ``a project change whose admission outlives the watcher's bound is still app
                 use _sink =
                     FsHotWatch.Logging.installSink
                         { Write = lines.Enqueue
-                          Level = FsHotWatch.Logging.LogLevel.Warning }
+                          Level = FsHotWatch.Logging.LogLevel.Warning
+                          File = None }
 
                 deliver (ProjectChanged [ projectPath ])
 

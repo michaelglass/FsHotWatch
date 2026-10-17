@@ -28,8 +28,14 @@ let setLogLevel level =
 /// worktree's log. Work that carries no session's context logs to stderr: the host log.
 [<NoComparison; NoEquality>]
 type LogSink =
-    { Write: string -> unit
-      Level: LogLevel }
+    {
+        Write: string -> unit
+        Level: LogLevel
+        /// The file this sink's lines end up in, when there is one: what a message that
+        /// sends its reader to "the log" names. `None` for a sink that keeps its lines in
+        /// memory or on a stream nobody named.
+        File: string option
+    }
 
 let private currentSink = System.Threading.AsyncLocal<LogSink option>()
 
@@ -51,7 +57,36 @@ let fileSink (path: string) (level: LogLevel) : LogSink =
     let gate = System.Threading.Lock()
 
     { Write = fun line -> Locking.locked gate (fun () -> System.IO.File.AppendAllText(path, line + "\n"))
-      Level = level }
+      Level = level
+      File = Some path }
+
+/// A sink writing each line to stderr AND appending it to `path`: an in-process host's
+/// log. Its caller watches stderr; the file outlives the terminal, holds the same lines
+/// a daemon's log would, and is what a diagnostic can name.
+let teeSink (path: string) (level: LogLevel) : LogSink =
+    let file = fileSink path level
+
+    { file with
+        Write =
+            fun line ->
+                eprintfn "%s" line
+                file.Write line }
+
+/// A sink writing to stderr, for a process whose launcher redirected stderr into
+/// `path`. Its lines already land in that file, so writing it as well would double
+/// every line; the sink exists to NAME the file.
+let stderrInto (path: string) (level: LogLevel) : LogSink =
+    { Write = fun line -> eprintfn "%s" line
+      Level = level
+      File = Some path }
+
+/// Where this context's log lines can be read back, as a message shows it: the
+/// installed sink's file, or `stderr above` when no file holds them.
+let logPointer () : string =
+    match currentSink.Value with
+    | Some { File = Some path } -> path
+    | Some { File = None }
+    | None -> "stderr above"
 
 /// Check if a given level is enabled.
 let isEnabled level =

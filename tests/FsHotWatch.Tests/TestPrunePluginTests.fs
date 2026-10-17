@@ -3016,7 +3016,8 @@ let ``a project killed at its timeout is logged TIMED OUT (infrastructure), neve
         use _sink =
             FsHotWatch.Logging.installSink
                 { Write = lines.Enqueue
-                  Level = FsHotWatch.Logging.LogLevel.Info }
+                  Level = FsHotWatch.Logging.LogLevel.Info
+                  File = None }
 
         // Prints a complete "Passed!" summary, then hangs past its 1 s budget.
         let configs =

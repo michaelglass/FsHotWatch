@@ -4260,7 +4260,8 @@ let private runWithGeneratingBeforeRunAnd
     use _sink =
         FsHotWatch.Logging.installSink
             { Write = lines.Enqueue
-              Level = FsHotWatch.Logging.LogLevel.Debug }
+              Level = FsHotWatch.Logging.LogLevel.Debug
+              File = None }
 
     let host = createModelHost (Unchecked.defaultof<_>) repoRoot
     host.RegisterHandler(create ":memory:" repoRoot (Some configs) None beforeRun None None [])

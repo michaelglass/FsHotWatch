@@ -187,7 +187,8 @@ let ``shutdown gives up on a launch that never resolves, and says so`` () =
     use _ =
         Logging.installSink
             { Write = lines.Enqueue
-              Level = Logging.LogLevel.Debug }
+              Level = Logging.LogLevel.Debug
+              File = None }
 
     registry.ShutDown(TimeSpan.FromMilliseconds 100.0)
     launch.Dispose()

@@ -58,7 +58,8 @@ type private Logs() =
         let q = lines.GetOrAdd(name, fun _ -> ConcurrentQueue())
 
         { Write = q.Enqueue
-          Level = Logging.LogLevel.Info }
+          Level = Logging.LogLevel.Info
+          File = None }
 
     member _.Of(name: string) =
         match lines.TryGetValue name with

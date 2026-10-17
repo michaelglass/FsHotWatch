@@ -40,9 +40,10 @@ let shellQuote (value: string) : string = "'" + value.Replace("'", "'\\''") + "'
 /// The shell line that backgrounds the daemon. `toolPrefix` and `extraArgs` are
 /// already rendered for the shell (each ends in a space when non-empty); the
 /// executable and log paths are quoted here. stdin is `/dev/null`, so the daemon
-/// never holds a terminal or a caller's pipe open.
+/// never holds a terminal or a caller's pipe open. The daemon is told, in
+/// `DaemonLog.LaunchedEnvVar`, which file its stderr is redirected into.
 let daemonShellCommand (exe: string) (toolPrefix: string) (extraArgs: string) (logFile: string) : string =
-    $"nohup %s{shellQuote exe} %s{toolPrefix}%s{extraArgs}start >> %s{shellQuote logFile} 2>&1 < /dev/null &"
+    $"%s{DaemonConfig.DaemonLog.LaunchedEnvVar}=%s{shellQuote logFile} nohup %s{shellQuote exe} %s{toolPrefix}%s{extraArgs}start >> %s{shellQuote logFile} 2>&1 < /dev/null &"
 
 /// Why the helper returned instead of becoming the shell. A successful `execv`
 /// never returns, so a helper that gets to classify anything has failed.

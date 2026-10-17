@@ -2136,7 +2136,8 @@ let ``registering a second plugin under a taken name warns`` () =
     use _ =
         FsHotWatch.Logging.installSink
             { Write = fun line -> lock lines (fun () -> lines.Add line)
-              Level = FsHotWatch.Logging.LogLevel.Warning }
+              Level = FsHotWatch.Logging.LogLevel.Warning
+              File = None }
 
     host.RegisterHandler(idleHandler "twin")
     test <@ lines |> Seq.exists (fun l -> l.Contains "already registered") |> not @>

@@ -399,6 +399,26 @@ let internal runModeFor (command: Command) : Daemon.RunMode =
     | TestRerun _ -> Daemon.RunMode.OneShot
     | _ -> Daemon.RunMode.Watching
 
+/// The log sink this process installs before any work, so its lines and every
+/// diagnostic that names "the log" agree on one file: `DaemonLog.file`.
+///
+/// - An in-process host (`OneShot`) tees its lines to stderr and to the file a daemon
+///   here would write. A `test-rerun` that asks a running daemon instead adds its few
+///   client lines to that daemon's file.
+/// - A daemon whose launcher redirected its stderr names that file (`launchedLog`,
+///   read from `DaemonLog.LaunchedEnvVar`) and keeps writing stderr, which IS the file.
+/// - Anything else installs none: its lines are on its own stderr.
+let internal processLogSink
+    (command: Command)
+    (root: string)
+    (config: DaemonConfiguration)
+    (launchedLog: string option)
+    : Logging.LogSink option =
+    match runModeFor command, command, launchedLog with
+    | Daemon.RunMode.OneShot, _, _ -> Some(Logging.teeSink (DaemonLog.file root config.LogDir) Logging.logLevel)
+    | Daemon.RunMode.Watching, Start, Some path -> Some(Logging.stderrInto path Logging.logLevel)
+    | Daemon.RunMode.Watching, _, _ -> None
+
 /// Pick a render mode from the global `--agent` / `--compact` flags. `--agent`
 /// wins when both are set.
 let private pickMode (agentMode: bool) (compactMode: bool) : ProgressRenderer.RenderMode =
@@ -1208,14 +1228,8 @@ let startFreshDaemonWith
     (logDirName: string)
     (startupTimeoutSeconds: float)
     : bool =
-    let logDir =
-        if Path.IsPathRooted(logDirName) then
-            logDirName
-        else
-            Path.Combine(repoRoot, logDirName)
-
-    fileOps.CreateDirectory logDir
-    let logFile = Path.Combine(logDir, DaemonConfig.DaemonLog.FileName)
+    let logFile = DaemonConfig.DaemonLog.file repoRoot logDirName
+    fileOps.CreateDirectory(Path.GetDirectoryName logFile)
     // A refusal recorded by an EARLIER launch must never be read back as this one's.
     let startupFailure = DaemonStartupFailure.path repoRoot
 
@@ -2907,13 +2921,9 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
                 with ConfigError _ ->
                     DaemonConfig.DefaultLogDir
 
-            let dir =
-                if Path.IsPathRooted logDir then
-                    logDir
-                else
-                    Path.Combine(worktree.Root.Value, logDir)
-
-            FsHotWatch.Logging.fileSink (Path.Combine(dir, DaemonConfig.DaemonLog.FileName)) FsHotWatch.Logging.logLevel
+            FsHotWatch.Logging.fileSink
+                (DaemonConfig.DaemonLog.file worktree.Root.Value logDir)
+                FsHotWatch.Logging.logLevel
 
         let watchConfig (worktree: FsHotWatch.RepositoryIdentity.ResolvedWorktree) (onChange: unit -> unit) =
             DaemonConfig.watchRepoConfigFile worktree.Root.Value (fun reason ->
@@ -4326,6 +4336,34 @@ let private runCli (args: string array) : int =
                     with ConfigError msg ->
                         eprintfn $"fshw: config error: %s{msg}"
                         exit 2
+
+                // Read once and cleared: the builds and tests this process starts must not
+                // take this daemon's log for their own.
+                let launchedLog =
+                    Environment.GetEnvironmentVariable DaemonConfig.DaemonLog.LaunchedEnvVar
+                    |> Option.ofObj
+                    |> Option.filter (String.IsNullOrEmpty >> not)
+
+                Environment.SetEnvironmentVariable(DaemonConfig.DaemonLog.LaunchedEnvVar, null)
+
+                // Installed here, before any host exists, so everything this process
+                // starts carries it.
+                use _log =
+                    match processLogSink command repoRoot config launchedLog with
+                    | Some sink ->
+                        let installed = FsHotWatch.Logging.installSink sink
+
+                        if runModeFor command = Daemon.RunMode.OneShot then
+                            let argv = Environment.GetCommandLineArgs() |> String.concat " "
+
+                            FsHotWatch.Logging.info
+                                "host"
+                                $"in-process host pid=%d{Environment.ProcessId} argv=%s{argv}"
+
+                        installed
+                    | None ->
+                        { new IDisposable with
+                            member _.Dispose() = () }
 
                 let createDaemon (root: string) =
                     daemonWith opts config (runModeFor command) (FsHotWatch.DaemonHosting.standalone ()) root

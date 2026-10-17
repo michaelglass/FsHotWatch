@@ -164,7 +164,8 @@ let ``a seed that alone selects more than its whole queue is named as a non-mono
         use _sink =
             FsHotWatch.Logging.installSink
                 { Write = lines.Enqueue
-                  Level = FsHotWatch.Logging.LogLevel.Warning }
+                  Level = FsHotWatch.Logging.LogLevel.Warning
+                  File = None }
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 

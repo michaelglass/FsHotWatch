@@ -667,7 +667,8 @@ let ``every spawn is counted and logged with its route`` () =
     use _ =
         Logging.installSink
             { Write = lines.Enqueue
-              Level = Logging.LogLevel.Info }
+              Level = Logging.LogLevel.Info
+              File = None }
 
     let hookStep () =
         runProcessObserved ignore "/bin/sh" (shell "exit 0") "/" [] tenSeconds |> ignore

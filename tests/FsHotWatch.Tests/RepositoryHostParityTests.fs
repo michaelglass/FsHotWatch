@@ -519,7 +519,8 @@ let private startSession (registry: SessionRegistry) (root: string) =
           Environment = SessionEnvironment.ofProcess root
           Sink =
             { Write = ignore
-              Level = Logging.LogLevel.Info }
+              Level = Logging.LogLevel.Info
+              File = None }
           // What the host gives every session (`SessionResources`): its pooled test-impact
           // connections go when it ends. Each mode reuses this worktree's path, and a
           // pooled connection would otherwise carry the last mode's database into the next.

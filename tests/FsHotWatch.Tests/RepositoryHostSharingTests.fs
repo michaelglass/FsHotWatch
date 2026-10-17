@@ -71,7 +71,8 @@ let private start (registry: SessionRegistry) (worktree: ResolvedWorktree) =
           Environment = SessionEnvironment.ofProcess worktree.Root.Value
           Sink =
             { Write = ignore
-              Level = Logging.LogLevel.Info }
+              Level = Logging.LogLevel.Info
+              File = None }
           Owned = [] }
 
     match registry.Start(id, spec) with

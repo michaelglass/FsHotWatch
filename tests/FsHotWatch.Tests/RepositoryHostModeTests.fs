@@ -637,7 +637,8 @@ let private inProcessHost (root: string) (stateHome: string) (factory: SessionRe
           SinkFor =
             fun _ ->
                 { Write = ignore
-                  Level = Logging.LogLevel.Info }
+                  Level = Logging.LogLevel.Info
+                  File = None }
           WatchConfig =
             fun _ _ ->
                 { new IDisposable with

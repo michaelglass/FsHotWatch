@@ -2329,7 +2329,9 @@ let internal overranWorkOf (work: PluginWorkOwner.HostSnapshot) (plugin: string)
 /// past the bound it stated (a write blocked on a lock another process holds, a call that
 /// hangs) — so it is named as that work, with how long it has run against its bound.
 /// `None` when no stalled plugin overran a declaration: the generic wording stands.
+/// `log` is where the reader finds that work's last line (`Logging.logPointer`).
 let internal overranWedgeMessage
+    (log: string)
     (now: System.DateTime)
     (work: PluginWorkOwner.HostSnapshot)
     (busy: string list)
@@ -2366,8 +2368,15 @@ let internal overranWedgeMessage
         Some(
             $"WaitForComplete: plugin(s) WEDGED — declared bounded work OVERRAN its deadline without returning: %s{overran}.%s{inside} "
             + "The work named itself and stated how long it would take, so this is that call blocked or hung (a lock another process holds, I/O that never completes), not a lost hand-off. "
-            + "Inspect logs/daemon.log for the last line that work wrote, then `fshw stop` to reclaim the daemon."
+            + $"Inspect %s{log} for the last line that work wrote, then `fshw stop` to reclaim the daemon."
         )
+
+/// A plugin whose message loop crashed. `log` is where its full stack was written
+/// (`Logging.logPointer`).
+let internal deadPluginMessage (log: string) (name: string) (crash: exn) : string =
+    $"WaitForComplete: plugin '%s{name}' is DEAD — its message loop crashed, so it will report work in flight forever and this wait can never resolve. "
+    + $"The crash: %s{crash.Message}. "
+    + $"This is a bug in fshw, not in the tree being checked. See %s{log} for the full stack, then `fshw stop` to reclaim the daemon."
 
 let formatPluginWait
     (now: System.DateTime)
@@ -2642,14 +2651,7 @@ let private waitCoreWith
         // certain one — no threshold, no inference from silence. Everything below
         // is the heuristic backstop for a stall nobody reported.
         match host.FaultedPlugins() with
-        | (name, ex) :: _ ->
-            raise (
-                System.TimeoutException(
-                    $"WaitForComplete: plugin '%s{name}' is DEAD — its message loop crashed, so it will report work in flight forever and this wait can never resolve. "
-                    + $"The crash: %s{ex.Message}. "
-                    + "This is a bug in fshw, not in the tree being checked. See logs/daemon.log for the full stack, then `fshw stop` to reclaim the daemon."
-                )
-            )
+        | (name, ex) :: _ -> raise (System.TimeoutException(deadPluginMessage (Logging.logPointer ()) name ex))
         | [] ->
 
             // Cheapest test first, and the one that is almost always false.
@@ -2696,15 +2698,19 @@ let private waitCoreWith
             then
                 let joined = String.concat ", " busy
 
+                // Read in the context the message is logged from below, so the file it
+                // names is the one that holds it.
+                let log = Logging.logPointer ()
+
                 let message =
-                    match overranWedgeMessage now host.WorkSnapshot busy with
+                    match overranWedgeMessage log now host.WorkSnapshot busy with
                     | Some overran -> overran
                     | None ->
                         $"WaitForComplete: plugin(s) WEDGED — %s{joined} reported work in flight for %s{formatElapsed stallThreshold} with nothing Running and no event finishing anywhere in the host. "
                         + "That hand-off should take milliseconds, so this is a stuck inflight count (an event whose handler never returned, or an exclusive run whose completion was never posted), not slow work. "
-                        + "Inspect logs/daemon.log around this timestamp, then `fshw stop` to reclaim the daemon."
+                        + $"Inspect %s{log} around this timestamp, then `fshw stop` to reclaim the daemon."
 
-                // The message points the reader at logs/daemon.log, so the log holds it.
+                // The message points the reader at `log`, so the log holds it.
                 Logging.error "wait" message
                 raise (System.TimeoutException message)
 

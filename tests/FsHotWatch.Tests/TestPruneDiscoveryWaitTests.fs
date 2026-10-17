@@ -49,7 +49,8 @@ let private runWhileDiscovering (repoRoot: string) (trigger: PluginHost -> unit)
     use _sink =
         FsHotWatch.Logging.installSink
             { Write = lines.Enqueue
-              Level = FsHotWatch.Logging.LogLevel.Debug }
+              Level = FsHotWatch.Logging.LogLevel.Debug
+              File = None }
 
     let host = PluginHost.create (Unchecked.defaultof<_>) repoRoot
     host.WorkStore.PublishProjectModel(FsHotWatch.ProjectModel.Observation.Rediscovering fixtureModelGeneration)
@@ -137,7 +138,8 @@ let ``a host that has observed no discovery launches at once`` () =
         use _sink =
             FsHotWatch.Logging.installSink
                 { Write = lines.Enqueue
-                  Level = FsHotWatch.Logging.LogLevel.Debug }
+                  Level = FsHotWatch.Logging.LogLevel.Debug
+                  File = None }
 
         let host = PluginHost.create (Unchecked.defaultof<_>) repoRoot
 
