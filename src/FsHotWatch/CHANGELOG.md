@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.81 - 2026-10-17
+
 - fix!: the WEDGED, DEAD and OVERRAN wait failures name the log their lines were actually
   written to, instead of a hard-coded `logs/daemon.log` that ignored a configured `logDir` and
   did not exist for in-process hosts. `Logging.LogSink` gains `File: string option`, read back

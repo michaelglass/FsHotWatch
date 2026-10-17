@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.81 - 2026-10-17
+
+- fix: every daemon-log pointer names the configured log, with a guard against new literals
+
+
 ## 0.13.0-alpha.80 - 2026-10-17
 
 - fix(test-prune): an unfiltered in-flight run absorbs triggers it already satisfies
