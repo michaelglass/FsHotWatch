@@ -103,6 +103,33 @@ let ``enumerateFiles survives an unreadable subtree and keeps walking`` () =
                     UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
                 ))
 
+// The pruning walk is best-effort too: an unreadable directory it is allowed into
+// contributes no paths and does not fault the walk.
+[<Fact(Timeout = 15000)>]
+let ``bestEffortFilePathsPruning drops an unreadable subtree and keeps walking`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "sw-prune-perm" (fun tmpDir ->
+            let readable = Path.Combine(tmpDir, "readable.fs")
+            File.WriteAllText(readable, "")
+
+            let locked = Path.Combine(tmpDir, "locked")
+            Directory.CreateDirectory locked |> ignore
+            File.WriteAllText(Path.Combine(locked, "unreachable.fs"), "")
+            File.SetUnixFileMode(locked, UnixFileMode.None)
+
+            try
+                let got =
+                    SafeWalk.bestEffortFilePathsPruning (fun _ -> false) "*" tmpDir
+                    |> Seq.map Path.GetFileName
+                    |> List.ofSeq
+
+                test <@ got = [ "readable.fs" ] @>
+            finally
+                File.SetUnixFileMode(
+                    locked,
+                    UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                ))
+
 // The depth cap is the belt for cycles that evade the symlink guard (e.g.
 // bind mounts): a subtree nested beyond MaxDepth is skipped — with a warning,
 // not silently — while everything above the cap is still enumerated.
