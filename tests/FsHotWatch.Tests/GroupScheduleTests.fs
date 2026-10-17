@@ -273,7 +273,8 @@ let private runnerConfig (script: string) (project: string) : TestPrunePlugin.Te
       FilterTemplate = None
       ClassJoin = " "
       TimeoutSec = None
-      ReportVerificationFormat = TestPrunePlugin.AutoDetect }
+      ReportVerificationFormat = TestPrunePlugin.AutoDetect
+      AlwaysClasses = [] }
 
 let private runAll (tmpDir: string) (cap: int option) (configs: TestPrunePlugin.TestConfig list) =
     let host = FsHotWatch.PluginHost.PluginHost.create (Unchecked.defaultof<_>) tmpDir

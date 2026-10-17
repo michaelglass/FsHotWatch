@@ -252,7 +252,8 @@ let ``incident: a beforeRun throw in the run-tests command surfaces as Failed, n
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         // A preflight failure, modelling a real csrf-gate step.
         let beforeRun = Some(fun _ _ -> failwith "csrf-gate failed")
@@ -302,7 +303,8 @@ let ``incident: a test child that never becomes a live process drives the run to
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 
@@ -355,7 +357,8 @@ let ``run-tests command with a passing beforeRun runs normally and reports Compl
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let beforeRun = Some(fun _ _ -> ran.Value <- true)
 
@@ -469,7 +472,8 @@ let barTest () = assert (bar 1 = 2)
                     FilterTemplate = None
                     ClassJoin = " "
                     TimeoutSec = None
-                    ReportVerificationFormat = AutoDetect } ]
+                    ReportVerificationFormat = AutoDetect
+                    AlwaysClasses = [] } ]
 
             let handler = create dbPath tmpDir (Some configs) None None None None []
             host.RegisterHandler(handler)
@@ -577,7 +581,8 @@ let ``a rerun queued for debt the active run clears preserves that run's evidenc
                     FilterTemplate = None
                     ClassJoin = " "
                     TimeoutSec = None
-                    ReportVerificationFormat = AutoDetect } ]
+                    ReportVerificationFormat = AutoDetect
+                    AlwaysClasses = [] } ]
 
             let host = createModelHost (Unchecked.defaultof<_>) tmpDir
             let (getCompleted, recorder) = testRunCompletedRecorder ()
@@ -690,7 +695,8 @@ let fooTest () = assert (foo 1 = 2)
                     FilterTemplate = None
                     ClassJoin = " "
                     TimeoutSec = Some(RealCheckTestCapMs / 1000)
-                    ReportVerificationFormat = AutoDetect } ]
+                    ReportVerificationFormat = AutoDetect
+                    AlwaysClasses = [] } ]
 
             let host = createModelHost checker tmpDir
             host.RegisterHandler(create dbPath tmpDir (Some configs) None None None None [])
@@ -860,7 +866,8 @@ let ``restart persistence: a non-empty queue survives a daemon restart and is re
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
@@ -903,7 +910,8 @@ let ``no-covering-test symbol drops from the queue at flush without wedging it``
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
@@ -966,7 +974,8 @@ let ``a covering project that matched ZERO tests does not discharge a pending sy
                 FilterTemplate = Some "--filter-class {classes}"
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
@@ -1402,7 +1411,8 @@ let ``BatchChecked drains a pending queue instead of resting on a stale verdict`
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
@@ -1455,7 +1465,8 @@ let private ledgerRunner (project: string) (marker: string) : TestConfig =
       FilterTemplate = None
       ClassJoin = " "
       TimeoutSec = None
-      ReportVerificationFormat = AutoDetect }
+      ReportVerificationFormat = AutoDetect
+      AlwaysClasses = [] }
 
 [<Fact(Timeout = 20000)>]
 let ``an UNREADABLE ledger widens to the FULL suite rather than greening on nothing`` () =
@@ -1601,7 +1612,8 @@ let ``a symbol covered only by an unconfigured project stays owed`` () =
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
@@ -1639,7 +1651,8 @@ let ``a plugin with a test run in flight reports BUSY, so no verdict can resolve
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
@@ -1957,7 +1970,8 @@ let private gatedRunConfig (tmpDir: string) (release: string) (polls: int) =
           FilterTemplate = None
           ClassJoin = " "
           TimeoutSec = Some 30
-          ReportVerificationFormat = AutoDetect }
+          ReportVerificationFormat = AutoDetect
+          AlwaysClasses = [] }
 
     config, started, doneFile
 
@@ -2086,7 +2100,8 @@ let private countingGatedRunConfig (tmpDir: string) (release: string) (polls: in
           FilterTemplate = None
           ClassJoin = " "
           TimeoutSec = Some 30
-          ReportVerificationFormat = AutoDetect }
+          ReportVerificationFormat = AutoDetect
+          AlwaysClasses = [] }
 
     config, started, runs
 

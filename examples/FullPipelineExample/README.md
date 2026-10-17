@@ -91,7 +91,8 @@ let runFullPipeline (repoRoot: string) =
                     FilterTemplate = Some "--filter-class {classes}"
                     ClassJoin = " "
                     TimeoutSec = None
-                    ReportVerificationFormat = AutoDetect } ]) // testConfigs
+                    ReportVerificationFormat = AutoDetect
+                    AlwaysClasses = [] } ]) // testConfigs
             None // buildExtensions
             None // beforeRun
             None // afterRun

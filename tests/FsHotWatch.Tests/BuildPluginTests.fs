@@ -609,7 +609,8 @@ let ``file changes observed during a test host defer the build until that run co
                             FilterTemplate = None
                             ClassJoin = " "
                             TimeoutSec = None
-                            ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
+                            ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                            AlwaysClasses = [] } ])
                     None
                     None
                     None
@@ -752,7 +753,8 @@ let ``a force-run cancelled after it started still releases the build deferral``
                             FilterTemplate = None
                             ClassJoin = " "
                             TimeoutSec = None
-                            ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
+                            ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                            AlwaysClasses = [] } ])
                     None
                     None
                     None
@@ -889,7 +891,8 @@ let private manualTestWaitsForBuild () =
                             FilterTemplate = None
                             ClassJoin = " "
                             TimeoutSec = None
-                            ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
+                            ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                            AlwaysClasses = [] } ])
                     None
                     None
                     None
@@ -1015,7 +1018,8 @@ let ``failed build rejects queued and later manual hosts until a success drains 
                         FilterTemplate = None
                         ClassJoin = " "
                         TimeoutSec = None
-                        ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
+                        ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                        AlwaysClasses = [] } ])
                 None
                 None
                 None
@@ -1118,7 +1122,8 @@ let ``queued template build preserves changes for a second project root`` () =
                         FilterTemplate = None
                         ClassJoin = " "
                         TimeoutSec = None
-                        ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
+                        ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                        AlwaysClasses = [] } ])
                 None
                 None
                 None

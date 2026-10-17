@@ -53,7 +53,8 @@ let private echoConfig: TestConfig =
       FilterTemplate = None
       ClassJoin = " "
       TimeoutSec = None
-      ReportVerificationFormat = AutoDetect }
+      ReportVerificationFormat = AutoDetect
+      AlwaysClasses = [] }
 
 /// Index Lib + Tests with `extensions`, edit the handler's body, and return the
 /// `affected-tests` answer once the edit has been handled.

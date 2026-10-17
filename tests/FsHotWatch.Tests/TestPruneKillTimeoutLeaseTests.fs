@@ -56,7 +56,8 @@ let ``a test run whose child kill times out does not wedge the next run on the s
             FilterTemplate = None
             ClassJoin = " "
             TimeoutSec = Some 30
-            ReportVerificationFormat = AutoDetect } ]
+            ReportVerificationFormat = AutoDetect
+            AlwaysClasses = [] } ]
 
     // The first run's process scope records what a kill that never returned records:
     // a child whose termination it cannot establish. The suite itself finishes.

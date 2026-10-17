@@ -55,7 +55,8 @@ let ``a test host killed at its timeout is stopped from the bottom up, so its co
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = Some 1
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         host.RegisterHandler(create ":memory:" tmpDir (Some configs) None None None None [])

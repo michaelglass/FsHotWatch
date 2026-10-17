@@ -122,7 +122,8 @@ let private config project command args : TestConfig =
       FilterTemplate = None
       ClassJoin = " "
       TimeoutSec = Some 60
-      ReportVerificationFormat = Ctrf }
+      ReportVerificationFormat = Ctrf
+      AlwaysClasses = [] }
 
 /// Run `run-tests` once over `configs` with `traces`, returning the command's JSON and
 /// the plugin's activity log.

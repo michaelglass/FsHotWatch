@@ -86,7 +86,8 @@ let private config root : TestPrunePlugin.TestConfig =
       FilterTemplate = None
       ClassJoin = " "
       TimeoutSec = None
-      ReportVerificationFormat = TestPrunePlugin.AutoDetect }
+      ReportVerificationFormat = TestPrunePlugin.AutoDetect
+      AlwaysClasses = [] }
 
 [<Fact(Timeout = 120000)>]
 let ``analysis retired by a model change is indexed when the same check is delivered again`` () =

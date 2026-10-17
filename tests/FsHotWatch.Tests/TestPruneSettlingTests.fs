@@ -53,7 +53,8 @@ let private config: TestConfig =
       FilterTemplate = None
       ClassJoin = " "
       TimeoutSec = None
-      ReportVerificationFormat = AutoDetect }
+      ReportVerificationFormat = AutoDetect
+      AlwaysClasses = [] }
 
 let private read (host: FsHotWatch.PluginHost.PluginHost) name =
     host.RunCommand(name, [||]) |> Async.RunSynchronously |> Option.get

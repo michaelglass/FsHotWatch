@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: `TestConfig.AlwaysClasses` names test classes every impact-filtered launch includes,
+  for tests that read the source tree as data and so have no symbol edge to what they police.
+  They are added to every filtered selection and to the would-have-run projection; an empty
+  selection (every project in full) and a project already running in full are left alone. An
+  edit whose every changed symbol has no covering test runs those classes instead of taking the
+  nothing-to-verify skip. The test-evidence key does not include them: they change what a
+  filtered run selects, not what a full green means.
+- Breaking: `TestConfig` has a new field, `AlwaysClasses`.
+
 ## 0.13.0-alpha.84 - 2026-10-18
 
 - feat(test-prune): optional tests.maxParallelProjects caps concurrent test groups

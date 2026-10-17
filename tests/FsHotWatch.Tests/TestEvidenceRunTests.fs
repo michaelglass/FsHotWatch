@@ -90,7 +90,8 @@ let private configs =
           FilterTemplate = None
           ClassJoin = " "
           TimeoutSec = Some 30
-          ReportVerificationFormat = Ctrf })
+          ReportVerificationFormat = Ctrf
+          AlwaysClasses = [] })
 
 /// The model the host publishes: every project, its references, and an identity per
 /// project that is the same in every checkout (the options do not change in these tests;

@@ -94,7 +94,8 @@ let private indexFixture (tmpDir: string) =
             FilterTemplate = None
             ClassJoin = " "
             TimeoutSec = None
-            ReportVerificationFormat = AutoDetect } ]
+            ReportVerificationFormat = AutoDetect
+            AlwaysClasses = [] } ]
 
     host.RegisterHandler(create dbPath tmpDir (Some testConfigs) None None None None [])
     pipeline.RegisterProject(Path.Combine(tmpDir, "Fixture.fsx"), options)
@@ -248,7 +249,8 @@ let ``a signature-node name queued by TestPrune.Core 9 is verified by a real run
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         // What 9.0.0 left behind: a v13 index holding the signature node, a queue that still
         // owes it (an .fsi edit whose covering run never went green), and a valid full-suite

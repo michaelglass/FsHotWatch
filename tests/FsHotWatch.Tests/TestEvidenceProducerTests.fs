@@ -402,7 +402,8 @@ let ``the canonical config writes every field in full, however long`` () =
           FilterTemplate = Some "--filter-class {classes}"
           ClassJoin = " "
           TimeoutSec = Some 30
-          ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.Ctrf }
+          ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.Ctrf
+          AlwaysClasses = [] }
 
     let a = FsHotWatch.TestPrune.TestPrunePlugin.canonicalTestConfig (config "a")
     let b = FsHotWatch.TestPrune.TestPrunePlugin.canonicalTestConfig (config "b")

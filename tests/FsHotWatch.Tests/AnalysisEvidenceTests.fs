@@ -389,7 +389,8 @@ let ``a daemon that runs tests seals every checkable file without publishing an 
               FilterTemplate = None
               ClassJoin = " "
               TimeoutSec = None
-              ReportVerificationFormat = AutoDetect }
+              ReportVerificationFormat = AutoDetect
+              AlwaysClasses = [] }
 
         let handler =
             create (Path.Combine(root, "tests.db")) root (Some [ config ]) None None None None []
