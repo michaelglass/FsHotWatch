@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.82 - 2026-10-17
+
 - fix: a directory or glob named in `verdictInputs` or `evidence.extra` resolves to the files
   the repository's `.gitignore` files leave in, instead of everything under it. A publish
   directory, a restore cache or a metrics log under a listed directory moved the tree hash and

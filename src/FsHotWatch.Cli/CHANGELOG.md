@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.110 - 2026-10-17
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.109 - 2026-10-17
 
 - fix: in-process hosts (`check --run-once`, `confirm --run-once`, and a `test-rerun` that
