@@ -557,13 +557,27 @@ let ``Watchdog logs a host suspension once, when the wall clock outruns the awak
 
     // Both fake clocks move in ONE write: a tick between two separate writes would see the
     // wall clock jump without the awake clock and log a suspension that never happened.
-    // A tick reads `now` and then `awake`, so `now` pins the snapshot `awake` answers from.
+    // A tick reads `now` and then `awake`, so `now` pins the snapshot `awake` answers
+    // from, and `awake` consumes it. An `awake` with no pin means the watchdog changed its
+    // read order and the race is back: recorded in `misread` and asserted on below, since a
+    // throw on the watchdog's timer thread need not reach the test.
     let clocks: FsHotWatch.HostClock.Reading ref =
         ref
             { Wall = t0
               Awake = TimeSpan.FromSeconds 1000.0 }
 
-    let pinned = ref clocks.Value
+    let pinned: FsHotWatch.HostClock.Reading option ref = ref None
+    let misread = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    let awakeFromPin () =
+        match pinned.Value with
+        | Some reading ->
+            pinned.Value <- None
+            reading.Awake
+        | None ->
+            let message = "awake() was read without a now() pinning its snapshot first"
+            misread.Enqueue message
+            failwith message
 
     use _w =
         new Watchdog(
@@ -571,11 +585,12 @@ let ``Watchdog logs a host suspension once, when the wall clock outruns the awak
             heartbeatEvery = TimeSpan.FromHours(1.0),
             now =
                 (fun () ->
-                    pinned.Value <- clocks.Value
-                    pinned.Value.Wall),
+                    let reading = clocks.Value
+                    pinned.Value <- Some reading
+                    reading.Wall),
             log = logged.Enqueue,
             tick = TimeSpan.FromMilliseconds(20.0),
-            awake = (fun () -> pinned.Value.Awake)
+            awake = awakeFromPin
         )
 
     let suspensions () =
@@ -589,6 +604,7 @@ let ``Watchdog logs a host suspension once, when the wall clock outruns the awak
           Awake = TimeSpan.FromSeconds 1030.0 }
 
     Thread.Sleep 200
+    test <@ misread.IsEmpty @>
     test <@ List.isEmpty (suspensions ()) @>
 
     // The lid closes: 394s of wall clock pass, 2s of them awake.
@@ -603,3 +619,5 @@ let ``Watchdog logs a host suspension once, when the wall clock outruns the awak
         <@
             suspensions () = [ "host was suspended ~392s since the previous watchdog tick (wall clock advanced 394s, awake 2s)" ]
         @>
+
+    test <@ misread.IsEmpty @>
