@@ -3391,6 +3391,26 @@ let ``requestOwedRun sends set-scope with a PARSEABLE {"scope":"owed"} payload``
         test <@ doc.RootElement.GetProperty("scope").GetString() = "owed" @>
     | other -> failwith $"expected exactly one set-scope call, got %A{other}"
 
+[<Fact(Timeout = 15000)>]
+let ``requestOwedRun is never fatal: no set-scope command, or a transport that throws, returns quietly`` () =
+    // Not evidence either way: `check` reads what ran from `test-scope`, and a run that
+    // never launched reads as nothing verified.
+    let mutable asked = 0
+
+    let absent: ScopeCommands.Send =
+        fun _ _ ->
+            asked <- asked + 1
+            None
+
+    let throws: ScopeCommands.Send =
+        fun _ _ ->
+            asked <- asked + 1
+            failwith "pipe broke"
+
+    ScopeCommands.requestOwedRun absent
+    ScopeCommands.requestOwedRun throws
+    test <@ asked = 2 @>
+
 /// Run `f`, capturing BOTH streams, and return (output, result).
 ///
 /// Both, deliberately: `UI.fail` writes the verdict line to stderr while `UI.info`
