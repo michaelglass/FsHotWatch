@@ -95,9 +95,19 @@ let internal orNone (ask: string -> Stamp voption) (path: string) : Stamp voptio
     with _ ->
         ValueNone
 
+/// The reader for a platform that is macOS (`isMacOS`), Linux (`isLinux`) or neither:
+/// `mac` or `linux` with a throw read as no stamp, or no stamp at all elsewhere.
+let internal selectReader
+    (isMacOS: bool)
+    (isLinux: bool)
+    (mac: string -> Stamp voption)
+    (linux: string -> Stamp voption)
+    : string -> Stamp voption =
+    if isMacOS then orNone mac
+    elif isLinux then orNone linux
+    else fun _ -> ValueNone
+
 /// This platform's stamp of `path`, or `ValueNone` where it cannot be read: a missing
 /// file, an unsupported platform or filesystem, or a failed call.
 let read: string -> Stamp voption =
-    if OperatingSystem.IsMacOS() then orNone askMacOS
-    elif OperatingSystem.IsLinux() then orNone askLinux
-    else fun _ -> ValueNone
+    selectReader (OperatingSystem.IsMacOS()) (OperatingSystem.IsLinux()) askMacOS askLinux

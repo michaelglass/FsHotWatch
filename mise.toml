@@ -121,8 +121,10 @@ run = [
 [tasks.test-direct]
 description = "Run tests directly with coverage (for CI). Excludes IntegrationTests whose SDK-reflection paths fire nondeterministically and make the coverage ratchet flaky."
 # Wipe any stale per-project coverage the daemon may have written to
-# coverage/<project>/ in prior runs — coverageratchet walks the tree and
-# would otherwise see TestPrune.Core sources (from the sibling ProjectReference)
+# coverage/<project>/ in prior runs. The coverage tasks pass
+# `--search-dir coverage`, so coverageratchet walks only coverage/ (recursively,
+# never the rest of the tree), and a leftover coverage/<project>/ report would
+# otherwise feed it TestPrune.Core sources (from the sibling ProjectReference)
 # that aren't filtered by coverage.settings in the daemon path.
 run = """
 rm -rf coverage
@@ -164,7 +166,7 @@ depends = ["restore"]
 
 [tasks.coverage-check]
 description = "Check per-file coverage meets minimum threshold"
-run = "dotnet tool run coverageratchet check coverage-ratchet-FsHotWatch.json"
+run = "dotnet tool run coverageratchet check coverage-ratchet-FsHotWatch.json --search-dir coverage"
 depends = ["test-direct"]
 
 [tasks.coverage-ratchet]
@@ -185,7 +187,7 @@ description = "Tighten coverage thresholds to current coverage. EXPLICIT — nev
 # and is REPORTED, not repaired. Anything else is a tool crash and propagates unchanged,
 # so a misbehaving tool never silently rewrites thresholds.
 run = """sh -c '
-  dotnet tool run coverageratchet ratchet coverage-ratchet-FsHotWatch.json
+  dotnet tool run coverageratchet ratchet coverage-ratchet-FsHotWatch.json --search-dir coverage
   c=$?
   if [ $c -eq 0 ] || [ $c -eq 1 ]; then exit 0; fi
   exit $c
@@ -194,12 +196,12 @@ depends = ["test-direct"]
 
 [tasks.coverage-loosen]
 description = "Loosen coverage thresholds to current values"
-run = "dotnet tool run coverageratchet loosen coverage-ratchet-FsHotWatch.json"
+run = "dotnet tool run coverageratchet loosen coverage-ratchet-FsHotWatch.json --search-dir coverage"
 depends = ["test-direct"]
 
 [tasks.loosen-from-ci]
 description = "Merge coverage thresholds from CI artifacts"
-run = "dotnet tool run coverageratchet loosen-from-ci coverage-ratchet-FsHotWatch.json"
+run = "dotnet tool run coverageratchet loosen-from-ci coverage-ratchet-FsHotWatch.json --search-dir coverage"
 depends = ["test-direct"]
 
 [tasks.lint-project]

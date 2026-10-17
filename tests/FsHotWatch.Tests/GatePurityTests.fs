@@ -136,3 +136,39 @@ let ``no gate task redirects, tees or copies onto a declared verdict input`` () 
                               yield $"%s{taskName}: %s{path} in %s{line.Trim()}" ]
 
     test <@ List.isEmpty violations @>
+
+/// The directory `test-direct` writes its Cobertura report into, relative to the repo root.
+let private testDirectReportDir mise =
+    let m =
+        Regex.Match(commandLines mise "test-direct", @"--coverage-output\s+""?\$PWD/(\S+?)/coverage\.cobertura\.xml")
+
+    if m.Success then Some m.Groups[1].Value else None
+
+[<Fact>]
+let ``every coverageratchet task reads only the report test-direct writes`` () =
+    // With no `--search-dir`, coverageratchet walks the tree from the repo root and merges
+    // EVERY coverage.cobertura.xml it finds (hidden directories aside), keyed by file
+    // basename. A CI report downloaded into the gitignored `tmp/` (an older version of
+    // the same files, at other line numbers) then merged into the fresh one: measured
+    // 2026-10-17, FileStamp.fs read 15/18 branches and failed its floor while the report
+    // test-direct had just written said 10/10.
+    let mise = miseToml (repoRoot ())
+    let reportDir = testDirectReportDir mise
+
+    test <@ reportDir.IsSome @>
+
+    let invocations =
+        [ for taskName in taskNames mise do
+              for line in (commandLines mise taskName).Split('\n') do
+                  if Regex.IsMatch(line, @"coverageratchet\s+\S") then
+                      yield taskName, line.Trim() ]
+
+    test <@ not (List.isEmpty invocations) @>
+
+    let required = $"--search-dir %s{reportDir.Value}"
+
+    let unscoped =
+        invocations
+        |> List.filter (fun (_, line) -> not (Regex.IsMatch(line, Regex.Escape required + @"(\s|""|'|$)")))
+
+    test <@ List.isEmpty unscoped @>
