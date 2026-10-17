@@ -156,7 +156,7 @@ let ``PendingVerification: hash is order-independent and empty-distinct`` () =
 // `.fshw/test-prune/pending-verification.json`.
 // =============================================================================
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 [<Trait("Regression", "LifecycleMailboxOrder")>]
 let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the symbols`` () =
     // A beforeRun throw propagates out of executeTests, `runTestsWithImpact` catches it,
@@ -210,12 +210,14 @@ let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the
 
         let await = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
-        test <@ await.Wait(TimeSpan.FromSeconds 15.0) @>
+        // The run is in-process: beforeRun throws before any child is spawned. Both waits
+        // only end a hang.
+        test <@ await.Wait(TimeSpan.FromMilliseconds(float HangWaitMs)) @>
 
         // TestPrune publishes its terminal status from its own mailbox after queuing the
         // lifecycle event. The recorder consumes that event on another mailbox, so wait
         // for both mailboxes to drain before reading recorder-owned state.
-        waitForQuiescent host 10000
+        waitForQuiescent host HangWaitMs
 
         // An aborted run verified nothing.
         match host.GetStatus("test-prune") with

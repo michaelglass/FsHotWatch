@@ -17,12 +17,18 @@ A bound is one of three things.
    `Wait(timeout)`: it ends a test that would otherwise hang, and the failure it reports
    is "this never happened". A hang cap is fail-safe when correct work cannot reach it:
    - the work under it is in-process, or one trivial child (`echo`, `sh -c true`,
-     `sleep`), and the cap is at least 5 s; or
+     `sleep`), and the cap is at least 5 s. A loaded full run (load average about 50)
+     stalled such work past 5, 10 and 15 s bounds, so a wait or cap that has gone red
+     on load moves to `HangWaitMs` (30 s) under a `SyncHangBackstopMs` cap; or
    - the work has a product-owned bound (a tool timeout, a `TimeoutSec`) and the cap
      sits above it, so the product decides first and reports a typed outcome; or
    - the work is a real FCS type-check or lint pass, which has no product bound, and
      the wait is at least `RealCheckWaitMs` (30 s) with the xUnit cap above every wait
-     the test makes.
+     the test makes; or
+   - the work is a daemon discovering a real `.fsproj`: an in-process MSBuild
+     evaluation, which has no product bound and runs one at a time per process
+     (`Daemon.evaluateInProcess`), so in a full run it queues behind every other
+     test's. The cap is `InProcessEvaluationTestCapMs` (300 s).
 
    A hang cap that breaks these rules is a timing assertion in disguise and is treated
    as rule 1.
@@ -32,7 +38,8 @@ A bound is one of three things.
 
 The literals that encode rule 2 live in `tests/FsHotWatch.Tests/TestHelpers.fs`
 (`FantomasRunBudgetMs`, `FantomasRunWaitMs`, `RealFantomasTestCapMs`, `RealCheckWaitMs`,
-`RealCheckTestCapMs`, `DaemonStartupWaitMs`, `SyncHangBackstopMs`). `FormatCheckPluginTests` pins `FantomasRunBudgetMs` to the
+`RealCheckTestCapMs`, `DaemonStartupWaitMs`, `SyncHangBackstopMs`, `HangWaitMs`,
+`InProcessEvaluationTestCapMs`). `FormatCheckPluginTests` pins `FantomasRunBudgetMs` to the
 product's `FormatTimeoutDefaultSec`, so raising the product bound without the caps goes
 red.
 
@@ -81,6 +88,11 @@ own named waits decided.
 | `TestPrunePendingVerificationTests` "mid-run change…" and the five boot-cohort facts | real checks under 30 s caps, with 10–20 s waits after them | CAN-FLAKE (cancelled at 30 s in loaded runs; the mid-run test once alone) | caps `RealCheckTestCapMs`, waits after real checks `RealCheckWaitMs` |
 | `DaemonConfigTests` registerPlugins (8 facts), `FileFreshnessTests` "a Clean stamp over an emptied index must still WIDEN" and its positive control, `RepositoryIdentityTests` "control state is keyed by repository…" | 15 s caps over synchronous in-process work on temp files | CAN-FLAKE (cancelled at 15 s in one loaded full run while taking milliseconds alone) | `SyncHangBackstopMs` (60 s): the cap only reports a hang |
 | `RepositoryIdentityTests` "real git…" and "real jj…" | 3 and 5 real commands, each bounded at 10 s, under a 30 s cap: the cap sat below its own bounds | CAN-FLAKE (cancelled at 30 s) | each command `RealCommandMs` (20 s); caps `4 * RealCommandMs` and `6 * RealCommandMs` |
+| `RunOnceOutputTests`, the 17 facts over `withProjectOnlyRepo` that use the real project loader | 60 s caps over a daemon discovering a real one-line `.fsproj` | CAN-FLAKE (cancelled at 60 s in a loaded confirm 10-16, whose log shows `MSBuild evaluation complete … in 59.5s`; about 1 s alone) | `InProcessEvaluationTestCapMs` (300 s). The two facts with a scripted loader keep 60 s |
+| `TestPruneNamedDispatchTests`, both facts | 10 s waits after real FCS checks of two scripts, while test-prune folds their symbols into the impact index (its product bound is the 20 min `ImpactSelectionDeadline`), under 60 s caps | CAN-FLAKE (the batch quiescence wait expired at 10 s in a loaded confirm 10-16) | waits `RealCheckWaitMs`, caps `RealCheckTestCapMs` |
+| `BuildPluginTests` "build-status command returns passed true after successful build" and "…returns failed after failed build" | a 5 s terminal-status wait over one `echo` or `false` build and a 30 s quiescence wait, under a 15 s cap | CAN-FLAKE (the 5 s wait expired in a loaded confirm 10-16) | both waits `HangWaitMs`, cap `SyncHangBackstopMs` |
+| `PluginFrameworkOwnershipTests` "external executor failure during finalization settles the original receipt only once" | the receipt's own `Wait(5 s)` and a 5 s wait on finalization, under a 15 s cap, over in-process work | CAN-FLAKE (cancelled at 15 s in a loaded confirm 10-16) | the receipt and finalization are awaited with no bound, as in "durable commit failures…"; cap `SyncHangBackstopMs` |
+| `TestPrunePendingVerificationTests` "incident: a beforeRun throw aborts the run…" | a 15 s terminal wait and a 10 s quiescence wait under a 20 s cap; beforeRun throws before any child is spawned | CAN-FLAKE (the quiescence wait expired at 10 s in a loaded confirm 10-16) | both waits `HangWaitMs`, cap `SyncHangBackstopMs` |
 
 ## Product bounds that decided the claim
 

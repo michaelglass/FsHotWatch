@@ -968,6 +968,21 @@ let RealFantomasTestCapMs = 360_000
 [<Literal>]
 let SyncHangBackstopMs = 60_000
 
+/// A wait, inside a test capped at `SyncHangBackstopMs`, for in-process work or one
+/// trivial child (`echo`, `false`, `sh -c true`) to reach the state it awaits. Neither
+/// has a product bound to sit above. Alone they finish in under a second; a loaded full
+/// run stalled them past 5 s and 10 s waits. This only ends work that never finishes.
+[<Literal>]
+let HangWaitMs = 30_000
+
+/// The xUnit cap for a test whose daemon discovers a real `.fsproj`. Discovery is an
+/// in-process MSBuild evaluation with no product bound, and a process runs one
+/// evaluation at a time (`Daemon.evaluateInProcess`), so in a full run each queues
+/// behind every other test's. One project's evaluation takes about a second alone and
+/// took 59.5 s in a loaded full run; this cap is five times that.
+[<Literal>]
+let InProcessEvaluationTestCapMs = 300_000
+
 /// A wait whose event follows a real FCS type-check or lint pass. FCS has no product
 /// bound to sit above, so this is the margin for a check slowed by a saturated box.
 [<Literal>]

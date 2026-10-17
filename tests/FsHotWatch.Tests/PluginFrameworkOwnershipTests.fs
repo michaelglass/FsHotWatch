@@ -608,7 +608,7 @@ let ``cache write failure preserves published state and faults the actual event 
             .IsNone
     )
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``external executor failure during finalization settles the original receipt only once`` () =
     let owner = PluginWorkOwner.Owner(0)
     let failure = System.IO.IOException("executor lost during durable finalization")
@@ -634,11 +634,17 @@ let ``external executor failure during finalization settles the original receipt
 
     let registration = registerHandlerForOwner owner defaultServices handler
 
+    // No bound on the receipt: only the finalization's own failure can end this wait, and
+    // a receipt that never settles is a hang the xUnit cap reports.
     let receipt =
-        registration.DispatchTracked(DispatchBuildCompleted BuildSucceeded).Value.Wait(System.TimeSpan.FromSeconds 5.)
+        registration
+            .DispatchTracked(DispatchBuildCompleted BuildSucceeded)
+            .Value.Wait(System.Threading.Timeout.InfiniteTimeSpan)
 
     Assert.Same(failure, Assert.Throws<System.IO.IOException>(fun () -> receipt.GetAwaiter().GetResult()))
-    entered.Task.WaitAsync(System.TimeSpan.FromSeconds 5.).GetAwaiter().GetResult()
+    // Faulting the executor can settle the receipt before finalization reaches `entered`,
+    // so wait for it, again with no bound of its own.
+    entered.Task.GetAwaiter().GetResult()
     Assert.Same(failure, registration.Fault().Value)
     Assert.False(registration.IsBusy())
     Assert.Equal(1, owner.Snapshot.State)
