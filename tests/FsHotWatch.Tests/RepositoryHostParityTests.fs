@@ -201,6 +201,42 @@ let private build
     Cli.DaemonConfig.registerPlugins daemon root config
     daemon
 
+type private KeyInputs = (string * Map<string, string>) list
+
+/// What each task-cache entry under `root`'s state was keyed on: the entry's name
+/// without its key hash, and the labelled input digests it records (`keyInputs`). An
+/// entry's name carries only a hash of its key, so two modes that key one tree
+/// differently show up in `StateFiles` as a pair of opaque hashes; compared through
+/// this, they name the input. test-prune's whole-run entry is left out, as in
+/// `observe`: whether it is written is interleaving, not mode.
+let private keyInputsOf (root: string) : KeyInputs =
+    let tasks = Path.Combine(FsHwPaths.root root, "cache", "tasks")
+
+    if Directory.Exists tasks then
+        Directory.GetFiles(tasks, "*.json", SearchOption.AllDirectories)
+        |> Array.map (fun f ->
+            let name = Path.GetFileNameWithoutExtension f
+
+            let inputs =
+                match JsonNode.Parse(File.ReadAllText f)["keyInputs"] with
+                | null -> Map.empty
+                | node ->
+                    node.AsObject()
+                    |> Seq.map (fun kv -> kv.Key, kv.Value.GetValue<string>())
+                    |> Map.ofSeq
+
+            name.Substring(0, name.LastIndexOf '@'), inputs)
+        |> Array.filter (fun (entry, _) -> entry <> "test-prune")
+        |> Array.sort
+        |> List.ofArray
+    else
+        []
+
+/// What `drive` saw: each settle point's statuses, and the key inputs at the first.
+type private Driven =
+    { Phases: (string * string * bool) list list
+      FirstKeyInputs: KeyInputs }
+
 /// The scenario: settle the first scan (build, tests, coverage), make an edit the tests
 /// cover, settle again. Returns, for each settle point, every plugin's status there and
 /// whether it ran in the phase that led to it.
@@ -242,15 +278,20 @@ let private drive
     config.WaitForScanGeneration(0L).Wait()
     settle ()
     let first = snapshot ()
+    // The store keeps one entry per plugin and file, so the edit's re-key replaces the
+    // first: what the first keys were made of is read before it.
+    let firstKeyInputs = keyInputsOf root
     File.WriteAllText(Path.Combine(root, "src", "Lib", "Lib.fs"), "module Lib\nlet add a b = b + a\n")
     let before = generation ()
     config.RequestScan None
     config.WaitForScanGeneration(before).Wait()
     settle ()
-    [ first; snapshot () ]
+
+    { Phases = [ first; snapshot () ]
+      FirstKeyInputs = firstKeyInputs }
 
 /// Everything a consumer observes, with this worktree's root spelled `<root>`.
-let private observe (root: string) (config: DaemonRpcConfig) phases =
+let private observe (root: string) (config: DaemonRpcConfig) (driven: Driven) =
     // Error files are named after the path they report, with `/` spelled `-`.
     let normalize (text: string) =
         text.Replace(root, "<root>").Replace(root.Replace('/', '-'), "<root>")
@@ -381,6 +422,8 @@ let private observe (root: string) (config: DaemonRpcConfig) phases =
         |> Array.sort
         |> List.ofArray
 
+    let cacheKeyInputs = keyInputsOf root
+
     let testRuns =
         all
         |> Array.filter (fun f -> f.EndsWith ".ctrf.json")
@@ -449,8 +492,10 @@ let private observe (root: string) (config: DaemonRpcConfig) phases =
        // there in 2 of 3 runs (test-prune's transient states interleave with the build
        // differently), so it cannot tell the modes apart. Where each plugin stands at
        // every settle point, and whether it ran to get there, is stable and is compared.
-       Phases = phases
+       Phases = driven.Phases
        StateFiles = files
+       CacheKeyInputs = cacheKeyInputs
+       FirstKeyInputs = driven.FirstKeyInputs
        TestRuns = testRuns
        Coverage = coverage
        ScanMetrics = scanMetrics
@@ -478,8 +523,8 @@ let private runLegacy (root: string) =
         Async.StartAsTask(daemon.RunWith(serveInto served, TimeSpan.FromSeconds 5.0, DateTime.UtcNow, cts))
 
     let config = served.Task.Result
-    let phases = drive root config daemon.GetScanGeneration transitions
-    let observed = observe root config phases
+    let driven = drive root config daemon.GetScanGeneration transitions
+    let observed = observe root config driven
     cts.Cancel()
     run.Wait(TimeSpan.FromSeconds 60.0) |> ignore
     // The per-worktree daemon's process would exit here, and its pooled database
@@ -550,8 +595,8 @@ let private runHosted (root: string) =
 
     let id, session = startSession registry root
     let config = session.Serving.Result
-    let phases = drive root config session.Daemon.GetScanGeneration transitions
-    let observed = observe root config phases
+    let driven = drive root config session.Daemon.GetScanGeneration transitions
+    let observed = observe root config driven
     test <@ registry.Detach id @>
     observed
 
@@ -628,11 +673,75 @@ let private runHostedBesideASibling (root: string) =
     // The observed session's project is the canonical content the sibling claimed.
     test <@ (canonicalProjects.CanonicalHash "src/Lib/Lib.fsproj").IsSome @>
     let config = session.Serving.Result
-    let phases = drive root config session.Daemon.GetScanGeneration transitions
-    let observed = observe root config phases
+    let driven = drive root config session.Daemon.GetScanGeneration transitions
+    let observed = observe root config driven
     test <@ registry.Detach id @>
     test <@ registry.Detach siblingId @>
     observed
+
+/// The key inputs on which two runs' task-cache entries disagree, as `<entry>: <label>`.
+/// An entry is keyed more than once over the scenario (the edit re-keys the build), so
+/// each of its labels is compared as the set of digests it was minted with. An entry
+/// recording no inputs is left out: `KeyFingerprints` is a bounded process-wide registry,
+/// and an entry minted across its reset records none, which says nothing about the mode.
+/// `StateFiles` still compares every entry's name and key hash.
+let private divergentKeyInputs (expected: KeyInputs) (actual: KeyInputs) : string list =
+    let recorded (entries: KeyInputs) =
+        entries
+        |> List.filter (fun (_, inputs) -> not (Map.isEmpty inputs))
+        |> List.groupBy fst
+        |> Map.ofList
+        |> Map.map (fun _ group -> List.map snd group)
+
+    let sides = [ recorded expected; recorded actual ]
+
+    let keyings entry side =
+        Map.tryFind entry side |> Option.defaultValue []
+
+    let digests entry label side =
+        keyings entry side |> List.map (Map.tryFind label) |> Set.ofList
+
+    sides
+    |> List.collect (Map.keys >> List.ofSeq)
+    |> List.distinct
+    |> List.sort
+    |> List.collect (fun entry ->
+        sides
+        |> List.collect (keyings entry >> List.collect (Map.keys >> List.ofSeq))
+        |> List.distinct
+        |> List.sort
+        |> List.filter (fun label -> (sides |> List.map (digests entry label) |> List.distinct).Length > 1)
+        |> List.map (fun label -> $"%s{entry}: %s{label}"))
+
+/// The digests `entry`'s keys were minted with under `label`, over the whole run.
+let private keyedWith (entry: string) (label: string) (observed: KeyInputs) =
+    observed
+    |> List.filter (fun (name, _) -> name = entry)
+    |> List.choose (snd >> Map.tryFind label)
+    |> Set.ofList
+
+[<Fact(Timeout = 15000)>]
+let ``divergent key inputs name the entry and the label, and nothing that agrees`` () =
+    let keyed (pairs: (string * string) list) = Map.ofList pairs
+
+    let legacy: KeyInputs =
+        [ "build", keyed [ "inputs", "a"; "dotnet-toolchain", "t1" ]
+          "build", keyed [ "inputs", "b"; "dotnet-toolchain", "t1" ]
+          "test-prune--repo:x", keyed [ "source", "s" ]
+          "lint--repo:y", Map.empty ]
+
+    let hosted: KeyInputs =
+        [ "build", keyed [ "inputs", "b"; "dotnet-toolchain", "t2" ]
+          "build", keyed [ "inputs", "a"; "dotnet-toolchain", "t2" ]
+          "test-prune--repo:x", keyed [ "source", "s" ] ]
+
+    test <@ divergentKeyInputs legacy hosted = [ "build: dotnet-toolchain" ] @>
+    test <@ List.isEmpty (divergentKeyInputs legacy legacy) @>
+
+    test
+        <@ divergentKeyInputs legacy [] = [ "build: dotnet-toolchain"; "build: inputs"; "test-prune--repo:x: source" ] @>
+
+    test <@ keyedWith "build" "inputs" legacy = set [ "a"; "b" ] @>
 
 [<Fact(Timeout = 900000)>]
 let ``a legacy daemon, a hosted session, and one sharing its checker observe the same run`` () =
@@ -703,6 +812,17 @@ let ``a legacy daemon, a hosted session, and one sharing its checker observe the
         test <@ hosted.Phases = legacy.Phases @>
         test <@ hosted.TestRuns = legacy.TestRuns @>
         test <@ hosted.Coverage = legacy.Coverage @>
+        // Before the entry names: keys minted from different inputs fail here naming the
+        // input, rather than below as a pair of hashes.
+        test <@ List.isEmpty (divergentKeyInputs legacy.CacheKeyInputs hosted.CacheKeyInputs) @>
+
+        // The inputs are compared, not merely recorded alike: in every mode the edit
+        // re-keyed the build on its content, under one toolchain.
+        for observed in [ legacy; hosted; besideASibling ] do
+            let keyings = observed.FirstKeyInputs @ observed.CacheKeyInputs
+            test <@ (keyedWith "build" "inputs" keyings).Count = 2 @>
+            test <@ (keyedWith "build" FsHotWatch.TaskCache.ToolchainLabel keyings).Count = 1 @>
+
         test <@ hosted.StateFiles = legacy.StateFiles @>
         test <@ hosted.ScanMetrics = legacy.ScanMetrics @>
         test <@ legacy.PluginCommand.StartsWith "{\"files\"" @>
@@ -735,5 +855,6 @@ let ``a legacy daemon, a hosted session, and one sharing its checker observe the
         test <@ besideASibling.Phases = lintReplayedFirst legacy.Phases @>
         test <@ besideASibling.TestRuns = legacy.TestRuns @>
         test <@ besideASibling.Coverage = legacy.Coverage @>
+        test <@ List.isEmpty (divergentKeyInputs legacy.CacheKeyInputs besideASibling.CacheKeyInputs) @>
         test <@ besideASibling.StateFiles = legacy.StateFiles @>
         test <@ besideASibling.ScanMetrics = legacy.ScanMetrics @>)

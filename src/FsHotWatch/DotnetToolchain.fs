@@ -40,13 +40,28 @@ let describe (versionAnswer: string) (dotnetRoot: string option) (globalJson: st
       $"global.json=%s{globalJson}" ]
     |> String.concat "\n"
 
+let private versionLine =
+    Text.RegularExpressions.Regex(@"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-+]*)?$")
+
+/// The version line in what a successful `dotnet --version` printed. Its stdout and
+/// stderr arrive merged, and a `dotnet` child writes diagnostics of its own beside the
+/// version, nondeterministically ("CNamedPipe::Write - Writing message to named pipe
+/// failed.: Bad file descriptor" on GitHub's Linux runners). Two asks under one SDK
+/// must answer alike, so only the version is the answer. Output with no version line
+/// in it is kept whole: what it says is all there is to tell one apart from another.
+let private versionOf (printed: string) : string =
+    printed.Split('\n')
+    |> Array.map (fun line -> line.Trim())
+    |> Array.tryFind versionLine.IsMatch
+    |> Option.defaultWith (fun () -> printed.Trim())
+
 /// `dotnet --version`, run by `run`, as the answer `describe` records: the version on
 /// success, the exit code and output on failure. A failure is an identity too — it is
 /// the one a fixed environment must not share — and so is a spawn that threw.
 let internal answerOf (run: unit -> ProcessOutcome) : string =
     try
         match run () with
-        | Succeeded output -> (renderOutput output).Trim()
+        | Succeeded output -> versionOf (renderOutput output)
         | Failed(code, output) -> $"failed (exit %d{code}): %s{(renderOutput output).Trim()}"
         | TimedOut _ as outcome -> $"failed: %s{outputOf outcome}"
     with ex ->

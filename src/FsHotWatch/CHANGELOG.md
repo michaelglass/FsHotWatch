@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: the toolchain identity every task-cache key is scoped to is the version line
+  `dotnet --version` printed, not everything it printed. Its stdout and stderr arrive merged,
+  and a `dotnet` child sometimes writes a diagnostic of its own beside the version
+  (`CNamedPipe::Write - Writing message to named pipe failed.: Bad file descriptor` on GitHub
+  Linux runners). A repository host asks again under each session's environment, so when one
+  ask printed the line and the other did not, a per-worktree daemon and a hosted session keyed
+  the same tree under the same SDK differently, and every task-cache entry missed across modes.
+  Output with no version line in it is still kept whole.
+
 ## 0.10.0-alpha.82 - 2026-10-17
 
 - fix: a directory or glob named in `verdictInputs` or `evidence.extra` resolves to the files

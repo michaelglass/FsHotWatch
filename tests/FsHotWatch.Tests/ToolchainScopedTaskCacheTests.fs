@@ -228,3 +228,61 @@ let ``clearing through the scope clears the store beneath it`` () =
             [ buildKey; lintA; lintB; fmtA ]
             |> List.forall (fun c -> scoped.TryGet c key = None)
         @>
+
+// A `dotnet` child prints diagnostics of its own beside the version, nondeterministically:
+// a GitHub-hosted Linux runner's `dotnet --version` answered
+// "10.0.402\nCNamedPipe::Write - Writing message to named pipe failed.: Bad file descriptor"
+// in one process, and every task key a per-worktree daemon minted there was scoped to
+// that line. A repository host's session asks again under its own environment, where the
+// line may not appear, so the SAME tree under the SAME SDK got a different key in each
+// mode. The identity is the version dotnet resolved, not the bytes it happened to print.
+let private pipeNoise =
+    "CNamedPipe::Write - Writing message to named pipe failed.: Bad file descriptor"
+
+let private drained (text: string) =
+    FsHotWatch.ProcessHelper.Succeeded(FsHotWatch.ProcessHelper.ProcessOutput.Drained text)
+
+[<Fact(Timeout = 15000)>]
+let ``a successful answer is the version line, whatever else dotnet printed beside it`` () =
+    test <@ answerOf (fun () -> drained $"10.0.402\n%s{pipeNoise}") = "10.0.402" @>
+    test <@ answerOf (fun () -> drained $"%s{pipeNoise}\n10.0.402") = "10.0.402" @>
+    test <@ answerOf (fun () -> drained "10.0.100-rc.2.25502.107\r\n") = "10.0.100-rc.2.25502.107" @>
+
+    let incomplete =
+        answerOf (fun () ->
+            FsHotWatch.ProcessHelper.Succeeded(
+                FsHotWatch.ProcessHelper.ProcessOutput.DrainTimedOut("10.0.402", System.TimeSpan.FromSeconds 2.0)
+            ))
+
+    test <@ incomplete = "10.0.402" @>
+
+[<Fact(Timeout = 15000)>]
+let ``a successful answer with no version line in it is kept whole`` () =
+    test <@ answerOf (fun () -> drained $"  %s{pipeNoise}\n") = pipeNoise @>
+
+[<Fact(Timeout = 15000)>]
+let ``a host session and this process resolve one identity when only dotnet's diagnostics differ`` () =
+    withTempDir "toolchain-noise" (fun dir ->
+        // The process's own `dotnet --version` printed the pipe diagnostic; the session's,
+        // asked again under the same variables, did not.
+        let resolver =
+            Resolver(fun _ ->
+                match FsHotWatch.SessionScope.SessionEnvironment.current () with
+                | None -> answerOf (fun () -> drained $"10.0.402\n%s{pipeNoise}")
+                | Some _ -> answerOf (fun () -> drained "10.0.402"))
+
+        let legacy = resolver.Identity dir
+
+        let hosted =
+            let session =
+                FsHotWatch.SessionScope.SessionEnvironment.create
+                    dir
+                    (Map.ofList
+                        [ match System.Environment.GetEnvironmentVariable "DOTNET_ROOT" with
+                          | null -> ()
+                          | root -> "DOTNET_ROOT", root ])
+
+            use _scope = FsHotWatch.SessionScope.SessionEnvironment.install session
+            resolver.Identity dir
+
+        test <@ hosted = legacy @>)
