@@ -2432,6 +2432,12 @@ module internal StallWatch =
         else
             watch
 
+    /// Fold in a sample taken while supervised work is live inside its deadline. That work
+    /// is progress however quiet it looks, so the clock restarts: when it ends, whatever
+    /// the host still owns gets the full threshold from that moment, rather than whatever
+    /// was left of a threshold that ran down while the supervised work did.
+    let working (now: System.DateTime) (watch: StallWatch) : StallWatch = { watch with Since = now }
+
     /// Has nothing finished for `threshold`, as of `now`?
     let stalled (threshold: System.TimeSpan) (now: System.DateTime) (watch: StallWatch) : bool =
         now - watch.Since >= threshold
@@ -2655,27 +2661,38 @@ let private waitCoreWith
             let busy = if host.AnyPluginBusy() then host.BusyPluginNames() else []
 
             let now = System.DateTime.UtcNow
-            progress <- StallWatch.observe (host.CompletedDispatches()) now progress
+            let work = host.WorkSnapshot
+
+            // A BOUNDED operation that is live and inside its deadline is working: a cold
+            // discovery or an impact selection owns work for minutes while no plugin event
+            // completes anywhere, which is byte-for-byte the signature of a stuck inflight
+            // count. The difference is not in how it looks but in what will happen — that
+            // work has a deadline which will fail it, and an event fold that never returns
+            // has nothing. So every sample taken while it is live restarts the clock, and
+            // the rest of the fold it was part of gets the full threshold once it ends.
+            progress <-
+                StallWatch.observe (host.CompletedDispatches()) now progress
+                |> fun watch ->
+                    if work.SupervisedWorkInFlight then
+                        StallWatch.working now watch
+                    else
+                        watch
+
+            // Past its deadline, declared work has its own failure recorded and stops
+            // counting as live. It said how long it would take, so the overrun is the
+            // verdict: no further threshold is owed before naming it.
+            let overran =
+                busy |> List.exists (fun plugin -> not (overranWorkOf work plugin).IsEmpty)
 
             // Only meaningful when NOTHING is Running: a busy plugin that is also
             // Running is simply working. `anyRunning` is checked LAST because it is
             // the dearest of the three and, given no progress for the threshold, the
             // rarest to change the answer.
-            //
-            // A BOUNDED operation that is live and inside its deadline is working too,
-            // and is the one shape this detector used to get wrong: a cold discovery owns
-            // work for minutes while no plugin event completes anywhere, which is
-            // byte-for-byte the signature of a stuck inflight count. The difference is not
-            // in how it looks but in what will happen — that work has a deadline which
-            // will fail it, and an event fold that never returns has nothing. So a live
-            // supervised operation counts as progress while it is inside its deadline;
-            // past it, its own failure is recorded, `SupervisedWorkInFlight` goes false,
-            // and this fires as before.
             if
                 not busy.IsEmpty
-                && StallWatch.stalled stallThreshold now progress
+                && not work.SupervisedWorkInFlight
+                && (overran || StallWatch.stalled stallThreshold now progress)
                 && not (anyRunning ())
-                && not host.WorkSnapshot.SupervisedWorkInFlight
             then
                 let joined = String.concat ", " busy
 

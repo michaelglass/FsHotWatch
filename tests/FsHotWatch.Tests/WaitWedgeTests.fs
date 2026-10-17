@@ -329,6 +329,23 @@ let ``a count that has not moved for the threshold is a stall`` () =
     test <@ not (Daemon.StallWatch.stalled threshold justBefore (Daemon.StallWatch.observe 7L justBefore watch)) @>
     test <@ Daemon.StallWatch.stalled threshold at (Daemon.StallWatch.observe 7L at watch) @>
 
+[<Fact>]
+let ``time spent inside supervised work is not charged to the stall that follows it`` () =
+    // Supervised work held the count still for twice the threshold. The threshold for what
+    // follows starts at its last live sample, not at the last finished event before it.
+    let threshold = TimeSpan.FromSeconds 5.0
+    let start = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+    let lastLive = start + threshold + threshold
+
+    let watch =
+        Daemon.StallWatch.start start
+        |> Daemon.StallWatch.observe 7L start
+        |> Daemon.StallWatch.working lastLive
+
+    test <@ not (Daemon.StallWatch.stalled threshold (lastLive + TimeSpan.FromSeconds 1.0) watch) @>
+    test <@ Daemon.StallWatch.stalled threshold (lastLive + threshold) watch @>
+    test <@ watch.Finished = 7L @>
+
 [<Fact(Timeout = 60_000)>]
 let ``a plugin whose loop died fails the wait immediately, naming it`` () =
     // A dead agent no longer has to be inferred from silence over a threshold: the
@@ -561,3 +578,118 @@ let ``a wait that runs out inside declared work names that work and how far into
         test <@ failure.Message.Contains "of 5m 0s" @>
     finally
         release.Set()
+
+// ---------------------------------------------------------------------------
+// The fold after its declaration: the silence the declaration covered is not stall time.
+// ---------------------------------------------------------------------------
+//
+// A declaration is usually only PART of a fold: the impact selection returns, and the fold
+// still classifies, logs and commits its state. While the declaration is live the
+// detector waits on it; when it ends, the remainder of the fold is ordinary work with
+// nothing Running and no event finished since BEFORE the declaration began. A declaration
+// that ran longer than the stall threshold must not leave the remainder already "stalled"
+// the instant it starts — the time inside the plugin's own bound was progress.
+
+/// A declared unit of work, then an undeclared remainder of the same fold, each gated.
+let private declaredThenTailHandler
+    (name: string)
+    (deadline: TimeSpan)
+    (declaredRelease: ManualResetEventSlim)
+    (tailEntered: ManualResetEventSlim)
+    (tailRelease: ManualResetEventSlim)
+    =
+    { Name = PluginName.create name
+      Init = ()
+      Update =
+        fun ctx state _event ->
+            async {
+                do
+                    use _bound = ctx.DeclareBoundedWork "impact selection" deadline
+                    declaredRelease.Wait()
+
+                tailEntered.Set()
+                tailRelease.Wait()
+                return state
+            }
+      Commands = []
+      Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+      PrepareCommit = None
+      CacheKey = None
+      Teardown = None }
+
+[<Fact(Timeout = 60_000)>]
+let ``the fold after a declaration longer than the stall threshold is not instantly wedged`` () =
+    use declaredRelease = new ManualResetEventSlim(false)
+    use tailEntered = new ManualResetEventSlim(false)
+    use tailRelease = new ManualResetEventSlim(false)
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
+
+    try
+        host.RegisterHandler(
+            declaredThenTailHandler
+                "selecting-plugin"
+                (TimeSpan.FromMinutes 20.0)
+                declaredRelease
+                tailEntered
+                tailRelease
+        )
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        test <@ waitUntilTrue (fun () -> host.AnyPluginBusy()) 10_000 @>
+
+        let threshold = TimeSpan.FromSeconds 2.0
+
+        let wait =
+            Daemon.waitForAllTerminalCore host (TimeSpan.FromSeconds 30.0) threshold CancellationToken.None
+
+        // The declared work outlasts the stall threshold, inside its own bound.
+        // FSHW-WAIT-001 ok: the window must outlast the stall threshold; nothing is awaited.
+        Thread.Sleep 2_500
+        test <@ not wait.IsFaulted @>
+        declaredRelease.Set()
+        Assert.True(tailEntered.Wait(TimeSpan.FromSeconds 10.0), "the remainder of the fold must start")
+
+        // The remainder is well inside the stall threshold: a wedge verdict now could only
+        // have come from charging the declared time as silence.
+        // FSHW-WAIT-001 ok: asserting a NEGATIVE (no wedge verdict) inside this window.
+        Thread.Sleep 500
+        test <@ not wait.IsFaulted @>
+
+        tailRelease.Set()
+        wait.GetAwaiter().GetResult()
+    finally
+        declaredRelease.Set()
+        tailRelease.Set()
+
+[<Fact(Timeout = 60_000)>]
+let ``a fold that hangs after its declaration ends is still named wedged`` () =
+    // The negative control: the declared time restarts the clock, it does not stop it. A
+    // remainder that never returns is caught one stall threshold after the declaration ends.
+    use declaredRelease = new ManualResetEventSlim(false)
+    use tailEntered = new ManualResetEventSlim(false)
+    use tailRelease = new ManualResetEventSlim(false)
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
+
+    try
+        host.RegisterHandler(
+            declaredThenTailHandler "hanging-plugin" (TimeSpan.FromMinutes 20.0) declaredRelease tailEntered tailRelease
+        )
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        declaredRelease.Set()
+        Assert.True(tailEntered.Wait(TimeSpan.FromSeconds 10.0), "the remainder of the fold must start")
+
+        let failure =
+            Assert.Throws<TimeoutException>(fun () ->
+                Daemon.waitForAllTerminalCore
+                    host
+                    (TimeSpan.FromSeconds 30.0)
+                    (TimeSpan.FromMilliseconds 300.0)
+                    CancellationToken.None
+                |> fun t -> t.GetAwaiter().GetResult())
+
+        test <@ failure.Message.Contains "WEDGED" @>
+        test <@ failure.Message.Contains "hanging-plugin" @>
+    finally
+        declaredRelease.Set()
+        tailRelease.Set()
