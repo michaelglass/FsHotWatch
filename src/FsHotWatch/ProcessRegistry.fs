@@ -50,6 +50,28 @@ let internal TerminationBudget = TimeSpan.FromSeconds 5.0
 /// used its full budget can still report what it established.
 let private TeardownGrace = TimeSpan.FromSeconds 1.0
 
+/// How long a teardown waits for the escalation of a kill that did not return. The
+/// escalation bounds itself (two signal rounds of bounded polls); this is the backstop.
+let internal EscalationBudget = TimeSpan.FromSeconds 10.0
+
+/// The bounds one registry's teardowns run under. Injected so a test can drive a kill
+/// that hangs without paying the production budgets.
+[<NoComparison>]
+type internal TeardownBudgets =
+    {
+        /// How long a killed child is given to exit (`TerminationBudget`).
+        Termination: TimeSpan
+        /// Extra time the teardown allows beyond that (`TeardownGrace`).
+        Grace: TimeSpan
+        /// How long the escalation of a kill that did not return may take.
+        Escalation: TimeSpan
+    }
+
+let internal DefaultBudgets =
+    { Termination = TerminationBudget
+      Grace = TeardownGrace
+      Escalation = EscalationBudget }
+
 /// What a handle can tell us about its child.
 [<RequireQualifiedAccess; NoComparison; NoEquality>]
 type internal ExitObservation =
@@ -63,6 +85,9 @@ type internal ExitObservation =
 type internal Termination =
     | Established
     | Uncertain of reason: string
+    /// The kill did not return (`hung`), and escalation left these members running, or
+    /// could not prove them ours or gone: each pid with why.
+    | Survived of hung: string * survivors: (int * string) list
 
 /// Only a handle that positively reports exit is evidence that its child is gone. A
 /// disposed handle is NOT: disposing a `Process` releases our view of the child, not
@@ -102,6 +127,12 @@ type internal IOwnedChild =
     abstract KillTree: unit -> unit
     /// Wait up to `milliseconds` for the child to exit.
     abstract WaitForExit: milliseconds: int -> unit
+    /// Escalate a kill that did not return, against the identity recorded at launch (pid
+    /// and start time, never a name). `None` when no identity was recorded: no signal
+    /// could then be proven to reach OUR process, so the tree is left to be booked as
+    /// leaked. Otherwise the members escalation left running, or could not prove ours or
+    /// gone, each with why; empty means the tree is gone.
+    abstract Escalate: unit -> (int * string) list option
 
 /// A `Process` as an owned child. The pid is read now, while the caller holds a live
 /// handle, so a later disposal cannot erase it.
@@ -114,10 +145,27 @@ let internal ownedProcess (p: Process) : IOwnedChild =
         member _.KillTree() = p.Kill(entireProcessTree = true)
 
         member _.WaitForExit milliseconds =
-            p.WaitForExit(milliseconds: int) |> ignore }
+            p.WaitForExit(milliseconds: int) |> ignore
+
+        member _.Escalate() = None }
+
+/// `child`, escalating a kill that did not return through `escalate` (see
+/// `IOwnedChild.Escalate`). The registry compiles before the escalation does, so the
+/// launcher, which recorded the child's identity, supplies it. `None` leaves `child`
+/// as it was.
+let internal escalatingWith (escalate: (unit -> (int * string) list) option) (child: IOwnedChild) : IOwnedChild =
+    match escalate with
+    | None -> child
+    | Some escalateNow ->
+        { new IOwnedChild with
+            member _.Pid = child.Pid
+            member _.Observe() = child.Observe()
+            member _.KillTree() = child.KillTree()
+            member _.WaitForExit milliseconds = child.WaitForExit milliseconds
+            member _.Escalate() = Some(escalateNow ()) }
 
 /// Kill one child's tree and wait, within the budget, for positive evidence of exit.
-let private terminateHandle (child: IOwnedChild) : Termination =
+let private terminateHandle (budget: TimeSpan) (child: IOwnedChild) : Termination =
     match child.Observe() with
     | ExitObservation.Running ->
         let killFailure =
@@ -128,42 +176,102 @@ let private terminateHandle (child: IOwnedChild) : Termination =
                 Some ex
 
         try
-            child.WaitForExit(int TerminationBudget.TotalMilliseconds)
+            child.WaitForExit(int budget.TotalMilliseconds)
         with ex when isExpectedProcessException ex ->
             ()
 
         classifyTermination (child.Observe()) killFailure
     | settled -> classifyTermination settled None
 
+let private startLongRunning (work: unit -> Termination) : Task<Termination> =
+    Task.Factory.StartNew(work, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)
+
+/// Wait at most `budget` for every task, side by side.
+let private waitAllWithin (budget: TimeSpan) (tasks: Task<Termination> array) =
+    if not (Array.isEmpty tasks) then
+        Task.WaitAll(tasks |> Array.map (fun task -> task :> Task), budget) |> ignore
+
+/// Escalate one child whose teardown did not return within its budget (`hung` says
+/// so). The kill call is still in flight; escalation re-proves ownership before every
+/// signal, so the two cannot reach a stranger between them.
+let private escalateHung (hung: string) (child: IOwnedChild) : Termination =
+    try
+        match child.Escalate() with
+        | None -> Termination.Uncertain hung
+        | Some [] ->
+            Logging.warn
+                "process-registry"
+                $"ESCALATED tracked child pid %d{child.Pid} at teardown: %s{hung}, so its tree was sent SIGTERM,                   then SIGKILL, member by member (pid and start time). It is gone."
+
+            Termination.Established
+        | Some survivors ->
+            let named =
+                survivors
+                |> List.map (fun (pid, why) -> $"pid %d{pid} (%s{why})")
+                |> String.concat "; "
+
+            Logging.error
+                "process-registry"
+                $"tracked child pid %d{child.Pid} SURVIVED escalation at teardown: %s{hung}, and SIGTERM then                   SIGKILL left %s{named}. These are STILL RUNNING."
+
+            Termination.Survived(hung, survivors)
+    with ex ->
+        Termination.Uncertain $"%s{hung}, and its escalation threw %s{ex.GetType().Name}: %s{ex.Message}"
+
 /// Tear every child down side by side, all bounded by ONE wait. A kill call that has
-/// not come back by then is reported as uncertain rather than waited on.
-let private terminateAll (children: IOwnedChild array) : Termination array =
+/// not come back by then is escalated through its child (`IOwnedChild.Escalate`), the
+/// escalations side by side under one more bounded wait. A tree no escalation could
+/// account for is reported as uncertain rather than waited on.
+let private terminateAll (budgets: TeardownBudgets) (children: IOwnedChild array) : Termination array =
     let attempts =
         children
         |> Array.map (fun child ->
-            Task.Factory.StartNew(
-                (fun () ->
-                    try
-                        terminateHandle child
-                    with ex ->
-                        Termination.Uncertain $"the teardown threw %s{ex.GetType().Name}: %s{ex.Message}"),
-                CancellationToken.None,
-                TaskCreationOptions.LongRunning,
-                TaskScheduler.Default
-            ))
+            startLongRunning (fun () ->
+                try
+                    terminateHandle budgets.Termination child
+                with ex ->
+                    Termination.Uncertain $"the teardown threw %s{ex.GetType().Name}: %s{ex.Message}"))
 
-    let allowed = TerminationBudget + TeardownGrace
+    let allowed = budgets.Termination + budgets.Grace
+    waitAllWithin allowed attempts
 
-    if not (Array.isEmpty attempts) then
-        Task.WaitAll(attempts |> Array.map (fun attempt -> attempt :> Task), allowed)
-        |> ignore
+    let hung = $"the teardown did not return within %s{string allowed}"
 
-    attempts
-    |> Array.map (fun attempt ->
-        if attempt.IsCompletedSuccessfully then
-            attempt.Result
+    // A finished teardown is final; only the ones still in flight are escalated.
+    let escalations =
+        Array.zip children attempts
+        |> Array.map (fun (child, attempt) ->
+            if attempt.IsCompleted then
+                attempt
+            else
+                startLongRunning (fun () -> escalateHung hung child))
+
+    waitAllWithin budgets.Escalation escalations
+
+    escalations
+    |> Array.map (fun escalation ->
+        if escalation.IsCompletedSuccessfully then
+            escalation.Result
         else
-            Termination.Uncertain $"the teardown did not return within %s{string allowed}")
+            Termination.Uncertain $"%s{hung}, and its escalation did not finish within %s{string budgets.Escalation}")
+
+/// The leaks one teardown outcome books: the child itself when its termination is
+/// uncertain, or each member escalation left behind, by its own pid.
+let private leaksOf (child: IOwnedChild) (outcome: Termination) : LeakedTree list =
+    match outcome with
+    | Termination.Established -> []
+    | Termination.Uncertain reason ->
+        [ { Pid = child.Pid
+            Description = $"tracked child pid %d{child.Pid}"
+            Reason = reason
+            At = DateTime.UtcNow } ]
+    | Termination.Survived(hung, survivors) ->
+        survivors
+        |> List.map (fun (pid, why) ->
+            { Pid = pid
+              Description = $"pid %d{pid}, in the tree of tracked child pid %d{child.Pid}"
+              Reason = $"%s{hung}, and escalation left it: %s{why}"
+              At = DateTime.UtcNow })
 
 /// Per-scope process tracker. Scoped via AsyncLocal so a daemon's spawned children
 /// register against that daemon's registry, not a process-wide global. This keeps
@@ -172,7 +280,7 @@ let private terminateAll (children: IOwnedChild array) : Termination array =
 /// A registry may have a PARENT: an operation's own scope (see `withChildScope`). It
 /// forwards every admission, untrack and leak to its parent, so daemon shutdown still
 /// sees an operation's children, while tearing the operation down reaches only its own.
-type Registry internal (parent: Registry option) =
+type Registry internal (parent: Registry option, budgets: TeardownBudgets) =
     // One lock for admission, untrack and the shutdown snapshot, so "closed" and "the
     // set of children" are never observed out of step. OS calls stay outside it.
     let gate = Lock()
@@ -188,13 +296,9 @@ type Registry internal (parent: Registry option) =
     // Append-only: a tree we could not account for is never un-leaked.
     let leaks = ConcurrentQueue<LeakedTree>()
 
-    let uncertain (pid: int) (reason: string) =
-        { Pid = pid
-          Description = $"tracked child pid %d{pid}"
-          Reason = reason
-          At = DateTime.UtcNow }
+    new() = Registry(None, DefaultBudgets)
 
-    new() = Registry(None)
+    internal new(parent: Registry option) = Registry(parent, DefaultBudgets)
 
     /// True once this registry, or any registry it forwards to, has shut down.
     member internal _.IsClosed: bool =
@@ -221,9 +325,9 @@ type Registry internal (parent: Registry option) =
                     not closed)
 
             if not admitted then
-                match terminateAll [| child |] with
-                | [| Termination.Uncertain reason |] -> this.ReportLeak(uncertain child.Pid reason)
-                | _ -> ()
+                for outcome in terminateAll budgets [| child |] do
+                    for leak in leaksOf child outcome do
+                        this.ReportLeak leak
 
                 parent |> Option.iter (fun owner -> owner.UntrackChild key)
 
@@ -313,7 +417,7 @@ type Registry internal (parent: Registry option) =
     /// its owner untracked it while the teardown ran: accounting for it is then the
     /// owner's job, and `ProcessHelper` reports its own failed kills.
     member this.KillAll() : unit =
-        this.ShutDown(TerminationBudget + TeardownGrace)
+        this.ShutDown(budgets.Termination + budgets.Grace)
 
     /// `KillAll`, waiting at most `launchBudget` for launches in flight (see
     /// `BeginLaunch`). Separate so the give-up arm is testable without its full budget.
@@ -323,15 +427,15 @@ type Registry internal (parent: Registry option) =
                 closed <- true
                 live |> Seq.map (fun kv -> kv.Key, kv.Value) |> Array.ofSeq)
 
-        let outcomes = terminateAll (Array.map snd children)
+        let outcomes = terminateAll budgets (Array.map snd children)
 
         for (key, child), outcome in Array.zip children outcomes do
             let stillOwned = Locking.locked gate (fun () -> live.Remove key)
             parent |> Option.iter (fun owner -> owner.UntrackChild key)
 
-            match outcome with
-            | Termination.Uncertain reason when stillOwned -> this.ReportLeak(uncertain child.Pid reason)
-            | _ -> ()
+            if stillOwned then
+                for leak in leaksOf child outcome do
+                    this.ReportLeak leak
 
         // A child spawned before the close but not yet admitted was in no snapshot. Its
         // launching thread is refused at admission and reaps it; returning before that

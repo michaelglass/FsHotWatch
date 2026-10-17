@@ -459,7 +459,8 @@ let ``only positive exit evidence establishes termination`` () =
     let reasonOf termination =
         match termination with
         | ProcessRegistry.Termination.Uncertain reason -> reason
-        | ProcessRegistry.Termination.Established ->
+        | ProcessRegistry.Termination.Established
+        | ProcessRegistry.Termination.Survived _ ->
             Assert.Fail "expected uncertainty"
             ""
 

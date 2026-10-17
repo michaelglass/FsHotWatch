@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: registry shutdown escalates a tracked child whose kill does not return, the same way a
+  run's own teardown does, instead of only recording it as LEAKED. The escalation goes through
+  the child (`IOwnedChild.Escalate`), against the pid and start time recorded when the child
+  was launched, never a name: SIGTERM, then SIGKILL, to every member still running and still
+  ours. A tree escalation saw leave is not booked as leaked. Each member it left running, or
+  could not prove ours or gone, is logged at ERROR and booked as leaked under its own pid. A
+  child with no recorded identity is still booked as leaked without a signal, and a kill that
+  returns never escalates. The escalations run side by side under one bounded wait.
+
 ## 0.10.0-alpha.84 - 2026-10-17
 
 - fix: the toolchain identity every task-cache key is scoped to is the version line
