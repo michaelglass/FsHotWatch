@@ -609,6 +609,24 @@ let withProcessWorkingDirectory (dir: string option) (body: unit -> 'a) : 'a =
     finally
         Directory.SetCurrentDirectory original
 
+/// What an in-process MSBuild evaluation does to the process working directory: note
+/// where the process stands, stand it in `projectDir`, run `meanwhile`, then put back
+/// the directory it noted, which a concurrent evaluation may have moved it to. Run
+/// inside `withProcessWorkingDirectory`, which restores the real one.
+let evaluateInProjectDirectory (projectDir: string) (meanwhile: unit -> unit) : unit =
+    let found = Directory.GetCurrentDirectory()
+    Directory.SetCurrentDirectory projectDir
+    meanwhile ()
+    Directory.SetCurrentDirectory found
+
+/// Whether the directory the process stands in still exists. Reading a deleted one
+/// throws, which is how every relative path and `Process.Start` then fails.
+let processWorkingDirectoryExists () : bool =
+    try
+        Directory.Exists(Directory.GetCurrentDirectory())
+    with :? FileNotFoundException ->
+        false
+
 let withTempDir (prefix: string) (body: string -> 'a) =
     // Canonicalize so /var/folders/... and /private/var/folders/... don't diverge
     // across test+plugin views of the same path (macOS temp dir is a symlink).

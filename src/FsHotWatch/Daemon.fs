@@ -780,6 +780,23 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
                 admission.Release() |> ignore
         }
 
+/// MSBuild evaluating in this process stands the PROCESS in each project it evaluates
+/// and, when done, puts back the directory it found. Two evaluations overlapping in one
+/// process (a repository host's sessions, a test host's daemons) put back each other's:
+/// the later one to finish leaves the process standing in the earlier one's project, and
+/// once that directory is deleted every relative path and every `Process.Start` in the
+/// process fails. So evaluations run one at a time, each putting back where it started.
+let private inProcessEvaluation = obj ()
+
+let private evaluateInProcess (load: unit -> 'a) : 'a =
+    lock inProcessEvaluation (fun () ->
+        let found = Directory.GetCurrentDirectory()
+
+        try
+            load ()
+        finally
+            Directory.SetCurrentDirectory found)
+
 /// Discover .fsproj files and register them with the graph and pipeline.
 /// Uses Ionide.ProjInfo for MSBuild design-time evaluation to get real
 /// assembly references, NuGet packages, and compiler flags.
@@ -855,13 +872,14 @@ let private discoverAndRegisterProjects
 
         try
             let loaded: Types.ProjectOptions list =
-                match binlogDir with
-                | Some dir ->
-                    Logging.info "discover" $"Binlog capture enabled: %s{dir.FullName}"
+                evaluateInProcess (fun () ->
+                    match binlogDir with
+                    | Some dir ->
+                        Logging.info "discover" $"Binlog capture enabled: %s{dir.FullName}"
 
-                    loader.LoadProjects(fsprojFiles, [], BinaryLogGeneration.Within dir)
-                    |> Seq.toList
-                | None -> loader.LoadProjects(fsprojFiles) |> Seq.toList
+                        loader.LoadProjects(fsprojFiles, [], BinaryLogGeneration.Within dir)
+                        |> Seq.toList
+                    | None -> loader.LoadProjects(fsprojFiles) |> Seq.toList)
 
             loadedCount <- loaded.Length
 

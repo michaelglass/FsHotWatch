@@ -74,6 +74,17 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core: overlapping project evaluations no longer strand the process in a deleted directory
+
+- MSBuild evaluating in process stands the process in each project it evaluates, then
+  puts back the directory it found. Two evaluations at once in one process (a repository
+  host serving several sessions, or a test host running several daemons) put back each
+  other's directories. The one that finished last left the process standing in the
+  other's project. Once that directory was deleted, every relative path and every
+  `Process.Start` in the process failed: 47 unrelated tests in one suite run. Evaluations
+  now run one at a time, and each puts back the directory it started in. A test forces
+  the overlap and fails without the fix.
+
 ### test-prune: prose that starts with "failed" is no longer filed as a failing test
 
 - test-prune read any console line starting with `failed ` as a failing test. A test
