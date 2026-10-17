@@ -768,3 +768,15 @@ let ``an unreadable test project file makes no key`` () =
                 test <@ Result.isError (keyResultOf root defaultConfig) @>
             finally
                 File.SetUnixFileMode(project, UnixFileMode.UserRead ||| UnixFileMode.UserWrite))
+
+[<Fact>]
+let ``the capture's log line marks an unset variable and names its env files`` () =
+    let loaded: LoadedEnvironment =
+        { Variables = Map.ofList [ "FSHW_EV_ABSENT", "unset"; "FSHW_EV_PRESENT", "set:sha256:00" ]
+          EnvFiles = Map.ofList [ ".env.test", "sha256:00" ] }
+
+    let line = LoadedEnvironment.describe loaded
+    test <@ line.Contains "FSHW_EV_ABSENT (unset)" @>
+    test <@ line.Contains "FSHW_EV_PRESENT (set)" @>
+    test <@ line.Contains ".env.test" @>
+    test <@ not (line.Contains "sha256") @>
