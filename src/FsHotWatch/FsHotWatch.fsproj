@@ -63,6 +63,7 @@
 
   <ItemGroup>
     <Compile Include="Locking.fs" />
+    <Compile Include="DrainedTimer.fs" />
     <Compile Include="Logging.fs" />
     <Compile Include="Json.fs" />
     <Compile Include="SessionScope.fs" />

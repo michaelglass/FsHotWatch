@@ -638,3 +638,28 @@ let ``runTick recovers from an unobservable wedge AT MOST ONCE across ticks`` ()
     test <@ wedges.Count = 1 @>
     test <@ wedges.[0].Contains "cannot tell which plugin" @>
     test <@ log.Count = 0 @>
+
+[<Fact(Timeout = 30000)>]
+let ``a tick in flight when the monitor is disposed recovers before the daemon's source is disposed`` () =
+    let since = DateTime.UtcNow - TimeSpan.FromHours 2.0
+
+    let seen =
+        cancelAcrossTeardown (fun hold shutdown ->
+            createMonitorWith
+                (TimeSpan.FromMilliseconds 100.0)
+                { Bound = TimeSpan.FromMinutes 60.0
+                  ResultQueuedBound = TimeSpan.FromMinutes 5.0
+                  EscalateEvery = TimeSpan.FromMinutes 5.0
+                  Now = fun () -> DateTime.UtcNow
+                  RunningPlugins =
+                    fun () ->
+                        hold ()
+                        [ "analyzers", since ]
+                  QueuedResults = fun () -> []
+                  Awaiting = fun _ -> ""
+                  AnyBusy = fun () -> false
+                  LastActivityAt = fun () -> DateTime.UtcNow
+                  Log = ignore
+                  OnWedged = fun _ -> shutdown () })
+
+    test <@ seen = None @>

@@ -320,12 +320,12 @@ let runTick (deps: IdleExitDeps) (latch: FireLatch) : TickOutcome =
         deps.Log $"[idle-exit] tick failed: %s{ex.ToString()}"
         TickOutcome.TickFailed(ex.Message)
 
-/// Create the live scheduler `System.Threading.Timer` (period 30s). The caller
-/// owns disposal. Logs the enable line on creation. Pure wiring around `runTick`
-/// — all effects come through `deps`.
-let createTimer (deps: IdleExitDeps) : Timer =
+/// Create the scheduler timer with an explicit tick period. The caller owns
+/// disposal; once it returns, no tick is running and none will, so the caller may
+/// then dispose what `deps.Shutdown` uses. Logs the enable line on creation. Pure
+/// wiring around `runTick` — all effects come through `deps`.
+let createTimerWith (period: TimeSpan) (deps: IdleExitDeps) : IDisposable =
     let latch = FireLatch.create ()
-    let period = TimeSpan.FromSeconds(30.0)
 
     let floorNote =
         match deps.PressureFloorMin with
@@ -335,6 +335,8 @@ let createTimer (deps: IdleExitDeps) : Timer =
     deps.Log
         $"[idle-exit] enabled: will shut down after %d{deps.BaseThresholdMin}min idle (checked every 30s)%s{floorNote}"
 
-    let onTick (_: obj) = runTick deps latch |> ignore
+    DrainedTimer.every period (fun () -> runTick deps latch |> ignore)
 
-    new Timer(TimerCallback(onTick), null, period, period)
+/// Create the live scheduler timer (period 30s).
+let createTimer (deps: IdleExitDeps) : IDisposable =
+    createTimerWith (TimeSpan.FromSeconds 30.0) deps

@@ -118,6 +118,7 @@
     <Compile Include="ScanActivityTests.fs" />
     <Compile Include="DaemonPhasesTests.fs" />
     <Compile Include="ScanMetricsTests.fs" />
+    <Compile Include="DrainedTimerTests.fs" />
     <Compile Include="IdleExitTests.fs" />
     <Compile Include="VanishedRootTests.fs" />
     <Compile Include="HeartbeatTests.fs" />

@@ -134,6 +134,56 @@ let waitUntilTrue (condition: unit -> bool) (timeoutMs: int) : bool =
 
     ok
 
+/// What a timer's tick saw when it cancelled the daemon's `CancellationTokenSource`
+/// across its owner's teardown: `None` when the cancel went through, the exception
+/// when it found the source already disposed.
+///
+/// `start hold shutdown` starts the timer under test with `hold ()` called inside
+/// every tick before it decides to shut down, and `shutdown` as its shutdown action.
+/// Every tick is held until a tick is in flight; then the owner tears down in the
+/// daemon's order — dispose the timer, then the source — and only after that, or
+/// after half a second if disposing the timer waits for the tick, are the ticks let go.
+let cancelAcrossTeardown (start: (unit -> unit) -> (unit -> unit) -> IDisposable) : exn option =
+    // Not disposed: a tick the timer queued before it stopped may still reach them.
+    let entered = new ManualResetEventSlim()
+    let release = new ManualResetEventSlim()
+    let cts = new CancellationTokenSource()
+
+    let outcome =
+        Tasks.TaskCompletionSource<exn option>(Tasks.TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let hold () =
+        entered.Set()
+        release.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+    let shutdown () =
+        try
+            cts.Cancel()
+            outcome.TrySetResult None |> ignore
+        with ex ->
+            outcome.TrySetResult(Some ex) |> ignore
+
+    let timer = start hold shutdown
+
+    if not (entered.Wait(TimeSpan.FromSeconds 10.0)) then
+        failwith "no tick reached the hold"
+
+    let teardown =
+        Tasks.Task.Run(fun () ->
+            timer.Dispose()
+            cts.Dispose())
+
+    teardown.Wait(TimeSpan.FromMilliseconds 500.0) |> ignore
+    release.Set()
+
+    if not (teardown.Wait(TimeSpan.FromSeconds 10.0)) then
+        failwith "the owner's teardown never finished"
+
+    if not (outcome.Task.Wait(TimeSpan.FromSeconds 10.0)) then
+        failwith "no tick shut down"
+
+    outcome.Task.Result
+
 /// Run `body` while every thread pool thread is held, then let them go. Process-wide:
 /// a test class using it belongs to the serialized `LogGlobalCollectionName` collection.
 let withEveryPoolThreadBusy (body: unit -> 'T) : 'T =

@@ -3462,7 +3462,7 @@ type Daemon
                               Shutdown = fun () -> cts.Cancel()
                               Log = fun message -> Logging.info "idle-exit" message }
 
-                        IdleExit.createTimer deps :> IDisposable
+                        IdleExit.createTimer deps
                     | _ ->
                         // No-op disposable when idle-exit is off.
                         { new IDisposable with

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix!: a daemon no longer crashes its process when a vanished-root, idle-exit or
+  plugin-wedge tick runs across teardown. Disposing `System.Threading.Timer` does not wait
+  for a tick already running, so a tick could cancel the daemon's `CancellationTokenSource`
+  after its owner had disposed it; the `ObjectDisposedException` was thrown on a timer
+  thread, where nothing caught it (the idle-exit and wedge ticks caught and logged it).
+  These timers now return once no tick is running and none will start, so the owner may
+  then dispose what their shutdown action uses.
+  - Breaking: `IdleExit.createTimer` returns `IDisposable` instead of `Timer`.
+  - New: `IdleExit.createTimerWith` (an explicit tick period).
 - feat!: the test-evidence key covers the environment the daemon started with. A tests
   entry's `evidence.env` names variables whose values join the key as digests (an unset
   variable differs from an empty one); no value is stored or logged. Each declared
