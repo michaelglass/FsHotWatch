@@ -24,6 +24,15 @@ type PreprocessorsRun =
         Failures: (string * string) list
     }
 
+/// `file: reason; file: reason` for the files a preprocessor could not process, each
+/// file shown repository-relative with forward slashes.
+let private describeFailures (repoRoot: string) (failed: (string * string) list) : string =
+    failed
+    |> List.map (fun (file, why) ->
+        let shown = System.IO.Path.GetRelativePath(repoRoot, file).Replace('\\', '/')
+        $"%s{shown}: %s{why}")
+    |> String.concat "; "
+
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
 type PluginHost
     (
@@ -351,12 +360,7 @@ type PluginHost
                                 // "rewrote 0 of N". Its rewrites above still stand.
                                 failures <- failures @ failed
 
-                                let reason =
-                                    failed
-                                    |> List.map (fun (file, why) ->
-                                        let shown = System.IO.Path.GetRelativePath(repoRoot, file).Replace('\\', '/')
-                                        $"%s{shown}: %s{why}")
-                                    |> String.concat "; "
+                                let reason = describeFailures repoRoot failed
 
                                 Logging.error preprocessor.Name $"%s{summary}: %s{reason}"
 
