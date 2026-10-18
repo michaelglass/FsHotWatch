@@ -33,7 +33,7 @@
   },
   "maxCharactersOnLine": {
     "enabled": false,
-    "_comment": "Off: 812 finding(s) in 187 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "_comment": "Off: Fantomas owns line breaking at the same 120 columns. The tree is Fantomas-clean; of the 785 longer lines (2026-10-18), 623 are string literals and 23 are comments, which Fantomas cannot break. The rest are lines Fantomas chose to leave long.",
     "config": {
       "maxCharactersOnLine": 120
     }
