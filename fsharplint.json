@@ -29,7 +29,7 @@
   },
   "indentation": {
     "enabled": false,
-    "_comment": "Off: 4228 finding(s) in 223 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable."
+    "_comment": "Off: Fantomas owns layout and this rule fights it. The tree is Fantomas-clean (fantomas --check exits 0) and the 4,236 findings (2026-10-18) are Fantomas's own output: 3-space-aligned anonymous-record fields, object expressions, interpolated-string continuations. Reformatting a sample to the rule's 4-space shape and re-running Fantomas restores the flagged layout, so no whitespace fix survives format-on-save."
   },
   "maxCharactersOnLine": {
     "enabled": false,
