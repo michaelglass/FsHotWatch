@@ -126,6 +126,16 @@ let dropGone (repoRoot: string) (store: Store) : Store * string list =
 
     List.fold (fun kept relPath -> Map.remove relPath kept) store gone, gone
 
+/// One stored entry, or None when it is null or does not deserialize.
+let private tryEntry (kv: Collections.Generic.KeyValuePair<string, JsonNode>) =
+    match kv.Value with
+    | null -> None
+    | value ->
+        try
+            Some(kv.Key, deserializeState value)
+        with _ ->
+            None
+
 /// An entry whose file is `Gone` is dropped (`dropGone`), silently: there is nothing to
 /// warn about and nothing to fix, and the next `save` writes the store without it.
 let load (repoRoot: string) : Store =
@@ -147,18 +157,7 @@ let load (repoRoot: string) : Store =
                 else
                     let obj = root.AsObject()
 
-                    obj
-                    |> Seq.choose (fun kv ->
-                        match kv.Value with
-                        | null -> None
-                        | value ->
-                            try
-                                Some(kv.Key, deserializeState value)
-                            with _ ->
-                                None)
-                    |> Map.ofSeq
-                    |> dropGone repoRoot
-                    |> fst
+                    obj |> Seq.choose tryEntry |> Map.ofSeq |> dropGone repoRoot |> fst
         with _ ->
             Map.empty
 

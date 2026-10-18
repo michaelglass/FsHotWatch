@@ -174,6 +174,23 @@ let private transitiveDependents (graph: ProjectGraph.IProjectGraphReader) (prod
 
     walk Set.empty (graph.GetDependents producer)
 
+/// `firstOrigin :: restOrigins` with the origin built for `consumerTfm` first, when there is
+/// one, and the rest after it.
+let private primaryForFramework (consumerTfm: string) (firstOrigin: string) (restOrigins: string list) =
+    match
+        firstOrigin :: restOrigins
+        |> List.partition (fun o ->
+            System.String.Equals(
+                Path.GetFileName(Path.GetDirectoryName o),
+                consumerTfm,
+                System.StringComparison.OrdinalIgnoreCase
+            ))
+    with
+    | matching :: restMatching, rest -> matching, restMatching @ rest
+    // Nothing matched the consumer's framework, so the partition returned the origins
+    // unchanged.
+    | [], _ -> firstOrigin, restOrigins
+
 /// Every dependency-assembly copy the graph implies and the disk confirms.
 ///
 /// Scoped to the ProjectReference closure the graph already tracks — never "any file
@@ -223,20 +240,7 @@ let dependencyCopies (graph: ProjectGraph.IProjectGraphReader) : CopyPair list =
                             // there is one — the file the reader is looking at.
                             let consumerTfm = Path.GetFileName consumerDir
 
-                            let primary, others =
-                                match
-                                    origins
-                                    |> List.partition (fun o ->
-                                        System.String.Equals(
-                                            Path.GetFileName(Path.GetDirectoryName o),
-                                            consumerTfm,
-                                            System.StringComparison.OrdinalIgnoreCase
-                                        ))
-                                with
-                                | matching :: restMatching, rest -> matching, restMatching @ rest
-                                // Nothing matched the consumer's framework, so the
-                                // partition returned `origins` unchanged.
-                                | [], _ -> firstOrigin, restOrigins
+                            let primary, others = primaryForFramework consumerTfm firstOrigin restOrigins
 
                             Some
                                 { Producer = stem producer

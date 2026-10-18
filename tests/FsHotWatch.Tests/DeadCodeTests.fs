@@ -209,3 +209,52 @@ let ``formatReport with no unreachable symbols prints only the summary`` () =
                       "  Reachable: 5"
                       "  Potentially unreachable: 0" ]
         @>
+
+let private unreachableIn (sources: string list) : TestPrune.DeadCode.VerboseDeadCodeResult =
+    let symbol: SymbolInfo =
+        { FullName = "App.Lib.island"
+          Kind = SymbolKind.Value
+          SourceFile = "src/Lib.fs"
+          LineStart = 40
+          LineEnd = 40
+          ContentHash = "h"
+          IsExtern = false }
+
+    { Base =
+        { TotalSymbols = 1
+          ReachableSymbols = 0
+          UnreachableSymbols = [ symbol ] }
+      UnreachableSymbols =
+        [ { Symbol = symbol
+            Reason = TestPrune.DeadCode.DisconnectedFromEntryPoints sources } ] }
+
+[<Fact(Timeout = 15000)>]
+let ``verbose formatReport names every source of a small disconnected island`` () =
+    let lines = formatReport true (unreachableIn [ "App.A.a"; "App.B.b" ])
+
+    test <@ lines |> List.exists (fun l -> l.EndsWith("— has edges from: App.A.a, App.B.b")) @>
+
+[<Fact(Timeout = 15000)>]
+let ``verbose formatReport truncates a disconnected island's sources after three`` () =
+    let lines =
+        formatReport true (unreachableIn [ "App.A.a"; "App.B.b"; "App.C.c"; "App.D.d"; "App.E.e" ])
+
+    test
+        <@
+            lines
+            |> List.exists (fun l -> l.EndsWith("— has edges from: App.A.a, App.B.b, App.C.c, ..."))
+        @>
+
+[<Fact(Timeout = 30000)>]
+let ``runDefault reads the real schema version of a seeded DB and exits 0`` () =
+    withTempDir "deadcode-default" (fun repoRoot ->
+        seedDb repoRoot |> ignore
+
+        let exitCode =
+            runDefault
+                repoRoot
+                { EntryPatterns = defaultEntryPatterns
+                  IncludeTests = false
+                  Verbose = false }
+
+        test <@ exitCode = 0 @>)

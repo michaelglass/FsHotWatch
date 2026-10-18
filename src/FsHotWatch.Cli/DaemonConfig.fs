@@ -562,6 +562,179 @@ let private parseSelection (v: JsonElement) : TestPrune.Domain.WalkPolicy =
     | true, _ -> raise (ConfigErrorException "tests.selection.testScopedSources must be an array")
     | _ -> TestPrune.Domain.WalkPolicy.FollowAll
 
+/// One `tests.projects[]` entry. Every malformed value is a `ConfigErrorException`.
+let private parseTestProject (p: JsonElement) : TestProjectConfig =
+    let project =
+        match p.TryGetProperty("project") with
+        | true, v -> v.GetString()
+        | _ -> "unknown"
+
+    let command =
+        match p.TryGetProperty("command") with
+        | true, v -> v.GetString()
+        | _ -> "dotnet"
+
+    let args =
+        match p.TryGetProperty("args") with
+        | true, v -> v.GetString()
+        | _ -> $"test --project %s{project}"
+
+    let group =
+        match p.TryGetProperty("group") with
+        | true, v -> v.GetString()
+        | _ -> "default"
+
+    let env =
+        match p.TryGetProperty("environment") with
+        | true, envObj ->
+            envObj.EnumerateObject()
+            |> Seq.map (fun prop -> prop.Name, prop.Value.GetString())
+            |> Seq.toList
+        | _ -> []
+
+    let filterTemplate =
+        match p.TryGetProperty("filterTemplate") with
+        | true, v -> Some(v.GetString())
+        | _ -> None
+
+    let classJoin =
+        match p.TryGetProperty("classJoin") with
+        | true, v -> v.GetString()
+        | _ -> " "
+
+    // `alwaysClasses`: classes every impact-filtered run includes.
+    // Refused unless it is an array of non-blank strings: read as
+    // "none", a typo would silently stop running the very tests the
+    // key exists to keep running.
+    let alwaysClasses =
+        let key = $"tests.projects[%s{project}].alwaysClasses"
+
+        match p.TryGetProperty("alwaysClasses") with
+        | true, v when v.ValueKind = JsonValueKind.Array ->
+            v.EnumerateArray()
+            |> Seq.map (fun item ->
+                if
+                    item.ValueKind = JsonValueKind.String
+                    && not (String.IsNullOrWhiteSpace(item.GetString()))
+                then
+                    item.GetString()
+                else
+                    refuseUnknown key (describeValue item) [ "a non-blank class name" ])
+            |> Seq.distinct
+            |> Seq.toList
+        | true, v -> refuseUnknown key (describeValue v) [ "an array of class names" ]
+        | false, _ -> []
+
+    // `coverage` may be bool (collect + enforce together) or an
+    // object. `collectForImpact` decouples TestPrune collection
+    // from consumer-ratchet participation (`enabled`).
+    let collectCoverage, coverage, coverageArgsTemplate =
+        match p.TryGetProperty("coverage") with
+        | true, v when v.ValueKind = JsonValueKind.False -> false, false, None
+        | true, v when v.ValueKind = JsonValueKind.True -> true, true, None
+        | true, v when v.ValueKind = JsonValueKind.Object ->
+            let enabled =
+                match v.TryGetProperty("enabled") with
+                | true, e when e.ValueKind = JsonValueKind.False -> false
+                | _ -> true
+
+            let collectForImpact =
+                match v.TryGetProperty("collectForImpact") with
+                | true, e when e.ValueKind = JsonValueKind.True -> true
+                | true, e when e.ValueKind = JsonValueKind.False -> false
+                | _ -> enabled
+
+            let tmpl =
+                match v.TryGetProperty("argsTemplate") with
+                | true, t when t.ValueKind = JsonValueKind.String -> Some(t.GetString())
+                | _ -> None
+
+            collectForImpact, enabled, tmpl
+        | _ -> true, true, None
+
+    let timeoutSec =
+        match p.TryGetProperty("timeoutSec") with
+        | true, t when t.ValueKind = JsonValueKind.Number -> Some(t.GetInt32())
+        | _ -> None
+
+    // `reportVerificationFormat`: how fshw obtains the structured
+    // test report the verdict is derived from. Absent → AutoDetect.
+    let reportVerificationFormat =
+        let refuse (v: JsonElement) =
+            refuseUnknown
+                $"tests.projects[%s{project}].reportVerificationFormat"
+                (describeValue v)
+                (jsonStrings [ "auto"; "autodetect"; "detect"; "ctrf"; "off"; "none"; "disabled"; "false" ])
+
+        match p.TryGetProperty("reportVerificationFormat") with
+        | true, v when v.ValueKind = JsonValueKind.String ->
+            match v.GetString().ToLowerInvariant() with
+            | "ctrf" -> Ctrf
+            | "auto"
+            | "autodetect"
+            | "detect" -> AutoDetect
+            | "off"
+            | "none"
+            | "disabled"
+            | "false" -> Disabled
+            | _ -> refuse v
+        | true, v when v.ValueKind <> JsonValueKind.Null -> refuse v
+        | _ -> AutoDetect
+
+    // `traces`: every project takes part in `tests.traces`
+    // recording unless it says `"traces": false`. An object takes
+    // part and may set the project's own `weaveTests`. Any other
+    // value is refused: read as "take part", a typo'd object would
+    // silently record with a weave the config never asked for.
+    let traces, traceWeave =
+        let key = $"tests.projects[%s{project}].traces"
+
+        match p.TryGetProperty("traces") with
+        | false, _ -> true, None
+        | true, t when t.ValueKind = JsonValueKind.True -> true, None
+        | true, t when t.ValueKind = JsonValueKind.False -> false, None
+        | true, t when t.ValueKind = JsonValueKind.Object ->
+            let weave =
+                t.EnumerateObject()
+                |> Seq.map (fun prop ->
+                    match prop.Name with
+                    | "weaveTests" -> parseWeaveTests $"%s{key}.weaveTests" prop.Value
+                    | other ->
+                        raise (ConfigErrorException $"%s{key}: unknown key '%s{other}' — expected only \"weaveTests\""))
+                |> Seq.tryLast
+
+            true, weave
+        | true, t -> refuseUnknown key (describeValue t) [ "true"; "false"; "{ \"weaveTests\": \"sites\" | \"full\" }" ]
+
+    // `evidence`: how far this project's runtime reads reach, for the
+    // test-evidence key. TestPrune reads it itself
+    // (`TestEvidenceKey.configsOf`); refused HERE, at load, so a narrowing
+    // nobody can honour is never silently the default.
+    let evidence =
+        match p.TryGetProperty("evidence") with
+        | true, e -> Some e
+        | false, _ -> None
+
+    match FsHotWatch.TestEvidenceKey.parseConfig evidence with
+    | Result.Ok _ -> ()
+    | Result.Error e -> raise (ConfigErrorException $"tests.projects[%s{project}].%s{e}")
+
+    { Project = project
+      Command = command
+      Args = args
+      Group = group
+      Environment = env
+      FilterTemplate = filterTemplate
+      ClassJoin = classJoin
+      CollectCoverage = collectCoverage
+      Coverage = coverage
+      CoverageArgsTemplate = coverageArgsTemplate
+      TimeoutSec = timeoutSec
+      ReportVerificationFormat = reportVerificationFormat
+      AlwaysClasses = alwaysClasses
+      Traces = traces
+      TraceWeave = traceWeave }
+
 /// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
 let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
     use doc = JsonDocument.Parse(json)
@@ -834,188 +1007,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
 
             let projects =
                 match v.TryGetProperty("projects") with
-                | true, arr ->
-                    arr.EnumerateArray()
-                    |> Seq.map (fun p ->
-                        let project =
-                            match p.TryGetProperty("project") with
-                            | true, v -> v.GetString()
-                            | _ -> "unknown"
-
-                        let command =
-                            match p.TryGetProperty("command") with
-                            | true, v -> v.GetString()
-                            | _ -> "dotnet"
-
-                        let args =
-                            match p.TryGetProperty("args") with
-                            | true, v -> v.GetString()
-                            | _ -> $"test --project %s{project}"
-
-                        let group =
-                            match p.TryGetProperty("group") with
-                            | true, v -> v.GetString()
-                            | _ -> "default"
-
-                        let env =
-                            match p.TryGetProperty("environment") with
-                            | true, envObj ->
-                                envObj.EnumerateObject()
-                                |> Seq.map (fun prop -> prop.Name, prop.Value.GetString())
-                                |> Seq.toList
-                            | _ -> []
-
-                        let filterTemplate =
-                            match p.TryGetProperty("filterTemplate") with
-                            | true, v -> Some(v.GetString())
-                            | _ -> None
-
-                        let classJoin =
-                            match p.TryGetProperty("classJoin") with
-                            | true, v -> v.GetString()
-                            | _ -> " "
-
-                        // `alwaysClasses`: classes every impact-filtered run includes.
-                        // Refused unless it is an array of non-blank strings: read as
-                        // "none", a typo would silently stop running the very tests the
-                        // key exists to keep running.
-                        let alwaysClasses =
-                            let key = $"tests.projects[%s{project}].alwaysClasses"
-
-                            match p.TryGetProperty("alwaysClasses") with
-                            | true, v when v.ValueKind = JsonValueKind.Array ->
-                                v.EnumerateArray()
-                                |> Seq.map (fun item ->
-                                    if
-                                        item.ValueKind = JsonValueKind.String
-                                        && not (String.IsNullOrWhiteSpace(item.GetString()))
-                                    then
-                                        item.GetString()
-                                    else
-                                        refuseUnknown key (describeValue item) [ "a non-blank class name" ])
-                                |> Seq.distinct
-                                |> Seq.toList
-                            | true, v -> refuseUnknown key (describeValue v) [ "an array of class names" ]
-                            | false, _ -> []
-
-                        // `coverage` may be bool (collect + enforce together) or an
-                        // object. `collectForImpact` decouples TestPrune collection
-                        // from consumer-ratchet participation (`enabled`).
-                        let collectCoverage, coverage, coverageArgsTemplate =
-                            match p.TryGetProperty("coverage") with
-                            | true, v when v.ValueKind = JsonValueKind.False -> false, false, None
-                            | true, v when v.ValueKind = JsonValueKind.True -> true, true, None
-                            | true, v when v.ValueKind = JsonValueKind.Object ->
-                                let enabled =
-                                    match v.TryGetProperty("enabled") with
-                                    | true, e when e.ValueKind = JsonValueKind.False -> false
-                                    | _ -> true
-
-                                let collectForImpact =
-                                    match v.TryGetProperty("collectForImpact") with
-                                    | true, e when e.ValueKind = JsonValueKind.True -> true
-                                    | true, e when e.ValueKind = JsonValueKind.False -> false
-                                    | _ -> enabled
-
-                                let tmpl =
-                                    match v.TryGetProperty("argsTemplate") with
-                                    | true, t when t.ValueKind = JsonValueKind.String -> Some(t.GetString())
-                                    | _ -> None
-
-                                collectForImpact, enabled, tmpl
-                            | _ -> true, true, None
-
-                        let timeoutSec =
-                            match p.TryGetProperty("timeoutSec") with
-                            | true, t when t.ValueKind = JsonValueKind.Number -> Some(t.GetInt32())
-                            | _ -> None
-
-                        // `reportVerificationFormat`: how fshw obtains the structured
-                        // test report the verdict is derived from. Absent → AutoDetect.
-                        let reportVerificationFormat =
-                            let refuse (v: JsonElement) =
-                                refuseUnknown
-                                    $"tests.projects[%s{project}].reportVerificationFormat"
-                                    (describeValue v)
-                                    (jsonStrings
-                                        [ "auto"; "autodetect"; "detect"; "ctrf"; "off"; "none"; "disabled"; "false" ])
-
-                            match p.TryGetProperty("reportVerificationFormat") with
-                            | true, v when v.ValueKind = JsonValueKind.String ->
-                                match v.GetString().ToLowerInvariant() with
-                                | "ctrf" -> Ctrf
-                                | "auto"
-                                | "autodetect"
-                                | "detect" -> AutoDetect
-                                | "off"
-                                | "none"
-                                | "disabled"
-                                | "false" -> Disabled
-                                | _ -> refuse v
-                            | true, v when v.ValueKind <> JsonValueKind.Null -> refuse v
-                            | _ -> AutoDetect
-
-                        // `traces`: every project takes part in `tests.traces`
-                        // recording unless it says `"traces": false`. An object takes
-                        // part and may set the project's own `weaveTests`. Any other
-                        // value is refused: read as "take part", a typo'd object would
-                        // silently record with a weave the config never asked for.
-                        let traces, traceWeave =
-                            let key = $"tests.projects[%s{project}].traces"
-
-                            match p.TryGetProperty("traces") with
-                            | false, _ -> true, None
-                            | true, t when t.ValueKind = JsonValueKind.True -> true, None
-                            | true, t when t.ValueKind = JsonValueKind.False -> false, None
-                            | true, t when t.ValueKind = JsonValueKind.Object ->
-                                let weave =
-                                    t.EnumerateObject()
-                                    |> Seq.map (fun prop ->
-                                        match prop.Name with
-                                        | "weaveTests" -> parseWeaveTests $"%s{key}.weaveTests" prop.Value
-                                        | other ->
-                                            raise (
-                                                ConfigErrorException
-                                                    $"%s{key}: unknown key '%s{other}' — expected only \"weaveTests\""
-                                            ))
-                                    |> Seq.tryLast
-
-                                true, weave
-                            | true, t ->
-                                refuseUnknown
-                                    key
-                                    (describeValue t)
-                                    [ "true"; "false"; "{ \"weaveTests\": \"sites\" | \"full\" }" ]
-
-                        // `evidence`: how far this project's runtime reads reach, for the
-                        // test-evidence key. TestPrune reads it itself
-                        // (`TestEvidenceKey.configsOf`); refused HERE, at load, so a narrowing
-                        // nobody can honour is never silently the default.
-                        let evidence =
-                            match p.TryGetProperty("evidence") with
-                            | true, e -> Some e
-                            | false, _ -> None
-
-                        match FsHotWatch.TestEvidenceKey.parseConfig evidence with
-                        | Result.Ok _ -> ()
-                        | Result.Error e -> raise (ConfigErrorException $"tests.projects[%s{project}].%s{e}")
-
-                        { Project = project
-                          Command = command
-                          Args = args
-                          Group = group
-                          Environment = env
-                          FilterTemplate = filterTemplate
-                          ClassJoin = classJoin
-                          CollectCoverage = collectCoverage
-                          Coverage = coverage
-                          CoverageArgsTemplate = coverageArgsTemplate
-                          TimeoutSec = timeoutSec
-                          ReportVerificationFormat = reportVerificationFormat
-                          AlwaysClasses = alwaysClasses
-                          Traces = traces
-                          TraceWeave = traceWeave })
-                    |> Seq.toList
+                | true, arr -> arr.EnumerateArray() |> Seq.map parseTestProject |> Seq.toList
                 | _ -> []
 
             // `tests.excluded` — first-class, and the only
