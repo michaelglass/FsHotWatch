@@ -20,7 +20,7 @@ open TestPrune.Database
 let private DeleteCoveredOccurrence =
     "DELETE FROM symbol_occurrences WHERE symbol_id = (SELECT id FROM symbols WHERE full_name = 'Fixture.covered');"
 
-[<Theory(Timeout = 10000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``ratchet mapping retains symbol ownership until its coverage write commits`` (partial: bool) =
