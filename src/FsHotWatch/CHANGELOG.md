@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.88 - 2026-10-18
+
 - fix: an unreadable directory that a `dir/` exclude names is no longer a hole in the tree
   hash or the test-evidence key. The hole was matched as a bare path, which reads as a file,
   so the directory-only pattern missed the very directory it names (a directory below it

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.34 - 2026-10-18
+
 - fix: files matched by `ignoreFiles` in fsharplint.json are no longer linted.
   FSharpLint applies `ignoreFiles` only when it lints a whole project itself; the
   plugin lints one parsed file at a time, which never checks it, so every ignored file

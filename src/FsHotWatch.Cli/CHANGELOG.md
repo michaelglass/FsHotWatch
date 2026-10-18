@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.121 - 2026-10-18
+
+- fix(cli): a failed detached daemon launch names its signal and quotes the helper's stderr
+- fix: an unreadable directory a dir/ exclude names is not a tree-hash hole
+- fix(lint): honour fsharplint.json ignoreFiles and follow config edits
+
+
 ## 0.14.0-alpha.120 - 2026-10-18
 
 - fix: test evidence is reused across checkouts of one commit when an `exclude`d file under
