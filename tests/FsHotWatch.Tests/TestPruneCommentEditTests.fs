@@ -137,12 +137,14 @@ let ``every reading with no evidence for the tree names why`` () =
     Assert.Equal(("evidence-revoked", Some "why"), UnverifiedTree.wire (UnverifiedTree.Revoked "why"))
     Assert.Equal(("covers-nothing", None), UnverifiedTree.wire UnverifiedTree.CoversNothing)
 
-/// A two-file repository: `src/Lib.fs`, whose `Lib.f` the class `LibTests` covers, and
-/// a model that compiles it. The runner appends its filter (or `full`) to `runs` and
-/// fails while `flag` exists — a behaviour change the symbol diff never saw.
+/// A repository of two compiled files: `src/Lib.fs`, whose `Lib.f` the class `LibTests`
+/// covers, and `src/Orphan.fs`, whose `Orphan.g` no test covers. The runner appends its
+/// filter (or `sh`, for a whole-project run) to `runs` and fails while `flag` exists — a
+/// behaviour change the symbol diff never saw.
 type private NarrowingRepo =
     { Host: PluginHost
       Source: string
+      Orphan: string
       Runs: string
       Flag: string
       Root: string }
@@ -150,24 +152,63 @@ type private NarrowingRepo =
 let private libSource comment =
     $"module Lib\n\n// %s{comment}\nlet f () = 1\n"
 
-let private withNarrowingRepo (body: NarrowingRepo -> unit) =
+let private orphanSource comment =
+    $"module Orphan\n\n// %s{comment}\nlet g () = 2\n"
+
+/// `Lib.f`, covered by `LibTests`, and `Orphan.g`, which the index holds and no test covers.
+let private seedIndex (db: TestPrune.Database.Database) =
+    let symbol name file : SymbolInfo =
+        { FullName = name
+          Kind = SymbolKind.Value
+          SourceFile = file
+          LineStart = 1
+          LineEnd = 1
+          ContentHash = $"%s{name}-hash"
+          IsExtern = false }
+
+    let covering: TestMethodInfo =
+        { SymbolFullName = "LibTests.f works"
+          TestProject = "P1"
+          TestClass = "LibTests"
+          TestMethod = "f works" }
+
+    db.RebuildProjects(
+        [ AnalysisResult.Create(
+              [ symbol "Lib.f" "src/Lib.fs"
+                symbol "LibTests.f works" "LibTests.fs"
+                symbol "Orphan.g" "src/Orphan.fs" ],
+              [ { FromSymbol = "LibTests.f works"
+                  ToSymbol = "Lib.f"
+                  Kind = DependencyKind.Calls
+                  Source = "core" } ],
+              [ covering ]
+          ) ]
+    )
+
+    clearSqlitePoolForDb db
+
+/// The repository, with `always` declared as P1's `alwaysClasses`.
+let private withNarrowingRepoDeclaring (always: string list) (body: NarrowingRepo -> unit) =
     withTempDir "tp-symbol-free" (fun tmpDir ->
         let source = Path.Combine(tmpDir, "src", "Lib.fs")
+        let orphan = Path.Combine(tmpDir, "src", "Orphan.fs")
         Directory.CreateDirectory(Path.GetDirectoryName source) |> ignore
         File.WriteAllText(source, libSource "original")
+        File.WriteAllText(orphan, orphanSource "original")
         let runs = Path.Combine(tmpDir, "p1-runs")
         let flag = Path.Combine(tmpDir, "behaviour-changed")
         seedBaseline tmpDir [ "P1" ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
-        let db = TestPrune.Database.Database.create dbPath
-        PendingQueueHelpers.seedCoveredSymbol db "Lib.f" "src/Lib.fs" "P1" "LibTests" "f works"
+        seedIndex (TestPrune.Database.Database.create dbPath)
 
         let config =
             { PendingQueueHelpers.flagConfig tmpDir "P1" flag with
                 // `$0 $1` is the filter `--filter-class <classes>`, or `sh` for a whole-project run.
                 Args = $"-c \"echo $0 $1 >> {runs}; if [ -f {flag} ]; then exit 1; else exit 0; fi\""
-                FilterTemplate = Some "--filter-class {classes}" }
+                FilterTemplate = Some "--filter-class {classes}"
+                ClassJoin = ","
+                AlwaysClasses = always }
 
         let host =
             PluginHost(
@@ -176,18 +217,25 @@ let private withNarrowingRepo (body: NarrowingRepo -> unit) =
                 taskCache = (FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache)
             )
 
-        host.WorkStore.PublishProjectModelWithFiles(fixtureModel, Set.ofList [ AbsFilePath.create source ])
+        host.WorkStore.PublishProjectModelWithFiles(
+            fixtureModel,
+            Set.ofList [ AbsFilePath.create source; AbsFilePath.create orphan ]
+        )
+
         host.RegisterHandler(create dbPath tmpDir (Some [ config ]) None None None None [])
 
         try
             body
                 { Host = host
                   Source = source
+                  Orphan = orphan
                   Runs = runs
                   Flag = flag
                   Root = tmpDir }
         finally
             host.Teardown())
+
+let private withNarrowingRepo body = withNarrowingRepoDeclaring [] body
 
 let private lastRun (repo: NarrowingRepo) =
     File.ReadAllLines(repo.Runs) |> Array.last
@@ -247,6 +295,76 @@ let ``a symbol-free edit to a file no model compiles still runs every project in
 
         let notes = Path.Combine(repo.Root, "src", "notes.txt")
         File.WriteAllText(notes, "a note")
+        emitBatchAndQuiesce repo.Host [ repo.Source ]
+        landBuild repo.Host
+
+        test <@ runCount repo = before + 1 @>
+        test <@ lastRun repo = "sh" @>)
+
+/// The case the narrowing used to refuse: a comment in a compiled file no test covers.
+/// What executes that file's code is known, and it is nothing, so the edit owes exactly
+/// the classes that read the tree as data: the declared `alwaysClasses`.
+[<Fact(Timeout = 60000)>]
+let ``a comment-only edit to a source file no test covers runs only the always-classes`` () =
+    withNarrowingRepoDeclaring [ "GuardTests" ] (fun repo ->
+        landBuild repo.Host
+        test <@ lastRun repo = "sh" @>
+        let before = runCount repo
+
+        File.WriteAllText(repo.Orphan, orphanSource "edited")
+        emitBatchAndQuiesce repo.Host [ repo.Orphan ]
+        landBuild repo.Host
+
+        test <@ runCount repo = before + 1 @>
+        test <@ lastRun repo = "--filter-class GuardTests" @>
+
+        match scopeOf repo.Host with
+        | ImpactFiltered _ -> ()
+        | other -> Assert.Fail($"the always-classes run's evidence is bound to the edited tree, got %A{other}")
+
+        // The edited tree is verified: another build over it runs nothing.
+        landBuild repo.Host
+        test <@ runCount repo = before + 1 @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a comment-only edit to a covered source file runs its covering classes and the always-classes`` () =
+    withNarrowingRepoDeclaring [ "GuardTests" ] (fun repo ->
+        landBuild repo.Host
+        let before = runCount repo
+
+        File.WriteAllText(repo.Source, libSource "edited")
+        foldAndBuild repo
+
+        test <@ runCount repo = before + 1 @>
+        test <@ lastRun repo = "--filter-class LibTests,GuardTests" @>)
+
+/// With no always-classes declared, nothing short of running can earn evidence for the
+/// edited tree, so the uncovered edit keeps the whole-project run.
+[<Fact(Timeout = 60000)>]
+let ``a comment-only edit to an uncovered source file with no always-classes runs every project in full`` () =
+    withNarrowingRepo (fun repo ->
+        landBuild repo.Host
+        let before = runCount repo
+
+        File.WriteAllText(repo.Orphan, orphanSource "edited")
+        emitBatchAndQuiesce repo.Host [ repo.Orphan ]
+        landBuild repo.Host
+
+        test <@ runCount repo = before + 1 @>
+        test <@ lastRun repo = "sh" @>
+
+        match scopeOf repo.Host with
+        | FullSuite(1, _) -> ()
+        | other -> Assert.Fail($"the full run's evidence is bound to the edited tree, got %A{other}"))
+
+/// Positive control: declaring always-classes does not narrow an edit outside compiled source.
+[<Fact(Timeout = 60000)>]
+let ``a symbol-free edit outside compiled source still runs in full when always-classes are declared`` () =
+    withNarrowingRepoDeclaring [ "GuardTests" ] (fun repo ->
+        landBuild repo.Host
+        let before = runCount repo
+
+        File.WriteAllText(Path.Combine(repo.Root, "src", "notes.txt"), "a note")
         emitBatchAndQuiesce repo.Host [ repo.Source ]
         landBuild repo.Host
 
@@ -387,7 +505,7 @@ let ``any path that is not an edited compiled F# source file keeps the whole-pro
         @>
 
 [<Fact>]
-let ``a file the index holds no symbol or covering test for keeps the whole-project run`` () =
+let ``a file the index holds no symbol for keeps the whole-project run`` () =
     let unknown = { index with SymbolsIn = fun _ -> [] }
 
     test
@@ -396,14 +514,40 @@ let ``a file the index holds no symbol or covering test for keeps the whole-proj
             |> refusedWith "no symbol"
         @>
 
+[<Fact>]
+let ``a file whose symbols no runnable test covers is narrowed to no class`` () =
     let uncovered =
         { index with
             Affected = fun _ -> [ method "Unrun" "Elsewhere" ] }
 
     test
         <@
-            selectWith (Some before) (Some after) (Some after.Identity) compiledAll uncovered
-            |> refusedWith "no runnable test covers"
+            selectWith (Some before) (Some after) (Some after.Identity) compiledAll uncovered = SymbolFreeEdit.Covering(
+                [ "src/Lib.fs" ],
+                [ "Lib.f"; "Lib.g" ],
+                Map.empty
+            )
+        @>
+
+[<Fact>]
+let ``an uncovered file edited beside a covered one adds no class of its own`` () =
+    let ix =
+        { index with
+            SymbolsIn =
+                function
+                | "src/Lib.fs" -> [ "Lib.f" ]
+                | "src/Other.fs" -> [ "Other.h" ]
+                | _ -> [] }
+
+    let both = tree [ "src/Lib.fs", "h2"; "src/Other.fs", "o2" ]
+
+    test
+        <@
+            selectWith (Some before) (Some both) (Some both.Identity) compiledAll ix = SymbolFreeEdit.Covering(
+                [ "src/Lib.fs"; "src/Other.fs" ],
+                [ "Lib.f"; "Other.h" ],
+                Map.ofList [ "P1", [ "LibTests" ] ]
+            )
         @>
 
 [<Fact>]
