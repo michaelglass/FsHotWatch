@@ -124,6 +124,33 @@ let private currentModelGeneration (ctx: PluginCtx<'Msg>) =
     | FsHotWatch.ProjectModel.Observation.Rediscovering _
     | FsHotWatch.ProjectModel.Observation.Unavailable _ -> None
 
+/// What one reading of the fsharplint.json decides: the config's cache-key component,
+/// its shape error, and whether its `ignoreFiles` excludes a file.
+type private LoadedConfig =
+    { Hash: string
+      ShapeError: string option
+      IsIgnored: string -> bool }
+
+/// True when `configPath`'s `ignoreFiles` excludes a file, decided by FSharpLint's own
+/// matcher. FSharpLint applies `ignoreFiles` only when it enumerates a project itself;
+/// `lintParsedSource`, which this plugin calls per file, never consults it. A config
+/// FSharpLint cannot load ignores nothing: the lint itself reports that failure.
+let private ignoredBy (configPath: string) : string -> bool =
+    let globs =
+        Lint.getConfig (Lint.ConfigurationParam.FromFile configPath)
+        |> Result.toOption
+        |> Option.bind _.ignoreFiles
+
+    match globs with
+    | Some globs ->
+        let parsed =
+            globs
+            |> Array.map FSharpLint.Framework.Configuration.IgnoreFiles.parseIgnorePath
+            |> Array.toList
+
+        fun file -> FSharpLint.Framework.Configuration.IgnoreFiles.shouldFileBeIgnored parsed (IO.Path.GetFullPath file)
+    | None -> fun _ -> false
+
 /// Creates a framework plugin handler that lints files using pre-parsed AST
 /// and check results from the daemon's warm FSharpChecker. Cache key is
 /// content-merkle (file source + tool/config hashes); jj commit_id is not
@@ -139,11 +166,35 @@ let create
         let secs = defaultArg timeoutSec LintTimeoutDefaultSec
         TimeSpan.FromSeconds(float secs)
 
-    let configHash =
-        match lintConfigPath with
-        | Some path when System.IO.File.Exists path -> FsHotWatch.CheckCache.sha256Hex (System.IO.File.ReadAllText path)
-        | Some _ -> "missing-config"
-        | None -> "no-config"
+    // The daemon outlives edits to fsharplint.json, so the file is re-read on every event
+    // and everything derived from it is recomputed whenever its text changes. Read once at
+    // start-up, an edit left results keyed, and files ignored, by settings it no longer held.
+    let loadConfig (text: string option) : LoadedConfig =
+        { Hash =
+            match lintConfigPath, text with
+            | Some _, Some text -> FsHotWatch.CheckCache.sha256Hex text
+            | Some _, None -> "missing-config"
+            | None, _ -> "no-config"
+          // A config with keys FSharpLint binds to nothing would lint every file "clean"
+          // for the rules under them. Fail every run, naming the keys, instead of linting.
+          ShapeError = lintConfigPath |> Option.bind LintConfigShape.check
+          IsIgnored =
+            match lintConfigPath, text with
+            | Some path, Some _ -> ignoredBy path
+            | _ -> fun _ -> false }
+
+    let loaded = ref (None: (string option * LoadedConfig) option)
+
+    let currentConfig () =
+        let text =
+            lintConfigPath |> Option.filter IO.File.Exists |> Option.map IO.File.ReadAllText
+
+        match loaded.Value with
+        | Some(seen, config) when seen = text -> config
+        | _ ->
+            let config = loadConfig text
+            loaded.Value <- Some(text, config)
+            config
 
     let cacheKey (event: PluginEvent<unit>) : ContentHash option =
         match event with
@@ -157,7 +208,7 @@ let create
                 FsHotWatch.TaskCache.merkleCacheKey
                     [ "plugin-version", PluginCacheSalt
                       "tool", fsharpLintVersion
-                      "config", configHash
+                      "config", (currentConfig ()).Hash
                       // REPO-RELATIVE. FSharpLint's verdict depends on where a file
                       // sits in the repository (naming rules read the path), never on
                       // which checkout of that repository it was read from — so the
@@ -185,10 +236,6 @@ let create
             Logging.error "lint" $"Failed to load lint config: %s{ex.Message} — using defaults"
             Lint.OptionalLintParameters.Default
 
-    // A config with keys FSharpLint binds to nothing would lint every file "clean" for
-    // the rules under them. Fail every run, naming the keys, instead of linting at all.
-    let configShapeError = lintConfigPath |> Option.bind LintConfigShape.check
-
     let lintFile =
         defaultArg lintRunner (fun result ->
             let typeCheckResults =
@@ -205,8 +252,14 @@ let create
             lintReportingFailures lintParams (fun p -> Lint.lintParsedSource p parsedInfo))
 
     let runLint (result: FileCheckResult) =
-        match configShapeError with
+        let config = currentConfig ()
+        let file = AbsFilePath.value result.File
+
+        match config.ShapeError with
         | Some message -> Lint.LintResult.Failure(Lint.LintFailure.FailedToLoadConfig message)
+        | None when config.IsIgnored file ->
+            Logging.debug "lint" $"Skipping %s{file}: matched by ignoreFiles"
+            Lint.LintResult.Success []
         | None -> lintFile result
 
     { Name = PluginName.create "lint"
