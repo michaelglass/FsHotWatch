@@ -222,8 +222,7 @@
     }
   },
   "moduleNames": {
-    "enabled": false,
-    "_comment": "Off: 5 finding(s) in 4 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "enabled": true,
     "config": {
       "naming": "PascalCase",
       "underscores": "None"
