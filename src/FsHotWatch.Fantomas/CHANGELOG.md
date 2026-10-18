@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.30 - 2026-10-18
+
 - fix!: the format preprocessor reports each file the pinned Fantomas could not process
   (a parse error, or a timed-out run) as a failure of the pass, instead of logging it and
   reporting `rewrote 0 of N` green. Such a file is handed back to the tool on every later

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.33 - 2026-10-18
+
+- style(lint)!: enable literalNames
+
+
 ## 0.7.0-alpha.32 - 2026-10-18
 
 - fix!: an fsharplint.json key FSharpLint's loader binds to no rule (a group wrapped in

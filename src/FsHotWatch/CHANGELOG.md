@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.87 - 2026-10-18
+
 - fix: the test-evidence store keeps each entry's coverage report gzip-compressed (schema
   `fshw-test-evidence-v2`, field `coverage.gzip`). On one repository's full suite a project's
   32.5 MB Cobertura report compressed to 1.7 MB. Its entry had been 57 MB on disk: the report,

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.120 - 2026-10-18
+
 - fix: test evidence is reused across checkouts of one commit when an `exclude`d file under
   a project directory differs between them. The daemon now passes `.fshw.json`'s
   `exclude` to the evidence key, so the key leaves out what the verdict tree hash leaves

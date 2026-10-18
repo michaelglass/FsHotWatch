@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.88 - 2026-10-18
+
 - **fix!: `createWithTracesIn` takes the daemon's `exclude` patterns as its first
   argument**, and the test-evidence wiring keys with them instead of with none. The verdict
   tree hash honours `exclude` and the evidence key did not, so two checkouts of one commit

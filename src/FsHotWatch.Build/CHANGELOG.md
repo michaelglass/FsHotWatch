@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.47 - 2026-10-18
+
+- style(lint): enable canBeReplacedWithComposition
+
+
 ## 0.7.0-alpha.46 - 2026-10-16
 
 - fix: an edit made while a build is running is recompiled by the next build. That build may
