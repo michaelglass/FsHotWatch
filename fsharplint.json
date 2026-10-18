@@ -323,7 +323,7 @@
   },
   "maxNumberOfFunctionParameters": {
     "enabled": false,
-    "_comment": "Off: 70 finding(s) in 24 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "_comment": "Off: refactoring backlog. 70 finding(s) on main (2026-10-18); reaching 0 means splitting files, modules, classes or signatures, which is structural work tracked separately, not a lint sweep.",
     "config": {
       "maxItems": 6
     }
