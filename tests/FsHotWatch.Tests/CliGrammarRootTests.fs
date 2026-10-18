@@ -31,7 +31,7 @@ let private cliUnions () : Type list =
     |> Array.toList
 
 let private hasAny (types: Type list) (case: UnionCaseInfo) =
-    types |> List.exists (fun a -> not (Array.isEmpty (case.GetCustomAttributes a)))
+    types |> List.exists (case.GetCustomAttributes >> Array.isEmpty >> not)
 
 let private isCommandUnion (t: Type) =
     FSharpType.GetUnionCases(t, true) |> Array.exists (hasAny commandAttributeTypes)

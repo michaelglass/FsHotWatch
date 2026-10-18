@@ -79,8 +79,7 @@
     "_comment": "Off: 20 finding(s) in 14 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable."
   },
   "canBeReplacedWithComposition": {
-    "enabled": false,
-    "_comment": "Off: 6 finding(s) in 5 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable."
+    "enabled": true
   },
   "failwithWithSingleArgument": {
     "enabled": true
