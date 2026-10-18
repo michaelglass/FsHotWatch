@@ -760,18 +760,18 @@ let ``applyDepsGate: None gate always proceeds and reports nothing`` () =
     let proceed = applyDepsGate None host "/r/P.fsproj"
 
     test <@ proceed @>
-    test <@ host.GetErrorsByPlugin pluginName |> Map.isEmpty @>
+    test <@ host.GetErrorsByPlugin FsHotWatch.DepsFreshness.PluginName |> Map.isEmpty @>
 
 [<Fact(Timeout = 10000)>]
 let ``applyDepsGate: Proceed clears any prior deps diagnostic`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let proj = "/r/P.fsproj"
-    host.ReportErrors(pluginName, proj, [ ErrorEntry.error "old" ])
+    host.ReportErrors(FsHotWatch.DepsFreshness.PluginName, proj, [ ErrorEntry.error "old" ])
 
     let proceed = applyDepsGate (Some(fun _ -> Proceed)) host proj
 
     test <@ proceed @>
-    test <@ host.GetErrorsByPlugin pluginName |> Map.isEmpty @>
+    test <@ host.GetErrorsByPlugin FsHotWatch.DepsFreshness.PluginName |> Map.isEmpty @>
 
 [<Fact(Timeout = 10000)>]
 let ``applyDepsGate: FailFast reports one error, skips FCS, verdict non-zero`` () =
@@ -783,7 +783,7 @@ let ``applyDepsGate: FailFast reports one error, skips FCS, verdict non-zero`` (
 
     test <@ not proceed @>
 
-    let byPlugin = host.GetErrorsByPlugin pluginName
+    let byPlugin = host.GetErrorsByPlugin FsHotWatch.DepsFreshness.PluginName
     let entries = byPlugin |> Map.tryFind proj |> Option.defaultValue []
     test <@ entries.Length = 1 @>
     test <@ host.HasFailingReasons false @>
@@ -806,7 +806,9 @@ let ``applyDepsGate: SkipAlreadyAttempted reports its own diagnostic`` () =
     test <@ not proceed @>
 
     let entries =
-        host.GetErrorsByPlugin pluginName |> Map.tryFind proj |> Option.defaultValue []
+        host.GetErrorsByPlugin FsHotWatch.DepsFreshness.PluginName
+        |> Map.tryFind proj
+        |> Option.defaultValue []
 
     test <@ entries.Length = 1 @>
     // The scan that skipped this project cannot now read as green.
@@ -816,12 +818,12 @@ let ``applyDepsGate: SkipAlreadyAttempted reports its own diagnostic`` () =
 let ``applyDepsGate: RecoveredOk proceeds and clears prior diagnostic`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let proj = "/r/P.fsproj"
-    host.ReportErrors(pluginName, proj, [ ErrorEntry.error "old" ])
+    host.ReportErrors(FsHotWatch.DepsFreshness.PluginName, proj, [ ErrorEntry.error "old" ])
 
     let proceed = applyDepsGate (Some(fun _ -> RecoveredOk)) host proj
 
     test <@ proceed @>
-    test <@ host.GetErrorsByPlugin pluginName |> Map.isEmpty @>
+    test <@ host.GetErrorsByPlugin FsHotWatch.DepsFreshness.PluginName |> Map.isEmpty @>
 
 // ---- paketGroupsFromLock (drives the per-group, walk-free paket restore) ----
 

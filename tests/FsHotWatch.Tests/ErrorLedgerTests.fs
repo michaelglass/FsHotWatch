@@ -895,7 +895,7 @@ let ``a reporter that throws with a log sink that throws leaves the ledger answe
     test
         <@
             all.["a.fs"]
-            |> List.exists (fun (plugin, e) -> plugin = reporterFailurePlugin && e.Message.Contains "IOException")
+            |> List.exists (fun (plugin, e) -> plugin = ReporterFailurePlugin && e.Message.Contains "IOException")
         @>
 
 /// A clean re-report of the file drops the reporter-failure alarm, whether the
@@ -914,11 +914,11 @@ let ``a clean re-report drops the reporter-failure alarm`` () =
     let ledger = ErrorLedger([ flaky ], logError = (fun _ _ -> ()))
     ledger.Report("lint", "a.fs", [ entry "one" DiagnosticSeverity.Error 1 ])
     delivered ledger
-    test <@ ledger.GetByPlugin reporterFailurePlugin |> Map.containsKey "a.fs" @>
+    test <@ ledger.GetByPlugin ReporterFailurePlugin |> Map.containsKey "a.fs" @>
 
     ledger.Report("lint", "a.fs", [ entry "two" DiagnosticSeverity.Error 1 ])
     delivered ledger
-    test <@ ledger.GetByPlugin reporterFailurePlugin |> Map.isEmpty @>
+    test <@ ledger.GetByPlugin ReporterFailurePlugin |> Map.isEmpty @>
     test <@ (ledger.GetByPlugin "lint").["a.fs"] |> List.map _.Message = [ "two" ] @>
 
 [<Fact(Timeout = 15000)>]

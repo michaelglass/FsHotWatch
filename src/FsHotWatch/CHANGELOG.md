@@ -3,6 +3,7 @@
 ## Unreleased
 
 - style: `PluginHost.create` is a function in a `PluginHost` module instead of a static member of the type. F# call sites read the same; code that reached the static member by reflection or from C# must use the module function.
+- **style!: `DepsFreshness.pluginName` is `DepsFreshness.PluginName` and `ErrorLedger.reporterFailurePlugin` is `ErrorLedger.ReporterFailurePlugin`**: `[<Literal>]` values are PascalCase (FSharpLint `literalNames`).
 
 ## 0.10.0-alpha.86 - 2026-10-18
 

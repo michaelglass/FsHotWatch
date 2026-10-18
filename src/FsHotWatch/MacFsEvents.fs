@@ -18,16 +18,16 @@ let private CoreFoundationLib =
 
 // ─── Constants ──────────────────────────────────────────────────────
 [<Literal>]
-let private kFSEventStreamEventIdSinceNow = 0xFFFFFFFFFFFFFFFFUL
+let private FSEventStreamEventIdSinceNow = 0xFFFFFFFFFFFFFFFFUL
 
 [<Literal>]
-let private kFSEventStreamCreateFlagFileEvents = 0x00000010u
+let private FSEventStreamCreateFlagFileEvents = 0x00000010u
 
 [<Literal>]
-let private kFSEventStreamCreateFlagNoDefer = 0x00000002u
+let private FSEventStreamCreateFlagNoDefer = 0x00000002u
 
 [<Literal>]
-let private kCFStringEncodingUTF8 = 0x08000100u
+let private CFStringEncodingUTF8 = 0x08000100u
 
 /// The most directory prefixes `FSEventStreamSetExclusionPaths` accepts.
 [<Literal>]
@@ -217,7 +217,7 @@ extern void private FSEventStreamRelease(nativeint streamRef)
 let private createCFStringArray (paths: string list) =
     let cfStrings =
         paths
-        |> List.map (fun p -> CFStringCreateWithCString(nativeint 0, p, kCFStringEncodingUTF8))
+        |> List.map (fun p -> CFStringCreateWithCString(nativeint 0, p, CFStringEncodingUTF8))
         |> List.toArray
 
     if cfStrings |> Array.exists (fun s -> s = nativeint 0) then
@@ -435,7 +435,7 @@ type FsEventStream
             cfArrayRef <- arr
             cfStringRefs <- strs
 
-            let flags = kFSEventStreamCreateFlagFileEvents ||| kFSEventStreamCreateFlagNoDefer
+            let flags = FSEventStreamCreateFlagFileEvents ||| FSEventStreamCreateFlagNoDefer
 
             streamRef <-
                 FSEventStreamCreate(
@@ -443,7 +443,7 @@ type FsEventStream
                     callback,
                     nativeint 0,
                     cfArrayRef,
-                    kFSEventStreamEventIdSinceNow,
+                    FSEventStreamEventIdSinceNow,
                     latencySeconds,
                     flags
                 )
@@ -465,7 +465,7 @@ type FsEventStream
                     warn "fsevents" "FSEventStreamSetExclusionPaths refused; excluded paths are filtered after delivery"
 
             // kCFRunLoopDefaultMode is a CFString constant — create it by value
-            runLoopModeRef <- CFStringCreateWithCString(nativeint 0, "kCFRunLoopDefaultMode", kCFStringEncodingUTF8)
+            runLoopModeRef <- CFStringCreateWithCString(nativeint 0, "kCFRunLoopDefaultMode", CFStringEncodingUTF8)
 
             if runLoopModeRef = nativeint 0 then
                 failwith "CFStringCreateWithCString returned null — failed to create kCFRunLoopDefaultMode"

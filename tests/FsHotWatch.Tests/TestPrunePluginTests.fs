@@ -3086,7 +3086,7 @@ let ``a project killed at its timeout is logged TIMED OUT (infrastructure), neve
 let ``isZeroTestsUnderFilter true for filtered run with MTP zero-tests exit code`` () =
     let outcome =
         FsHotWatch.ProcessHelper.ProcessOutcome.Failed(
-            zeroTestsExitCode,
+            ZeroTestsExitCode,
             FsHotWatch.ProcessHelper.ProcessOutput.Drained "Test run summary: Zero tests ran"
         )
 
@@ -3111,7 +3111,7 @@ let ``isZeroTestsUnderFilter false for UNFILTERED run even with zero-tests exit`
     // misconfigured runner) and must still surface — not be silently skipped.
     let outcome =
         FsHotWatch.ProcessHelper.ProcessOutcome.Failed(
-            zeroTestsExitCode,
+            ZeroTestsExitCode,
             FsHotWatch.ProcessHelper.ProcessOutput.Drained "Zero tests ran"
         )
 
@@ -3891,7 +3891,7 @@ let ``buildCoverageArgs picks baseline on full run and partial on filtered run``
           Partial = "/tmp/cov/partial.cobertura.xml"
           Cobertura = "/tmp/cov/coverage.cobertura.xml"
           IncludeInRatchet = true
-          ArgsTemplate = defaultCoverageArgsTemplate }
+          ArgsTemplate = DefaultCoverageArgsTemplate }
 
     let full = buildCoverageArgs paths false
     test <@ full.Contains("baseline.cobertura.xml") @>
@@ -3911,7 +3911,7 @@ let ``default template uses an MTP-accepted output format`` () =
           Partial = "/tmp/cov/partial.cobertura.xml"
           Cobertura = "/tmp/cov/coverage.cobertura.xml"
           IncludeInRatchet = true
-          ArgsTemplate = defaultCoverageArgsTemplate }
+          ArgsTemplate = DefaultCoverageArgsTemplate }
 
     let args = buildCoverageArgs paths false
     let mtpAccepts = [ "coverage"; "xml"; "cobertura" ]

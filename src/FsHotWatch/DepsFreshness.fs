@@ -24,7 +24,7 @@ type Freshness =
 /// Plugin name under which the gate reports its fail-fast diagnostic. Shows up
 /// in `fshw errors` / `check` and feeds the aggregate verdict like any plugin.
 [<Literal>]
-let pluginName = "deps"
+let PluginName = "deps"
 
 /// Pure freshness comparator. Stale when assets are missing, or older than any
 /// dependency-declaring file. No dep files → Fresh (nothing can invalidate the

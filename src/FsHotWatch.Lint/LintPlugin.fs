@@ -111,7 +111,7 @@ let private fsharpLintVersion =
 [<Literal>]
 // v2 orphans every entry written under the path-ABSOLUTE key (v1), which no other
 // checkout could have read anyway.
-let private pluginCacheSalt = "lint-merkle-v2"
+let private PluginCacheSalt = "lint-merkle-v2"
 
 /// The generation of the model the host currently publishes, when it is available.
 /// `None` while no model is observable (never discovered, mid-rediscovery, or
@@ -155,7 +155,7 @@ let create
 
             Some(
                 FsHotWatch.TaskCache.merkleCacheKey
-                    [ "plugin-version", pluginCacheSalt
+                    [ "plugin-version", PluginCacheSalt
                       "tool", fsharpLintVersion
                       "config", configHash
                       // REPO-RELATIVE. FSharpLint's verdict depends on where a file

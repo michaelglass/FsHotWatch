@@ -5778,7 +5778,7 @@ let ``a daemon restores a project without assets through the injected restore`` 
         test <@ not (File.Exists(Path.Combine(sourceDir, "obj", "project.assets.json"))) @>
 
         let gateErrors =
-            daemon.Host.GetErrorsByPlugin(DepsFreshness.pluginName)
+            daemon.Host.GetErrorsByPlugin(DepsFreshness.PluginName)
             |> Map.toList
             |> List.collect snd
 

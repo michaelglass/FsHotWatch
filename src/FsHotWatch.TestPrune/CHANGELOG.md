@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **style!: `TestPrunePlugin.DefaultCoverageArgsTemplate`, `TraceSettings.DefaultDbPath` and `TraceSettings.DefaultVerifyTimeoutSec` are PascalCase (were camelCase)**: `[<Literal>]` values are PascalCase (FSharpLint `literalNames`).
+
 ## 0.13.0-alpha.87 - 2026-10-18
 
 - fix: a queued impact rerun is judged stale only when nothing is owed, no dependency

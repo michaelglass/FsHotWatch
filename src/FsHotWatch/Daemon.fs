@@ -194,11 +194,11 @@ let internal applyDepsGate
     | Some g ->
         match g projPath with
         | DepsFreshness.Proceed ->
-            host.ClearErrors(DepsFreshness.pluginName, projPath)
+            host.ClearErrors(DepsFreshness.PluginName, projPath)
             true
         | DepsFreshness.RecoveredOk ->
             Logging.info "deps" $"%s{Path.GetFileName projPath}: deps were stale — auto-restored OK"
-            host.ClearErrors(DepsFreshness.pluginName, projPath)
+            host.ClearErrors(DepsFreshness.PluginName, projPath)
             true
         | DepsFreshness.SkipAlreadyAttempted ->
             // Skipping is right — a project whose deps will not restore must not be
@@ -219,7 +219,7 @@ let internal applyDepsGate
                 + "Restore the project's dependencies and re-run; the gate re-arms once its deps are observed fresh."
 
             host.ReportErrors(
-                DepsFreshness.pluginName,
+                DepsFreshness.PluginName,
                 projPath,
                 [ ErrorLedger.ErrorEntry.errorWithDetail message detail ]
             )
@@ -234,7 +234,7 @@ let internal applyDepsGate
                 else
                     ErrorLedger.ErrorEntry.errorWithDetail message detail
 
-            host.ReportErrors(DepsFreshness.pluginName, projPath, [ entry ])
+            host.ReportErrors(DepsFreshness.PluginName, projPath, [ entry ])
             false
 
 /// Fingerprint fsproj files by path + content hash. Used by ScanAll to skip
@@ -427,7 +427,7 @@ let internal restoredSinceDiscovery (tracker: ContentDedup.Tracker) (projects: s
     |> List.filter (fun project -> projectAssetsFileFor project |> Option.exists tracker.ChangedSinceObserved)
 
 [<Literal>]
-let internal projInfoBinlogEnvVar = "FSHW_PROJINFO_BINLOG"
+let internal ProjInfoBinlogEnvVar = "FSHW_PROJINFO_BINLOG"
 
 let internal projInfoLogDir (repoRoot: string) =
     Path.Combine(FsHwPaths.root repoRoot, "logs", "projinfo")
@@ -842,7 +842,7 @@ let private discoverAndRegisterProjects
         Directory.CreateDirectory(logDir) |> ignore
 
         let binlogDir =
-            if isTruthyEnv projInfoBinlogEnvVar then
+            if isTruthyEnv ProjInfoBinlogEnvVar then
                 let dir = Path.Combine(logDir, "binlogs")
                 Directory.CreateDirectory(dir) |> ignore
                 Some(DirectoryInfo(dir))
@@ -953,7 +953,7 @@ let private discoverAndRegisterProjects
 
 /// How many changed projects a scoped-invalidation line names before eliding.
 [<Literal>]
-let internal scopedChangeNamesLogged = 8
+let internal ScopedChangeNamesLogged = 8
 
 /// Render the changed projects for the scoped-invalidation log line.
 ///
@@ -967,7 +967,7 @@ let internal scopedChangeNamesLogged = 8
 /// share a `.fsproj` name, and a name that silently merges two subjects is how a
 /// count becomes wrong rather than merely coarse.
 ///
-/// Elides past `scopedChangeNamesLogged` so a tree-wide invalidation cannot turn one
+/// Elides past `ScopedChangeNamesLogged` so a tree-wide invalidation cannot turn one
 /// line into a screenful, and SAYS it elided rather than truncating silently.
 let internal describeChangedProjects (repoRoot: string) (projects: string list) : string =
     let relative (path: string) =
@@ -981,7 +981,7 @@ let internal describeChangedProjects (repoRoot: string) (projects: string list) 
     match projects with
     | [] -> ""
     | _ ->
-        let shown = projects |> List.truncate scopedChangeNamesLogged |> List.map relative
+        let shown = projects |> List.truncate ScopedChangeNamesLogged |> List.map relative
         let elided = projects.Length - shown.Length
         let names = String.concat ", " shown
 
@@ -2453,7 +2453,7 @@ module internal StallWatch =
 /// Sentinel message for shutdown-driven cancellation. Anything that surfaces
 /// this is a daemon-teardown event, not a plugin failure.
 [<Literal>]
-let internal daemonShuttingDownMessage = "daemon shutting down"
+let internal DaemonShuttingDownMessage = "daemon shutting down"
 
 /// Wait for all plugins to settle: one pinned publication of the host's owned work
 /// holds none and satisfies the caller's `restRequires`. There is no time window.
@@ -2719,7 +2719,7 @@ let private waitCoreWith
             // Catches the race between cancellation and the first Async.Sleep —
             // see waitForAllTerminal's doc-comment for the full contract.
             if ct.IsCancellationRequested then
-                raise (System.OperationCanceledException(daemonShuttingDownMessage, ct))
+                raise (System.OperationCanceledException(DaemonShuttingDownMessage, ct))
 
             checkForWedgedPlugin ()
 
@@ -3374,7 +3374,7 @@ type Daemon
                                 let! winner = Task.WhenAny([| waiter; cancel |])
 
                                 if obj.ReferenceEquals(winner, cancel) then
-                                    raise (System.OperationCanceledException(daemonShuttingDownMessage, cts.Token))
+                                    raise (System.OperationCanceledException(DaemonShuttingDownMessage, cts.Token))
 
                                 linked.Cancel()
                                 // The waiter may have settled with its scan's failure.

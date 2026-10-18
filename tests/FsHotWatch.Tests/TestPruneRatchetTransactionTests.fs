@@ -17,7 +17,7 @@ open TestPrune.Database
 
 /// What a graph rebuild's orphan removal does to a declaration that vanished from its file.
 [<Literal>]
-let private deleteCoveredOccurrence =
+let private DeleteCoveredOccurrence =
     "DELETE FROM symbol_occurrences WHERE symbol_id = (SELECT id FROM symbols WHERE full_name = 'Fixture.covered');"
 
 [<Theory(Timeout = 10000)>]
@@ -64,7 +64,7 @@ let ``ratchet mapping retains symbol ownership until its coverage write commits`
             // Microsoft.Data.Sqlite reads zero as "wait forever", not "fail now". Bound
             // the genuine lock wait while the writer owns the mapping.
             remove.CommandTimeout <- 1
-            remove.CommandText <- deleteCoveredOccurrence
+            remove.CommandText <- DeleteCoveredOccurrence
 
             try
                 Assert.Equal(1, remove.ExecuteNonQuery())
@@ -103,6 +103,6 @@ let ``ratchet mapping retains symbol ownership until its coverage write commits`
         // The exclusion lasts only for the transaction. The waiting graph mutation may
         // proceed afterwards, and the ordinary FK cascade removes the obsolete points.
         use removeAfterCommit = inspection.CreateCommand()
-        removeAfterCommit.CommandText <- deleteCoveredOccurrence
+        removeAfterCommit.CommandText <- DeleteCoveredOccurrence
         Assert.Equal(1, removeAfterCommit.ExecuteNonQuery())
         Assert.Equal(0L, Convert.ToInt64(coverage.ExecuteScalar())))

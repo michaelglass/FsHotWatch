@@ -235,7 +235,7 @@ let DefaultLogDir = "logs"
 /// `CoverageArgsTemplate` is the command-line template the daemon appends
 /// when collecting coverage. `{output}` is substituted with the per-run
 /// baseline or partial file path. `None` means use the MTP-cobertura default
-/// (`FsHotWatch.TestPrune.TestPrunePlugin.defaultCoverageArgsTemplate`).
+/// (`FsHotWatch.TestPrune.TestPrunePlugin.DefaultCoverageArgsTemplate`).
 /// For other test runners (coverlet.collector, AltCover, etc.), provide
 /// your own template.
 type TestProjectConfig =
@@ -1079,11 +1079,11 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     let verifyTimeoutSec =
                         match t.TryGetProperty("verifyTimeoutSec") with
                         | true, n when n.ValueKind = JsonValueKind.Number -> n.GetInt32()
-                        | _ -> FsHotWatch.TestPrune.TraceSettings.defaultVerifyTimeoutSec
+                        | _ -> FsHotWatch.TestPrune.TraceSettings.DefaultVerifyTimeoutSec
 
                     let settings: FsHotWatch.TestPrune.TraceSettings =
                         { Record = record
-                          DbPath = str "db" |> Option.defaultValue FsHotWatch.TestPrune.TraceSettings.defaultDbPath
+                          DbPath = str "db" |> Option.defaultValue FsHotWatch.TestPrune.TraceSettings.DefaultDbPath
                           WeaveTests = weaveTests
                           FingerprintInputs = strs "fingerprintInputs"
                           FingerprintEnv = strs "fingerprintEnv"
@@ -2464,7 +2464,7 @@ let registerPluginsIn
                     let argsTemplate =
                         Map.tryFind project projectsByName
                         |> Option.bind (fun p -> p.CoverageArgsTemplate)
-                        |> Option.defaultValue FsHotWatch.TestPrune.TestPrunePlugin.defaultCoverageArgsTemplate
+                        |> Option.defaultValue FsHotWatch.TestPrune.TestPrunePlugin.DefaultCoverageArgsTemplate
 
                     Some
                         { FsHotWatch.TestPrune.TestPrunePlugin.CoveragePaths.Baseline =

@@ -132,7 +132,7 @@ let SessionRunLedger = 64
 ///
 /// The file format is Cobertura regardless of `ArgsTemplate` — the template
 /// is responsible for telling its runner to write Cobertura to `{output}`.
-/// For Microsoft Testing Platform, use `defaultCoverageArgsTemplate`; for
+/// For Microsoft Testing Platform, use `DefaultCoverageArgsTemplate`; for
 /// other runners (coverlet.collector, AltCover, OpenCover) supply your own.
 type CoveragePaths =
     {
@@ -333,7 +333,7 @@ let internal coverageReceiptFromReceipt
 /// (xUnit v3, MSTest v3 — anything invoked as `dotnet run --project <test>
 /// --no-build -- ...`). `{output}` is replaced with the target file path.
 [<Literal>]
-let defaultCoverageArgsTemplate =
+let DefaultCoverageArgsTemplate =
     "--coverage --coverage-output-format cobertura --coverage-output \"{output}\""
 
 [<Literal>]
@@ -4017,7 +4017,7 @@ let internal buildFilterArgs (config: TestConfig) (classesByProject: Map<string,
 
 /// Microsoft.Testing.Platform exit code for "no tests matched / zero tests ran".
 [<Literal>]
-let internal zeroTestsExitCode = 8
+let internal ZeroTestsExitCode = 8
 
 /// True when a *filtered* run matched no tests in this project. An explicit
 /// `--filter-*` passthrough (run-tests / test-rerun) is fanned out to EVERY test
@@ -4035,7 +4035,7 @@ let internal zeroTestsExitCode = 8
 let internal isZeroTestsUnderFilter (wasFiltered: bool) (outcome: ProcessOutcome) : bool =
     wasFiltered
     && match outcome with
-       | ProcessOutcome.Failed(code, _) when code = zeroTestsExitCode -> true
+       | ProcessOutcome.Failed(code, _) when code = ZeroTestsExitCode -> true
        | ProcessOutcome.Failed(_, output) ->
            // A text SEARCH for a marker: a capture cut short by an unfinished drain
            // can only cost us the hit (falling back to the exit code above), never
