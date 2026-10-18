@@ -691,3 +691,136 @@ let ``lint with a project config reaches a terminal status`` () =
         match host.GetStatus "lint" with
         | Some(Completed _) -> ()
         | other -> Assert.Fail($"Expected Completed, got: %A{other}"))
+
+// ---------------------------------------------------------------------------
+// A lint that never ran must never read as a clean lint.
+// ---------------------------------------------------------------------------
+
+/// Parse `source` as `file` with the real checker, and lint it through the plugin with
+/// the REAL FSharpLint (no stubbed runner). Returns the terminal status and the lint
+/// ledger's entries for the file.
+let private lintThroughPlugin (dir: string) (configPath: string option) (fileName: string) (source: string) =
+    let file = System.IO.Path.Combine(dir, fileName)
+
+    let parsed =
+        sharedChecker.Value.ParseFile(
+            file,
+            SourceText.ofString source,
+            { FSharp.Compiler.CodeAnalysis.FSharpParsingOptions.Default with
+                SourceFiles = [| file |] }
+        )
+        |> Async.RunSynchronously
+
+    let host = createModelHost (Unchecked.defaultof<_>) dir
+    host.RegisterHandler(create None configPath None None)
+
+    host.EmitFileChecked
+        { fakeFileCheckResult file with
+            Source = source
+            ParseResults = parsed }
+
+    waitForTerminalStatus host "lint" 20000
+
+    let entries =
+        host.GetErrorsByPlugin "lint"
+        |> Map.toList
+        |> List.collect snd
+        |> List.map _.Message
+
+    host.GetStatus "lint", entries
+
+[<Fact(Timeout = 15000)>]
+let ``a lint runner that throws reports Failed naming the exception, never zero issues`` () =
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
+
+    let runner (_result: FileCheckResult) : Lint.LintResult =
+        raise (System.MissingMethodException "Method not found: NamePatPairs.get_pats()")
+
+    host.RegisterHandler(create None None (Some runner) None)
+    host.EmitFileChecked(fakeFileCheckResult "/tmp/test/Throws.fs")
+    waitForTerminalStatus host "lint" 15000
+
+    match host.GetStatus "lint" with
+    | Some(Failed(msg, _, _)) ->
+        test <@ msg.Contains "MissingMethodException" @>
+        test <@ msg.Contains "NamePatPairs.get_pats()" @>
+        test <@ msg.Contains "Throws.fs" @>
+    | other -> Assert.Fail($"Expected Failed, got: %A{other}")
+
+    test <@ host.GetErrorsByPlugin "lint" |> Map.isEmpty |> not @>
+
+// FSharpLint's own failure channel: its linter catches every exception, reports it ONLY
+// as ProjectProgress.Failed, and still returns `Success []`. That shape must fail.
+[<Fact(Timeout = 15000)>]
+let ``a core that reports ProjectProgress Failed and returns no warnings is a lint failure`` () =
+    let core (lintParams: Lint.OptionalLintParameters) =
+        let report = Option.get lintParams.ReportLinterProgress
+        report (Lint.ProjectProgress.Starting "<inline source>")
+
+        report (Lint.ProjectProgress.Failed("<inline source>", System.MissingMethodException "get_pats() not found"))
+
+        report (Lint.ProjectProgress.ReachedEnd("<inline source>", []))
+        Lint.LintResult.Success []
+
+    let ex =
+        Assert.Throws<LintCoreFailedException>(fun () ->
+            lintReportingFailures Lint.OptionalLintParameters.Default core |> ignore)
+
+    test <@ ex.Message.Contains "MissingMethodException" @>
+    test <@ ex.Message.Contains "get_pats() not found" @>
+
+[<Fact(Timeout = 15000)>]
+let ``a core that never reaches the end of the file examined nothing and is a lint failure`` () =
+    let core (_: Lint.OptionalLintParameters) = Lint.LintResult.Success []
+
+    let ex =
+        Assert.Throws<LintCoreFailedException>(fun () ->
+            lintReportingFailures Lint.OptionalLintParameters.Default core |> ignore)
+
+    test <@ ex.Message.Contains "never reached the end" @>
+
+[<Fact(Timeout = 15000)>]
+let ``a core that reaches the end without failing passes its result through`` () =
+    let core (lintParams: Lint.OptionalLintParameters) =
+        let report = Option.get lintParams.ReportLinterProgress
+        report (Lint.ProjectProgress.Starting "<inline source>")
+        report (Lint.ProjectProgress.ReachedEnd("<inline source>", []))
+        Lint.LintResult.Success []
+
+    match lintReportingFailures Lint.OptionalLintParameters.Default core with
+    | Lint.LintResult.Success [] -> ()
+    | other -> Assert.Fail($"Expected Success [], got: %A{other}")
+
+// Positive controls: the REAL FSharpLint, through the plugin, finds a planted finding.
+// A step that merely completes proves nothing — "linted 1 files, 0 issues" was exactly
+// what a linter that threw on every file reported.
+[<Fact(Timeout = 30000)>]
+let ``real FSharpLint through the plugin reports a planted FL0065 hint`` () =
+    withTempDir "lint-planted-fl0065" (fun dir ->
+        let source = "module Planted\n\nlet isNone (x: int list) = x = []\n"
+        let status, entries = lintThroughPlugin dir None "Planted.fs" source
+
+        match status with
+        | Some(Completed _) -> ()
+        | other -> Assert.Fail($"Expected Completed, got: %A{other}")
+
+        test <@ entries |> List.exists (fun m -> m.Contains "List.isEmpty") @>)
+
+[<Fact(Timeout = 30000)>]
+let ``real FSharpLint through the plugin reports a project-config rule`` () =
+    withTempDir "lint-planted-config" (fun dir ->
+        let configPath = System.IO.Path.Combine(dir, "fsharplint.json")
+
+        System.IO.File.WriteAllText(
+            configPath,
+            """{ "maxCharactersOnLine": { "enabled": true, "config": { "maxCharactersOnLine": 20 } } }"""
+        )
+
+        let source = "module Long\n\nlet aVeryLongIdentifierName = 1\n"
+        let status, entries = lintThroughPlugin dir (Some configPath) "Long.fs" source
+
+        match status with
+        | Some(Completed _) -> ()
+        | other -> Assert.Fail($"Expected Completed, got: %A{other}")
+
+        test <@ entries |> List.isEmpty |> not @>)

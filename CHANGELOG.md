@@ -74,6 +74,30 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### lint: the in-process lint plugin lints again, and a lint that never ran fails
+
+- **fix!: a lint run that threw, or examined nothing, now fails the step.** FSharpLint
+  catches every exception its linter meets, reports it only through
+  `ReportLinterProgress` as `ProjectProgress.Failed`, and then returns `Success []`. The
+  plugin never read that channel. So when FSharpLint.Core 0.27.0, compiled against FCS
+  43.9, threw `MissingMethodException` on every file under the FCS the daemon runs, the
+  step read `Completed: linted N files, 0 issues`. Every consumer on the default
+  `"lint": true` got a lint that could never find anything. Now a reported failure, a
+  run that never reached the end of the file, and a runner that throws each set the step
+  to `Failed`, naming the file and the exception type and message.
+- **fix: FsHotWatch.Lint takes FSharpLint.Core from `FSharpLintAnalyzerShim`
+  0.5.0-alpha.1.** That package bundles an FSharpLint.Core built against FCS 43.12.202+,
+  the same build the `analyzers.paths` route loads. The published packages do not match
+  the FCS in use. 0.27.0 throws on `NamePatPairs.get_pats()`. The 0.27.1 nightlies,
+  built on 43.12.201, throw on `FSharpType.get_BasicQualifiedName()`, whose return type
+  changed in 43.12.202. That second failure only shows with full type-check results.
+- The lint cache key now carries FSharpLint.Core's module version id, not its assembly
+  version. The bundled build is stamped 1.0.0.0, so a version-based key would let a new
+  build replay an old build's results.
+- Tests: the real linter, through the plugin, has to report a planted FL0065 (`x = []`)
+  and a project-config rule. Previously the integration tests accepted `Failed` as
+  "graceful" and a completed step as success, so they could not see any of this.
+
 ### coverage: a full-suite check fails when a floored file has no row in the report
 
 - The daemon's coverage check took its file set from the report, so a file with a floor

@@ -34,6 +34,14 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.303" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
-    <PackageReference Include="FSharpLint.Core" Version="0.27.0" />
+    <!-- FSharpLint.Core comes from the analyzer shim, which bundles a build compiled against
+         FCS 43.12.202+ (the same build the analyzers path loads). The published
+         FSharpLint.Core packages are compiled against older FCS signatures: 0.27.0 against
+         43.9 (throws on `NamePatPairs.get_pats()`), and the 0.27.1 nightlies against 43.12.201
+         (throws on `FSharpType.get_BasicQualifiedName()`, whose return type changed in
+         43.12.202). FSharpLint catches those exceptions itself and returns no warnings, so
+         a mismatched build lints nothing. LintPlugin now fails loudly on that, and the
+         integration tests lint a planted finding through a real type check. -->
+    <PackageReference Include="FSharpLintAnalyzerShim" Version="0.5.0-alpha.1" />
   </ItemGroup>
 </Project>

@@ -410,9 +410,13 @@ let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> stri
 
 [<Fact(Timeout = RealCheckTestCapMs)>]
 let ``lint plugin detects warnings on bad code`` () =
+    // End to end: a real FCS type check, the real FSharpLint, through the plugin. The
+    // planted `x = []` is FL0065 (use List.isEmpty). A lint that completed with no finding,
+    // or failed, is a defect: both were once read here as "graceful" while FSharpLint
+    // threw on every file against the FCS in use.
     let badCode =
         """module Temp
-let x = 5
+let isNone (x: int list) = x = []
 """
 
     withTempFsFile badCode (fun _dir filePath ->
@@ -423,35 +427,24 @@ let x = 5
         let lint = LintPlugin.create None None None None
         host.RegisterHandler(lint)
 
-        try
-            let result = checkTempFile checker filePath
+        match checkTempFile checker filePath with
+        | Some checkResult ->
+            test <@ checkResult.CheckResults.IsFullCheck @>
+            host.EmitFileChecked(stampFixture checkResult)
+            waitForTerminalStatus host "lint" RealCheckWaitMs
 
-            match result with
-            | Some checkResult ->
-                host.EmitFileChecked(stampFixture checkResult)
+            match host.GetStatus("lint") with
+            | Some(Completed _) -> ()
+            | other -> Assert.Fail($"Expected Completed, got: %A{other}")
 
-                waitUntil
-                    (fun () ->
-                        match host.GetStatus("lint") with
-                        | Some(Completed _)
-                        | Some(PluginStatus.Failed _) -> true
-                        | _ -> false)
-                    RealCheckWaitMs
+            let messages =
+                host.GetErrorsByPlugin("lint")
+                |> Map.toList
+                |> List.collect snd
+                |> List.map _.Message
 
-                let status = host.GetStatus("lint")
-                test <@ status.IsSome @>
-
-                match status.Value with
-                | Completed _ -> ()
-                | PluginStatus.Failed(msg, _, _) ->
-                    // FCS version mismatch may cause lint to fail — acceptable
-                    Assert.True(true, $"Lint failed gracefully: {msg}")
-                | other -> Assert.Fail($"Unexpected lint status: %A{other}")
-            | None ->
-                // FCS could not check the temp file (version mismatch etc.) — skip
-                Assert.True(true, "Skipped: FCS could not check temp file")
-        with ex ->
-            Assert.True(true, $"Skipped due to FCS exception: {ex.Message}"))
+            test <@ messages |> List.exists (fun m -> m.Contains "List.isEmpty") @>
+        | None -> Assert.Fail("FCS failed to check the temp file"))
 
 // The format tests below run the REAL pinned tool (`dotnet tool run fantomas`,
 // resolved from this checkout's `.config/dotnet-tools.json`) with the checkout as the
@@ -660,24 +653,13 @@ let ``LintPlugin reports no warnings on clean code`` () =
     | Some checkResult ->
         host.EmitFileChecked(stampFixture checkResult)
 
-        waitUntil
-            (fun () ->
-                match host.GetStatus("lint") with
-                | Some(Completed _)
-                | Some(PluginStatus.Failed _) -> true
-                | _ -> false)
-            RealCheckWaitMs
+        waitForTerminalStatus host "lint" RealCheckWaitMs
 
-        let status = host.GetStatus("lint")
-        test <@ status.IsSome @>
-
-        match status.Value with
-        | Completed _ -> ()
-        | PluginStatus.Failed(msg, _, _) ->
-            // An FCS version mismatch can fail lint; graceful handling is the assertion.
-            Assert.True(true, $"Lint failed gracefully: {msg}")
-        | other -> Assert.Fail($"Unexpected lint status: %A{other}")
-    | None -> Assert.True(true, "Skipped: FCS could not check file")
+        // A failed lint is not "graceful": it is a lint that never ran.
+        match host.GetStatus("lint") with
+        | Some(Completed _) -> ()
+        | other -> Assert.Fail($"Expected Completed, got: %A{other}")
+    | None -> Assert.Fail("FCS failed to check the file")
 
 [<Fact(Timeout = RealCheckTestCapMs)>]
 let ``LintPlugin reports warnings on code with issues`` () =
@@ -691,33 +673,22 @@ let ``LintPlugin reports warnings on code with issues`` () =
 
     let badCode =
         """module Temp
-let x = 5
+let isNone (x: int list) = x = []
 """
 
     withTempFsFile badCode (fun _dir filePath ->
-        try
-            let result = checkTempFile checker filePath
+        match checkTempFile checker filePath with
+        | Some checkResult ->
+            host.EmitFileChecked(stampFixture checkResult)
+            waitForTerminalStatus host "lint" RealCheckWaitMs
+            waitForQuiescent host RealCheckWaitMs
 
-            match result with
-            | Some checkResult ->
-                host.EmitFileChecked(stampFixture checkResult)
-
-                waitUntil
-                    (fun () ->
-                        match host.GetStatus("lint") with
-                        | Some(Completed _)
-                        | Some(PluginStatus.Failed _) -> true
-                        | _ -> false)
-                    RealCheckWaitMs
-
-                waitForQuiescent host RealCheckWaitMs
-
-                let cmdResult = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
-                test <@ cmdResult.IsSome @>
-                test <@ cmdResult.Value.Contains("warnings") @>
-            | None -> Assert.True(true, "Skipped: FCS could not check temp file")
-        with ex ->
-            Assert.True(true, $"Skipped due to FCS exception: {ex.Message}"))
+            // The planted FL0065 is counted: one file, at least one warning.
+            let cmdResult = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
+            test <@ cmdResult.IsSome @>
+            test <@ cmdResult.Value.Contains "\"files\": 1" @>
+            test <@ not (cmdResult.Value.Contains "\"warnings\": 0") @>
+        | None -> Assert.Fail("FCS failed to check the temp file"))
 
 // ===========================================================================
 // AnalyzersPlugin — success and failure
