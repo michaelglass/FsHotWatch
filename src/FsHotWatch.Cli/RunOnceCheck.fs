@@ -206,7 +206,7 @@ let private runOnceAndVerdictIn
         let awaitDiscovery () =
             match daemon.WaitForDiscoveryFailure().GetAwaiter().GetResult() with
             | Some message ->
-                // Publish BEFORE Program.fs converts ConfigError to exit 2. Otherwise a
+                // Publish BEFORE Program.fs converts ConfigErrorException to exit 2. Otherwise a
                 // prior green remains readable after this failed run and lies about the
                 // current tree — the most dangerous form of the original incident.
                 settledTree.Value <- IpcOutput.SettledTree.capture repoRoot config.Exclude
@@ -220,7 +220,7 @@ let private runOnceAndVerdictIn
                     settledTree.Value
                 |> ignore
 
-                raise (ConfigError message)
+                raise (ConfigErrorException message)
             | None -> ()
 
         let scanAndSettle () : Map<string, PluginStatus> =

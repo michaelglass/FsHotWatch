@@ -34,7 +34,7 @@ let private captureStderr (f: unit -> 'a) : string * 'a =
 let private assertNoStackTrace (text: string) =
     test <@ not (text.Contains("Unhandled exception")) @>
     test <@ not (text.Contains("   at ")) @>
-    test <@ not (text.Contains("ConfigError")) @>
+    test <@ not (text.Contains("ConfigErrorException")) @>
     test <@ not (text.Contains("Exception")) @>
 
 let private analyzersConfig (paths: string list) (hints: (string * string) list) : DaemonConfiguration =
@@ -73,12 +73,12 @@ let private noIpc () : IpcOps =
       IsRunning = fun _ -> false
       LaunchDaemon = fun _ _ _ -> () }
 
-/// The user-facing text a `ConfigError` carries. `exn.Message` on an F# exception is its
-/// structured `%A` rendering (`ConfigError "…"`), which is not what any surface prints.
+/// The user-facing text a `ConfigErrorException` carries. `exn.Message` on an F# exception is its
+/// structured `%A` rendering (`ConfigErrorException "…"`), which is not what any surface prints.
 let private configErrorText (register: unit -> unit) : string =
-    match Assert.Throws<ConfigError>(register) :> exn with
-    | ConfigError message -> message
-    | other -> failwith $"expected ConfigError, got %s{other.GetType().Name}"
+    match Assert.Throws<ConfigErrorException>(register) :> exn with
+    | ConfigErrorException message -> message
+    | other -> failwith $"expected ConfigErrorException, got %s{other.GetType().Name}"
 
 /// A repo root the zero-projects pre-check accepts.
 let private withProjectRepo (prefix: string) (body: string -> unit) =
@@ -230,13 +230,13 @@ let ``parseConfig refuses a bootstrap hint for an unconfigured path or a non-str
     let defaults = defaultTestConfig ()
 
     let unconfigured =
-        Assert.Throws<ConfigError>(fun () ->
+        Assert.Throws<ConfigErrorException>(fun () ->
             parseConfig """{"analyzers": {"paths": ["a/bin"], "bootstrapHints": {"b/bin": "x"}}}""" defaults
             |> ignore)
 
     test <@ unconfigured.Message.Contains("b/bin") @>
 
-    Assert.Throws<ConfigError>(fun () ->
+    Assert.Throws<ConfigErrorException>(fun () ->
         parseConfig """{"analyzers": {"paths": ["a/bin"], "bootstrapHints": {"a/bin": 3}}}""" defaults
         |> ignore)
     |> ignore

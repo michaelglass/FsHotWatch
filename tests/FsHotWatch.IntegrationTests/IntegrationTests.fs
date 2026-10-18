@@ -182,7 +182,8 @@ let ``analyzers load guard fires per-path when one of several paths loads zero``
                            BootstrapHints = Map.empty |} }
 
         let ex =
-            Assert.Throws<DaemonConfig.ConfigError>(fun () -> DaemonConfig.registerPlugins daemon tmpDir config)
+            Assert.Throws<DaemonConfig.ConfigErrorException>(fun () ->
+                DaemonConfig.registerPlugins daemon tmpDir config)
 
         Assert.Contains(emptyPath, ex.Message)
         Assert.Contains("no-such-analyzer-bin-dir", ex.Message)

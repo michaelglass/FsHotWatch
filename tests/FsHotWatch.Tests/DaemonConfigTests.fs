@@ -130,12 +130,14 @@ let ``parseConfig fsEventsLatencyMs zero is valid (no coalescing)`` () =
 [<InlineData("""{"fsEventsLatencyMs": -10}""", "-10")>]
 [<InlineData("""{"fsEventsLatencyMs": "nope"}""", "nope")>]
 [<InlineData("""{"fsEventsLatencyMs": 2.5}""", "2.5")>]
-let ``parseConfig fsEventsLatencyMs that is not a non-negative integer is a ConfigError naming it``
+let ``parseConfig fsEventsLatencyMs that is not a non-negative integer is a ConfigErrorException naming it``
     (json: string, bad: string)
     =
     // Was a warning and a silent fall-back to 250 — a mistyped latency then measured
     // the default while the config claimed otherwise.
-    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
     test <@ ex.message.Contains "fsEventsLatencyMs" @>
     test <@ ex.message.Contains bad @>
 
@@ -164,8 +166,10 @@ let ``parseConfig checker cacheSizeFactor positive value is used`` () =
 [<InlineData("""{"checker": {"cacheSizeFactor": "10"}}""")>]
 [<InlineData("""{"checker": {"cacheSizeFactor": 99999999999}}""")>]
 [<InlineData("""{"checker": 10}""")>]
-let ``parseConfig checker cacheSizeFactor that is not a positive integer is a ConfigError`` (json: string) =
-    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+let ``parseConfig checker cacheSizeFactor that is not a positive integer is a ConfigErrorException`` (json: string) =
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
     test <@ ex.message.Contains "checker" @>
 
 // --- parseConfig: run-level hooks ---
@@ -230,13 +234,15 @@ let ``parseConfig runHookCommands empty array is legal and brackets nothing`` ()
 [<Theory(Timeout = 15000)>]
 [<InlineData("""{"runHookCommands": ["chekc", "confrim"]}""", "chekc")>]
 [<InlineData("""{"runHookCommands": ["confirm", "chekc"]}""", "chekc")>]
-let ``parseConfig runHookCommands with an unknown verb is a ConfigError naming it and the accepted verbs``
+let ``parseConfig runHookCommands with an unknown verb is a ConfigErrorException naming it and the accepted verbs``
     (json: string, bad: string)
     =
     // A typo must never change which verbs are bracketed. Dropping it used to
     // silently un-bracket the verb the typo was meant to name (`["confirm", "chekc"]`
     // bracketed confirm only), and a warning scrolls past inside a long gate.
-    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
     test <@ ex.message.Contains "runHookCommands" @>
     test <@ ex.message.Contains bad @>
     test <@ ex.message.Contains "check" && ex.message.Contains "confirm" @>
@@ -246,8 +252,10 @@ let ``parseConfig runHookCommands with an unknown verb is a ConfigError naming i
 [<InlineData("""{"runHookCommands": 3}""")>]
 [<InlineData("""{"runHookCommands": {"confirm": true}}""")>]
 [<InlineData("""{"runHookCommands": ["confirm", 3]}""")>]
-let ``parseConfig runHookCommands of the wrong shape is a ConfigError`` (json: string) =
-    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+let ``parseConfig runHookCommands of the wrong shape is a ConfigErrorException`` (json: string) =
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
     test <@ ex.message.Contains "runHookCommands" @>
 
 [<Fact(Timeout = 15000)>]
@@ -490,11 +498,13 @@ let ``parseConfig format check string returns Check`` () =
 [<Theory(Timeout = 15000)>]
 [<InlineData("""{"format": "chek"}""", "chek")>]
 [<InlineData("""{"format": 1}""", "1")>]
-let ``parseConfig format unknown value is a ConfigError naming it and the accepted values``
+let ``parseConfig format unknown value is a ConfigErrorException naming it and the accepted values``
     (json: string, bad: string)
     =
     // Was a warning and a silent fall-back to Auto — so `"chek"` quietly REWROTE files.
-    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
     test <@ ex.message.Contains "format" @>
     test <@ ex.message.Contains bad @>
 
@@ -573,7 +583,7 @@ let ``parseConfig cache object reads maxEntries all`` () =
 [<InlineData("""{"cache": {"include": "src/"}}""")>]
 let ``parseConfig cache object refuses a value it cannot honour`` (json: string) =
     // A cache setting read wrong is a cache silently off or silently unbounded.
-    Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
     |> ignore
 
 [<Fact(Timeout = 15000)>]
@@ -773,9 +783,9 @@ let ``createCacheComponents passes maxEntries and the project filter to the cach
 [<Theory(Timeout = 15000)>]
 [<InlineData("file")>]
 [<InlineData("jj")>]
-let ``parseConfig raises ConfigError on the removed file cache backend`` (value: string) =
+let ``parseConfig raises ConfigErrorException on the removed file cache backend`` (value: string) =
     let ex =
-        Assert.Throws<ConfigError>(fun () -> parseConfig $$"""{"cache": "{{value}}"}""" defaults |> ignore)
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig $$"""{"cache": "{{value}}"}""" defaults |> ignore)
 
     // Without the offending value and both fixes in the message, a hard failure is just
     // a worse warning.
@@ -786,8 +796,12 @@ let ``parseConfig raises ConfigError on the removed file cache backend`` (value:
 [<Theory(Timeout = 15000)>]
 [<InlineData("""{"cache": "redis"}""", "redis")>]
 [<InlineData("""{"cache": 5}""", "5")>]
-let ``parseConfig cache unknown value is a ConfigError naming it and the accepted values`` (json: string, bad: string) =
-    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+let ``parseConfig cache unknown value is a ConfigErrorException naming it and the accepted values``
+    (json: string, bad: string)
+    =
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
     test <@ ex.message.Contains "cache" @>
     test <@ ex.message.Contains bad @>
     test <@ ex.message.Contains "memory" && ex.message.Contains "none" @>
@@ -840,10 +854,12 @@ let ``analyzers config parses explicit failOnSeverity`` () =
 [<InlineData("""{"analyzers":{"paths":["p1"],"failOnSeverity":"bogus"}}""", "bogus")>]
 [<InlineData("""{"analyzers":{"paths":["p1"],"failOnSeverity":"Warning"}}""", "Warning")>]
 [<InlineData("""{"analyzers":{"paths":["p1"],"failOnSeverity":2}}""", "2")>]
-let ``parseConfig analyzers unknown failOnSeverity is a ConfigError naming it and the accepted values``
+let ``parseConfig analyzers unknown failOnSeverity is a ConfigErrorException naming it and the accepted values``
     (json: string, bad: string)
     =
-    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
     test <@ ex.message.Contains "analyzers.failOnSeverity" @>
     test <@ ex.message.Contains bad @>
 
@@ -1020,9 +1036,12 @@ let ``parseConfig coverage without reports searches, as before`` () =
 [<InlineData("\"coverage/x.xml\"")>]
 [<InlineData("[1]")>]
 [<InlineData("null")>]
-let ``parseConfig coverage reports of any other shape is a ConfigError`` (reports: string) =
+let ``parseConfig coverage reports of any other shape is a ConfigErrorException`` (reports: string) =
     let json = """{"coverage": {"reports": __R__}}""".Replace("__R__", reports)
-    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
     test <@ ex.message.Contains "coverage.reports" @>
 
 [<Fact(Timeout = 15000)>]
@@ -1030,7 +1049,9 @@ let ``parseConfig coverage refuses both searchDir and reports`` () =
     let json =
         """{"coverage": {"searchDir": "coverage", "reports": ["coverage/x.cobertura.xml"]}}"""
 
-    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
     test <@ ex.message.Contains "searchDir" && ex.message.Contains "reports" @>
 
 [<Fact(Timeout = 15000)>]
@@ -1091,14 +1112,16 @@ let ``parseConfig tests alwaysClasses reads the class names, and none when absen
 [<InlineData("\"A.Scan\"", "A.Scan")>]
 [<InlineData("[\"A.Scan\", 3]", "3")>]
 [<InlineData("[\"  \"]", "  ")>]
-let ``parseConfig tests alwaysClasses that is not a list of class names is a ConfigError naming it``
+let ``parseConfig tests alwaysClasses that is not a list of class names is a ConfigErrorException naming it``
     (value: string, bad: string)
     =
     // Read as "no classes", a typo would silently stop running the tests the key exists for.
     let json =
         """{"tests": {"projects": [{"project": "T", "alwaysClasses": __V__}]}}""".Replace("__V__", value)
 
-    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
     test <@ ex.message.Contains "tests.projects[T].alwaysClasses" @>
     test <@ ex.message.Contains bad @>
 
@@ -1106,7 +1129,7 @@ let ``parseConfig tests alwaysClasses that is not a list of class names is a Con
 [<InlineData("\"bogus\"", "bogus")>]
 [<InlineData("\"crtf\"", "crtf")>]
 [<InlineData("false", "false")>]
-let ``parseConfig tests reportVerificationFormat unknown value is a ConfigError naming it and the accepted values``
+let ``parseConfig tests reportVerificationFormat unknown value is a ConfigErrorException naming it and the accepted values``
     (value: string, bad: string)
     =
     // Was a warning and a silent fall-back to AutoDetect — the same typo class that
@@ -1114,7 +1137,9 @@ let ``parseConfig tests reportVerificationFormat unknown value is a ConfigError 
     let json =
         """{"tests": {"projects": [{"project": "T", "reportVerificationFormat": __V__}]}}""".Replace("__V__", value)
 
-    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
     test <@ ex.message.Contains "reportVerificationFormat" @>
     test <@ ex.message.Contains bad @>
 
@@ -1130,7 +1155,7 @@ let ``parseConfig tests reportVerificationFormat unknown value is a ConfigError 
 [<InlineData("""{ "extra": "data/x.json" }""", "extra")>]
 [<InlineData("""{ "envFiles": ["../secrets.env"] }""", "inside the repository")>]
 [<InlineData("""{ "env": ["A=B"] }""", "env")>]
-let ``parseConfig tests evidence block that cannot be honoured is a ConfigError naming the project``
+let ``parseConfig tests evidence block that cannot be honoured is a ConfigErrorException naming the project``
     (evidence: string, named: string)
     =
     // Read by TestPrune at runtime (`TestEvidenceKey.configsOf`), refused HERE at load:
@@ -1138,7 +1163,9 @@ let ``parseConfig tests evidence block that cannot be honoured is a ConfigError 
     let json =
         """{"tests": {"projects": [{"project": "T", "evidence": __E__}]}}""".Replace("__E__", evidence)
 
-    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
     test <@ ex.message.Contains "tests.projects[T].evidence" @>
     test <@ ex.message.Contains named @>
 
@@ -1518,7 +1545,9 @@ let ``parseConfig refuses incomplete and unknown test extensions`` (extensionJso
         }}
     }}"""
 
-    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
     test <@ ex.Message.Contains("tests.extensions") @>
 
 [<Fact(Timeout = 15000)>]
@@ -1619,7 +1648,9 @@ let ``parseConfig refuses a malformed tests.selection`` (selectionJson: string) 
     let json =
         $"""{{"tests":{{"selection":{selectionJson},"projects":[{{"project":"Tests"}}]}}}}"""
 
-    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
     test <@ ex.Message.Contains "tests.selection" @>
     test <@ ex.Message.Contains expected @>
 
@@ -1755,7 +1786,7 @@ let ``registerPlugins stores FileCommand pattern on host`` () =
             @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
-let ``registerPlugins raises ConfigError when configured analyzers load zero`` () =
+let ``registerPlugins raises ConfigErrorException when configured analyzers load zero`` () =
     // A non-existent dir is the actual CI bug (bin built in the wrong config). The
     // alternative to raising is registering a do-nothing plugin that lets the gate pass.
     withTempDir "cfg-analyzers-zero" (fun tmpDir ->
@@ -1771,7 +1802,8 @@ let ``registerPlugins raises ConfigError when configured analyzers load zero`` (
                            FailOnSeverity = DiagnosticSeverity.Hint
                            BootstrapHints = Map.empty |} }
 
-        let ex = Assert.Throws<ConfigError>(fun () -> registerPlugins daemon tmpDir config)
+        let ex =
+            Assert.Throws<ConfigErrorException>(fun () -> registerPlugins daemon tmpDir config)
 
         Assert.Contains("loaded 0 analyzers", ex.Message)
         Assert.Contains("no-such-analyzer-bin-dir", ex.Message)
@@ -1814,36 +1846,38 @@ let ``registerPlugins with afterTests-only plugin does not register pattern`` ()
 // --- loadConfig: strict parse errors ---
 
 [<Fact(Timeout = 15000)>]
-let ``loadConfig throws ConfigError on malformed JSON`` () =
+let ``loadConfig throws ConfigErrorException on malformed JSON`` () =
     withTempDir "cfg-malformed" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), "{not valid json")
-        let ex = Assert.Throws<ConfigError>(fun () -> loadConfig tmpDir |> ignore)
+        let ex = Assert.Throws<ConfigErrorException>(fun () -> loadConfig tmpDir |> ignore)
         Assert.Contains(".fshw.json", ex.Message))
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig raises ConfigError when fileCommands entry lacks pattern and afterTests`` () =
+let ``parseConfig raises ConfigErrorException when fileCommands entry lacks pattern and afterTests`` () =
     let json = """{ "fileCommands": [ { "command": "echo", "args": "hi" } ] }"""
 
-    Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
     |> ignore
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig raises ConfigError when afterTests entry lacks name`` () =
+let ``parseConfig raises ConfigErrorException when afterTests entry lacks name`` () =
     let json =
         """{ "fileCommands": [ { "afterTests": true, "command": "echo", "args": "hi" } ] }"""
 
-    Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
     |> ignore
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig raises ConfigError on fileCommands pattern with embedded wildcard`` () =
+let ``parseConfig raises ConfigErrorException on fileCommands pattern with embedded wildcard`` () =
     // An embedded `*` diverges between FileSystemWatcher.Filter (glob) and
     // FilePattern.matches (literal). Failing at config-load beats the unhandled
     // ArgumentException it used to throw at registration time.
     let json =
         """{ "fileCommands": [ { "pattern": "schema.*.sql", "command": "echo", "args": "hi" } ] }"""
 
-    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
     Assert.Contains("schema.*.sql", ex.Message)
 
 // --- countPlugins ---
@@ -2410,7 +2444,7 @@ let ``loadConfig REFUSES a config whose test scope omits a solution test project
     withTempDir "cfg-scope-undeclared" (fun tmpDir ->
         stageSolutionRepo tmpDir gatingOnlyAppTests
 
-        let ex = Assert.Throws<ConfigError>(fun () -> loadConfig tmpDir |> ignore)
+        let ex = Assert.Throws<ConfigErrorException>(fun () -> loadConfig tmpDir |> ignore)
 
         // Names the project, the solution, and both ways out — a refusal nobody
         // can act on is its own kind of silence.
@@ -2447,7 +2481,7 @@ let ``loadConfig REFUSES an exclusion with no reason — a declaration must decl
 
         stageSolutionRepo tmpDir json
 
-        let ex = Assert.Throws<ConfigError>(fun () -> loadConfig tmpDir |> ignore)
+        let ex = Assert.Throws<ConfigErrorException>(fun () -> loadConfig tmpDir |> ignore)
         Assert.Contains("reason", ex.Message))
 
 [<Fact(Timeout = 30000)>]
@@ -2477,7 +2511,7 @@ let ``loadConfig REFUSES a verdictInputs declaration it cannot honour as written
             """{"verdictInputs": {"hashed": [{"path": "coverage-counts.json"}]}}"""
         )
 
-        let ex = Assert.Throws<ConfigError>(fun () -> loadConfig tmpDir |> ignore)
+        let ex = Assert.Throws<ConfigErrorException>(fun () -> loadConfig tmpDir |> ignore)
         Assert.Contains("verdictInputs", ex.Message)
         Assert.Contains("why", ex.Message))
 
@@ -2633,7 +2667,9 @@ let ``parseConfig preprocessors keeps config order`` () =
 [<InlineData("""{"preprocessors": [{"name": "gen", "command": "make", "triggers": ["a*b"]}]}""", "triggers")>]
 [<InlineData("""{"preprocessors": {"name": "gen", "command": "make"}}""", "array")>]
 let ``parseConfig preprocessors refuses a malformed entry`` (json: string, expected: string) =
-    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
     test <@ ex.Message.Contains expected @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
@@ -2763,9 +2799,11 @@ let ``TraceSettings.parseRecord rejects unknown values`` () =
 [<InlineData("sometimes")>]
 [<InlineData("full-run")>]
 [<InlineData("")>]
-let ``parseConfig an unknown record value is a ConfigError naming it and the accepted values`` (value: string) =
+let ``parseConfig an unknown record value is a ConfigErrorException naming it and the accepted values``
+    (value: string)
+    =
     let ex =
-        Assert.Throws<ConfigError>(fun () -> tracesOf $"""{{"record": "%s{value}"}}""" |> ignore)
+        Assert.Throws<ConfigErrorException>(fun () -> tracesOf $"""{{"record": "%s{value}"}}""" |> ignore)
 
     test <@ ex.message.Contains $"'%s{value}'" @>
 
@@ -2812,8 +2850,9 @@ let ``parseConfig a project's traces object opts in and overrides weaveTests`` (
 [<InlineData("5", "'5'")>]
 [<InlineData("null", "'null'")>]
 [<InlineData("[]", "'[]'")>]
-let ``parseConfig a project's traces of any other shape is a ConfigError`` (value: string, named: string) =
-    let ex = Assert.Throws<ConfigError>(fun () -> projectTracesOf value |> ignore)
+let ``parseConfig a project's traces of any other shape is a ConfigErrorException`` (value: string, named: string) =
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> projectTracesOf value |> ignore)
 
     test <@ ex.message.Contains "tests.projects[T].traces" && ex.message.Contains named @>
 
@@ -2821,9 +2860,11 @@ let ``parseConfig a project's traces of any other shape is a ConfigError`` (valu
 [<InlineData("\"most\"", "'most'")>]
 [<InlineData("\"\"", "''")>]
 [<InlineData("true", "'true'")>]
-let ``parseConfig an unknown weaveTests in a project's traces is a ConfigError`` (value: string, named: string) =
+let ``parseConfig an unknown weaveTests in a project's traces is a ConfigErrorException``
+    (value: string, named: string)
+    =
     let ex =
-        Assert.Throws<ConfigError>(fun () -> projectTracesOf $"""{{"weaveTests": %s{value}}}""" |> ignore)
+        Assert.Throws<ConfigErrorException>(fun () -> projectTracesOf $"""{{"weaveTests": %s{value}}}""" |> ignore)
 
     test
         <@
@@ -2834,9 +2875,9 @@ let ``parseConfig an unknown weaveTests in a project's traces is a ConfigError``
     test <@ ex.message.Contains "\"sites\"" && ex.message.Contains "\"full\"" @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig an unknown key in a project's traces object is a ConfigError`` () =
+let ``parseConfig an unknown key in a project's traces object is a ConfigErrorException`` () =
     let ex =
-        Assert.Throws<ConfigError>(fun () -> projectTracesOf """{"weave": "full"}""" |> ignore)
+        Assert.Throws<ConfigErrorException>(fun () -> projectTracesOf """{"weave": "full"}""" |> ignore)
 
     test <@ ex.message.Contains "tests.projects[T].traces" && ex.message.Contains "'weave'" @>
     test <@ ex.message.Contains "weaveTests" @>
@@ -2844,9 +2885,9 @@ let ``parseConfig an unknown key in a project's traces object is a ConfigError``
 [<Theory(Timeout = 15000)>]
 [<InlineData("\"most\"", "'most'")>]
 [<InlineData("true", "'true'")>]
-let ``parseConfig an unknown tests.traces.weaveTests is a ConfigError`` (value: string, named: string) =
+let ``parseConfig an unknown tests.traces.weaveTests is a ConfigErrorException`` (value: string, named: string) =
     let ex =
-        Assert.Throws<ConfigError>(fun () -> tracesOf $"""{{"weaveTests": %s{value}}}""" |> ignore)
+        Assert.Throws<ConfigErrorException>(fun () -> tracesOf $"""{{"weaveTests": %s{value}}}""" |> ignore)
 
     test <@ ex.message.Contains "tests.traces.weaveTests" && ex.message.Contains named @>
 
@@ -2871,9 +2912,13 @@ let ``parseConfig tests.runOn reads change and request`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig refuses an unknown tests.runOn rather than launching runs unasked`` () =
-    let ex = Assert.Throws<ConfigError>(fun () -> runOnOf "\"requested\"" |> ignore)
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> runOnOf "\"requested\"" |> ignore)
+
     test <@ ex.message.Contains "tests.runOn" @>
-    Assert.Throws<ConfigError>(fun () -> runOnOf "false" |> ignore) |> ignore
+
+    Assert.Throws<ConfigErrorException>(fun () -> runOnOf "false" |> ignore)
+    |> ignore
 
 // --- parseConfig: tests.maxParallelProjects ---
 // How many test groups may run at once. Absent: all of them, as before the option.
@@ -2902,7 +2947,9 @@ let ``parseConfig reads tests.maxParallelProjects as a whole number of groups`` 
 [<InlineData("null")>]
 [<InlineData("true")>]
 let ``parseConfig refuses a tests.maxParallelProjects that is not a positive whole number`` (value: string) =
-    let ex = Assert.Throws<ConfigError>(fun () -> maxParallelOf value |> ignore)
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> maxParallelOf value |> ignore)
+
     test <@ ex.message.Contains "tests.maxParallelProjects" && ex.message.Contains value @>
 
 [<Fact(Timeout = 15000)>]
@@ -2946,7 +2993,7 @@ let ``FSHW_TESTS_RUN_ON wins over tests.runOn in both directions`` () =
 [<Fact(Timeout = 15000)>]
 let ``an unknown FSHW_TESTS_RUN_ON is refused rather than read as the default`` () =
     let ex =
-        Assert.Throws<ConfigError>(fun () ->
+        Assert.Throws<ConfigErrorException>(fun () ->
             daemonTestModeWith (Some "requested") (parseConfig onChange defaults) |> ignore)
 
     test <@ ex.message.Contains(TestsRunOnEnvVar: string) @>

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **style!: the config-error exception is `ConfigErrorException` (was `ConfigError`)**, the .NET suffix FSharpLint's `exceptionNames` enforces. Code that catches it by name must use the new name.
+
 ## 0.14.0-alpha.119 - 2026-10-18
 
 - chore: rebuild to bundle updated dependencies

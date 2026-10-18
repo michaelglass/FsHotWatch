@@ -920,7 +920,7 @@ let ``run-once overwrites a current green before surfacing total discovery failu
             daemon.Host.GetAllStatuses()
 
         let ex =
-            Assert.Throws<ConfigError>(fun () ->
+            Assert.Throws<ConfigErrorException>(fun () ->
                 FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdictWith
                     runScan
                     (fun _ -> "")
@@ -993,7 +993,7 @@ let ``run-once waits for an initial discovery still inside the real loader`` () 
             loader.Resume(0)
 
             let ex =
-                Assert.Throws<ConfigError>(fun () -> driver.GetAwaiter().GetResult() |> ignore)
+                Assert.Throws<ConfigErrorException>(fun () -> driver.GetAwaiter().GetResult() |> ignore)
 
             test <@ ex.Message.Contains("PROJECT LOADING FAILED") @>
             discoveryTask |> Option.iter (fun running -> running.GetAwaiter().GetResult())

@@ -30,7 +30,7 @@
 ///
 ///   * a declaration that cannot be honoured as written (no `path`, no `why`,
 ///     escaping the repo, declared as both hashed and not-an-input) is a hard
-///     `ConfigError` at load — the daemon refuses to start;
+///     `ConfigErrorException` at load — the daemon refuses to start;
 ///   * a declaration that resolves to NO FILE contributes a SENTINEL entry to the
 ///     hash rather than contributing zero, so a typo cannot quietly restore the
 ///     old fail-open, and the hash still moves when the file appears.

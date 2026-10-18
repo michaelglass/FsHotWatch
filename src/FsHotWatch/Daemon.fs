@@ -504,7 +504,7 @@ let internal totalDiscoveryFailure (fsprojFilesFound: int) (projectsLoaded: int)
         None
 
 /// Recognize the terminal across the JSON-RPC exception boundary, which does not
-/// preserve the concrete `ConfigError` type. The prefix is deliberately the same
+/// preserve the concrete `ConfigErrorException` type. The prefix is deliberately the same
 /// stable phrase the human/log/verdict surfaces carry.
 let internal isTotalDiscoveryFailureMessage (message: string) : bool =
     not (isNull message)
