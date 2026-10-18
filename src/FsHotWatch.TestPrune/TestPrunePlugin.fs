@@ -9902,6 +9902,12 @@ let internal createWithEvidenceAndQueries
     /// queued while a run is in flight, and that run may have discharged exactly the debt
     /// that queued it: launching blindly would produce a zero-project run whose result
     /// erases the passing evidence.
+    ///
+    /// Stale needs the evidence to cover the tree as well. A run that executed nothing
+    /// (every client abandoned it, its artifacts or test host were unavailable) discharged
+    /// nothing, and the debt alone cannot show that: a tree moved only by an edit the
+    /// symbol diff sees as changing no symbol owes no symbol, yet has no evidence. The
+    /// rerun queued behind such a run is what verifies it.
     let impactRun (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
         match testConfigs with
         | Some configs when not configs.IsEmpty ->
@@ -9916,10 +9922,16 @@ let internal createWithEvidenceAndQueries
                 tryRepairSchemaDrift ex
                 ctx.ReportStatus(PluginStatus.failedNow ex.Message $"rerun flush failed: %s{ex.Message}" TimeSpan.Zero)
                 state
-            | Ok rerunState when nothingOwed rerunState.Debt && Set.isEmpty rerunState.PendingForceRunProjects ->
+            | Ok rerunState when
+                nothingOwed rerunState.Debt
+                && Set.isEmpty rerunState.PendingForceRunProjects
+                && ReceiptInputTree.matches
+                    (rerunState.EvidenceReceipt |> Option.bind (fun receipt -> receipt.InputTreeHash))
+                    (ReceiptInputTree.read repoRoot)
+                ->
                 Logging.info
                     "test-prune"
-                    "Queued impact rerun is stale — the completed run cleared all verification debt and no dependency fanout remains"
+                    "Queued impact rerun is stale — nothing is owed, no dependency fanout remains, and the evidence covers the current tree"
 
                 rerunState
             | Ok rerunState ->

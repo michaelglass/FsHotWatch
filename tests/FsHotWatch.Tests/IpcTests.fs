@@ -31,6 +31,7 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
     { Host = host
       RequestShutdown = ignore
       RequestScan = ignore
+      InvocationReleased = fun _ -> System.Threading.CancellationToken.None
       GetScanStatus = fun () -> "idle"
       GetScanGeneration = fun () -> 0L
       TriggerBuild = fun () -> async { return () }
@@ -287,6 +288,51 @@ let ``server responds to RunCommand`` () =
     try
         let result = IpcClient.runCommand pipeName "greet" "" |> Async.RunSynchronously
         test <@ result.Contains("hello world") @>
+    finally
+        cts.Cancel()
+
+        try
+            serverTask.Wait(TimeSpan.FromSeconds(3.0)) |> ignore
+        with _ ->
+            ()
+
+[<Fact(Timeout = 15000)>]
+let ``server responds to RunCommandFor, naming the invocation it asks for`` () =
+    let pipeName = $"fshw-test-{Guid.NewGuid():N}"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    use cts = new CancellationTokenSource()
+    let looked = Collections.Concurrent.ConcurrentQueue<string>()
+
+    let handler =
+        { Name = PluginName.create "greeter"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands = [ "greet", PluginCommand.Request(fun _ctx args -> async { return $"hello %s{args.[0]}" }) ]
+          Subscriptions = PluginSubscriptions.none
+          PrepareCommit = None
+          CacheKey = None
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+
+    let config =
+        { defaultRpcConfig host with
+            InvocationReleased =
+                fun id ->
+                    looked.Enqueue id
+                    CancellationToken.None }
+
+    let serverTask = Async.StartImmediateAsTask(IpcServer.start pipeName config cts)
+
+    test <@ IpcServer.acceptsConnection pipeName @>
+
+    try
+        let result =
+            IpcClient.runCommandFor pipeName "invocation-3" "greet" "claude"
+            |> Async.RunSynchronously
+
+        test <@ result = "hello claude" @>
+        test <@ List.ofSeq looked = [ "invocation-3" ] @>
     finally
         cts.Cancel()
 

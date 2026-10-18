@@ -57,6 +57,7 @@ let private noIpc () : IpcOps =
       GetStatus = fun _ -> async { return "{}" }
       GetPluginStatus = fun _ _ -> async { return "{}" }
       RunCommand = fun _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name }
+      RunCommandFor = fun _ _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name }
       GetDiagnostics =
         fun _ _ ->
             async {

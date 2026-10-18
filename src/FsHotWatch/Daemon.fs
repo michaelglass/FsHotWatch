@@ -3352,6 +3352,7 @@ type Daemon
                     { Host = host
                       RequestShutdown = fun () -> cts.Cancel()
                       RequestScan = onScan
+                      InvocationReleased = RunClaim.releasedFor repoRoot
                       GetScanStatus = this.FormatScanStatus
                       GetScanGeneration = this.GetScanGeneration
                       TriggerBuild = triggerBuild

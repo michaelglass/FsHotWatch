@@ -201,6 +201,11 @@ let ``an invocation that holds no claim is held by the daemon`` () =
         test <@ heldByDaemon (RunClaim.leaseWith poll "some-box" (fun _ -> false) root (Some "inv-unclaimed")) @>)
 
 [<Fact>]
+let ``an invocation that holds no claim releases nothing: its token never fires`` () =
+    withTempDir "claim-released-unclaimed" (fun root ->
+        test <@ not (RunClaim.releasedFor root "inv-unclaimed").CanBeCanceled @>)
+
+[<Fact>]
 let ``a claim from another host is held by the daemon — its pid is never dead to us`` () =
     withTempDir "claim-lease-foreign" (fun root ->
         writeClaim root aClaim

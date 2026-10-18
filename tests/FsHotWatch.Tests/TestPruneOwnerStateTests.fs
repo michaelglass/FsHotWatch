@@ -499,6 +499,17 @@ let private launchRecordingCtx (claim: SharedRunClaim) =
     intents,
     (fun () -> claims)
 
+/// The evidence a completed run leaves for the tree `tree`.
+let private receiptOver (tree: string option) : TestEvidenceReceipt =
+    { InputTreeHash = tree
+      ModelGeneration = None
+      ProjectInputs = None
+      RunId = Guid.NewGuid()
+      Coverage = RunCoverage.none
+      Seeds = []
+      ZeroSelection = ZeroSelection.NotAZero
+      FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject }
+
 [<Fact(Timeout = 15000)>]
 let ``a queued impact run whose debt was discharged launches nothing`` () =
     let root = isolatedRoot ()
@@ -507,11 +518,38 @@ let ``a queued impact run whose debt was discharged launches nothing`` () =
     let handler =
         create ":memory:" root (Some [ config "ProjA" ]) None None None None []
 
+    // What the completed run that discharged the debt leaves: evidence for this tree.
+    let discharged =
+        { handler.Init with
+            EvidenceReceipt = Some(receiptOver (ReceiptInputTree.read root)) }
+
+    Assert.True(discharged.EvidenceReceipt.Value.InputTreeHash.IsSome, "the isolated root must be a readable tree")
+
     let ctx, intents, claims = launchRecordingCtx SharedClaimed
-    let idle = update ctx handler handler.Init (Custom ImpactRunRequested)
+    let idle = update ctx handler discharged (Custom ImpactRunRequested)
     Assert.Equal(0, claims ())
     Assert.Empty intents
     Assert.Equal<Set<string>>(Set.empty, idle.PendingForceRunProjects)
+
+/// Nothing is owed, but no run has verified this tree: the run before the rerun executed
+/// nothing (every client abandoned it, say), or an edit no symbol diff sees moved it. The
+/// rerun is what verifies it, so it launches.
+[<Fact(Timeout = 15000)>]
+let ``a queued impact run launches when the evidence does not cover the tree, though nothing is owed`` () =
+    let root = isolatedRoot ()
+    seedBaseline root [ "ProjA" ]
+
+    let handler =
+        create ":memory:" root (Some [ config "ProjA" ]) None None None None []
+
+    let moved =
+        { handler.Init with
+            EvidenceReceipt = Some(receiptOver (Some "a tree that is gone")) }
+
+    for state in [ handler.Init; moved ] do
+        let ctx, _, claims = launchRecordingCtx SharedClaimed
+        update ctx handler state (Custom ImpactRunRequested) |> ignore
+        Assert.Equal(1, claims ())
 
 [<Theory(Timeout = 15000)>]
 [<InlineData(true)>]

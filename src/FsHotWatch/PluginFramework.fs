@@ -2016,8 +2016,10 @@ let internal registerHandlerForOwner
                 match command with
                 | PluginCommand.Request request ->
                     // A request runs under its requester's token — the IPC server's
-                    // per-connection token for a client — so the intents it enqueues are
-                    // held by that client, and released when it goes away.
+                    // per-connection token for a client, joined by the run claim of the
+                    // invocation that sent it when it names one (`RunCommandFor`) — so
+                    // the intents it enqueues are held by that client, and released when
+                    // it goes away.
                     async {
                         let! requester = Async.CancellationToken
                         let leases = PluginWorkOwner.ConsumerLeases.ofClient requester

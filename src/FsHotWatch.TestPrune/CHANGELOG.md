@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: a queued impact rerun is judged stale only when nothing is owed, no dependency
+  fanout remains, and the evidence covers the current tree. A run that executed nothing (one
+  every client abandoned, or one whose artifacts or test host were unavailable) discharges
+  nothing, but the debt alone cannot show that when the tree moved only by an edit the
+  symbol diff sees as changing no symbol. The rerun a build queued behind such a run was
+  dropped as "stale — the completed run cleared all verification debt", nothing else
+  launched, and the check ended with no verdict for the edited tree. The rerun now launches
+  and verifies it.
+
 ## 0.13.0-alpha.86 - 2026-10-18
 
 - fix: an edit the symbol diff sees as changing no symbol (a comment) to a compiled F# source

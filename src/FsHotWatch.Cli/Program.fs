@@ -529,6 +529,10 @@ type IpcOps =
         GetStatus: string -> Async<string>
         GetPluginStatus: string -> string -> Async<string>
         RunCommand: string -> string -> string -> Async<string>
+        /// `RunCommand` on `pipe` on behalf of the invocation named: what the command asks
+        /// for is held through that invocation's run claim, not only its connection
+        /// (`RunCommandFor`). Arguments: pipe, invocation id, command name, args JSON.
+        RunCommandFor: string -> string -> string -> string -> Async<string>
         GetDiagnostics: string -> string -> Async<string>
         WaitForScan: string -> int64 -> Async<string>
         WaitForComplete: string -> int -> Async<string>
@@ -552,6 +556,7 @@ let defaultIpcOps: IpcOps =
       GetStatus = IpcClient.getStatus
       GetPluginStatus = IpcClient.getPluginStatus
       RunCommand = IpcClient.runCommand
+      RunCommandFor = IpcClient.runCommandFor
       GetDiagnostics = IpcClient.getDiagnostics
       WaitForScan = IpcClient.waitForScan
       WaitForComplete = IpcClient.waitForComplete
@@ -979,9 +984,15 @@ let internal readCheckReach (ipc: IpcOps) (pipeName: string) : IpcParsing.CheckR
 let internal requestFullSuiteScope (ipc: IpcOps) (pipeName: string) : unit =
     ScopeCommands.requestFullSuiteScope (scopeSend ipc pipeName)
 
-/// `ScopeCommands.requestOwedRun` over the daemon.
-let internal requestOwedRun (ipc: IpcOps) (pipeName: string) : unit =
-    ScopeCommands.requestOwedRun (scopeSend ipc pipeName)
+/// `ScopeCommands.requestOwedRun` over the daemon, on behalf of `invocationId`. The
+/// request replies once the owed run is queued, and the connection closes with the
+/// reply, so the run must be held by the invocation that goes on waiting for it, or it is
+/// cancelled as client-less before it has run.
+let internal requestOwedRun (ipc: IpcOps) (pipeName: string) (invocationId: string) : unit =
+    ScopeCommands.requestOwedRun (
+        ScopeCommands.overIpc (fun name args ->
+            ipc.RunCommandFor pipeName invocationId name args |> Async.RunSynchronously)
+    )
 
 /// Tell the build plugin the next build must be REAL, not a cache replay (see
 /// `IpcParsing.ForceRebuildCommand`). Best-effort and non-fatal by design, exactly like
@@ -1087,7 +1098,7 @@ let private ensureAndQueryErrors
             else
                 // `check` asks for the run the daemon owes, before the scan that may
                 // provoke it: a daemon under `tests.runOn: "request"` launches none unasked.
-                requestOwedRun ipc pipeName
+                requestOwedRun ipc pipeName invocation.Id
 
             withCheckIpc daemonLog forceRestart (fun () ->
                 IpcOutput.pollAndRenderForInvocation
@@ -2710,6 +2721,7 @@ let sessionIpcOps (link: HostLink) : IpcOps =
       GetStatus = fun _ -> call "GetStatus" [||]
       GetPluginStatus = fun _ plugin -> call "GetPluginStatus" [| plugin |]
       RunCommand = fun _ name argsJson -> call "RunCommand" [| name; argsJson |]
+      RunCommandFor = fun _ id name argsJson -> call "RunCommandFor" [| name; argsJson; id |]
       GetDiagnostics = fun _ filter -> call "GetDiagnostics" [| filter |]
       WaitForScan = fun _ after -> call "WaitForScan" [| after |]
       WaitForComplete = fun _ timeoutMs -> call "WaitForComplete" [| timeoutMs |]

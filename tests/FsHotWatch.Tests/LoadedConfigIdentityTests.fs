@@ -20,6 +20,7 @@ let private noIpc () : IpcOps =
       GetStatus = fun _ -> async { return "{}" }
       GetPluginStatus = fun _ _ -> async { return "" }
       RunCommand = fun _ _ _ -> async { return "" }
+      RunCommandFor = fun _ _ _ _ -> async { return "" }
       GetDiagnostics = fun _ _ -> async { return "{}" }
       WaitForScan = fun _ _ -> async { return "" }
       WaitForComplete = fun _ _ -> async { return "{}" }
