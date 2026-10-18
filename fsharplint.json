@@ -267,7 +267,7 @@
   },
   "publicValuesNames": {
     "enabled": false,
-    "_comment": "Off: 36 finding(s) in 24 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "_comment": "Off: 36 public constants (2026-10-18), e.g. Heartbeat.DefaultCadence, SafeWalk.SourceExcludedDirs. Renaming them is public-API churn that conflicts with parallel FsHotWatch work; revisit when no FsHotWatch changes are in flight.",
     "config": {
       "naming": "CamelCase",
       "underscores": "AllowPrefix"
