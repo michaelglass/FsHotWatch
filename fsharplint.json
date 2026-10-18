@@ -117,7 +117,7 @@
   },
   "maxLinesInFunction": {
     "enabled": false,
-    "_comment": "Off: 2 finding(s) in 2 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "_comment": "Off: refactoring backlog. 2 finding(s) on main (2026-10-18); reaching 0 means splitting files, modules, classes or signatures, which is structural work tracked separately, not a lint sweep.",
     "config": {
       "maxLines": 500
     }
