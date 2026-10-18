@@ -153,31 +153,31 @@ type private FSEventStreamCallback =
             unit
 
 // ─── P/Invoke: CoreFoundation ───────────────────────────────────────
-[<DllImport(CoreFoundationLib)>]
-extern nativeint private CFStringCreateWithCString(
+[<DllImport(CoreFoundationLib, EntryPoint = "CFStringCreateWithCString")>]
+extern nativeint private cfStringCreateWithCString(
     nativeint alloc,
     [<MarshalAs(UnmanagedType.LPUTF8Str)>] string cStr,
     uint32 encoding
 )
 
-[<DllImport(CoreFoundationLib)>]
-extern nativeint private CFArrayCreate(nativeint alloc, nativeint[] values, nativeint numValues, nativeint callBacks)
+[<DllImport(CoreFoundationLib, EntryPoint = "CFArrayCreate")>]
+extern nativeint private cfArrayCreate(nativeint alloc, nativeint[] values, nativeint numValues, nativeint callBacks)
 
-[<DllImport(CoreFoundationLib)>]
-extern void private CFRelease(nativeint cf)
+[<DllImport(CoreFoundationLib, EntryPoint = "CFRelease")>]
+extern void private cfRelease(nativeint cf)
 
-[<DllImport(CoreFoundationLib)>]
-extern nativeint private CFRunLoopGetCurrent()
+[<DllImport(CoreFoundationLib, EntryPoint = "CFRunLoopGetCurrent")>]
+extern nativeint private cfRunLoopGetCurrent()
 
-[<DllImport(CoreFoundationLib)>]
-extern void private CFRunLoopRun()
+[<DllImport(CoreFoundationLib, EntryPoint = "CFRunLoopRun")>]
+extern void private cfRunLoopRun()
 
-[<DllImport(CoreFoundationLib)>]
-extern void private CFRunLoopStop(nativeint runLoop)
+[<DllImport(CoreFoundationLib, EntryPoint = "CFRunLoopStop")>]
+extern void private cfRunLoopStop(nativeint runLoop)
 
 // ─── P/Invoke: FSEvents (CoreServices) ──────────────────────────────
-[<DllImport(CoreServicesLib)>]
-extern nativeint private FSEventStreamCreate(
+[<DllImport(CoreServicesLib, EntryPoint = "FSEventStreamCreate")>]
+extern nativeint private fsEventStreamCreate(
     nativeint allocator,
     FSEventStreamCallback callback,
     nativeint context,
@@ -189,26 +189,26 @@ extern nativeint private FSEventStreamCreate(
 
 /// At most `MaxExclusionPaths` directory prefixes the kernel drops before dispatch.
 /// Must be called before the stream starts.
-[<DllImport(CoreServicesLib)>]
-extern [<return: MarshalAs(UnmanagedType.U1)>] bool private FSEventStreamSetExclusionPaths(
+[<DllImport(CoreServicesLib, EntryPoint = "FSEventStreamSetExclusionPaths")>]
+extern [<return: MarshalAs(UnmanagedType.U1)>] bool private fsEventStreamSetExclusionPaths(
     nativeint streamRef,
     nativeint pathsToExclude
 )
 
-[<DllImport(CoreServicesLib)>]
-extern void private FSEventStreamScheduleWithRunLoop(nativeint streamRef, nativeint runLoop, nativeint runLoopMode)
+[<DllImport(CoreServicesLib, EntryPoint = "FSEventStreamScheduleWithRunLoop")>]
+extern void private fsEventStreamScheduleWithRunLoop(nativeint streamRef, nativeint runLoop, nativeint runLoopMode)
 
-[<DllImport(CoreServicesLib)>]
-extern [<return: MarshalAs(UnmanagedType.U1)>] bool private FSEventStreamStart(nativeint streamRef)
+[<DllImport(CoreServicesLib, EntryPoint = "FSEventStreamStart")>]
+extern [<return: MarshalAs(UnmanagedType.U1)>] bool private fsEventStreamStart(nativeint streamRef)
 
-[<DllImport(CoreServicesLib)>]
-extern void private FSEventStreamStop(nativeint streamRef)
+[<DllImport(CoreServicesLib, EntryPoint = "FSEventStreamStop")>]
+extern void private fsEventStreamStop(nativeint streamRef)
 
-[<DllImport(CoreServicesLib)>]
-extern void private FSEventStreamInvalidate(nativeint streamRef)
+[<DllImport(CoreServicesLib, EntryPoint = "FSEventStreamInvalidate")>]
+extern void private fsEventStreamInvalidate(nativeint streamRef)
 
-[<DllImport(CoreServicesLib)>]
-extern void private FSEventStreamRelease(nativeint streamRef)
+[<DllImport(CoreServicesLib, EntryPoint = "FSEventStreamRelease")>]
+extern void private fsEventStreamRelease(nativeint streamRef)
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -217,18 +217,18 @@ extern void private FSEventStreamRelease(nativeint streamRef)
 let private createCFStringArray (paths: string list) =
     let cfStrings =
         paths
-        |> List.map (fun p -> CFStringCreateWithCString(nativeint 0, p, CFStringEncodingUTF8))
+        |> List.map (fun p -> cfStringCreateWithCString (nativeint 0, p, CFStringEncodingUTF8))
         |> List.toArray
 
     if cfStrings |> Array.exists (fun s -> s = nativeint 0) then
         for s in cfStrings do
             if s <> nativeint 0 then
-                CFRelease(s)
+                cfRelease (s)
 
         failwith "CFStringCreateWithCString returned null — failed to create CFString for a watched path"
 
     let arr =
-        CFArrayCreate(nativeint 0, cfStrings, nativeint cfStrings.Length, nativeint 0)
+        cfArrayCreate (nativeint 0, cfStrings, nativeint cfStrings.Length, nativeint 0)
 
     arr, cfStrings
 
@@ -371,34 +371,34 @@ type FsEventStream
 
     let releaseResources () =
         if streamRef <> nativeint 0 then
-            FSEventStreamRelease(streamRef)
+            fsEventStreamRelease (streamRef)
             streamRef <- nativeint 0
 
         runLoopRef <- nativeint 0
         runLoopThread <- null
 
         if runLoopModeRef <> nativeint 0 then
-            CFRelease(runLoopModeRef)
+            cfRelease (runLoopModeRef)
             runLoopModeRef <- nativeint 0
 
         for s in cfStringRefs do
             if s <> nativeint 0 then
-                CFRelease(s)
+                cfRelease (s)
 
         cfStringRefs <- [||]
 
         for s in exclusionStringRefs do
             if s <> nativeint 0 then
-                CFRelease(s)
+                cfRelease (s)
 
         exclusionStringRefs <- [||]
 
         if exclusionArrayRef <> nativeint 0 then
-            CFRelease(exclusionArrayRef)
+            cfRelease (exclusionArrayRef)
             exclusionArrayRef <- nativeint 0
 
         if cfArrayRef <> nativeint 0 then
-            CFRelease(cfArrayRef)
+            cfRelease (cfArrayRef)
             cfArrayRef <- nativeint 0
 
         if callbackHandle.IsAllocated then
@@ -408,15 +408,15 @@ type FsEventStream
         NativeCleanupCoordinator(
             (fun () ->
                 if streamRef <> nativeint 0 then
-                    FSEventStreamStop(streamRef)),
+                    fsEventStreamStop (streamRef)),
             (fun () ->
                 if streamRef <> nativeint 0 then
-                    FSEventStreamInvalidate(streamRef)),
+                    fsEventStreamInvalidate (streamRef)),
             (fun () ->
                 let runLoop = Volatile.Read(&runLoopRef)
 
                 if runLoop <> nativeint 0 then
-                    CFRunLoopStop(runLoop)),
+                    cfRunLoopStop (runLoop)),
             (fun () -> runLoopThread),
             releaseResources
         )
@@ -438,7 +438,7 @@ type FsEventStream
             let flags = FSEventStreamCreateFlagFileEvents ||| FSEventStreamCreateFlagNoDefer
 
             streamRef <-
-                FSEventStreamCreate(
+                fsEventStreamCreate (
                     nativeint 0,
                     callback,
                     nativeint 0,
@@ -461,11 +461,11 @@ type FsEventStream
 
                 // A refused exclusion is not fatal: the managed callback still
                 // filters every event, the kernel just dispatches more of them.
-                if not (FSEventStreamSetExclusionPaths(streamRef, exclusionArrayRef)) then
+                if not (fsEventStreamSetExclusionPaths (streamRef, exclusionArrayRef)) then
                     warn "fsevents" "FSEventStreamSetExclusionPaths refused; excluded paths are filtered after delivery"
 
             // kCFRunLoopDefaultMode is a CFString constant — create it by value
-            runLoopModeRef <- CFStringCreateWithCString(nativeint 0, "kCFRunLoopDefaultMode", CFStringEncodingUTF8)
+            runLoopModeRef <- cfStringCreateWithCString (nativeint 0, "kCFRunLoopDefaultMode", CFStringEncodingUTF8)
 
             if runLoopModeRef = nativeint 0 then
                 failwith "CFStringCreateWithCString returned null — failed to create kCFRunLoopDefaultMode"
@@ -480,16 +480,16 @@ type FsEventStream
             runLoopThread <-
                 Thread(fun () ->
                     // Get this thread's run loop — must be called from the thread that will run it
-                    let rl = CFRunLoopGetCurrent()
+                    let rl = cfRunLoopGetCurrent ()
                     Volatile.Write(&runLoopRef, rl)
 
                     // Schedule before signalling — the constructor starts the stream once
                     // this fires.
-                    FSEventStreamScheduleWithRunLoop(capturedStreamRef, rl, capturedModeRef)
+                    fsEventStreamScheduleWithRunLoop (capturedStreamRef, rl, capturedModeRef)
                     runLoopReady.Set()
 
                     // Blocks, pumping CFRunLoop events, until CFRunLoopStop() in cleanup().
-                    CFRunLoopRun()
+                    cfRunLoopRun ()
                     cleanupCoordinator.RunLoopExited()
                     debug "fsevents" "CFRunLoopRun() returned — run loop thread exiting")
 
@@ -500,7 +500,7 @@ type FsEventStream
             runLoopReady.Wait()
 
             // Safe from any thread once the stream is scheduled.
-            if not (FSEventStreamStart(streamRef)) then
+            if not (fsEventStreamStart (streamRef)) then
                 raise (StartFailedException())
 
             cleanupCoordinator.MarkStarted()

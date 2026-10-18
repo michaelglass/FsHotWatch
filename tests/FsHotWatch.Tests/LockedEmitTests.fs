@@ -15,12 +15,12 @@ open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.Tests.TestHelpers
 
-/// More callbacks than a starved pool injects threads for in many times `Bound`.
-let private QueuedCallbacks = 200
+/// More callbacks than a starved pool injects threads for in many times `bound`.
+let private queuedCallbacks = 200
 
 /// Far longer than an emit that publishes on the caller's thread takes; far shorter than
 /// a pool injecting a thread for each queued callback ahead of the emit's publication.
-let private Bound = TimeSpan.FromSeconds 5.0
+let private bound = TimeSpan.FromSeconds 5.0
 
 let private checkedFile =
     { File = AbsFilePath.create "/tmp/locked-emit/A.fs"
@@ -92,7 +92,7 @@ let ``an emit under the discovery lock finishes while the scan's other callbacks
                 // this pool thread would use its local queue, which an injected thread
                 // reads only after the global one.
                 callbacks <-
-                    [ for _ in 1..QueuedCallbacks ->
+                    [ for _ in 1..queuedCallbacks ->
                           Task.Factory.StartNew(
                               (fun () ->
                                   discovery.Enter()
@@ -103,15 +103,15 @@ let ``an emit under the discovery lock finishes while the scan's other callbacks
                           ) ]
 
                 queued.Set()
-                holder.Join Bound)
+                holder.Join bound)
 
         Assert.True(
             finished,
-            $"EmitFileChecked under the lock did not return within %O{Bound}: it waits for a pool thread \
-              that %d{QueuedCallbacks} callbacks waiting on the same lock are queued ahead of"
+            $"EmitFileChecked under the lock did not return within %O{bound}: it waits for a pool thread \
+              that %d{queuedCallbacks} callbacks waiting on the same lock are queued ahead of"
         )
 
-        Assert.True(emitted.Elapsed < Bound, $"the emit took %O{emitted.Elapsed}")
+        Assert.True(emitted.Elapsed < bound, $"the emit took %O{emitted.Elapsed}")
     finally
         releaseFold.Set()
         // Unblocked pool: the holder's emit completes, then every callback gets the lock.
@@ -161,9 +161,9 @@ let ``a synchronous change publishes an asynchronous one queued ahead of it firs
     try
         withEveryPoolThreadBusy (fun () ->
             poster.Start()
-            Assert.True(poster.Join Bound, "posting an asynchronous change waited")
+            Assert.True(poster.Join bound, "posting an asynchronous change waited")
             writer.Start()
-            Assert.True(published.Wait Bound, "the synchronous change waited for a pool thread")
+            Assert.True(published.Wait bound, "the synchronous change waited for a pool thread")
             // Published, though its caller cannot resume until the pool has a thread.
             Assert.Equal<string list>([ "async" ], store.Read row))
 

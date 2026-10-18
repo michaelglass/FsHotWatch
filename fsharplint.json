@@ -275,8 +275,7 @@
     }
   },
   "privateValuesNames": {
-    "enabled": false,
-    "_comment": "Off: 20 finding(s) in 6 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "enabled": true,
     "config": {
       "naming": "CamelCase",
       "underscores": "AllowPrefix"

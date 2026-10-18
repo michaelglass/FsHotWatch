@@ -1541,11 +1541,11 @@ module internal ReceiptInputTree =
           Removed = was |> pathsWhere (fun path _ -> not (now.ContainsKey path)) }
 
     /// At most this many paths per kind are named; the count is always the full one.
-    let private PathsNamedPerKind = 10
+    let private pathsNamedPerKind = 10
 
     let private namePaths (paths: string list) : string =
-        let named = paths |> List.truncate PathsNamedPerKind |> String.concat ", "
-        let left = List.length paths - PathsNamedPerKind
+        let named = paths |> List.truncate pathsNamedPerKind |> String.concat ", "
+        let left = List.length paths - pathsNamedPerKind
         if left > 0 then $"%s{named} (+%d{left} more)" else named
 
     let describeDelta (delta: TreeDelta) : string =
@@ -1564,7 +1564,7 @@ module internal ReceiptInputTree =
     /// How far a file's write time may trail the clock read that preceded the write.
     /// Filesystems stamp from a coarse clock, and some store whole or even-numbered
     /// seconds.
-    let private WriteTimeSlack = TimeSpan.FromSeconds 2.0
+    let private writeTimeSlack = TimeSpan.FromSeconds 2.0
 
     /// Whether the watcher reports an edit to a repo-relative path while a run is in
     /// flight: it reports the files it checks, which are the current model's checkable
@@ -1605,7 +1605,7 @@ module internal ReceiptInputTree =
                 not (reported.Contains rel)
                 && try
                     File.GetLastWriteTimeUtc(Path.Combine(repoRoot, rel))
-                    >= hostStarted - WriteTimeSlack
+                    >= hostStarted - writeTimeSlack
                    with
                    | :? IOException
                    | :? UnauthorizedAccessException -> false
