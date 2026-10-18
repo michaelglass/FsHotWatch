@@ -607,3 +607,56 @@ let ``a quarantined file is weighed by retention and ages out like an entry`` ()
         test <@ store.Prune() = [ quarantined ] @>
         test <@ not (File.Exists quarantined) @>
         test <@ log () |> List.exists (fun l -> l.Contains "evicted") @>)
+
+[<Fact>]
+let ``a coverage report is stored compressed and read back byte for byte`` () =
+    // A Cobertura report is tens of megabytes of repetitive XML per project, and as a
+    // JSON string inside a JSON string every quote and angle bracket is escaped twice.
+    // Stored raw, one tree's entries filled most of the store's budget and each full run
+    // evicted the last tree's evidence.
+    withStore (fun dir _ _ store ->
+        let row i =
+            $"""<line number="%d{i}" hits="1" branch="false" /><class name="M%d{i}" filename="%s{RepoRootPlaceholder}/src/A.fs">"""
+
+        let report =
+            "<coverage>" + (Seq.init 20_000 row |> String.concat "\n") + "</coverage>"
+
+        let key = keyFor "c-cov"
+
+        let entry =
+            { entryFor "tests/T/T.fsproj" key t0 with
+                Coverage =
+                    Some
+                        { Path = "coverage/T/coverage.cobertura.xml"
+                          Content = report } }
+
+        test <@ store.Write entry @>
+        let onDisk = entryFiles dir |> List.sumBy (fun f -> FileInfo(f).Length)
+        test <@ onDisk * 10L < int64 report.Length @>
+
+        match store.Lookup("tests/T/T.fsproj", key) with
+        | Lookup.Hit read -> test <@ read = entry @>
+        | Lookup.Miss miss -> failwith (describeMiss miss))
+
+[<Fact>]
+let ``a coverage blob that is not a compressed stream is corrupt, never a throw`` () =
+    let written = envelope (entryFor "tests/T/T.fsproj" (keyFor "c1") t0)
+    let payload = Text.Json.Nodes.JsonNode.Parse(written).["payload"]
+    let p = Text.Json.Nodes.JsonNode.Parse(payload.GetValue<string>())
+
+    let wrapWith (gzip: string) =
+        p["coverage"].["gzip"] <- gzip
+        let text = p.ToJsonString()
+        let o = Text.Json.Nodes.JsonObject()
+        o["schema"] <- Schema
+        o["checksum"] <- ContentHash.ofText text
+        o["payload"] <- text
+        o.ToJsonString()
+
+    let corrupt (text: string) =
+        match decode text with
+        | Decoded.Corrupt _ -> true
+        | _ -> false
+
+    test <@ corrupt (wrapWith "not base64 at all!") @>
+    test <@ corrupt (wrapWith (Convert.ToBase64String "plain bytes, no gzip header"B)) @>

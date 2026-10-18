@@ -18,8 +18,10 @@ open System.Text.Json
 open System.Text.Json.Nodes
 
 /// The entry format. A file stating any other schema is a miss and is quarantined.
+///
+/// v2 stores the coverage report gzip-compressed and base64-encoded (`coverage.gzip`).
 [<Literal>]
-let Schema = "fshw-test-evidence-v1"
+let Schema = "fshw-test-evidence-v2"
 
 /// Where an entry came from.
 type Producer =
@@ -187,6 +189,39 @@ let directoryFor (repoRoot: string) =
 let private isKeyValue (key: string) =
     key.Length = 64 && key |> Seq.forall Uri.IsHexDigit
 
+/// A coverage report as stored: gzip, then base64. A Cobertura report is tens of megabytes
+/// of repetitive XML per project, and written raw as a JSON string inside the envelope's
+/// JSON string it grew by half again in escapes. Measured on one repository's full suite,
+/// a 32.5 MB report compressed to 1.7 MB, so the store holds many trees' evidence rather
+/// than about two.
+let private compress (text: string) : string =
+    let buffer = new MemoryStream()
+    // Disposed explicitly rather than by `use`: the gzip footer is written on dispose, and
+    // `ToArray` still answers on the closed buffer.
+    let gzip = new Compression.GZipStream(buffer, Compression.CompressionLevel.Optimal)
+
+    try
+        let bytes = Text.Encoding.UTF8.GetBytes text
+        gzip.Write(bytes, 0, bytes.Length)
+    finally
+        gzip.Dispose()
+
+    Convert.ToBase64String(buffer.ToArray())
+
+/// The inverse of `compress`. Text that is not base64 throws `FormatException`, and bytes
+/// that are not a gzip stream throw `InvalidDataException`; `decode` reads both as corrupt.
+let private decompress (stored: string) : string =
+    let gzip =
+        new Compression.GZipStream(
+            new MemoryStream(Convert.FromBase64String stored),
+            Compression.CompressionMode.Decompress
+        )
+
+    try
+        (new StreamReader(gzip, Text.Encoding.UTF8)).ReadToEnd()
+    finally
+        gzip.Dispose()
+
 let private serializePayload (entry: Entry) : string =
     let o = JsonObject()
     o["key"] <- entry.Key
@@ -217,7 +252,7 @@ let private serializePayload (entry: Entry) : string =
     | Some c ->
         let co = JsonObject()
         co["path"] <- c.Path
-        co["content"] <- c.Content
+        co["gzip"] <- compress c.Content
         o["coverage"] <- co
     | None -> ()
 
@@ -268,7 +303,7 @@ let private parsePayload (payload: string) : Entry =
         | Some c when c.ValueKind = JsonValueKind.Object ->
             Some
                 { Path = req c "path"
-                  Content = req c "content" }
+                  Content = decompress (req c "gzip") }
         | _ -> None }
 
 /// The envelope written to disk: schema, a checksum of the payload, and the payload as a
@@ -304,6 +339,7 @@ let internal decode (text: string) : Decoded =
     with
     | :? JsonException as ex -> Decoded.Corrupt ex.Message
     | :? FormatException as ex -> Decoded.Corrupt ex.Message
+    | :? InvalidDataException as ex -> Decoded.Corrupt ex.Message
     | :? InvalidOperationException as ex -> Decoded.Corrupt ex.Message
 
 type Store(settings: Settings) =

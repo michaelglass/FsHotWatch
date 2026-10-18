@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: the test-evidence store keeps each entry's coverage report gzip-compressed (schema
+  `fshw-test-evidence-v2`, field `coverage.gzip`). On one repository's full suite a project's
+  32.5 MB Cobertura report compressed to 1.7 MB. Its entry had been 57 MB on disk: the report,
+  plus about 20 MB of JSON escapes for it. One tree's entries were about 245 MB against the 512 MB budget, so every
+  full run evicted the previous tree's evidence. Entries of the old schema are a miss and
+  are quarantined, as any unknown schema is. A blob that is not a gzip stream is read as
+  corrupt.
+
 - fix: a test-evidence key leaves out exactly the files the verdict tree hash leaves out.
   A closure project's directory under a discovery root is read off the snapshot rather than
   walked a second time, and one outside every root is walked under the same `exclude`, so
