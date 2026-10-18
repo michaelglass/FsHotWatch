@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.86 - 2026-10-18
+
 - fix: an edit the symbol diff sees as changing no symbol (a comment) to a compiled F# source
   file no runnable test covers no longer runs every test project in full. What executes the
   file is known, and it is nothing, so it adds no class: with `alwaysClasses` declared the

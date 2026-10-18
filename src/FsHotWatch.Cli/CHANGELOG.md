@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.116 - 2026-10-18
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.115 - 2026-10-18
 
 - feat: `tests.projects[].alwaysClasses` lists test classes every impact-filtered `check`
