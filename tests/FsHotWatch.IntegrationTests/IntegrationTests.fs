@@ -1380,7 +1380,8 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let handler =
             TestPrunePlugin.create dbPath repoRoot (Some testConfigs) None None None None []
@@ -1423,7 +1424,8 @@ let ``TestPrunePlugin with failing test reports failure`` () =
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let handler =
             TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None []
@@ -1661,7 +1663,8 @@ let ``Full pipeline: format → build → test`` () =
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let testPruneHandler =
             TestPrunePlugin.create dbPath tmpDir (Some testConfigs) None None None None []
@@ -1804,7 +1807,8 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let handler =
             TestPrunePlugin.create dbPath repoRoot (Some testConfigs) None None None None []
@@ -1990,7 +1994,8 @@ let ``TestPrune honors per-project TimeoutSec and records TimedOut`` () =
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = Some 1
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -2173,7 +2178,8 @@ let ``run summary names the slowest project when 2+ projects ran`` () =
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect }
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] }
               { TestPrunePlugin.TestConfig.Project = "SlowProj"
                 Command = "sh"
                 Args = "-c \"sleep 1.0\""
@@ -2182,7 +2188,8 @@ let ``run summary names the slowest project when 2+ projects ran`` () =
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 

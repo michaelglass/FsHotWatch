@@ -100,7 +100,8 @@ let private config: TestConfig =
       ClassJoin = " "
       TimeoutSec = Some 300
       // The switches come from the restored xUnit major, as for a real project.
-      ReportVerificationFormat = AutoDetect }
+      ReportVerificationFormat = AutoDetect
+      AlwaysClasses = [] }
 
 let private runTests (root: string) (traces: TraceSettings option) =
     let host = FsHotWatch.PluginHost.PluginHost.create (Unchecked.defaultof<_>) root

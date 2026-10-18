@@ -51,7 +51,8 @@ let private runner (tmpDir: string) (project: string) (failedTest: string) : Tes
       FilterTemplate = None
       ClassJoin = " "
       TimeoutSec = None
-      ReportVerificationFormat = AutoDetect }
+      ReportVerificationFormat = AutoDetect
+      AlwaysClasses = [] }
 
 let private runsOf (tmpDir: string) (project: string) : int =
     let path = Path.Combine(tmpDir, $"%s{project}-runs")

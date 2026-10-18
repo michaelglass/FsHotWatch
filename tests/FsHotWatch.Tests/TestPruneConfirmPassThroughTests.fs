@@ -337,7 +337,8 @@ let private runScenario (root: string) (setup: Setup) =
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = Some 15
-                ReportVerificationFormat = Ctrf } ]
+                ReportVerificationFormat = Ctrf
+                AlwaysClasses = [] } ]
 
         let coveragePaths _ =
             let dir = Path.Combine(root, "coverage")
@@ -563,7 +564,8 @@ let private scopeSequence name (steps: string option list) =
               FilterTemplate = None
               ClassJoin = " "
               TimeoutSec = None
-              ReportVerificationFormat = AutoDetect }
+              ReportVerificationFormat = AutoDetect
+              AlwaysClasses = [] }
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
 

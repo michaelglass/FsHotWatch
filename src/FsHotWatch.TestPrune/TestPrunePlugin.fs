@@ -1088,6 +1088,10 @@ type TestConfig =
         /// How to obtain the structured test report for the verdict. Default
         /// `AutoDetect`. Override via `.fshw.json` `reportVerificationFormat`.
         ReportVerificationFormat: ReportVerificationFormat
+        /// Test classes every impact-filtered run of this project includes, whatever
+        /// changed (`.fshw.json` `alwaysClasses`). For tests that read the source
+        /// tree as data, which no symbol edge leads to. See `AlwaysClasses`.
+        AlwaysClasses: string list
     }
 
 /// A test project's configuration as one canonical JSON document: every field, in a fixed
@@ -1124,6 +1128,8 @@ let internal canonicalTestConfig (c: TestConfig) : string =
          |> Option.toObj)
 
     o["reportVerificationFormat"] <- sprintf "%A" c.ReportVerificationFormat
+    // `AlwaysClasses` is deliberately absent: it changes which classes a FILTERED run
+    // selects, never what a project's full green means, and only full greens are reused.
     o.ToJsonString()
 
 /// Why runtime evidence could not safely exclude a configured project.
@@ -3606,6 +3612,40 @@ let internal receiptEvidenceMismatch
         Some
             $"the receipt grades run %s{idOf receipt.RunId} but the model evidence %s{heldText}; a check graded from this state refuses its green"
 
+/// `alwaysClasses`: the classes a project runs in every impact-filtered launch.
+///
+/// Some tests read the source tree as DATA: a guard that greps every source file for a
+/// banned call, a census of test attributes. Nothing they police is a symbol they call,
+/// so no edge leads to them, and impact selection never picks them however the tree
+/// they read changes. A project declares them, and every filtered launch carries them.
+module internal AlwaysClasses =
+
+    /// Each configured project's declared classes; projects with none are absent.
+    let only (configs: TestConfig list) : Map<string, string list> =
+        configs
+        |> List.choose (fun c ->
+            if List.isEmpty c.AlwaysClasses then
+                None
+            else
+                Some(c.Project, c.AlwaysClasses))
+        |> Map.ofList
+
+    /// `selected` with every project's always-classes added. An EMPTY selection already
+    /// means "every project in full", and a project present with `[]` already runs in
+    /// full, so neither is touched: widening must never narrow a run.
+    let widen (configs: TestConfig list) (selected: Map<string, string list>) : Map<string, string list> =
+        if Map.isEmpty selected then
+            selected
+        else
+            only configs
+            |> Map.fold
+                (fun acc project always ->
+                    match Map.tryFind project acc with
+                    | Some [] -> acc
+                    | Some classes -> Map.add project (classes @ always |> List.distinct) acc
+                    | None -> Map.add project always acc)
+                selected
+
 /// The launch selection `executeTests` will actually honour, from the per-project class
 /// map. ONE derivation, so the run's real selection and the one projects
 /// through cannot read the same map differently.
@@ -3653,6 +3693,7 @@ let internal wouldHaveRunSelection
 
     checkForceRunProjects
     |> Set.fold (fun acc proj -> Map.add proj [] acc) symbolAffectedByProject
+    |> AlwaysClasses.widen configs
     |> selectionOf configs
 
 /// The same `ScopeReport`, for a selection that was never LAUNCHED — the
@@ -8489,6 +8530,31 @@ let internal createWithEvidenceAndQueries
                     | Some(SymbolFreeEdit.Refused _)
                     | None -> affectedByProject, None
 
+                // ALWAYS-CLASSES. Every filtered launch carries each project's declared
+                // `alwaysClasses`: tests that read the source tree as data, which no
+                // symbol edge leads to. An edit whose every changed symbol has no
+                // covering test would otherwise take the nothing-to-verify skip below,
+                // yet the tree changed under classes that read all of it, so that edit
+                // runs exactly those classes instead. An empty selection is left alone:
+                // it already runs every project in full.
+                let alwaysOnly =
+                    totalClasses = 0
+                    && Set.isEmpty forceRunProjects
+                    && List.isEmpty inputs.OutstandingFailures
+                    && Map.isEmpty affectedByProject
+                    && UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered
+                    && not (Map.isEmpty (AlwaysClasses.only configs))
+
+                let affectedByProject =
+                    if alwaysOnly then
+                        Logging.info
+                            "test-prune"
+                            "Every changed symbol has no covering test, but the tree changed under the declared alwaysClasses; running only those"
+
+                        AlwaysClasses.only configs
+                    else
+                        AlwaysClasses.widen configs affectedByProject
+
                 // TEST EVIDENCE, at launch: AFTER selection, so it can only take away
                 // launches the selector chose, never add a green it did not. Keyed now,
                 // before `beforeRun` touches anything. Every run keys (so its greens can be
@@ -8608,6 +8674,7 @@ let internal createWithEvidenceAndQueries
                     totalClasses = 0
                     && Set.isEmpty forceRunProjects
                     && not hasQuarantinedFailures
+                    && not alwaysOnly
                     && (baselineEquivalent || nothingToVerify)
                 then
                     if nothingToVerify then
@@ -8663,7 +8730,7 @@ let internal createWithEvidenceAndQueries
                                      | UncoveredChanges.No -> ZeroSelection.AlreadyVerified) }
                         )
                 else
-                    if totalClasses = 0 && narrowedSeeds.IsNone then
+                    if totalClasses = 0 && narrowedSeeds.IsNone && not alwaysOnly then
                         // NAME the debt that refused the zero-affected
                         // skip, and say what will actually run. Both halves were wrong
                         // before: the cause was hard-coded to two of five possibilities,

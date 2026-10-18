@@ -85,7 +85,8 @@ let private projConfig: TestConfig =
       FilterTemplate = Some "-- --filter-class {classes}"
       ClassJoin = "|"
       TimeoutSec = None
-      ReportVerificationFormat = AutoDetect }
+      ReportVerificationFormat = AutoDetect
+      AlwaysClasses = [] }
 
 /// A completed run whose CTRF report sits where the runner writes it.
 let private finished (repoRoot: string) (report: string option) (result: TestResult) (launch: TestRunLaunch) =

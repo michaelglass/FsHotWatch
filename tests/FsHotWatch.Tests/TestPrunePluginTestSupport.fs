@@ -175,7 +175,8 @@ let withSingleProjectHarness (tmpDir: string) (projectName: string) =
             FilterTemplate = None
             ClassJoin = " "
             TimeoutSec = None
-            ReportVerificationFormat = AutoDetect } ]
+            ReportVerificationFormat = AutoDetect
+            AlwaysClasses = [] } ]
 
     let host = createModelHost (Unchecked.defaultof<_>) tmpDir
     let handler = create ":memory:" tmpDir (Some configs) None None None None []
@@ -328,7 +329,8 @@ module PendingQueueHelpers =
           FilterTemplate = None
           ClassJoin = " "
           TimeoutSec = None
-          ReportVerificationFormat = AutoDetect }
+          ReportVerificationFormat = AutoDetect
+          AlwaysClasses = [] }
 
     /// The durable pending-verification queue for a repo root. An UNREADABLE ledger is a
     /// test failure, not an empty queue: these tests assert on what is owed, and reading
@@ -349,7 +351,8 @@ let testConfigNamed (project: string) : TestConfig =
       FilterTemplate = Some "--filter-class {classes}"
       ClassJoin = " "
       TimeoutSec = None
-      ReportVerificationFormat = AutoDetect }
+      ReportVerificationFormat = AutoDetect
+      AlwaysClasses = [] }
 
 /// Recording ctx over the plugin: captures terminal statuses and models the shared error
 /// ledger, where ClearAllErrors wipes the plugin's whole slice exactly as

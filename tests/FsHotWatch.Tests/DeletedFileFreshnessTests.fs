@@ -52,7 +52,8 @@ let private newHost (tmpDir: string) : PluginHost =
             FilterTemplate = None
             ClassJoin = " "
             TimeoutSec = None
-            ReportVerificationFormat = AutoDetect } ]
+            ReportVerificationFormat = AutoDetect
+            AlwaysClasses = [] } ]
 
     let host = createModelHost sharedChecker.Value tmpDir
     host.RegisterHandler(create (Path.Combine(tmpDir, "tp.db")) tmpDir (Some configs) None None None None [])

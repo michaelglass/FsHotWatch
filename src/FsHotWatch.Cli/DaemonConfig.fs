@@ -256,6 +256,9 @@ type TestProjectConfig =
         /// How to obtain the structured test report the verdict is derived from
         /// (`reportVerificationFormat` in `.fshw.json`). Default `AutoDetect`.
         ReportVerificationFormat: ReportVerificationFormat
+        /// `alwaysClasses`: test classes every impact-filtered run of this project
+        /// includes. Empty when absent.
+        AlwaysClasses: string list
         /// Whether this project takes part in `tests.traces` recording. Default true;
         /// `"traces": false` opts it out.
         Traces: bool
@@ -867,6 +870,29 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                             | true, v -> v.GetString()
                             | _ -> " "
 
+                        // `alwaysClasses`: classes every impact-filtered run includes.
+                        // Refused unless it is an array of non-blank strings: read as
+                        // "none", a typo would silently stop running the very tests the
+                        // key exists to keep running.
+                        let alwaysClasses =
+                            let key = $"tests.projects[%s{project}].alwaysClasses"
+
+                            match p.TryGetProperty("alwaysClasses") with
+                            | true, v when v.ValueKind = JsonValueKind.Array ->
+                                v.EnumerateArray()
+                                |> Seq.map (fun item ->
+                                    if
+                                        item.ValueKind = JsonValueKind.String
+                                        && not (String.IsNullOrWhiteSpace(item.GetString()))
+                                    then
+                                        item.GetString()
+                                    else
+                                        refuseUnknown key (describeValue item) [ "a non-blank class name" ])
+                                |> Seq.distinct
+                                |> Seq.toList
+                            | true, v -> refuseUnknown key (describeValue v) [ "an array of class names" ]
+                            | false, _ -> []
+
                         // `coverage` may be bool (collect + enforce together) or an
                         // object. `collectForImpact` decouples TestPrune collection
                         // from consumer-ratchet participation (`enabled`).
@@ -981,6 +1007,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                           CoverageArgsTemplate = coverageArgsTemplate
                           TimeoutSec = timeoutSec
                           ReportVerificationFormat = reportVerificationFormat
+                          AlwaysClasses = alwaysClasses
                           Traces = traces
                           TraceWeave = traceWeave })
                     |> Seq.toList
@@ -2385,7 +2412,8 @@ let registerPluginsIn
                   FilterTemplate = p.FilterTemplate
                   ClassJoin = p.ClassJoin
                   TimeoutSec = p.TimeoutSec
-                  ReportVerificationFormat = p.ReportVerificationFormat })
+                  ReportVerificationFormat = p.ReportVerificationFormat
+                  AlwaysClasses = p.AlwaysClasses })
 
         // fail LOUD and SPECIFIC. `runShellSteps` names the step,
         // its exit code and its output; raising `describe` means the plugin's

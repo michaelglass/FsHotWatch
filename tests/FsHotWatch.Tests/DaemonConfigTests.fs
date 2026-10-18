@@ -1074,6 +1074,34 @@ let ``parseConfig tests reportVerificationFormat parses auto/ctrf/off`` () =
     test <@ parseFmt "ctrf" = FsHotWatch.TestPrune.TestPrunePlugin.Ctrf @>
     test <@ parseFmt "off" = FsHotWatch.TestPrune.TestPrunePlugin.Disabled @>
 
+[<Fact(Timeout = 15000)>]
+let ``parseConfig tests alwaysClasses reads the class names, and none when absent`` () =
+    let parse json =
+        (parseConfig json defaults).Tests.Value.Projects.[0].AlwaysClasses
+
+    test <@ List.isEmpty (parse """{"tests": {"projects": [{"project": "T"}]}}""") @>
+
+    let declared =
+        parse
+            """{"tests": {"projects": [{"project": "T", "alwaysClasses": ["A.Scan", "A.Census+Nested group", "A.Scan"]}]}}"""
+
+    test <@ declared = [ "A.Scan"; "A.Census+Nested group" ] @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("\"A.Scan\"", "A.Scan")>]
+[<InlineData("[\"A.Scan\", 3]", "3")>]
+[<InlineData("[\"  \"]", "  ")>]
+let ``parseConfig tests alwaysClasses that is not a list of class names is a ConfigError naming it``
+    (value: string, bad: string)
+    =
+    // Read as "no classes", a typo would silently stop running the tests the key exists for.
+    let json =
+        """{"tests": {"projects": [{"project": "T", "alwaysClasses": __V__}]}}""".Replace("__V__", value)
+
+    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    test <@ ex.message.Contains "tests.projects[T].alwaysClasses" @>
+    test <@ ex.message.Contains bad @>
+
 [<Theory(Timeout = 15000)>]
 [<InlineData("\"bogus\"", "bogus")>]
 [<InlineData("\"crtf\"", "crtf")>]

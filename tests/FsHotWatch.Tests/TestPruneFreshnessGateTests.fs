@@ -69,7 +69,8 @@ let ``a cached helper-file analysis cannot relabel a freshly executed test failu
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = Disabled } ]
+                ReportVerificationFormat = Disabled
+                AlwaysClasses = [] } ]
 
         // A checkout that has earned its baseline: sealing the helper's cohort owes no run,
         // so the red below is the build's run and nothing earlier.
@@ -344,7 +345,8 @@ let ``FileChecked with FCS errors persists symbols to DB and stamps sidecar dirt
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
@@ -464,7 +466,8 @@ let ``FileChecked without FCS errors flushes symbols to DB (gate doesn't break c
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
@@ -610,7 +613,8 @@ let ``cold-boot regression: dirty FCS leaves sidecar dirty so detectChanges fall
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         // Phase 1: clean check, flush populates DB.
         let host1 = createModelHost checker tmpDir
@@ -776,7 +780,8 @@ let phaseBTest () = ()
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let host = createModelHost checker tmpDir
         let handler = create dbPath tmpDir (Some testConfigs) None None None None []
@@ -866,7 +871,8 @@ let ``Item 3: pre-BuildCompleted clean FileChecked → sidecar stays dirty`` () 
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
@@ -919,7 +925,8 @@ let ``Item 3: post-BuildCompleted clean FileChecked → sidecar stamped clean`` 
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
@@ -964,7 +971,8 @@ let ``Item 3: clean check after prior dirty, still pre-build → stays dirty`` (
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
@@ -1229,7 +1237,8 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
@@ -2234,7 +2243,8 @@ let ``a present-but-stale apphost defers as 'waiting on build' instead of passin
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
@@ -2293,7 +2303,8 @@ let ``stale failures from a prior cycle are cleared when the next cycle supersed
               FilterTemplate = None
               ClassJoin = " "
               TimeoutSec = None
-              ReportVerificationFormat = AutoDetect }
+              ReportVerificationFormat = AutoDetect
+              AlwaysClasses = [] }
 
         let configs = [ mk "ProjA" flagA; mk "ProjB" flagB ]
 

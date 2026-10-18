@@ -343,6 +343,7 @@ let ``serializeConfig test project without filterTemplate omits it`` () =
                             CoverageArgsTemplate = None
                             TimeoutSec = None
                             ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                            AlwaysClasses = []
                             Traces = true
                             TraceWeave = None } ]
                        Excluded = []

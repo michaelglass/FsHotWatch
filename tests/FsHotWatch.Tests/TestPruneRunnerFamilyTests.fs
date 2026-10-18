@@ -285,7 +285,8 @@ let ``run-tests gives an xUnit 4 runner its v4 flags and reads the report from t
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmp
         let handler = create ":memory:" tmp (Some configs) None None None None []
@@ -324,7 +325,8 @@ let ``run-tests invokes the real xUnit 4 runner and verifies its CTRF report`` (
             FilterTemplate = None
             ClassJoin = " "
             TimeoutSec = Some 240
-            ReportVerificationFormat = AutoDetect } ]
+            ReportVerificationFormat = AutoDetect
+            AlwaysClasses = [] } ]
 
     // The plugin's OWN root is isolated: over `repoRoot` it would write this repository's
     // `.fshw/test-prune/` ledgers — and since the full-suite baseline became

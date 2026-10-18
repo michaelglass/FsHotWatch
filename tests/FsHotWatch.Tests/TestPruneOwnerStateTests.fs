@@ -61,7 +61,8 @@ let private config (project: string) : TestConfig =
       FilterTemplate = Some "-- --filter-class {classes}"
       ClassJoin = "|"
       TimeoutSec = None
-      ReportVerificationFormat = AutoDetect }
+      ReportVerificationFormat = AutoDetect
+      AlwaysClasses = [] }
 
 let private finished (results: (string * TestResult) list) (launch: TestRunLaunch) =
     let runId = Guid.NewGuid()

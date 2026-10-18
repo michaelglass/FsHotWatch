@@ -74,7 +74,8 @@ let private hostWithHangingFirstRun (root: string) =
             FilterTemplate = None
             ClassJoin = " "
             TimeoutSec = Some 300
-            ReportVerificationFormat = AutoDetect } ]
+            ReportVerificationFormat = AutoDetect
+            AlwaysClasses = [] } ]
 
     let recorder, startedCount, unclosed = lifecycleRecorder ()
     let host = PluginHost.create (Unchecked.defaultof<_>) root

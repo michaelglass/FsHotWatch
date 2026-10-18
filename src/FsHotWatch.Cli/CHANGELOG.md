@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: `tests.projects[].alwaysClasses` lists test classes every impact-filtered `check`
+  runs, whatever changed. It is meant for tests that read the source tree as data, such as a
+  guard that scans every source file, which impact selection can never reach. A project already
+  running in full is unaffected, and an edit no test covers runs these classes instead of zero.
+  A value that is not an array of non-blank class names is a config error naming the field.
+- Breaking: `TestProjectConfig` has a new field, `AlwaysClasses`.
+
 ## 0.14.0-alpha.114 - 2026-10-18
 
 - feat: `tests.maxParallelProjects` caps how many test groups run at once (absent: all of them, as

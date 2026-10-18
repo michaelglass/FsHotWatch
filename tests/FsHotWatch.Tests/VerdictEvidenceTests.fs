@@ -665,7 +665,8 @@ let private gatedTestHost (repoRoot: string) (release: string) =
                     FilterTemplate = None
                     ClassJoin = " "
                     TimeoutSec = None
-                    ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ])
+                    ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                    AlwaysClasses = [] } ])
             None
             None
             None

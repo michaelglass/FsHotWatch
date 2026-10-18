@@ -28,7 +28,8 @@ let private gatedProject (project: string) (started: string) (release: string) :
       FilterTemplate = None
       ClassJoin = " "
       TimeoutSec = None
-      ReportVerificationFormat = Disabled }
+      ReportVerificationFormat = Disabled
+      AlwaysClasses = [] }
 
 /// A repo root with one source file, so the run binds a readable input tree.
 let private withRepo body =
@@ -177,7 +178,8 @@ let private numberedCoverageProject (project: string) (counter: string) : TestCo
       FilterTemplate = None
       ClassJoin = " "
       TimeoutSec = None
-      ReportVerificationFormat = Disabled }
+      ReportVerificationFormat = Disabled
+      AlwaysClasses = [] }
 
 [<Fact(Timeout = 40000)>]
 let ``each run keeps its own copy of the coverage it wrote`` () =

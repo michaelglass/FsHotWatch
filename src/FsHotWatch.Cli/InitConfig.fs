@@ -79,6 +79,7 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
                       CoverageArgsTemplate = None
                       TimeoutSec = None
                       ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                      AlwaysClasses = []
                       Traces = true
                       TraceWeave = None }
             | SourceProject _ -> None)

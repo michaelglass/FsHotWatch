@@ -21,7 +21,8 @@ let private markerRunner (project: string) (marker: string) : TestConfig =
       FilterTemplate = None
       ClassJoin = " "
       TimeoutSec = None
-      ReportVerificationFormat = AutoDetect }
+      ReportVerificationFormat = AutoDetect
+      AlwaysClasses = [] }
 
 let private seamTree (tmpDir: string) =
     let dbPath = Path.Combine(tmpDir, "tp.db")

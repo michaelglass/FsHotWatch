@@ -61,7 +61,8 @@ let private projConfig (project: string) : TestConfig =
       FilterTemplate = Some "-- --filter-class {classes}"
       ClassJoin = "|"
       TimeoutSec = None
-      ReportVerificationFormat = AutoDetect }
+      ReportVerificationFormat = AutoDetect
+      AlwaysClasses = [] }
 
 /// A `TestsFinished` for a completed run: per-project results plus the SCOPE it was
 /// launched against.
@@ -2348,7 +2349,8 @@ let private markerRunner (project: string) (marker: string) (projFile: string) :
       FilterTemplate = None
       ClassJoin = " "
       TimeoutSec = None
-      ReportVerificationFormat = Disabled }
+      ReportVerificationFormat = Disabled
+      AlwaysClasses = [] }
 
 /// Drive one real run of both projects and return the repo root's marker facts.
 /// Seeds a covering symbol per project and a pending queue naming both, so a
@@ -2592,7 +2594,8 @@ let ``a cached test-prune replay clears the whole ledger, exactly as its real ru
                 FilterTemplate = None
                 ClassJoin = " "
                 TimeoutSec = None
-                ReportVerificationFormat = AutoDetect } ]
+                ReportVerificationFormat = AutoDetect
+                AlwaysClasses = [] } ]
 
         let handler =
             create (Path.Combine(tmpDir, "tp.db")) tmpDir (Some configs) None None None None []
