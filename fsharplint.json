@@ -288,7 +288,7 @@
   },
   "patternMatchClauseIndentation": {
     "enabled": false,
-    "_comment": "Off: 83 finding(s) in 34 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "_comment": "Off: Fantomas owns layout and this rule fights it. Its findings (83, 2026-10-18) are clause layouts in the Fantomas-clean tree, e.g. a parenthesised match inside a && chain. Fantomas is idempotent, so any whitespace-only re-indent of a clause is reverted on the next format.",
     "config": {
       "allowSingleLineLambda": false
     }
