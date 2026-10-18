@@ -139,15 +139,15 @@ let private addWorktree (cfg: Config) (name: string) (path: string) =
     | Error e -> failwith $"could not create worktree %s{path}: %s{e}"
 
 let private removeWorktree (cfg: Config) (name: string) (path: string) =
-    let _ =
-        if isJj cfg.Repo then
-            Instruments.run "jj" $"workspace forget %s{name}" cfg.Repo (TimeSpan.FromMinutes 2.0)
-        else
-            Instruments.run
-                "git"
-                $"worktree remove --force %s{ProcessHelper.quoteArg path}"
-                cfg.Repo
-                (TimeSpan.FromMinutes 2.0)
+    (if isJj cfg.Repo then
+         Instruments.run "jj" $"workspace forget %s{name}" cfg.Repo (TimeSpan.FromMinutes 2.0)
+     else
+         Instruments.run
+             "git"
+             $"worktree remove --force %s{ProcessHelper.quoteArg path}"
+             cfg.Repo
+             (TimeSpan.FromMinutes 2.0))
+    |> ignore
 
     try
         Directory.Delete(path, true)

@@ -1774,7 +1774,7 @@ let internal debounceShouldFire (gate: obj) (lastFire: DateTime ref) (window: Ti
 /// poller happens to see.
 let internal configChangeReason (configPath: string) (defaults: DaemonConfiguration) : string =
     try
-        let _ = parseConfig (File.ReadAllText configPath) defaults
+        parseConfig (File.ReadAllText configPath) defaults |> ignore
         "config changed, stopping (restart to apply)"
     with ex ->
         $"config invalid, stopping: %s{ex.Message}"

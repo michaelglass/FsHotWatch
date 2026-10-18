@@ -2517,7 +2517,7 @@ let private runDotnetIn (cwd: string) (args: string) : unit =
     psi.RedirectStandardError <- true
     psi.WorkingDirectory <- cwd
     let proc = Process.Start(psi)
-    let _ = proc.StandardOutput.ReadToEnd()
+    proc.StandardOutput.ReadToEnd() |> ignore
     let stderr = proc.StandardError.ReadToEnd()
     proc.WaitForExit()
 
