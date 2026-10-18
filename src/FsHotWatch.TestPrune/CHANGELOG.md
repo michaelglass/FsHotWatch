@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: an edit the symbol diff sees as changing no symbol (a comment) to a compiled F# source
+  file no runnable test covers no longer runs every test project in full. What executes the
+  file is known, and it is nothing, so it adds no class: with `alwaysClasses` declared the
+  run is exactly those classes and earns a receipt for the edited tree, and an uncovered file
+  edited beside covered ones no longer widens their narrowed run. With no `alwaysClasses`
+  declared the edit still runs every project in full, since nothing short of a run can earn
+  evidence for the edited tree. A file the impact index holds no symbol for still refuses the
+  narrowing. See docs/adr-039.
+
 ## 0.13.0-alpha.85 - 2026-10-18
 
 - feat: `TestConfig.AlwaysClasses` names test classes every impact-filtered launch includes,

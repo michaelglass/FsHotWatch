@@ -1816,7 +1816,9 @@ module UnverifiedTree =
 [<RequireQualifiedAccess>]
 type SymbolFreeEdit =
     /// Every edited file is a compiled F# source file the symbol diff has run over, and
-    /// these classes, by project, cover its symbols.
+    /// these classes, by project, cover its symbols. A file whose symbols no runnable test
+    /// covers adds no class: what executes its code is known, and it is nothing, so
+    /// `classes` is empty when no edited file is covered.
     | Covering of files: string list * seeds: string list * classes: Map<string, string list>
     /// Why the edit is not narrowed: the run stays every project in full.
     | Refused of reason: string
@@ -1885,28 +1887,28 @@ module internal SymbolFreeEdit =
 
                         rel, seeds, tests)
 
+                // A file the index holds no symbol for is one it cannot answer for. A
+                // file it holds symbols for, with no runnable test covering any, is
+                // answered: nothing executes it.
                 match perFile |> List.tryFind (fun (_, seeds, _) -> List.isEmpty seeds) with
                 | Some(rel, _, _) -> SymbolFreeEdit.Refused $"the impact index holds no symbol for %s{rel}"
                 | None ->
-                    match perFile |> List.tryFind (fun (_, _, tests) -> List.isEmpty tests) with
-                    | Some(rel, _, _) -> SymbolFreeEdit.Refused $"no runnable test covers a symbol of %s{rel}"
-                    | None ->
-                        let classes =
-                            perFile
-                            |> List.collect (fun (_, _, tests) -> tests)
-                            |> List.groupBy _.TestProject
-                            |> List.map (fun (project, tests) ->
-                                project, tests |> List.map _.TestClass |> List.distinct |> List.sort)
-                            |> Map.ofList
+                    let classes =
+                        perFile
+                        |> List.collect (fun (_, _, tests) -> tests)
+                        |> List.groupBy _.TestProject
+                        |> List.map (fun (project, tests) ->
+                            project, tests |> List.map _.TestClass |> List.distinct |> List.sort)
+                        |> Map.ofList
 
-                        SymbolFreeEdit.Covering(
-                            delta.Changed,
-                            perFile
-                            |> List.collect (fun (_, seeds, _) -> seeds)
-                            |> List.distinct
-                            |> List.sort,
-                            classes
-                        )
+                    SymbolFreeEdit.Covering(
+                        delta.Changed,
+                        perFile
+                        |> List.collect (fun (_, seeds, _) -> seeds)
+                        |> List.distinct
+                        |> List.sort,
+                        classes
+                    )
 
 /// What is still owed before a green is test-equivalent to the last full suite. It is
 /// published with the run results it depends on, so a reader of one snapshot reads one
@@ -8506,13 +8508,23 @@ let internal createWithEvidenceAndQueries
                               TestsIn = db.GetTestMethodsInFile
                               Affected = queries.AffectedTests }
 
-                        SymbolFreeEdit.select
-                            inputs.EvidenceManifest
-                            inputTree
-                            inputs.SealedTree
-                            compiled
-                            (fun project -> Set.isEmpty runnableProjects || Set.contains project runnableProjects)
-                            index
+                        match
+                            SymbolFreeEdit.select
+                                inputs.EvidenceManifest
+                                inputTree
+                                inputs.SealedTree
+                                compiled
+                                (fun project -> Set.isEmpty runnableProjects || Set.contains project runnableProjects)
+                                index
+                        with
+                        // No test covers the edited files, and no always-class stands in
+                        // for them: only running can earn evidence for the edited tree.
+                        | SymbolFreeEdit.Covering(files, _, classes) when
+                            Map.isEmpty classes && Map.isEmpty (AlwaysClasses.only configs)
+                            ->
+                            SymbolFreeEdit.Refused
+                                $"no runnable test covers a symbol of %s{describeAll files}, and no project declares alwaysClasses"
+                        | narrowing -> narrowing
                         |> Some
                     else
                         None
@@ -8522,9 +8534,15 @@ let internal createWithEvidenceAndQueries
                     | Some(SymbolFreeEdit.Covering(files, seeds, classes)) ->
                         let classCount = classes |> Map.values |> Seq.sumBy List.length
 
+                        let running =
+                            if classCount = 0 then
+                                $"no runnable test covers their %d{List.length seeds} symbol(s), so running only the declared alwaysClasses"
+                            else
+                                $"running the %d{classCount} class(es) covering their %d{List.length seeds} symbol(s)"
+
                         Logging.info
                             "test-prune"
-                            $"No affected classes, and the tree moved since the evidence was earned only by an edit to %d{List.length files} compiled F# source file(s) the symbol diff saw as changing no symbol (%s{describeAll files}); running the %d{classCount} class(es) covering their %d{List.length seeds} symbol(s) instead of every project in full"
+                            $"No affected classes, and the tree moved since the evidence was earned only by an edit to %d{List.length files} compiled F# source file(s) the symbol diff saw as changing no symbol (%s{describeAll files}); %s{running} instead of every project in full"
 
                         classes, Some seeds
                     | Some(SymbolFreeEdit.Refused _)
@@ -8535,21 +8553,30 @@ let internal createWithEvidenceAndQueries
                 // symbol edge leads to. An edit whose every changed symbol has no
                 // covering test would otherwise take the nothing-to-verify skip below,
                 // yet the tree changed under classes that read all of it, so that edit
-                // runs exactly those classes instead. An empty selection is left alone:
-                // it already runs every project in full.
+                // runs exactly those classes instead. So does an edit no symbol diff sees
+                // to compiled files no test covers (`SymbolFreeEdit.Covering` with no
+                // class). An empty selection is otherwise left alone: it already runs
+                // every project in full.
+                let uncoveredSymbolFreeEdit =
+                    match symbolFreeEdit with
+                    | Some(SymbolFreeEdit.Covering(_, _, classes)) -> Map.isEmpty classes
+                    | _ -> false
+
                 let alwaysOnly =
                     totalClasses = 0
                     && Set.isEmpty forceRunProjects
                     && List.isEmpty inputs.OutstandingFailures
                     && Map.isEmpty affectedByProject
-                    && UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered
+                    && (UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered
+                        || uncoveredSymbolFreeEdit)
                     && not (Map.isEmpty (AlwaysClasses.only configs))
 
                 let affectedByProject =
                     if alwaysOnly then
-                        Logging.info
-                            "test-prune"
-                            "Every changed symbol has no covering test, but the tree changed under the declared alwaysClasses; running only those"
+                        if not uncoveredSymbolFreeEdit then
+                            Logging.info
+                                "test-prune"
+                                "Every changed symbol has no covering test, but the tree changed under the declared alwaysClasses; running only those"
 
                         AlwaysClasses.only configs
                     else

@@ -34,8 +34,16 @@ Every other shape keeps the whole-project run, and the refusal reason is logged 
 - the last `BatchChecked` did not fold the current tree (the diff is not in hand);
 - any added or removed path, or a moved path that is not a compiled `.fs` file (`.fsi`,
   `.fsproj`, props, data files, declared verdict inputs);
-- an edited file the impact index holds no symbol for, or whose symbols no runnable test
-  covers.
+- an edited file the impact index holds no symbol for;
+- every edited file's symbols lacking a runnable covering test, when no project declares
+  `alwaysClasses`.
+
+An edited file whose symbols no runnable test covers is not a refusal: what executes its code
+is known, and it is nothing, so it adds no class. When no edited file is covered, the run is
+exactly the declared `alwaysClasses`, as for a symbol edit whose every changed symbol is
+uncovered, and it earns a receipt for the edited tree. With none declared the edit keeps the
+whole-project run: a skip would earn no receipt for the edited tree, and unlike an uncovered
+symbol edit there is no changed symbol to name as unverified.
 
 The receipt tree's entries are kept in state (`EvidenceManifest`) beside the receipt, and read
 only while their identity is the receipt's `InputTreeHash`.

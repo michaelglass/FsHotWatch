@@ -257,3 +257,65 @@ let ``an edit no symbol diff sees outside compiled source still runs every proje
             assertGreen unseen
             let _, _, verdict = unseen
             assertFreshFullPair root priorRunIds verdict))
+
+[<Fact(Timeout = 900000)>]
+let ``a symbol-free edit to a compiled file no test covers runs only the always-classes and earns the edited tree`` () =
+    let clock = budget ()
+
+    withTempDir "fshw-uncovered-edit-check-command" (fun root ->
+        preparePair clock root
+        // A compiled file ColdA's tests never execute, and ColdB declaring its one class
+        // as an always-class: the edit below owes exactly that class.
+        let a = Path.Combine(root, "tests", "ColdA")
+        File.WriteAllText(Path.Combine(a, "Unused.fs"), "module ColdA.Unused\nlet unused () = 7\n")
+
+        File.WriteAllText(
+            Path.Combine(a, "ColdA.fsproj"),
+            project.Replace(
+                """<Compile Include="Value.fs" />""",
+                """<Compile Include="Unused.fs" /><Compile Include="Value.fs" />"""
+            )
+        )
+
+        let configPath = Path.Combine(root, ".fshw.json")
+
+        File.WriteAllText(
+            configPath,
+            File
+                .ReadAllText(configPath)
+                .Replace(
+                    """"project": "ColdB", "command": "dotnet",""",
+                    """"project": "ColdB", "alwaysClasses": [ "ColdB.Tests" ], "command": "dotnet","""
+                )
+        )
+
+        Assert.Contains("alwaysClasses", File.ReadAllText configPath)
+        commit clock root "an uncovered compiled file and an always-class"
+
+        withDaemon clock root (fun cli ->
+            let baseline = check clock root cli
+            assertGreen baseline
+            let _, _, full = baseline
+            assertScope "full" 2 2 full
+
+            File.Delete(markerPath root "ColdA")
+            File.Delete(markerPath root "ColdB")
+            // New bytes, no changed symbol, in a compiled file no test covers: what
+            // executes it is known, and it is nothing, so only the always-class runs.
+            File.AppendAllText(Path.Combine(a, "Unused.fs"), "// moves the bytes only\n")
+            let unseen = check clock root cli
+            assertGreen unseen
+            let _, _, verdict = unseen
+            assertScope "filtered" 1 2 verdict
+            assertSuite "ColdB" 1 0 verdict
+            Assert.Equal("observed 2", File.ReadAllText(markerPath root "ColdB"))
+            Assert.False(File.Exists(markerPath root "ColdA"), "the always-only run executed ColdA")
+
+            Assert.NotEqual<string>(
+                full.GetProperty("treeHash").GetString(),
+                verdict.GetProperty("treeHash").GetString()
+            )
+
+            // The receipt applies to the edited tree as it is on disk.
+            let code, text = run clock root "dotnet" [ cli; "verdict" ]
+            Assert.True((code = 0), $"the always-only verdict does not apply to the edited tree:\n{text}")))
