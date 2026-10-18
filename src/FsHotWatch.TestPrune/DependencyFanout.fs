@@ -160,7 +160,7 @@ let private projectInputsHash (graph: ProjectGraphAccessor) (isCompiled: string 
             | None -> "dll:" + FsHotWatch.ContentHash.UnhashableContent
 
     let files =
-        projectDirectoryInputs (fun dir -> Directory.EnumerateFiles dir) projectDir isCompiled
+        projectDirectoryInputs Directory.EnumerateFiles projectDir isCompiled
         @ importedBuildInputs projectDir
         |> List.sort
         |> List.map (fun (path, hash) -> $"file:%s{path}=%s{hash}")

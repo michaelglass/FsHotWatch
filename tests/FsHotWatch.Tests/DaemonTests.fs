@@ -1222,8 +1222,7 @@ let ``runChecksWithRetry returns zero unchecked when all files check first pass`
     let check (_: AbsFilePath) = async { return Some 1 }
 
     let outcome =
-        runChecksWithRetry 3 8 check (fun r -> emitted.Add r) files
-        |> Async.RunSynchronously
+        runChecksWithRetry 3 8 check emitted.Add files |> Async.RunSynchronously
 
     // A converged scan says so in the type, and reports ZERO
     // extra rounds — the amplification measure the retry budget exists to bound.
@@ -1251,8 +1250,7 @@ let ``runChecksWithRetry retries a transiently-cancelled file until it converges
     let files = [ "/a.fs"; "/b.fs"; "/c.fs" ] |> List.map AbsFilePath.create
 
     let outcome =
-        runChecksWithRetry 3 8 check (fun r -> emitted.Add r) files
-        |> Async.RunSynchronously
+        runChecksWithRetry 3 8 check emitted.Add files |> Async.RunSynchronously
 
     // Converged, but it cost exactly ONE extra round — the number that
     // distinguishes a single self-cancellation from runaway amplification.

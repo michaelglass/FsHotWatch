@@ -1124,7 +1124,7 @@ let internal canonicalTestConfig (c: TestConfig) : string =
 
     o["timeoutSec"] <-
         (c.TimeoutSec
-         |> Option.map (fun t -> System.Text.Json.Nodes.JsonValue.Create t)
+         |> Option.map System.Text.Json.Nodes.JsonValue.Create
          |> Option.toObj)
 
     o["reportVerificationFormat"] <- sprintf "%A" c.ReportVerificationFormat
@@ -4125,7 +4125,7 @@ module ConsoleText =
                 let t = l.TrimStart()
 
                 [ "total:"; "failed:"; "succeeded:"; "skipped:"; "duration:" ]
-                |> List.exists (fun prefix -> t.StartsWith prefix)
+                |> List.exists t.StartsWith
 
             all.[index].Trim()
             :: (all.[index + 1 ..]

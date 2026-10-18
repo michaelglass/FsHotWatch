@@ -220,7 +220,7 @@ let solutionProjects (solutionText: string) : string list =
     else
         let pattern =
             projectExtensions
-            |> List.map (fun ext -> Regex.Escape ext)
+            |> List.map Regex.Escape
             |> String.concat "|"
             |> sprintf "\"([^\"]+(?:%s))\""
 

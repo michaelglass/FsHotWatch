@@ -863,11 +863,7 @@ let ``parseConfig analyzers unknown failOnSeverity is a ConfigErrorException nam
     test <@ ex.message.Contains "analyzers.failOnSeverity" @>
     test <@ ex.message.Contains bad @>
 
-    test
-        <@
-            [ "error"; "warning"; "info"; "hint" ]
-            |> List.forall (fun accepted -> ex.message.Contains accepted)
-        @>
+    test <@ [ "error"; "warning"; "info"; "hint" ] |> List.forall ex.message.Contains @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig format string variants land deterministically`` () =

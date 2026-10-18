@@ -90,10 +90,9 @@ let resolveCacheScope
 /// matches an `include` glob (or `include` is empty) and no `exclude` glob. Globs are
 /// gitignore-style, relative to the repository root.
 let cacheAdmits (repoRoot: string) (includes: string list) (excludes: string list) : string -> bool =
-    let matcher (patterns: string list) =
-        let ignore = (Ignore.Ignore(), patterns) ||> List.fold (fun ig p -> ig.Add(p))
-
-        fun (relative: string) -> ignore.IsIgnored relative
+    let matcher (patterns: string list) : string -> bool =
+        let rules = (Ignore.Ignore(), patterns) ||> List.fold (fun ig p -> ig.Add(p))
+        rules.IsIgnored
 
     let included =
         if List.isEmpty includes then

@@ -1828,7 +1828,7 @@ let internal armedWatchdogLoopWith
             | unchanged -> unchanged
 
         let launchReached = reached launchDeadlineAt
-        let overallReached = overallTimeoutAt |> Option.exists (fun at -> reached at)
+        let overallReached = overallTimeoutAt |> Option.exists reached
 
         match decideLaunchStep launchReached overallReached exited sawOutput with
         | LaunchStep.Exited -> LaunchOutcome.Exited

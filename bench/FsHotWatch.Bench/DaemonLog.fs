@@ -137,7 +137,7 @@ let private scanChecked =
 /// A scan cycle opens on `N projects, M files registered` and closes on
 /// `Checked N files (T tiers), skipped S, unchecked U`.
 let scanCycles (window: string list) : Cycle list =
-    cycles (tagged "scan" (fun b -> scanRegistered.IsMatch b)) (tagged "scan" (fun b -> scanChecked.IsMatch b)) window
+    cycles (tagged "scan" scanRegistered.IsMatch) (tagged "scan" scanChecked.IsMatch) window
 
 /// Counts one scan cycle reported.
 type ScanCounts =

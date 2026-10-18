@@ -569,7 +569,7 @@ let inputsFor (snap: Snapshot) (request: Request) : Result<Inputs * int64, strin
         // resolve makes no key: it might name a file outside every hashed directory.
         let linked =
             closure
-            |> List.map (fun p -> linkedItems p)
+            |> List.map linkedItems
             |> List.fold
                 (fun acc next ->
                     match acc, next with

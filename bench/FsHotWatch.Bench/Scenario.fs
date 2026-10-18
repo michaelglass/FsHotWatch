@@ -246,7 +246,7 @@ let scanProblems (owner: Owner) (sample: ScanMetrics.ScanSample option) (window:
           if s.FilesDepsGated > 0 then
               $"scan deps-gated %d{s.FilesDepsGated} file(s)"
 
-          match window |> DaemonLog.scanCycles |> List.tryPick (fun c -> DaemonLog.scanCounts c) with
+          match window |> DaemonLog.scanCycles |> List.tryPick DaemonLog.scanCounts with
           | None -> "daemon.log window has no complete scan cycle"
           | Some counts when counts.Checked <> s.FilesChecked ->
               $"log scan checked %d{counts.Checked} but scan-metrics says %d{s.FilesChecked}"

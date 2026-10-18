@@ -1861,7 +1861,7 @@ let private waitForDaemonReady
         probe
         (fun () -> daemonProcessAliveWith defaultFileOps repoRoot)
         (fun () -> DateTime.UtcNow)
-        (fun ms -> Thread.Sleep ms)
+        Thread.Sleep
         (fun () -> eprintfn "  Waiting for the daemon to finish starting...")
         200
         deadlineSeconds
