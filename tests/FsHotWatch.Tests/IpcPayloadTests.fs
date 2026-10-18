@@ -19,6 +19,7 @@ let private rpcConfigWithUnchecked (unchecked: int) (host: PluginHost) : DaemonR
     { Host = host
       RequestShutdown = ignore
       RequestScan = ignore
+      InvocationReleased = fun _ -> System.Threading.CancellationToken.None
       GetScanStatus = fun () -> "idle"
       GetScanGeneration = fun () -> 0L
       TriggerBuild = fun () -> async { return () }

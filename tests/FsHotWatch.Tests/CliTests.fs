@@ -894,6 +894,7 @@ let private fakeIpc () : IpcOps =
       GetStatus = fun _ -> async { return completedStatusJson }
       GetPluginStatus = fun _ _ -> async { return "{}" }
       RunCommand = fun _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name }
+      RunCommandFor = fun _ _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name }
       GetDiagnostics =
         fun _ _ ->
             async {
@@ -3378,22 +3379,26 @@ let ``requestFullSuiteScope sends set-scope with a PARSEABLE {"scope":"full"} pa
 let ``requestOwedRun sends set-scope with a PARSEABLE {"scope":"owed"} payload`` () =
     // `check`'s request for the run its daemon owes: under `tests.runOn: "request"` that
     // run launches only when asked. An older daemon answers with an unknown-scope error,
-    // which changes nothing there.
-    let mutable seen: (string * string) list = []
+    // which changes nothing there. It names the invocation: the reply comes back once the
+    // run is queued and the connection closes with it, so only the invocation still
+    // waiting for the run can hold it.
+    let mutable seen: (string * string * string) list = []
 
     let ipc =
         { fakeIpc () with
-            RunCommand =
-                fun _ name args ->
+            RunCommand = fun _ _ _ -> async { return failwith "an owed run held by its connection alone" }
+            RunCommandFor =
+                fun _ invocation name args ->
                     async {
-                        seen <- (name, args) :: seen
+                        seen <- (invocation, name, args) :: seen
                         return """{"scope":"owed"}"""
                     } }
 
-    requestOwedRun ipc "pipe"
+    requestOwedRun ipc "pipe" "invocation-7"
 
     match seen with
-    | [ (name, args) ] ->
+    | [ (invocation, name, args) ] ->
+        test <@ invocation = "invocation-7" @>
         test <@ name = "set-scope" @>
 
         use doc = System.Text.Json.JsonDocument.Parse(args)

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **fix!: a run a CLI invocation asked for through a command is no longer cancelled as
+  client-less while that invocation is still waiting for it. `DaemonRpcConfig` gains
+  `InvocationReleased: string -> CancellationToken`**, so code that builds the config must
+  supply it (`RunClaim.releasedFor repoRoot` in the daemon; a token that never fires holds
+  the work for the daemon). A command request held the intents it enqueued by its own
+  connection alone, and a CLI closes that connection as soon as the reply arrives, then
+  waits on other connections. So `set-scope owed`, which replies once the owed run is
+  queued, released its only lease within milliseconds. The run it launched was cancelled
+  at its next cancellation point ("every client that wanted it has gone"), and the check
+  ended with no verdict while its client was still waiting. The new
+  `RunCommandFor(name, argsJson, invocationId)` RPC (`IpcClient.runCommandFor`) holds what
+  the command enqueues by its connection and by that invocation's run claim, so it is
+  withdrawn or cancelled only once both have gone. `RunCommand`, which names no
+  invocation, is unchanged.
+
 ## 0.10.0-alpha.85 - 2026-10-18
 
 - fix: registry shutdown escalates a tracked child whose kill does not return, the same way a

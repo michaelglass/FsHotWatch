@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: `check` asks for the run its daemon owes (`set-scope owed`) on behalf of its own
+  invocation (`RunCommandFor`), so the run is held for as long as the check waits for it.
+  It was held only by the request's connection, which closes with the reply, and the run
+  could be cancelled as client-less before it had run, ending the check with exit 3 and no
+  verdict. `IpcOps` gains `RunCommandFor`.
+
 ## 0.14.0-alpha.116 - 2026-10-18
 
 - chore: rebuild to bundle updated dependencies

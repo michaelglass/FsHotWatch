@@ -381,3 +381,9 @@ let internal leaseWith
 /// `leaseWith` for this machine, polled every two seconds.
 let internal leaseFor (repoRoot: string) (invocationId: string option) : PluginWorkOwner.ConsumerLeases =
     leaseWith (TimeSpan.FromSeconds 2.0) Environment.MachineName processAlive repoRoot invocationId
+
+/// The token that fires once the invocation `invocationId` has gone (`leaseFor`), or one
+/// that never fires when there is no claim of this machine to watch.
+let internal releasedFor (repoRoot: string) (invocationId: string) : Threading.CancellationToken =
+    leaseFor repoRoot (Some invocationId)
+    |> PluginWorkOwner.ConsumerLeases.releasedToken

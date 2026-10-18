@@ -709,6 +709,16 @@ module ConsumerLeases =
 
             Some(abandoned, watch)
 
+    /// One token standing for `leases`: it fires once every lease is released, and it
+    /// can never fire when the daemon holds the work. A request run under it holds what
+    /// it enqueues for exactly those consumers (`ofClient`). The source is never
+    /// disposed: the intents and runs it comes to hold register on it for as long as
+    /// they live.
+    let releasedToken (leases: ConsumerLeases) : CancellationToken =
+        match whenAllReleased leases with
+        | Some(abandoned, _) -> abandoned.Token
+        | None -> CancellationToken.None
+
 /// A command waiting for an exclusive key. It is owned from the moment it is accepted:
 /// its receipt settles only after the fold it becomes has been published, or when it is
 /// withdrawn because every consumer released its lease.

@@ -168,6 +168,10 @@ type DaemonRpcConfig =
         /// Admit a scan for the invocation that asked for it, if it named one: the scan's
         /// work is held through that invocation's run claim (`RunClaim.leaseFor`).
         RequestScan: string option -> unit
+        /// The token that fires once the CLI invocation named has gone: when its run
+        /// claim is released (`RunClaim.releasedFor`). One that never fires when there is
+        /// no claim to watch, so the daemon holds what that invocation asks for.
+        InvocationReleased: string -> CancellationToken
         GetScanStatus: unit -> string
         GetScanGeneration: unit -> int64
         TriggerBuild: unit -> Async<unit>
@@ -302,6 +306,23 @@ type DaemonRpcTarget
                 | _ -> ()
         }
 
+    /// Run a registered command under `requester`, the token its requests hold their
+    /// intents for, and reply with its result or the unknown-command sentinel.
+    let runCommandUnder (requester: CancellationToken) (name: string) (argsJson: string) =
+        task {
+            let args =
+                if String.IsNullOrEmpty(argsJson) then
+                    [||]
+                else
+                    [| argsJson |]
+
+            let! result = Async.StartAsTask(config.Host.RunCommand(name, args), cancellationToken = requester)
+
+            match result with
+            | Some r -> return r
+            | None -> return unknownCommandReply name
+        }
+
     /// The wedge entry to splice into a status map, if the daemon is wedged.
     let wedgeEntry () : (string * obj) option =
         watchdog
@@ -353,21 +374,24 @@ type DaemonRpcTarget
         // The command's own async runs under the disconnect token, so whatever it does
         // inline stops at its next cancellation point once its client is gone. Work it
         // hands to a plugin (an owned run, a queued intent) belongs to the plugin, is
-        // shared with the watcher and other clients, and is not cancelled here.
+        // shared with the watcher and other clients, and is not cancelled here. A request
+        // holds the intents it enqueues for that token: for this connection alone.
+        trackedTask $"RunCommand:%s{name}" (fun disconnected -> runCommandUnder disconnected name argsJson)
+
+    /// `RunCommand` on behalf of the CLI invocation `invocationId`. The intents the
+    /// command enqueues are held by this connection AND by that invocation's run claim,
+    /// so they outlive the reply: a CLI closes the connection the moment the reply
+    /// arrives, then waits on other connections for the work it asked for. They are
+    /// withdrawn, or their run cancelled, once both have gone (`InvocationReleased`).
+    member _.RunCommandFor(name: string, argsJson: string, invocationId: string) : Task<string> =
         trackedTask $"RunCommand:%s{name}" (fun disconnected ->
-            task {
-                let args =
-                    if String.IsNullOrEmpty(argsJson) then
-                        [||]
-                    else
-                        [| argsJson |]
+            let requester =
+                PluginWorkOwner.ConsumerLeases.merge
+                    (PluginWorkOwner.ConsumerLeases.ofClient disconnected)
+                    (PluginWorkOwner.ConsumerLeases.ofClient (config.InvocationReleased invocationId))
+                |> PluginWorkOwner.ConsumerLeases.releasedToken
 
-                let! result = Async.StartAsTask(config.Host.RunCommand(name, args), cancellationToken = disconnected)
-
-                match result with
-                | Some r -> return r
-                | None -> return unknownCommandReply name
-            })
+            runCommandUnder requester name argsJson)
 
     /// Gracefully shut down the daemon.
     member _.Shutdown() : string =
@@ -964,6 +988,11 @@ module IpcClient =
     /// Run a registered command by name.
     let runCommand (pipeName: string) (name: string) (argsJson: string) : Async<string> =
         invoke pipeName "RunCommand" [| name; argsJson |]
+
+    /// `runCommand` on behalf of `invocationId`: what it asks for is held through that
+    /// invocation's run claim as well as this connection (`RunCommandFor`).
+    let runCommandFor (pipeName: string) (invocationId: string) (name: string) (argsJson: string) : Async<string> =
+        invoke pipeName "RunCommandFor" [| name; argsJson; invocationId |]
 
     /// Shut down the daemon gracefully.
     let shutdown (pipeName: string) : Async<string> = invoke pipeName "Shutdown" [||]

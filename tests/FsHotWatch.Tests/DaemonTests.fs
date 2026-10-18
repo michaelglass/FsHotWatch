@@ -1106,6 +1106,7 @@ let private scanStatusAnswered (state: ScanState) : string * string list =
                 { Host = daemon.Host
                   RequestShutdown = ignore
                   RequestScan = ignore
+                  InvocationReleased = fun _ -> System.Threading.CancellationToken.None
                   GetScanStatus = daemon.FormatScanStatus
                   GetScanGeneration = fun () -> 0L
                   TriggerBuild = fun () -> async { return () }

@@ -87,6 +87,7 @@
     <Compile Include="PluginFrameworkResultFirstTests.fs" />
     <Compile Include="PluginFrameworkLeaseTests.fs" />
     <Compile Include="ClientLeaseLineageTests.fs" />
+    <Compile Include="CommandClientLeaseTests.fs" />
     <Compile Include="PluginCtxHelpersTests.fs" />
     <Compile Include="JsonTests.fs" />
     <Compile Include="PluginHostTests.fs" />
@@ -171,6 +172,7 @@
     <Compile Include="TestPruneSignatureOccurrenceTests.fs" />
     <Compile Include="TestPruneDebtScopeTests.fs" />
     <Compile Include="TestPruneCommentEditTests.fs" />
+    <Compile Include="TestPruneWithdrawnRunTests.fs" />
     <Compile Include="TestPruneImpactQueryCountTests.fs" />
     <Compile Include="TestPruneConfirmPassThroughTests.fs" />
     <Compile Include="TestPruneWalkPolicyTests.fs" />
