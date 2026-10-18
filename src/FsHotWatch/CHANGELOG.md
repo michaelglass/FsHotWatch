@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.86 - 2026-10-18
+
 - **fix!: a run a CLI invocation asked for through a command is no longer cancelled as
   client-less while that invocation is still waiting for it. `DaemonRpcConfig` gains
   `InvocationReleased: string -> CancellationToken`**, so code that builds the config must

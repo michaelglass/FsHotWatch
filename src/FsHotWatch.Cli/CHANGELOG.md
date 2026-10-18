@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.117 - 2026-10-18
+
 - fix: `check` asks for the run its daemon owes (`set-scope owed`) on behalf of its own
   invocation (`RunCommandFor`), so the run is held for as long as the check waits for it.
   It was held only by the request's connection, which closes with the reply, and the run

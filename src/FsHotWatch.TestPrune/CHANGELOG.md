@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.87 - 2026-10-18
+
 - fix: a queued impact rerun is judged stale only when nothing is owed, no dependency
   fanout remains, and the evidence covers the current tree. A run that executed nothing (one
   every client abandoned, or one whose artifacts or test host were unavailable) discharges
