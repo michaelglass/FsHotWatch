@@ -127,21 +127,51 @@ let ``helper host refuses to launch when no muxer exists`` () =
 [<Fact>]
 let ``launch failure names the outcome and the command for every helper observation`` () =
     let bound = TimeSpan.FromSeconds 5.0
-    let failure = DetachedLaunch.launchFailure bound "the command"
+
+    let failure =
+        DetachedLaunch.launchFailure bound "the command" (Some "shell said no\n")
 
     Assert.Equal(None, failure (DetachedLaunch.HelperObservation.Exited 0))
 
     let exited = (failure (DetachedLaunch.HelperObservation.Exited 7)).Value
     Assert.IsType<InvalidOperationException>(exited) |> ignore
-    Assert.Equal("Detached daemon launch helper exited 7 launching: the command", exited.Message)
+
+    Assert.Equal(
+        "Detached daemon launch helper exited 7 launching: the command\nHelper stderr:\nshell said no",
+        exited.Message
+    )
 
     let killed = (failure (DetachedLaunch.HelperObservation.Stuck true)).Value
     Assert.IsType<TimeoutException>(killed) |> ignore
     Assert.Contains("exceeded 5 seconds and was killed", killed.Message)
+    Assert.EndsWith("\nHelper stderr:\nshell said no", killed.Message)
 
     let unreaped = (failure (DetachedLaunch.HelperObservation.Stuck false)).Value
     Assert.IsType<TimeoutException>(unreaped) |> ignore
     Assert.Contains("exceeded 5 seconds and could not be reaped", unreaped.Message)
+    Assert.EndsWith("\nHelper stderr:\nshell said no", unreaped.Message)
+
+[<Fact>]
+let ``exit codes in the signal range name the signal that killed the helper`` () =
+    Assert.Equal("7", DetachedLaunch.describeExitCode 7)
+    Assert.Equal("128", DetachedLaunch.describeExitCode 128)
+    Assert.Equal("160", DetachedLaunch.describeExitCode 160)
+    Assert.Equal("134 (killed by signal 6, SIGABRT)", DetachedLaunch.describeExitCode 134)
+    Assert.Equal("139 (killed by signal 11, SIGSEGV)", DetachedLaunch.describeExitCode 139)
+    Assert.Equal("137 (killed by signal 9, SIGKILL)", DetachedLaunch.describeExitCode 137)
+    // 10 is SIGBUS on macOS and SIGUSR1 on Linux, so no single name is right.
+    Assert.Equal("138 (killed by signal 10, a platform-numbered signal)", DetachedLaunch.describeExitCode 138)
+
+[<Fact>]
+let ``helper stderr is described whether it held text, held nothing, or never closed`` () =
+    Assert.Equal(
+        "Helper stderr:\nline one\nline two",
+        DetachedLaunch.describeHelperStderr (Some "line one\nline two\n")
+    )
+
+    Assert.Equal("Helper stderr: empty.", DetachedLaunch.describeHelperStderr (Some " \n"))
+
+    Assert.Equal("Helper stderr: still open when the wait for it ended.", DetachedLaunch.describeHelperStderr None)
 
 [<Fact(Timeout = 30000)>]
 let ``detached launch reports original failed command`` () =
@@ -149,7 +179,7 @@ let ``detached launch reports original failed command`` () =
         let error =
             Assert.Throws<InvalidOperationException>(fun () -> DetachedLaunch.launch root "exit 7")
 
-        Assert.Equal("Detached daemon launch helper exited 7 launching: exit 7", error.Message))
+        Assert.Equal("Detached daemon launch helper exited 7 launching: exit 7\nHelper stderr: empty.", error.Message))
 
 [<Fact(Timeout = 60000)>]
 let ``detached launch bounds and reaps a stuck helper`` () =
@@ -161,7 +191,7 @@ let ``detached launch bounds and reaps a stuck helper`` () =
         try
             let error =
                 Assert.Throws<TimeoutException>(fun () ->
-                    DetachedLaunch.launchWithin (TimeSpan.FromSeconds 10.0) root command)
+                    DetachedLaunch.launchWithin ignore (TimeSpan.FromSeconds 10.0) root command)
 
             Assert.Contains("exceeded 10 seconds and was killed", error.Message)
             Assert.True(File.Exists receipt, "positive control: the helper must have become the shell")
@@ -185,3 +215,41 @@ let ``detached launch bounds and reaps a stuck helper`` () =
                         proc.Kill()
                 with :? ArgumentException ->
                     ())
+
+// Positive control for the abort diagnostics: a real helper that writes to stderr and
+// then dies of SIGABRT, through the real pipe and the real exit status.
+[<Fact(Timeout = 30000)>]
+let ``detached launch failure names the signal and carries the helper's stderr`` () =
+    withTempDir "detached-launch-abort" (fun root ->
+        let error =
+            Assert.Throws<InvalidOperationException>(fun () ->
+                DetachedLaunch.launch root "echo 'about to abort' >&2; kill -ABRT $$")
+
+        Assert.StartsWith("Detached daemon launch helper exited 134 (killed by signal 6, SIGABRT)", error.Message)
+        Assert.Contains("launching: echo 'about to abort' >&2; kill -ABRT $$", error.Message)
+        Assert.Contains("Helper stderr:\nabout to abort", error.Message))
+
+[<Fact(Timeout = 30000)>]
+let ``a successful helper hands its stderr to the caller's report, and a silent one hands nothing`` () =
+    withTempDir "detached-launch-report" (fun root ->
+        let messages = ResizeArray<string>()
+        DetachedLaunch.launchWithin messages.Add (TimeSpan.FromSeconds 20.0) root "echo 'a note' >&2; exit 0"
+        Assert.Equal<string list>([ "a note\n" ], List.ofSeq messages)
+
+        messages.Clear()
+        DetachedLaunch.launchWithin messages.Add (TimeSpan.FromSeconds 20.0) root "exit 0"
+        Assert.Empty(messages))
+
+[<Fact(Timeout = 30000)>]
+let ``a helper whose stderr outlives it is reported as still open, not waited on`` () =
+    withTempDir "detached-launch-held-stderr" (fun root ->
+        // The backgrounded sleep inherits the helper's stderr and keeps it open past the
+        // two-second drain; it ends on its own soon after.
+        let error =
+            Assert.Throws<InvalidOperationException>(fun () ->
+                DetachedLaunch.launchWithin ignore (TimeSpan.FromSeconds 2.0) root "/bin/sleep 4 & exit 3")
+
+        Assert.Equal(
+            "Detached daemon launch helper exited 3 launching: /bin/sleep 4 & exit 3\nHelper stderr: still open when the wait for it ended.",
+            error.Message
+        ))

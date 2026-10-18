@@ -22,6 +22,7 @@ open System
 open System.Diagnostics
 open System.IO
 open System.Runtime.InteropServices
+open System.Threading.Tasks
 
 /// The hidden argument that turns a CLI process into the launch helper. Only the
 /// EXACT shape `[| HelperFlag; command |]` is honoured.
@@ -141,21 +142,73 @@ type HelperObservation =
     /// Still running at the bound; `reaped` says whether it died after being killed.
     | Stuck of reaped: bool
 
-/// The failure a helper observation means, naming the command it was launching.
-let internal launchFailure (bound: TimeSpan) (command: string) (observation: HelperObservation) : exn option =
+/// The signals whose numbers are the same on macOS and Linux.
+let private portableSignalNames =
+    Map
+        [ 1, "SIGHUP"
+          2, "SIGINT"
+          3, "SIGQUIT"
+          4, "SIGILL"
+          5, "SIGTRAP"
+          6, "SIGABRT"
+          8, "SIGFPE"
+          9, "SIGKILL"
+          11, "SIGSEGV"
+          13, "SIGPIPE"
+          14, "SIGALRM"
+          15, "SIGTERM" ]
+
+/// An exit status as the caller reports it. .NET reports a process killed by signal
+/// `n` as `128 + n`, so a status in that range also names the signal: a helper that
+/// exits 134 died of SIGABRT (a runtime abort or failfast) and never chose the code.
+let internal describeExitCode (code: int) : string =
+    if code > 128 && code < 160 then
+        let signal = code - 128
+
+        let name =
+            portableSignalNames
+            |> Map.tryFind signal
+            |> Option.defaultValue "a platform-numbered signal"
+
+        $"%d{code} (killed by signal %d{signal}, %s{name})"
+    else
+        string code
+
+/// The helper's stderr for a failure message: `None` when the stream was still open
+/// when the caller stopped waiting for it.
+let internal describeHelperStderr (stderr: string option) : string =
+    match stderr with
+    | None -> "Helper stderr: still open when the wait for it ended."
+    | Some text when String.IsNullOrWhiteSpace text -> "Helper stderr: empty."
+    | Some text -> $"Helper stderr:\n%s{text.TrimEnd()}"
+
+/// The failure a helper observation means, naming the command it was launching and
+/// carrying what the helper wrote to stderr, which is the only record of a runtime
+/// abort or of a shell that could not run the command.
+let internal launchFailure
+    (bound: TimeSpan)
+    (command: string)
+    (stderr: string option)
+    (observation: HelperObservation)
+    : exn option =
+    let detail = describeHelperStderr stderr
+
     match observation with
     | HelperObservation.Exited 0 -> None
     | HelperObservation.Exited code ->
-        Some(InvalidOperationException $"Detached daemon launch helper exited %d{code} launching: %s{command}")
+        Some(
+            InvalidOperationException
+                $"Detached daemon launch helper exited %s{describeExitCode code} launching: %s{command}\n%s{detail}"
+        )
     | HelperObservation.Stuck true ->
         Some(
             TimeoutException
-                $"Detached daemon launch helper exceeded %g{bound.TotalSeconds} seconds and was killed, launching: %s{command}"
+                $"Detached daemon launch helper exceeded %g{bound.TotalSeconds} seconds and was killed, launching: %s{command}\n%s{detail}"
         )
     | HelperObservation.Stuck false ->
         Some(
             TimeoutException
-                $"Detached daemon launch helper exceeded %g{bound.TotalSeconds} seconds and could not be reaped, launching: %s{command}"
+                $"Detached daemon launch helper exceeded %g{bound.TotalSeconds} seconds and could not be reaped, launching: %s{command}\n%s{detail}"
         )
 
 type private AssemblyAnchor = class end
@@ -163,7 +216,8 @@ type private AssemblyAnchor = class end
 /// The start info for the helper that runs `command` with `host`. It inherits this
 /// process's environment, which the shell it execs and the daemon inherit in turn, plus
 /// the thread-suspend setting `ThreadSuspendInjection.launchOverride` decides from
-/// `isMacOS` and `getEnv`.
+/// `isMacOS` and `getEnv`. Its stderr is captured: the shell it execs moves the daemon's
+/// own stderr into the log, so what arrives there is the helper's and the shell's.
 let internal helperStartInfo
     (isMacOS: bool)
     (getEnv: string -> string)
@@ -178,15 +232,27 @@ let internal helperStartInfo
     psi.WorkingDirectory <- workingDirectory
     psi.UseShellExecute <- false
     psi.RedirectStandardInput <- true
+    psi.RedirectStandardError <- true
 
     ThreadSuspendInjection.launchOverride isMacOS getEnv
     |> Option.iter (fun (name, value) -> psi.Environment[name] <- value)
 
     psi
 
+/// The longest the caller waits, once the helper is gone, for its stderr to close. Only
+/// a process the launch command left holding the stream keeps it open.
+let private stderrDrainBound = TimeSpan.FromSeconds 5.0
+
 /// Run `command` through the helper from `workingDirectory` and wait at most `bound`
-/// for it. Raises when the helper cannot be started, fails, or has to be killed.
-let internal launchWithin (bound: TimeSpan) (workingDirectory: string) (command: string) : unit =
+/// for it. Raises when the helper cannot be started, fails, or has to be killed; the
+/// exception carries the helper's stderr. A helper that succeeds hands what it wrote to
+/// stderr, if anything, to `report`.
+let internal launchWithin
+    (report: string -> unit)
+    (bound: TimeSpan)
+    (workingDirectory: string)
+    (command: string)
+    : unit =
     let host =
         helperHost Environment.ProcessPath (RuntimeEnvironment.GetRuntimeDirectory()) File.Exists
 
@@ -205,22 +271,35 @@ let internal launchWithin (bound: TimeSpan) (workingDirectory: string) (command:
     // started helper, whose stdin is redirected, can never take.
     let helper = Process.Start psi
 
-    let observation =
+    let observation, stderr =
         try
+            let stderrText = helper.StandardError.ReadToEndAsync()
             helper.StandardInput.Close()
             let boundMs = int bound.TotalMilliseconds
 
-            if helper.WaitForExit boundMs then
-                HelperObservation.Exited helper.ExitCode
-            else
-                // Our own just-started helper, never a pidfile-discovered process.
-                helper.Kill(entireProcessTree = true)
-                HelperObservation.Stuck(helper.WaitForExit boundMs)
+            let observation =
+                if helper.WaitForExit boundMs then
+                    HelperObservation.Exited helper.ExitCode
+                else
+                    // Our own just-started helper, never a pidfile-discovered process.
+                    helper.Kill(entireProcessTree = true)
+                    HelperObservation.Stuck(helper.WaitForExit boundMs)
+
+            let drainMs = Math.Min(bound.TotalMilliseconds, stderrDrainBound.TotalMilliseconds)
+            Task.WhenAny(stderrText, Task.Delay(TimeSpan.FromMilliseconds drainMs)).Wait()
+
+            observation,
+            (if stderrText.IsCompletedSuccessfully then
+                 Some stderrText.Result
+             else
+                 None)
         finally
             helper.Dispose()
 
-    launchFailure bound command observation |> Option.iter raise
+    match launchFailure bound command stderr observation with
+    | Some failure -> raise failure
+    | None -> stderr |> Option.filter (String.IsNullOrEmpty >> not) |> Option.iter report
 
 /// Launch `command` detached from this process's session and group.
 let launch (workingDirectory: string) (command: string) : unit =
-    launchWithin HelperBound workingDirectory command
+    launchWithin (eprintf "%s") HelperBound workingDirectory command

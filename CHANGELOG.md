@@ -74,6 +74,16 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### cli: a daemon launch that fails says why
+
+- The short-lived helper that detaches a daemon from the CLI's process group could fail
+  with only "helper exited 134". Its stderr went to the caller's stderr, which a test host
+  or agent harness does not keep, so a runtime abort's own message was lost. The helper's
+  stderr is now captured. A failed launch carries it in the error, and an exit status of
+  128 + n names signal n: "exited 134 (killed by signal 6, SIGABRT)". A launch that
+  succeeds still prints anything the helper wrote to stderr. A test aborts a real helper
+  and checks that the error names the signal and quotes its stderr.
+
 ### format: a file the formatter cannot parse fails the format pass
 
 - **fix!: the format preprocessor fails, naming each file, when the pinned Fantomas
