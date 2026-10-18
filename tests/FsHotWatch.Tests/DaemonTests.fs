@@ -4397,10 +4397,10 @@ let ``THE RACE: a discovery in flight reports rediscovering, never an empty mode
     let coordinator = DiscoveryCoordinator()
 
     let started =
-        new TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
     let release =
-        new TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
     let inFlight =
         coordinator.Run(fun () ->

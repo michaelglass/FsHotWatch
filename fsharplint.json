@@ -65,7 +65,7 @@
   },
   "redundantNewKeyword": {
     "enabled": false,
-    "_comment": "Off: 4 finding(s) in 3 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable."
+    "_comment": "Off: it fights the compiler. It flags `new` on IDisposable types declared in another project of this solution (SpawnHelper.Connection, Watchdog, SessionRegistry, PollingFileWatcher: 10 of its 14 findings, 2026-10-18), and dropping `new` there is FS0760, an error under TreatWarningsAsErrors. Its true positives (BCL TaskCompletionSource and Thread) were fixed."
   },
   "nestedStatements": {
     "enabled": false,

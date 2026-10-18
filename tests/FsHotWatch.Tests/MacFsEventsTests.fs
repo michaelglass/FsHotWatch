@@ -237,7 +237,7 @@ module ``native cleanup lifecycle tests`` =
         let mutable releasedBeforeExit = false
 
         let thread =
-            new Thread(
+            Thread(
                 ThreadStart(fun () ->
                     cleanup.Cleanup()
                     releasedBeforeExit <- order |> Seq.contains "release"
