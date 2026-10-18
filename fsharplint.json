@@ -197,7 +197,7 @@
   },
   "recordFieldNames": {
     "enabled": false,
-    "_comment": "Off: 27 finding(s) in 3 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "_comment": "Off by design. 26 of its 27 findings (2026-10-18) are private record representations, Verdict and RunVerdict, whose camelCase fields back PascalCase members of the same name and are reachable only through a validating constructor. PascalCase fields would collide with those members, so the fix would rename one side for the linter alone. The one public camelCase field (IdleExit.FireLatch.state) was renamed.",
     "config": {
       "naming": "PascalCase",
       "underscores": "None"
