@@ -3153,6 +3153,35 @@ let ``an UNREADABLE DIRECTORY fails the hash CLOSED — a hole is not an empty t
                     UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
                 ))
 
+[<Fact>]
+let ``an unreadable directory that a dir-slash exclude names is not a hole`` () =
+    // A `dir/` pattern matches a directory, and a hole IS a directory. Asked as a bare
+    // path, `Vault` reads as a file, the pattern misses it, and a directory the config
+    // says we do not verify still counted as a hole in what we do.
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "tree-unreadable-excluded-dir" (fun root ->
+            makeRepo root
+
+            let vault = Path.Combine(root, "src", "Lib", "Vault")
+            let other = Path.Combine(root, "src", "Lib", "Other")
+
+            let rwx =
+                UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+
+            for dir in [ vault; other ] do
+                Directory.CreateDirectory dir |> ignore
+                File.WriteAllText(Path.Combine(dir, "Hidden.fs"), "module Hidden")
+                File.SetUnixFileMode(dir, UnixFileMode.None)
+
+            try
+                test <@ (TreeHash.files root [ "src/Lib/Vault/" ]).Skipped = [ "src/Lib/Other" ] @>
+
+                // POSITIVE CONTROL: with no exclude, the same unreadable directory is a hole.
+                test <@ (TreeHash.files root []).Skipped = [ "src/Lib/Other"; "src/Lib/Vault" ] @>
+            finally
+                for dir in [ vault; other ] do
+                    File.SetUnixFileMode(dir, rwx))
+
 // ---------------------------------------------------------------------------
 // CTRF — malformed reports are never counted as evidence.
 // ---------------------------------------------------------------------------

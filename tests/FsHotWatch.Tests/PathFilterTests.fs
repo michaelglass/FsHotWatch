@@ -84,6 +84,32 @@ let ``isExcludedPath excludes obj and bin alongside patterns they do not match``
     test <@ isExcludedPath "/repo" [ "vendor/" ] "/repo/src/obj/Debug/net10.0/Info.fs" @>
     test <@ isExcludedPath "/repo" [ "vendor/" ] "/repo/src/bin/Release/net10.0/Thing.fs" @>
 
+// --- isExcludedDirectory: a directory asked without a trailing `/` ---
+
+[<Fact>]
+let ``isExcludedDirectory matches the directory a dir-slash pattern names`` () =
+    test <@ isExcludedDirectory "/repo" [ "src/vendor/" ] "/repo/src/vendor" @>
+    test <@ isExcludedDirectory "/repo" [ "vendor/" ] "/repo/src/vendor/inner" @>
+    // The file form misses it: the bare path reads as a file.
+    test <@ not (isExcludedPath "/repo" [ "src/vendor/" ] "/repo/src/vendor") @>
+
+[<Fact>]
+let ``isExcludedDirectory leaves an unexcluded directory alone`` () =
+    test <@ not (isExcludedDirectory "/repo" [ "vendor/" ] "/repo/src/other") @>
+    test <@ not (isExcludedDirectory "/repo" [ "/"; "!" ] "/repo/src/other") @>
+
+[<Fact>]
+let ``isExcludedDirectory reads dir-star as the contents, not the directory`` () =
+    // As git does: `vendor/*` ignores what is inside `vendor`, never `vendor` itself.
+    test <@ not (isExcludedDirectory "/repo" [ "vendor/*" ] "/repo/vendor") @>
+    test <@ isExcludedDirectory "/repo" [ "vendor/*" ] "/repo/vendor/inner" @>
+
+[<Fact>]
+let ``isExcludedDirectory honours a negated directory`` () =
+    let isExcluded = isExcludedDirectory "/repo" [ "vendor/*"; "!vendor/keep/" ]
+    test <@ isExcluded "/repo/vendor/drop" @>
+    test <@ not (isExcluded "/repo/vendor/keep") @>
+
 // --- isExcludedPath: gitignore patterns must be matched against repo-relative paths ---
 // Regression: matching against absolute paths made a pattern like `.workspaces/`
 // hit every absolute path containing that segment, even when the repo root was

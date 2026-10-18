@@ -109,6 +109,7 @@ type Walked =
 /// and the specific statement wins over the general one.
 let files (repoRoot: string) (excludePatterns: string list) : Walked =
     let isExcluded = PathFilter.isExcludedPath repoRoot excludePatterns
+    let isExcludedDir = PathFilter.isExcludedDirectory repoRoot excludePatterns
 
     let relativeTo (abs: string) =
         Path.GetRelativePath(repoRoot, abs).Replace('\\', '/')
@@ -152,7 +153,7 @@ let files (repoRoot: string) (excludePatterns: string list) : Walked =
       Skipped =
         walked
         |> List.collect (fun w -> w.Skipped |> List.map (fun s -> s.Path))
-        |> List.filter (isExcluded >> not)
+        |> List.filter (isExcludedDir >> not)
         |> List.map relativeTo
         |> List.sortWith (fun a b -> String.CompareOrdinal(a, b)) }
 
