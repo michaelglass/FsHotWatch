@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.31 - 2026-10-18
+
 - fix!: a lint run that threw, or examined nothing, now reports Failed and names the
   exception. Before, FSharpLint reported its internal failures only as
   `ProjectProgress.Failed` and returned no warnings, and the plugin reported 0 issues.
