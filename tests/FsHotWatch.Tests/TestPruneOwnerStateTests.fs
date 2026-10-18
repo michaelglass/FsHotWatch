@@ -221,7 +221,13 @@ let private pendingDebtFixture () =
             Symbols = Set.singleton symbol
             CoveringProjectsBySymbol = Map.ofList [ symbol, Set.singleton "ProjA" ] }
 
-    root, symbol, make, handler, ctx, prior, launch
+    {| Root = root
+       Symbol = symbol
+       Make = make
+       Handler = handler
+       Ctx = ctx
+       Prior = prior
+       Launch = launch |}
 
 let private durableQueueOwes root symbol =
     match PendingVerification.load root with
@@ -232,27 +238,30 @@ let private durableQueueOwes root symbol =
 [<InlineData("cache")>]
 [<InlineData("disk")>]
 let ``a failed completion fold cannot discharge committed pending debt`` (observer: string) =
-    let root, symbol, make, handler, _, prior, launch = pendingDebtFixture ()
+    let fx = pendingDebtFixture ()
     let refusal = InvalidOperationException("fixture refuses the completion")
 
     Assert.Throws<InvalidOperationException>(fun () ->
-        update (refusingCtx refusal) handler prior (finished [ "ProjA", passing ] launch)
+        update (refusingCtx refusal) fx.Handler fx.Prior (finished [ "ProjA", passing ] fx.Launch)
         |> ignore)
     |> ignore
 
     if observer = "cache" then
-        Assert.True((buildKey handler prior).IsNone, "the committed owner still owes the symbol")
+        Assert.True((buildKey fx.Handler fx.Prior).IsNone, "the committed owner still owes the symbol")
     else
-        let restarted = make ()
-        Assert.True(durableQueueOwes root symbol, "the durable queue must still name the symbol")
+        let restarted = fx.Make()
+        Assert.True(durableQueueOwes fx.Root fx.Symbol, "the durable queue must still name the symbol")
         Assert.True((buildKey restarted restarted.Init).IsNone, "a restart must still owe the symbol")
 
 [<Fact(Timeout = 15000)>]
 let ``a successful completion discharges only its returned pending debt snapshot`` () =
-    let _, _, _, handler, ctx, prior, launch = pendingDebtFixture ()
-    let completed = update ctx handler prior (finished [ "ProjA", passing ] launch)
-    Assert.True((buildKey handler completed).IsSome, "positive control: the completed owner paid its debt")
-    Assert.True((buildKey handler prior).IsNone, "a retained snapshot must not learn a later discharge")
+    let fx = pendingDebtFixture ()
+
+    let completed =
+        update fx.Ctx fx.Handler fx.Prior (finished [ "ProjA", passing ] fx.Launch)
+
+    Assert.True((buildKey fx.Handler completed).IsSome, "positive control: the completed owner paid its debt")
+    Assert.True((buildKey fx.Handler fx.Prior).IsNone, "a retained snapshot must not learn a later discharge")
 
 [<Theory(Timeout = 15000)>]
 [<InlineData(true)>]
@@ -342,28 +351,35 @@ let ``a confirm launch that could not start keeps the full-suite scope`` (invali
 
 [<Fact(Timeout = 15000)>]
 let ``pending debt persistence follows the successful proposal and precedes acknowledgement`` () =
-    let root, symbol, make, handler, ctx, prior, launch = pendingDebtFixture ()
-    let candidate = update ctx handler prior (finished [ "ProjA", passing ] launch)
-    Assert.True(durableQueueOwes root symbol, "an unpublished proposal must not discharge durable debt")
+    let fx = pendingDebtFixture ()
 
-    let prepared = handler.PrepareCommit.Value prior candidate |> Async.RunSynchronously
-    Assert.False(durableQueueOwes root symbol, "a successful preparation writes the candidate's queue")
-    Assert.True((make ()).Init.Debt.RecoveryOutstanding, "before publication a restart cannot trust the sidecars")
+    let candidate =
+        update fx.Ctx fx.Handler fx.Prior (finished [ "ProjA", passing ] fx.Launch)
+
+    Assert.True(durableQueueOwes fx.Root fx.Symbol, "an unpublished proposal must not discharge durable debt")
+
+    let prepared =
+        fx.Handler.PrepareCommit.Value fx.Prior candidate |> Async.RunSynchronously
+
+    Assert.False(durableQueueOwes fx.Root fx.Symbol, "a successful preparation writes the candidate's queue")
+    Assert.True((fx.Make()).Init.Debt.RecoveryOutstanding, "before publication a restart cannot trust the sidecars")
 
     prepared.Finalize |> Async.RunSynchronously
-    let published = make ()
+    let published = fx.Make()
     Assert.False(published.Init.Debt.RecoveryOutstanding)
     Assert.Empty(published.Init.Debt.PendingQueue)
-    Assert.Contains(symbol, prior.Debt.PendingQueue)
+    Assert.Contains(fx.Symbol, fx.Prior.Debt.PendingQueue)
 
 [<Fact(Timeout = 15000)>]
 let ``failed durable preparation retains restart debt after a partial sidecar write`` () =
-    let root, symbol, make, handler, ctx, prior, launch = pendingDebtFixture ()
-    let candidate = update ctx handler prior (finished [ "ProjA", passing ] launch)
+    let fx = pendingDebtFixture ()
+
+    let candidate =
+        update fx.Ctx fx.Handler fx.Prior (finished [ "ProjA", passing ] fx.Launch)
 
     // The queue is written before the baseline. Refusing the baseline write models a
     // preparation that failed after part of it reached disk.
-    let baselinePath = FullSuiteBaseline.sidecarPath root
+    let baselinePath = FullSuiteBaseline.sidecarPath fx.Root
 
     if File.Exists baselinePath then
         File.Delete baselinePath
@@ -371,41 +387,43 @@ let ``failed durable preparation retains restart debt after a partial sidecar wr
     Directory.CreateDirectory baselinePath |> ignore
 
     Assert.ThrowsAny<Exception>(fun () ->
-        handler.PrepareCommit.Value prior candidate |> Async.RunSynchronously |> ignore)
+        fx.Handler.PrepareCommit.Value fx.Prior candidate
+        |> Async.RunSynchronously
+        |> ignore)
     |> ignore
 
-    Assert.False(durableQueueOwes root symbol, "positive control: the queue write happened")
-    Assert.Contains(symbol, prior.Debt.PendingQueue)
-    let restarted = make ()
+    Assert.False(durableQueueOwes fx.Root fx.Symbol, "positive control: the queue write happened")
+    Assert.Contains(fx.Symbol, fx.Prior.Debt.PendingQueue)
+    let restarted = fx.Make()
     Assert.True(restarted.Init.Debt.RecoveryOutstanding)
     Assert.True((buildKey restarted restarted.Init).IsNone)
 
 [<Fact(Timeout = 15000)>]
 let ``a completed launch cannot discharge a newer revision of the same symbol`` () =
-    let _, symbol, _, handler, ctx, prior, launch = pendingDebtFixture ()
+    let fx = pendingDebtFixture ()
 
     let changedAgain =
-        { prior with
+        { fx.Prior with
             Debt =
-                { prior.Debt with
+                { fx.Prior.Debt with
                     Revision = 1L
-                    SymbolRevisions = Map.ofList [ symbol, 1L ] } }
+                    SymbolRevisions = Map.ofList [ fx.Symbol, 1L ] } }
 
     let completed =
-        update ctx handler changedAgain (finished [ "ProjA", passing ] launch)
+        update fx.Ctx fx.Handler changedAgain (finished [ "ProjA", passing ] fx.Launch)
 
-    Assert.Contains(symbol, completed.Debt.PendingQueue)
-    Assert.Equal(1L, completed.Debt.SymbolRevisions[symbol])
-    Assert.True((buildKey handler completed).IsNone)
+    Assert.Contains(fx.Symbol, completed.Debt.PendingQueue)
+    Assert.Equal(1L, completed.Debt.SymbolRevisions[fx.Symbol])
+    Assert.True((buildKey fx.Handler completed).IsNone)
 
     let currentLaunch =
-        { launch with
+        { fx.Launch with
             SymbolRevisions = changedAgain.Debt.SymbolRevisions }
 
     let verified =
-        update ctx handler changedAgain (finished [ "ProjA", passing ] currentLaunch)
+        update fx.Ctx fx.Handler changedAgain (finished [ "ProjA", passing ] currentLaunch)
 
-    Assert.DoesNotContain(symbol, verified.Debt.PendingQueue)
+    Assert.DoesNotContain(fx.Symbol, verified.Debt.PendingQueue)
 
 /// A command context whose intents are recorded and acknowledged by `receipt`, as the
 /// owner acknowledges once the intent's fold is committed.
