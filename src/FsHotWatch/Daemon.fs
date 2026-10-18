@@ -796,6 +796,12 @@ let private evaluateInProcess (load: unit -> 'a) : 'a =
         finally
             Directory.SetCurrentDirectory found)
 
+/// Run `action` while no in-process evaluation runs: one in flight finishes first, and
+/// none starts until `action` returns. An evaluation whose project directory is deleted
+/// under it never returns, and leaves the process standing in a directory that no longer
+/// exists, so whatever deletes a tree a daemon may still be evaluating in does it here.
+let internal whileNoEvaluationRuns (action: unit -> 'a) : 'a = lock inProcessEvaluation action
+
 /// Discover .fsproj files and register them with the graph and pipeline.
 /// Uses Ionide.ProjInfo for MSBuild design-time evaluation to get real
 /// assembly references, NuGet packages, and compiler flags.

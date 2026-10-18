@@ -3,8 +3,10 @@ module FsHotWatch.Tests.WorkingDirectoryDeletionTests
 open System
 open System.Diagnostics
 open System.IO
+open System.Threading
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.Tests.TestHelpers
 
 // The real deletion of a process's working directory, in a process of its own. The unit
 // suite drives the same code over a stand-in `getcwd` (EventTests), because a test that
@@ -79,3 +81,45 @@ let ``a process whose working directory is deleted names it for a relative path 
         test <@ field "ROOTED" = Path.Combine(Path.GetPathRoot stood, "repo", "src", "Lib.fs") @>
     finally
         Directory.Delete(scratch, true)
+
+// A daemon's MSBuild evaluation stands the process in the project's directory. Deleting
+// that directory under it leaves the evaluation unable to return, and the process stands
+// in a directory that no longer exists, so every relative path and every `Process.Start`
+// of every test beside it fails. A test's scratch tree is torn down while its daemon may
+// still be re-evaluating a project change, so the teardown waits the evaluation out.
+[<Fact(Timeout = 180000)>]
+let ``deleting a scratch tree a daemon is evaluating in waits the evaluation out`` () =
+    let root = Path.Combine(Path.GetTempPath(), $"fshw-eval-delete-{Guid.NewGuid():N}")
+    let projectDir = Path.Combine(root, "src", "MyProj")
+    Directory.CreateDirectory(Path.Combine(projectDir, "obj")) |> ignore
+
+    File.WriteAllText(
+        Path.Combine(projectDir, "MyProj.fsproj"),
+        "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\n"
+    )
+
+    // The unreadable package graph a daemon test's probe writes leave behind.
+    File.WriteAllText(Path.Combine(projectDir, "obj", "project.assets.json"), "{\"version\":3,\"probe\":1}")
+
+    let standingInProject () =
+        try
+            let here = Directory.GetCurrentDirectory()
+            here.Contains(Path.GetFileName root) && Path.GetFileName here = "MyProj"
+        with :? FileNotFoundException ->
+            false
+
+    withProcessWorkingDirectory None (fun () ->
+        use daemon =
+            FsHotWatch.Daemon.Daemon.createWith
+                Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
+                root
+                FsHotWatch.Daemon.Daemon.DaemonOptions.defaults
+
+        let discovery =
+            Tasks.Task.Run(fun () -> daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously |> ignore)
+
+        test <@ waitUntilTrue standingInProject 60000 @>
+        deleteTempDir root
+        test <@ discovery.Wait(TimeSpan.FromSeconds 60.0) @>
+        test <@ processWorkingDirectoryExists () @>
+        test <@ not (Directory.Exists root) @>)
