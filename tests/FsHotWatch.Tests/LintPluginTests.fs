@@ -884,3 +884,101 @@ let ``a config every key of which FSharpLint binds lints normally`` () =
     | other -> Assert.Fail($"Expected Completed, got: %A{other}")
 
     test <@ runs = 1 @>
+
+// ---------------------------------------------------------------------------
+// fsharplint.json ignoreFiles
+// ---------------------------------------------------------------------------
+
+/// A config that flags every line over 20 characters, ignoring the files named.
+let private ignoringConfig (ignored: string list) =
+    let globs = ignored |> List.map (sprintf "\"%s\"") |> String.concat ", "
+
+    $"""{{ "ignoreFiles": [ %s{globs} ], "maxCharactersOnLine": {{ "enabled": true, "config": {{ "maxCharactersOnLine": 20 }} }} }}"""
+
+let private longSource = "module Long\n\nlet aVeryLongIdentifierName = 1\n"
+
+// FSharpLint applies ignoreFiles only when it lints a whole project itself; the plugin
+// lints one parsed file at a time, which never consults it.
+[<Fact(Timeout = 30000)>]
+let ``a file matched by ignoreFiles is not linted, while its unignored sibling is`` () =
+    withTempDir "lint-ignore-files" (fun dir ->
+        let configPath = System.IO.Path.Combine(dir, "fsharplint.json")
+        System.IO.File.WriteAllText(configPath, ignoringConfig [ "Ignored.fs" ])
+
+        let ignoredStatus, ignoredEntries =
+            lintThroughPlugin dir (Some configPath) "Ignored.fs" longSource
+
+        let keptStatus, keptEntries =
+            lintThroughPlugin dir (Some configPath) "Kept.fs" longSource
+
+        match ignoredStatus, keptStatus with
+        | Some(Completed _), Some(Completed _) -> ()
+        | other -> Assert.Fail($"Expected both Completed, got: %A{other}")
+
+        test <@ ignoredEntries |> List.isEmpty @>
+        // Positive control: the same violation in a file the config does not ignore.
+        test <@ keptEntries |> List.isEmpty |> not @>)
+
+/// Create the plugin against `configPath`, THEN rewrite the config to `edited`, then lint
+/// `fileName`: the lint must follow the file as it is now, not as the plugin first read it.
+let private lintAfterConfigEdit (dir: string) (edited: string) (fileName: string) =
+    let configPath = System.IO.Path.Combine(dir, "fsharplint.json")
+    System.IO.File.WriteAllText(configPath, ignoringConfig [])
+    let file = System.IO.Path.Combine(dir, fileName)
+
+    let parsed =
+        sharedChecker.Value.ParseFile(
+            file,
+            SourceText.ofString longSource,
+            { FSharp.Compiler.CodeAnalysis.FSharpParsingOptions.Default with
+                SourceFiles = [| file |] }
+        )
+        |> Async.RunSynchronously
+
+    let host = createModelHost (Unchecked.defaultof<_>) dir
+    host.RegisterHandler(create None (Some configPath) None None)
+    System.IO.File.WriteAllText(configPath, edited)
+
+    host.EmitFileChecked
+        { fakeFileCheckResult file with
+            Source = longSource
+            ParseResults = parsed }
+
+    waitForTerminalStatus host "lint" 20000
+
+    host.GetErrorsByPlugin "lint" |> Map.toList |> List.collect snd
+
+[<Fact(Timeout = 30000)>]
+let ``an ignoreFiles entry added after the plugin started is honoured`` () =
+    withTempDir "lint-ignore-edit" (fun dir ->
+        test
+            <@
+                lintAfterConfigEdit dir (ignoringConfig [ "Edited.fs" ]) "Edited.fs"
+                |> List.isEmpty
+            @>
+
+        test
+            <@
+                lintAfterConfigEdit dir (ignoringConfig [ "Edited.fs" ]) "Other.fs"
+                |> List.isEmpty
+                |> not
+            @>)
+
+// The result cache must not serve a verdict reached under a config the file no longer holds.
+[<Fact(Timeout = 15000)>]
+let ``the cache key follows an edit to the config after the plugin started`` () =
+    withTempDir "lint-config-key-edit" (fun dir ->
+        let configPath = System.IO.Path.Combine(dir, "fsharplint.json")
+        System.IO.File.WriteAllText(configPath, ignoringConfig [])
+        let handler = create None (Some configPath) None None
+        let keyOf = (Option.get handler.CacheKey) handler.Init
+        let event = FileChecked(fakeFileCheckResult (System.IO.Path.Combine(dir, "Foo.fs")))
+        let before = keyOf event
+        System.IO.File.WriteAllText(configPath, ignoringConfig [ "Foo.fs" ])
+        let after = keyOf event
+        System.IO.File.Delete configPath
+        let deleted = keyOf event
+
+        test <@ before.IsSome @>
+        test <@ before <> after @>
+        test <@ deleted <> after && deleted <> before @>)

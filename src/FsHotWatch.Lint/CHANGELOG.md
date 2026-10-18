@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: files matched by `ignoreFiles` in fsharplint.json are no longer linted.
+  FSharpLint applies `ignoreFiles` only when it lints a whole project itself; the
+  plugin lints one parsed file at a time, which never checks it, so every ignored file
+  (a generated one, typically) was reported anyway. The plugin now asks FSharpLint's
+  own matcher (`IgnoreFiles.shouldFileBeIgnored`) before linting a file.
+- fix: an edit to fsharplint.json is now seen by a running daemon. Its hash (part of
+  every lint cache key) and its shape check were computed once at start-up, so after
+  an edit the cache kept serving results reached under the old settings. The plugin
+  now re-reads the file and recomputes both, and its `ignoreFiles`, when its text changes.
+
 ## 0.7.0-alpha.33 - 2026-10-18
 
 - style(lint)!: enable literalNames
