@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.85 - 2026-10-18
+
 - feat: `TestConfig.AlwaysClasses` names test classes every impact-filtered launch includes,
   for tests that read the source tree as data and so have no symbol edge to what they police.
   They are added to every filtered selection and to the would-have-run projection; an empty

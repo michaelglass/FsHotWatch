@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.115 - 2026-10-18
+
 - feat: `tests.projects[].alwaysClasses` lists test classes every impact-filtered `check`
   runs, whatever changed. It is meant for tests that read the source tree as data, such as a
   guard that scans every source file, which impact selection can never reach. A project already
