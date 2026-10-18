@@ -482,7 +482,7 @@ let ``with the kill switch off every project launches exactly as without a store
         test <@ verdicts completedOff = verdicts completedFirst @>
         test <@ List.isEmpty (reusedIn completedOff) @>
         test <@ completedOff.Verification = completedFirst.Verification @>
-        test <@ evidenceWiringWhen false (rootNamed "c") |> Option.isNone @>)
+        test <@ evidenceWiringWhen false [] (rootNamed "c") |> Option.isNone @>)
 
 [<Fact(Timeout = 60000)>]
 let ``a failing run writes no evidence`` () =

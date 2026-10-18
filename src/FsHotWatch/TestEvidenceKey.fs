@@ -21,7 +21,7 @@ open System.Text.Json
 
 /// Bumped whenever WHAT is hashed or HOW changes, so an old entry can never match.
 [<Literal>]
-let Version = "test-evidence-v2"
+let Version = "test-evidence-v3"
 
 /// How far a test project's runtime reads are assumed to reach.
 [<RequireQualifiedAccess>]
@@ -388,6 +388,12 @@ type Snapshot =
         Files: (string * string) list
         /// Repo-relative directories holding a project file in the verdict tree.
         ProjectDirs: string list
+        /// The discovery roots the verdict walk covered, repo-relative (`src`, `tests`).
+        /// A closure directory under one of them is read off `Files`, never walked again.
+        Roots: string list
+        /// The config's `exclude`, as the verdict walk applied it. A closure directory
+        /// outside every root is walked with the same patterns.
+        ExcludePatterns: string list
         /// Bytes read to hash `Files`.
         BytesHashed: int64
     }
@@ -423,6 +429,11 @@ let EvidenceKnownInputs = [ ".config/dotnet-tools.json" ]
 
 /// Walk and hash the verdict tree of `repoRoot` (the same set `TreeHash` addresses),
 /// plus `EvidenceKnownInputs`.
+///
+/// `excludePatterns` must be the daemon's `exclude`, the same patterns the verdict tree
+/// hash is computed with. A file that hash leaves out is in no key: a generated cache
+/// that embeds the checkout's path (Fable's `project_cracked.json`) would otherwise give
+/// every checkout of one commit its own key, and no green would ever be reused.
 let snapshot (repoRoot: string) (excludePatterns: string list) : Snapshot =
     let root = Path.GetFullPath repoRoot
     let walked = TreeHash.files root excludePatterns
@@ -455,6 +466,8 @@ let snapshot (repoRoot: string) (excludePatterns: string list) : Snapshot =
         |> List.filter isProjectFile
         |> List.map directoryOf
         |> List.distinct
+      Roots = walked.Roots
+      ExcludePatterns = excludePatterns
       BytesHashed = walked.Files |> List.sumBy (snd >> fileSize) }
 
 /// One test project's request against a snapshot.
@@ -546,22 +559,34 @@ let inputsFor (snap: Snapshot) (request: Request) : Result<Inputs * int64, strin
     | _ :: _, _ -> Error $"""closure project outside the repository: %s{String.concat ", " escaping}"""
     | [], (unknown, _) :: _ -> Error $"project options unknown for %s{unknown}"
     | [], [] ->
-        // Every file under a closure project's directory, walked directly rather than read
-        // off the verdict tree: a project outside `src/`+`tests/` is still fully keyed.
+        // Every verdict-tree entry under a closure project's directory, its holes included.
+        // A directory under a discovery root is read off the snapshot, so the closure is
+        // exactly the tree hash's files there: one walk, one exclude, no second owner of
+        // what is left out. A project outside every root (or at the repository root) is
+        // walked directly, so it is still fully keyed, under the same exclude.
         let mutable extraBytes = 0L
+        let isExcluded = PathFilter.isExcludedPath root snap.ExcludePatterns
+
+        let inVerdictWalk (dir: string) =
+            dir <> "." && snap.Roots |> List.exists (fun r -> dir = r || isUnder r dir)
 
         let closureFiles =
             closureDirs
             |> List.collect (fun dir ->
-                let abs = if dir = "." then root else Path.Combine(root, dir)
-                let walk = SafeWalk.walk SafeWalk.SourceExcludedDirs "*" abs
+                if inVerdictWalk dir then
+                    snap.Files |> List.filter (fun (p, _) -> isUnder dir p)
+                else
+                    let abs = if dir = "." then root else Path.Combine(root, dir)
+                    let walk = SafeWalk.walk SafeWalk.SourceExcludedDirs "*" abs
 
-                (walk.Files
-                 |> List.map (fun f ->
-                     extraBytes <- extraBytes + f.Length
-                     rel f.FullName, ContentHash.ofFile f.FullName))
-                @ (walk.Skipped
-                   |> List.map (fun s -> rel s.Path + "/", ContentHash.UnhashableContent)))
+                    (walk.Files
+                     |> List.filter (fun f -> not (isExcluded f.FullName))
+                     |> List.map (fun f ->
+                         extraBytes <- extraBytes + f.Length
+                         rel f.FullName, ContentHash.ofFile f.FullName))
+                    @ (walk.Skipped
+                       |> List.filter (fun s -> not (isExcluded s.Path))
+                       |> List.map (fun s -> rel s.Path + "/", ContentHash.UnhashableContent)))
             |> List.distinctBy fst
 
         // Items a closure project names outside the closure's directories (a linked

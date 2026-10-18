@@ -2520,6 +2520,7 @@ let registerPluginsIn
 
         let handler =
             createWithTracesIn
+                config.Exclude
                 testMode
                 t.MaxParallelProjects
                 t.Traces

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: test evidence is reused across checkouts of one commit when an `exclude`d file under
+  a project directory differs between them. The daemon now passes `.fshw.json`'s
+  `exclude` to the evidence key, so the key leaves out what the verdict tree hash leaves
+  out. A checkout's first check after another checkout earned green for the same tree ran
+  the whole suite again.
+
 - fix: `fshw check` fails its format stage, naming the file, when the pinned Fantomas
   cannot parse a file the scan hands it, and `fshw format` names such a file instead of
   counting it as formatted. A whole-tree scan used to report `format: rewrote 0 of N`.

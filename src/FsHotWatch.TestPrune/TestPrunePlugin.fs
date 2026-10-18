@@ -12299,9 +12299,13 @@ let internal createWithEvidenceAndQueries
 
 /// `createWithQueries` over the plugin's own index.
 /// The test-evidence wiring a daemon gets for `repoRoot`: the repository's box-wide store,
-/// its projects' `evidence` blocks and this process's toolchain. `None` when
-/// `FSHW_TEST_EVIDENCE=0`, or when the config cannot be read (loudly).
-let internal evidenceWiringWhen (enabled: bool) (repoRoot: string) : TestEvidenceRun.Wiring option =
+/// its projects' `evidence` blocks, this process's toolchain and the daemon's `exclude`.
+/// `None` when `FSHW_TEST_EVIDENCE=0`, or when the config cannot be read (loudly).
+let internal evidenceWiringWhen
+    (enabled: bool)
+    (excludePatterns: string list)
+    (repoRoot: string)
+    : TestEvidenceRun.Wiring option =
     if not enabled then
         Logging.info "test-prune" $"test evidence: off (%s{TestEvidenceStore.KillSwitchEnvVar}=0)"
         None
@@ -12323,14 +12327,14 @@ let internal evidenceWiringWhen (enabled: bool) (repoRoot: string) : TestEvidenc
                       Toolchain = lazy (TestEvidenceKey.toolchainOf repoRoot)
                       Loaded = loaded
                       ProducerHash = ContentHash.ofText CheckCache.toolchainIdentity
-                      ExcludePatterns = [] }
+                      ExcludePatterns = excludePatterns }
             with ex ->
                 Logging.warn "test-prune" $"test evidence: off — the store could not be opened: %s{ex.Message}"
                 None
 
 /// The test-evidence wiring a daemon gets for `repoRoot`, unless `FSHW_TEST_EVIDENCE=0`.
-let internal defaultEvidenceWiring (repoRoot: string) =
-    evidenceWiringWhen (TestEvidenceStore.enabled ()) repoRoot
+let internal defaultEvidenceWiring (excludePatterns: string list) (repoRoot: string) =
+    evidenceWiringWhen (TestEvidenceStore.enabled ()) excludePatterns repoRoot
 
 /// `createWithEvidenceAndQueries` with the daemon's default test-evidence wiring.
 let internal createWithQueries
@@ -12343,7 +12347,7 @@ let internal createWithQueries
     (repoRoot: string)
     =
     createWithEvidenceAndQueries
-        (defaultEvidenceWiring repoRoot)
+        (defaultEvidenceWiring [] repoRoot)
         queriesOf
         launchDeadline
         maxParallelProjects
@@ -12400,7 +12404,12 @@ let internal createWithLaunchDeadline
 ///
 /// `initialMode` is the mode the session starts in (`TestMode.initial` for a daemon). See
 /// `createWithScope` for `resolveExcludedProjects` and the launch policy.
+///
+/// `excludePatterns` is the daemon's `exclude`, the patterns its verdict tree hash is
+/// computed with. The test-evidence key leaves out exactly those files, so two checkouts
+/// whose tree hashes agree also agree on every key.
 let createWithTracesIn
+    (excludePatterns: string list)
     (initialMode: TestMode)
     // `tests.maxParallelProjects`: at most this many test groups run at once, longest
     // expected wall first; `None` launches every group at once.
@@ -12426,7 +12435,9 @@ let createWithTracesIn
         |> Option.ofObj
         |> resolveLaunchDeadline
 
-    createWithLaunchDeadline
+    createWithEvidenceAndQueries
+        (defaultEvidenceWiring excludePatterns repoRoot)
+        ImpactQueries.ofDatabase
         launchDeadline
         maxParallelProjects
         resolveExcludedProjects
@@ -12463,6 +12474,7 @@ let createWithTraces
     (dependsOn: string list)
     =
     createWithTracesIn
+        []
         TestMode.initial
         None
         traces

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a test-evidence key leaves out exactly the files the verdict tree hash leaves out.
+  A closure project's directory under a discovery root is read off the snapshot rather than
+  walked a second time, and one outside every root is walked under the same `exclude`, so
+  closure, shared and other-project inputs together are the tree hash's own entries. An
+  excluded generated file under a project directory (Fable's `project_cracked.json`,
+  which embeds the checkout's absolute path) used to give every checkout of one commit its
+  own key, so no green was ever reused across checkouts. `TestEvidenceKey.Snapshot` gains
+  `Roots` and `ExcludePatterns`, and `Version` is `test-evidence-v3`, so entries
+  keyed the old way are never matched.
+
 - **fix!: a preprocessor pass that could not process some files is a Failed status.**
   `PreprocessResult` gains `Failures: (string * string) list` (file, reason), so code
   that builds one must supply it (`Failures = []` for a pass that processed everything).

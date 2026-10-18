@@ -70,6 +70,7 @@ let private onRequestSession (tmpDir: string) (dbPath: string) (configs: TestCon
 
     let handler =
         createWithTracesIn
+            []
             (TestMode.startingWith false)
             None
             None
