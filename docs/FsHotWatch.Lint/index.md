@@ -35,6 +35,14 @@ In `.fshw.json`:
 Set `"lint": false` to disable. The plugin automatically loads
 `fsharplint.json` from your repo root if it exists.
 
+Configure each rule at the root of `fsharplint.json`, as
+`"<rule>": { "enabled": true, "config": { ... } }` with FSharpLint's field names.
+FSharpLint's loader silently drops a key it has no field for, and every rule under it
+with it. A group wrapped in `enabled`/`config`
+(`"typography": { "enabled": true, "config": { ... } }`) is the common case. So the
+plugin fails the lint, naming each such key, rather than reporting files clean. Keys
+starting with `_` (such as `"_comment"`) are annotations and are allowed.
+
 ## CLI
 
 ```bash

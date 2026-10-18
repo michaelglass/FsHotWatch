@@ -24,6 +24,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="LintConfigShape.fs" />
     <Compile Include="LintPlugin.fs" />
   </ItemGroup>
 
