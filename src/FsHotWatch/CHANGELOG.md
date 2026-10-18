@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- style: `PluginHost.create` is a function in a `PluginHost` module instead of a static member of the type. F# call sites read the same; code that reached the static member by reflection or from C# must use the module function.
+
 ## 0.10.0-alpha.86 - 2026-10-18
 
 - **fix!: a run a CLI invocation asked for through a command is no longer cancelled as
