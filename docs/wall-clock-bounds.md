@@ -68,6 +68,8 @@ Every upper wall-clock bound on a measured duration, as of this commit.
 | 17 | `AdmissionBoundTests` (all three facts, via `givesUpWithinBound`) | `elapsed < AdmissionBound (5 s) + 2 s` | CANNOT-FLAKE | The wait is `WaitOne` on the test's own thread, not a pool callback. Overshooting by 2 s needs that one runnable thread to go unscheduled for 2 s. The defect it guards against waits for the starved pool to inject a thread for every held item ahead of its timer. The class is in the serialized `LogGlobal` collection, so the pool starvation it causes reaches no other test. |
 | 18 | `ProgramTests` "…stop…" facts at the three `elapsed () < …` sites | `< 1 s`, `< quiet + exit + 1 s` | CANNOT-FLAKE | `fakeStopOps` is a virtual clock: `SleepMs` advances it and nothing reads real time. |
 | 19 | `DaemonPhasesTests` "`StartedAt + Elapsed <= now`" | ordering | CANNOT-FLAKE | `now` is read after the record is closed. Load moves `now` later, never earlier. |
+| 20 | `WaitWedgeTests` "the fold after a declaration longer than the stall threshold is not instantly wedged" | a 2 s stall threshold on real time, with 2.5 s and 500 ms sleeps on the test thread | CAN-FLAKE (WEDGED in a loaded full run 10-18) | **Fixed.** The wedge detector reads an injected clock (`Daemon.waitForAllTerminalCoreOn`), and the test moves it by hand (`ManualClock`). The test waits for the detector to sample the clock, not for time to pass. It ends by advancing one threshold past the declaration and asserting WEDGED names the plugin, so a detector that ignored the clock is red. |
+| 21 | `TestPruneConfirmPassThroughTests` "a confirm's run is observably the run check makes to earn its baseline" | no bound: the snapshot of an `OnStatusChanged` recorder raced the host's trigger agent, which delivers a status after publishing it | CAN-FLAKE (one side's `Completed` missing in a loaded full run 10-18) | **Fixed.** The snapshot waits (`HangWaitMs`) until the recorder's last status is the one the host reports. |
 
 ## Hang caps that were the assertion
 
@@ -93,6 +95,8 @@ own named waits decided.
 | `BuildPluginTests` "build-status command returns passed true after successful build" and "…returns failed after failed build" | a 5 s terminal-status wait over one `echo` or `false` build and a 30 s quiescence wait, under a 15 s cap | CAN-FLAKE (the 5 s wait expired in a loaded confirm 10-16) | both waits `HangWaitMs`, cap `SyncHangBackstopMs` |
 | `PluginFrameworkOwnershipTests` "external executor failure during finalization settles the original receipt only once" | the receipt's own `Wait(5 s)` and a 5 s wait on finalization, under a 15 s cap, over in-process work | CAN-FLAKE (cancelled at 15 s in a loaded confirm 10-16) | the receipt and finalization are awaited with no bound, as in "durable commit failures…"; cap `SyncHangBackstopMs` |
 | `TestPrunePendingVerificationTests` "incident: a beforeRun throw aborts the run…" | a 15 s terminal wait and a 10 s quiescence wait under a 20 s cap; beforeRun throws before any child is spawned | CAN-FLAKE (the quiescence wait expired at 10 s in a loaded confirm 10-16) | both waits `HangWaitMs`, cap `SyncHangBackstopMs` |
+| `TestPruneConfirmPassThroughTests`, the seven facts over `runScenario` and the parity fact | 30, 60 and 90 s caps over real FCS checks, with 10 and 20 s waits after them. The held run had `TimeoutSec = 15` | CAN-FLAKE (same shape as the boot-cohort scenario) | caps `RealCheckTestCapMs` (parity, which runs two scenarios: `2 * RealCheckTestCapMs`), waits after real checks `RealCheckWaitMs`, and the other waits `HangWaitMs`. The held run's bound is `RealCheckTestCapMs / 1000`, and its gate polls about 150 s |
+| `TestPruneRatchetTransactionTests` (both cases), `FileErrorReporterTests` (8 facts), `IpcParsingTests` (57), `IpcTests` (62) | 10–30 s caps over in-process work: SQLite, temp files, reply parsing, an in-process IPC server. Each `IpcClient` call has its own 5 s connect bound, and the cache-clear fact makes four calls under 15 s | CAN-FLAKE (cancelled at 10, 15, 10 and 23 s in loaded full runs 10-18) | `SyncHangBackstopMs`. The asserted positive waits in `IpcTests` (5–10 s) are `HangWaitMs` |
 
 ## Product bounds that decided the claim
 
@@ -136,6 +140,9 @@ One line per kind. Each meets rule 2 as written above.
   failure), a count, a log line, or a handshake the test controls.
 - If a test exists to show that something did not wait, give the wait a timeout far past
   the xUnit cap, so the defect shows up as a reported hang rather than a slow pass.
+- A stall or idle threshold that a test sets short on purpose runs on an injected clock
+  the test moves. On real time, a descheduled test thread is indistinguishable from the
+  silence the threshold measures.
 - Over real tool work, size caps and waits from the product's own bound with the literals
   above, never from how long the tool usually takes.
 - A new upper wall-clock bound needs a row in this file.

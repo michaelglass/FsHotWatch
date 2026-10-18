@@ -69,7 +69,7 @@ let ``daemon probe follows a listening server through shutdown`` () =
                     waitForServer pipeName
                     test <@ IpcClient.isRunning pipeName @>
                     cts.Cancel()
-                    test <@ server.Wait(TimeSpan.FromSeconds 5.0) @>
+                    test <@ server.Wait(HangWaitMs) @>
                     IpcClient.isRunning pipeName
                 finally
                     cts.Cancel())
@@ -78,7 +78,7 @@ let ``daemon probe follows a listening server through shutdown`` () =
     finally
         host.Teardown()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``server shutdown closes a connection that never finishes`` () =
     let pipeName = $"fp-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -97,7 +97,7 @@ let ``server shutdown closes a connection that never finishes`` () =
 
         idle.Connect(5000)
         cts.Cancel()
-        test <@ server.Wait(TimeSpan.FromSeconds 5.0) @>
+        test <@ server.Wait(HangWaitMs) @>
         test <@ not (IpcClient.isRunning pipeName) @>
         // The server end was closed under the client. macOS reports that as end of
         // stream; Linux reports ECONNRESET for a connection the server never read from.
@@ -107,7 +107,7 @@ let ``server shutdown closes a connection that never finishes`` () =
 
         let closed =
             try
-                read.Wait(TimeSpan.FromSeconds 5.0) && read.Result = 0
+                read.Wait(HangWaitMs) && read.Result = 0
             with :? AggregateException as e when (e.InnerException :? System.IO.IOException) ->
                 true
 
@@ -116,7 +116,7 @@ let ``server shutdown closes a connection that never finishes`` () =
         cts.Cancel()
         host.Teardown()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a single connection attempt tells a listening pipe from an absent one`` () =
     let pipeName = $"fp-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -158,7 +158,7 @@ let ``waiting for a refused connection polls until refusal and gives up at its b
             )
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a stopping server gives up waiting on a name another live server still serves`` () =
     let pipeName = $"fp-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -201,7 +201,7 @@ let ``a stopping server gives up waiting on a name another live server still ser
 
         stopping.Cancel()
         // Bounded by the release wait, not held forever by the other server.
-        test <@ first.Wait(TimeSpan.FromSeconds 5.0) @>
+        test <@ first.Wait(HangWaitMs) @>
         test <@ IpcClient.isRunning pipeName @>
     finally
         stopping.Cancel()
@@ -209,7 +209,7 @@ let ``a stopping server gives up waiting on a name another live server still ser
         second.Wait(TimeSpan.FromSeconds 5.0) |> ignore
         host.Teardown()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``server shutdown completes when an acceptor could not create its pipe`` () =
     // Longer than any Unix socket path allows, so every acceptor faults at construction.
     let pipeName = String('p', 300)
@@ -221,13 +221,13 @@ let ``server shutdown completes when an acceptor could not create its pipe`` () 
         // No wait first: every acceptor faults at construction either way, and shutdown
         // must still await them all and complete.
         cts.Cancel()
-        test <@ server.Wait(TimeSpan.FromSeconds 5.0) @>
+        test <@ server.Wait(HangWaitMs) @>
         test <@ server.Status = TaskStatus.RanToCompletion @>
     finally
         cts.Cancel()
         host.Teardown()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``server responds to GetStatus`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -262,7 +262,7 @@ let ``server responds to GetStatus`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``server responds to RunCommand`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -296,7 +296,7 @@ let ``server responds to RunCommand`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``server responds to RunCommandFor, naming the invocation it asks for`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -341,7 +341,7 @@ let ``server responds to RunCommandFor, naming the invocation it asks for`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``GetPluginStatus returns specific plugin's status`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -379,7 +379,7 @@ let ``GetPluginStatus returns specific plugin's status`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``GetPluginStatus returns not found for unknown plugin`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -404,7 +404,7 @@ let ``GetPluginStatus returns not found for unknown plugin`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``RunCommand with plugin that returns a result`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -446,7 +446,7 @@ let ``RunCommand with plugin that returns a result`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``RunCommand returns unknown command for non-existent command`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -472,7 +472,7 @@ let ``RunCommand returns unknown command for non-existent command`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``GetStatus serializes multiple plugins with different statuses`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -576,7 +576,7 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
 
 // --- Wedge-aware status ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``GetStatus splices a WEDGED report when the watchdog has a stuck op`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let clock = ref (DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc))
@@ -604,7 +604,7 @@ let ``GetStatus splices a WEDGED report when the watchdog has a stuck op`` () =
     // Inline recovery action.
     test <@ json.Contains("fshw stop") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``status replies carry the heap valve's report once it has fired, and not before`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let t0 = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
@@ -644,7 +644,7 @@ let ``status replies carry the heap valve's report once it has fired, and not be
     test <@ FsHotWatch.Cli.IpcParsing.heapValveOf (target.GetDiagnostics "") = None @>
 
     clock.Value <- t0.AddMinutes 3.0
-    waitUntil (fun () -> watchdog.HeapValveReport() |> Option.isSome) 5000
+    waitUntil (fun () -> watchdog.HeapValveReport() |> Option.isSome) HangWaitMs
 
     test <@ target.GetStatus().Contains HeapValveStatusKey @>
 
@@ -652,7 +652,7 @@ let ``status replies carry the heap valve's report once it has fired, and not be
     | Some report -> test <@ report.Contains "fired 1 time(s)" @>
     | None -> Assert.Fail "expected the heap valve's report in the diagnostics reply"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``GetStatus omits the wedge entry when no op is stuck`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -671,7 +671,7 @@ let ``GetStatus omits the wedge entry when no op is stuck`` () =
     test <@ not (json.Contains("fshw-wedge")) @>
     test <@ not (json.Contains("WEDGED:")) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ScanStatus prefixes the wedge report when a stuck op is in flight`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let clock = ref (DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc))
@@ -699,7 +699,7 @@ let ``ScanStatus prefixes the wedge report when a stuck op is in flight`` () =
     // The underlying scan line is still present.
     test <@ status.Contains("complete: 10 files") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``status stays responsive over a real pipe while another op is wedged`` () =
     // End-to-end acceptance: a real daemon over a real pipe, ONE RPC op blocked
     // indefinitely (a stuck WaitForComplete), and a concurrent `status` call must
@@ -751,7 +751,7 @@ let ``status stays responsive over a real pipe while another op is wedged`` () =
         // The defining assertion: `status` must return within a bounded time.
         let statusTask = Async.StartAsTask(async { return! IpcClient.getStatus pipeName })
 
-        let completed = statusTask.Wait(TimeSpan.FromSeconds(8.0))
+        let completed = statusTask.Wait(HangWaitMs)
         test <@ completed @>
         // The wedged op is still parked (we didn't accidentally unblock it).
         test <@ not wedged.IsCompleted @>
@@ -766,7 +766,7 @@ let ``status stays responsive over a real pipe while another op is wedged`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.RunCommand returns unknown command for missing command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -779,7 +779,7 @@ let ``DaemonRpcTarget.RunCommand returns unknown command for missing command`` (
 
     test <@ isUnknownCommandReply result @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -816,7 +816,7 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
 
     test <@ result2 = "hello test-arg" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -867,7 +867,7 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
 
     test <@ Map.isEmpty (getParsed "no-such") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``WaitForScan resolves immediately when generation already advanced`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -885,7 +885,7 @@ let ``WaitForScan resolves immediately when generation already advanced`` () =
     let result = target.WaitForScan(3L).Result
     test <@ result.Contains("complete") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``WaitForScan blocks until generation advances`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let tcs = TaskCompletionSource<unit>()
@@ -905,7 +905,7 @@ let ``WaitForScan blocks until generation advances`` () =
     let result = waitTask.Result
     test <@ result.Contains("complete") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``WaitForScan legacy path resolves immediately on hot daemon`` () =
     // Regression: WaitForGeneration(-1, currentGen>0) must not hang. On a hot daemon
     // the scan already completed, so the legacy path returns immediately.
@@ -913,7 +913,7 @@ let ``WaitForScan legacy path resolves immediately on hot daemon`` () =
     let task = signal.WaitForGeneration(-1L, 1L)
     test <@ task.IsCompleted @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``WaitForScan legacy path blocks on cold daemon`` () =
     // Cold daemon = generation 0.
     let signal = FsHotWatch.Daemon.ScanSignal()
@@ -924,7 +924,7 @@ let ``WaitForScan legacy path blocks on cold daemon`` () =
     task.Wait(System.TimeSpan.FromSeconds(5.0)) |> ignore
     test <@ task.IsCompleted @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``WaitForGeneration does not hang when scan completes before waiter is registered`` () =
     // Race: the client reads currentGeneration=0, then before posting WaitFor to the
     // agent the scan completes and SignalGeneration(1) fires. Without latching the
@@ -939,7 +939,7 @@ let ``WaitForGeneration does not hang when scan completes before waiter is regis
     task.Wait(System.TimeSpan.FromSeconds(2.0)) |> ignore
     test <@ task.IsCompleted @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``WaitForComplete resolves when all plugins terminal`` () =
     let tcs = TaskCompletionSource<unit>()
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -961,7 +961,7 @@ let ``WaitForComplete resolves when all plugins terminal`` () =
 
 // --- DaemonRpcTarget unit tests (no IPC pipe) ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.Shutdown calls RequestShutdown and returns message`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable called = false
@@ -975,7 +975,7 @@ let ``DaemonRpcTarget.Shutdown calls RequestShutdown and returns message`` () =
     test <@ result = "shutting down" @>
     test <@ called @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.Scan returns generation and calls RequestScan`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable called = false
@@ -991,7 +991,7 @@ let ``DaemonRpcTarget.Scan returns generation and calls RequestScan`` () =
     test <@ result = "scan started:42" @>
     test <@ called @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.ScanStatus delegates to GetScanStatus`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1002,7 +1002,7 @@ let ``DaemonRpcTarget.ScanStatus delegates to GetScanStatus`` () =
     let target = DaemonRpcTarget(config)
     test <@ target.ScanStatus() = "complete: 70 files checked in 15.5s" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.Invalidate awaits cache invalidation and acknowledges it`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable called = false
@@ -1015,7 +1015,7 @@ let ``DaemonRpcTarget.Invalidate awaits cache invalidation and acknowledges it``
     test <@ target.Invalidate().Result = "invalidated" @>
     test <@ called @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.Invalidate is bounded by the RPC seam`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1028,7 +1028,7 @@ let ``DaemonRpcTarget.Invalidate is bounded by the RPC seam`` () =
     Assert.IsType<TimeoutException>(ex.InnerException) |> ignore
     test <@ ex.InnerException.Message.Contains("Invalidate") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.GetDiagnostics returns all errors when filter is empty`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1048,7 +1048,7 @@ let ``DaemonRpcTarget.GetDiagnostics returns all errors when filter is empty`` (
     test <@ json.Contains("bad code") @>
     test <@ json.Contains("error-plugin") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.GetDiagnostics filters by plugin name`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1082,14 +1082,14 @@ let ``DaemonRpcTarget.GetDiagnostics filters by plugin name`` () =
     test <@ analyzerJson.Contains("analyzer issue") @>
     test <@ not (analyzerJson.Contains("lint issue")) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.GetDiagnostics returns zero count when no errors`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let target = DaemonRpcTarget(defaultRpcConfig host)
     let json = target.GetDiagnostics("")
     test <@ json.Contains("\"count\":0") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``GetDiagnostics drops a late finding for the old side of a rename`` () =
     withTempDir "rename-diagnostics" (fun root ->
         let oldPath = System.IO.Path.Combine(root, "OldName.fs")
@@ -1135,7 +1135,7 @@ let ``GetDiagnostics drops a late finding for the old side of a rename`` () =
         test <@ host.GetErrors() |> Map.containsKey oldPath |> not @>
         test <@ host.GetErrors() |> Map.containsKey newPath @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.GetDiagnostics includes detail field`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1153,7 +1153,7 @@ let ``DaemonRpcTarget.GetDiagnostics includes detail field`` () =
     test <@ json.Contains("\"detail\"") @>
     test <@ json.Contains("println debug: x = 42") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.GetDiagnostics includes detail when filtered by plugin`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1168,7 +1168,7 @@ let ``DaemonRpcTarget.GetDiagnostics includes detail when filtered by plugin`` (
     test <@ json.Contains("\"detail\"") @>
     test <@ json.Contains("full output with debug info") @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.TriggerBuild calls config and returns status`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable buildCalled = false
@@ -1187,7 +1187,7 @@ let ``DaemonRpcTarget.TriggerBuild calls config and returns status`` () =
     test <@ buildCalled @>
     test <@ result.Contains("{") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.FormatAll delegates to config`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1199,7 +1199,7 @@ let ``DaemonRpcTarget.FormatAll delegates to config`` () =
     let result = target.FormatAll().Result
     test <@ result = "formatted 5 files" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.RerunPlugin delegates to config`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable capturedName = ""
@@ -1219,7 +1219,7 @@ let ``DaemonRpcTarget.RerunPlugin delegates to config`` () =
     test <@ result = "{}" @>
     test <@ capturedName = "coverage-ratchet" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.RerunPlugin returns error payload when plugin has no pattern`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1232,7 +1232,7 @@ let ``DaemonRpcTarget.RerunPlugin returns error payload when plugin has no patte
     test <@ result.Contains("error") @>
     test <@ result.Contains("missing") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1284,7 +1284,7 @@ let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
     | StatusView.Failed(msg, _) -> test <@ msg.Contains("2 failed") @>
     | other -> failwithf "expected Failed, got %A" other
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``WaitForComplete times out while plugin owns unfinished work`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1298,7 +1298,7 @@ let ``WaitForComplete times out while plugin owns unfinished work`` () =
         { new IDisposable with
             member _.Dispose() =
                 release.TrySetResult(()) |> ignore
-                waitUntil (fun () -> not (host.AnyPluginBusy())) 5000 }
+                waitUntil (fun () -> not (host.AnyPluginBusy())) HangWaitMs }
 
     let handler =
         { Name = PluginName.create "stuck-plugin"
@@ -1325,7 +1325,7 @@ let ``WaitForComplete times out while plugin owns unfinished work`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    test <@ entered.Task.Wait(TimeSpan.FromSeconds(5.0)) @>
+    test <@ entered.Task.Wait(HangWaitMs) @>
     test <@ host.AnyPluginBusy() @>
 
     let config =
@@ -1341,7 +1341,7 @@ let ``WaitForComplete times out while plugin owns unfinished work`` () =
 
     test <@ ex.Message.Contains("timed out") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``WaitForComplete client observes failure when daemon is shut down mid-wait`` () =
     // Real IPC over a real named pipe: the client blocks in WaitForComplete on a
     // plugin holding an actual unfinished event. We cancel the server CTS; the client
@@ -1361,7 +1361,7 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
         { new IDisposable with
             member _.Dispose() =
                 release.TrySetResult(()) |> ignore
-                waitUntil (fun () -> not (host.AnyPluginBusy())) 5000 }
+                waitUntil (fun () -> not (host.AnyPluginBusy())) HangWaitMs }
 
     let handler =
         { Name = PluginName.create "stuck-plugin"
@@ -1387,7 +1387,7 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    test <@ entered.Task.Wait(TimeSpan.FromSeconds(5.0)) @>
+    test <@ entered.Task.Wait(HangWaitMs) @>
     test <@ host.AnyPluginBusy() @>
 
     use cts = new CancellationTokenSource()
@@ -1420,7 +1420,7 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
             )
 
         // Observe the actual RPC callback entering its owned-work wait.
-        test <@ waitEntered.Task.Wait(TimeSpan.FromSeconds(5.0)) @>
+        test <@ waitEntered.Task.Wait(HangWaitMs) @>
         test <@ not clientTask.IsCompleted @>
 
         // Simulate daemon shutdown.
@@ -1428,7 +1428,7 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
 
         // The contract: the client must observe a failure within a bounded
         // time. 8 seconds is generous — production teardown is sub-second.
-        let completed = clientTask.Wait(TimeSpan.FromSeconds(8.0))
+        let completed = clientTask.Wait(HangWaitMs)
         test <@ completed @>
 
         match clientTask.Result with
@@ -1445,7 +1445,7 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
         with _ ->
             ()
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``repeated scan force via IPC increments generation each time`` () =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-rescan-{Guid.NewGuid():N}")
@@ -1492,7 +1492,7 @@ let ``repeated scan force via IPC increments generation each time`` () =
         if System.IO.Directory.Exists tmpDir then
             System.IO.Directory.Delete(tmpDir, true)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``WaitForScan client observes failure when daemon is shut down mid-wait`` () =
     // Companion to the WaitForComplete shutdown test, for the OTHER blocking wait: a
     // client parked in WaitForScan for a generation that will never arrive (no scan is
@@ -1537,7 +1537,7 @@ let ``WaitForScan client observes failure when daemon is shut down mid-wait`` ()
         // Simulate daemon shutdown.
         cts.Cancel()
 
-        let completed = clientTask.Wait(TimeSpan.FromSeconds(8.0))
+        let completed = clientTask.Wait(HangWaitMs)
         test <@ completed @>
 
         match clientTask.Result with
@@ -1578,7 +1578,7 @@ let private writeMalformedFrame (pipeName: string) (payload: byte[]) : bool =
     with _ ->
         false
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``server keeps accepting connections after a malformed-frame client`` () =
     let pipeName = $"fshw-wedge-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -1647,7 +1647,7 @@ let ``server keeps accepting connections after a malformed-frame client`` () =
 [<Collection(LogGlobalCollectionName)>]
 type AcceptLoopFaultTests() =
 
-    [<Fact(Timeout = 20000)>]
+    [<Fact(Timeout = SyncHangBackstopMs)>]
     member _.``accept loop logs pipe-bind failures instead of swallowing them``() =
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
         // Long enough that the socket path exceeds the 104-char macOS limit
@@ -1681,7 +1681,7 @@ type AcceptLoopFaultTests() =
             // cancellation, and cancellation must still shut it down cleanly.
             let exited =
                 try
-                    serverTask.Wait(TimeSpan.FromSeconds(5.0))
+                    serverTask.Wait(HangWaitMs)
                 with :? AggregateException ->
                     serverTask.IsCompleted
 
@@ -1700,15 +1700,15 @@ type AcceptLoopFaultTests() =
 // plugin was wedged. The daemon now always applies a finite bound; there is
 // deliberately no "infinite" setting.
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``resolveVerdictDeadline: absent override falls back to the default`` () =
     Assert.Equal(DefaultVerdictDeadline, resolveVerdictDeadline None)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``resolveVerdictDeadline: a positive integer override wins`` () =
     Assert.Equal(TimeSpan.FromSeconds 7200.0, resolveVerdictDeadline (Some "7200"))
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("0")>]
 [<InlineData("-5")>]
 [<InlineData("nonsense")>]
@@ -1734,7 +1734,7 @@ let ``resolveVerdictDeadline: junk / non-positive override falls back to the def
 // RED-BEFORE-GREEN: drop the deadline race from `trackedTask` and the first test
 // hangs until xUnit kills it at 15s.
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an RPC whose work never completes faults with TimeoutException at the seam`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1753,7 +1753,7 @@ let ``an RPC whose work never completes faults with TimeoutException at the seam
     // The wedge report's inline recovery rides along, so the client knows what to do.
     test <@ inner.Message.Contains("fshw stop") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``RPC deadline includes a synchronous callback before its task is returned`` () =
     // A callback can wedge BEFORE it hands back a Task: a `task { }` body runs inline
     // up to its first real await, so a blocking call there never yields. If the seam
@@ -1781,10 +1781,10 @@ let ``RPC deadline includes a synchronous callback before its task is returned``
     let call = Task.Run<string>(Func<Task<string>>(fun () -> target.Invalidate()))
 
     try
-        test <@ entered.Task.Wait(TimeSpan.FromSeconds 5.0) @>
+        test <@ entered.Task.Wait(HangWaitMs) @>
 
         let settledInTime =
-            obj.ReferenceEquals(Task.WhenAny(call :> Task, Task.Delay(TimeSpan.FromSeconds 5.0)).Result, call)
+            obj.ReferenceEquals(Task.WhenAny(call :> Task, Task.Delay(HangWaitMs)).Result, call)
 
         test <@ settledInTime @>
         let ex = Assert.Throws<AggregateException>(fun () -> call.Wait())
@@ -1799,7 +1799,7 @@ let ``RPC deadline includes a synchronous callback before its task is returned``
         with _ ->
             ()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an RPC that completes inside the deadline returns normally`` () =
     // The seam must not fire on healthy work — the deadline is a backstop, not a
     // budget.
@@ -1813,7 +1813,7 @@ let ``an RPC that completes inside the deadline returns normally`` () =
     let result = target.WaitForScan(-1L).Result
     test <@ result = "complete: 3 files checked in 0.1s" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the seam refuses an infinite deadline rather than obeying it`` () =
     // The one way left to ask for an unbounded RPC is to pass an infinite deadline to
     // the seam. It is not honoured: it falls back to the ambient deadline.
@@ -1825,7 +1825,7 @@ let ``the seam refuses an infinite deadline rather than obeying it`` () =
     // Healthy work still returns — the fallback deadline is finite but ample, not zero.
     test <@ target.WaitForScan(-1L).Result = "idle" @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``scan waiters retain their request when recovery is queued before failure settles`` () =
     let signal = ScanSignal()
 
@@ -1890,7 +1890,7 @@ let private inFlightNames (watchdog: FsHotWatch.OperationWatchdog.Watchdog) =
 /// A killed client must not leave work running that existed only on its behalf: the
 /// command's own async is cancelled when the connection drops, and the daemon stops
 /// reporting it in flight.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a dropped client cancels the command it alone was waiting on`` () =
     let pipeName = $"fshw-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -1934,15 +1934,15 @@ let ``a dropped client cancels the command it alone was waiting on`` () =
         let drop, _reply =
             startAbandonableCall pipeName "RunCommand" [| box "slow"; box "" |]
 
-        test <@ started.Task.Wait(TimeSpan.FromSeconds 10.0) @>
+        test <@ started.Task.Wait(HangWaitMs) @>
         test <@ inFlightNames watchdog = [ "RunCommand:slow" ] @>
         test <@ not cancelled.Task.IsCompleted @>
 
         // The client goes away mid-call.
         drop ()
 
-        test <@ cancelled.Task.Wait(TimeSpan.FromSeconds 10.0) @>
-        test <@ waitUntilTrue (fun () -> List.isEmpty (inFlightNames watchdog)) 10000 @>
+        test <@ cancelled.Task.Wait(HangWaitMs) @>
+        test <@ waitUntilTrue (fun () -> List.isEmpty (inFlightNames watchdog)) HangWaitMs @>
     finally
         cts.Cancel()
         server.Wait(TimeSpan.FromSeconds 5.0) |> ignore
@@ -1952,7 +1952,7 @@ let ``a dropped client cancels the command it alone was waiting on`` () =
 /// left. Two clients wait on the same daemon-wide completion; dropping one retires
 /// only that client's RPC, leaves the shared wait running and the other client's
 /// reply owed — and then delivered.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a dropped client does not cancel shared work another client still waits on`` () =
     let pipeName = $"fshw-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -1980,7 +1980,7 @@ let ``a dropped client does not cancel shared work another client still waits on
         let dropB, replyB = startAbandonableCall pipeName "WaitForComplete" [| box 0 |]
 
         let bothWaiting =
-            waitUntilTrue (fun () -> Volatile.Read(&waiters.contents) = 2) 10000
+            waitUntilTrue (fun () -> Volatile.Read(&waiters.contents) = 2) HangWaitMs
 
         test <@ bothWaiting @>
         test <@ inFlightNames watchdog = [ "WaitForComplete"; "WaitForComplete" ] @>
@@ -1988,12 +1988,12 @@ let ``a dropped client does not cancel shared work another client still waits on
         dropA ()
 
         // The server has retired A's RPC — and only A's.
-        test <@ waitUntilTrue (fun () -> List.length (inFlightNames watchdog) = 1) 10000 @>
+        test <@ waitUntilTrue (fun () -> List.length (inFlightNames watchdog) = 1) HangWaitMs @>
         test <@ not shared.Task.IsCompleted @>
         test <@ not replyB.IsCompleted @>
 
         shared.TrySetResult(()) |> ignore
-        test <@ replyB.Wait(TimeSpan.FromSeconds 10.0) @>
+        test <@ replyB.Wait(HangWaitMs) @>
         dropB ()
     finally
         cts.Cancel()
@@ -2007,7 +2007,7 @@ type private E2eMsg =
 /// End to end: a client asks a plugin for a run over a real pipe and is killed while the
 /// run is in flight. The run existed only for that client, so the daemon cancels it —
 /// not merely the RPC waiting on it — and the plugin stops being busy.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a dropped client cancels the plugin run it alone asked for`` () =
     let pipeName = $"fshw-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -2071,13 +2071,13 @@ let ``a dropped client cancels the plugin run it alone asked for`` () =
         let drop, _reply =
             startAbandonableCall pipeName "RunCommand" [| box "want"; box "" |]
 
-        test <@ started.Task.Wait(TimeSpan.FromSeconds 10.0) @>
+        test <@ started.Task.Wait(HangWaitMs) @>
 
         drop ()
 
-        test <@ cancelled.Task.Wait(TimeSpan.FromSeconds 10.0) @>
-        test <@ waitUntilTrue (fun () -> List.isEmpty (inFlightNames watchdog)) 10000 @>
-        test <@ waitUntilTrue (fun () -> host.GetStatus "e2e-leased" = Some Idle) 10000 @>
+        test <@ cancelled.Task.Wait(HangWaitMs) @>
+        test <@ waitUntilTrue (fun () -> List.isEmpty (inFlightNames watchdog)) HangWaitMs @>
+        test <@ waitUntilTrue (fun () -> host.GetStatus "e2e-leased" = Some Idle) HangWaitMs @>
     finally
         cts.Cancel()
         server.Wait(TimeSpan.FromSeconds 5.0) |> ignore
@@ -2087,7 +2087,7 @@ let ``a dropped client cancels the plugin run it alone asked for`` () =
 /// when the last instance is disposed, dropping any connection still in its backlog
 /// (reset on Linux). So a waiting instance must exist even while every acceptor is busy:
 /// a client arriving then is served, not queued behind them.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a client is served while every acceptor is busy with an earlier one`` () =
     let suffix = Guid.NewGuid().ToString("N").Substring(0, 8)
     let pipeName = $"fshw-acc-%s{suffix}"
@@ -2120,7 +2120,8 @@ let ``a client is served while every acceptor is busy with an earlier one`` () =
     let held = [ connect (); connect (); connect () ]
 
     try
-        let allHeld = waitUntilTrue (fun () -> Volatile.Read &opened.contents = 3) 10000
+        let allHeld =
+            waitUntilTrue (fun () -> Volatile.Read &opened.contents = 3) HangWaitMs
 
         test <@ allHeld @>
 
@@ -2128,8 +2129,7 @@ let ``a client is served while every acceptor is busy with an earlier one`` () =
         let answer = Array.zeroCreate<byte> 1
         let read = later.ReadAsync(answer, 0, 1)
 
-        let served =
-            read.Wait(TimeSpan.FromSeconds 5.0) && read.Result = 1 && answer[0] = 42uy
+        let served = read.Wait(HangWaitMs) && read.Result = 1 && answer[0] = 42uy
 
         test <@ served @>
     finally
@@ -2188,7 +2188,7 @@ let ``WaitForComplete and GetStatus answer the client while the status writer is
 /// reads is returned as "Completed, 0 errors": a false green. Read status-first, the
 /// same interleaving yields "Running" (with or without the findings), which denies a
 /// green, and a Completed status is only ever read with its findings behind it.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``diagnostics never read a plugin as Completed without the findings it reported first`` () =
     let mutable status = Running(since = DateTime.UtcNow)
     let mutable findings: string list = []
@@ -2231,7 +2231,7 @@ type private ClearRecordingCache() =
         member _.ClearPluginFile plugin file =
             cleared.Enqueue $"plugin-file %s{plugin} %s{file}"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cache-clear reaches the host's task cache with each filter`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let cache = ClearRecordingCache()

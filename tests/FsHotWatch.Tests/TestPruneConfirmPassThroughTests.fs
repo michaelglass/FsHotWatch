@@ -288,7 +288,7 @@ let private runScenario (root: string) (setup: Setup) =
             "#!/bin/sh\n"
             + $"printf 'run\\n' >> '%s{runMarker}'\n"
             + $"touch '%s{started}'\n"
-            + gatedWait root release 3000
+            + gatedWait root release 7500
             + "\n"
             + "cov=''; name=''; dir=''\n"
             + "while [ $# -gt 0 ]; do\n"
@@ -321,7 +321,7 @@ let private runScenario (root: string) (setup: Setup) =
         let primingHost = createModelHost checker root
         primingHost.RegisterHandler(create dbPath root None None None None None [])
         primingHost.EmitBuildCompleted(BuildSucceeded)
-        waitForPluginIdle primingHost "test-prune" 5.0
+        waitForPluginIdle primingHost "test-prune" (float HangWaitMs / 1000.0)
 
         for file in [ libFile; testsFile ] do
             check primingHost file
@@ -336,7 +336,8 @@ let private runScenario (root: string) (setup: Setup) =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = Some 15
+                // Only a hang ends the held run: its release waits on real checks.
+                TimeoutSec = Some(RealCheckTestCapMs / 1000)
                 ReportVerificationFormat = Ctrf
                 AlwaysClasses = [] } ]
 
@@ -393,7 +394,7 @@ let private runScenario (root: string) (setup: Setup) =
 
         File.WriteAllText(libFile, libSource2)
         host.EmitBuildCompleted(BuildSucceeded)
-        waitUntil (fun () -> File.Exists started) 10000
+        waitUntil (fun () -> File.Exists started) HangWaitMs
 
         let seal (trigger: BatchCheckedTrigger) (files: string list) =
             let committedBefore = committedBy host "test-prune"
@@ -406,7 +407,7 @@ let private runScenario (root: string) (setup: Setup) =
                     Trigger = trigger }
             )
 
-            test <@ waitForCommitted host "test-prune" committedBefore (int64 files.Length + 1L) 10000 @>
+            test <@ waitForCommitted host "test-prune" committedBefore (int64 files.Length + 1L) RealCheckWaitMs @>
 
         for trigger in setup.Cohorts do
             match trigger with
@@ -418,9 +419,21 @@ let private runScenario (root: string) (setup: Setup) =
             seal (InSessionBatch [ SourceChanged [ libFile ] ]) [ libFile ]
 
         File.WriteAllText(release, "")
-        waitForQuiescent host 20000
+        waitForQuiescent host RealCheckWaitMs
 
         let runCount () = File.ReadAllLines(runMarker).Length
+
+        // A status reaches `statuses` through the host's trigger agent, after the host
+        // publishes it, so a snapshot taken at rest can still miss the last transition.
+        // Take it once the observer has heard the status the host reports.
+        let reported =
+            host.GetStatus "test-prune"
+            |> Option.map (fun status -> normalize root $"%A{status}")
+
+        waitUntilOr
+            "the test-prune status observer hearing the status the host reports"
+            (fun () -> Seq.tryLast statuses = reported)
+            HangWaitMs
 
         let observed =
             [ yield! writtenFiles root |> Map.toList
@@ -452,7 +465,7 @@ let private runScenario (root: string) (setup: Setup) =
             let check () =
                 seal BootScan [ libFile; testsFile ]
                 host.EmitBuildCompleted(BuildSucceeded)
-                waitForQuiescent host 20000
+                waitForQuiescent host RealCheckWaitMs
 
             let coveringBefore = recorded.CoveringQueries
             let runsBefore = runCount ()
@@ -494,7 +507,7 @@ let private assertGreen (outcome: Outcome) =
     | Some(Completed _) -> ()
     | other -> Assert.Fail($"expected the run to complete green, got %A{other}")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``a cold confirm with debt sealing mid-run runs once and asks no covering query`` () =
     // Before pass-through, the in-session cohort queued an impact re-run behind the held
     // run, and every flush and the completion classified the queue by covering project.
@@ -505,7 +518,7 @@ let ``a cold confirm with debt sealing mid-run runs once and asks no covering qu
     test <@ outcome.AffectedQueries <= 1 @>
     assertGreen outcome
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``a green confirm records the baseline and clears the debt it covered`` () =
     let outcome = scenario "tp-pt-baseline" Confirm [ BootScan ] false
     Assert.Equal(1, outcome.RunCount)
@@ -513,7 +526,7 @@ let ``a green confirm records the baseline and clears the debt it covered`` () =
     test <@ outcome.Baseline |> Option.exists (fun b -> b.Projects = Set.ofList [ "Lib" ]) @>
     assertGreen outcome
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``a tree edit during a confirm leaves no verdict and never a second run`` () =
     let outcome = scenario "tp-pt-moved" Confirm [ BootScan ] true
     Assert.Equal(1, outcome.RunCount)
@@ -523,7 +536,7 @@ let ``a tree edit during a confirm leaves no verdict and never a second run`` ()
     | Some(Completed _) -> Assert.Fail("a run over a tree that moved under it must not report green")
     | _ -> ()
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``check attaches boot-scan debt to its in-flight full run`` () =
     // No baseline, so check's first run is full. The boot cohort scanned the tree that run
     // is testing, so the run covers it.
@@ -533,7 +546,7 @@ let ``check attaches boot-scan debt to its in-flight full run`` () =
     test <@ outcome.AffectedQueries > 0 @>
     assertGreen outcome
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``check still queues one rerun for an in-session cohort during its full run`` () =
     // Mutation caught: attaching every cohort, not only BootScan, would let check skip the
     // run an edit owes.
@@ -645,7 +658,7 @@ let private runAt (root: string) (setup: Setup) =
 /// must be observably the full run a cold `check` makes, except where `selectionOwned`
 /// says. Driven over the in-process plugin host, which is the `--run-once` transport. The
 /// daemon transport delivers the plugin the same events over IPC, so it is not repeated.
-[<Fact(Timeout = 90000)>]
+[<Fact(Timeout = 2 * RealCheckTestCapMs)>]
 let ``a confirm's run is observably the run check makes to earn its baseline`` () =
     // One root for both, so absolute paths, and every hash over them, agree.
     let root =
@@ -693,7 +706,7 @@ let ``a confirm's run is observably the run check makes to earn its baseline`` (
             + String.Join("\n", differing |> List.map describe)
         )
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``a check after a confirm in the same daemon is served warm`` () =
     let outcome =
         scenarioWith
@@ -713,7 +726,7 @@ let ``a check after a confirm in the same daemon is served warm`` () =
     | Some(Completed _) -> ()
     | other -> Assert.Fail($"expected the warm check to report the confirm's green, got %A{other}")
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``a covered full run leaves nothing for the next cohort over the same tree`` () =
     // The BootScan cohort attached to the full run and the run covered it. Its files and
     // their runtime-coverage obligations are covered too: before, they stayed in

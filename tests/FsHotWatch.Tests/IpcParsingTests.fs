@@ -15,12 +15,12 @@ let private parseEl (json: string) =
 
 // --- parseTaggedStatus ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseTaggedStatus parses idle`` () =
     let el = parseEl """{"tag":"idle"}"""
     test <@ parseTaggedStatus el = StatusView.Idle @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseTaggedStatus parses running`` () =
     let el = parseEl """{"tag":"running","since":"2026-04-05T12:00:00.0000000Z"}"""
 
@@ -30,7 +30,7 @@ let ``parseTaggedStatus parses running`` () =
         test <@ isExpected @>
     | other -> failwithf "expected Running, got %A" other
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseTaggedStatus parses completed`` () =
     let el = parseEl """{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"}"""
 
@@ -38,7 +38,7 @@ let ``parseTaggedStatus parses completed`` () =
     | StatusView.Completed _ -> ()
     | other -> failwithf "expected Completed, got %A" other
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseTaggedStatus parses failed preserving multi-line error`` () =
     let err = "line one\nline two"
 
@@ -55,7 +55,7 @@ let ``parseTaggedStatus parses failed preserving multi-line error`` () =
     | StatusView.Failed(msg, _) -> test <@ msg = err @>
     | other -> failwithf "expected Failed, got %A" other
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseTaggedStatus is UNREADABLE for an unknown tag — never idle`` () =
     let el = parseEl """{"tag":"garbage"}"""
 
@@ -63,7 +63,7 @@ let ``parseTaggedStatus is UNREADABLE for an unknown tag — never idle`` () =
     | StatusView.Unreadable _ -> ()
     | other -> failwithf "expected Unreadable, got %A" other
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseTaggedStatus is UNREADABLE for a non-object`` () =
     let el = parseEl "\"idle\""
 
@@ -71,7 +71,7 @@ let ``parseTaggedStatus is UNREADABLE for a non-object`` () =
     | StatusView.Unreadable _ -> ()
     | other -> failwithf "expected Unreadable, got %A" other
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseTaggedStatus is UNREADABLE for a running status whose since will not parse`` () =
     // `since` is the ONLY input to the wedge classifier. Rounding it
     // to `Idle` does not lose a timestamp, it defeats wedge detection outright and
@@ -84,7 +84,7 @@ let ``parseTaggedStatus is UNREADABLE for a running status whose since will not 
 
 // --- parseStatusField ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseStatusField accepts tagged object`` () =
     let el = parseEl """{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"}"""
 
@@ -92,7 +92,7 @@ let ``parseStatusField accepts tagged object`` () =
     | StatusView.Completed _ -> ()
     | other -> failwithf "expected Completed, got %A" other
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseStatusField is UNREADABLE on a malformed object — it does NOT fall back to Idle`` () =
     // This asserted `= StatusView.Idle` and passed for its whole life: a green test
     // enshrining the fail-open is how one survives. Do not put it back.
@@ -104,54 +104,54 @@ let ``parseStatusField is UNREADABLE on a malformed object — it does NOT fall 
 
 // --- parseTaggedOutcome ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseTaggedOutcome parses completed`` () =
     let el = parseEl """{"tag":"completed"}"""
     test <@ parseTaggedOutcome el = Some CompletedRun @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseTaggedOutcome parses failed with error`` () =
     let el = parseEl """{"tag":"failed","error":"boom"}"""
     test <@ parseTaggedOutcome el = Some(FailedRun "boom") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseTaggedOutcome parses verifiedNothing with its detail`` () =
     // The run that executed nothing is a CASE on the wire.
     let el = parseEl """{"tag":"verifiedNothing","detail":"no test executed"}"""
     test <@ parseTaggedOutcome el = Some(VerifiedNothing "no test executed") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseTaggedOutcome: a verifiedNothing with no detail is still a verified-nothing run`` () =
     // The case is the fact; the detail is its words. A payload that lost the words
     // must not turn into a pass or into a failure.
     let el = parseEl """{"tag":"verifiedNothing"}"""
     test <@ parseTaggedOutcome el = Some(VerifiedNothing "") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseTaggedOutcome returns None for non-object`` () =
     let el = parseEl "\"Completed\""
     test <@ parseTaggedOutcome el = None @>
 
 // --- parseOutcomeField ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseOutcomeField tagged failed`` () =
     let outcomeEl = parseEl """{"tag":"failed","error":"oops"}"""
     test <@ parseOutcomeField outcomeEl = FailedRun "oops" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseOutcomeField tagged completed`` () =
     let outcomeEl = parseEl """{"tag":"completed"}"""
     test <@ parseOutcomeField outcomeEl = CompletedRun @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseOutcomeField tagged verifiedNothing`` () =
     let outcomeEl =
         parseEl """{"tag":"verifiedNothing","detail":"0 test project(s) ran"}"""
 
     test <@ parseOutcomeField outcomeEl = VerifiedNothing "0 test project(s) ran" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseOutcomeField: an outcome tag this build does not recognize is a FAILED run, not a pass`` () =
     // An unknown run outcome used to default to `CompletedRun` — a PASS. `Verdict.fs`
     // states the opposite policy: "An unknown state is not a passing state." A newer
@@ -162,7 +162,7 @@ let ``parseOutcomeField: an outcome tag this build does not recognize is a FAILE
     | FailedRun _ -> ()
     | other -> failwithf "expected FailedRun, got %A" other
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseOutcomeField: an outcome that is not even an object is a FAILED run`` () =
     match parseOutcomeField (parseEl "\"completed\"") with
     | FailedRun _ -> ()
@@ -170,7 +170,7 @@ let ``parseOutcomeField: an outcome that is not even an object is a FAILED run``
 
 // --- parsePluginStatuses end-to-end with new wire format ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parsePluginStatuses FAILS CLOSED on malformed JSON — an unreadable map is not an empty one`` () =
     // Returning `Map.empty` vanished every plugin — nothing Failed, nothing Running,
     // and a verdict over the resulting clean ledger stayed green. `Map.empty` is a
@@ -180,7 +180,7 @@ let ``parsePluginStatuses FAILS CLOSED on malformed JSON — an unreadable map i
     | Result.Error _ -> ()
     | Result.Ok m -> failwithf "expected Error, got a %d-entry map" (Map.count m)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parsePluginStatuses propagates non-JSON exceptions (F8)`` () =
     // Null must surface as a real exception from JsonDocument.Parse, not degrade
     // into a readable-looking answer.
@@ -194,7 +194,7 @@ let ``parsePluginStatuses propagates non-JSON exceptions (F8)`` () =
 
     test <@ thrown @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parsePluginStatuses parses tagged status objects`` () =
     let json =
         """{"build":{"status":{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"},"subtasks":[],"activityTail":[],"lastRun":null},"lint":{"status":{"tag":"idle"},"subtasks":[],"activityTail":[],"lastRun":null}}"""
@@ -207,7 +207,7 @@ let ``parsePluginStatuses parses tagged status objects`` () =
 
     test <@ parsed.["lint"].Status = StatusView.Idle @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parsePluginStatuses parses tagged lastRun outcome`` () =
     let json =
         """{"worker":{"status":{"tag":"failed","error":"e","at":"2026-04-05T12:00:00.0000000Z"},"subtasks":[],"activityTail":[],"lastRun":{"startedAt":"2026-04-05T12:00:00.0000000Z","elapsedMs":42,"outcome":{"tag":"failed","error":"multi\nline"},"summary":null,"activityTail":[]}}}"""
@@ -221,7 +221,7 @@ let ``parsePluginStatuses parses tagged lastRun outcome`` () =
 
 // --- parseDiagnosticsResponse ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseDiagnosticsResponse handles tagged status field`` () =
     let json =
         """{"count":0,"files":{},"statuses":{"build":{"status":{"tag":"idle"},"subtasks":[],"activityTail":[],"lastRun":null}}}"""
@@ -231,19 +231,19 @@ let ``parseDiagnosticsResponse handles tagged status field`` () =
 
 // --- Coverage parsing (unchecked field on the diagnostics response) ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseDiagnosticsResponse unchecked=0 -> Complete`` () =
     let json = """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
     let resp = parseDiagnosticsResponse json
     test <@ resp.Coverage = Complete @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseDiagnosticsResponse unchecked=3 -> Incomplete 3`` () =
     let json = """{"count":0,"files":{},"statuses":{},"unchecked":3}"""
     let resp = parseDiagnosticsResponse json
     test <@ resp.Coverage = Incomplete 3 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseDiagnosticsResponse missing unchecked field -> Unknown`` () =
     // Cross-version backstop: an old daemon that doesn't send `unchecked` must
     // never read as Complete.
@@ -251,7 +251,7 @@ let ``parseDiagnosticsResponse missing unchecked field -> Unknown`` () =
     let resp = parseDiagnosticsResponse json
     test <@ resp.Coverage = Unknown @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseDiagnosticsResponse garbage unchecked field -> Unknown`` () =
     let json = """{"count":0,"files":{},"statuses":{},"unchecked":"banana"}"""
     let resp = parseDiagnosticsResponse json
@@ -264,7 +264,7 @@ let ``parseDiagnosticsResponse garbage unchecked field -> Unknown`` () =
 // extra fields included, so a plugin can never drop out of the status map — which
 // would hide that plugin from every reader of the map.
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseTaggedStatus parses completed carrying only its timestamp`` () =
     let el = parseEl """{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"}"""
 
@@ -274,7 +274,7 @@ let ``parseTaggedStatus parses completed carrying only its timestamp`` () =
         test <@ year = 2026 @>
     | other -> failwithf "expected Completed, got %A" other
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseTaggedStatus ignores legacy verdict fields on a completed payload`` () =
     // A daemon still sending summary/elapsedMs parses identically: those fields are
     // simply not part of the status.
@@ -290,14 +290,14 @@ let ``parseTaggedStatus ignores legacy verdict fields on a completed payload`` (
 
 // --- TestScope.describe / parseTaggedOutcome: totality pins -----------------
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``TestScope.describe names every scope`` () =
     test <@ (TestScope.describe (FullSuite(6, None))).Contains "full suite" @>
     test <@ (TestScope.describe (ImpactFiltered(2, 6))).Contains "impact-filtered" @>
     test <@ TestScope.describe (NoTestsRun NoTestsReason.Unstated) = "no tests ran (the daemon did not say why)" @>
     test <@ (TestScope.describe ScopeUnknown).Contains "unknown" @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``none scope preserves why no tests ran`` () =
     let scopeOf suffix =
         parseTestRunReport $"""{{"runId":null,"kind":"none","ranProjects":0,"totalProjects":0{suffix},"projects":[]}}"""
@@ -341,7 +341,7 @@ let ``none scope preserves why no tests ran`` () =
     | NoTestsRun(NoTestsReason.EvidenceRevoked detail) -> test <@ detail.Contains "no detail" @>
     | other -> failwith $"expected evidence-revoked, got %A{other}"
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``every stated no-tests reason reads as a cause, never as silence`` () =
     let described =
         [ NoTestsReason.NoRunYet
@@ -363,7 +363,7 @@ let ``every stated no-tests reason reads as a cause, never as silence`` () =
     test <@ described.[3].Contains "the run aborted" @>
     test <@ described.[4].Contains "cover no configured test project" @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``zero reasons are total across known unknown and truncated evidence`` () =
     let already = NoTestsReason.describe NoTestsReason.AlreadyVerified
 
@@ -385,12 +385,12 @@ let ``zero reasons are total across known unknown and truncated evidence`` () =
     test <@ widenedCount = NoTestsReason.ChangesUncovered([ "A"; "B" ], 2, UnrunnableCoverage.none) @>
     test <@ future = NoTestsReason.UnknownReason "future-zero" @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseTaggedOutcome parses timedOut with its reason`` () =
     let el = parseEl """{"tag":"timedOut","reason":"620s"}"""
     test <@ parseTaggedOutcome el = Some(TimedOut "620s") @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseTaggedOutcome parses failed with its error`` () =
     let el = parseEl """{"tag":"failed","error":"3 failed"}"""
     test <@ parseTaggedOutcome el = Some(FailedRun "3 failed") @>
@@ -404,7 +404,7 @@ let ``parseTaggedOutcome parses failed with its error`` () =
 // has a shape it believes.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseCheckReach reads a recorded projection, run id and scope included`` () =
     let reading =
         parseCheckReach
@@ -422,7 +422,7 @@ let ``parseCheckReach reads a recorded projection, run id and scope included`` (
         test <@ r.Recall = FailureRecallMeasured(3, 4, 1.0, false) @>
     | other -> failwithf "a well-formed reply must parse, got %A" other
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseCheckReach reads every reach token, and a full-suite selection`` () =
     let replyWith (reach: string) =
         parseCheckReach
@@ -443,7 +443,7 @@ let ``parseCheckReach reads every reach token, and a full-suite selection`` () =
     | ReachRecorded r -> test <@ r.Scope = FullSuite(6, None) @>
     | other -> failwithf "expected a recorded projection, got %A" other
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``check-reach carries named misses and their causes`` () =
     let reading =
         parseCheckReach
@@ -466,7 +466,7 @@ let ``check-reach carries named misses and their causes`` () =
             @>
     | other -> failwithf "expected named missed failures, got %A" other
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``missed evidence preserves unknown causes and drops malformed rows`` () =
     let reading =
         parseCheckReach
@@ -486,7 +486,7 @@ let ``missed evidence preserves unknown causes and drops malformed rows`` () =
             @>
     | other -> failwithf "expected future missed evidence, got %A" other
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``every unreadable check-reach reply refuses, and none of them reads as a reach`` () =
     // The one property. A reply this build cannot make sense of must never produce a
     // reach — the reach is what turns into `Agreed`.
@@ -526,7 +526,7 @@ let ``every unreadable check-reach reply refuses, and none of them reads as a re
     | ReachRecorded r -> test <@ r.Reach = NoFailuresToReach @>
     | other -> failwithf "a well-formed reply must still parse, got %A" other
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a reply that names no scope for the selection reads as UNREADABLE, never full-suite`` () =
     match
         parseCheckReach
@@ -537,7 +537,7 @@ let ``a reply that names no scope for the selection reads as UNREADABLE, never f
 
 // --- wall-time attribution rework: the daemon's phase ledger on the diagnostics response ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonEvidence.parse reads the daemonPhases array, dropping entries it cannot place`` () =
     let json =
         """{"count":0,"files":{},"statuses":{},"unchecked":0,
@@ -559,7 +559,7 @@ let ``DaemonEvidence.parse reads the daemonPhases array, dropping entries it can
         test <@ phases.[1].Detail = None @>
     | DaemonEvidence.NotServed -> failwith "a served daemonPhases array must parse as Served"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonEvidence.parse is NotServed for a daemon that sends no ledger`` () =
     test <@ DaemonEvidence.parse """{"count":0,"files":{},"statuses":{},"unchecked":0}""" = DaemonEvidence.NotServed @>
     test <@ DaemonEvidence.parse """{"daemonPhases":"nope"}""" = DaemonEvidence.NotServed @>
@@ -567,7 +567,7 @@ let ``DaemonEvidence.parse is NotServed for a daemon that sends no ledger`` () =
 
 // --- the baseline on the wire ------------------------------------
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a test-scope reply naming a baseline parses to Valid, with its run and project count`` () =
     let report =
         parseTestRunReport
@@ -580,7 +580,7 @@ let ``a test-scope reply naming a baseline parses to Valid, with its run and pro
         test <@ b.EarnedAt = DateTime(2026, 9, 6, 12, 0, 0, DateTimeKind.Utc) @>
     | other -> failwithf "expected a valid baseline, got %A" other
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a reply stating why the baseline is absent parses to Absent with that reason`` () =
     let report =
         parseTestRunReport
@@ -588,7 +588,7 @@ let ``a reply stating why the baseline is absent parses to Absent with that reas
 
     test <@ report.Baseline = BaselineReading.Absent "no full-suite run yet" @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a reply with no baseline field, or a malformed one, is NotReported — never Valid`` () =
     let silent =
         parseTestRunReport """{"kind":"full","ranProjects":3,"totalProjects":3}"""
@@ -608,7 +608,7 @@ let ``a reply with no baseline field, or a malformed one, is NotReported — nev
     test <@ TestRunReport.noTestSuite.Baseline = BaselineReading.NoTestSuite @>
     test <@ TestRunReport.noTestSuite.Scope = ScopeUnknown @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a zero-selection reply names the symbols covered only by unlisted projects`` () =
     let report =
         parseTestRunReport
@@ -754,7 +754,7 @@ let ``model receipts accept explicit analysis identity and reject malformed run 
 let private fullReply (extra: string) =
     $"""{{"kind":"full","ranProjects":2,"totalProjects":2%s{extra}}}"""
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a full-suite cause reaches the verdict scope from the test-scope reply`` () =
     let report = parseTestRunReport (fullReply ""","cause":"no-full-suite-baseline" """)
     test <@ TestScope.isFullSuite report.Scope @>
@@ -762,7 +762,7 @@ let ``a full-suite cause reaches the verdict scope from the test-scope reply`` (
     test <@ scope.["kind"].GetValue<string>() = "full" @>
     test <@ scope.["cause"].GetValue<string>() = "no-full-suite-baseline" @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a full suite whose reply states no cause says nothing about one, rather than inventing one`` () =
     // An older daemon sends no cause. Its full suite stays a full suite, and the verdict
     // records `null`: "this reading does not say".
@@ -771,7 +771,7 @@ let ``a full suite whose reply states no cause says nothing about one, rather th
         test <@ report.Scope = FullSuite(2, None) @>
         test <@ isNull (VerdictFixtures.scopeOnTheWire report).["cause"] @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``every full-suite cause survives the test-scope reply and the verdict file under its own token`` () =
     for cause in FsHotWatch.TestPrune.FullSuiteCause.all do
         let token = FsHotWatch.TestPrune.FullSuiteCause.token cause
@@ -788,7 +788,7 @@ let ``every full-suite cause survives the test-scope reply and the verdict file 
 
     test <@ List.distinct tokens = tokens @>
 
-[<Theory(Timeout = 10000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(""","cause":"a-cause-from-another-version" """)>]
 [<InlineData(""","cause":42""")>]
 let ``a full-suite cause this build cannot read fails closed to an unreadable scope`` (extra: string) =
@@ -797,7 +797,7 @@ let ``a full-suite cause this build cannot read fails closed to an unreadable sc
 
 // --- test-scope: changed files whose changes selected no tests ----------------
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the not-selected files reach the verdict scope from the test-scope reply`` () =
     let report =
         parseTestRunReport (fullReply ""","notSelected":[{"file":"src/Lib/Broken.fs","reason":"fcs-errors"}]""")
@@ -807,7 +807,7 @@ let ``the not-selected files reach the verdict scope from the test-scope reply``
     test <@ scope.["notSelected"].[0].["file"].GetValue<string>() = "src/Lib/Broken.fs" @>
     test <@ scope.["notSelected"].[0].["reason"].GetValue<string>() = "fcs-errors" @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``"no file was withheld" and "this reply does not say" are different bytes in the verdict scope`` () =
     // An older daemon sends no `notSelected`; that is silence, never "none".
     for reply in [ fullReply ""; fullReply ""","notSelected":null""" ] do
@@ -821,7 +821,7 @@ let ``"no file was withheld" and "this reply does not say" are different bytes i
 
     test <@ none.["notSelected"].ToJsonString() = "[]" @>
 
-[<Theory(Timeout = 10000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(""","notSelected":[{"file":"src/A.fs","reason":"a-reason-from-another-version"}]""")>]
 [<InlineData(""","notSelected":[{"reason":"fcs-errors"}]""")>]
 [<InlineData(""","notSelected":["src/A.fs"]""")>]
@@ -832,7 +832,7 @@ let ``a not-selected entry this build cannot read fails closed to an unreadable 
 
 // --- test-scope: the evidence for the graded run, from the same reply ----------
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the test-scope reply's evidence for the graded run is read beside the run`` () =
     let runId = Guid.Parse("d0000000-2500-4000-8000-000000000250")
 
@@ -849,7 +849,7 @@ let ``the test-scope reply's evidence for the graded run is read beside the run`
 
     test <@ report.GradedEvidence = GradedEvidenceReading.Reported(Some expected) @>
 
-[<Theory(Timeout = 10000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("", "not-reported")>]
 [<InlineData(""","evidence":null""", "none")>]
 [<InlineData(""","evidence":{"modelGeneration":7}""", "none")>]

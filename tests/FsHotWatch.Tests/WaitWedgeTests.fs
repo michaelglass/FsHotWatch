@@ -617,12 +617,39 @@ let private declaredThenTailHandler
       CacheKey = None
       Teardown = None }
 
-[<Fact(Timeout = 60_000)>]
+/// The wedge detector's clock, moved by the test. A stall threshold is a span of silence,
+/// so on real time a test thread descheduled past a short threshold reads as a wedge.
+/// Here only `Advance` moves time.
+type private ManualClock(start: DateTime) =
+    let mutable ticks = start.Ticks
+    let mutable reads = 0L
+
+    /// The detector reads this once per sample, so the read count is the sample count.
+    member _.Now() : DateTime =
+        Interlocked.Increment(&reads) |> ignore
+        DateTime(Interlocked.Read(&ticks), DateTimeKind.Utc)
+
+    member _.Advance(by: TimeSpan) =
+        Interlocked.Add(&ticks, by.Ticks) |> ignore
+
+    /// Returns once the detector has sampled the clock twice more, or `wait` has ended and
+    /// so stopped sampling. A read counted after this call starts sees every `Advance` made
+    /// before it.
+    member _.AwaitSamples(wait: Tasks.Task) =
+        let seen = Interlocked.Read(&reads)
+
+        waitUntilOr
+            "the wedge detector sampling its clock"
+            (fun () -> wait.IsCompleted || Interlocked.Read(&reads) >= seen + 2L)
+            HangWaitMs
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the fold after a declaration longer than the stall threshold is not instantly wedged`` () =
     use declaredRelease = new ManualResetEventSlim(false)
     use tailEntered = new ManualResetEventSlim(false)
     use tailRelease = new ManualResetEventSlim(false)
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
+    let clock = ManualClock(DateTime.UtcNow)
 
     try
         host.RegisterHandler(
@@ -635,28 +662,38 @@ let ``the fold after a declaration longer than the stall threshold is not instan
         )
 
         host.EmitBuildCompleted(BuildSucceeded)
-        test <@ waitUntilTrue (fun () -> host.AnyPluginBusy()) 10_000 @>
+        test <@ waitUntilTrue (fun () -> host.AnyPluginBusy()) HangWaitMs @>
 
         let threshold = TimeSpan.FromSeconds 2.0
 
+        // The deadline is far past the xUnit cap: only the detector or rest can end this.
         let wait =
-            Daemon.waitForAllTerminalCore host (TimeSpan.FromSeconds 30.0) threshold CancellationToken.None
+            Daemon.waitForAllTerminalCoreOn clock.Now host (TimeSpan.FromMinutes 10.0) threshold CancellationToken.None
 
         // The declared work outlasts the stall threshold, inside its own bound.
-        // FSHW-WAIT-001 ok: the window must outlast the stall threshold; nothing is awaited.
-        Thread.Sleep 2_500
-        test <@ not wait.IsFaulted @>
+        clock.AwaitSamples wait
+        clock.Advance(threshold + TimeSpan.FromMilliseconds 500.0)
+        clock.AwaitSamples wait
+        test <@ not wait.IsCompleted @>
+
         declaredRelease.Set()
-        Assert.True(tailEntered.Wait(TimeSpan.FromSeconds 10.0), "the remainder of the fold must start")
+        Assert.True(tailEntered.Wait HangWaitMs, "the remainder of the fold must start")
 
-        // The remainder is well inside the stall threshold: a wedge verdict now could only
-        // have come from charging the declared time as silence.
-        // FSHW-WAIT-001 ok: asserting a NEGATIVE (no wedge verdict) inside this window.
-        Thread.Sleep 500
-        test <@ not wait.IsFaulted @>
+        // No time has passed on the detector's clock since the declaration ended. A wedge
+        // verdict now could only have come from charging the declared time as silence.
+        clock.AwaitSamples wait
+        test <@ not wait.IsCompleted @>
 
-        tailRelease.Set()
-        wait.GetAwaiter().GetResult()
+        // The declared time restarted the clock rather than stopping it: one threshold of
+        // silence after the declaration, the remainder is named wedged.
+        clock.Advance threshold
+        waitUntilOr "a wedge verdict one threshold after the declaration ended" (fun () -> wait.IsCompleted) HangWaitMs
+
+        let failure =
+            Assert.Throws<TimeoutException>(fun () -> wait.GetAwaiter().GetResult())
+
+        test <@ failure.Message.Contains "WEDGED" @>
+        test <@ failure.Message.Contains "selecting-plugin" @>
     finally
         declaredRelease.Set()
         tailRelease.Set()

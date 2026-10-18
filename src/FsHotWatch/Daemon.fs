@@ -2495,8 +2495,14 @@ let internal DaemonShuttingDownMessage = "daemon shutting down"
 /// publication that answers rest — nothing for a settling wait, evidence for the current
 /// model for the verdict-bearing one. Taken as a parameter rather than read from a flag so
 /// the two waits differ by the question they ask, not by a mode the loop switches on.
+///
+/// `stallClock` is the clock the wedge detector reads, and only it: a threshold is a
+/// duration of silence, so a caller that must decide whether a given silence is a wedge
+/// (a test with a deliberately short threshold) drives it, and a descheduled thread cannot
+/// pass for a stalled host. The deadline and every rendered elapsed time stay on real time.
 let private waitCoreWith
     (restRequires: PluginWorkOwner.HostSnapshot -> bool)
+    (stallClock: unit -> System.DateTime)
     (host: PluginHost)
     (timeout: System.TimeSpan)
     (stallThreshold: System.TimeSpan)
@@ -2661,7 +2667,7 @@ let private waitCoreWith
         not snapshot.IsBusy && restRequires snapshot
 
     // Wedge detection state, keyed on `CompletedDispatches` — see `StallWatch`.
-    let mutable progress = StallWatch.start System.DateTime.UtcNow
+    let mutable progress = StallWatch.start (stallClock ())
 
     let checkForWedgedPlugin () =
         // A plugin whose message loop died reports work in flight forever, so
@@ -2690,11 +2696,13 @@ let private waitCoreWith
             // work has a deadline which will fail it, and an event fold that never returns
             // has nothing. So every sample taken while it is live restarts the clock, and
             // the rest of the fold it was part of gets the full threshold once it ends.
+            let stallNow = stallClock ()
+
             progress <-
-                StallWatch.observe (host.CompletedDispatches()) now progress
+                StallWatch.observe (host.CompletedDispatches()) stallNow progress
                 |> fun watch ->
                     if work.SupervisedWorkInFlight then
-                        StallWatch.working now watch
+                        StallWatch.working stallNow watch
                     else
                         watch
 
@@ -2712,7 +2720,7 @@ let private waitCoreWith
 
             if
                 busyOutsideSupervisedWork
-                && (overran || StallWatch.stalled stallThreshold now progress)
+                && (overran || StallWatch.stalled stallThreshold stallNow progress)
                 && not (anyRunning ())
             then
                 let joined = String.concat ", " busy
@@ -2760,13 +2768,23 @@ let private waitCoreWith
 /// Settling wait: the host owns no work. Used by the in-process `RunOnce`/scan path,
 /// which needs "everything admitted has been committed" and asks nothing about evidence.
 /// Settling rest: the host owns no work, and nothing further is asked of it.
+let internal waitForAllTerminalCoreOn
+    (stallClock: unit -> System.DateTime)
+    (host: PluginHost)
+    (timeout: System.TimeSpan)
+    (stallThreshold: System.TimeSpan)
+    (ct: CancellationToken)
+    : Task<unit> =
+    waitCoreWith (fun _ -> true) stallClock host timeout stallThreshold ct
+
+/// `waitForAllTerminalCoreOn` with the wedge detector on real time.
 let internal waitForAllTerminalCore
     (host: PluginHost)
     (timeout: System.TimeSpan)
     (stallThreshold: System.TimeSpan)
     (ct: CancellationToken)
     : Task<unit> =
-    waitCoreWith (fun _ -> true) host timeout stallThreshold ct
+    waitForAllTerminalCoreOn (fun () -> System.DateTime.UtcNow) host timeout stallThreshold ct
 
 let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) (ct: CancellationToken) : Task<unit> =
     waitForAllTerminalCore host timeout waitForAllTerminalBusyStallThreshold ct
@@ -2816,7 +2834,9 @@ let internal waitForEvidenceCore
     // shutdown cancellation alike — instead of relying on a `finally` at one call site.
     task {
         use _observation = host.WorkStore.Observe()
-        return! waitCoreWith hasEvidenceForCurrentModel host timeout stallThreshold ct
+
+        return!
+            waitCoreWith hasEvidenceForCurrentModel (fun () -> System.DateTime.UtcNow) host timeout stallThreshold ct
     }
 
 let internal waitForVerdict (host: PluginHost) (timeout: System.TimeSpan) (ct: CancellationToken) : Task<unit> =
