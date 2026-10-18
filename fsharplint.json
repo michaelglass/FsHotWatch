@@ -340,8 +340,7 @@
     }
   },
   "maxNumberOfBooleanOperatorsInCondition": {
-    "enabled": false,
-    "_comment": "Off: 7 finding(s) in 3 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "enabled": true,
     "config": {
       "maxItems": 6
     }

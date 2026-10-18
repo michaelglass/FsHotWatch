@@ -92,6 +92,20 @@ let private classifyFcs (name: string) : Share =
             || seg.StartsWith("Ident`", StringComparison.Ordinal)
             || seg = "PrettyNaming")
 
+    // A session's own parse and check results: syntax trees, name resolution, symbol uses.
+    let perSession () =
+        [ ".Syntax"; "NameResolution"; "CodeAnalysis" ]
+        |> List.exists (fun part -> name.Contains(part, StringComparison.Ordinal))
+        || anySegment (fun seg -> seg.StartsWith("Syn", StringComparison.Ordinal) && isUpperAt 3 seg)
+        || anySegment (fun seg -> seg.StartsWith("Parsed", StringComparison.Ordinal))
+        || [ "CapturedNameResolution"
+             "TcResolutions"
+             "TcSymbolUse"
+             "Item_"
+             "FSharpCheck"
+             "FSharpParse" ]
+           |> List.exists (fun prefix -> l.StartsWith(prefix, StringComparison.Ordinal))
+
     if typedTreeSyntax && not (name.Contains("AbstractIL", StringComparison.Ordinal)) then
         Share.TypedTree
     elif
@@ -102,19 +116,7 @@ let private classifyFcs (name: string) : Share =
         || l.Contains("BinaryReader", StringComparison.Ordinal)
     then
         Share.Metadata
-    elif
-        name.Contains(".Syntax", StringComparison.Ordinal)
-        || name.Contains("NameResolution", StringComparison.Ordinal)
-        || name.Contains("CodeAnalysis", StringComparison.Ordinal)
-        || anySegment (fun seg -> seg.StartsWith("Syn", StringComparison.Ordinal) && isUpperAt 3 seg)
-        || anySegment (fun seg -> seg.StartsWith("Parsed", StringComparison.Ordinal))
-        || l.StartsWith("CapturedNameResolution", StringComparison.Ordinal)
-        || l.StartsWith("TcResolutions", StringComparison.Ordinal)
-        || l.StartsWith("TcSymbolUse", StringComparison.Ordinal)
-        || l.StartsWith("Item_", StringComparison.Ordinal)
-        || l.StartsWith("FSharpCheck", StringComparison.Ordinal)
-        || l.StartsWith("FSharpParse", StringComparison.Ordinal)
-    then
+    elif perSession () then
         Share.PerSession
     else
         Share.TypedTree

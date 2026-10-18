@@ -6943,11 +6943,14 @@ let internal cacheKeyFor
         // this write feeds the key an ordinary whole-tree check reads.
         // The terminal receipt therefore has to establish the whole configured suite;
         // a green project-scoped/manual or impact-scoped run cannot mint broader proof.
-        if
+        let provenFullSuite =
             completed.Verification = Ran FullSuite
             && noProjectRefutedOrUnrun
             && notAborted
             && not allZeroMatchRun
+
+        if
+            provenFullSuite
             && (pendingQueueHash ()).IsNone
             && not (hasOutstandingFailures ())
         then
@@ -8488,15 +8491,18 @@ let internal createWithEvidenceAndQueries
                     let unverified =
                         not (ReceiptInputTree.matches inputs.EvidenceTree (inputTree |> Option.map _.Identity))
 
+                    let nothingSelected =
+                        totalClasses = 0
+                        && Set.isEmpty forceRunProjects
+                        && List.isEmpty inputs.OutstandingFailures
+                        && not (UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered)
+
                     if
                         unverified
                         && hasCachedResults
                         && not scopeIsFullSuite
                         && nothingOwed inputs.Debt
-                        && totalClasses = 0
-                        && Set.isEmpty forceRunProjects
-                        && List.isEmpty inputs.OutstandingFailures
-                        && not (UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered)
+                        && nothingSelected
                     then
                         let compiled =
                             ctx.ProjectGraph.ObserveCheckableFiles()
@@ -8697,13 +8703,10 @@ let internal createWithEvidenceAndQueries
 
                 let nothingToVerify = UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered
 
-                if
-                    totalClasses = 0
-                    && Set.isEmpty forceRunProjects
-                    && not hasQuarantinedFailures
-                    && not alwaysOnly
-                    && (baselineEquivalent || nothingToVerify)
-                then
+                let nothingForced =
+                    totalClasses = 0 && Set.isEmpty forceRunProjects && not hasQuarantinedFailures
+
+                if nothingForced && not alwaysOnly && (baselineEquivalent || nothingToVerify) then
                     if nothingToVerify then
                         Logging.info
                             "test-prune"
@@ -9773,19 +9776,24 @@ let internal createWithEvidenceAndQueries
             |> List.forall (fun file ->
                 hashed.Contains(Path.GetRelativePath(repoRoot, AbsFilePath.value file).Replace('\\', '/')))
 
-        match state.CoveredFullSuite with
-        | Some(tree, generation) when
+        // An idle boot scan that owes debt the covering run can speak for.
+        let bootScanOwesCoverableDebt () =
             batch.Trigger = BootScan
             && state.InFlight.IsNone
             && not (Set.isEmpty state.Debt.PendingQueue && Map.isEmpty state.Debt.RuntimeObligations)
             && not state.Debt.RecoveryOutstanding
             && Option.isNone (baselineInvalidReason state.Debt)
             && Set.isEmpty state.PendingForceRunProjects
-            && ReceiptInputTree.matches (Some tree.Identity) state.SealedTree
+
+        // The covering run passed this very tree, under the current model.
+        let coveredBy (tree: ReceiptTree) generation =
+            ReceiptInputTree.matches (Some tree.Identity) state.SealedTree
             && inTree tree
             && observeModelGeneration ctx = generation
             && indexNamesOnlyRunnable (lazy (resolveExcludedProjects ()))
-            ->
+
+        match state.CoveredFullSuite with
+        | Some(tree, generation) when bootScanOwesCoverableDebt () && coveredBy tree generation ->
             Logging.info
                 "test-prune"
                 $"BatchChecked: %s{owedDescription state.Debt} discovered by BootScan over the tree the last full-suite run passed — covered by that run, no re-run"

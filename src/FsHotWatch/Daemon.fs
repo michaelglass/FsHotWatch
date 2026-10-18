@@ -2689,9 +2689,10 @@ let private waitCoreWith
             // Running is simply working. `anyRunning` is checked LAST because it is
             // the dearest of the three and, given no progress for the threshold, the
             // rarest to change the answer.
+            let busyOutsideSupervisedWork = not busy.IsEmpty && not work.SupervisedWorkInFlight
+
             if
-                not busy.IsEmpty
-                && not work.SupervisedWorkInFlight
+                busyOutsideSupervisedWork
                 && (overran || StallWatch.stalled stallThreshold now progress)
                 && not (anyRunning ())
             then
