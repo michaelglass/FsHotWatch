@@ -631,6 +631,13 @@ let private deleteTempDirResilient (tmpDir: string) =
             else
                 System.Threading.Thread.Sleep(25)
 
+/// Delete a test's scratch tree, the way `withTempDir` does when its body returns. Its
+/// daemon may still be re-evaluating a project change in it, and deleting a directory an
+/// evaluation stands in leaves the whole test host in a directory that no longer exists,
+/// so the deletion waits out any evaluation in flight.
+let deleteTempDir (tmpDir: string) =
+    FsHotWatch.Daemon.whileNoEvaluationRuns (fun () -> deleteTempDirResilient tmpDir)
+
 /// Delete `dir` and everything under it while something may still be writing there (a
 /// running daemon's `.fshw/`), retrying for up to `timeoutMs`. True once it is gone.
 let deleteWhileWritten (dir: string) (timeoutMs: int) : bool =
@@ -689,7 +696,7 @@ let withTempDir (prefix: string) (body: string -> 'a) =
     try
         body tmpDir
     finally
-        deleteTempDirResilient tmpDir
+        deleteTempDir tmpDir
 
 /// The daemon's own checker, shared: its options decide which symbol data a check keeps.
 let daemonChecker = lazy (FsHotWatch.Daemon.Daemon.createChecker ())
