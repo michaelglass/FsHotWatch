@@ -28,15 +28,81 @@ type LintState =
             | Result.Ok _
             | Result.Error _ -> this
 
-// TODO: lintParsedSource misses hint-based rules (e.g. FL0065 "x = [] ===> List.isEmpty x")
-// that the solution-level linter (dotnet fsharplint lint) catches. Investigate using
-// Lint.lintProject with a warm FSharpChecker instead of per-file lintParsedSource.
-// See ../FsharpLint for the FSharpLint.Core source.
+/// A lint run that did not actually lint: FSharpLint failed inside, or never reached the
+/// end of the file. Raised so the run reports FAILURE instead of a clean file.
+type LintCoreFailedException(message: string, inner: exn) =
+    inherit Exception(message, inner)
 
-/// FSharpLint version embedded into cache keys so a tool upgrade invalidates
-/// every entry without manual flushing.
+/// Run one FSharpLint invocation (`core`) and turn its silent failures into an exception.
+///
+/// FSharpLint catches every exception its linter meets (an FCS binary mismatch throws
+/// `MissingMethodException` on every file, for example). It reports the exception ONLY as
+/// `ProjectProgress.Failed` through `ReportLinterProgress`, then returns `Success []`. Read
+/// alone, that result says "0 issues" about a file nothing linted. So a run that reported a
+/// failure, or never reported reaching the end of the file, raises
+/// `LintCoreFailedException` naming the cause. A `Failure` result is FSharpLint's own
+/// failure channel and passes through unchanged.
+let lintReportingFailures
+    (lintParams: Lint.OptionalLintParameters)
+    (core: Lint.OptionalLintParameters -> Lint.LintResult)
+    : Lint.LintResult =
+    let progress = System.Collections.Concurrent.ConcurrentQueue<Lint.ProjectProgress>()
+
+    let report (p: Lint.ProjectProgress) =
+        progress.Enqueue p
+        lintParams.ReportLinterProgress |> Option.iter (fun forward -> forward p)
+
+    let result =
+        core
+            { lintParams with
+                ReportLinterProgress = Some report }
+
+    match result with
+    | Lint.LintResult.Failure _ -> result
+    | Lint.LintResult.Success _ ->
+        let failure =
+            progress
+            |> Seq.tryPick (fun p ->
+                match p with
+                | Lint.ProjectProgress.Failed(_, ex) -> Some ex
+                | Lint.ProjectProgress.Starting _
+                | Lint.ProjectProgress.ReachedEnd _ -> None)
+
+        let reachedEnd =
+            progress
+            |> Seq.exists (fun p ->
+                match p with
+                | Lint.ProjectProgress.ReachedEnd _ -> true
+                | Lint.ProjectProgress.Starting _
+                | Lint.ProjectProgress.Failed _ -> false)
+
+        match failure with
+        | Some ex ->
+            raise (
+                LintCoreFailedException(
+                    $"FSharpLint failed inside and linted nothing: %s{ex.GetType().FullName}: %s{ex.Message}",
+                    ex
+                )
+            )
+        | None when not reachedEnd ->
+            raise (LintCoreFailedException("FSharpLint never reached the end of the file: nothing was linted", null))
+        | None -> result
+
+/// The message a failed lint reports: a core failure already names its cause, and any
+/// other exception is named by its type.
+let private describeLintException (ex: exn) =
+    match ex with
+    | :? LintCoreFailedException -> ex.Message
+    | _ -> $"%s{ex.GetType().FullName}: %s{ex.Message}"
+
+
+/// FSharpLint build identity embedded into cache keys so a tool upgrade invalidates
+/// every entry without manual flushing. The module version id, not the assembly
+/// version: the build FsHotWatch.Lint ships (bundled by the analyzer shim) is stamped
+/// 1.0.0.0 whatever it contains, so a version would let a new build read an old one's
+/// results.
 let private fsharpLintVersion =
-    typeof<FSharpLint.Application.Lint.OptionalLintParameters>.Assembly.GetName().Version
+    typeof<FSharpLint.Application.Lint.OptionalLintParameters>.Assembly.ManifestModule.ModuleVersionId
     |> string
 
 /// Bumped manually when this plugin's caching semantics change in a way that
@@ -132,7 +198,7 @@ let create
                   TypeCheckResults = typeCheckResults
                   ProjectCheckResults = None }
 
-            Lint.lintParsedSource lintParams parsedInfo)
+            lintReportingFailures lintParams (fun p -> Lint.lintParsedSource p parsedInfo))
 
     { Name = PluginName.create "lint"
       Init = { WarningsByFile = Map.empty }
@@ -186,7 +252,26 @@ let create
                                         Logging.warn "lint" $"Skipping %s{fileStr} — no parse results"
                                         return state
                                     else
-                                        match runWithCancellableTimeout lintTimeout (fun _ct -> runLint result) with
+                                        // A runner that throws (FSharpLint's binary mismatch with
+                                        // FCS, a core failure surfaced by `lintReportingFailures`)
+                                        // is a FAILED lint for this file, named by its exception.
+                                        let lintOrError _ct =
+                                            try
+                                                Result.Ok(runLint result)
+                                            with ex ->
+                                                Result.Error ex
+
+                                        let reportFailure (msg: string) =
+                                            ctx.ReportErrors fileStr [ ErrorEntry.error msg ]
+
+                                            ctx.ReportStatus(
+                                                PluginStatus.failedNow
+                                                    msg
+                                                    $"lint failed on {System.IO.Path.GetFileName fileStr}"
+                                                    (elapsed ())
+                                            )
+
+                                        match runWithCancellableTimeout lintTimeout lintOrError with
                                         | WorkTimedOut after ->
                                             let reason = $"timed out after %d{int after.TotalSeconds}s"
                                             Logging.error "lint" $"Lint TIMED OUT for %s{fileStr}: %s{reason}"
@@ -194,7 +279,7 @@ let create
                                             PluginCtxHelpers.timedOutWith ctx "lint" reason after
 
                                             return state
-                                        | WorkCompleted(Lint.LintResult.Success warnings) ->
+                                        | WorkCompleted(Result.Ok(Lint.LintResult.Success warnings)) ->
                                             Logging.debug
                                                 "lint"
                                                 $"Linted %s{System.IO.Path.GetFileName fileStr}: %d{warnings.Length} warnings"
@@ -225,18 +310,13 @@ let create
                                                 (elapsed ())
 
                                             return newState
-                                        | WorkCompleted(Lint.LintResult.Failure failure) ->
-                                            let msg = $"Lint failed for %s{fileStr}: %A{failure}"
-
-                                            ctx.ReportErrors fileStr [ ErrorEntry.error msg ]
-
-                                            ctx.ReportStatus(
-                                                PluginStatus.failedNow
-                                                    msg
-                                                    $"lint failed on {System.IO.Path.GetFileName fileStr}"
-                                                    (elapsed ())
-                                            )
-
+                                        | WorkCompleted(Result.Ok(Lint.LintResult.Failure failure)) ->
+                                            reportFailure $"Lint failed for %s{fileStr}: %A{failure}"
+                                            return state
+                                        | WorkCompleted(Result.Error ex) ->
+                                            let msg = $"Lint failed for %s{fileStr}: %s{describeLintException ex}"
+                                            Logging.error "lint" msg
+                                            reportFailure msg
                                             return state
                                 })
                 | _ -> return state

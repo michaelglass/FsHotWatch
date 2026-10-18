@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix!: a lint run that threw, or examined nothing, now reports Failed and names the
+  exception. Before, FSharpLint reported its internal failures only as
+  `ProjectProgress.Failed` and returned no warnings, and the plugin reported 0 issues.
+- fix: FSharpLint.Core now comes from `FSharpLintAnalyzerShim` 0.5.0-alpha.1, a build
+  compiled against FCS 43.12.202+. The published 0.27.0 and 0.27.1 nightlies throw
+  `MissingMethodException` under the FCS in use.
+- fix: the cache key carries FSharpLint.Core's module version id, not its assembly version.
+
 ## 0.7.0-alpha.30 - 2026-10-16
 
 - fix!: a #nowarn file no longer turns the evidence receipt red after an edit
