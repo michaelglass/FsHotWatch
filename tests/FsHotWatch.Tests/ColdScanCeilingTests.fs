@@ -285,6 +285,7 @@ let private runGenerations (scenario: Scenario) : Outcome =
                         Ok
                             { Modified = []
                               Considered = files.Length
+                              Failures = []
                               Evidence = "newer edit delivered" }
 
                     member _.Dispose() = () }

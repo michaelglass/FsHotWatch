@@ -250,6 +250,7 @@ let ``host owns preprocessor work until its outcome is published`` (refuse: bool
                     Ok
                         { Modified = []
                           Considered = files.Length
+                          Failures = []
                           Evidence = "controlled pass" }
 
             member _.Dispose() = () }
@@ -292,6 +293,7 @@ let ``preprocessor runs before events are dispatched`` () =
                 Ok
                     { Modified = []
                       Considered = changedFiles.Length
+                      Failures = []
                       Evidence = "tracker" }
 
             member _.Dispose() = () }
@@ -312,6 +314,7 @@ let ``preprocessor modified files are returned`` () =
                 Ok
                     { Modified = [ "src/Formatted.fs"; "src/Other.fs" ]
                       Considered = 1
+                      Failures = []
                       Evidence = "modifier v1" }
 
             member _.Dispose() = () }
@@ -369,6 +372,7 @@ let ``preprocessor status is tracked`` () =
                 Ok
                     { Modified = [ "a.fs" ]
                       Considered = 1
+                      Failures = []
                       Evidence = "status-pp" }
 
             member _.Dispose() = () }
@@ -1738,6 +1742,7 @@ let ``RerunPlugin names a preprocessor as such and points at fshw format`` () =
                 Ok
                     { Modified = []
                       Considered = changedFiles.Length
+                      Failures = []
                       Evidence = "fake" }
 
             member _.Dispose() = () }
@@ -2035,6 +2040,7 @@ let private recordingPreprocessor (name: string) (writes: string list) (seen: Re
             Ok
                 { Modified = writes
                   Considered = files.Length
+                  Failures = []
                   Evidence = name }
 
         member _.Dispose() = () }
@@ -2116,6 +2122,7 @@ let ``a status write is visible to the next read with every pool thread held`` (
                         Result.Ok
                             { Modified = []
                               Considered = 0
+                              Failures = []
                               Evidence = "none" }
 
                     member _.Dispose() = () }

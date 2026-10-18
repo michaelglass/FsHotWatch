@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix!: the format preprocessor reports each file the pinned Fantomas could not process
+  (a parse error, or a timed-out run) as a failure of the pass, instead of logging it and
+  reporting `rewrote 0 of N` green. Such a file is handed back to the tool on every later
+  pass until it is processed. A single-file run's bare file-name echo is attributed.
+
 ## 0.7.0-alpha.29 - 2026-09-29
 
 - test(integration): stub fantomas in the all-plugins test

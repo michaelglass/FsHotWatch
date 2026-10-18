@@ -164,14 +164,27 @@ type FormatReport =
 let NeedsFormattingExitCode = 99
 
 /// Resolve a path Fantomas printed back to the absolute path the caller passed. The
-/// tool echoes paths as given, so an exact match is the normal case; the fallback covers
-/// a relative echo from a `workDir`-relative invocation.
+/// tool echoes paths as given, so an exact match is the normal case; the first fallback
+/// covers a relative echo from a `workDir`-relative invocation.
+///
+/// The second covers the tool's single-file shape: handed exactly ONE file, fantomas
+/// 7.0.5 echoes its bare file name (`Failed to format file: Bad.fs : Could not parse
+/// file.`), not the path it was given. A bare name resolves only when exactly one
+/// requested file carries it; an ambiguous name stays unattributed rather than guessed.
 let private resolveEcho (workDir: string) (requested: Set<string>) (echoed: string) : string option =
     if requested.Contains echoed then
         Some echoed
     else
         let full = Path.GetFullPath(Path.Combine(workDir, echoed))
-        if requested.Contains full then Some full else None
+
+        if requested.Contains full then
+            Some full
+        elif Path.GetFileName echoed = echoed then
+            match requested |> Set.filter (fun r -> Path.GetFileName r = echoed) |> Set.toList with
+            | [ only ] -> Some only
+            | _ -> None
+        else
+            None
 
 /// Pure reading of the tool's text. `<path> needs formatting` lines and the two
 /// shapes of per-file error — `error: Failed to format <path>: <reason>` from `--check`,

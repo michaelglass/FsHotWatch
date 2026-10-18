@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **fix!: a preprocessor pass that could not process some files is a Failed status.**
+  `PreprocessResult` gains `Failures: (string * string) list` (file, reason), so code
+  that builds one must supply it (`Failures = []` for a pass that processed everything).
+  The host fails the pass naming each file repository-relative, still applying its
+  rewrites, and `PreprocessorsRun.Failures` collects them for `fshw format`.
+
 ## 0.10.0-alpha.86 - 2026-10-18
 
 - **fix!: a run a CLI invocation asked for through a command is no longer cancelled as

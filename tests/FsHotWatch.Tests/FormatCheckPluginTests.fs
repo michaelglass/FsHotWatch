@@ -94,7 +94,7 @@ let private waitCompleted (host: PluginHost) (timeoutMs: int) =
     waitUntil
         (fun () ->
             match host.GetStatus("format-check") with
-            | Some(Completed _) -> true
+            | Some(PluginStatus.Completed _) -> true
             | _ -> false)
         timeoutMs
 
@@ -175,7 +175,7 @@ let ``format check handles non-source change events without crashing`` () =
         (fun () ->
             (not (host.AnyPluginBusy()))
             && (match host.GetStatus("format-check") with
-                | Some(Completed _) -> true
+                | Some(PluginStatus.Completed _) -> true
                 | _ -> false))
         17000
 
@@ -574,10 +574,116 @@ let ``FormatPreprocessor reports a file the tool cannot parse and leaves it alon
         let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
 
         match preprocessor.Process [ file ] dir with
-        | Ok result -> test <@ List.isEmpty result.Modified @>
+        | Ok result ->
+            test <@ List.isEmpty result.Modified @>
+            test <@ result.Failures |> List.map fst = [ file ] @>
         | Error e -> failwith $"a parse error is a per-file finding, not a refusal: %s{e}"
 
         test <@ File.ReadAllText(file) = original @>)
+
+// A new file the pinned Fantomas cannot parse must fail the format stage of the very
+// gate that adds it. It used to be logged and dropped: a whole-tree pass reported
+// `format: rewrote 0 of 2500 file(s)` (green) over a file the tool had refused, and
+// only a later single-file pass, whose output echoes a bare file name the reader could
+// not attribute, happened to go red. These run the REAL pinned tool through the host's
+// preprocessor pass, the path `check`'s forced scan takes.
+
+/// `let f (land: int) = …`: FCS only warns (FS0062, ML compatibility), but the pinned
+/// Fantomas rejects the file outright: "Could not parse file."
+let private unparseable = "module Bad\n\nlet f (land: int) = land + 1\n"
+
+let private wellFormatted = "module Good\n\nlet x = 1\nlet y = 2\n"
+
+let private preprocessorHost (dir: string) =
+    let host = PluginHost.create (Unchecked.defaultof<_>) dir
+    host.RegisterPreprocessor(FormatPreprocessor())
+    host
+
+let private formatFailedWith (host: PluginHost) (fragment: string) =
+    match host.GetStatus "format" with
+    | Some(PluginStatus.Failed(reason, _, _)) -> reason.Contains fragment
+    | _ -> false
+
+[<Fact(Timeout = RealFantomasTestCapMs)>]
+let ``a new file the pinned tool cannot parse fails the format pass that is handed it, among others`` () =
+    withPinnedRepo "fmt-new-bad" (fun dir ->
+        let good = Path.Combine(dir, "Good.fs")
+        let bad = Path.Combine(dir, "Bad.fs")
+        File.WriteAllText(good, wellFormatted)
+        File.WriteAllText(bad, unparseable)
+        let host = preprocessorHost dir
+
+        let run = host.RunPreprocessors [ good; bad ]
+
+        test <@ File.ReadAllText bad = unparseable @>
+        test <@ formatFailedWith host "Bad.fs: Could not parse file" @>
+        test <@ run.Failures |> List.map fst = [ bad ] @>)
+
+[<Fact(Timeout = RealFantomasTestCapMs)>]
+let ``a new file the pinned tool cannot parse, handed over alone, is a finding about that file`` () =
+    // Alone, the tool echoes only `Bad.fs`. The failure must still name the file.
+    withPinnedRepo "fmt-new-bad-alone" (fun dir ->
+        let bad = Path.Combine(dir, "sub", "Bad.fs")
+        Directory.CreateDirectory(Path.GetDirectoryName bad) |> ignore
+        File.WriteAllText(bad, unparseable)
+        let host = preprocessorHost dir
+
+        let run = host.RunPreprocessors [ bad ]
+
+        test <@ List.isEmpty run.Refused @>
+        test <@ run.Failures |> List.map fst = [ bad ] @>
+        test <@ formatFailedWith host "sub/Bad.fs: Could not parse file" @>)
+
+[<Fact(Timeout = RealFantomasTestCapMs)>]
+let ``an unparseable file keeps the format pass failed while it is unchanged, and clears once fixed`` () =
+    // A later pass that is not handed the broken file (a change batch elsewhere) must
+    // not report the stage green over it: the failure is re-earned from the file's
+    // current bytes on every pass, never forgotten and never replayed.
+    withPinnedRepo "fmt-bad-persists" (fun dir ->
+        let good = Path.Combine(dir, "Good.fs")
+        let bad = Path.Combine(dir, "Bad.fs")
+        File.WriteAllText(good, wellFormatted)
+        File.WriteAllText(bad, unparseable)
+        let host = preprocessorHost dir
+
+        host.RunPreprocessors [ good; bad ] |> ignore
+        let failedFirst = formatFailedWith host "Bad.fs"
+        host.RunPreprocessors [ good ] |> ignore
+        let failedLater = formatFailedWith host "Bad.fs"
+
+        File.WriteAllText(bad, "module Bad\n\nlet f (value: int) = value + 1\n")
+        let fixedRun = host.RunPreprocessors [ bad ]
+
+        test <@ failedFirst @>
+        test <@ failedLater @>
+        test <@ List.isEmpty fixedRun.Failures @>
+
+        test
+            <@
+                match host.GetStatus "format" with
+                | Some(PluginStatus.Completed _) -> true
+                | _ -> false
+            @>)
+
+[<Fact(Timeout = RealFantomasTestCapMs)>]
+let ``positive control: a new well-formatted file passes the format pass`` () =
+    withPinnedRepo "fmt-new-good" (fun dir ->
+        let good = Path.Combine(dir, "Good.fs")
+        File.WriteAllText(good, wellFormatted)
+        let host = preprocessorHost dir
+
+        let run = host.RunPreprocessors [ good ]
+
+        test <@ List.isEmpty run.Failures @>
+        test <@ List.isEmpty run.Refused @>
+
+        test
+            <@
+                match host.GetStatus "format" with
+                | Some(PluginStatus.Completed(_, verdict)) ->
+                    verdict.Summary.StartsWith "format: rewrote 0 of 1 file(s)"
+                | _ -> false
+            @>)
 
 [<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``format check reports a file the tool cannot parse as a ledger error`` () =
@@ -804,7 +910,7 @@ let private runFormatCheckBatches
             (fun () ->
                 (not (host.AnyPluginBusy()))
                 && (match host.GetStatus("format-check") with
-                    | Some(Completed _) -> true
+                    | Some(PluginStatus.Completed _) -> true
                     | _ -> false))
             FantomasRunWaitMs
 
