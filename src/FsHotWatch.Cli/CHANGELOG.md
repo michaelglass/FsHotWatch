@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.118 - 2026-10-18
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.117 - 2026-10-18
 
 - fix: `check` asks for the run its daemon owes (`set-scope owed`) on behalf of its own
