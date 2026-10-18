@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: an unreadable directory that a `dir/` exclude names is no longer a hole in the tree
+  hash or the test-evidence key. The hole was matched as a bare path, which reads as a file,
+  so the directory-only pattern missed the very directory it names (a directory below it
+  was matched). New `PathFilter.isExcludedDirectory` asks the patterns in directory form,
+  as `GitIgnores` does, so `vendor/*` still excludes what is inside `vendor`, not `vendor`.
+
 ## 0.10.0-alpha.87 - 2026-10-18
 
 - fix: the test-evidence store keeps each entry's coverage report gzip-compressed (schema

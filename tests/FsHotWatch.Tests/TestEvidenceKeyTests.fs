@@ -887,3 +887,30 @@ let ``a closure project outside the verdict walk is keyed under the same exclude
                 test <@ Result.isError (inputsFor (snapshot a []) (withC a (requestFor a defaultConfig))) @>
             finally
                 File.SetUnixFileMode(hidden, rwx))
+
+[<Fact>]
+let ``an unreadable directory a dir-slash exclude names is no hole in a direct walk`` () =
+    // The directory the pattern names, not one below it: asked as a bare path it reads
+    // as a file, and `bench/C/.cache/` missed it.
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "evkey-excluded-root-unreadable" (fun root ->
+            populate root
+            write root "bench/C/C.fsproj" (fsproj [])
+            write root "bench/C/Lib.fs" "1"
+            write root "bench/C/.cache/cracked.json" root
+
+            let request =
+                let r = requestFor root defaultConfig
+
+                { r with
+                    Closure = Path.Combine(root, "bench/C/C.fsproj") :: r.Closure }
+
+            let hidden = Path.Combine(root, "bench/C/.cache")
+            File.SetUnixFileMode(hidden, UnixFileMode.None)
+
+            try
+                test <@ Result.isOk (inputsFor (snapshot root [ "bench/C/.cache/" ]) request) @>
+                // POSITIVE CONTROL: unexcluded, the same directory is a hole.
+                test <@ Result.isError (inputsFor (snapshot root []) request) @>
+            finally
+                File.SetUnixFileMode(hidden, rwx))

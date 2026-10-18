@@ -54,6 +54,18 @@ let isExcludedPath (repoRoot: string) (excludePatterns: string list) : (string -
                 | Some rel -> ig.IsIgnored(rel)
                 | None -> false)
 
+/// `isExcludedPath` for a DIRECTORY, asked without a trailing `/`. A bare path reads as
+/// a file, so a directory-only pattern (`vendor/`) would miss the very directory it
+/// names; the patterns are asked in directory form instead, trailing `/` dropped, as
+/// `GitIgnores` does. Asking `vendor/` would not do: `Ignore` reads it as `vendor/` plus
+/// an empty name, so `vendor/*` would match `vendor` itself, where git matches only
+/// what is inside it.
+let isExcludedDirectory (repoRoot: string) (excludePatterns: string list) : (string -> bool) =
+    excludePatterns
+    |> List.map (fun p -> p.TrimEnd('/'))
+    |> List.filter (fun p -> p <> "" && p <> "!")
+    |> isExcludedPath repoRoot
+
 /// Load an ignore file (gitignore syntax) and return a predicate that checks
 /// absolute paths against it. Returns a function that always returns false
 /// if the file does not exist or cannot be read. Paths outside `repoRoot` are

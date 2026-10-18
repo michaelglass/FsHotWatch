@@ -566,6 +566,7 @@ let inputsFor (snap: Snapshot) (request: Request) : Result<Inputs * int64, strin
         // walked directly, so it is still fully keyed, under the same exclude.
         let mutable extraBytes = 0L
         let isExcluded = PathFilter.isExcludedPath root snap.ExcludePatterns
+        let isExcludedDir = PathFilter.isExcludedDirectory root snap.ExcludePatterns
 
         let inVerdictWalk (dir: string) =
             dir <> "." && snap.Roots |> List.exists (fun r -> dir = r || isUnder r dir)
@@ -585,7 +586,7 @@ let inputsFor (snap: Snapshot) (request: Request) : Result<Inputs * int64, strin
                          extraBytes <- extraBytes + f.Length
                          rel f.FullName, ContentHash.ofFile f.FullName))
                     @ (walk.Skipped
-                       |> List.filter (fun s -> not (isExcluded s.Path))
+                       |> List.filter (fun s -> not (isExcludedDir s.Path))
                        |> List.map (fun s -> rel s.Path + "/", ContentHash.UnhashableContent)))
             |> List.distinctBy fst
 
