@@ -185,7 +185,11 @@ let create
             Logging.error "lint" $"Failed to load lint config: %s{ex.Message} — using defaults"
             Lint.OptionalLintParameters.Default
 
-    let runLint =
+    // A config with keys FSharpLint binds to nothing would lint every file "clean" for
+    // the rules under them. Fail every run, naming the keys, instead of linting at all.
+    let configShapeError = lintConfigPath |> Option.bind LintConfigShape.check
+
+    let lintFile =
         defaultArg lintRunner (fun result ->
             let typeCheckResults =
                 match result.CheckResults with
@@ -199,6 +203,11 @@ let create
                   ProjectCheckResults = None }
 
             lintReportingFailures lintParams (fun p -> Lint.lintParsedSource p parsedInfo))
+
+    let runLint (result: FileCheckResult) =
+        match configShapeError with
+        | Some message -> Lint.LintResult.Failure(Lint.LintFailure.FailedToLoadConfig message)
+        | None -> lintFile result
 
     { Name = PluginName.create "lint"
       Init = { WarningsByFile = Map.empty }
@@ -311,7 +320,7 @@ let create
 
                                             return newState
                                         | WorkCompleted(Result.Ok(Lint.LintResult.Failure failure)) ->
-                                            reportFailure $"Lint failed for %s{fileStr}: %A{failure}"
+                                            reportFailure $"Lint failed for %s{fileStr}: %s{failure.Description}"
                                             return state
                                         | WorkCompleted(Result.Error ex) ->
                                             let msg = $"Lint failed for %s{fileStr}: %s{describeLintException ex}"

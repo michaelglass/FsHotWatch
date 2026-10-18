@@ -691,6 +691,133 @@ let isNone (x: int list) = x = []
         | None -> Assert.Fail("FCS failed to check the temp file"))
 
 // ===========================================================================
+// fsharplint.json: what the in-process lint and the analyzer shim each enforce
+// ===========================================================================
+
+/// A file with one line over 20 characters (FL0060 under `maxCharactersOnLine` 20) and
+/// one redundant `new` (FL0014): a line rule and a type-checked AST rule.
+let private plantedLintSource =
+    """module Temp
+let o = System.Object()
+let longerThanTwentyCharacters = new System.Object()
+"""
+
+let private flatLintConfig =
+    """{
+  "maxCharactersOnLine": { "enabled": true, "config": { "maxCharactersOnLine": 20 } },
+  "redundantNewKeyword": { "enabled": true }
+}"""
+
+/// FSharpLint's own deprecated grouped shape: the rules sit directly under the group.
+let private groupedLintConfig =
+    """{
+  "typography": { "maxCharactersOnLine": { "enabled": true, "config": { "maxCharactersOnLine": 20 } } },
+  "conventions": { "redundantNewKeyword": { "enabled": true } }
+}"""
+
+/// The group wrapped in `enabled`/`config`, which FSharpLint's loader binds to nothing.
+let private wrappedLintConfig =
+    """{ "typography": { "enabled": true, "config": { "maxCharactersOnLine": { "enabled": true, "maxCharacters": 20 } } } }"""
+
+let private fsharpLintShimPath () =
+    Path.Combine(findRepoRoot (), "tools/fsharplint-shim/bin/Debug/net10.0")
+
+/// Lint the planted file, with `configJson` as the fsharplint.json beside it, through the
+/// in-process LintPlugin and (when `withShim`) the analyzer shim on the same check.
+/// Returns each plugin's terminal status and its findings as (line, column, message).
+let private lintPlanted (configJson: string) (withShim: bool) =
+    analyzerCheckGate.Wait()
+
+    try
+        withTempFsFile plantedLintSource (fun dir filePath ->
+            let configPath = Path.Combine(dir, "fsharplint.json")
+            File.WriteAllText(configPath, configJson)
+            let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+            let host = createModelHost checker (findRepoRoot ())
+            host.RegisterHandler(LintPlugin.create None (Some configPath) None None)
+
+            if withShim then
+                host.RegisterHandler(
+                    AnalyzersPlugin.create None [ fsharpLintShimPath () ] None DiagnosticSeverity.Error
+                )
+
+            match checkTempFile checker filePath with
+            | Some checkResult ->
+                host.EmitFileChecked(stampFixture checkResult)
+                waitForTerminalStatus host "lint" RealCheckWaitMs
+
+                if withShim then
+                    waitForTerminalStatus host "analyzers" RealCheckWaitMs
+
+                let findings plugin =
+                    host.GetErrorsByPlugin(plugin)
+                    |> Map.toList
+                    |> List.collect snd
+                    |> List.map (fun e -> e.Line, e.Column, e.Message)
+                    |> List.sort
+
+                (host.GetStatus("lint"), findings "lint"), (host.GetStatus("analyzers"), findings "analyzers")
+            | None -> failwith "FCS failed to check the temp file")
+    finally
+        analyzerCheckGate.Release() |> ignore
+
+let private assertPlantedFindings (findings: (int * int * string) list) =
+    test
+        <@
+            findings
+            |> List.exists (fun (line, _, m) -> line = 3 && m.Contains "less than 21 characters")
+        @>
+
+    test <@ findings |> List.exists (fun (line, _, m) -> line = 3 && m.Contains "new") @>
+
+[<Fact(Timeout = RealCheckTestCapMs)>]
+let ``in-process lint reports a rule configured only at the root`` () =
+    let (status, findings), _ = lintPlanted flatLintConfig false
+
+    match status with
+    | Some(Completed _) -> ()
+    | other -> Assert.Fail($"Expected Completed, got: %A{other}")
+
+    assertPlantedFindings findings
+
+[<Fact(Timeout = RealCheckTestCapMs)>]
+let ``in-process lint reports a rule configured only inside a group`` () =
+    let (status, findings), _ = lintPlanted groupedLintConfig false
+
+    match status with
+    | Some(Completed _) -> ()
+    | other -> Assert.Fail($"Expected Completed, got: %A{other}")
+
+    assertPlantedFindings findings
+
+[<Fact(Timeout = RealCheckTestCapMs)>]
+let ``in-process lint fails a group wrapped in enabled and config, naming the key`` () =
+    // FSharpLint's loader binds nothing under the wrapper, so the shim lints this file
+    // clean. The in-process lint refuses to: a config that enforces nothing it names
+    // is reported, not passed.
+    let (status, _), _ = lintPlanted wrappedLintConfig false
+
+    match status with
+    | Some(PluginStatus.Failed(message, _, _)) -> test <@ message.Contains "typography.config" @>
+    | other -> Assert.Fail($"Expected Failed naming the wrapper, got: %A{other}")
+
+[<Theory(Timeout = RealCheckTestCapMs)>]
+[<InlineData("flat")>]
+[<InlineData("grouped")>]
+let ``in-process lint and the analyzer shim report the same findings for one config`` (shape: string) =
+    let config = if shape = "flat" then flatLintConfig else groupedLintConfig
+
+    let (lintStatus, lintFindings), (shimStatus, shimFindings) = lintPlanted config true
+
+    match lintStatus, shimStatus with
+    | Some(Completed _), Some(Completed _) -> ()
+    | other -> Assert.Fail($"Expected both Completed, got: %A{other}")
+
+    // Not vacuous: both paths found the planted rules, and found exactly the same ones.
+    assertPlantedFindings lintFindings
+    test <@ lintFindings = shimFindings @>
+
+// ===========================================================================
 // AnalyzersPlugin — success and failure
 // ===========================================================================
 

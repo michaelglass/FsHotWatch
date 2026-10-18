@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix!: an fsharplint.json key FSharpLint's loader binds to no rule (a group wrapped in
+  `enabled`/`config`, a setting outside `config`, an unknown key) fails the lint and
+  names the key, instead of silently dropping every rule under it.
+
 ## 0.7.0-alpha.31 - 2026-10-18
 
 - fix!: a lint run that threw, or examined nothing, now reports Failed and names the

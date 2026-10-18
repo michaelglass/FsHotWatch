@@ -74,6 +74,35 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### lint: a fsharplint.json key FSharpLint binds to no rule fails the lint
+
+- **fix!: the in-process lint fails, naming each key, when `fsharplint.json` has a key
+  FSharpLint's loader drops.** FSharpLint deserializes the file into its
+  `Configuration` record and silently ignores every property no field names. The legacy
+  wrapped group, `"typography": { "enabled": true, "config": { ... } }`, is that case:
+  the group record has no `enabled` or `config` field, so every rule under it is
+  dropped and the lint reports each file clean. A rule setting beside `enabled` instead
+  of inside `config` (`"maxCharacters": 120`), a misnamed setting, an `enabled` under
+  `hints`, and a top-level key FSharpLint has no field for (`binding`,
+  `numberOfItems`) are dropped the same way. The step now reports `Failed` and lists
+  the dotted path of every such key. It lints nothing until the config is fixed.
+- The check reads no rule itself. It walks the file's JSON against the record types
+  FSharpLint deserializes into, with the same camel-case naming, so it can only list
+  what the loader ignores. FSharpLint's own grouped shape, with the rules directly under
+  `typography`/`conventions`/`formatting`, binds and still lints. Keys starting with
+  `_` are annotations and are allowed anywhere.
+- **Migrate before upgrading** if your `.fshw.json` has `"lint": true` (the default)
+  and your fsharplint.json uses the wrapped shape: move each rule to the root, as
+  `"<rule>": { "enabled": true, "config": { ... } }` with FSharpLint's field names. Its
+  embedded default fsharplint.json lists every one. The analyzer route
+  (`FSharpLintAnalyzerShim` on `analyzers.paths`) uses the same loader and still drops
+  those keys without a word, so a wrapped config enforces nothing there either.
+- A lint failure FSharpLint itself returns is now reported by its description, not its
+  F# structural print.
+- Tests: a rule configured only at the root, or only inside a group, is reported through
+  a real type check. The in-process lint and the analyzer shim, given one config and one
+  check, report identical findings for both shapes.
+
 ### lint: the in-process lint plugin lints again, and a lint that never ran fails
 
 - **fix!: a lint run that threw, or examined nothing, now fails the step.** FSharpLint

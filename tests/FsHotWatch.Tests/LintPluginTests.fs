@@ -824,3 +824,63 @@ let ``real FSharpLint through the plugin reports a project-config rule`` () =
         | other -> Assert.Fail($"Expected Completed, got: %A{other}")
 
         test <@ entries |> List.isEmpty |> not @>)
+
+// ---------------------------------------------------------------------------
+// fsharplint.json keys FSharpLint's loader binds to nothing
+// ---------------------------------------------------------------------------
+
+/// Run one file through a plugin configured with `configJson`, reaching a terminal
+/// status, and report the runner's call count with that status.
+let private lintWithConfig (configJson: string) =
+    withTempDir "lint-config-shape" (fun dir ->
+        let configPath = System.IO.Path.Combine(dir, "fsharplint.json")
+        System.IO.File.WriteAllText(configPath, configJson)
+        let host = createModelHost (Unchecked.defaultof<_>) dir
+        let mutable runs = 0
+
+        let runner (_result: FileCheckResult) =
+            System.Threading.Interlocked.Increment(&runs) |> ignore
+            Lint.LintResult.Success []
+
+        host.RegisterHandler(create (Some dir) (Some configPath) (Some runner) None)
+        host.EmitFileChecked(fakeFileCheckResult (System.IO.Path.Combine(dir, "File.fs")))
+        waitForTerminalStatus host "lint" 15000
+        runs, host.GetStatus("lint"))
+
+[<Fact(Timeout = 20000)>]
+let ``a group wrapped in enabled and config fails the lint naming the key`` () =
+    // The shape both of this repo's own configs once used. FSharpLint's loader binds
+    // nothing under it, so every rule in the group silently never runs.
+    let runs, status =
+        lintWithConfig
+            """{ "typography": { "enabled": true, "config": { "maxCharactersOnLine": { "enabled": true, "maxCharacters": 20 } } } }"""
+
+    match status with
+    | Some(Failed(message, _, _)) ->
+        test <@ message.Contains "typography.enabled" @>
+        test <@ message.Contains "typography.config" @>
+    | other -> Assert.Fail($"Expected Failed naming the unbound keys, got: %A{other}")
+
+    // Nothing is linted against a config that cannot say what it enforces.
+    test <@ runs = 0 @>
+
+[<Fact(Timeout = 20000)>]
+let ``an unknown top-level key fails the lint naming the key`` () =
+    let _, status =
+        lintWithConfig """{ "binding": { "enabled": true, "config": { "uselessBinding": { "enabled": true } } } }"""
+
+    match status with
+    | Some(Failed(message, _, _)) -> test <@ message.Contains "binding" @>
+    | other -> Assert.Fail($"Expected Failed naming the unknown key, got: %A{other}")
+
+[<Fact(Timeout = 20000)>]
+let ``a config every key of which FSharpLint binds lints normally`` () =
+    let runs, status =
+        lintWithConfig
+            """{ "_comment": "annotations are allowed", "maxCharactersOnLine": { "enabled": true, "config": { "maxCharactersOnLine": 120 } } }"""
+
+    match status with
+    | Some(Completed _) -> ()
+    | other -> Assert.Fail($"Expected Completed, got: %A{other}")
+
+    test <@ runs = 1 @>
