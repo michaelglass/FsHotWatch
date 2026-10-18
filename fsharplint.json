@@ -55,7 +55,7 @@
   },
   "trailingNewLineInFile": {
     "enabled": false,
-    "_comment": "Off: 444 finding(s) in 442 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable."
+    "_comment": "Off: Fantomas owns layout and this rule fights it. Despite its name it flags the single final newline every file ends with (444 findings, 2026-10-18), which Fantomas always writes: strip it and Fantomas puts it back."
   },
   "noTabCharacters": {
     "enabled": true
