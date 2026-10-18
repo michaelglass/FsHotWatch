@@ -15,7 +15,7 @@ module FsHotWatch.Cli.SolutionScope
 //
 // THE RULE. Every test project in the solution is either GATED (named in
 // `tests.projects`) or EXCLUDED with a written reason (`tests.excluded`).
-// Anything else is a `ConfigError` — the same treatment `analyzerPathFailures`
+// Anything else is a `ConfigErrorException` — the same treatment `analyzerPathFailures`
 // already gives an analyzer path that loads zero analyzers, one level up. An
 // unloaded analyzer and a clean one must never look alike; an unrun test
 // project and a passing one must not either.
@@ -220,7 +220,7 @@ let solutionProjects (solutionText: string) : string list =
     else
         let pattern =
             projectExtensions
-            |> List.map (fun ext -> Regex.Escape ext)
+            |> List.map Regex.Escape
             |> String.concat "|"
             |> sprintf "\"([^\"]+(?:%s))\""
 

@@ -709,7 +709,7 @@ let ``status stays responsive over a real pipe while another op is wedged`` () =
     let pipeName = $"fshw-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let cts = new CancellationTokenSource()
-    let blockForever = new TaskCompletionSource<unit>()
+    let blockForever = TaskCompletionSource<unit>()
 
     let config =
         { defaultRpcConfig host with

@@ -17,7 +17,7 @@ open FsHotWatch.TestPrune.TestPrunePlugin
 /// There is no file backend: FCS check results are not serializable (a deserialized
 /// entry always reconstructs as `ParseOnly`, which `CheckPipeline.tryGetCachedFullCheck`
 /// treats as a MISS), so it could never hit. A config value selecting the removed
-/// `"cache": "file"` / `"jj"` backend is a hard `ConfigError` — dead config fails the
+/// `"cache": "file"` / `"jj"` backend is a hard `ConfigErrorException` — dead config fails the
 /// load rather than warning and carrying on, because a warning inside a long gate is
 /// indistinguishable from noise and lets the dead key survive indefinitely.
 type CacheBackendConfig =
@@ -90,10 +90,9 @@ let resolveCacheScope
 /// matches an `include` glob (or `include` is empty) and no `exclude` glob. Globs are
 /// gitignore-style, relative to the repository root.
 let cacheAdmits (repoRoot: string) (includes: string list) (excludes: string list) : string -> bool =
-    let matcher (patterns: string list) =
-        let ignore = (Ignore.Ignore(), patterns) ||> List.fold (fun ig p -> ig.Add(p))
-
-        fun (relative: string) -> ignore.IsIgnored relative
+    let matcher (patterns: string list) : string -> bool =
+        let rules = (Ignore.Ignore(), patterns) ||> List.fold (fun ig p -> ig.Add(p))
+        rules.IsIgnored
 
     let included =
         if List.isEmpty includes then
@@ -235,7 +234,7 @@ let DefaultLogDir = "logs"
 /// `CoverageArgsTemplate` is the command-line template the daemon appends
 /// when collecting coverage. `{output}` is substituted with the per-run
 /// baseline or partial file path. `None` means use the MTP-cobertura default
-/// (`FsHotWatch.TestPrune.TestPrunePlugin.defaultCoverageArgsTemplate`).
+/// (`FsHotWatch.TestPrune.TestPrunePlugin.DefaultCoverageArgsTemplate`).
 /// For other test runners (coverlet.collector, AltCover, etc.), provide
 /// your own template.
 type TestProjectConfig =
@@ -414,7 +413,7 @@ type DaemonConfiguration =
         /// change-to-rebuild latency. Only affects the macOS FSEvents watcher.
         FsEventsLatencyMs: int
         /// TransparentCompiler cache size factor, from `checker.cacheSizeFactor`.
-        /// A positive integer; anything else is a `ConfigError`. Absent →
+        /// A positive integer; anything else is a `ConfigErrorException`. Absent →
         /// `Daemon.DefaultCheckerCacheSizeFactor` (FCS's own default, 100).
         CheckerCacheSizeFactor: int
         /// Run-level `beforeRun` hook, from the top-level
@@ -488,7 +487,7 @@ let private defaultConfigFor (repoRoot: string) =
 
 /// Raised when `.fshw.json` cannot be read, parsed, or validated.
 /// Carries a user-facing message.
-exception ConfigError of message: string
+exception ConfigErrorException of message: string
 
 /// The user-facing text of a JSON value in a config message: a string's contents,
 /// otherwise its raw JSON (`5`, `false`, `{...}`).
@@ -500,12 +499,12 @@ let private describeValue (v: JsonElement) =
 
 /// Refuse a value outside a key's enumerated set, naming the value and every
 /// accepted one (`accepted` holds JSON literals: `"\"check\""`, `"true"`). An unknown
-/// enumerated value is a `ConfigError`, never a warning and a fall-back to the
+/// enumerated value is a `ConfigErrorException`, never a warning and a fall-back to the
 /// default: a warning scrolls past inside a long gate, so a typo would silently select
 /// behaviour the config never asked for.
 let private refuseUnknown (key: string) (bad: string) (accepted: string list) : 'a =
     let choices = String.concat ", " accepted
-    raise (ConfigError $"%s{key}: unknown value '%s{bad}' — expected one of %s{choices}")
+    raise (ConfigErrorException $"%s{key}: unknown value '%s{bad}' — expected one of %s{choices}")
 
 /// JSON string literals, for `refuseUnknown`'s accepted list.
 let private jsonStrings (values: string list) = values |> List.map (sprintf "\"%s\"")
@@ -529,15 +528,18 @@ let private testScopedSourceNames: string list =
     [ TestPrune.Sql.SqlCoupling.Source; TestPrune.Sql.SqlCoupling.SqlHydraSource ]
 
 /// `tests.selection`: `{ "testScopedSources": [...] }` as the impact walk's policy. Every
-/// malformed shape and every name outside `testScopedSourceNames` is a `ConfigError`: a
+/// malformed shape and every name outside `testScopedSourceNames` is a `ConfigErrorException`: a
 /// typo must not fall back to following every edge, nor to some other policy.
 let private parseSelection (v: JsonElement) : TestPrune.Domain.WalkPolicy =
     if v.ValueKind <> JsonValueKind.Object then
-        raise (ConfigError "tests.selection must be an object")
+        raise (ConfigErrorException "tests.selection must be an object")
 
     for property in v.EnumerateObject() do
         if property.Name <> "testScopedSources" then
-            raise (ConfigError $"tests.selection: unknown key '%s{property.Name}' — expected \"testScopedSources\"")
+            raise (
+                ConfigErrorException
+                    $"tests.selection: unknown key '%s{property.Name}' — expected \"testScopedSources\""
+            )
 
     match v.TryGetProperty("testScopedSources") with
     | true, sources when sources.ValueKind = JsonValueKind.Array ->
@@ -545,7 +547,7 @@ let private parseSelection (v: JsonElement) : TestPrune.Domain.WalkPolicy =
             sources.EnumerateArray()
             |> Seq.map (fun source ->
                 if source.ValueKind <> JsonValueKind.String then
-                    raise (ConfigError "tests.selection.testScopedSources must be an array of strings")
+                    raise (ConfigErrorException "tests.selection.testScopedSources must be an array of strings")
 
                 let name = source.GetString()
 
@@ -556,8 +558,181 @@ let private parseSelection (v: JsonElement) : TestPrune.Domain.WalkPolicy =
             |> Set.ofSeq
 
         { TestPrune.Domain.WalkPolicy.TestScopedSources = names }
-    | true, _ -> raise (ConfigError "tests.selection.testScopedSources must be an array")
+    | true, _ -> raise (ConfigErrorException "tests.selection.testScopedSources must be an array")
     | _ -> TestPrune.Domain.WalkPolicy.FollowAll
+
+/// One `tests.projects[]` entry. Every malformed value is a `ConfigErrorException`.
+let private parseTestProject (p: JsonElement) : TestProjectConfig =
+    let project =
+        match p.TryGetProperty("project") with
+        | true, v -> v.GetString()
+        | _ -> "unknown"
+
+    let command =
+        match p.TryGetProperty("command") with
+        | true, v -> v.GetString()
+        | _ -> "dotnet"
+
+    let args =
+        match p.TryGetProperty("args") with
+        | true, v -> v.GetString()
+        | _ -> $"test --project %s{project}"
+
+    let group =
+        match p.TryGetProperty("group") with
+        | true, v -> v.GetString()
+        | _ -> "default"
+
+    let env =
+        match p.TryGetProperty("environment") with
+        | true, envObj ->
+            envObj.EnumerateObject()
+            |> Seq.map (fun prop -> prop.Name, prop.Value.GetString())
+            |> Seq.toList
+        | _ -> []
+
+    let filterTemplate =
+        match p.TryGetProperty("filterTemplate") with
+        | true, v -> Some(v.GetString())
+        | _ -> None
+
+    let classJoin =
+        match p.TryGetProperty("classJoin") with
+        | true, v -> v.GetString()
+        | _ -> " "
+
+    // `alwaysClasses`: classes every impact-filtered run includes.
+    // Refused unless it is an array of non-blank strings: read as
+    // "none", a typo would silently stop running the very tests the
+    // key exists to keep running.
+    let alwaysClasses =
+        let key = $"tests.projects[%s{project}].alwaysClasses"
+
+        match p.TryGetProperty("alwaysClasses") with
+        | true, v when v.ValueKind = JsonValueKind.Array ->
+            v.EnumerateArray()
+            |> Seq.map (fun item ->
+                if
+                    item.ValueKind = JsonValueKind.String
+                    && not (String.IsNullOrWhiteSpace(item.GetString()))
+                then
+                    item.GetString()
+                else
+                    refuseUnknown key (describeValue item) [ "a non-blank class name" ])
+            |> Seq.distinct
+            |> Seq.toList
+        | true, v -> refuseUnknown key (describeValue v) [ "an array of class names" ]
+        | false, _ -> []
+
+    // `coverage` may be bool (collect + enforce together) or an
+    // object. `collectForImpact` decouples TestPrune collection
+    // from consumer-ratchet participation (`enabled`).
+    let collectCoverage, coverage, coverageArgsTemplate =
+        match p.TryGetProperty("coverage") with
+        | true, v when v.ValueKind = JsonValueKind.False -> false, false, None
+        | true, v when v.ValueKind = JsonValueKind.True -> true, true, None
+        | true, v when v.ValueKind = JsonValueKind.Object ->
+            let enabled =
+                match v.TryGetProperty("enabled") with
+                | true, e when e.ValueKind = JsonValueKind.False -> false
+                | _ -> true
+
+            let collectForImpact =
+                match v.TryGetProperty("collectForImpact") with
+                | true, e when e.ValueKind = JsonValueKind.True -> true
+                | true, e when e.ValueKind = JsonValueKind.False -> false
+                | _ -> enabled
+
+            let tmpl =
+                match v.TryGetProperty("argsTemplate") with
+                | true, t when t.ValueKind = JsonValueKind.String -> Some(t.GetString())
+                | _ -> None
+
+            collectForImpact, enabled, tmpl
+        | _ -> true, true, None
+
+    let timeoutSec =
+        match p.TryGetProperty("timeoutSec") with
+        | true, t when t.ValueKind = JsonValueKind.Number -> Some(t.GetInt32())
+        | _ -> None
+
+    // `reportVerificationFormat`: how fshw obtains the structured
+    // test report the verdict is derived from. Absent → AutoDetect.
+    let reportVerificationFormat =
+        let refuse (v: JsonElement) =
+            refuseUnknown
+                $"tests.projects[%s{project}].reportVerificationFormat"
+                (describeValue v)
+                (jsonStrings [ "auto"; "autodetect"; "detect"; "ctrf"; "off"; "none"; "disabled"; "false" ])
+
+        match p.TryGetProperty("reportVerificationFormat") with
+        | true, v when v.ValueKind = JsonValueKind.String ->
+            match v.GetString().ToLowerInvariant() with
+            | "ctrf" -> Ctrf
+            | "auto"
+            | "autodetect"
+            | "detect" -> AutoDetect
+            | "off"
+            | "none"
+            | "disabled"
+            | "false" -> Disabled
+            | _ -> refuse v
+        | true, v when v.ValueKind <> JsonValueKind.Null -> refuse v
+        | _ -> AutoDetect
+
+    // `traces`: every project takes part in `tests.traces`
+    // recording unless it says `"traces": false`. An object takes
+    // part and may set the project's own `weaveTests`. Any other
+    // value is refused: read as "take part", a typo'd object would
+    // silently record with a weave the config never asked for.
+    let traces, traceWeave =
+        let key = $"tests.projects[%s{project}].traces"
+
+        match p.TryGetProperty("traces") with
+        | false, _ -> true, None
+        | true, t when t.ValueKind = JsonValueKind.True -> true, None
+        | true, t when t.ValueKind = JsonValueKind.False -> false, None
+        | true, t when t.ValueKind = JsonValueKind.Object ->
+            let weave =
+                t.EnumerateObject()
+                |> Seq.map (fun prop ->
+                    match prop.Name with
+                    | "weaveTests" -> parseWeaveTests $"%s{key}.weaveTests" prop.Value
+                    | other ->
+                        raise (ConfigErrorException $"%s{key}: unknown key '%s{other}' — expected only \"weaveTests\""))
+                |> Seq.tryLast
+
+            true, weave
+        | true, t -> refuseUnknown key (describeValue t) [ "true"; "false"; "{ \"weaveTests\": \"sites\" | \"full\" }" ]
+
+    // `evidence`: how far this project's runtime reads reach, for the
+    // test-evidence key. TestPrune reads it itself
+    // (`TestEvidenceKey.configsOf`); refused HERE, at load, so a narrowing
+    // nobody can honour is never silently the default.
+    let evidence =
+        match p.TryGetProperty("evidence") with
+        | true, e -> Some e
+        | false, _ -> None
+
+    match FsHotWatch.TestEvidenceKey.parseConfig evidence with
+    | Result.Ok _ -> ()
+    | Result.Error e -> raise (ConfigErrorException $"tests.projects[%s{project}].%s{e}")
+
+    { Project = project
+      Command = command
+      Args = args
+      Group = group
+      Environment = env
+      FilterTemplate = filterTemplate
+      ClassJoin = classJoin
+      CollectCoverage = collectCoverage
+      Coverage = coverage
+      CoverageArgsTemplate = coverageArgsTemplate
+      TimeoutSec = timeoutSec
+      ReportVerificationFormat = reportVerificationFormat
+      AlwaysClasses = alwaysClasses
+      Traces = traces
+      TraceWeave = traceWeave }
 
 /// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
 let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
@@ -631,7 +806,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
 
     let cache =
         let refuse (detail: string) =
-            raise (ConfigError $"cache: %s{detail}")
+            raise (ConfigErrorException $"cache: %s{detail}")
 
         let refuseValue (v: JsonElement) =
             refuseUnknown
@@ -691,7 +866,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 // gone. A warning here scrolled past inside a 10-minute gate, so the
                 // dead key survived in a real repo's `.fshw.json` for weeks.
                 raise (
-                    ConfigError(
+                    ConfigErrorException(
                         $"cache: '%s{removed}' has been REMOVED — the on-disk FCS check cache could never "
                         + "produce a hit (FCS results aren't serializable, so every lookup returned ParseOnly, "
                         + "which the check pipeline treats as a miss) and only wrote dead JSON. It was already "
@@ -742,7 +917,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     |> Seq.map (fun hint ->
                         if not (List.contains hint.Name paths) then
                             raise (
-                                ConfigError(
+                                ConfigErrorException(
                                     $"analyzers.bootstrapHints names '%s{hint.Name}', which is not an analyzers.paths entry \
                                       — a hint for an unconfigured path could never be shown"
                                 )
@@ -753,13 +928,13 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                             hint.Name, hint.Value.GetString()
                         | _ ->
                             raise (
-                                ConfigError(
+                                ConfigErrorException(
                                     $"analyzers.bootstrapHints['%s{hint.Name}'] must be a non-blank string command"
                                 )
                             ))
                     |> Map.ofSeq
                 | true, hints when hints.ValueKind = JsonValueKind.Null -> Map.empty
-                | true, _ -> raise (ConfigError "analyzers.bootstrapHints must be an object of path → command")
+                | true, _ -> raise (ConfigErrorException "analyzers.bootstrapHints must be an object of path → command")
                 | _ -> Map.empty
 
             if paths.IsEmpty then
@@ -802,10 +977,12 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                                 let parsed = value.GetString()
 
                                 if String.IsNullOrWhiteSpace(parsed) then
-                                    raise (ConfigError($"tests.extensions.%s{propertyName} must be non-blank"))
+                                    raise (
+                                        ConfigErrorException($"tests.extensions.%s{propertyName} must be non-blank")
+                                    )
 
                                 parsed
-                            | _ -> raise (ConfigError($"tests.extensions.%s{propertyName} is required"))
+                            | _ -> raise (ConfigErrorException($"tests.extensions.%s{propertyName} is required"))
 
                         match (requiredNonBlank "type").ToLowerInvariant() with
                         | "falco" ->
@@ -817,9 +994,9 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                         | "sqlhydra" ->
                             SqlHydraExtension { GeneratedModulePrefix = requiredNonBlank "generatedModulePrefix" }
                         | "named-dispatch" -> NamedDispatchExtension
-                        | other -> raise (ConfigError($"tests.extensions has unknown type '%s{other}'")))
+                        | other -> raise (ConfigErrorException($"tests.extensions has unknown type '%s{other}'")))
                     |> Seq.toList
-                | true, _ -> raise (ConfigError("tests.extensions must be an array"))
+                | true, _ -> raise (ConfigErrorException("tests.extensions must be an array"))
                 | _ -> []
 
             let selection =
@@ -829,188 +1006,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
 
             let projects =
                 match v.TryGetProperty("projects") with
-                | true, arr ->
-                    arr.EnumerateArray()
-                    |> Seq.map (fun p ->
-                        let project =
-                            match p.TryGetProperty("project") with
-                            | true, v -> v.GetString()
-                            | _ -> "unknown"
-
-                        let command =
-                            match p.TryGetProperty("command") with
-                            | true, v -> v.GetString()
-                            | _ -> "dotnet"
-
-                        let args =
-                            match p.TryGetProperty("args") with
-                            | true, v -> v.GetString()
-                            | _ -> $"test --project %s{project}"
-
-                        let group =
-                            match p.TryGetProperty("group") with
-                            | true, v -> v.GetString()
-                            | _ -> "default"
-
-                        let env =
-                            match p.TryGetProperty("environment") with
-                            | true, envObj ->
-                                envObj.EnumerateObject()
-                                |> Seq.map (fun prop -> prop.Name, prop.Value.GetString())
-                                |> Seq.toList
-                            | _ -> []
-
-                        let filterTemplate =
-                            match p.TryGetProperty("filterTemplate") with
-                            | true, v -> Some(v.GetString())
-                            | _ -> None
-
-                        let classJoin =
-                            match p.TryGetProperty("classJoin") with
-                            | true, v -> v.GetString()
-                            | _ -> " "
-
-                        // `alwaysClasses`: classes every impact-filtered run includes.
-                        // Refused unless it is an array of non-blank strings: read as
-                        // "none", a typo would silently stop running the very tests the
-                        // key exists to keep running.
-                        let alwaysClasses =
-                            let key = $"tests.projects[%s{project}].alwaysClasses"
-
-                            match p.TryGetProperty("alwaysClasses") with
-                            | true, v when v.ValueKind = JsonValueKind.Array ->
-                                v.EnumerateArray()
-                                |> Seq.map (fun item ->
-                                    if
-                                        item.ValueKind = JsonValueKind.String
-                                        && not (String.IsNullOrWhiteSpace(item.GetString()))
-                                    then
-                                        item.GetString()
-                                    else
-                                        refuseUnknown key (describeValue item) [ "a non-blank class name" ])
-                                |> Seq.distinct
-                                |> Seq.toList
-                            | true, v -> refuseUnknown key (describeValue v) [ "an array of class names" ]
-                            | false, _ -> []
-
-                        // `coverage` may be bool (collect + enforce together) or an
-                        // object. `collectForImpact` decouples TestPrune collection
-                        // from consumer-ratchet participation (`enabled`).
-                        let collectCoverage, coverage, coverageArgsTemplate =
-                            match p.TryGetProperty("coverage") with
-                            | true, v when v.ValueKind = JsonValueKind.False -> false, false, None
-                            | true, v when v.ValueKind = JsonValueKind.True -> true, true, None
-                            | true, v when v.ValueKind = JsonValueKind.Object ->
-                                let enabled =
-                                    match v.TryGetProperty("enabled") with
-                                    | true, e when e.ValueKind = JsonValueKind.False -> false
-                                    | _ -> true
-
-                                let collectForImpact =
-                                    match v.TryGetProperty("collectForImpact") with
-                                    | true, e when e.ValueKind = JsonValueKind.True -> true
-                                    | true, e when e.ValueKind = JsonValueKind.False -> false
-                                    | _ -> enabled
-
-                                let tmpl =
-                                    match v.TryGetProperty("argsTemplate") with
-                                    | true, t when t.ValueKind = JsonValueKind.String -> Some(t.GetString())
-                                    | _ -> None
-
-                                collectForImpact, enabled, tmpl
-                            | _ -> true, true, None
-
-                        let timeoutSec =
-                            match p.TryGetProperty("timeoutSec") with
-                            | true, t when t.ValueKind = JsonValueKind.Number -> Some(t.GetInt32())
-                            | _ -> None
-
-                        // `reportVerificationFormat`: how fshw obtains the structured
-                        // test report the verdict is derived from. Absent → AutoDetect.
-                        let reportVerificationFormat =
-                            let refuse (v: JsonElement) =
-                                refuseUnknown
-                                    $"tests.projects[%s{project}].reportVerificationFormat"
-                                    (describeValue v)
-                                    (jsonStrings
-                                        [ "auto"; "autodetect"; "detect"; "ctrf"; "off"; "none"; "disabled"; "false" ])
-
-                            match p.TryGetProperty("reportVerificationFormat") with
-                            | true, v when v.ValueKind = JsonValueKind.String ->
-                                match v.GetString().ToLowerInvariant() with
-                                | "ctrf" -> Ctrf
-                                | "auto"
-                                | "autodetect"
-                                | "detect" -> AutoDetect
-                                | "off"
-                                | "none"
-                                | "disabled"
-                                | "false" -> Disabled
-                                | _ -> refuse v
-                            | true, v when v.ValueKind <> JsonValueKind.Null -> refuse v
-                            | _ -> AutoDetect
-
-                        // `traces`: every project takes part in `tests.traces`
-                        // recording unless it says `"traces": false`. An object takes
-                        // part and may set the project's own `weaveTests`. Any other
-                        // value is refused: read as "take part", a typo'd object would
-                        // silently record with a weave the config never asked for.
-                        let traces, traceWeave =
-                            let key = $"tests.projects[%s{project}].traces"
-
-                            match p.TryGetProperty("traces") with
-                            | false, _ -> true, None
-                            | true, t when t.ValueKind = JsonValueKind.True -> true, None
-                            | true, t when t.ValueKind = JsonValueKind.False -> false, None
-                            | true, t when t.ValueKind = JsonValueKind.Object ->
-                                let weave =
-                                    t.EnumerateObject()
-                                    |> Seq.map (fun prop ->
-                                        match prop.Name with
-                                        | "weaveTests" -> parseWeaveTests $"%s{key}.weaveTests" prop.Value
-                                        | other ->
-                                            raise (
-                                                ConfigError
-                                                    $"%s{key}: unknown key '%s{other}' — expected only \"weaveTests\""
-                                            ))
-                                    |> Seq.tryLast
-
-                                true, weave
-                            | true, t ->
-                                refuseUnknown
-                                    key
-                                    (describeValue t)
-                                    [ "true"; "false"; "{ \"weaveTests\": \"sites\" | \"full\" }" ]
-
-                        // `evidence`: how far this project's runtime reads reach, for the
-                        // test-evidence key. TestPrune reads it itself
-                        // (`TestEvidenceKey.configsOf`); refused HERE, at load, so a narrowing
-                        // nobody can honour is never silently the default.
-                        let evidence =
-                            match p.TryGetProperty("evidence") with
-                            | true, e -> Some e
-                            | false, _ -> None
-
-                        match FsHotWatch.TestEvidenceKey.parseConfig evidence with
-                        | Result.Ok _ -> ()
-                        | Result.Error e -> raise (ConfigError $"tests.projects[%s{project}].%s{e}")
-
-                        { Project = project
-                          Command = command
-                          Args = args
-                          Group = group
-                          Environment = env
-                          FilterTemplate = filterTemplate
-                          ClassJoin = classJoin
-                          CollectCoverage = collectCoverage
-                          Coverage = coverage
-                          CoverageArgsTemplate = coverageArgsTemplate
-                          TimeoutSec = timeoutSec
-                          ReportVerificationFormat = reportVerificationFormat
-                          AlwaysClasses = alwaysClasses
-                          Traces = traces
-                          TraceWeave = traceWeave })
-                    |> Seq.toList
+                | true, arr -> arr.EnumerateArray() |> Seq.map parseTestProject |> Seq.toList
                 | _ -> []
 
             // `tests.excluded` — first-class, and the only
@@ -1042,7 +1038,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
 
             // `tests.traces`: opt-in per-test trace recording. Absent → None (off,
             // byte-for-byte today's behaviour). An unknown `record` value is a
-            // ConfigError: a typo would otherwise switch tracing off unnoticed.
+            // ConfigErrorException: a typo would otherwise switch tracing off unnoticed.
             let traces =
                 match v.TryGetProperty("traces") with
                 | true, t when t.ValueKind = JsonValueKind.Object ->
@@ -1068,7 +1064,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                             | Some r -> r
                             | None ->
                                 raise (
-                                    ConfigError
+                                    ConfigErrorException
                                         $"tests.traces.record has unknown value '%s{raw}' (expected off, full-runs or every-run)"
                                 )
 
@@ -1082,11 +1078,11 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     let verifyTimeoutSec =
                         match t.TryGetProperty("verifyTimeoutSec") with
                         | true, n when n.ValueKind = JsonValueKind.Number -> n.GetInt32()
-                        | _ -> FsHotWatch.TestPrune.TraceSettings.defaultVerifyTimeoutSec
+                        | _ -> FsHotWatch.TestPrune.TraceSettings.DefaultVerifyTimeoutSec
 
                     let settings: FsHotWatch.TestPrune.TraceSettings =
                         { Record = record
-                          DbPath = str "db" |> Option.defaultValue FsHotWatch.TestPrune.TraceSettings.defaultDbPath
+                          DbPath = str "db" |> Option.defaultValue FsHotWatch.TestPrune.TraceSettings.DefaultDbPath
                           WeaveTests = weaveTests
                           FingerprintInputs = strs "fingerprintInputs"
                           FingerprintEnv = strs "fingerprintEnv"
@@ -1112,7 +1108,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             let maxParallelProjects =
                 let refuse (n: JsonElement) =
                     raise (
-                        ConfigError
+                        ConfigErrorException
                             $"tests.maxParallelProjects must be a whole number of at least 1, got %s{n.GetRawText()}"
                     )
 
@@ -1183,10 +1179,10 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     | _ -> ""
 
                 if pattern.IsNone && afterTests.IsNone then
-                    raise (ConfigError "fileCommands entry must specify `pattern` or `afterTests`")
+                    raise (ConfigErrorException "fileCommands entry must specify `pattern` or `afterTests`")
 
                 if afterTests.IsSome && name.IsNone then
-                    raise (ConfigError "fileCommands entries with `afterTests` require an explicit `name`")
+                    raise (ConfigErrorException "fileCommands entries with `afterTests` require an explicit `name`")
 
                 // Validate the pattern shape at config-load so unsupported
                 // globs (embedded `*`) fail with a clean `fshw: config error:`
@@ -1197,7 +1193,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     try
                         FsHotWatch.Watcher.FilePattern.parse p |> ignore
                     with :? System.ArgumentException as ex ->
-                        raise (ConfigError $"fileCommands pattern invalid: %s{ex.Message}")
+                        raise (ConfigErrorException $"fileCommands pattern invalid: %s{ex.Message}")
                 | None -> ()
 
                 // Derive the effective plugin name up-front so registration is
@@ -1223,7 +1219,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             |> Seq.toList
         | _ -> []
 
-    // `preprocessors`: every shape mistake is a `ConfigError`, because an entry that
+    // `preprocessors`: every shape mistake is a `ConfigErrorException`, because an entry that
     // silently did not register is a generator that silently did not run.
     let preprocessors =
         let entry (index: int) (e: JsonElement) : PreprocessorConfig =
@@ -1232,12 +1228,12 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             let requiredString (key: string) =
                 match e.TryGetProperty(key) with
                 | true, v when v.ValueKind = JsonValueKind.String && v.GetString().Trim() <> "" -> v.GetString()
-                | _ -> raise (ConfigError $"%s{at} must have a non-empty string `%s{key}`")
+                | _ -> raise (ConfigErrorException $"%s{at} must have a non-empty string `%s{key}`")
 
             let optionalString (key: string) =
                 match e.TryGetProperty(key) with
                 | true, v when v.ValueKind = JsonValueKind.String -> Some(v.GetString())
-                | true, _ -> raise (ConfigError $"%s{at}.%s{key} must be a string")
+                | true, _ -> raise (ConfigErrorException $"%s{at}.%s{key} must be a string")
                 | _ -> None
 
             let stringList (key: string) =
@@ -1248,10 +1244,10 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                         if item.ValueKind = JsonValueKind.String then
                             item.GetString()
                         else
-                            raise (ConfigError $"%s{at}.%s{key} must be an array of strings"))
+                            raise (ConfigErrorException $"%s{at}.%s{key} must be an array of strings"))
                     |> Seq.toList
                     |> Some
-                | true, _ -> raise (ConfigError $"%s{at}.%s{key} must be an array of strings")
+                | true, _ -> raise (ConfigErrorException $"%s{at}.%s{key} must be an array of strings")
                 | _ -> None
 
             let trigger =
@@ -1264,13 +1260,13 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                         try
                             FsHotWatch.Watcher.FilePattern.parse pattern
                         with :? System.ArgumentException as ex ->
-                            raise (ConfigError $"%s{at}.triggers pattern invalid: %s{ex.Message}"))
+                            raise (ConfigErrorException $"%s{at}.triggers pattern invalid: %s{ex.Message}"))
                     |> FsHotWatch.CommandPreprocessor.Trigger.Matching
 
             let timeoutSec =
                 match e.TryGetProperty("timeoutSec") with
                 | true, t when t.ValueKind = JsonValueKind.Number && t.GetInt32() > 0 -> Some(t.GetInt32())
-                | true, _ -> raise (ConfigError $"%s{at}.timeoutSec must be a positive whole number")
+                | true, _ -> raise (ConfigErrorException $"%s{at}.timeoutSec must be a positive whole number")
                 | _ -> None
 
             { Name = requiredString "name"
@@ -1290,11 +1286,12 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             |> List.iter (fun (name, count) ->
                 if count > 1 then
                     raise (
-                        ConfigError $"preprocessors: the name '%s{name}' is used %d{count} times; names must be unique"
+                        ConfigErrorException
+                            $"preprocessors: the name '%s{name}' is used %d{count} times; names must be unique"
                     ))
 
             entries
-        | true, _ -> raise (ConfigError "preprocessors must be an array of entries")
+        | true, _ -> raise (ConfigErrorException "preprocessors must be an array of entries")
         | _ -> []
 
     let coverage =
@@ -1323,14 +1320,14 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     Some(r.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList)
                 | true, r ->
                     raise (
-                        ConfigError
+                        ConfigErrorException
                             $"coverage.reports: expected a non-empty array of report paths, got '%s{describeValue r}'"
                     )
 
             match reports, v.TryGetProperty("searchDir") with
             | Some _, (true, _) ->
                 raise (
-                    ConfigError
+                    ConfigErrorException
                         "coverage: give either searchDir or reports, not both — reports names the exact files a check reads"
                 )
             | _ -> ()
@@ -1376,7 +1373,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | _ -> defaults.TimeoutSec
 
     // `fsEventsLatencyMs`: absent → default (250); a non-negative integer is used
-    // verbatim (0 is valid — no coalescing); anything else is a `ConfigError`, like
+    // verbatim (0 is valid — no coalescing); anything else is a `ConfigErrorException`, like
     // `checker.cacheSizeFactor` — a mistyped latency silently falling back would run
     // the default while the config claimed otherwise.
     let fsEventsLatencyMs =
@@ -1396,16 +1393,16 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             | Some ms -> ms
             | None ->
                 raise (
-                    ConfigError
+                    ConfigErrorException
                         $"fsEventsLatencyMs must be a non-negative whole number of milliseconds (e.g. 250), got %s{v.GetRawText()}"
                 )
 
-    // `checker.cacheSizeFactor`: a positive integer, else a hard ConfigError — a
+    // `checker.cacheSizeFactor`: a positive integer, else a hard ConfigErrorException — a
     // mistyped factor silently falling back would make a benchmark row measure the
     // default while claiming otherwise.
     let checkerCacheSizeFactor =
         let refuse () =
-            raise (ConfigError "checker.cacheSizeFactor must be a positive whole number, e.g. 10")
+            raise (ConfigErrorException "checker.cacheSizeFactor must be a positive whole number, e.g. 10")
 
         match root.TryGetProperty("checker") with
         | false, _ -> defaults.CheckerCacheSizeFactor
@@ -1417,7 +1414,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 | true, n when n > 0 -> n
                 | _ -> refuse ()
             | true, _ -> refuse ()
-        | true, _ -> raise (ConfigError "checker must be an object, e.g. {\"cacheSizeFactor\": 10}")
+        | true, _ -> raise (ConfigErrorException "checker must be an object, e.g. {\"cacheSizeFactor\": 10}")
 
     // Parse a `number | false` tristate, shared by the two idle-exit windows:
     // positive N → `minutes N`; a non-positive number / `false` / `true` →
@@ -1474,7 +1471,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | _ -> None
 
     // `runHookCommands`: which verbs the run-level hooks bracket. An unknown verb or a
-    // wrong shape is a `ConfigError`: dropping a typo used to un-bracket the verb it was
+    // wrong shape is a `ConfigErrorException`: dropping a typo used to un-bracket the verb it was
     // meant to name, silently but for a warning. Only an explicitly empty array can
     // disable bracketing, and that is announced.
     let runHookCommands =
@@ -1512,7 +1509,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             || v.ValueKind = JsonValueKind.Object
             ->
             raise (
-                ConfigError
+                ConfigErrorException
                     $"runHookCommands must be an array of \"check\" / \"confirm\", e.g. [\"confirm\"], got %s{v.GetRawText()}"
             )
         // Absent, `null`, `false`, `true` → the default. `false` reads as "I am not
@@ -1614,7 +1611,7 @@ let stripConfig (config: DaemonConfiguration) : DaemonConfiguration =
         FileCommands = [] }
 
 /// Reconcile the configured test scope with the solution and
-/// raise `ConfigError` on any disagreement.
+/// raise `ConfigErrorException` on any disagreement.
 ///
 /// Runs on EVERY config load — which is every fshw invocation, in the CLI
 /// process — rather than once when a daemon boots. That placement is the whole
@@ -1647,7 +1644,9 @@ let internal validateTestScope (repoRoot: string) (config: DaemonConfiguration) 
                 Logging.warn "config" $"NOT RUN — %s{e.Project}: %s{e.Reason}"
         | findings ->
             raise (
-                ConfigError(SolutionScope.describeFindings (SolutionScope.solutionNameFor repoRoot t.Solution) findings)
+                ConfigErrorException(
+                    SolutionScope.describeFindings (SolutionScope.solutionNameFor repoRoot t.Solution) findings
+                )
             )
 
 /// `verdictInputs` decides WHICH FILES the verdict is
@@ -1665,7 +1664,7 @@ let private validateVerdictInputs (repoRoot: string) (json: string) : unit =
 
     match declaration.Errors with
     | [] -> ()
-    | errors -> raise (ConfigError("verdictInputs — " + String.concat "; " errors))
+    | errors -> raise (ConfigErrorException("verdictInputs — " + String.concat "; " errors))
 
     // A declared path that matches nothing is NOT fatal: an analyzer assembly a repo
     // declares does not exist until the first build, and refusing to start would wedge
@@ -1688,7 +1687,7 @@ let private validateVerdictInputs (repoRoot: string) (json: string) : unit =
 /// parsed (`""` when there is no file). The text is what a daemon's loaded-config
 /// identity is computed from: re-reading the file later could describe an edit the
 /// daemon never loaded. Returns defaults if no file exists.
-/// Raises ConfigError on read / parse / validation failure.
+/// Raises ConfigErrorException on read / parse / validation failure.
 let loadConfigWithSource (repoRoot: string) : DaemonConfiguration * string =
     let configPath = Path.Combine(repoRoot, ".fshw.json")
 
@@ -1702,7 +1701,7 @@ let loadConfigWithSource (repoRoot: string) : DaemonConfiguration * string =
             try
                 File.ReadAllText(configPath)
             with ex ->
-                raise (ConfigError $"Cannot read .fshw.json: %s{ex.Message}")
+                raise (ConfigErrorException $"Cannot read .fshw.json: %s{ex.Message}")
 
         try
             let config = parseConfig json defaults
@@ -1711,11 +1710,11 @@ let loadConfigWithSource (repoRoot: string) : DaemonConfiguration * string =
             Logging.info "config" "Loaded .fshw.json"
             config, json
         with
-        | ConfigError _ -> reraise ()
-        | ex -> raise (ConfigError $".fshw.json: %s{ex.Message}")
+        | ConfigErrorException _ -> reraise ()
+        | ex -> raise (ConfigErrorException $".fshw.json: %s{ex.Message}")
 
 /// Load config from .fshw.json in repoRoot. Returns defaults if no file exists.
-/// Raises ConfigError on read / parse / validation failure.
+/// Raises ConfigErrorException on read / parse / validation failure.
 let loadConfig (repoRoot: string) : DaemonConfiguration = loadConfigWithSource repoRoot |> fst
 
 /// Count the plugins that would be registered for a given configuration.
@@ -1766,7 +1765,7 @@ let internal debounceShouldFire (gate: obj) (lastFire: DateTime ref) (window: Ti
 /// poller happens to see.
 let internal configChangeReason (configPath: string) (defaults: DaemonConfiguration) : string =
     try
-        let _ = parseConfig (File.ReadAllText configPath) defaults
+        parseConfig (File.ReadAllText configPath) defaults |> ignore
         "config changed, stopping (restart to apply)"
     with ex ->
         $"config invalid, stopping: %s{ex.Message}"
@@ -2353,7 +2352,7 @@ let registerPluginsIn
 
         // Fail-loud — see `analyzerPathFailures`.
         match analyzerPathFailuresWith (fun p -> Map.tryFind p hintByAbsolutePath) loadedByOriginalPath with
-        | Some message -> raise (ConfigError message)
+        | Some message -> raise (ConfigErrorException message)
         | None ->
             // Every configured path loaded ≥1 here: we are inside `Some a`, so paths
             // were given, and the guard above only passes when none contributed 0.
@@ -2464,7 +2463,7 @@ let registerPluginsIn
                     let argsTemplate =
                         Map.tryFind project projectsByName
                         |> Option.bind (fun p -> p.CoverageArgsTemplate)
-                        |> Option.defaultValue FsHotWatch.TestPrune.TestPrunePlugin.defaultCoverageArgsTemplate
+                        |> Option.defaultValue FsHotWatch.TestPrune.TestPrunePlugin.DefaultCoverageArgsTemplate
 
                     Some
                         { FsHotWatch.TestPrune.TestPrunePlugin.CoveragePaths.Baseline =
@@ -2520,6 +2519,7 @@ let registerPluginsIn
 
         let handler =
             createWithTracesIn
+                config.Exclude
                 testMode
                 t.MaxParallelProjects
                 t.Traces

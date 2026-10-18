@@ -1193,20 +1193,23 @@ let ``an unavailable project model can NEVER yield a green — in any mode, scop
           BuildWait.ArtifactNotProduced
           BuildWait.StaleOutput [ "stale" ] ]
 
+    let evidence =
+        [ for coverage in coverages do
+              for baseline in baselines do
+                  for wait in waits -> coverage, baseline, wait ]
+
     let outcomes =
         [ for model in unavailableModels do
               for mode in [ InnerLoop; Confirmation ] do
                   for scope in scopes do
-                      for coverage in coverages do
-                          for baseline in baselines do
-                              for wait in waits do
-                                  let reading =
-                                      { inputs false coverage scope with
-                                          Baseline = baseline
-                                          WaitingOnBuild = wait }
-                                      |> withModel model
+                      for coverage, baseline, wait in evidence do
+                          let reading =
+                              { inputs false coverage scope with
+                                  Baseline = baseline
+                                  WaitingOnBuild = wait }
+                              |> withModel model
 
-                                  (model, mode, scope, coverage, baseline, wait), verdict mode reading ]
+                          (model, mode, scope, coverage, baseline, wait), verdict mode reading ]
 
     // 8 models x 2 modes x 6 scopes x 3 coverages x 4 baselines x 3 waits.
     test <@ List.length outcomes = 3456 @>

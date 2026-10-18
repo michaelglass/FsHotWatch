@@ -141,7 +141,7 @@ let ``each session is built in its own scope: its own sink, environment and proc
 
                 let path =
                     SessionEnvironment.current ()
-                    |> Option.map (fun e -> SessionEnvironment.root e)
+                    |> Option.map SessionEnvironment.root
                     |> Option.defaultValue "<none>"
 
                 seen[spec.Worktree.Root.Value] <- (path, daemon.ProcessRegistry))

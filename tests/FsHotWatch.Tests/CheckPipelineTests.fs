@@ -907,7 +907,7 @@ let ``nothing in the daemon reads symbol uses, so background resolutions stay of
 
     let callers =
         sources
-        |> List.filter (fun path -> not (foregroundReaders.Contains(Path.GetFileName path)))
+        |> List.filter (Path.GetFileName >> foregroundReaders.Contains >> not)
         |> List.choose (fun path ->
             let text = File.ReadAllText path
 

@@ -48,7 +48,7 @@ let internal TerminationBudget = TimeSpan.FromSeconds 5.0
 
 /// Extra time the whole teardown allows beyond `TerminationBudget`, so a child that
 /// used its full budget can still report what it established.
-let private TeardownGrace = TimeSpan.FromSeconds 1.0
+let private teardownGrace = TimeSpan.FromSeconds 1.0
 
 /// How long a teardown waits for the escalation of a kill that did not return. The
 /// escalation bounds itself (two signal rounds of bounded polls); this is the backstop.
@@ -61,7 +61,7 @@ type internal TeardownBudgets =
     {
         /// How long a killed child is given to exit (`TerminationBudget`).
         Termination: TimeSpan
-        /// Extra time the teardown allows beyond that (`TeardownGrace`).
+        /// Extra time the teardown allows beyond that (`teardownGrace`).
         Grace: TimeSpan
         /// How long the escalation of a kill that did not return may take.
         Escalation: TimeSpan
@@ -69,7 +69,7 @@ type internal TeardownBudgets =
 
 let internal DefaultBudgets =
     { Termination = TerminationBudget
-      Grace = TeardownGrace
+      Grace = teardownGrace
       Escalation = EscalationBudget }
 
 /// What a handle can tell us about its child.

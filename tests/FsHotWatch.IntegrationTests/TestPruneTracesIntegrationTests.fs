@@ -154,7 +154,7 @@ let ``a traced run records its test's trace and reaches the untraced run's verdi
                 root
                 (Some
                     { Record = RecordEveryRun
-                      DbPath = TraceSettings.defaultDbPath
+                      DbPath = TraceSettings.DefaultDbPath
                       WeaveTests = WeaveTestSites
                       FingerprintInputs = []
                       FingerprintEnv = []

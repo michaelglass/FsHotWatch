@@ -1861,7 +1861,7 @@ let private waitForDaemonReady
         probe
         (fun () -> daemonProcessAliveWith defaultFileOps repoRoot)
         (fun () -> DateTime.UtcNow)
-        (fun ms -> Thread.Sleep ms)
+        Thread.Sleep
         (fun () -> eprintfn "  Waiting for the daemon to finish starting...")
         200
         deadlineSeconds
@@ -2935,7 +2935,7 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
             let logDir =
                 try
                     (DaemonConfig.loadConfig worktree.Root.Value).LogDir
-                with ConfigError _ ->
+                with ConfigErrorException _ ->
                     DaemonConfig.DefaultLogDir
 
             FsHotWatch.Logging.fileSink
@@ -3316,7 +3316,7 @@ let internal executeCommandWatchingConfig
         /// in-process instead of a socket).
         ///
         /// A misconfiguration surfaced during plugin registration (e.g. the fail-loud
-        /// analyzers guard) raises `ConfigError`. Report it cleanly with a RED exit code
+        /// analyzers guard) raises `ConfigErrorException`. Report it cleanly with a RED exit code
         /// — same contract as the config-load handler — rather than crashing with an
         /// unhandled-exception stack trace.
         let runOnceIn (invocation: Verdict.Invocation) (checkMode: CheckVerdict.CheckMode) : int =
@@ -3329,7 +3329,7 @@ let internal executeCommandWatchingConfig
                     createDaemon
                     repoRoot
                     config
-            with ConfigError msg ->
+            with ConfigErrorException msg ->
                 eprintfn $"fshw: config error: %s{msg}"
                 2
 
@@ -3494,7 +3494,7 @@ let internal executeCommandWatchingConfig
                                     $"fshw: daemon not started — %s{ex.Message}. Nothing is left running (no watcher, no pidfile, no lock). Run `fshw start` again once fseventsd is healthy; if it keeps refusing, the repository is on a volume FSEvents cannot watch — move it to a local volume."
 
                                 2
-                            | ConfigError message ->
+                            | ConfigErrorException message ->
                                 // An expected, user-correctable refusal (e.g.
                                 // analyzers.paths that have not been built) — never an unhandled
                                 // exception with a stack trace. Exit 2, the fail-closed startup
@@ -4353,7 +4353,7 @@ let private runCli (args: string array) : int =
                 let config, configSource =
                     try
                         loadConfigWithSource repoRoot
-                    with ConfigError msg ->
+                    with ConfigErrorException msg ->
                         eprintfn $"fshw: config error: %s{msg}"
                         exit 2
 

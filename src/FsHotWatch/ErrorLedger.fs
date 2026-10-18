@@ -265,7 +265,7 @@ type internal LedgerKeyRevision =
 /// synthetic Error entry lands in the same `state.Errors` map that GetAll /
 /// FailingReasons / HasFailingReasons (and thus the CLI exit code) consult.
 [<Literal>]
-let reporterFailurePlugin = "error-ledger"
+let ReporterFailurePlugin = "error-ledger"
 
 let private isFailing warningsAreFailures e =
     ErrorEntry.isFailing warningsAreFailures e
@@ -411,7 +411,7 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
 
         // The synthetic key under which a reporter-failure for this plugin/file is
         // tracked, so a later clean re-report of the same file clears the stale alarm.
-        let failureKey = struct (reporterFailurePlugin, file)
+        let failureKey = struct (ReporterFailurePlugin, file)
 
         if not accepted then
             state', []
@@ -432,7 +432,7 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
     /// aggregate verdict is non-clean rather than falsely green (the diagnostics may be
     /// lost on disk).
     let recordDelivery plugin file (entryCount: int) (failures: exn list) (state: LedgerState) =
-        let failureKey = struct (reporterFailurePlugin, file)
+        let failureKey = struct (ReporterFailurePlugin, file)
 
         if List.isEmpty failures then
             { state with
@@ -444,7 +444,7 @@ type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string ->
             |> markPresent failureKey
 
     let dropFailureAlarm file (state: LedgerState) =
-        let failureKey = struct (reporterFailurePlugin, file)
+        let failureKey = struct (ReporterFailurePlugin, file)
 
         { state with
             Errors = Map.remove failureKey state.Errors }

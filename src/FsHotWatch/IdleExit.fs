@@ -133,19 +133,19 @@ let resolveThreshold (config: IdleExitConfig) (repoRoot: string) : int option =
 /// means that under concurrent timer ticks exactly one caller observes the
 /// armed-to-fired transition; every other caller is rejected.
 [<NoComparison; NoEquality>]
-type FireLatch = { mutable state: int }
+type FireLatch = { mutable State: int }
 
 module FireLatch =
     /// A fresh, armed latch.
-    let create () : FireLatch = { state = 0 }
+    let create () : FireLatch = { State = 0 }
 
     /// Attempt to claim the single fire. Returns `true` for exactly one caller
     /// across all threads; `false` for every subsequent caller.
     let tryFire (latch: FireLatch) : bool =
-        Interlocked.CompareExchange(&latch.state, 1, 0) = 0
+        Interlocked.CompareExchange(&latch.State, 1, 0) = 0
 
     /// True once the latch has fired (or is firing). Read for diagnostics/tests.
-    let hasFired (latch: FireLatch) : bool = Volatile.Read(&latch.state) = 1
+    let hasFired (latch: FireLatch) : bool = Volatile.Read(&latch.State) = 1
 
 /// A typed reason the daemon must NOT idle-exit right now. —
 /// "busy" used to collapse to a bare bool, which is why a whole class of work

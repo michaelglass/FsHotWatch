@@ -1224,8 +1224,7 @@ let ``runChecksWithRetry returns zero unchecked when all files check first pass`
     let check (_: AbsFilePath) = async { return Some 1 }
 
     let outcome =
-        runChecksWithRetry 3 8 check (fun r -> emitted.Add r) files
-        |> Async.RunSynchronously
+        runChecksWithRetry 3 8 check emitted.Add files |> Async.RunSynchronously
 
     // A converged scan says so in the type, and reports ZERO
     // extra rounds — the amplification measure the retry budget exists to bound.
@@ -1253,8 +1252,7 @@ let ``runChecksWithRetry retries a transiently-cancelled file until it converges
     let files = [ "/a.fs"; "/b.fs"; "/c.fs" ] |> List.map AbsFilePath.create
 
     let outcome =
-        runChecksWithRetry 3 8 check (fun r -> emitted.Add r) files
-        |> Async.RunSynchronously
+        runChecksWithRetry 3 8 check emitted.Add files |> Async.RunSynchronously
 
     // Converged, but it cost exactly ONE extra round — the number that
     // distinguishes a single self-cancellation from runaway amplification.
@@ -4403,10 +4401,10 @@ let ``THE RACE: a discovery in flight reports rediscovering, never an empty mode
     let coordinator = DiscoveryCoordinator()
 
     let started =
-        new TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
     let release =
-        new TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
     let inFlight =
         coordinator.Run(fun () ->
@@ -5786,7 +5784,7 @@ let ``a daemon restores a project without assets through the injected restore`` 
         test <@ not (File.Exists(Path.Combine(sourceDir, "obj", "project.assets.json"))) @>
 
         let gateErrors =
-            daemon.Host.GetErrorsByPlugin(DepsFreshness.pluginName)
+            daemon.Host.GetErrorsByPlugin(DepsFreshness.PluginName)
             |> Map.toList
             |> List.collect snd
 

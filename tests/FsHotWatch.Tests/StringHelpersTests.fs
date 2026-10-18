@@ -33,7 +33,7 @@ let ``a collection at or under the sample size is rendered in full`` () =
     test <@ describeMany [ "a" ] = "1 [a]" @>
     test <@ describeMany [ "a"; "b"; "c" ] = "3 [a; b; c]" @>
 
-    let exactly = List.init DefaultLogSample (fun i -> string i)
+    let exactly = List.init DefaultLogSample string
     let rendered = describeMany exactly
 
     test <@ rendered.StartsWith $"%d{DefaultLogSample} [" @>

@@ -2,11 +2,32 @@
 
 ## Unreleased
 
+- fix: the test-evidence store keeps each entry's coverage report gzip-compressed (schema
+  `fshw-test-evidence-v2`, field `coverage.gzip`). On one repository's full suite a project's
+  32.5 MB Cobertura report compressed to 1.7 MB. Its entry had been 57 MB on disk: the report,
+  plus about 20 MB of JSON escapes for it. One tree's entries were about 245 MB against the 512 MB budget, so every
+  full run evicted the previous tree's evidence. Entries of the old schema are a miss and
+  are quarantined, as any unknown schema is. A blob that is not a gzip stream is read as
+  corrupt.
+
+- fix: a test-evidence key leaves out exactly the files the verdict tree hash leaves out.
+  A closure project's directory under a discovery root is read off the snapshot rather than
+  walked a second time, and one outside every root is walked under the same `exclude`, so
+  closure, shared and other-project inputs together are the tree hash's own entries. An
+  excluded generated file under a project directory (Fable's `project_cracked.json`,
+  which embeds the checkout's absolute path) used to give every checkout of one commit its
+  own key, so no green was ever reused across checkouts. `TestEvidenceKey.Snapshot` gains
+  `Roots` and `ExcludePatterns`, and `Version` is `test-evidence-v3`, so entries
+  keyed the old way are never matched.
+
 - **fix!: a preprocessor pass that could not process some files is a Failed status.**
   `PreprocessResult` gains `Failures: (string * string) list` (file, reason), so code
   that builds one must supply it (`Failures = []` for a pass that processed everything).
   The host fails the pass naming each file repository-relative, still applying its
   rewrites, and `PreprocessorsRun.Failures` collects them for `fshw format`.
+
+- style: `PluginHost.create` is a function in a `PluginHost` module instead of a static member of the type. F# call sites read the same; code that reached the static member by reflection or from C# must use the module function.
+- **style!: `DepsFreshness.pluginName` is `DepsFreshness.PluginName` and `ErrorLedger.reporterFailurePlugin` is `ErrorLedger.ReporterFailurePlugin`**: `[<Literal>]` values are PascalCase (FSharpLint `literalNames`).
 
 ## 0.10.0-alpha.86 - 2026-10-18
 

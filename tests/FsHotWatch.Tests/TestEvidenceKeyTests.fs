@@ -780,3 +780,110 @@ let ``the capture's log line marks an unset variable and names its env files`` (
     test <@ line.Contains "FSHW_EV_PRESENT (set)" @>
     test <@ line.Contains ".env.test" @>
     test <@ not (line.Contains "sha256") @>
+
+// ---------------------------------------------------------------------------
+// The key's inputs are the verdict tree's inputs: one owner for what is excluded
+// ---------------------------------------------------------------------------
+
+/// A generated cache that embeds the checkout's absolute path, as Fable's cracker cache
+/// does, under a closure project's directory.
+let private crackerCache = "src/A/.fable-build/fable_modules/project_cracked.json"
+
+let private writeCrackerCache (root: string) =
+    write root crackerCache $"""{{ "projectDir": "%s{root.Replace('\\', '/')}/src/A" }}"""
+
+let private keyExcluding (exclude: string list) (root: string) (adjust: Request -> Request) =
+    match inputsFor (snapshot root exclude) (adjust (requestFor root defaultConfig)) with
+    | Ok(inputs, _) -> compute inputs
+    | Error e -> failwith e
+
+let private asTB (root: string) (r: Request) =
+    { r with
+        Project = Path.Combine(root, "tests/TB/TB.fsproj")
+        Closure = [ Path.Combine(root, "src/B/B.fsproj") ] }
+
+[<Fact>]
+let ``an excluded path-bearing file that differs between checkouts moves no project's key`` () =
+    // Two checkouts of one commit: identical tracked bytes, and a generated cache under a
+    // closure project's directory that names each checkout's own path. The config excludes
+    // it, so the verdict tree hash agrees, and so must every evidence key, or no checkout
+    // can reuse another's green.
+    withTwin (fun a b ->
+        writeCrackerCache a
+        writeCrackerCache b
+        let exclude = [ "src/A/.fable-build/" ]
+        test <@ (TreeHash.compute a exclude).Hash = (TreeHash.compute b exclude).Hash @>
+        // TA has A in its closure; TB sees A only as another project's directory.
+        test <@ (keyExcluding exclude a id).Value = (keyExcluding exclude b id).Value @>
+        test <@ (keyExcluding exclude a (asTB a)).Value = (keyExcluding exclude b (asTB b)).Value @>)
+
+[<Fact>]
+let ``the same differing file in a path the config does not exclude moves the key`` () =
+    // The positive control: without the exclude the cache is an ordinary input, so the
+    // test above passes because of the exclude and not because the file is never read.
+    withTwin (fun a b ->
+        writeCrackerCache a
+        writeCrackerCache b
+        test <@ moved (keyExcluding [] a id).Labels (keyExcluding [] b id).Labels = [ "closure" ] @>
+
+        test <@ moved (keyExcluding [] a (asTB a)).Labels (keyExcluding [] b (asTB b)).Labels = [ "otherProjects" ] @>)
+
+[<Fact>]
+let ``the key's file inputs are exactly the verdict tree's for the same exclude`` () =
+    // The parity guard. Under the default reads, closure + shared + otherProjects
+    // partition the verdict tree: fold them the way TreeHash does and the result is the
+    // tree hash itself, so the two walks cannot drift apart. Only the evidence-known
+    // inputs the tree does not hold are extra.
+    withTempDir "evkey-parity" (fun root ->
+        populate root
+        writeCrackerCache root
+        write root "tests/TA/generated/out.txt" "excluded too"
+
+        for exclude in [ []; [ "src/A/.fable-build/"; "tests/TA/generated/" ] ] do
+            for adjust in [ id; asTB root ] do
+                let inputs =
+                    match inputsFor (snapshot root exclude) (adjust (requestFor root defaultConfig)) with
+                    | Ok(inputs, _) -> inputs
+                    | Error e -> failwith e
+
+                let tree = TreeHash.files root exclude
+                let inTree = tree.Files |> List.map fst |> Set.ofList
+
+                let extra =
+                    EvidenceKnownInputs |> List.filter (inTree.Contains >> not) |> Set.ofList
+
+                let keyed =
+                    inputs.Closure @ inputs.Shared @ inputs.OtherProjects
+                    |> List.filter (fst >> extra.Contains >> not)
+                    |> List.sortWith (fun (x, _) (y, _) -> String.CompareOrdinal(x, y))
+
+                test <@ TreeHash.hashEntries keyed = (TreeHash.ofWalked tree).Hash @>)
+
+[<Fact>]
+let ``a closure project outside the verdict walk is keyed under the same exclude`` () =
+    // A project outside src and tests is walked directly; that walk must leave out what
+    // the config excludes, files and unreadable directories alike, and keep the rest.
+    withTwin (fun a b ->
+        for root in [ a; b ] do
+            write root "bench/C/C.fsproj" (fsproj [])
+            write root "bench/C/Lib.fs" "1"
+            write root "bench/C/.cache/cracked.json" root
+            write root "bench/C/.cache/inner/state.bin" root
+
+        let withC (root: string) (r: Request) =
+            { r with
+                Closure = Path.Combine(root, "bench/C/C.fsproj") :: r.Closure }
+
+        let exclude = [ "bench/C/.cache/" ]
+        test <@ (keyExcluding exclude a (withC a)).Value = (keyExcluding exclude b (withC b)).Value @>
+        test <@ moved (keyExcluding [] a (withC a)).Labels (keyExcluding [] b (withC b)).Labels = [ "closure" ] @>
+
+        if not (OperatingSystem.IsWindows()) then
+            let hidden = Path.Combine(a, "bench/C/.cache/inner")
+            File.SetUnixFileMode(hidden, UnixFileMode.None)
+
+            try
+                test <@ Result.isOk (inputsFor (snapshot a exclude) (withC a (requestFor a defaultConfig))) @>
+                test <@ Result.isError (inputsFor (snapshot a []) (withC a (requestFor a defaultConfig))) @>
+            finally
+                File.SetUnixFileMode(hidden, rwx))

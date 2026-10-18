@@ -655,7 +655,7 @@ module RedCause =
     /// message, and ONLY for entries the checker itself reported (`fcs`) — a plugin that
     /// happens to quote the phrase is not the compiler crashing.
     [<Literal>]
-    let private checkerFaultMarker = "internal error:"
+    let private CheckerFaultMarker = "internal error:"
 
     /// Classify one cause. `exists` is injected rather than called directly so a test can
     /// pin the "the file is gone" branch without deleting anything, and — more to the
@@ -684,7 +684,7 @@ module RedCause =
             || source = FsHotWatch.PluginActivity.FcsPluginName
                && (message: string)
                    .TrimStart()
-                   .StartsWith(checkerFaultMarker, System.StringComparison.OrdinalIgnoreCase)
+                   .StartsWith(CheckerFaultMarker, System.StringComparison.OrdinalIgnoreCase)
 
         let computedFromSuspectCheck =
             source = FsHotWatch.PluginActivity.AnalyzersPluginName && suspect.Contains file

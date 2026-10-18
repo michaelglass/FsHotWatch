@@ -16,7 +16,7 @@ open FsHotWatch.Tests.TestHelpers
 
 /// Well past the bound for a wait kept by its caller, well short of one that waits for
 /// a starved pool to reach its timer.
-let private Slack = TimeSpan.FromSeconds 2.0
+let private slack = TimeSpan.FromSeconds 2.0
 
 let private queueIn (store: Store) =
     SupervisedWork.Queue(
@@ -76,7 +76,7 @@ let private givesUpWithinBound (store: Store) (wait: unit -> unit) =
         // that one runnable thread to go unscheduled for 2 s. The defect it guards against
         // waits for the starved pool to inject a thread for each held item ahead of the timer.
         Assert.True(
-            elapsed < SupervisedWork.AdmissionBound + Slack,
+            elapsed < SupervisedWork.AdmissionBound + slack,
             $"gave up after %O{elapsed}, bound %O{SupervisedWork.AdmissionBound}"
         )
     finally

@@ -823,4 +823,8 @@ type PluginHost
 
         fileCommandPatterns.Clear()
 
-    static member create (checker: FSharpChecker) (repoRoot: string) = PluginHost(checker, repoRoot)
+
+/// Curried construction of a `PluginHost` with no reporters, task cache or suppressed codes.
+[<RequireQualifiedAccess>]
+module PluginHost =
+    let create (checker: FSharpChecker) (repoRoot: string) = PluginHost(checker, repoRoot)

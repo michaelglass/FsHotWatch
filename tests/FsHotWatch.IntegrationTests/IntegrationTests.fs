@@ -182,7 +182,8 @@ let ``analyzers load guard fires per-path when one of several paths loads zero``
                            BootstrapHints = Map.empty |} }
 
         let ex =
-            Assert.Throws<DaemonConfig.ConfigError>(fun () -> DaemonConfig.registerPlugins daemon tmpDir config)
+            Assert.Throws<DaemonConfig.ConfigErrorException>(fun () ->
+                DaemonConfig.registerPlugins daemon tmpDir config)
 
         Assert.Contains(emptyPath, ex.Message)
         Assert.Contains("no-such-analyzer-bin-dir", ex.Message)
@@ -2516,7 +2517,7 @@ let private runDotnetIn (cwd: string) (args: string) : unit =
     psi.RedirectStandardError <- true
     psi.WorkingDirectory <- cwd
     let proc = Process.Start(psi)
-    let _ = proc.StandardOutput.ReadToEnd()
+    proc.StandardOutput.ReadToEnd() |> ignore
     let stderr = proc.StandardError.ReadToEnd()
     proc.WaitForExit()
 

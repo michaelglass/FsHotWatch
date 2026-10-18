@@ -29,11 +29,11 @@
   },
   "indentation": {
     "enabled": false,
-    "_comment": "Off: 4228 finding(s) in 223 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable."
+    "_comment": "Off: Fantomas owns layout and this rule fights it. The tree is Fantomas-clean (fantomas --check exits 0) and the 4,236 findings (2026-10-18) are Fantomas's own output: 3-space-aligned anonymous-record fields, object expressions, interpolated-string continuations. Reformatting a sample to the rule's 4-space shape and re-running Fantomas restores the flagged layout, so no whitespace fix survives format-on-save."
   },
   "maxCharactersOnLine": {
     "enabled": false,
-    "_comment": "Off: 812 finding(s) in 187 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "_comment": "Off: Fantomas owns line breaking at the same 120 columns. The tree is Fantomas-clean; of the 785 longer lines (2026-10-18), 623 are string literals and 23 are comments, which Fantomas cannot break. The rest are lines Fantomas chose to leave long.",
     "config": {
       "maxCharactersOnLine": 120
     }
@@ -48,14 +48,14 @@
   },
   "maxLinesInFile": {
     "enabled": false,
-    "_comment": "Off: 51 finding(s) in 50 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "_comment": "Off: refactoring backlog. 51 finding(s) on main (2026-10-18); reaching 0 means splitting files, modules, classes or signatures, which is structural work tracked separately, not a lint sweep.",
     "config": {
       "maxLinesInFile": 1000
     }
   },
   "trailingNewLineInFile": {
     "enabled": false,
-    "_comment": "Off: 444 finding(s) in 442 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable."
+    "_comment": "Off: Fantomas owns layout and this rule fights it. Despite its name it flags the single final newline every file ends with (444 findings, 2026-10-18), which Fantomas always writes: strip it and Fantomas puts it back."
   },
   "noTabCharacters": {
     "enabled": true
@@ -65,22 +65,19 @@
   },
   "redundantNewKeyword": {
     "enabled": false,
-    "_comment": "Off: 4 finding(s) in 3 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable."
+    "_comment": "Off: it fights the compiler. It flags `new` on IDisposable types declared in another project of this solution (SpawnHelper.Connection, Watchdog, SessionRegistry, PollingFileWatcher: 10 of its 14 findings, 2026-10-18), and dropping `new` there is FS0760, an error under TreatWarningsAsErrors. Its true positives (BCL TaskCompletionSource and Thread) were fixed."
   },
   "nestedStatements": {
-    "enabled": false,
-    "_comment": "Off: 12 finding(s) in 6 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "enabled": true,
     "config": {
       "depth": 8
     }
   },
   "reimplementsFunction": {
-    "enabled": false,
-    "_comment": "Off: 20 finding(s) in 14 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable."
+    "enabled": true
   },
   "canBeReplacedWithComposition": {
-    "enabled": false,
-    "_comment": "Off: 6 finding(s) in 5 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable."
+    "enabled": true
   },
   "failwithWithSingleArgument": {
     "enabled": true
@@ -120,7 +117,7 @@
   },
   "maxLinesInFunction": {
     "enabled": false,
-    "_comment": "Off: 2 finding(s) in 2 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "_comment": "Off: refactoring backlog. 2 finding(s) on main (2026-10-18); reaching 0 means splitting files, modules, classes or signatures, which is structural work tracked separately, not a lint sweep.",
     "config": {
       "maxLines": 500
     }
@@ -145,7 +142,7 @@
   },
   "maxLinesInModule": {
     "enabled": false,
-    "_comment": "Off: 74 finding(s) in 73 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "_comment": "Off: refactoring backlog. 74 finding(s) on main (2026-10-18); reaching 0 means splitting files, modules, classes or signatures, which is structural work tracked separately, not a lint sweep.",
     "config": {
       "maxLines": 500
     }
@@ -170,7 +167,7 @@
   },
   "maxLinesInClass": {
     "enabled": false,
-    "_comment": "Off: 1 finding(s) in 1 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "_comment": "Off: refactoring backlog. 1 finding(s) on main (2026-10-18); reaching 0 means splitting files, modules, classes or signatures, which is structural work tracked separately, not a lint sweep.",
     "config": {
       "maxLines": 500
     }
@@ -184,8 +181,7 @@
     }
   },
   "exceptionNames": {
-    "enabled": false,
-    "_comment": "Off: 1 finding(s) in 1 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "enabled": true,
     "config": {
       "naming": "PascalCase",
       "underscores": "None",
@@ -201,7 +197,7 @@
   },
   "recordFieldNames": {
     "enabled": false,
-    "_comment": "Off: 27 finding(s) in 3 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "_comment": "Off by design. 26 of its 27 findings (2026-10-18) are private record representations, Verdict and RunVerdict, whose camelCase fields back PascalCase members of the same name and are reachable only through a validating constructor. PascalCase fields would collide with those members, so the fix would rename one side for the linter alone. The one public camelCase field (IdleExit.FireLatch.state) was renamed.",
     "config": {
       "naming": "PascalCase",
       "underscores": "None"
@@ -222,16 +218,14 @@
     }
   },
   "moduleNames": {
-    "enabled": false,
-    "_comment": "Off: 5 finding(s) in 4 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "enabled": true,
     "config": {
       "naming": "PascalCase",
       "underscores": "None"
     }
   },
   "literalNames": {
-    "enabled": false,
-    "_comment": "Off: 16 finding(s) in 9 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "enabled": true,
     "config": {
       "naming": "PascalCase",
       "underscores": "AllowAny"
@@ -245,8 +239,7 @@
     }
   },
   "memberNames": {
-    "enabled": false,
-    "_comment": "Off: 1 finding(s) in 1 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "enabled": true,
     "config": {
       "naming": "PascalCase",
       "underscores": "AllowPrefix"
@@ -274,15 +267,14 @@
   },
   "publicValuesNames": {
     "enabled": false,
-    "_comment": "Off: 36 finding(s) in 24 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "_comment": "Off: 36 public constants (2026-10-18), e.g. Heartbeat.DefaultCadence, SafeWalk.SourceExcludedDirs. Renaming them is public-API churn that conflicts with parallel FsHotWatch work; revisit when no FsHotWatch changes are in flight.",
     "config": {
       "naming": "CamelCase",
       "underscores": "AllowPrefix"
     }
   },
   "privateValuesNames": {
-    "enabled": false,
-    "_comment": "Off: 20 finding(s) in 6 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "enabled": true,
     "config": {
       "naming": "CamelCase",
       "underscores": "AllowPrefix"
@@ -296,7 +288,7 @@
   },
   "patternMatchClauseIndentation": {
     "enabled": false,
-    "_comment": "Off: 83 finding(s) in 34 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "_comment": "Off: Fantomas owns layout and this rule fights it. Its findings (83, 2026-10-18) are clause layouts in the Fantomas-clean tree, e.g. a parenthesised match inside a && chain. Fantomas is idempotent, so any whitespace-only re-indent of a clause is reverted on the next format.",
     "config": {
       "allowSingleLineLambda": false
     }
@@ -305,8 +297,7 @@
     "enabled": true
   },
   "favourIgnoreOverLetWild": {
-    "enabled": false,
-    "_comment": "Off: 5 finding(s) in 4 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable."
+    "enabled": true
   },
   "wildcardNamedWithAsPattern": {
     "enabled": true
@@ -319,36 +310,33 @@
   },
   "favourTypedIgnore": {
     "enabled": false,
-    "_comment": "Off: 2240 finding(s) in 233 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable."
+    "_comment": "Off: not wanted. 2,242 findings (2026-10-18), essentially every `|> ignore` in the tree. Annotating each ignore with its type is a sweep whose cost outweighs the partial-application mistakes it would catch."
   },
   "favourReRaise": {
-    "enabled": false,
-    "_comment": "Off: 1 finding(s) in 1 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable."
+    "enabled": true
   },
   "maxNumberOfItemsInTuple": {
-    "enabled": false,
-    "_comment": "Off: 1 finding(s) in 1 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "enabled": true,
     "config": {
       "maxItems": 6
     }
   },
   "maxNumberOfFunctionParameters": {
     "enabled": false,
-    "_comment": "Off: 70 finding(s) in 24 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "_comment": "Off: refactoring backlog. 70 finding(s) on main (2026-10-18); reaching 0 means splitting files, modules, classes or signatures, which is structural work tracked separately, not a lint sweep.",
     "config": {
       "maxItems": 6
     }
   },
   "maxNumberOfMembers": {
     "enabled": false,
-    "_comment": "Off: 28 finding(s) in 21 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "_comment": "Off: refactoring backlog. 28 finding(s) on main (2026-10-18); reaching 0 means splitting files, modules, classes or signatures, which is structural work tracked separately, not a lint sweep.",
     "config": {
       "maxItems": 6
     }
   },
   "maxNumberOfBooleanOperatorsInCondition": {
-    "enabled": false,
-    "_comment": "Off: 7 finding(s) in 3 file(s) on main when enabled (shim-path lint, 2026-10-18). Follow-up: fix or deliberately suppress them, then enable.",
+    "enabled": true,
     "config": {
       "maxItems": 6
     }

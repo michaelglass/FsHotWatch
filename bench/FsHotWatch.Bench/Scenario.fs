@@ -139,15 +139,15 @@ let private addWorktree (cfg: Config) (name: string) (path: string) =
     | Error e -> failwith $"could not create worktree %s{path}: %s{e}"
 
 let private removeWorktree (cfg: Config) (name: string) (path: string) =
-    let _ =
-        if isJj cfg.Repo then
-            Instruments.run "jj" $"workspace forget %s{name}" cfg.Repo (TimeSpan.FromMinutes 2.0)
-        else
-            Instruments.run
-                "git"
-                $"worktree remove --force %s{ProcessHelper.quoteArg path}"
-                cfg.Repo
-                (TimeSpan.FromMinutes 2.0)
+    (if isJj cfg.Repo then
+         Instruments.run "jj" $"workspace forget %s{name}" cfg.Repo (TimeSpan.FromMinutes 2.0)
+     else
+         Instruments.run
+             "git"
+             $"worktree remove --force %s{ProcessHelper.quoteArg path}"
+             cfg.Repo
+             (TimeSpan.FromMinutes 2.0))
+    |> ignore
 
     try
         Directory.Delete(path, true)
@@ -246,7 +246,7 @@ let scanProblems (owner: Owner) (sample: ScanMetrics.ScanSample option) (window:
           if s.FilesDepsGated > 0 then
               $"scan deps-gated %d{s.FilesDepsGated} file(s)"
 
-          match window |> DaemonLog.scanCycles |> List.tryPick (fun c -> DaemonLog.scanCounts c) with
+          match window |> DaemonLog.scanCycles |> List.tryPick DaemonLog.scanCounts with
           | None -> "daemon.log window has no complete scan cycle"
           | Some counts when counts.Checked <> s.FilesChecked ->
               $"log scan checked %d{counts.Checked} but scan-metrics says %d{s.FilesChecked}"

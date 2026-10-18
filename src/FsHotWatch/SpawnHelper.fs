@@ -638,7 +638,9 @@ type internal Connection(toHelper: Stream, fromHelper: Stream) =
                     SpawnHelperException
                         $"the spawn helper did not start `%s{fileName}` within %d{int budget.TotalSeconds}s"
                 )
-            | failure -> raise failure.InnerException
+            | failure ->
+                let startFailure = failure.InnerException
+                raise startFailure
 
     /// Kill child `id`'s tree and wait for the helper's answer: `None` when the kill
     /// returned, the failure otherwise. Raises `SpawnHelperException` if the helper is

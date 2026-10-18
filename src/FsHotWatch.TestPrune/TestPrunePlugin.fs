@@ -132,7 +132,7 @@ let SessionRunLedger = 64
 ///
 /// The file format is Cobertura regardless of `ArgsTemplate` — the template
 /// is responsible for telling its runner to write Cobertura to `{output}`.
-/// For Microsoft Testing Platform, use `defaultCoverageArgsTemplate`; for
+/// For Microsoft Testing Platform, use `DefaultCoverageArgsTemplate`; for
 /// other runners (coverlet.collector, AltCover, OpenCover) supply your own.
 type CoveragePaths =
     {
@@ -333,7 +333,7 @@ let internal coverageReceiptFromReceipt
 /// (xUnit v3, MSTest v3 — anything invoked as `dotnet run --project <test>
 /// --no-build -- ...`). `{output}` is replaced with the target file path.
 [<Literal>]
-let defaultCoverageArgsTemplate =
+let DefaultCoverageArgsTemplate =
     "--coverage --coverage-output-format cobertura --coverage-output \"{output}\""
 
 [<Literal>]
@@ -1124,7 +1124,7 @@ let internal canonicalTestConfig (c: TestConfig) : string =
 
     o["timeoutSec"] <-
         (c.TimeoutSec
-         |> Option.map (fun t -> System.Text.Json.Nodes.JsonValue.Create t)
+         |> Option.map System.Text.Json.Nodes.JsonValue.Create
          |> Option.toObj)
 
     o["reportVerificationFormat"] <- sprintf "%A" c.ReportVerificationFormat
@@ -1541,11 +1541,11 @@ module internal ReceiptInputTree =
           Removed = was |> pathsWhere (fun path _ -> not (now.ContainsKey path)) }
 
     /// At most this many paths per kind are named; the count is always the full one.
-    let private PathsNamedPerKind = 10
+    let private pathsNamedPerKind = 10
 
     let private namePaths (paths: string list) : string =
-        let named = paths |> List.truncate PathsNamedPerKind |> String.concat ", "
-        let left = List.length paths - PathsNamedPerKind
+        let named = paths |> List.truncate pathsNamedPerKind |> String.concat ", "
+        let left = List.length paths - pathsNamedPerKind
         if left > 0 then $"%s{named} (+%d{left} more)" else named
 
     let describeDelta (delta: TreeDelta) : string =
@@ -1564,7 +1564,7 @@ module internal ReceiptInputTree =
     /// How far a file's write time may trail the clock read that preceded the write.
     /// Filesystems stamp from a coarse clock, and some store whole or even-numbered
     /// seconds.
-    let private WriteTimeSlack = TimeSpan.FromSeconds 2.0
+    let private writeTimeSlack = TimeSpan.FromSeconds 2.0
 
     /// Whether the watcher reports an edit to a repo-relative path while a run is in
     /// flight: it reports the files it checks, which are the current model's checkable
@@ -1605,7 +1605,7 @@ module internal ReceiptInputTree =
                 not (reported.Contains rel)
                 && try
                     File.GetLastWriteTimeUtc(Path.Combine(repoRoot, rel))
-                    >= hostStarted - WriteTimeSlack
+                    >= hostStarted - writeTimeSlack
                    with
                    | :? IOException
                    | :? UnauthorizedAccessException -> false
@@ -4017,7 +4017,7 @@ let internal buildFilterArgs (config: TestConfig) (classesByProject: Map<string,
 
 /// Microsoft.Testing.Platform exit code for "no tests matched / zero tests ran".
 [<Literal>]
-let internal zeroTestsExitCode = 8
+let internal ZeroTestsExitCode = 8
 
 /// True when a *filtered* run matched no tests in this project. An explicit
 /// `--filter-*` passthrough (run-tests / test-rerun) is fanned out to EVERY test
@@ -4035,7 +4035,7 @@ let internal zeroTestsExitCode = 8
 let internal isZeroTestsUnderFilter (wasFiltered: bool) (outcome: ProcessOutcome) : bool =
     wasFiltered
     && match outcome with
-       | ProcessOutcome.Failed(code, _) when code = zeroTestsExitCode -> true
+       | ProcessOutcome.Failed(code, _) when code = ZeroTestsExitCode -> true
        | ProcessOutcome.Failed(_, output) ->
            // A text SEARCH for a marker: a capture cut short by an unfinished drain
            // can only cost us the hit (falling back to the exit code above), never
@@ -4125,7 +4125,7 @@ module ConsoleText =
                 let t = l.TrimStart()
 
                 [ "total:"; "failed:"; "succeeded:"; "skipped:"; "duration:" ]
-                |> List.exists (fun prefix -> t.StartsWith prefix)
+                |> List.exists t.StartsWith
 
             all.[index].Trim()
             :: (all.[index + 1 ..]
@@ -6943,11 +6943,14 @@ let internal cacheKeyFor
         // this write feeds the key an ordinary whole-tree check reads.
         // The terminal receipt therefore has to establish the whole configured suite;
         // a green project-scoped/manual or impact-scoped run cannot mint broader proof.
-        if
+        let provenFullSuite =
             completed.Verification = Ran FullSuite
             && noProjectRefutedOrUnrun
             && notAborted
             && not allZeroMatchRun
+
+        if
+            provenFullSuite
             && (pendingQueueHash ()).IsNone
             && not (hasOutstandingFailures ())
         then
@@ -8488,15 +8491,18 @@ let internal createWithEvidenceAndQueries
                     let unverified =
                         not (ReceiptInputTree.matches inputs.EvidenceTree (inputTree |> Option.map _.Identity))
 
+                    let nothingSelected =
+                        totalClasses = 0
+                        && Set.isEmpty forceRunProjects
+                        && List.isEmpty inputs.OutstandingFailures
+                        && not (UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered)
+
                     if
                         unverified
                         && hasCachedResults
                         && not scopeIsFullSuite
                         && nothingOwed inputs.Debt
-                        && totalClasses = 0
-                        && Set.isEmpty forceRunProjects
-                        && List.isEmpty inputs.OutstandingFailures
-                        && not (UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered)
+                        && nothingSelected
                     then
                         let compiled =
                             ctx.ProjectGraph.ObserveCheckableFiles()
@@ -8697,13 +8703,10 @@ let internal createWithEvidenceAndQueries
 
                 let nothingToVerify = UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered
 
-                if
-                    totalClasses = 0
-                    && Set.isEmpty forceRunProjects
-                    && not hasQuarantinedFailures
-                    && not alwaysOnly
-                    && (baselineEquivalent || nothingToVerify)
-                then
+                let nothingForced =
+                    totalClasses = 0 && Set.isEmpty forceRunProjects && not hasQuarantinedFailures
+
+                if nothingForced && not alwaysOnly && (baselineEquivalent || nothingToVerify) then
                     if nothingToVerify then
                         Logging.info
                             "test-prune"
@@ -9773,19 +9776,24 @@ let internal createWithEvidenceAndQueries
             |> List.forall (fun file ->
                 hashed.Contains(Path.GetRelativePath(repoRoot, AbsFilePath.value file).Replace('\\', '/')))
 
-        match state.CoveredFullSuite with
-        | Some(tree, generation) when
+        // An idle boot scan that owes debt the covering run can speak for.
+        let bootScanOwesCoverableDebt () =
             batch.Trigger = BootScan
             && state.InFlight.IsNone
             && not (Set.isEmpty state.Debt.PendingQueue && Map.isEmpty state.Debt.RuntimeObligations)
             && not state.Debt.RecoveryOutstanding
             && Option.isNone (baselineInvalidReason state.Debt)
             && Set.isEmpty state.PendingForceRunProjects
-            && ReceiptInputTree.matches (Some tree.Identity) state.SealedTree
+
+        // The covering run passed this very tree, under the current model.
+        let coveredBy (tree: ReceiptTree) generation =
+            ReceiptInputTree.matches (Some tree.Identity) state.SealedTree
             && inTree tree
             && observeModelGeneration ctx = generation
             && indexNamesOnlyRunnable (lazy (resolveExcludedProjects ()))
-            ->
+
+        match state.CoveredFullSuite with
+        | Some(tree, generation) when bootScanOwesCoverableDebt () && coveredBy tree generation ->
             Logging.info
                 "test-prune"
                 $"BatchChecked: %s{owedDescription state.Debt} discovered by BootScan over the tree the last full-suite run passed — covered by that run, no re-run"
@@ -12299,9 +12307,13 @@ let internal createWithEvidenceAndQueries
 
 /// `createWithQueries` over the plugin's own index.
 /// The test-evidence wiring a daemon gets for `repoRoot`: the repository's box-wide store,
-/// its projects' `evidence` blocks and this process's toolchain. `None` when
-/// `FSHW_TEST_EVIDENCE=0`, or when the config cannot be read (loudly).
-let internal evidenceWiringWhen (enabled: bool) (repoRoot: string) : TestEvidenceRun.Wiring option =
+/// its projects' `evidence` blocks, this process's toolchain and the daemon's `exclude`.
+/// `None` when `FSHW_TEST_EVIDENCE=0`, or when the config cannot be read (loudly).
+let internal evidenceWiringWhen
+    (enabled: bool)
+    (excludePatterns: string list)
+    (repoRoot: string)
+    : TestEvidenceRun.Wiring option =
     if not enabled then
         Logging.info "test-prune" $"test evidence: off (%s{TestEvidenceStore.KillSwitchEnvVar}=0)"
         None
@@ -12323,14 +12335,14 @@ let internal evidenceWiringWhen (enabled: bool) (repoRoot: string) : TestEvidenc
                       Toolchain = lazy (TestEvidenceKey.toolchainOf repoRoot)
                       Loaded = loaded
                       ProducerHash = ContentHash.ofText CheckCache.toolchainIdentity
-                      ExcludePatterns = [] }
+                      ExcludePatterns = excludePatterns }
             with ex ->
                 Logging.warn "test-prune" $"test evidence: off — the store could not be opened: %s{ex.Message}"
                 None
 
 /// The test-evidence wiring a daemon gets for `repoRoot`, unless `FSHW_TEST_EVIDENCE=0`.
-let internal defaultEvidenceWiring (repoRoot: string) =
-    evidenceWiringWhen (TestEvidenceStore.enabled ()) repoRoot
+let internal defaultEvidenceWiring (excludePatterns: string list) (repoRoot: string) =
+    evidenceWiringWhen (TestEvidenceStore.enabled ()) excludePatterns repoRoot
 
 /// `createWithEvidenceAndQueries` with the daemon's default test-evidence wiring.
 let internal createWithQueries
@@ -12343,7 +12355,7 @@ let internal createWithQueries
     (repoRoot: string)
     =
     createWithEvidenceAndQueries
-        (defaultEvidenceWiring repoRoot)
+        (defaultEvidenceWiring [] repoRoot)
         queriesOf
         launchDeadline
         maxParallelProjects
@@ -12400,7 +12412,12 @@ let internal createWithLaunchDeadline
 ///
 /// `initialMode` is the mode the session starts in (`TestMode.initial` for a daemon). See
 /// `createWithScope` for `resolveExcludedProjects` and the launch policy.
+///
+/// `excludePatterns` is the daemon's `exclude`, the patterns its verdict tree hash is
+/// computed with. The test-evidence key leaves out exactly those files, so two checkouts
+/// whose tree hashes agree also agree on every key.
 let createWithTracesIn
+    (excludePatterns: string list)
     (initialMode: TestMode)
     // `tests.maxParallelProjects`: at most this many test groups run at once, longest
     // expected wall first; `None` launches every group at once.
@@ -12426,7 +12443,9 @@ let createWithTracesIn
         |> Option.ofObj
         |> resolveLaunchDeadline
 
-    createWithLaunchDeadline
+    createWithEvidenceAndQueries
+        (defaultEvidenceWiring excludePatterns repoRoot)
+        ImpactQueries.ofDatabase
         launchDeadline
         maxParallelProjects
         resolveExcludedProjects
@@ -12463,6 +12482,7 @@ let createWithTraces
     (dependsOn: string list)
     =
     createWithTracesIn
+        []
         TestMode.initial
         None
         traces

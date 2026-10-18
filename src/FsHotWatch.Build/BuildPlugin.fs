@@ -1275,8 +1275,11 @@ let internal createArmedWith
     // (callers inject `AbsFilePath.create` per file).
     let isTestFile (file: AbsFilePath) =
         graph.GetProjectsForFile(file)
-        |> List.exists (fun proj ->
-            testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(AbsProjectPath.value proj)))
+        |> List.exists (
+            AbsProjectPath.value
+            >> Path.GetFileNameWithoutExtension
+            >> testProjectNameSet.Contains
+        )
 
     let isTestProject (proj: AbsProjectPath) =
         testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(AbsProjectPath.value proj))

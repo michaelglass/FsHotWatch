@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **fix!: `createWithTracesIn` takes the daemon's `exclude` patterns as its first
+  argument**, and the test-evidence wiring keys with them instead of with none. The verdict
+  tree hash honours `exclude` and the evidence key did not, so two checkouts of one commit
+  whose tree hashes agreed still got different keys whenever an excluded file under a
+  project directory differed between them, and nothing was reused. `createWithTraces`,
+  `createWithScope` and `create` pass none, as before.
+
+- **style!: `TestPrunePlugin.DefaultCoverageArgsTemplate`, `TraceSettings.DefaultDbPath` and `TraceSettings.DefaultVerifyTimeoutSec` are PascalCase (were camelCase)**: `[<Literal>]` values are PascalCase (FSharpLint `literalNames`).
+
 ## 0.13.0-alpha.87 - 2026-10-18
 
 - fix: a queued impact rerun is judged stale only when nothing is owed, no dependency

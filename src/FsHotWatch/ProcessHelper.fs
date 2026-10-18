@@ -1079,10 +1079,10 @@ let internal sendTerminate (pid: int) : Result<unit, string> =
         Error $"kill(2) is unavailable: %s{ex.GetType().Name}: %s{ex.Message}"
 
 /// `SIG_IGN`, the ignored disposition (1 on macOS and Linux alike).
-let private SigIgn = 1n
+let private sigIgn = 1n
 
 /// Whether a SIGINT handler read from `sigaction` is the ignored disposition.
-let internal isIgnoredDisposition (handler: nativeint) = handler = SigIgn
+let internal isIgnoredDisposition (handler: nativeint) = handler = sigIgn
 
 /// Room for a `struct sigaction` on macOS (16 bytes) and Linux (152 on glibc). Both put
 /// the handler first, and it is the only field read.
@@ -1828,7 +1828,7 @@ let internal armedWatchdogLoopWith
             | unchanged -> unchanged
 
         let launchReached = reached launchDeadlineAt
-        let overallReached = overallTimeoutAt |> Option.exists (fun at -> reached at)
+        let overallReached = overallTimeoutAt |> Option.exists reached
 
         match decideLaunchStep launchReached overallReached exited sawOutput with
         | LaunchStep.Exited -> LaunchOutcome.Exited

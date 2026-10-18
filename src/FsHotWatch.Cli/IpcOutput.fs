@@ -1806,7 +1806,7 @@ let pollAndRenderForInvocation
         FsHotWatch.Daemon.isTotalDiscoveryFailureMessage ex.Message
         || FsHotWatch.Daemon.isModelKeptChangingDuringScanMessage ex.Message
         ->
-        // StreamJsonRpc preserves the message but not the concrete ConfigError
+        // StreamJsonRpc preserves the message but not the concrete ConfigErrorException
         // type. This is the daemon-backed twin of RunOnceCheck's early terminal:
         // no forced suite, and no stale green left on disk.
         //

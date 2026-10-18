@@ -384,8 +384,8 @@ let private observe (root: string) (config: DaemonRpcConfig) (driven: Driven) =
 
     let all =
         Directory.GetFiles(state, "*", SearchOption.AllDirectories)
-        |> Array.filter (fun f -> not (modeOwned.Files.Contains(Path.GetFileName f)))
-        |> Array.filter (fun f -> not (interleavingOwned (relative f)))
+        |> Array.filter (Path.GetFileName >> modeOwned.Files.Contains >> not)
+        |> Array.filter (relative >> interleavingOwned >> not)
 
     // Every file under .fshw, by kind: its meaning where a run leaves ids and clocks in
     // it, its bytes otherwise, its name only where the bytes are an engine's own

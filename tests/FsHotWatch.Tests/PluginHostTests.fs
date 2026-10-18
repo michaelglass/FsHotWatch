@@ -299,7 +299,7 @@ let ``preprocessor runs before events are dispatched`` () =
             member _.Dispose() = () }
 
     host.RegisterPreprocessor(preprocessor)
-    let _ = host.RunPreprocessors([ "src/Lib.fs" ])
+    host.RunPreprocessors([ "src/Lib.fs" ]) |> ignore
     test <@ preprocessorCalled @>
 
 [<Fact(Timeout = 15000)>]
@@ -382,7 +382,7 @@ let ``preprocessor status is tracked`` () =
     let statusBefore = host.GetStatus("status-pp")
     test <@ statusBefore = Some Idle @>
 
-    let _ = host.RunPreprocessors([ "src/Lib.fs" ])
+    host.RunPreprocessors([ "src/Lib.fs" ]) |> ignore
 
     let statusAfter = host.GetStatus("status-pp")
     test <@ statusAfter.IsSome @>

@@ -41,11 +41,11 @@ type TraceSettings =
 module TraceSettings =
     /// Where the trace database lives when `tests.traces.db` is absent.
     [<Literal>]
-    let defaultDbPath = ".fshw/test-traces.db"
+    let DefaultDbPath = ".fshw/test-traces.db"
 
     /// The verify timeout when `tests.traces.verifyTimeoutSec` is absent.
     [<Literal>]
-    let defaultVerifyTimeoutSec = 300
+    let DefaultVerifyTimeoutSec = 300
 
     /// Parse the `record` value (case-insensitive). Unknown text is `None`: the caller
     /// refuses the configuration.

@@ -1,7 +1,7 @@
 /// The daemon's own account of why it refused to start.
 ///
 /// A daemon is launched detached (`nohup … >> daemon.log`), so when it refuses to start
-/// over an expected, user-correctable condition — a `ConfigError` such as analyzers that
+/// over an expected, user-correctable condition — a `ConfigErrorException` such as analyzers that
 /// have not been built — the CLI that launched it only observes "the pipe never came up".
 /// Pointing the user at `daemon.log` makes them go and find the reason; this record
 /// carries the reason itself back to the CLI, which prints it (content first, not a

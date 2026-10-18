@@ -18,6 +18,13 @@ open FsHotWatch.ProcessHelper
 open FsHotWatch.SessionScope
 open FsHotWatch.Tests.TestHelpers
 
+/// True once `pidFile` names a pid among `livePids`: the child is in that registry.
+let private pidAdmitted (pidFile: string) (livePids: unit -> int list) () =
+    File.Exists pidFile
+    && (match Int32.TryParse((File.ReadAllText pidFile).Trim()) with
+        | true, pid -> livePids () |> List.contains pid
+        | _ -> false)
+
 let private createAndDispose (dir: string) =
     Directory.CreateDirectory(Path.Combine(dir, "src")) |> ignore
 
@@ -75,13 +82,7 @@ let ``a spawn after a daemon is created and disposed belongs to the caller's sco
                             // Reaped only once the caller's registry holds it. The child writes
                             // its pid before the launch returns, so a running child is not yet
                             // an admitted one.
-                            let admitted () =
-                                File.Exists pidFile
-                                && (match Int32.TryParse((File.ReadAllText pidFile).Trim()) with
-                                    | true, pid -> caller.LivePids() |> List.contains pid
-                                    | _ -> false)
-
-                            let running = waitUntilTrue admitted 20000
+                            let running = waitUntilTrue (pidAdmitted pidFile caller.LivePids) 20000
                             caller.KillAll()
                             running)
 

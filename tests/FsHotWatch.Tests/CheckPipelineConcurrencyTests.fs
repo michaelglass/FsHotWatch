@@ -77,10 +77,7 @@ let ``no more checks run at once than the pipeline's bound, however many are ask
         let files = manyFiles checker pipeline dir 12
 
         let results =
-            files
-            |> List.map (fun f -> pipeline.CheckFile f)
-            |> Async.Parallel
-            |> Async.RunSynchronously
+            files |> List.map pipeline.CheckFile |> Async.Parallel |> Async.RunSynchronously
 
         test <@ results |> Array.forall Option.isSome @>
         test <@ sink.Peak >= 1 && sink.Peak <= 2 @>
@@ -116,7 +113,7 @@ let ``checking every file of a project builds its snapshot once`` () =
         let files = manyFiles checker pipeline dir 8
 
         files
-        |> List.map (fun f -> pipeline.CheckFile f)
+        |> List.map pipeline.CheckFile
         |> Async.Parallel
         |> Async.RunSynchronously
         |> ignore
@@ -143,8 +140,7 @@ let ``two sessions checking through one scheduler share its bound`` () =
         let b, bFiles = session "b"
 
         let results =
-            (aFiles |> List.map (fun f -> a.CheckFile f))
-            @ (bFiles |> List.map (fun f -> b.CheckFile f))
+            (aFiles |> List.map a.CheckFile) @ (bFiles |> List.map b.CheckFile)
             |> Async.Parallel
             |> Async.RunSynchronously
 

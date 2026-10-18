@@ -28,8 +28,10 @@ type Wiring =
         Loaded: TestEvidenceKey.LoadedEnvironment
         /// The fshw build producing entries, recorded as provenance.
         ProducerHash: string
-        /// Patterns the verdict-tree walk leaves out. The daemon passes none — the widest
-        /// walk, so nothing it might exclude can be missing from a key.
+        /// The daemon's `exclude`: the patterns its verdict tree hash leaves out, and so
+        /// the patterns every key leaves out. Not a second list: a file the tree hash does
+        /// not address cannot decide a key either, and a path-bearing generated file there
+        /// would give every checkout its own key.
         ExcludePatterns: string list
     }
 

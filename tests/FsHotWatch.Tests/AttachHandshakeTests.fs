@@ -348,7 +348,7 @@ let ``every refusal has a stable kind and a message`` () =
         test
             <@
                 refusals
-                |> List.forall (fun r -> not (System.String.IsNullOrWhiteSpace(AttachRefusal.describe r)))
+                |> List.forall (AttachRefusal.describe >> System.String.IsNullOrWhiteSpace >> not)
             @>)
 
 // ---------------------------------------------------------------------------

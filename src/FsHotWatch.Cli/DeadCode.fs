@@ -80,6 +80,19 @@ let private readSchemaVersion (dbPath: string) : int =
 let isCompatibleSchema (version: int) : bool =
     version = 0 || version >= ExpectedSchemaVersion
 
+/// Why a symbol is unreachable, as the verbose report prints it.
+let private describeReason reason =
+    match reason with
+    | NoIncomingEdges -> "no incoming edges"
+    | DisconnectedFromEntryPoints sources ->
+        let truncated =
+            if sources.Length > 3 then
+                (sources |> List.take 3 |> String.concat ", ") + ", ..."
+            else
+                sources |> String.concat ", "
+
+        $"has edges from: %s{truncated}"
+
 /// Format the dead-code report to the lines printed on stdout, matching the
 /// standalone test-prune CLI's shape exactly. Pure over the analysis result so
 /// the formatting is unit-testable.
@@ -101,19 +114,7 @@ let formatReport (verbose: bool) (result: VerboseDeadCodeResult) : string list =
 
               for u in symbols |> List.sortBy (fun u -> u.Symbol.LineStart) do
                   if verbose then
-                      let reason =
-                          match u.Reason with
-                          | NoIncomingEdges -> "no incoming edges"
-                          | DisconnectedFromEntryPoints sources ->
-                              let truncated =
-                                  if sources.Length > 3 then
-                                      (sources |> List.take 3 |> String.concat ", ") + ", ..."
-                                  else
-                                      sources |> String.concat ", "
-
-                              $"has edges from: %s{truncated}"
-
-                      $"    - %s{u.Symbol.FullName} (%A{u.Symbol.Kind}, line %d{u.Symbol.LineStart}) — %s{reason}"
+                      $"    - %s{u.Symbol.FullName} (%A{u.Symbol.Kind}, line %d{u.Symbol.LineStart}) — %s{describeReason u.Reason}"
                   else
                       $"    - %s{u.Symbol.FullName} (%A{u.Symbol.Kind}, line %d{u.Symbol.LineStart})" ]
 
