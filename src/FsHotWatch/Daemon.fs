@@ -1635,7 +1635,20 @@ let renderFormatAll (offered: string list) (run: PluginHost.PreprocessorsRun) : 
         | [] ->
             $"formatted 0 of %d{offered.Length} files — no preprocessor is registered (`format` is off in .fshw.json)"
         | evidence ->
-            $"formatted %d{run.Modified.Length} of %d{offered.Length} files — "
+            // A file the formatter could not process is named, never folded into a count
+            // that reads as "already formatted".
+            let failed =
+                match run.Failures with
+                | [] -> ""
+                | failures ->
+                    let named =
+                        failures
+                        |> List.map (fun (file, why) -> $"%s{file}: %s{why}")
+                        |> String.concat "; "
+
+                    $", could not format %d{failures.Length} (%s{named})"
+
+            $"formatted %d{run.Modified.Length} of %d{offered.Length} files%s{failed} — "
             + String.concat "; " evidence
     | refused ->
         let reasons =

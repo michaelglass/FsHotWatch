@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: `fshw check` fails its format stage, naming the file, when the pinned Fantomas
+  cannot parse a file the scan hands it, and `fshw format` names such a file instead of
+  counting it as formatted. A whole-tree scan used to report `format: rewrote 0 of N`.
+
 ## 0.14.0-alpha.119 - 2026-10-18
 
 - chore: rebuild to bundle updated dependencies

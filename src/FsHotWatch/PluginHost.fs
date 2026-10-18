@@ -20,6 +20,8 @@ type PreprocessorsRun =
         Evidence: string list
         /// `(name, reason)` for every preprocessor that could not run at all.
         Refused: (string * string) list
+        /// `(file, reason)` for every file a preprocessor that ran could not process.
+        Failures: (string * string) list
     }
 
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
@@ -299,6 +301,8 @@ type PluginHost
     /// dotnet fantomas 7.0.5 (pinned in .config/dotnet-tools.json)` — and a pass that
     /// could not run (`Error`) or threw is a FAILED status carrying the reason, so it can
     /// never be read as "nothing needed rewriting".
+    /// A pass that ran but could not process some files (a formatter that cannot parse
+    /// one) is FAILED too, naming each file repository-relative with the tool's reason.
     member _.RunPreprocessors(files: string list) : PreprocessorsRun =
         // The pass, and each preprocessor inside it, is owned host work until its outcome
         // is published: the host is not at rest while a formatter is rewriting files.
@@ -309,6 +313,7 @@ type PluginHost
             let mutable lines = []
             let mutable evidence = []
             let mutable refused = []
+            let mutable failures = []
 
             for preprocessor in preprocessorsSnapshot () do
                 let operation = workStore.BeginOperation preprocessor.Name
@@ -326,14 +331,41 @@ type PluginHost
                             let finishedAt = System.DateTime.UtcNow
 
                             let summary =
-                                $"%s{preprocessor.Name}: rewrote %d{result.Modified.Length} of %d{result.Considered} file(s) — %s{result.Evidence}"
+                                match result.Failures with
+                                | [] ->
+                                    $"%s{preprocessor.Name}: rewrote %d{result.Modified.Length} of %d{result.Considered} file(s) — %s{result.Evidence}"
+                                | failed ->
+                                    $"%s{preprocessor.Name}: could not process %d{failed.Length} of %d{result.Considered} file(s), rewrote %d{result.Modified.Length} — %s{result.Evidence}"
 
                             lines <- summary :: lines
                             evidence <- result.Evidence :: evidence
 
-                            setStatus
-                                preprocessor.Name
-                                (Completed(finishedAt, RunVerdict.create summary (finishedAt - startedAt)))
+                            match result.Failures with
+                            | [] ->
+                                setStatus
+                                    preprocessor.Name
+                                    (Completed(finishedAt, RunVerdict.create summary (finishedAt - startedAt)))
+                            | failed ->
+                                // A file the pass could not process has not been shown to be
+                                // formatted: the pass FAILED, naming every such file, never
+                                // "rewrote 0 of N". Its rewrites above still stand.
+                                failures <- failures @ failed
+
+                                let reason =
+                                    failed
+                                    |> List.map (fun (file, why) ->
+                                        let shown = System.IO.Path.GetRelativePath(repoRoot, file).Replace('\\', '/')
+                                        $"%s{shown}: %s{why}")
+                                    |> String.concat "; "
+
+                                Logging.error preprocessor.Name $"%s{summary}: %s{reason}"
+
+                                workStore.FailOperation(operation, System.InvalidOperationException(summary))
+                                |> ignore
+
+                                setStatus
+                                    preprocessor.Name
+                                    (Failed(reason, finishedAt, RunVerdict.create summary (finishedAt - startedAt)))
                         | Result.Error reason ->
                             let finishedAt = System.DateTime.UtcNow
                             let summary = $"%s{preprocessor.Name} refused: %s{reason}"
@@ -364,7 +396,8 @@ type PluginHost
             { Modified = modifiedFiles |> List.distinct
               Lines = List.rev lines
               Evidence = List.rev evidence
-              Refused = List.rev refused }
+              Refused = List.rev refused
+              Failures = failures }
         finally
             workStore.EndOperation pass
 

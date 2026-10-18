@@ -17,6 +17,12 @@ type PreprocessResult =
         /// Files the pass actually examined, after its own filters (extension, ignore
         /// files). `0` with a non-empty batch means the batch held nothing for this pass.
         Considered: int
+        /// Files the pass examined but its tool could not process (a file the formatter
+        /// cannot parse), each with the tool's reason. A non-empty list FAILS the pass: the
+        /// host records a Failed status naming every file, while still suppressing the
+        /// watcher echo of what it did rewrite. Never dropped into a log line, because a
+        /// pass that refused a file has not established that the file is formatted.
+        Failures: (string * string) list
         /// What ran, for the status line — a formatter's binary and version, pinned where.
         Evidence: string
     }

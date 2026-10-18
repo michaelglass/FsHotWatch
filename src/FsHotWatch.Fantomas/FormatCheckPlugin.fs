@@ -71,7 +71,7 @@ let private settledKeys (repoRoot: string) (pin: FantomasPin) : string -> string
 /// The tool is bounded (`ProcessBounds.silent timeout` inside the runner) because
 /// a preprocessor runs inside the daemon's `processBatch` — a hang here wedges
 /// the CHANGE AGENT — and inside `performScan`, which `WaitForScan` blocks on as
-/// `check`'s very first step. A timed-out run leaves every file as it was.
+/// `check`'s very first step. A timed-out run leaves every file as it was, and fails.
 ///
 /// `runner` is the TEST SEAM: production uses `FantomasTool.dotnetToolRunner`; a
 /// test substitutes a recorder to prove which pin and arguments were handed over.
@@ -81,12 +81,24 @@ let private settledKeys (repoRoot: string) (pin: FantomasPin) : string -> string
 /// files, are not handed to it again: the tool is a pure function of those three, so the
 /// run would be a no-op. Only an unchanged file is remembered. A file the tool rewrote,
 /// could not format, or never finished (timeout) goes back to it on the next pass.
+///
+/// A file the tool could not format or never finished is a FAILURE of the pass
+/// (`PreprocessResult.Failures`), never a quiet log line beside "rewrote 0 of N": the
+/// host fails the format status naming it. It goes back to the tool on EVERY later pass,
+/// whatever that pass's batch holds, until the tool processes it or the file is gone,
+/// so the failure is re-earned from the current bytes and never forgotten.
 type FormatPreprocessor(?timeoutSec: int, ?runner: Runner) =
     let ignoreCache = FsHotWatch.PathFilter.IgnoreFilterCache()
     let runner = defaultArg runner dotnetToolRunner
 
     /// file → the key of the bytes the pinned tool last left unchanged.
     let settled = System.Collections.Concurrent.ConcurrentDictionary<string, string>()
+
+    /// file → why the pinned tool last failed to process it (could not parse it, or never
+    /// finished). Every pass hands these back to the tool, whether or not its batch holds
+    /// them, so a failure is re-earned from the file's current bytes until the tool
+    /// processes the file, and is never forgotten because a later batch was elsewhere.
+    let failing = System.Collections.Concurrent.ConcurrentDictionary<string, string>()
 
     let formatTimeout =
         TimeSpan.FromSeconds(float (defaultArg timeoutSec FormatTimeoutDefaultSec))
@@ -99,7 +111,14 @@ type FormatPreprocessor(?timeoutSec: int, ?runner: Runner) =
             | Error pinError -> Error(PinError.render pinError)
             | Ok pin ->
                 let evidence = describe repoRoot pin
-                let files = formattable (ignoreCache.Get(repoRoot)) changedFiles
+
+                let files =
+                    formattable (ignoreCache.Get(repoRoot)) (List.distinct (changedFiles @ List.ofSeq failing.Keys))
+
+                // A remembered failure whose file is gone or now ignored has nothing left to re-earn.
+                for file in List.ofSeq failing.Keys |> List.except files do
+                    failing.TryRemove file |> ignore
+
                 let keyOf = settledKeys repoRoot pin
                 // Keyed BEFORE the run, so a key only ever names bytes the tool was given.
                 let keyed = files |> List.map (fun file -> file, keyOf file)
@@ -123,9 +142,14 @@ type FormatPreprocessor(?timeoutSec: int, ?runner: Runner) =
                     for (file, reason) in report.FormatErrors do
                         Logging.error "format" $"could not format %s{file}: %s{reason}"
 
+                    let errored = Map.ofList report.FormatErrors
                     let unsettled = Set.ofList (report.Modified @ List.map fst report.FormatErrors)
 
                     for (file, key) in pending do
+                        match Map.tryFind file errored with
+                        | Some reason -> failing[file] <- reason
+                        | None -> failing.TryRemove file |> ignore
+
                         match key with
                         | Some key when not (unsettled.Contains file) -> settled[file] <- key
                         | _ -> settled.TryRemove file |> ignore
@@ -133,17 +157,24 @@ type FormatPreprocessor(?timeoutSec: int, ?runner: Runner) =
                     Ok
                         { Modified = report.Modified
                           Considered = files.Length
+                          Failures = report.FormatErrors
                           Evidence = evidence }
                 | Error(ToolFailure.TimedOut(after, kill)) ->
-                    // Left every file unformatted; the format-check plugin still reports
-                    // them, and the daemon must keep processing the batch.
-                    Logging.error
-                        "format"
-                        $"format TIMED OUT after %d{int after.TotalSeconds}s (%s{ProcessHelper.renderKillBrief kill}) — %d{toRun.Length} file(s) left unformatted"
+                    // Left every file it was handed unformatted. That is not a green: no
+                    // other plugin re-checks them when this pass is the format stage, so each
+                    // is a failure of the pass, and the daemon still keeps processing the batch.
+                    let reason =
+                        $"dotnet fantomas timed out after %d{int after.TotalSeconds}s (%s{ProcessHelper.renderKillBrief kill}); not formatted"
+
+                    Logging.error "format" $"format TIMED OUT: %d{toRun.Length} file(s) left unformatted — %s{reason}"
+
+                    for file in toRun do
+                        failing[file] <- reason
 
                     Ok
                         { Modified = []
                           Considered = files.Length
+                          Failures = toRun |> List.map (fun file -> file, reason)
                           Evidence = evidence }
                 | Error failure -> Error(ToolFailure.render failure)
 

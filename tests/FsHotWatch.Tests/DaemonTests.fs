@@ -368,6 +368,7 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
                     Ok
                         { Modified = changedFiles
                           Considered = changedFiles.Length
+                          Failures = []
                           Evidence = "test-formatter" }
 
                 member _.Dispose() = () }
@@ -428,6 +429,7 @@ let ``a file a preprocessor rewrites joins the batch the plugins receive`` () =
                     Ok
                         { Modified = [ FsHotWatch.CommandPreprocessor.realPathOf genFile ]
                           Considered = files.Length
+                          Failures = []
                           Evidence = "generator" }
 
                 member _.Dispose() = () }
@@ -1710,6 +1712,7 @@ let ``scan waits for discovery and re-scans when its captured model is invalidat
                         Ok
                             { Modified = []
                               Considered = files.Length
+                              Failures = []
                               Evidence = "capture barrier released" }
 
                     member _.Dispose() = () }
@@ -1949,6 +1952,7 @@ let ``a scan re-evaluates a project whose restore changed its package graph afte
                     Ok
                         { Modified = []
                           Considered = files.Length
+                          Failures = []
                           Evidence = "restore stand-in" }
 
                 member _.Dispose() = () }
@@ -3072,6 +3076,7 @@ let ``a scan whose model changes on every attempt fails by name instead of loopi
                     Ok
                         { Modified = []
                           Considered = files.Length
+                          Failures = []
                           Evidence = "storm barrier" }
 
                 member _.Dispose() = () }
@@ -3212,6 +3217,7 @@ let ``superseded owned change retries its admitted source against the current mo
                     Ok
                         { Modified = []
                           Considered = files.Length
+                          Failures = []
                           Evidence = "admitted source released" }
 
                 member _.Dispose() = () }
@@ -4637,6 +4643,7 @@ let ``a change batch whose model changes on every attempt fails by name and keep
                     Ok
                         { Modified = []
                           Considered = files.Length
+                          Failures = []
                           Evidence = "storm barrier" }
 
                 member _.Dispose() = () }
@@ -5601,6 +5608,7 @@ let private withHeldFirstScan
                     Ok
                         { Modified = []
                           Considered = files.Length
+                          Failures = []
                           Evidence = "barrier" }
 
                 member _.Dispose() = () }
@@ -6049,3 +6057,22 @@ let ``the settle re-check waits for a held test run and never interrupts it`` ()
             test <@ (suspectEntries daemon).IsEmpty @>
         finally
             workerGo.Set())
+
+[<Fact>]
+let ``fshw format names each file the formatter could not process instead of counting it as formatted`` () =
+    let run: PluginHost.PreprocessorsRun =
+        { Modified = []
+          Lines = []
+          Evidence = [ "dotnet fantomas 7.0.5 (pinned in .config/dotnet-tools.json)" ]
+          Refused = []
+          Failures = [ "/r/Bad.fs", "Could not parse file." ] }
+
+    test
+        <@
+            renderFormatAll [ "/r/Good.fs"; "/r/Bad.fs" ] run = "formatted 0 of 2 files, could not format 1 (/r/Bad.fs: Could not parse file.) — dotnet fantomas 7.0.5 (pinned in .config/dotnet-tools.json)"
+        @>
+
+    test
+        <@
+            renderFormatAll [ "/r/Good.fs" ] { run with Failures = [] } = "formatted 0 of 1 files — dotnet fantomas 7.0.5 (pinned in .config/dotnet-tools.json)"
+        @>

@@ -133,6 +133,7 @@ let create (spec: Spec) : IFsHotWatchPreprocessor =
                 Ok
                     { Modified = []
                       Considered = 0
+                      Failures = []
                       Evidence = $"%s{invocation} — not triggered by this batch" }
             else
                 let before = spec.Writes |> List.map (fun path -> path, contentOf path)
@@ -153,6 +154,7 @@ let create (spec: Spec) : IFsHotWatchPreprocessor =
                     Ok
                         { Modified = inWatcherForm repoRoot changedFiles modified
                           Considered = spec.Writes.Length
+                          Failures = []
                           Evidence = $"%s{invocation} exit 0 in %d{int clock.ElapsedMilliseconds}ms" }
                 | Ok(Failed(exitCode, output)) ->
                     Error

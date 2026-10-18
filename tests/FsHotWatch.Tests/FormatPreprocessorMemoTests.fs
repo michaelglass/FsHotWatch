@@ -162,3 +162,76 @@ let ``a file that cannot be read is never remembered as formatted`` () =
                 File.SetUnixFileMode(a, UnixFileMode.UserRead ||| UnixFileMode.UserWrite)
 
             test <@ calls () = [ [ a ]; [ a ] ] @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a file the tool could not format is handed back on a later pass whose batch does not hold it`` () =
+    withRepo (fun dir a b ->
+        let outcomes =
+            Collections.Generic.Queue<ProcessOutcome>(
+                [ Failed(1, ProcessOutput.Drained $"Failed to format file: %s{b} : Could not parse file.")
+                  Failed(1, ProcessOutput.Drained $"Failed to format file: %s{b} : Could not parse file.") ]
+            )
+
+        let calls = ResizeArray<string>()
+
+        let runner: Runner =
+            fun _ args _ _ ->
+                calls.Add args
+                outcomes.Dequeue()
+
+        let preprocessor = FormatPreprocessor(runner = runner) :> IFsHotWatchPreprocessor
+
+        let first = run preprocessor [ a; b ] dir
+        // A change batch elsewhere: `b` is not in it, and is still broken.
+        let later = run preprocessor [ a ] dir
+
+        test <@ first.Failures = [ b, "Could not parse file." ] @>
+        test <@ later.Failures = [ b, "Could not parse file." ] @>
+        test <@ calls.Count = 2 && calls[1] = $"\"%s{b}\"" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a remembered failure is dropped once its file is gone`` () =
+    withRepo (fun dir a b ->
+        let outcomes =
+            Collections.Generic.Queue<ProcessOutcome>(
+                [ Failed(1, ProcessOutput.Drained $"Failed to format file: %s{b} : Could not parse file.") ]
+            )
+
+        let runner: Runner = fun _ _ _ _ -> outcomes.Dequeue()
+        let preprocessor = FormatPreprocessor(runner = runner) :> IFsHotWatchPreprocessor
+
+        run preprocessor [ a; b ] dir |> ignore
+        File.Delete b
+        let later = run preprocessor [ a ] dir
+
+        test <@ List.isEmpty later.Failures @>
+        test <@ later.Considered = 1 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a timed-out pass fails every file it was handed, and hands them back next time`` () =
+    withRepo (fun dir a b ->
+        let timedOut =
+            TimedOut(
+                TimeSpan.FromSeconds 1.0,
+                ProcessOutput.DrainTimedOut("", TimeSpan.FromSeconds 2.0),
+                KillOutcome.Killed
+            )
+
+        let outcomes = Collections.Generic.Queue<ProcessOutcome>([ timedOut; clean ])
+        let calls = ResizeArray<string>()
+
+        let runner: Runner =
+            fun _ args _ _ ->
+                calls.Add args
+                outcomes.Dequeue()
+
+        let preprocessor = FormatPreprocessor(runner = runner) :> IFsHotWatchPreprocessor
+
+        let first = run preprocessor [ a; b ] dir
+        let later = run preprocessor [ a ] dir
+
+        test <@ first.Failures |> List.map fst = [ a; b ] @>
+        test <@ first.Failures |> List.forall (fun (_, why) -> why.Contains "timed out") @>
+        // `b` was never formatted, so the next pass re-earns it though its batch held only `a`.
+        test <@ calls[1] = $"\"%s{a}\" \"%s{b}\"" @>
+        test <@ List.isEmpty later.Failures @>)

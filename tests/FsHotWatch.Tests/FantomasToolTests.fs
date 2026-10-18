@@ -417,3 +417,19 @@ let ``format with no files never spawns`` () =
     let runner, calls = scripted (Succeeded(drained ""))
     test <@ format runner pin "/w" (TimeSpan.FromSeconds 1.0) [] = Ok { Modified = []; FormatErrors = [] } @>
     test <@ List.isEmpty (calls ()) @>
+
+[<Fact>]
+let ``parseOutput attributes a single-file rewrite error that echoes only the file name`` () =
+    // Handed ONE file, fantomas 7.0.5 echoes its bare file name, not the path it was
+    // given: `Failed to format file: Bad.fs : Could not parse file.` Unattributed, the
+    // line read as the tool failing rather than as a finding about that file.
+    let broken = "/w/tests/sub/Bad.fs"
+    let text = "Failed to format file: Bad.fs : Could not parse file.\n"
+    let report = parseOutput "/w" [ broken ] text
+    test <@ report.FormatErrors = [ broken, "Could not parse file." ] @>
+
+[<Fact>]
+let ``parseOutput does not guess between two requested files that share an echoed name`` () =
+    let text = "Failed to format file: Bad.fs : Could not parse file.\n"
+    let report = parseOutput "/elsewhere" [ "/w/a/Bad.fs"; "/w/b/Bad.fs" ] text
+    test <@ List.isEmpty report.FormatErrors @>

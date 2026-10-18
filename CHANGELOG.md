@@ -74,6 +74,28 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### format: a file the formatter cannot parse fails the format pass
+
+- **fix!: the format preprocessor fails, naming each file, when the pinned Fantomas
+  cannot process one.** A whole-tree pass handed Fantomas a new file it could not parse
+  (`Could not parse file.`), logged the error, and reported
+  `format: rewrote 0 of 2500 file(s)`, green. Only a later pass that handed over that
+  file alone went red, and then only by accident: alone, Fantomas echoes the bare file
+  name, which the output reader could not attribute, so the line read as the tool
+  failing. Now:
+  - `PreprocessResult` carries `Failures` (file, reason) and `PreprocessorsRun` carries
+    them too. A pass with any is a **Failed** status naming each file repository-relative
+    with the tool's reason; its rewrites still stand. **BREAKING** for code that builds a
+    `PreprocessResult`: add `Failures = []`.
+  - The preprocessor hands every file it could not process back to the tool on every
+    later pass, whatever that pass's batch holds, until the tool processes it or the file
+    is gone. A change batch elsewhere can no longer turn the status green over it.
+  - A timed-out pass fails every file it was handed. It used to report them as left
+    alone with a green status, which in `format: true` mode no other plugin rechecked.
+  - The single-file echo (`Failed to format file: Bad.fs : …`) is attributed to the one
+    requested file of that name; an ambiguous name stays unattributed.
+  - `fshw format` names each such file instead of counting it as formatted.
+
 ### lint: a fsharplint.json key FSharpLint binds to no rule fails the lint
 
 - **fix!: the in-process lint fails, naming each key, when `fsharplint.json` has a key
