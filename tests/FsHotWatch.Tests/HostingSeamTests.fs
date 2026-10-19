@@ -35,7 +35,7 @@ let private modeBranch =
 
 /// Every line outside the seam that branches on the mode, as `file:line: code`.
 let private strayBranches (root: string) =
-    Directory.EnumerateFiles(Path.Combine(root, "src"), "*.fs", SearchOption.AllDirectories)
+    FsHotWatch.Tests.TestHelpers.filesUnder FsHotWatch.SafeWalk.SourceExcludedDirs "*.fs" (Path.Combine(root, "src"))
     |> Seq.map (fun path -> Path.GetRelativePath(root, path).Replace('\\', '/'), path)
     |> Seq.filter (fun (relative, _) -> relative <> seam && not (relative.Contains "/obj/"))
     |> Seq.collect (fun (relative, path) ->
@@ -108,7 +108,7 @@ let private clearsCheckerCaches =
 
 /// The lines of `src/` whose code matches `pattern`, as (file, 1-based line, all lines).
 let private matchesIn (root: string) (pattern: Regex) =
-    Directory.EnumerateFiles(Path.Combine(root, "src"), "*.fs", SearchOption.AllDirectories)
+    FsHotWatch.Tests.TestHelpers.filesUnder FsHotWatch.SafeWalk.SourceExcludedDirs "*.fs" (Path.Combine(root, "src"))
     |> Seq.map (fun path -> Path.GetRelativePath(root, path).Replace('\\', '/'), path)
     |> Seq.filter (fun (relative, _) -> not (relative.Contains "/obj/"))
     |> Seq.collect (fun (relative, path) ->

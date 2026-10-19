@@ -30,7 +30,7 @@ let private exemptions =
 let private sourceFiles root =
     let src = Path.Combine(root, "src")
 
-    Directory.EnumerateFiles(src, "*.fs", SearchOption.AllDirectories)
+    FsHotWatch.Tests.TestHelpers.filesUnder FsHotWatch.SafeWalk.SourceExcludedDirs "*.fs" src
     |> Seq.map (fun path -> Path.GetRelativePath(root, path).Replace('\\', '/'))
     |> Seq.filter (fun path ->
         let segments = path.Split('/')

@@ -76,7 +76,13 @@ let depsFiles () =
     let cliDir = Path.Combine(repoRoot, "src", "FsHotWatch.Cli")
 
     if Directory.Exists cliDir then
-        Directory.EnumerateFiles(cliDir, "FsHotWatch.Cli.deps.json", SearchOption.AllDirectories)
+        let skipLinks =
+            // FSHW-WALK-001 ok: a `dotnet fsi` script cannot reference FsHotWatch.SafeWalk; skipping
+            // ReparsePoint means it never enters a symlinked directory. Hidden is NOT skipped,
+            // so the walk sees every build output the old one did.
+            EnumerationOptions(RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint)
+
+        Directory.EnumerateFiles(cliDir, "FsHotWatch.Cli.deps.json", skipLinks)
         |> Seq.sortByDescending File.GetLastWriteTimeUtc
         |> List.ofSeq
     else

@@ -396,7 +396,7 @@ let ``a refused analyzer identity means no cache key, no cache entry, and the an
             waitForTerminalStatus host "analyzers" 20000
 
             // Nothing was written: a verdict that cannot be named cannot be replayed.
-            test <@ Array.isEmpty (System.IO.Directory.GetFiles(store, "*", System.IO.SearchOption.AllDirectories)) @>))
+            test <@ List.isEmpty (allFilesUnder "*" store) @>))
 
 [<Fact(Timeout = 15000)>]
 let ``regression: cache key changes when the analyzer DLL is rebuilt (same path)`` () =

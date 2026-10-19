@@ -213,7 +213,8 @@ let private keyInputsOf (root: string) : KeyInputs =
     let tasks = Path.Combine(FsHwPaths.root root, "cache", "tasks")
 
     if Directory.Exists tasks then
-        Directory.GetFiles(tasks, "*.json", SearchOption.AllDirectories)
+        allFilesUnder "*.json" tasks
+        |> Array.ofList
         |> Array.map (fun f ->
             let name = Path.GetFileNameWithoutExtension f
 
@@ -383,7 +384,8 @@ let private observe (root: string) (config: DaemonRpcConfig) (driven: Driven) =
         rel.StartsWith("cache/tasks/test-prune@", StringComparison.Ordinal)
 
     let all =
-        Directory.GetFiles(state, "*", SearchOption.AllDirectories)
+        allFilesUnder "*" state
+        |> Array.ofList
         |> Array.filter (Path.GetFileName >> modeOwned.Files.Contains >> not)
         |> Array.filter (relative >> interleavingOwned >> not)
 
@@ -439,7 +441,8 @@ let private observe (root: string) (config: DaemonRpcConfig) (driven: Driven) =
         let dir = Path.Combine(root, "coverage")
 
         if Directory.Exists dir then
-            Directory.GetFiles(dir, "*.xml", SearchOption.AllDirectories)
+            allFilesUnder "*.xml" dir
+            |> Array.ofList
             |> Array.map (fun f ->
                 let xml = Xml.Linq.XDocument.Load f
 

@@ -955,7 +955,7 @@ let ``FileTaskCache roundtrips wasFiltered=true and a PARTIAL verification`` () 
 /// Rewrite the `verification` token of every cached `testRunCompleted` in `dir`:
 /// `None` removes the field, `Some token` replaces it.
 let private rewriteVerification (dir: string) (token: string option) =
-    for path in System.IO.Directory.EnumerateFiles(dir, "*.json", System.IO.SearchOption.AllDirectories) do
+    for path in allFilesUnder "*.json" dir do
         let root = System.Text.Json.Nodes.JsonNode.Parse(System.IO.File.ReadAllText path)
 
         let rec visit (node: System.Text.Json.Nodes.JsonNode) =

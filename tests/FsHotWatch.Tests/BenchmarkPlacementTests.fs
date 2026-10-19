@@ -50,7 +50,10 @@ let private gatedTestProjectDirs root =
 
 /// Source files of a project, skipping its build outputs.
 let private sourceFiles root (projectDir: string) =
-    Directory.EnumerateFiles(Path.Combine(root, projectDir), "*.fs", SearchOption.AllDirectories)
+    FsHotWatch.Tests.TestHelpers.filesUnder
+        FsHotWatch.SafeWalk.SourceExcludedDirs
+        "*.fs"
+        (Path.Combine(root, projectDir))
     |> Seq.filter (fun path ->
         let relative = Path.GetRelativePath(root, path)
 

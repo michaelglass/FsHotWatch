@@ -3268,3 +3268,120 @@ let ``FSHW-SPAWN-001 does not fire on starting a thread, timer or stopwatch`` ()
             |> List.filter (fun e -> e.Message.Contains "without going through ProcessHelper")
 
         test <@ findings.IsEmpty @>)
+
+// ---------------------------------------------------------------------------
+// FSHW-WALK-001 — a recursive directory walk that can follow a directory symlink.
+// `.devenv/profile -> /nix/store` sits one hop off the repository root, and the
+// ncurses `include/{ncurses,ncursesw} -> .` self-loops there double the path count per
+// level, so such a walk never finishes. `SearchOption.AllDirectories` reads as the
+// safe idiom and is not; neither is a hand-rolled `let rec` over GetDirectories.
+//
+// The controls in BOTH directions matter: a rule that fires on a one-level listing or
+// on a walk UP a parent chain would be suppressed rather than obeyed.
+// ---------------------------------------------------------------------------
+
+let private walkFindings (source: string) =
+    runRulesOn source
+    |> List.filter (fun e -> e.Message.Contains "Unguarded recursive directory walk")
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-WALK-001 fires on every recursive enumeration option`` () =
+    withAnalyzerGate (fun () ->
+        let source =
+            fsSource
+                [ "module Temp"
+                  "open System.IO"
+                  "let a d = Directory.GetFiles(d, \"*\", SearchOption.AllDirectories)"
+                  "let b d = Directory.EnumerateFiles(d, \"*\", System.IO.SearchOption.AllDirectories)"
+                  "let c d = Directory.GetFiles(d, \"*\", EnumerationOptions(RecurseSubdirectories = true))"
+                  "let e () ="
+                  "    let o = EnumerationOptions()"
+                  "    o.RecurseSubdirectories <- true"
+                  "    o" ]
+
+        let findings = walkFindings source
+
+        test <@ findings.Length = 4 @>
+        test <@ findings |> List.forall (fun e -> e.Severity = DiagnosticSeverity.Error) @>
+        test <@ findings |> List.forall (fun e -> e.Message.Contains "SafeWalk") @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-WALK-001 fires on hand-rolled recursion over a directory listing`` () =
+    withAnalyzerGate (fun () ->
+        let source =
+            fsSource
+                [ "module Temp"
+                  "open System.IO"
+                  // A for loop over the listing.
+                  "let rec viaFor (d: string) : string list ="
+                  "    [ for sub in Directory.GetDirectories d do"
+                  "          yield sub"
+                  "          yield! viaFor sub ]"
+                  // A pipeline over the listing, through a local alias, in a local rec.
+                  "let outer (root: string) ="
+                  "    let rec viaPipe (d: DirectoryInfo) : FileInfo seq ="
+                  "        let subs = d.EnumerateDirectories()"
+                  "        Seq.append (d.EnumerateFiles()) (subs |> Seq.collect viaPipe)"
+                  "    viaPipe (DirectoryInfo root)" ]
+
+        test <@ (walkFindings source).Length = 2 @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-WALK-001 sees inside class members`` () =
+    withAnalyzerGate (fun () ->
+        // xUnit class fixtures are written as `type FooTests() = member …`. A walker
+        // that reads only a type's augmentation members is blind there.
+        let source =
+            fsSource
+                [ "module Temp"
+                  "open System.IO"
+                  "type Probe() ="
+                  "    let rec walk (d: string) : string list ="
+                  "        [ for sub in Directory.GetDirectories d do yield! walk sub ]"
+                  "    member _.All(d: string) = Directory.GetFiles(d, \"*\", SearchOption.AllDirectories)"
+                  "    member _.Walk(d: string) = walk d" ]
+
+        test <@ (walkFindings source).Length = 2 @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-WALK-001 stays silent on non-recursive listings and on walks up a parent chain`` () =
+    withAnalyzerGate (fun () ->
+        let source =
+            fsSource
+                [ "module Temp"
+                  "open System.IO"
+                  "let top d = Directory.GetFiles(d, \"*\", SearchOption.TopDirectoryOnly)"
+                  "let flat d = Directory.GetFiles(d, \"*\", EnumerationOptions(RecurseSubdirectories = false))"
+                  "let oneLevel d = Directory.GetDirectories d |> Array.length"
+                  // Recursion that lists no directories: walking UP terminates.
+                  "let rec findUp (d: DirectoryInfo) ="
+                  "    if isNull d then None"
+                  "    elif File.Exists(Path.Combine(d.FullName, \"x.sln\")) then Some d"
+                  "    else findUp d.Parent"
+                  // A rec dispatcher that lists one level and recurses on something else.
+                  "let rec dispatch (args: string list) ="
+                  "    match args with"
+                  "    | [] -> 0"
+                  "    | \"count\" :: rest -> Directory.GetDirectories \".\" |> Array.length |> ignore; dispatch rest"
+                  "    | _ :: rest -> dispatch rest" ]
+
+        test <@ List.isEmpty (walkFindings source) @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-WALK-001 opt-out needs a stated reason`` () =
+    withAnalyzerGate (fun () ->
+        let source =
+            fsSource
+                [ "module Temp"
+                  "open System.IO"
+                  "// FSHW-WALK-001 ok: the fixture builds this tree itself and it holds no symlinks"
+                  "let reasoned d = Directory.GetFiles(d, \"*\", SearchOption.AllDirectories)"
+                  "let inline_ d = Directory.GetFiles(d, \"*\", SearchOption.AllDirectories) // FSHW-WALK-001 ok: built here"
+                  "// FSHW-WALK-001 ok:"
+                  "let bare d = Directory.GetFiles(d, \"*\", SearchOption.AllDirectories)" ]
+
+        // Only the bare marker's walk survives: an exception that does not say why is
+        // not countable as one.
+        let findings = walkFindings source
+        test <@ findings.Length = 1 @>
+        test <@ findings |> List.forall (fun e -> e.Line = 7) @>)

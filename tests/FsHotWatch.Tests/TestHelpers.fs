@@ -18,6 +18,28 @@ let sharedChecker =
 let dummyParseResults () : FSharpParseFileResults =
     RuntimeHelpers.GetUninitializedObject(typeof<FSharpParseFileResults>) :?> FSharpParseFileResults
 
+/// Every file matching `pattern` under `root`, recursively, as full paths — through
+/// `SafeWalk`, never `SearchOption.AllDirectories`, which follows directory symlinks
+/// (FSHW-WALK-001). A directory named in `excluded` is not walked; neither is a
+/// symlinked one. A missing root is empty. A directory the walk could NOT see fails
+/// the test rather than reading as empty: an assertion that a tree holds no such file
+/// must not pass because the tree could not be read.
+let filesUnder (excluded: Set<string>) (pattern: string) (root: string) : string list =
+    let result = FsHotWatch.SafeWalk.walk excluded pattern root
+
+    if not (List.isEmpty result.Skipped) then
+        let holes =
+            result.Skipped
+            |> List.map FsHotWatch.SafeWalk.describeSkip
+            |> String.concat "; "
+
+        failwith $"walk of %s{root} could not see: %s{holes}"
+
+    result.Files |> List.map _.FullName
+
+/// `filesUnder` for a tree the test built itself, where nothing is excluded.
+let allFilesUnder (pattern: string) (root: string) : string list = filesUnder Set.empty pattern root
+
 /// The project-model generation fixture results are captured against.
 let fixtureModelGeneration = 1L
 

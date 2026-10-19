@@ -397,7 +397,7 @@ let ``SIGTERM to a repository host reaps every session's test host and logs the 
 
         let hostPidFile () =
             if Directory.Exists stateHome then
-                Directory.EnumerateFiles(stateHome, "host.pid", SearchOption.AllDirectories)
+                FsHotWatch.SafeWalk.bestEffortFilePaths Set.empty "host.pid" stateHome
                 |> Seq.tryHead
             else
                 None

@@ -188,7 +188,8 @@ let private observeB (world: World) =
     let state = FsHwPaths.root world.B.Root.Value
 
     let files =
-        Directory.GetFiles(state, "*", SearchOption.AllDirectories)
+        allFilesUnder "*" state
+        |> Array.ofList
         |> Array.filter (fun f -> not (f.EndsWith "daemon.lock"))
         |> Array.sort
         |> Array.map (fun f ->

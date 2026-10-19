@@ -3779,8 +3779,7 @@ let private runLogsUnder (repoRoot: string) =
     if not (Directory.Exists root) then
         []
     else
-        Directory.GetFiles(root, "*" + FsHotWatch.RunLog.Suffix, SearchOption.AllDirectories)
-        |> Array.toList
+        allFilesUnder ("*" + FsHotWatch.RunLog.Suffix) root
         |> List.map (fun f -> Path.GetFileName f, File.ReadAllText f)
         |> List.sortBy fst
 
