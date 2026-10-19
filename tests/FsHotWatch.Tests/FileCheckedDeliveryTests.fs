@@ -647,3 +647,59 @@ let ``laterFilesInOwnProjects follows every project that compiles the file, skip
     Assert.Equal<string list>([ "/r/A/Last.fs"; "/r/B/Only.fs" ], later [ shared ])
     // A file its project no longer lists has no later files.
     Assert.Empty(later [ AbsFilePath.create "/r/Gone.fs" ])
+
+[<Fact(Timeout = 300000)>]
+let ``an edit's FileChecked is published while a build is still running`` () =
+    // A one-file edit's check result must not wait for the build: the build compiles the
+    // whole tree and runs for many seconds, the check of one file for well under one. The
+    // build here is held Running by a gate the test opens only after the check has landed,
+    // so a batch that waited on the build would never deliver the edit's FileChecked.
+    withFixture "check-not-behind-build" (fun fixture ->
+        fixture.Daemon.ScanAll() |> Async.RunSynchronously
+        settle fixture
+
+        let started = Path.Combine(fixture.Root, "build-started")
+        let script = Path.Combine(fixture.Root, "build.sh")
+
+        withReleaseGate fixture.Root "build" (fun release ->
+            // 4000 polls at 20 ms is ~80 s: beyond every wait below, so only the release
+            // ends the build. See `gatedWait`.
+            File.WriteAllText(script, $"touch '{started}'\n" + gatedWait fixture.Root release 4000 + "\n")
+
+            let getBuild, buildObserver = buildRecorder ()
+            fixture.Daemon.RegisterHandler buildObserver
+
+            fixture.Daemon.RegisterHandler(
+                FsHotWatch.Build.BuildPlugin.create "sh" script [] fixture.Daemon.Graph [] None [] None
+            )
+
+            // A build already Running when the edit arrives, as when edits come faster
+            // than the build finishes.
+            fixture.Daemon.Host.EmitFileChanged(SourceChanged [ fixture.Late ])
+
+            Assert.True(waitUntilTrue (fun () -> File.Exists started) 30000, "the build must start")
+
+            let buildRunning () =
+                match fixture.Daemon.Host.GetStatus "build" with
+                | Some(Running _) -> true
+                | _ -> false
+
+            Assert.True(waitUntilTrue buildRunning 30000, "the build must report Running")
+
+            let label = "edit during build"
+            fixture.SetPhase label
+            File.WriteAllText(fixture.Use, "module Use\nlet total : int = Late.tripled + 2\n")
+            fixture.Deliver(SourceChanged [ fixture.Use ])
+
+            let editChecked () =
+                fixture.Deliveries()
+                |> List.exists (fun d -> d.Phase = label && d.File = "Use.fs")
+
+            Assert.True(waitUntilTrue editChecked 60000, "the edit's FileChecked must land while the build is held")
+            // The ordering under test: the check landed, and the build has not finished.
+            Assert.True(buildRunning (), "the build must still be Running when the check lands")
+            Assert.True((getBuild ()).IsNone, "no BuildCompleted may precede the edit's FileChecked")
+
+            // Positive control: the build this test held does complete once released.
+            File.WriteAllText(release, "")
+            Assert.True(waitUntilTrue (fun () -> (getBuild ()).IsSome) 60000, "the released build must complete")))
