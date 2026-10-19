@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.89 - 2026-10-19
+
 - **feat!: every launch says which cause selected each test project.** A run's
   selection is the union of the symbol-precise classes and every widening (dependency
   fanout, the coarse fallback, evidence gaps, runtime coverage, outstanding reds,

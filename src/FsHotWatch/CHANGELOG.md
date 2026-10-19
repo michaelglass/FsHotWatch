@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.89 - 2026-10-19
+
+- feat(rules): FSHW-WALK-001 bans walks that can follow a directory symlink
+
+
 ## 0.10.0-alpha.88 - 2026-10-18
 
 - fix: an unreadable directory that a `dir/` exclude names is no longer a hole in the tree

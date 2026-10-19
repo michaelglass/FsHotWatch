@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.122 - 2026-10-19
+
 - **feat!: the verdict file's `scope` records `selectedBy`**, which cause selected each
   test project (`[{"project": "ProjA", "causes": ["dependency-fanout", "changed-symbols"]}]`,
   widest first), read from the daemon's `test-scope` reply. `null` where the daemon did
