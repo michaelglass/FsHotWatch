@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: the dependency-fanout walk of a project directory stops at `SafeWalk.MaxDepth` levels
+  and lists each level through `SafeWalk.subdirectories`. It already skipped symlinked
+  directories, but had no depth cap, so a cycle that evades that guard (a bind mount) could
+  walk forever. A subtree it stops short of contributes the "could not hash" sentinel under
+  its own path, as an unreadable directory does, so it can never read as unchanged.
+
 ## 0.13.0-alpha.88 - 2026-10-18
 
 - **fix!: `createWithTracesIn` takes the daemon's `exclude` patterns as its first

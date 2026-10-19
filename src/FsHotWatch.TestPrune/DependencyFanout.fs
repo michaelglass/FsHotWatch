@@ -86,6 +86,10 @@ let private isWalkedPast (dir: string) =
 /// otherwise. A directory that cannot be listed contributes `UnhashableContent` under its
 /// own path rather than nothing, so it can never read as unchanged — and only itself: its
 /// siblings are still read, so one locked directory cannot hide an edit beside it.
+/// A directory nested deeper than `SafeWalk.MaxDepth` below the project is not entered and
+/// contributes `UnhashableContent` the same way: the real tree is acyclic once symlinks are
+/// skipped, so only a cycle that evades that guard (a bind mount) can reach the cap, and a
+/// subtree it stopped short of must not read as unchanged either.
 ///
 /// Only an IO failure reads as unreadable. Anything else propagates: swallowed, a bug in
 /// the walk would turn every project into the same sentinel and silently stop fanout.
@@ -95,7 +99,7 @@ let internal projectDirectoryInputs
     (projectDir: string)
     (isCompiled: string -> bool)
     : (string * string) list =
-    let rec walk (dir: string) : (string * string) list =
+    let rec walk (depth: int) (dir: string) : (string * string) list =
         let relative (path: string) = Path.GetRelativePath(projectDir, path)
 
         try
@@ -109,18 +113,27 @@ let internal projectDirectoryInputs
                     |> List.filter (fun f -> not (isHidden f) && not (isCompiled f))
                     |> List.map (fun f -> relative f, FsHotWatch.ContentHash.ofFile f)
 
+                // One level per step, through SafeWalk: a listing it could not make is the
+                // same IO failure as an unreadable file list, and is answered the same way.
                 let below =
-                    Directory.EnumerateDirectories dir
-                    |> Seq.filter (isWalkedPast >> not)
-                    |> List.ofSeq
-                    |> List.collect walk
+                    match FsHotWatch.SafeWalk.subdirectories dir with
+                    | Error hole -> raise (IOException(FsHotWatch.SafeWalk.describeSkip hole))
+                    | Ok subdirs ->
+                        subdirs
+                        |> Array.filter (isWalkedPast >> not)
+                        |> List.ofArray
+                        |> List.collect (fun sub ->
+                            if depth >= FsHotWatch.SafeWalk.MaxDepth then
+                                [ relative sub + "/", FsHotWatch.ContentHash.UnhashableContent ]
+                            else
+                                walk (depth + 1) sub)
 
                 files @ below
         with
         | :? IOException
         | :? UnauthorizedAccessException -> [ relative dir + "/", FsHotWatch.ContentHash.UnhashableContent ]
 
-    walk projectDir
+    walk 0 projectDir
 
 /// The imported build files present in the directories above `projectDir`, by full path.
 let private importedBuildInputs (projectDir: string) : (string * string) list =

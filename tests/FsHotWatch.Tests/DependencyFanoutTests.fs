@@ -572,6 +572,55 @@ module ``fingerprint inputs`` =
                 <@ projectDirectoryInputs failing (Path.GetDirectoryName l.LibFsproj) (fun _ -> false) @>)
 
     [<Fact>]
+    let ``a subtree nested past the depth cap counts as unhashable, never as absent`` () =
+        // Only a cycle that evades the symlink guard (a bind mount) can get this deep, and
+        // the walk must stop there without reporting what it did not read as unchanged.
+        withLayout (fun l ->
+            let projectDir = Path.GetDirectoryName l.LibFsproj
+
+            let deepest =
+                List.replicate (FsHotWatch.SafeWalk.MaxDepth + 2) "d"
+                |> List.fold (fun dir name -> Path.Combine(dir, name)) projectDir
+
+            Directory.CreateDirectory deepest |> ignore
+            File.WriteAllText(Path.Combine(deepest, "data.txt"), "1")
+
+            let inputs =
+                projectDirectoryInputs Directory.EnumerateFiles projectDir (fun _ -> false)
+
+            let capped =
+                String.concat "/" (List.replicate (FsHotWatch.SafeWalk.MaxDepth + 1) "d") + "/"
+
+            test <@ inputs |> List.contains (capped, FsHotWatch.ContentHash.UnhashableContent) @>
+            test <@ inputs |> List.forall (fun (path, _) -> not (path.EndsWith "data.txt")) @>)
+
+    [<Fact>]
+    let ``a directory whose subdirectories cannot be listed counts as unhashable`` () =
+        // Its files listed — the injected lister never touches the disk for it — but its
+        // subdirectories did not: the same hole as an unreadable file list, answered alike.
+        withLayout (fun l ->
+            let projectDir = Path.GetDirectoryName l.LibFsproj
+            let locked = Path.Combine(projectDir, "Locked")
+            Directory.CreateDirectory(Path.Combine(locked, "Inner")) |> ignore
+
+            let listFiles (dir: string) =
+                if dir = locked then
+                    Seq.empty
+                else
+                    Directory.EnumerateFiles dir
+
+            try
+                File.SetUnixFileMode(locked, UnixFileMode.None)
+                let inputs = projectDirectoryInputs listFiles projectDir (fun _ -> false)
+
+                test <@ inputs |> List.contains ("Locked/", FsHotWatch.ContentHash.UnhashableContent) @>
+            finally
+                File.SetUnixFileMode(
+                    locked,
+                    UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                ))
+
+    [<Fact>]
     let ``one fingerprinter shares a referenced project across test projects without changing either answer`` () =
         withLayout (fun l ->
             let other = Path.Combine(l.Root, "Other", "Other.fsproj")
