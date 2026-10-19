@@ -1759,6 +1759,9 @@ type TestEvidenceReceipt =
         /// Why the run covered every project, when it did — the launch's
         /// `TestRunLaunch.FullSuiteCause`. `test-scope` sends it beside a `full` scope.
         FullSuiteCause: FullSuiteCause
+        /// Which cause selected each project — the launch's `TestRunLaunch.SelectedBy`.
+        /// `test-scope` sends it beside a `full` or `filtered` scope.
+        SelectedBy: ProjectAttribution list
     }
 
 /// Why `test-scope` holds no evidence for the tree it is asked about, when the completion
@@ -2374,6 +2377,9 @@ type TestRunLaunch =
         /// Decided at launch, where the widenings are known; read only when the run's
         /// coverage turns out to be the whole suite.
         FullSuiteCause: FullSuiteCause
+        /// Every selected project and each cause that put it in the run, widest first
+        /// (`SelectionAttribution.attribute`). Empty for a launch that selected nothing.
+        SelectedBy: ProjectAttribution list
         /// The changed files this run launched against. Its completion clears only
         /// these; a file that changed during the run still selects the next one.
         ChangedFiles: string list
@@ -3542,7 +3548,8 @@ module ReceiptTransition =
                       Coverage = coverage
                       Seeds = launch.Seeds
                       ZeroSelection = launch.ZeroSelection
-                      FullSuiteCause = launch.FullSuiteCause }
+                      FullSuiteCause = launch.FullSuiteCause
+                      SelectedBy = launch.SelectedBy }
 
     /// Fold one transition into the store. Total, and the only place the store changes
     /// on a completion.
@@ -3668,6 +3675,83 @@ let internal selectionOf
             | Some [] -> Some(c.Project, ProjectInFull)
             | Some classes -> Some(c.Project, ProjectClasses(Set.ofList classes)))
         |> Map.ofList
+
+/// The sources a launch's selection is the union of, each as the projects it put in the
+/// run. Kept apart until the launch is attributed, because once unioned no one can tell
+/// a wide selection that is honest from one that is a defect.
+type SelectionSources =
+    {
+        /// Every project, when `confirm`, an unreadable ledger or a missing full-suite
+        /// baseline forced the whole suite.
+        FullSuite: Set<string>
+        /// Every project, when the impact graph had a hole.
+        CoarseFallback: Set<string>
+        /// The projects with no whole-project run under the current project model.
+        EvidenceGap: Set<string>
+        /// The projects whose dependency fingerprint changed.
+        DependencyFanout: Set<string>
+        /// The projects runtime coverage attributes a changed file to.
+        RuntimeCoverage: Set<string>
+        /// The projects an outstanding red added classes to, or put in the run.
+        OutstandingFailure: Set<string>
+        /// The projects whose classes cover a changed or still-owed symbol.
+        ChangedSymbols: Set<string>
+        /// The projects whose classes cover a symbol-free edit's file.
+        SymbolFreeEdit: Set<string>
+        /// The projects whose declared always-classes the launch carried.
+        AlwaysClasses: Set<string>
+    }
+
+module SelectionSources =
+    /// No source selected anything.
+    let none: SelectionSources =
+        { FullSuite = Set.empty
+          CoarseFallback = Set.empty
+          EvidenceGap = Set.empty
+          DependencyFanout = Set.empty
+          RuntimeCoverage = Set.empty
+          OutstandingFailure = Set.empty
+          ChangedSymbols = Set.empty
+          SymbolFreeEdit = Set.empty
+          AlwaysClasses = Set.empty }
+
+module SelectionAttribution =
+    /// Every project of `selection` with each source that selected it, widest first.
+    ///
+    /// Attributes the LAUNCHED selection, never the sources alone: a source may name a
+    /// project the run then left out (it is not configured), and that is no cause of
+    /// anything. An empty `byProject` that still launched ran every project in full
+    /// because it was empty, so that is the one cause it names.
+    let attribute
+        (sources: SelectionSources)
+        (byProject: Map<string, string list>)
+        (selection: Map<string, ProjectSelection>)
+        : ProjectAttribution list =
+        let named =
+            [ SelectionCause.FullSuite, sources.FullSuite
+              SelectionCause.CoarseFallback, sources.CoarseFallback
+              SelectionCause.EvidenceGap, sources.EvidenceGap
+              SelectionCause.DependencyFanout, sources.DependencyFanout
+              SelectionCause.RuntimeCoverage, sources.RuntimeCoverage
+              SelectionCause.OutstandingFailure, sources.OutstandingFailure
+              SelectionCause.ChangedSymbols, sources.ChangedSymbols
+              SelectionCause.SymbolFreeEdit, sources.SymbolFreeEdit
+              SelectionCause.AlwaysClasses, sources.AlwaysClasses ]
+
+        let causesOf project =
+            if Map.isEmpty byProject then
+                [ SelectionCause.EmptySelection ]
+            else
+                named
+                |> List.filter (fun (_, projects) -> Set.contains project projects)
+                |> List.map fst
+
+        selection
+        |> Map.keys
+        |> Seq.map (fun project ->
+            { Project = project
+              Causes = causesOf project })
+        |> List.ofSeq
 
 /// What `check` would have launched over this tree — the run's own
 /// selection with the FULL-SUITE widening taken back out, and only that one.
@@ -8227,6 +8311,11 @@ let internal createWithEvidenceAndQueries
             "test-prune"
             $"Launching %s{kind} run under project model generation %s{ObservedModel.describe launch.ModelGeneration} (%s{scope}, %d{Map.count launch.Selection} project(s) selected)"
 
+    /// Which cause selected each project of a run that is about to execute. Logged once
+    /// the run is past the zero-affected skip, which executes nothing and selects nothing.
+    let logSelectedBy (launch: TestRunLaunch) =
+        Logging.info "test-prune" $"Selected by: %s{ProjectAttribution.describe launch.SelectedBy}"
+
     /// Returns the `TestsFinished` message the framework's RunExclusive posts back to the
     /// agent; the synchronous `Custom(TestsFinished)` handler emits `TestRunCompleted`
     /// inside the cache-write capture window. `TestRunStarted` fires before the host starts.
@@ -8621,6 +8710,36 @@ let internal createWithEvidenceAndQueries
                 /// proves nothing — the laundering vector).
                 let selection: Map<string, ProjectSelection> = selectionOf configs affectedByProject
 
+                // Which cause put each project in this run. Every source is kept apart
+                // up to here; unioned, a wide selection cannot be told from an honest one.
+                let selectedBy =
+                    let everyProject = fullSuiteProjects configs
+
+                    let sources: SelectionSources =
+                        { FullSuite =
+                            if scopeIsFullSuite || ledgerUnreadable || Option.isSome baselineInvalid then
+                                everyProject
+                            else
+                                Set.empty
+                          CoarseFallback = if Set.isEmpty coarseGaps then Set.empty else everyProject
+                          EvidenceGap = evidenceGap
+                          DependencyFanout = fanoutProjects
+                          RuntimeCoverage = runtimeForceProjects
+                          OutstandingFailure =
+                            quarantinedAffectedByProject
+                            |> Map.filter (fun project classes ->
+                                Map.tryFind project symbolAffectedByProject <> Some classes)
+                            |> Map.keys
+                            |> Set.ofSeq
+                          ChangedSymbols = symbolAffectedByProject |> Map.keys |> Set.ofSeq
+                          SymbolFreeEdit =
+                            match symbolFreeEdit with
+                            | Some(SymbolFreeEdit.Covering(_, _, classes)) -> classes |> Map.keys |> Set.ofSeq
+                            | _ -> Set.empty
+                          AlwaysClasses = AlwaysClasses.only configs |> Map.keys |> Set.ofSeq }
+
+                    SelectionAttribution.attribute sources affectedByProject selection
+
                 // The SAME derivation with the full-suite widening taken
                 // back out — what `check` would have launched over this tree, this
                 // instant. Every OTHER widening stays: the coarse fallback
@@ -8661,7 +8780,8 @@ let internal createWithEvidenceAndQueries
                       Reused = Map.empty
                       Seeds = narrowedSeeds |> Option.defaultValue inputs.Seeds
                       ZeroSelection = ZeroSelection.NotAZero
-                      FullSuiteCause = fullSuiteCause }
+                      FullSuiteCause = fullSuiteCause
+                      SelectedBy = selectedBy }
 
                 logLaunch "impact" inputs.Mode launch
 
@@ -8749,6 +8869,7 @@ let internal createWithEvidenceAndQueries
                             completed,
                             { launch with
                                 Selection = Map.empty
+                                SelectedBy = []
                                 // Executed nothing, so it neither covers nor projects
                                 // anything.
                                 WouldHaveRun = None
@@ -8760,6 +8881,8 @@ let internal createWithEvidenceAndQueries
                                      | UncoveredChanges.No -> ZeroSelection.AlreadyVerified) }
                         )
                 else
+                    logSelectedBy launch
+
                     if totalClasses = 0 && narrowedSeeds.IsNone && not alwaysOnly then
                         // NAME the debt that refused the zero-affected
                         // skip, and say what will actually run. Both halves were wrong
@@ -8909,7 +9032,8 @@ let internal createWithEvidenceAndQueries
                       Reused = Map.empty
                       Seeds = inputs.Seeds
                       ZeroSelection = ZeroSelection.NotAZero
-                      FullSuiteCause = fullSuiteCause }
+                      FullSuiteCause = fullSuiteCause
+                      SelectedBy = [] }
 
                 return TestsFinished(started, completed, launch)
         }
@@ -8965,7 +9089,12 @@ let internal createWithEvidenceAndQueries
               Reused = Map.empty
               Seeds = []
               ZeroSelection = ZeroSelection.NotAZero
-              FullSuiteCause = FullSuiteCause.ForceRun }
+              FullSuiteCause = FullSuiteCause.ForceRun
+              SelectedBy =
+                configs
+                |> List.map (fun c ->
+                    { Project = c.Project
+                      Causes = [ SelectionCause.ForceRun ] }) }
 
         async {
             do! awaitDiscoveryBeforeLaunch ctx
@@ -8978,6 +9107,7 @@ let internal createWithEvidenceAndQueries
                     ProjectInputs = observeTestInputs ctx }
 
             logLaunch "forced" mode commandLaunch
+            logSelectedBy commandLaunch
 
             let mutable emittedStart: TestRunStarted option = None
             let mutable returned = false
@@ -9363,6 +9493,14 @@ let internal createWithEvidenceAndQueries
                                 |> Option.map (fun receipt -> receipt.Coverage)
                                 |> Option.defaultValue RunCoverage.none
 
+                            // Which cause selected each project of the graded run. Null only
+                            // where no receipt says, which a `full` or `filtered` scope never is.
+                            let selectedBy =
+                                receipt
+                                |> Option.map (fun receipt ->
+                                    receipt.SelectedBy |> List.map ProjectAttribution.wire |> Array.ofList)
+                                |> Option.toObj
+
                             match scopeOf projects evidenceCoverage with
                             | ScopeFull n ->
                                 // Why this run took every project. Always present here: a
@@ -9377,6 +9515,7 @@ let internal createWithEvidenceAndQueries
                                     JsonSerializer.Serialize(
                                         {| kind = "full"
                                            cause = cause
+                                           selectedBy = selectedBy
                                            notSelected = notSelected
                                            runIds = runIds
                                            baseline = baseline
@@ -9392,6 +9531,7 @@ let internal createWithEvidenceAndQueries
                                 return
                                     JsonSerializer.Serialize(
                                         {| kind = "filtered"
+                                           selectedBy = selectedBy
                                            notSelected = notSelected
                                            runIds = runIds
                                            baseline = baseline

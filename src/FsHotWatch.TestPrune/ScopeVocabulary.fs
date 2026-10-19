@@ -103,3 +103,92 @@ module NotSelectedFile =
         {| file = entry.File
            reason = NotSelectedReason.token entry.Reason |}
         :> obj
+
+/// Why a test project is in a run's selection.
+///
+/// A run's selection is the UNION of several widenings, and before this vocabulary they
+/// were unioned before anything was reported: a wide run and an honest one looked alike.
+/// A project can be selected for several of these at once; they are listed widest first,
+/// so the first cause a project names is the one that decided how much of it ran.
+[<RequireQualifiedAccess>]
+type SelectionCause =
+    /// The whole suite was forced: `confirm`, an unreadable pending-verification ledger,
+    /// or no full-suite baseline. The scope's `FullSuiteCause` says which.
+    | FullSuite
+    /// A `run-tests` force run launched it.
+    | ForceRun
+    /// A file could not be analysed, an extension refresh failed, or a file is missing
+    /// from the impact index, so every project runs in full.
+    | CoarseFallback
+    /// It has no whole-project run under the current project model, so it runs in full.
+    | EvidenceGap
+    /// A project it depends on changed its dependency fingerprint, so it runs in full.
+    | DependencyFanout
+    /// Runtime coverage attributes a changed file to it, so it runs in full.
+    | RuntimeCoverage
+    /// It holds an outstanding red, which every run re-verifies.
+    | OutstandingFailure
+    /// Its classes cover a changed or still-owed symbol.
+    | ChangedSymbols
+    /// Its classes cover the symbols of a compiled source file whose edit changed no
+    /// symbol.
+    | SymbolFreeEdit
+    /// It declares `alwaysClasses`, which every filtered run carries.
+    | AlwaysClasses
+    /// The selection was empty and not skipped, and an empty selection runs every
+    /// project in full.
+    | EmptySelection
+
+module SelectionCause =
+    /// Every cause, widest first.
+    let all: SelectionCause list =
+        [ SelectionCause.FullSuite
+          SelectionCause.ForceRun
+          SelectionCause.CoarseFallback
+          SelectionCause.EvidenceGap
+          SelectionCause.DependencyFanout
+          SelectionCause.RuntimeCoverage
+          SelectionCause.OutstandingFailure
+          SelectionCause.ChangedSymbols
+          SelectionCause.SymbolFreeEdit
+          SelectionCause.AlwaysClasses
+          SelectionCause.EmptySelection ]
+
+    /// The wire token.
+    let token (cause: SelectionCause) : string =
+        match cause with
+        | SelectionCause.FullSuite -> "full-suite"
+        | SelectionCause.ForceRun -> "force-run"
+        | SelectionCause.CoarseFallback -> "coarse-fallback"
+        | SelectionCause.EvidenceGap -> "evidence-gap"
+        | SelectionCause.DependencyFanout -> "dependency-fanout"
+        | SelectionCause.RuntimeCoverage -> "runtime-coverage"
+        | SelectionCause.OutstandingFailure -> "outstanding-failure"
+        | SelectionCause.ChangedSymbols -> "changed-symbols"
+        | SelectionCause.SymbolFreeEdit -> "symbol-free-edit"
+        | SelectionCause.AlwaysClasses -> "always-classes"
+        | SelectionCause.EmptySelection -> "empty-selection"
+
+    /// The cause a wire token names; `None` for a token this build does not know.
+    let tryOfToken (wire: string) : SelectionCause option =
+        all |> List.tryFind (fun cause -> token cause = wire)
+
+/// One selected test project and every cause that put it in the run, widest first.
+type ProjectAttribution =
+    { Project: string
+      Causes: SelectionCause list }
+
+module ProjectAttribution =
+    /// The entry on the wire, as both the `test-scope` reply and the verdict file write it.
+    let wire (entry: ProjectAttribution) : obj =
+        {| project = entry.Project
+           causes = entry.Causes |> List.map SelectionCause.token |> Array.ofList |}
+        :> obj
+
+    /// One clause per project, for a log line: `ProjA <- changed-symbols, always-classes`.
+    let describe (attribution: ProjectAttribution list) : string =
+        attribution
+        |> List.map (fun entry ->
+            let causes = entry.Causes |> List.map SelectionCause.token |> String.concat ", "
+            $"%s{entry.Project} <- %s{causes}")
+        |> String.concat "; "

@@ -46,7 +46,8 @@ let emptyLaunch: TestRunLaunch =
       Reused = Map.empty
       Seeds = []
       ZeroSelection = ZeroSelection.NotAZero
-      FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject }
+      FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject
+      SelectedBy = [] }
 
 /// A launch that ran every named project UNFILTERED — the scope a full suite (or a
 /// plain `test-rerun`) has, and the only one whose green may clear an arbitrary red.
@@ -65,7 +66,8 @@ let fullSuiteLaunch (projects: string list) : TestRunLaunch =
       Reused = Map.empty
       Seeds = []
       ZeroSelection = ZeroSelection.NotAZero
-      FullSuiteCause = FullSuiteCause.Requested }
+      FullSuiteCause = FullSuiteCause.Requested
+      SelectedBy = [] }
 
 /// A launch that ran only `classes` in each named project — an impact-filtered
 /// selection. Projects NOT named were skipped entirely.
@@ -87,7 +89,8 @@ let filteredLaunch (selection: (string * string list) list) : TestRunLaunch =
       Reused = Map.empty
       Seeds = []
       ZeroSelection = ZeroSelection.NotAZero
-      FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject }
+      FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject
+      SelectedBy = [] }
 
 /// Register `handler` with an observing fixture command, returning a reader for the state
 /// the host's owner has committed. Cache keys and observations are functions of that

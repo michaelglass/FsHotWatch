@@ -493,6 +493,7 @@ field.
 | `scope.kind` | `full` · `filtered` · `none` · `unknown` (with `ranProjects` / `totalProjects`) |
 | `scope.cause` (on `full`) | why the run took every project: `requested` · `force-run` · `unreadable-ledger` · `no-full-suite-baseline` · `coarse-fallback` · `evidence-gap` · `selection-reached-every-project` · `null` (the reading does not say) |
 | `scope.notSelected` | changed files whose changes selected no tests, as `{file, reason}`; `reason` is `fcs-errors` (FCS reported errors for the file, so its symbols may be partial) · `[]` (none) · `null` (the reading does not say) |
+| `scope.selectedBy` | which cause selected each test project of the run, as `{project, causes}`, causes widest first: `full-suite` · `force-run` · `coarse-fallback` · `evidence-gap` · `dependency-fanout` · `runtime-coverage` · `outstanding-failure` · `changed-symbols` · `symbol-free-edit` · `always-classes` · `empty-selection` (an empty selection that still launched runs every project) · `null` (the reading does not say) |
 | `plugins[].outcome` | `ok` · `warn` · `fail` · `timed-out` · `running` |
 | `hooks[].outcome` | `ok` · `fail` · `signalled` (the run was signalled while the hook ran, and the signal's teardown stopped it) |
 | `command` | `check` (impact-scoped) · `confirm` (unfiltered, evidence-required) |

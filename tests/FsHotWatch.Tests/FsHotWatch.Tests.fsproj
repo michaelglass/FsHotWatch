@@ -158,6 +158,7 @@
     <Compile Include="TestPruneSettlingTests.fs" />
     <Compile Include="TestPruneModelChangeTests.fs" />
     <Compile Include="TestPruneAlwaysClassesTests.fs" />
+    <Compile Include="TestPruneSelectionAttributionTests.fs" />
     <Compile Include="TestPruneSupersededModelLogTests.fs" />
     <Compile Include="AnalysisEvidenceTests.fs" />
     <Compile Include="VerdictEvidenceTests.fs" />

@@ -401,6 +401,49 @@ let tryReadNotSelected (field: JsonElement option) : Result<NotSelectedFile list
         | None -> Result.Ok(Some(List.choose read entries))
     | Some value -> Result.Error $"a `notSelected` field that is not an array (%s{value.GetRawText()})"
 
+/// Read a scope object's `selectedBy` field: which cause selected each project of the
+/// run. ONE reader for the `test-scope` reply and the verdict file's `scope` object.
+///
+/// `Ok None` where the field is absent or `null`: a reading from before the field says
+/// nothing about why projects ran. `Error` for anything this build cannot read — an
+/// entry with no project, causes that are not an array of tokens, a cause
+/// `SelectionCause` does not know — which each caller turns into an unreadable scope.
+let tryReadSelectedBy (field: JsonElement option) : Result<ProjectAttribution list option, string> =
+    match field with
+    | None -> Result.Ok None
+    | Some value when value.ValueKind = JsonValueKind.Null -> Result.Ok None
+    | Some value when value.ValueKind = JsonValueKind.Array ->
+        let causesOf (entry: JsonElement) =
+            match entry.TryGetProperty "causes" with
+            | true, causes when causes.ValueKind = JsonValueKind.Array ->
+                let read =
+                    causes.EnumerateArray()
+                    |> Seq.map (fun cause ->
+                        if cause.ValueKind = JsonValueKind.String then
+                            SelectionCause.tryOfToken (cause.GetString())
+                        else
+                            None)
+                    |> List.ofSeq
+
+                if List.forall Option.isSome read then
+                    Some(List.choose id read)
+                else
+                    None
+            | _ -> None
+
+        let read (entry: JsonElement) =
+            match Json.tryString entry "project", causesOf entry with
+            | Some project, Some causes -> Some { Project = project; Causes = causes }
+            | _ -> None
+
+        let entries = value.EnumerateArray() |> List.ofSeq
+
+        match entries |> List.tryFind (read >> Option.isNone) with
+        | Some unreadable ->
+            Result.Error $"a selection attribution entry this build cannot read (%s{unreadable.GetRawText()})"
+        | None -> Result.Ok(Some(List.choose read entries))
+    | Some value -> Result.Error $"a `selectedBy` field that is not an array (%s{value.GetRawText()})"
+
 /// The test-prune plugin commands `confirm` speaks.
 ///
 /// `RunCommand` dispatches on the COMMAND name — a plugin's own name is not a command
@@ -815,6 +858,9 @@ type TestRunReport =
         /// daemon did not say (one older than the field, or no reply at all); `Some []`
         /// is its positive "none".
         NotSelected: NotSelectedFile list option
+        /// Which cause selected each project of the run. `None` where the daemon did not
+        /// say (one older than the field, no reply, or a run that selected nothing).
+        SelectedBy: ProjectAttribution list option
         /// The evidence the daemon holds for `RunId`, from the same reply.
         GradedEvidence: GradedEvidenceReading
     }
@@ -837,6 +883,7 @@ module TestRunReport =
           SeedCount = 0
           Baseline = BaselineReading.NotReported
           NotSelected = None
+          SelectedBy = None
           GradedEvidence = GradedEvidenceReading.NotReported }
 
     /// The report for a daemon/host with NO `test-scope` command: no
@@ -1010,6 +1057,12 @@ let parseTestRunReport (json: string) : TestRunReport =
             | Result.Ok notSelected -> scope, notSelected
             | Result.Error reason -> ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply has %s{reason}", None
 
+        // The same for a `selectedBy` this build cannot read.
+        let scope, selectedBy =
+            match tryReadSelectedBy (Json.tryProp root "selectedBy") with
+            | Result.Ok selectedBy -> scope, selectedBy
+            | Result.Error reason -> ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply has %s{reason}", None
+
         { Scope = scope
           RunId = runId
           SessionRuns = sessionRuns
@@ -1021,6 +1074,7 @@ let parseTestRunReport (json: string) : TestRunReport =
           SeedCount = seedCount
           Baseline = baseline
           NotSelected = notSelected
+          SelectedBy = selectedBy
           GradedEvidence = tryReadGradedEvidence (Json.tryProp root "evidence") }
     with ex ->
         TestRunReport.ofScopeOnly (

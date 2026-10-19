@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **feat!: every launch says which cause selected each test project.** A run's
+  selection is the union of the symbol-precise classes and every widening (dependency
+  fanout, the coarse fallback, evidence gaps, runtime coverage, outstanding reds,
+  always-classes, the full-suite scope), and the widenings were unioned before anything was
+  reported, so a wide selection could not be told from an honest one. `TestRunLaunch` and
+  `TestEvidenceReceipt` gain `SelectedBy: ProjectAttribution list` — each selected
+  project with its `SelectionCause`s, widest first — and the daemon log gains a
+  `Selected by: ProjA <- dependency-fanout, changed-symbols; …` line for every run that
+  executes. The `test-scope` reply carries it as `selectedBy` beside a `full` or
+  `filtered` scope. Breaking: code that builds either record must set the new field.
+
 ## 0.13.0-alpha.88 - 2026-10-18
 
 - **fix!: `createWithTracesIn` takes the daemon's `exclude` patterns as its first

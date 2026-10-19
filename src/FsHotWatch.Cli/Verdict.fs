@@ -1453,6 +1453,9 @@ type Verdict =
             /// why — the reading's `TestRunReport.NotSelected`. `None` is "this verdict does
             /// not say", as for `excluded`, and is not `Some []`.
             notSelected: NotSelectedFile list option
+            /// Which cause selected each project of the run — the reading's
+            /// `TestRunReport.SelectedBy`. `None` is "this verdict does not say".
+            selectedBy: ProjectAttribution list option
             outcome: Outcome
             exitCode: int
             plugins: PluginVerdict list
@@ -1530,6 +1533,9 @@ type Verdict =
 
     /// The changed files that selected no tests — see the `notSelected` field.
     member this.NotSelected = this.notSelected
+
+    /// Which cause selected each project — see the `selectedBy` field.
+    member this.SelectedBy = this.selectedBy
 
     /// Never `Green` while any plugin below is failing. Guaranteed by `create`.
     member this.Outcome = this.outcome
@@ -1807,6 +1813,7 @@ let create
           scope = runReport.Scope
           excluded = excluded
           notSelected = runReport.NotSelected
+          selectedBy = runReport.SelectedBy
           outcome = outcome
           exitCode = exitCode
           plugins = plugins
@@ -1873,9 +1880,17 @@ let private excludedJson (excluded: SolutionScope.Exclusion list option) : obj =
 let private scopeJson
     (excluded: SolutionScope.Exclusion list option)
     (notSelected: NotSelectedFile list option)
+    (selectedBy: ProjectAttribution list option)
     (scope: TestScope)
     : obj =
     let gaps = excludedJson excluded
+
+    // Which cause selected each project, on every kind beside `notSelected`. `null`
+    // where the reading did not say.
+    let attributed =
+        selectedBy
+        |> Option.map (List.map ProjectAttribution.wire >> Array.ofList)
+        |> Option.toObj
 
     // On every kind, beside `excluded`: which changed files selected no tests is a fact
     // about the selection whatever ran. `null` where the reading did not say.
@@ -1892,6 +1907,7 @@ let private scopeJson
            // `null` where the reading did not say why the run took every project.
            cause = cause |> Option.map FullSuiteCause.token |> Option.toObj
            notSelected = withheld
+           selectedBy = attributed
            excluded = gaps |}
         :> obj
     | ImpactFiltered(ran, total) ->
@@ -1899,6 +1915,7 @@ let private scopeJson
            ranProjects = ran
            totalProjects = total
            notSelected = withheld
+           selectedBy = attributed
            excluded = gaps |}
         :> obj
     | NoTestsRun reason ->
@@ -1941,11 +1958,13 @@ let private scopeJson
                  box (List.toArray unrunnable.Projects)
              | _ -> null)
            notSelected = withheld
+           selectedBy = attributed
            excluded = gaps |}
         :> obj
     | ScopeUnknown ->
         {| kind = "unknown"
            notSelected = withheld
+           selectedBy = attributed
            excluded = gaps |}
         :> obj
     // A DISTINCT kind, not folded into "unknown": "the daemon reported no scope" is an
@@ -1955,6 +1974,7 @@ let private scopeJson
         {| kind = "unreadable"
            reason = reason
            notSelected = withheld
+           selectedBy = attributed
            excluded = gaps |}
         :> obj
 
@@ -2058,7 +2078,7 @@ let private checkComparisonJson (excluded: SolutionScope.Exclusion list option) 
              box
                  // The pre-escalation reading's scope. It records no not-selected files:
                  // those are on the verdict's own scope, from the reading it was graded on.
-                 {| scope = scopeJson excluded None r.Scope
+                 {| scope = scopeJson excluded None None r.Scope
                     outcome = outcomeJson r.Outcome
                     failingSuites = r.FailingSuites
                     basis = SampleBasis.token r.Basis
@@ -2112,7 +2132,7 @@ let serialize (v: Verdict) : string =
            treeFileCount = v.TreeFileCount
            treeDeclaredCount = v.TreeDeclaredCount
            treeAbsentDeclarationCount = v.TreeAbsentDeclarationCount
-           scope = scopeJson v.Excluded v.NotSelected v.Scope
+           scope = scopeJson v.Excluded v.NotSelected v.SelectedBy v.Scope
            outcome = outcomeJson v.Outcome
            projectModel = projectModelJson v.ProjectModel
            checkComparison = checkComparisonJson v.Excluded v.Comparison
@@ -3074,6 +3094,12 @@ let read (repoRoot: string) : Reading =
                     | Ok notSelected -> scope, notSelected
                     | Error reason -> ScopeUnreadable $"the recorded scope has %s{reason}", None
 
+                // The same for a `selectedBy` this build cannot read.
+                let scope, selectedBy =
+                    match scopeEl |> Option.bind (fun el -> tryProp el "selectedBy") |> tryReadSelectedBy with
+                    | Ok selectedBy -> scope, selectedBy
+                    | Error reason -> ScopeUnreadable $"the recorded scope has %s{reason}", None
+
                 let excluded = scopeEl |> Option.bind parseExcluded
 
                 let gradedRunId =
@@ -3138,6 +3164,7 @@ let read (repoRoot: string) : Reading =
                           scope = scope
                           excluded = excluded
                           notSelected = notSelected
+                          selectedBy = selectedBy
                           outcome = outcome
                           exitCode = tryInt root "exitCode" |> Option.defaultValue 2
                           plugins = plugins

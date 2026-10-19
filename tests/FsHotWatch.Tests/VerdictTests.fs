@@ -132,6 +132,7 @@ let private build (s: Spec) : Verdict.Verdict =
           SeedCount = max s.SeedTotal (List.length s.Seeds)
           Baseline = s.Baseline
           NotSelected = s.NotSelected
+          SelectedBy = None
           GradedEvidence = GradedEvidenceReading.NotReported }
         s.Tree
         s.Excluded
@@ -1284,6 +1285,7 @@ let ``the verdict accounts for EVERY run the check produced, not just the graded
                   SeedCount = 0
                   Baseline = BaselineFixtures.reading
                   NotSelected = None
+                  SelectedBy = None
                   GradedEvidence = GradedEvidenceReading.NotReported }
 
         // The graded run leads — it is what the outcome was computed from — and every
@@ -1334,6 +1336,7 @@ let ``a report that ran ONLY in an early batch is reported as having run — and
                                   SeedCount = 0
                                   Baseline = BaselineFixtures.reading
                                   NotSelected = None
+                                  SelectedBy = None
                                   GradedEvidence = GradedEvidenceReading.NotReported } }
 
             v.Suites |> List.exists (fun s -> s.Project = "Acceptance.Tests"))
@@ -1367,6 +1370,7 @@ let ``the verdict names every CTRF report on disk for the check — the omission
                               SeedCount = 0
                               Baseline = BaselineFixtures.reading
                               NotSelected = None
+                              SelectedBy = None
                               GradedEvidence = GradedEvidenceReading.NotReported } }
 
         let onDisk =
@@ -6873,5 +6877,30 @@ let ``a verdict file whose not-selected entry has a reason this build does not k
             readScopeOf
                 root
                 """{"kind":"full","ranProjects":6,"totalProjects":6,"notSelected":[{"file":"src/A.fs","reason":"a-reason-from-another-version"}]}"""
+
+        test <@ TestScope.isUnreadable v.Scope @>)
+
+[<Fact>]
+let ``the selection attribution survives a round trip through the verdict file`` () =
+    withTempDir "verdict-selected-by-roundtrip" (fun root ->
+        let v =
+            readScopeOf
+                root
+                """{"kind":"filtered","ranProjects":1,"totalProjects":6,"selectedBy":[{"project":"ProjA","causes":["evidence-gap"]}]}"""
+
+        test <@ v.Scope = ImpactFiltered(1, 6) @>
+        let scope = (Nodes.JsonNode.Parse(Verdict.serialize v)).["scope"]
+        test <@ scope.["selectedBy"].[0].["project"].GetValue<string>() = "ProjA" @>
+        test <@ scope.["selectedBy"].[0].["causes"].[0].GetValue<string>() = "evidence-gap" @>)
+
+[<Fact>]
+let ``a verdict file whose selection attribution names a cause this build does not know reads as an unreadable scope``
+    ()
+    =
+    withTempDir "verdict-selected-by-unknown" (fun root ->
+        let v =
+            readScopeOf
+                root
+                """{"kind":"full","ranProjects":6,"totalProjects":6,"selectedBy":[{"project":"ProjA","causes":["a-cause-from-another-version"]}]}"""
 
         test <@ TestScope.isUnreadable v.Scope @>)

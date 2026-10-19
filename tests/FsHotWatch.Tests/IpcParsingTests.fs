@@ -830,6 +830,54 @@ let ``a not-selected entry this build cannot read fails closed to an unreadable 
     let report = parseTestRunReport (fullReply extra)
     test <@ TestScope.isUnreadable report.Scope @>
 
+
+// --- test-scope: which cause selected each project ----------------------------
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the selection attribution reaches the verdict scope from the test-scope reply`` () =
+    let report =
+        parseTestRunReport (
+            fullReply ""","selectedBy":[{"project":"ProjA","causes":["dependency-fanout","changed-symbols"]}]"""
+        )
+
+    test <@ TestScope.isFullSuite report.Scope @>
+
+    test
+        <@
+            report.SelectedBy = Some
+                [ { FsHotWatch.TestPrune.ProjectAttribution.Project = "ProjA"
+                    Causes =
+                      [ FsHotWatch.TestPrune.SelectionCause.DependencyFanout
+                        FsHotWatch.TestPrune.SelectionCause.ChangedSymbols ] } ]
+        @>
+
+    let scope = VerdictFixtures.scopeOnTheWire report
+    test <@ scope.["selectedBy"].[0].["project"].GetValue<string>() = "ProjA" @>
+    test <@ scope.["selectedBy"].[0].["causes"].[1].GetValue<string>() = "changed-symbols" @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a reply with no selection attribution says nothing, which is not an empty one`` () =
+    for reply in [ fullReply ""; fullReply ""","selectedBy":null""" ] do
+        let report = parseTestRunReport reply
+        test <@ report.SelectedBy = None @>
+        test <@ isNull (VerdictFixtures.scopeOnTheWire report).["selectedBy"] @>
+
+    let none =
+        parseTestRunReport (fullReply ""","selectedBy":[]""")
+        |> VerdictFixtures.scopeOnTheWire
+
+    test <@ none.["selectedBy"].ToJsonString() = "[]" @>
+
+[<Theory(Timeout = SyncHangBackstopMs)>]
+[<InlineData(""","selectedBy":[{"project":"ProjA","causes":["a-cause-from-another-version"]}]""")>]
+[<InlineData(""","selectedBy":[{"causes":["changed-symbols"]}]""")>]
+[<InlineData(""","selectedBy":[{"project":"ProjA","causes":"changed-symbols"}]""")>]
+[<InlineData(""","selectedBy":[{"project":"ProjA","causes":[42]}]""")>]
+[<InlineData(""","selectedBy":"ProjA" """)>]
+let ``a selection attribution this build cannot read fails closed to an unreadable scope`` (extra: string) =
+    let report = parseTestRunReport (fullReply extra)
+    test <@ TestScope.isUnreadable report.Scope @>
+
 // --- test-scope: the evidence for the graded run, from the same reply ----------
 
 [<Fact(Timeout = SyncHangBackstopMs)>]

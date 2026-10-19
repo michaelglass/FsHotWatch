@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **feat!: the verdict file's `scope` records `selectedBy`**, which cause selected each
+  test project (`[{"project": "ProjA", "causes": ["dependency-fanout", "changed-symbols"]}]`,
+  widest first), read from the daemon's `test-scope` reply. `null` where the daemon did
+  not say; a cause this build does not know makes the scope unreadable, as an unknown
+  `notSelected` reason does. Breaking: `TestRunReport` has a new field, `SelectedBy`.
+
 ## 0.14.0-alpha.121 - 2026-10-18
 
 - fix(cli): a failed detached daemon launch names its signal and quotes the helper's stderr
