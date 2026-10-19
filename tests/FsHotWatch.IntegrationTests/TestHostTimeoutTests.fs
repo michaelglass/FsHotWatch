@@ -68,7 +68,7 @@ let ``a test host killed at its timeout is stopped from the bottom up, so its co
         test <@ File.Exists restored @>
 
         let markers =
-            Directory.GetFiles(Ctrf.reportsDir tmpDir, "SlowTests" + TimeoutMarker.Suffix, SearchOption.AllDirectories)
+            allFilesUnder ("SlowTests" + TimeoutMarker.Suffix) (Ctrf.reportsDir tmpDir)
 
         test <@ markers.Length = 1 @>
         test <@ (File.ReadAllText markers[0]).Contains "TIMED OUT after 1s" @>)

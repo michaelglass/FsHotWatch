@@ -100,7 +100,7 @@ let ``concurrent placements of one content agree and leave no temporary file`` (
 
         test <@ placed.Length = 1 @>
         test <@ File.ReadAllBytes placed[0].Value = bytes @>
-        test <@ Directory.GetFiles(root, "*", SearchOption.AllDirectories).Length = 1 @>)
+        test <@ (allFilesUnder "*" root).Length = 1 @>)
 
 [<Fact>]
 let ``a later host reuses an entry whose bytes match, restoring its write time`` () =
@@ -125,7 +125,7 @@ let ``bytes that do not match the hash they were placed under are discarded`` ()
         let x = writeBytes (Path.Combine(dir, "X.dll")) [| 6uy |]
 
         test <@ store.Place x = None @>
-        test <@ Array.isEmpty (Directory.GetFiles(root, "*", SearchOption.AllDirectories)) @>)
+        test <@ List.isEmpty (allFilesUnder "*" root) @>)
 
 [<Fact>]
 let ``a file gone before it is copied is not placed`` () =

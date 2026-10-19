@@ -880,7 +880,7 @@ let ``nothing in the daemon reads symbol uses, so background resolutions stay of
     // highlight feature lands, this test fails and whoever adds it has to turn the
     // retention back on deliberately and measure what it costs.
     let sources =
-        Directory.EnumerateFiles(FsHotWatch.Tests.RepoTasks.repoRoot (), "*.fs", SearchOption.AllDirectories)
+        filesUnder FsHotWatch.SafeWalk.SourceExcludedDirs "*.fs" (FsHotWatch.Tests.RepoTasks.repoRoot ())
         |> Seq.filter (fun path ->
             let normalized = path.Replace('\\', '/')
 

@@ -618,8 +618,8 @@ let private hostPidIn (stateHome: string) : int option =
     if not (Directory.Exists dir) then
         None
     else
-        Directory.GetFiles(dir, "host.pid", SearchOption.AllDirectories)
-        |> Array.tryPick (fun f ->
+        FsHotWatch.SafeWalk.bestEffortFilePaths Set.empty "host.pid" dir
+        |> Seq.tryPick (fun f ->
             match Int32.TryParse((File.ReadAllText f).Trim()) with
             | true, pid when Instruments.isAlive pid -> Some pid
             | _ -> None)

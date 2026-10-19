@@ -447,13 +447,9 @@ let private writeBinlogWritingScript (tmpDir: string) =
 let private assertNoBinlogLeft (tmpDir: string) (recorded: string) =
     let state = FsHotWatch.FsHwPaths.root tmpDir
 
-    let left =
-        if System.IO.Directory.Exists state then
-            System.IO.Directory.GetFiles(state, "*.binlog", System.IO.SearchOption.AllDirectories)
-        else
-            [||]
+    let left = allFilesUnder "*.binlog" state
 
-    test <@ Array.isEmpty left @>
+    test <@ List.isEmpty left @>
     test <@ System.IO.File.Exists recorded @>
     let sideLog = (System.IO.File.ReadAllText recorded).Trim()
     test <@ not (sideLog.StartsWith state) @>

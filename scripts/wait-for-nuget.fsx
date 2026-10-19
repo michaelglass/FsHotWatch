@@ -279,7 +279,13 @@ let verifyInstalledTool config (commandName: string) (probeTools: string) =
     else
         let settingsFiles =
             if Directory.Exists probeTools then
-                Directory.GetFiles(probeTools, "DotnetToolSettings.xml", SearchOption.AllDirectories)
+                let skipLinks =
+                    // FSHW-WALK-001 ok: a `dotnet fsi` script cannot reference FsHotWatch.SafeWalk; skipping
+                    // ReparsePoint means it never enters a symlinked directory. Hidden is NOT skipped:
+                    // `--tool-path` installs keep their files under `.store/`.
+                    EnumerationOptions(RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint)
+
+                Directory.GetFiles(probeTools, "DotnetToolSettings.xml", skipLinks)
             else
                 [||]
 

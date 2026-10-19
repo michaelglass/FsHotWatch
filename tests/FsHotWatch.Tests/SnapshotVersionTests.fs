@@ -650,7 +650,7 @@ let ``two checkouts with identical content get identical snapshot versions`` () 
             File.Copy(tree1.ADll, tree2.ADll, true)
 
             // The second checkout was written at another time, as a checkout is.
-            for f in Directory.GetFiles(dir2, "*", SearchOption.AllDirectories) do
+            for f in allFilesUnder "*" dir2 do
                 File.SetLastWriteTimeUtc(f, File.GetLastWriteTimeUtc(f).AddDays -3.0)
 
             let versionsOf (tree: Tree) =

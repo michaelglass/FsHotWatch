@@ -68,7 +68,7 @@ let private keptFiles (path: string) : (string * string) list =
     if File.Exists path then
         [ path, Path.GetFileName path ]
     elif Directory.Exists path then
-        Directory.EnumerateFiles(path, "*.log", SearchOption.AllDirectories)
+        FsHotWatch.SafeWalk.bestEffortFilePaths Set.empty "*.log" path
         |> Seq.map (fun f -> f, Path.GetRelativePath(path, f).Replace('/', '_').Replace('\\', '_'))
         |> Seq.toList
     else

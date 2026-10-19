@@ -336,7 +336,7 @@ let private sourceFiles () =
     let repo = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "..", ".."))
     let src = Path.Combine(repo, "src")
 
-    Directory.EnumerateFiles(src, "*.fs", SearchOption.AllDirectories)
+    filesUnder FsHotWatch.SafeWalk.SourceExcludedDirs "*.fs" src
     |> Seq.map (fun path -> Path.GetRelativePath(repo, path).Replace('\\', '/'), path)
     |> Seq.filter (fun (relative, _) -> not (relative.Contains "/bin/" || relative.Contains "/obj/"))
     |> Seq.map (fun (relative, path) -> relative, File.ReadAllText path)

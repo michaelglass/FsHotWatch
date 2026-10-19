@@ -56,7 +56,7 @@ let private withStore (body: string -> (DateTimeOffset -> unit) -> (unit -> stri
         body dir (fun t -> now <- t) (fun () -> List.ofSeq log) store)
 
 let private entryFiles (dir: string) =
-    Directory.EnumerateFiles(dir, "*.json", SearchOption.AllDirectories)
+    allFilesUnder "*.json" dir
     |> Seq.filter (fun f -> Path.GetFileName(Path.GetDirectoryName f).Length = 2)
     |> Seq.toList
 
@@ -153,11 +153,7 @@ let ``concurrent writers of one key leave one valid entry`` () =
 
         test <@ entryFiles dir |> List.length = 1 @>
 
-        test
-            <@
-                Directory.EnumerateFiles(dir, "*.tmp", SearchOption.AllDirectories)
-                |> Seq.isEmpty
-            @>
+        test <@ allFilesUnder "*.tmp" dir |> Seq.isEmpty @>
 
         test
             <@
@@ -276,7 +272,7 @@ let ``a secret in an env file never reaches the store's bytes`` () =
         withStore (fun dir _ _ store ->
             store.Write(entryFor "tests/T/T.fsproj" key t0) |> ignore
 
-            for f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories) do
+            for f in allFilesUnder "*" dir do
                 test <@ not ((File.ReadAllText f).Contains "hunter2") @>))
 
 [<Fact>]
@@ -312,8 +308,7 @@ let ``an env value never reaches the store's bytes or its log`` () =
             store.Write(entryFor "tests/T/T.fsproj" key t0) |> ignore
             store.Lookup("tests/T/T.fsproj", keyWith None) |> ignore
 
-            let files =
-                Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories) |> Seq.toList
+            let files = allFilesUnder "*" dir
             // Positive control: there is a record to scan.
             test <@ not (List.isEmpty files) @>
 
@@ -521,11 +516,7 @@ let ``a write that cannot be renamed into place leaves no temp file and reports 
 
         test <@ not (store.Write(entryFor "tests/T/T.fsproj" key t0)) @>
 
-        test
-            <@
-                Directory.EnumerateFiles(dir, "*.tmp", SearchOption.AllDirectories)
-                |> Seq.isEmpty
-            @>
+        test <@ allFilesUnder "*.tmp" dir |> Seq.isEmpty @>
 
         test <@ log () |> List.exists (fun l -> l.Contains "could not store") @>)
 

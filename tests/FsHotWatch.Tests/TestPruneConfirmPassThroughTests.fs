@@ -198,7 +198,7 @@ let private writtenFiles (root: string) =
     [ ".fshw"; "coverage" ]
     |> List.map (fun dir -> Path.Combine(root, dir))
     |> List.filter Directory.Exists
-    |> Seq.collect (fun dir -> Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+    |> Seq.collect (fun dir -> allFilesUnder "*" dir)
     |> Seq.map (fun path ->
         let relative = Path.GetRelativePath(root, path).Replace('\\', '/')
         $"file:%s{normalize root relative}", normalize root (File.ReadAllText path))
