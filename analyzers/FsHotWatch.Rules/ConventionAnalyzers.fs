@@ -46,6 +46,9 @@
 ///   not something a signature can insist on. See `Detect.sleepSynchronisations`
 ///   for exactly what fires, what was measured and declined, and how a
 ///   deliberate sleep opts out.
+///
+///   FSHW-WALK-001 — no recursive directory walk that can follow a directory
+///   symlink. It lives in its own file, `WalkAnalyzer.fs`.
 module FsHotWatch.Rules.ConventionAnalyzers
 
 open FSharp.Analyzers.SDK

@@ -212,6 +212,8 @@ let enumerateEntriesPruning (pruned: DirectoryInfo -> bool) (searchPattern: stri
             // Both reads are attempted even when the first fails: a directory whose
             // files list but whose subdirectories do not still contributes its files.
             let files = attemptRead (fun () -> dir.GetFiles searchPattern)
+            // FSHW-WALK-001 ok: this IS the guarded walk — `inScope` drops every reparse point
+            // before it is recursed into, and `MaxDepth` caps the descent below.
             let subdirs = attemptRead (fun () -> dir.GetDirectories() |> Array.filter inScope)
 
             yield! files |> Result.defaultValue [||] |> Seq.map Found

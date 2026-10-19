@@ -74,6 +74,30 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### rules, tests, test-prune: no recursive directory walk may follow a symlink (FSHW-WALK-001)
+
+- A new house rule, **FSHW-WALK-001**, fails the check on `SearchOption.AllDirectories`,
+  on `RecurseSubdirectories = true` / `<- true`, and on a hand-rolled `let rec` that
+  recurses over `GetDirectories` / `EnumerateDirectories` (or the `FileSystemEntries`
+  pair). Those walks follow directory symlinks, and `.devenv/profile -> /nix/store` sits
+  one hop off the repository root. The ncurses `include/{ncurses,ncursesw} -> .`
+  self-loops there double the path count per level, so such a walk never finishes. The
+  production code already walked through `SafeWalk`; nothing stopped a raw walk coming
+  back. The rule sees inside class members, so an xUnit `type FooTests() = member …`
+  fixture is covered too. An exception needs `// FSHW-WALK-001 ok: <reason>` on the line
+  or the comment block above it, and a bare marker with no reason does not count.
+- The 27 raw walks in the test suites, the one in the benchmark harness and the two in
+  `scripts/` are gone. The tests use a new `TestHelpers.filesUnder` / `allFilesUnder`
+  built on `SafeWalk.walk`, which **fails the test** when it could not read a directory,
+  so a "no files left" assertion cannot pass over an unreadable tree. One of them walked
+  the repository root for `*.fs`; from the default checkout that included every jj
+  workspace under `.workspaces/`. It now prunes the tooling and build-output directories.
+  The two `dotnet fsi` scripts cannot reference `SafeWalk`; they skip reparse points with
+  `EnumerationOptions(AttributesToSkip = ReparsePoint)` and carry the rule's opt-out with
+  that reason. The other opt-out is `SafeWalk`'s own walker.
+- test-prune: the dependency-fanout input walk is depth-capped at `SafeWalk.MaxDepth` (see
+  `src/FsHotWatch.TestPrune/CHANGELOG.md`).
+
 ### cli: a daemon launch that fails says why
 
 - The short-lived helper that detaches a daemon from the CLI's process group could fail
