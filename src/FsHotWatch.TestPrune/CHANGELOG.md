@@ -6,6 +6,9 @@
   `TestConfig.Weight`. Each group holds its process slot charged at the largest weight
   among its projects. New `GroupSchedule.runAdmittedAs`, which admits each job under its
   own `JobSpec`. A weight is no part of the test-evidence key.
+- fix: a test-impact DB write refused for a lock names the SQLite busy timeout that expired:
+  "test-impact DB write blocked for 31s: SQLite busy timeout (30s) expired — <db> is locked by
+  another connection". The bound is read from a connection the database opened, not restated.
 
 ## 0.13.0-alpha.95 - 2026-10-28
 

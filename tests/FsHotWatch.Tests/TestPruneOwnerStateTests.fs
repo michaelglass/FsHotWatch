@@ -894,21 +894,41 @@ let ``the test-impact DB write declares itself, naming its file count and databa
     Assert.True(indexOf $"close: %s{writeLabel}" < indexOf "close: impact selection")
 
 /// SQLite reports a lock it waited out as `SQLITE_BUSY` ("database is locked"), naming
-/// neither the database nor the write. The flush re-raises it naming both, so the failed
-/// status a blocked write leaves says where to look.
+/// neither the database, the write nor the bound it waited. The flush re-raises it naming all
+/// three, so the failed status a blocked write leaves says it ran out of the busy timeout,
+/// not that something wedged.
 [<Fact(Timeout = 15000)>]
-let ``a DB write refused for a lock names the database, the write and how long it waited`` () =
+let ``a DB write refused for a lock names the database, the write, its wait and the busy timeout`` () =
     let busy =
         Microsoft.Data.Sqlite.SqliteException("SQLite Error 5: 'database is locked'.", 5)
 
     let named =
-        namedDbWriteFailure "/repo/.fshw/test-impact.db" 485 (TimeSpan.FromSeconds 30.0) busy
+        namedDbWriteFailure
+            "/repo/.fshw/test-impact.db"
+            (TimeSpan.FromSeconds 30.0)
+            485
+            (TimeSpan.FromSeconds 31.0)
+            busy
 
-    Assert.Contains("test-impact DB write blocked for 30s", named.Message)
+    Assert.Contains("test-impact DB write blocked for 31s", named.Message)
+    Assert.Contains("SQLite busy timeout (30s) expired", named.Message)
     Assert.Contains("/repo/.fshw/test-impact.db", named.Message)
     Assert.Contains("485 file(s)", named.Message)
+    Assert.DoesNotContain("WEDGED", named.Message)
     Assert.Same(busy, named.InnerException)
 
     // Any other failure passes through untouched: schema-drift repair reads it as raised.
     let other = InvalidOperationException "no such column: x"
-    Assert.Same(other, namedDbWriteFailure "/repo/.fshw/test-impact.db" 1 TimeSpan.Zero other)
+
+    Assert.Same(
+        other,
+        namedDbWriteFailure "/repo/.fshw/test-impact.db" (TimeSpan.FromSeconds 30.0) 1 TimeSpan.Zero other
+    )
+
+/// The bound a blocked write reports is the one the database's connections actually carry,
+/// read from a connection rather than restated here.
+[<Fact(Timeout = 15000)>]
+let ``the busy timeout reported is the one the test-impact DB's connections carry`` () =
+    let root = isolatedRoot ()
+    let db = TestPrune.Database.Database.create (Path.Combine(root, "impact.db"))
+    Assert.Equal(TimeSpan.FromSeconds 30.0, dbBusyTimeout db)

@@ -7429,16 +7429,30 @@ let internal hasFcsErrors (suppression: Suppression) (state: FileCheckState) : b
 let internal dbWriteLabel (dbPath: string) (fileCount: int) =
     $"test-impact DB write: %d{fileCount} file(s) to %s{dbPath}"
 
-/// A test-impact DB write SQLite refused because another connection held the lock past
-/// Microsoft.Data.Sqlite's busy wait (`SQLITE_BUSY` 5 / `SQLITE_LOCKED` 6) is re-raised
-/// naming the database, the write and how long it waited; SQLite's own "database is locked"
-/// names neither. Every other failure passes through untouched, so schema-drift repair
-/// still reads the exception it raised.
-let internal namedDbWriteFailure (dbPath: string) (fileCount: int) (waited: TimeSpan) (ex: exn) : exn =
+/// The busy timeout the test-impact DB's connections carry: how long a write waits on a lock
+/// another connection holds before SQLite refuses it. Read from a connection the database
+/// opened, so the bound a blocked write reports is the one it ran out of, not a restatement.
+let internal dbBusyTimeout (db: Database) : TimeSpan =
+    use conn = db.OpenConnection()
+    TimeSpan.FromSeconds(float conn.DefaultTimeout)
+
+/// A test-impact DB write SQLite refused (`SQLITE_BUSY` 5 / `SQLITE_LOCKED` 6) because another
+/// connection held the lock for the whole busy timeout (`dbBusyTimeout`) is re-raised naming
+/// the database, the write, how long it waited and the bound that expired. SQLite's own
+/// "database is locked" names none of them, and an expired busy timeout is a held lock, not a
+/// wedge. Every other failure passes through untouched, so schema-drift repair still reads
+/// the exception it raised.
+let internal namedDbWriteFailure
+    (dbPath: string)
+    (busyTimeout: TimeSpan)
+    (fileCount: int)
+    (waited: TimeSpan)
+    (ex: exn)
+    : exn =
     match ex with
     | :? Microsoft.Data.Sqlite.SqliteException as sqlite when sqlite.SqliteErrorCode = 5 || sqlite.SqliteErrorCode = 6 ->
         TimeoutException(
-            $"test-impact DB write blocked for %s{PluginWedge.formatElapsed waited}: %s{dbPath} is locked by another connection, so %d{fileCount} file(s) were not written ({sqlite.Message}). "
+            $"test-impact DB write blocked for %s{PluginWedge.formatElapsed waited}: SQLite busy timeout (%s{PluginWedge.formatElapsed busyTimeout}) expired — %s{dbPath} is locked by another connection, so %d{fileCount} file(s) were not written ({sqlite.Message}). "
             + "Another fshw daemon or CLI on the same .fshw/ directory, or any process holding a write transaction on that file, holds it.",
             ex
         )
@@ -7457,6 +7471,7 @@ let internal namedDbWriteFailure (dbPath: string) (fileCount: int) (waited: Time
 let private flushPendingAnalysis
     (db: Database)
     (dbPath: string)
+    (busyTimeout: TimeSpan)
     (declare: string -> IDisposable)
     (state: TestPruneState)
     =
@@ -7489,7 +7504,7 @@ let private flushPendingAnalysis
             try
                 db.RebuildProjects(Seq.toList allResults, fileKeys = Map.toList state.PendingIdentities)
             with ex ->
-                match namedDbWriteFailure dbPath allResults.Count clock.Elapsed ex with
+                match namedDbWriteFailure dbPath busyTimeout allResults.Count clock.Elapsed ex with
                 | named when obj.ReferenceEquals(named, ex) -> reraise ()
                 | named -> raise named
 
@@ -7917,6 +7932,7 @@ let internal createWithEvidenceAndQueries
                   Bound = TraceRun.indexFoldBound } })
 
     let db = Database.create (dbPath, walkPolicy)
+    let busyTimeout = dbBusyTimeout db
     let queries = queriesOf db
     let configuredTestProjects = testConfigs |> Option.defaultValue []
 
@@ -8490,7 +8506,12 @@ let internal createWithEvidenceAndQueries
         let indexedSomething = not state.PendingAnalysis.IsEmpty
 
         let flushedState =
-            flushPendingAnalysis db dbPath (fun label -> ctx.DeclareBoundedWork label ImpactSelectionDeadline) state
+            flushPendingAnalysis
+                db
+                dbPath
+                busyTimeout
+                (fun label -> ctx.DeclareBoundedWork label ImpactSelectionDeadline)
+                state
 
         // The flush wrote these analyses and their identities in one transaction.
         let flushedState =
