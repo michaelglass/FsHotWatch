@@ -268,9 +268,47 @@ let private scalarInt64 (conn: SqliteConnection) (sql: string) : int64 =
 let private readUserVersion (conn: SqliteConnection) : int =
     scalarInt64 conn "PRAGMA user_version;" |> int
 
-let private openConnection (dbPath: string) =
-    let connStr = $"Data Source=%s{dbPath}"
-    let conn = new SqliteConnection(connStr)
+/// How long a connection waits on a lock another connection holds before the statement
+/// fails with `SQLITE_BUSY` ("database is locked"). Set explicitly on every connection this
+/// module opens (Microsoft.Data.Sqlite's `Default Timeout`, which bounds its busy retry), so
+/// the bound is a named fact rather than the library default, and a write that runs out of
+/// it raises `DatabaseBusyException` naming it.
+let BusyTimeout = TimeSpan.FromSeconds 30.0
+
+/// A write refused because another connection held `dbPath`'s lock for the whole of
+/// `busyTimeout` (`BusyTimeout` unless the caller chose another bound). It IS the
+/// `SqliteException` SQLite raised, with the same error codes, so a caller that catches a
+/// lock by `SqliteErrorCode` still does; only the message says more.
+type DatabaseBusyException(dbPath: string, busyTimeout: TimeSpan, cause: SqliteException) =
+    inherit
+        SqliteException(
+            $"%s{dbPath} stayed locked by another connection for the whole %g{busyTimeout.TotalSeconds}s busy timeout, so the write was refused (%s{cause.Message}).",
+            cause.SqliteErrorCode,
+            cause.SqliteExtendedErrorCode
+        )
+
+    /// The database whose lock was held.
+    member _.DbPath = dbPath
+
+    /// The bound the write waited for before giving up.
+    member _.BusyTimeout = busyTimeout
+
+/// Run `write` against `dbPath`, re-raising a lock it waited out (`SQLITE_BUSY` 5,
+/// `SQLITE_LOCKED` 6) as `DatabaseBusyException` naming the database and `busyTimeout`.
+/// Every other failure passes through untouched.
+let private namingBusy (dbPath: string) (busyTimeout: TimeSpan) (write: unit -> 'T) : 'T =
+    try
+        write ()
+    with :? SqliteException as busy when busy.SqliteErrorCode = 5 || busy.SqliteErrorCode = 6 ->
+        raise (DatabaseBusyException(dbPath, busyTimeout, busy))
+
+/// Open a connection to `dbPath` (WAL, foreign keys on) whose statements wait
+/// `busyTimeout` on a lock another connection holds. The bound is set on the connection,
+/// not in its connection string, so the string (Microsoft.Data.Sqlite's pool key) stays
+/// `Data Source=<path>` and a caller clearing that pool still reaches these connections.
+let private openConnectionWaiting (busyTimeout: TimeSpan) (dbPath: string) =
+    let conn = new SqliteConnection($"Data Source=%s{dbPath}")
+    conn.DefaultTimeout <- int (Math.Ceiling busyTimeout.TotalSeconds)
 
     try
         conn.Open()
@@ -473,7 +511,9 @@ let private hasUserTables (conn: SqliteConnection) =
 /// Open a connection, deleting and recreating the database if its schema is older than
 /// this version's, and refusing it if newer. Returns `(connection, wasFresh)`; see
 /// `Database.WasRecreated` for what `wasFresh` obliges a caller with a derived cache to do.
-let private openCheckedConnection (dbPath: string) : SqliteConnection * bool =
+let private openCheckedConnection (busyTimeout: TimeSpan) (dbPath: string) : SqliteConnection * bool =
+    let openConnection = openConnectionWaiting busyTimeout
+
     if File.Exists(dbPath) then
         let conn = openConnection dbPath
         let version = readUserVersion conn
@@ -519,12 +559,18 @@ let private openCheckedConnection (dbPath: string) : SqliteConnection * bool =
 /// ANY core schema version, including one newer than this TestPrune.Core, which
 /// `Database.create` refuses. Core tables are not for this connection; nothing here checks
 /// that they exist or match this version.
-let openPluginConnection (dbPath: string) : SqliteConnection = openConnection dbPath
+let openPluginConnection (dbPath: string) : SqliteConnection =
+    openConnectionWaiting BusyTimeout dbPath
 
 /// SQLite-backed dependency graph storage. `policy` says which stored edges the
 /// affected-test walk follows (`QueryAffectedTests`, `QueryCoveringProjectsBySeed`); every
 /// other query sees every edge.
-type Database(dbPath: string, policy: Domain.WalkPolicy) =
+type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: TimeSpan) =
+    // Every connection this instance opens waits `busyTimeout` on a lock; every write
+    // that runs out of it says so (`namingBusy`).
+    let openConnection = openConnectionWaiting busyTimeout
+    let writing (write: unit -> 'T) : 'T = namingBusy dbPath busyTimeout write
+
     let warnedUnknownKinds = HashSet<string>()
     let mutable wasRecreated = false
 
@@ -546,17 +592,18 @@ type Database(dbPath: string, policy: Domain.WalkPolicy) =
             |> ignore
 
     do
-        let openedConn, fresh = openCheckedConnection dbPath
-        wasRecreated <- fresh
-        use conn = openedConn
-        execute conn schema
-        let currentVersion = readUserVersion conn
+        writing (fun () ->
+            let openedConn, fresh = openCheckedConnection busyTimeout dbPath
+            wasRecreated <- fresh
+            use conn = openedConn
+            execute conn schema
+            let currentVersion = readUserVersion conn
 
-        // Stamp when the file was unversioned or just recreated. A file stamped newer
-        // than `SchemaVersion` never reaches this point: `openCheckedConnection` refuses
-        // it, so the marker a newer process relies on is never downgraded.
-        if currentVersion < SchemaVersion then
-            execute conn $"PRAGMA user_version = %d{SchemaVersion};"
+            // Stamp when the file was unversioned or just recreated. A file stamped newer
+            // than `SchemaVersion` never reaches this point: `openCheckedConnection` refuses
+            // it, so the marker a newer process relies on is never downgraded.
+            if currentVersion < SchemaVersion then
+                execute conn $"PRAGMA user_version = %d{SchemaVersion};")
 
     /// True when this DB had no usable prior state when opened — the file did not exist,
     /// or an incompatible schema (a `SchemaVersion` bump) forced a delete+recreate. A
@@ -564,6 +611,9 @@ type Database(dbPath: string, policy: Domain.WalkPolicy) =
     /// cache that decides which files to re-index) should invalidate it when this is true:
     /// the recreated DB has lost every symbol the stale cache assumes is still indexed.
     member _.WasRecreated = wasRecreated
+
+    /// A database whose affected-test walk follows `policy`, waiting `BusyTimeout` on a lock.
+    new(dbPath: string, policy: Domain.WalkPolicy) = Database(dbPath, policy, BusyTimeout)
 
     /// A database whose walk follows every edge (`WalkPolicy.FollowAll`).
     new(dbPath: string) = Database(dbPath, Domain.WalkPolicy.FollowAll)
@@ -651,401 +701,403 @@ type Database(dbPath: string, policy: Domain.WalkPolicy) =
     member _.RebuildProjects
         (results: AnalysisResult list, ?fileKeys: (string * string) list, ?projectKeys: (string * string) list)
         =
-        let sourceFiles =
-            results
-            |> List.collect (fun r -> r.Symbols |> List.map (fun s -> s.SourceFile))
-            |> List.distinct
-            |> List.filter (fun f -> f <> ExternSourceFile)
+        writing (fun () ->
+            let sourceFiles =
+                results
+                |> List.collect (fun r -> r.Symbols |> List.map (fun s -> s.SourceFile))
+                |> List.distinct
+                |> List.filter (fun f -> f <> ExternSourceFile)
 
-        use conn = openConnection dbPath
+            use conn = openConnection dbPath
 
-        use txn = conn.BeginTransaction()
+            use txn = conn.BeginTransaction()
 
-        try
-            // Clear the facts each re-indexed file contributed — its edges, test methods
-            // and attributes, whichever symbol they hang off (`AstAnalyzer.factOwner`).
-            // Facts another file contributed survive, including edges INTO these files'
-            // symbols (row ids are preserved by the UPSERT below) and a signature file's
-            // edges when only its implementation is re-indexed, or vice versa.
-            if not sourceFiles.IsEmpty then
-                for table, ownedBy in
-                    [ "dependencies", ownedByAnyOf
-                      "test_methods", $"source_file IN (%s{nameSet})"
-                      "symbol_attributes", $"source_file IN (%s{nameSet})" ] do
-                    use delCmd = conn.CreateCommand()
-                    delCmd.Transaction <- txn
+            try
+                // Clear the facts each re-indexed file contributed — its edges, test methods
+                // and attributes, whichever symbol they hang off (`AstAnalyzer.factOwner`).
+                // Facts another file contributed survive, including edges INTO these files'
+                // symbols (row ids are preserved by the UPSERT below) and a signature file's
+                // edges when only its implementation is re-indexed, or vice versa.
+                if not sourceFiles.IsEmpty then
+                    for table, ownedBy in
+                        [ "dependencies", ownedByAnyOf
+                          "test_methods", $"source_file IN (%s{nameSet})"
+                          "symbol_attributes", $"source_file IN (%s{nameSet})" ] do
+                        use delCmd = conn.CreateCommand()
+                        delCmd.Transaction <- txn
 
-                    delCmd.CommandText <- $"DELETE FROM %s{table} WHERE %s{ownedBy}"
+                        delCmd.CommandText <- $"DELETE FROM %s{table} WHERE %s{ownedBy}"
 
-                    bindNameSet delCmd sourceFiles
-                    delCmd.ExecuteNonQuery() |> ignore
+                        bindNameSet delCmd sourceFiles
+                        delCmd.ExecuteNonQuery() |> ignore
 
-            let now = DateTime.UtcNow.ToString("o")
+                let now = DateTime.UtcNow.ToString("o")
 
-            // A symbol is one row per name; each declaring file has its own occurrence
-            // row carrying location and hash. UPSERT preserves both ids on conflict, so
-            // incoming foreign-key references (edges, coverage) remain valid.
-            //
-            // A real occurrence marks its symbol real. An extern placeholder is a symbol
-            // row with no occurrence at all and never overwrites a real one.
-            use realSymbolCmd = conn.CreateCommand()
-            realSymbolCmd.Transaction <- txn
+                // A symbol is one row per name; each declaring file has its own occurrence
+                // row carrying location and hash. UPSERT preserves both ids on conflict, so
+                // incoming foreign-key references (edges, coverage) remain valid.
+                //
+                // A real occurrence marks its symbol real. An extern placeholder is a symbol
+                // row with no occurrence at all and never overwrites a real one.
+                use realSymbolCmd = conn.CreateCommand()
+                realSymbolCmd.Transaction <- txn
 
-            realSymbolCmd.CommandText <-
-                """
-                INSERT INTO symbols (full_name, kind, is_extern)
-                VALUES (@fullName, @kind, 0)
-                ON CONFLICT(full_name) DO UPDATE SET
-                    kind = excluded.kind,
-                    is_extern = 0
-                RETURNING id
-                """
+                realSymbolCmd.CommandText <-
+                    """
+                    INSERT INTO symbols (full_name, kind, is_extern)
+                    VALUES (@fullName, @kind, 0)
+                    ON CONFLICT(full_name) DO UPDATE SET
+                        kind = excluded.kind,
+                        is_extern = 0
+                    RETURNING id
+                    """
 
-            use externSymbolCmd = conn.CreateCommand()
-            externSymbolCmd.Transaction <- txn
+                use externSymbolCmd = conn.CreateCommand()
+                externSymbolCmd.Transaction <- txn
 
-            externSymbolCmd.CommandText <-
-                """
-                INSERT INTO symbols (full_name, kind, is_extern)
-                VALUES (@fullName, @kind, 1)
-                ON CONFLICT(full_name) DO NOTHING
-                """
+                externSymbolCmd.CommandText <-
+                    """
+                    INSERT INTO symbols (full_name, kind, is_extern)
+                    VALUES (@fullName, @kind, 1)
+                    ON CONFLICT(full_name) DO NOTHING
+                    """
 
-            for cmd in [ realSymbolCmd; externSymbolCmd ] do
-                cmd.Parameters.Add("@fullName", SqliteType.Text) |> ignore
-                cmd.Parameters.Add("@kind", SqliteType.Text) |> ignore
+                for cmd in [ realSymbolCmd; externSymbolCmd ] do
+                    cmd.Parameters.Add("@fullName", SqliteType.Text) |> ignore
+                    cmd.Parameters.Add("@kind", SqliteType.Text) |> ignore
 
-            use occurrenceCmd = conn.CreateCommand()
-            occurrenceCmd.Transaction <- txn
+                use occurrenceCmd = conn.CreateCommand()
+                occurrenceCmd.Transaction <- txn
 
-            occurrenceCmd.CommandText <-
-                """
-                INSERT INTO symbol_occurrences (symbol_id, source_file, line_start, line_end, content_hash, indexed_at)
-                VALUES (@symbolId, @sourceFile, @lineStart, @lineEnd, @contentHash, @indexedAt)
-                ON CONFLICT(symbol_id, source_file) DO UPDATE SET
-                    line_start = excluded.line_start,
-                    line_end = excluded.line_end,
-                    content_hash = excluded.content_hash,
-                    indexed_at = excluded.indexed_at
-                """
+                occurrenceCmd.CommandText <-
+                    """
+                    INSERT INTO symbol_occurrences (symbol_id, source_file, line_start, line_end, content_hash, indexed_at)
+                    VALUES (@symbolId, @sourceFile, @lineStart, @lineEnd, @contentHash, @indexedAt)
+                    ON CONFLICT(symbol_id, source_file) DO UPDATE SET
+                        line_start = excluded.line_start,
+                        line_end = excluded.line_end,
+                        content_hash = excluded.content_hash,
+                        indexed_at = excluded.indexed_at
+                    """
 
-            let pOccSymbol = occurrenceCmd.Parameters.Add("@symbolId", SqliteType.Integer)
-            let pOccFile = occurrenceCmd.Parameters.Add("@sourceFile", SqliteType.Text)
-            let pOccStart = occurrenceCmd.Parameters.Add("@lineStart", SqliteType.Integer)
-            let pOccEnd = occurrenceCmd.Parameters.Add("@lineEnd", SqliteType.Integer)
-            let pOccHash = occurrenceCmd.Parameters.Add("@contentHash", SqliteType.Text)
-            occurrenceCmd.Parameters.AddWithValue("@indexedAt", now) |> ignore
+                let pOccSymbol = occurrenceCmd.Parameters.Add("@symbolId", SqliteType.Integer)
+                let pOccFile = occurrenceCmd.Parameters.Add("@sourceFile", SqliteType.Text)
+                let pOccStart = occurrenceCmd.Parameters.Add("@lineStart", SqliteType.Integer)
+                let pOccEnd = occurrenceCmd.Parameters.Add("@lineEnd", SqliteType.Integer)
+                let pOccHash = occurrenceCmd.Parameters.Add("@contentHash", SqliteType.Text)
+                occurrenceCmd.Parameters.AddWithValue("@indexedAt", now) |> ignore
 
-            // Must run BEFORE the upsert overwrites each occurrence's stored content_hash.
-            // A changed hash means the stored coverage offsets were computed against the
-            // old body and are now invalid, so purge them; the impact re-run re-ingests
-            // fresh coverage. A MOVED occurrence (same hash, shifted line_start) keeps its
-            // coverage — offsets are stable and GetFileCoverage re-derives the absolute
-            // line. New occurrences and removed ones (CASCADE via the coverage_points FK on
-            // the orphan DELETE below) need nothing here.
-            use purgeCovCmd = conn.CreateCommand()
-            purgeCovCmd.Transaction <- txn
+                // Must run BEFORE the upsert overwrites each occurrence's stored content_hash.
+                // A changed hash means the stored coverage offsets were computed against the
+                // old body and are now invalid, so purge them; the impact re-run re-ingests
+                // fresh coverage. A MOVED occurrence (same hash, shifted line_start) keeps its
+                // coverage — offsets are stable and GetFileCoverage re-derives the absolute
+                // line. New occurrences and removed ones (CASCADE via the coverage_points FK on
+                // the orphan DELETE below) need nothing here.
+                use purgeCovCmd = conn.CreateCommand()
+                purgeCovCmd.Transaction <- txn
 
-            purgeCovCmd.CommandText <-
-                """
-                DELETE FROM coverage_points
-                WHERE occurrence_id IN (
-                    SELECT o.id FROM symbol_occurrences o
-                    JOIN symbols s ON s.id = o.symbol_id
-                    WHERE s.full_name = @fullName
-                      AND o.source_file = @sourceFile
-                      AND o.content_hash <> @contentHash
-                )
-                """
+                purgeCovCmd.CommandText <-
+                    """
+                    DELETE FROM coverage_points
+                    WHERE occurrence_id IN (
+                        SELECT o.id FROM symbol_occurrences o
+                        JOIN symbols s ON s.id = o.symbol_id
+                        WHERE s.full_name = @fullName
+                          AND o.source_file = @sourceFile
+                          AND o.content_hash <> @contentHash
+                    )
+                    """
 
-            let pPurgeFullName = purgeCovCmd.Parameters.Add("@fullName", SqliteType.Text)
-            let pPurgeFile = purgeCovCmd.Parameters.Add("@sourceFile", SqliteType.Text)
-            let pPurgeHash = purgeCovCmd.Parameters.Add("@contentHash", SqliteType.Text)
+                let pPurgeFullName = purgeCovCmd.Parameters.Add("@fullName", SqliteType.Text)
+                let pPurgeFile = purgeCovCmd.Parameters.Add("@sourceFile", SqliteType.Text)
+                let pPurgeHash = purgeCovCmd.Parameters.Add("@contentHash", SqliteType.Text)
 
-            // Only an index that has ingested coverage has anything to purge; skipping the
-            // per-occurrence probe otherwise keeps a plain re-index at one write per row.
-            let hasCoverage =
-                use probe = conn.CreateCommand()
-                probe.Transaction <- txn
-                probe.CommandText <- "SELECT EXISTS(SELECT 1 FROM coverage_points)"
+                // Only an index that has ingested coverage has anything to purge; skipping the
+                // per-occurrence probe otherwise keeps a plain re-index at one write per row.
+                let hasCoverage =
+                    use probe = conn.CreateCommand()
+                    probe.Transaction <- txn
+                    probe.CommandText <- "SELECT EXISTS(SELECT 1 FROM coverage_points)"
 
-                match probe.ExecuteScalar() with
-                | :? int64 as n -> n <> 0L
-                | _ -> true
+                    match probe.ExecuteScalar() with
+                    | :? int64 as n -> n <> 0L
+                    | _ -> true
 
-            for result in results do
-                for sym in result.Symbols do
-                    if hasCoverage && not sym.IsExtern then
-                        pPurgeFullName.Value <- sym.FullName
-                        pPurgeFile.Value <- sym.SourceFile
-                        pPurgeHash.Value <- sym.ContentHash
-                        purgeCovCmd.ExecuteNonQuery() |> ignore
+                for result in results do
+                    for sym in result.Symbols do
+                        if hasCoverage && not sym.IsExtern then
+                            pPurgeFullName.Value <- sym.FullName
+                            pPurgeFile.Value <- sym.SourceFile
+                            pPurgeHash.Value <- sym.ContentHash
+                            purgeCovCmd.ExecuteNonQuery() |> ignore
 
-            for result in results do
-                for sym in result.Symbols do
-                    let cmd = if sym.IsExtern then externSymbolCmd else realSymbolCmd
-                    cmd.Parameters["@fullName"].Value <- sym.FullName
-                    cmd.Parameters["@kind"].Value <- symbolKindToString sym.Kind
+                for result in results do
+                    for sym in result.Symbols do
+                        let cmd = if sym.IsExtern then externSymbolCmd else realSymbolCmd
+                        cmd.Parameters["@fullName"].Value <- sym.FullName
+                        cmd.Parameters["@kind"].Value <- symbolKindToString sym.Kind
 
-                    // SQLite reports only the constraint name
-                    // (`symbols_full_name_is_qualified`), never the offending row. Since the
-                    // whole point of the constraint is to surface a bad name, the failure
-                    // has to carry that name and its file — and, because the reader is
-                    // usually someone whose test run just went red for a reason that is not
-                    // theirs, what it means and what to do about it.
-                    //
-                    // It stays a hard failure of the whole flush rather than a skipped row:
-                    // a dropped symbol silently loses its edges, and an index that quietly
-                    // under-selects looks exactly like one that is right.
-                    let symbolId =
-                        try
-                            cmd.ExecuteScalar()
-                        with :? SqliteException as ex ->
-                            raise (
-                                SqliteException(
-                                    $"Symbol '%s{sym.FullName}' (kind %A{sym.Kind}, from %s{sym.SourceFile}) was rejected by the symbols table: %s{ex.Message}. "
-                                    + "Every indexed name except a module's must be qualified (contain a '.'): an unqualified one would merge "
-                                    + "every same-named symbol in the repo into one node, so nothing from this flush was stored. "
-                                    + "This is a TestPrune analyzer bug, not a problem in your code: report it at "
-                                    + $"https://github.com/michaelglass/TestPrune/issues with the declaration of '%s{sym.FullName}' in %s{sym.SourceFile}. "
-                                    + "Until it is fixed, this index cannot select tests; run the full test suite.",
-                                    ex.SqliteErrorCode,
-                                    ex.SqliteExtendedErrorCode
+                        // SQLite reports only the constraint name
+                        // (`symbols_full_name_is_qualified`), never the offending row. Since the
+                        // whole point of the constraint is to surface a bad name, the failure
+                        // has to carry that name and its file — and, because the reader is
+                        // usually someone whose test run just went red for a reason that is not
+                        // theirs, what it means and what to do about it.
+                        //
+                        // It stays a hard failure of the whole flush rather than a skipped row:
+                        // a dropped symbol silently loses its edges, and an index that quietly
+                        // under-selects looks exactly like one that is right.
+                        let symbolId =
+                            try
+                                cmd.ExecuteScalar()
+                            with :? SqliteException as ex ->
+                                raise (
+                                    SqliteException(
+                                        $"Symbol '%s{sym.FullName}' (kind %A{sym.Kind}, from %s{sym.SourceFile}) was rejected by the symbols table: %s{ex.Message}. "
+                                        + "Every indexed name except a module's must be qualified (contain a '.'): an unqualified one would merge "
+                                        + "every same-named symbol in the repo into one node, so nothing from this flush was stored. "
+                                        + "This is a TestPrune analyzer bug, not a problem in your code: report it at "
+                                        + $"https://github.com/michaelglass/TestPrune/issues with the declaration of '%s{sym.FullName}' in %s{sym.SourceFile}. "
+                                        + "Until it is fixed, this index cannot select tests; run the full test suite.",
+                                        ex.SqliteErrorCode,
+                                        ex.SqliteExtendedErrorCode
+                                    )
                                 )
-                            )
 
-                    if not sym.IsExtern then
-                        pOccSymbol.Value <- symbolId
-                        pOccFile.Value <- sym.SourceFile
-                        pOccStart.Value <- sym.LineStart
-                        pOccEnd.Value <- sym.LineEnd
-                        pOccHash.Value <- sym.ContentHash
-                        occurrenceCmd.ExecuteNonQuery() |> ignore
+                        if not sym.IsExtern then
+                            pOccSymbol.Value <- symbolId
+                            pOccFile.Value <- sym.SourceFile
+                            pOccStart.Value <- sym.LineStart
+                            pOccEnd.Value <- sym.LineEnd
+                            pOccHash.Value <- sym.ContentHash
+                            occurrenceCmd.ExecuteNonQuery() |> ignore
 
-            // Orphan cleanup: every occurrence touched by this pass had its indexed_at
-            // bumped to `now`. An occurrence in the re-indexed files still carrying an older
-            // timestamp wasn't in the new analysis — delete it (CASCADE takes its coverage).
-            // A symbol survives while ANY file still declares it; a real symbol whose every
-            // occurrence is such a stale one was removed from the code, so delete it and
-            // CASCADE its edges. Only symbols with a stale occurrence are candidates, so a
-            // one-file re-index does not scan the whole symbol table.
-            if not sourceFiles.IsEmpty then
-                use delUndeclared = conn.CreateCommand()
-                delUndeclared.Transaction <- txn
+                // Orphan cleanup: every occurrence touched by this pass had its indexed_at
+                // bumped to `now`. An occurrence in the re-indexed files still carrying an older
+                // timestamp wasn't in the new analysis — delete it (CASCADE takes its coverage).
+                // A symbol survives while ANY file still declares it; a real symbol whose every
+                // occurrence is such a stale one was removed from the code, so delete it and
+                // CASCADE its edges. Only symbols with a stale occurrence are candidates, so a
+                // one-file re-index does not scan the whole symbol table.
+                if not sourceFiles.IsEmpty then
+                    use delUndeclared = conn.CreateCommand()
+                    delUndeclared.Transaction <- txn
 
-                delUndeclared.CommandText <-
-                    $"""
+                    delUndeclared.CommandText <-
+                        $"""
+                        DELETE FROM symbols
+                        WHERE is_extern = 0
+                          AND id IN (
+                              SELECT symbol_id FROM symbol_occurrences
+                              WHERE source_file IN (%s{nameSet}) AND indexed_at < @now
+                          )
+                          AND NOT EXISTS (
+                              SELECT 1 FROM symbol_occurrences o
+                              WHERE o.symbol_id = symbols.id
+                                AND (o.indexed_at >= @now OR o.source_file NOT IN (%s{nameSet}))
+                          )
+                        """
+
+                    bindNameSet delUndeclared sourceFiles
+                    delUndeclared.Parameters.AddWithValue("@now", now) |> ignore
+                    delUndeclared.ExecuteNonQuery() |> ignore
+
+                    use delOrphan = conn.CreateCommand()
+                    delOrphan.Transaction <- txn
+
+                    delOrphan.CommandText <-
+                        $"DELETE FROM symbol_occurrences WHERE source_file IN (%s{nameSet}) AND indexed_at < @now"
+
+                    bindNameSet delOrphan sourceFiles
+                    delOrphan.Parameters.AddWithValue("@now", now) |> ignore
+                    delOrphan.ExecuteNonQuery() |> ignore
+
+                // Reset parent links for re-indexed files before re-populating below. Parent links
+                // from non-re-indexed files are untouched (their row ids were preserved by the
+                // symbol UPSERT). Clearing first handles the case where a member moved to a
+                // different type or out of a type entirely.
+                if not sourceFiles.IsEmpty then
+                    use clrParent = conn.CreateCommand()
+                    clrParent.Transaction <- txn
+
+                    clrParent.CommandText <-
+                        $"UPDATE symbols SET parent_symbol_id = NULL WHERE id IN (SELECT symbol_id FROM symbol_occurrences WHERE source_file IN (%s{nameSet}))"
+
+                    bindNameSet clrParent sourceFiles
+                    clrParent.ExecuteNonQuery() |> ignore
+
+                // Populate parent_symbol_id from analyzer-supplied links. Only members of
+                // non-module types produce links, so module bindings stay with NULL parents
+                // and aggregate-type invalidation doesn't fan out across module siblings.
+                use plCmd = conn.CreateCommand()
+                plCmd.Transaction <- txn
+
+                plCmd.CommandText <-
+                    """
+                    UPDATE symbols
+                    SET parent_symbol_id = (SELECT id FROM symbols p WHERE p.full_name = @parent)
+                    WHERE full_name = @child
+                    """
+
+                let pPlChild = plCmd.Parameters.Add("@child", SqliteType.Text)
+                let pPlParent = plCmd.Parameters.Add("@parent", SqliteType.Text)
+
+                for result in results do
+                    for link in result.ParentLinks do
+                        pPlChild.Value <- link.Child
+                        pPlParent.Value <- link.Parent
+                        plCmd.ExecuteNonQuery() |> ignore
+
+                // Dependencies are inserted after all symbols so cross-project edges resolve
+                use depCmd = conn.CreateCommand()
+                depCmd.Transaction <- txn
+
+                depCmd.CommandText <-
+                    """
+                    INSERT OR IGNORE INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source, source_file_id)
+                    SELECT f.id, t.id, @depKind, @source, @sourceFileId
+                    FROM symbols f, symbols t
+                    WHERE f.full_name = @fromSymbol AND t.full_name = @toSymbol
+                    """
+
+                let pFromSymbol = depCmd.Parameters.Add("@fromSymbol", SqliteType.Text)
+                let pToSymbol = depCmd.Parameters.Add("@toSymbol", SqliteType.Text)
+                let pDepKind = depCmd.Parameters.Add("@depKind", SqliteType.Text)
+                let pSource = depCmd.Parameters.Add("@source", SqliteType.Text)
+                let pDepFile = depCmd.Parameters.Add("@sourceFileId", SqliteType.Integer)
+
+                let ownedDeps =
+                    results
+                    |> List.collect (fun result ->
+                        let owner = factOwner result
+                        result.Dependencies |> List.map (fun dep -> dep, owner (dependencyAnchor dep)))
+
+                let fileIds = internSourceFiles conn txn (ownedDeps |> List.map snd)
+
+                for dep, ownerFile in ownedDeps do
+                    pFromSymbol.Value <- dep.FromSymbol
+                    pToSymbol.Value <- dep.ToSymbol
+                    pDepKind.Value <- depKindToString dep.Kind
+                    pSource.Value <- dep.Source
+                    pDepFile.Value <- fileIds[ownerFile]
+                    depCmd.ExecuteNonQuery() |> ignore
+
+                // A literal node is shared by every test/producer that contains its decoded
+                // value, so no one file owns its row. Collect it only after every fresh edge
+                // has been inserted, and only when neither side of any edge still mentions it.
+                // Prefix + is_extern keeps this sweep away from ordinary extern placeholders.
+                use delUnusedLiteralNodes = conn.CreateCommand()
+                delUnusedLiteralNodes.Transaction <- txn
+
+                delUnusedLiteralNodes.CommandText <-
+                    """
                     DELETE FROM symbols
-                    WHERE is_extern = 0
-                      AND id IN (
-                          SELECT symbol_id FROM symbol_occurrences
-                          WHERE source_file IN (%s{nameSet}) AND indexed_at < @now
-                      )
+                    WHERE is_extern = 1
+                      AND substr(full_name, 1, length(@literalPrefix)) = @literalPrefix
                       AND NOT EXISTS (
-                          SELECT 1 FROM symbol_occurrences o
-                          WHERE o.symbol_id = symbols.id
-                            AND (o.indexed_at >= @now OR o.source_file NOT IN (%s{nameSet}))
+                          SELECT 1 FROM dependencies
+                          WHERE from_symbol_id = symbols.id OR to_symbol_id = symbols.id
                       )
                     """
 
-                bindNameSet delUndeclared sourceFiles
-                delUndeclared.Parameters.AddWithValue("@now", now) |> ignore
-                delUndeclared.ExecuteNonQuery() |> ignore
+                delUnusedLiteralNodes.Parameters.AddWithValue("@literalPrefix", SyntheticLiteralPrefix)
+                |> ignore
 
-                use delOrphan = conn.CreateCommand()
-                delOrphan.Transaction <- txn
+                delUnusedLiteralNodes.ExecuteNonQuery() |> ignore
 
-                delOrphan.CommandText <-
-                    $"DELETE FROM symbol_occurrences WHERE source_file IN (%s{nameSet}) AND indexed_at < @now"
+                use tmCmd = conn.CreateCommand()
+                tmCmd.Transaction <- txn
 
-                bindNameSet delOrphan sourceFiles
-                delOrphan.Parameters.AddWithValue("@now", now) |> ignore
-                delOrphan.ExecuteNonQuery() |> ignore
+                tmCmd.CommandText <-
+                    """
+                    INSERT OR REPLACE INTO test_methods (symbol_id, test_project, test_class, test_method, source_file)
+                    SELECT id, @testProject, @testClass, @testMethod, @sourceFile
+                    FROM symbols WHERE full_name = @symbolFullName
+                    """
 
-            // Reset parent links for re-indexed files before re-populating below. Parent links
-            // from non-re-indexed files are untouched (their row ids were preserved by the
-            // symbol UPSERT). Clearing first handles the case where a member moved to a
-            // different type or out of a type entirely.
-            if not sourceFiles.IsEmpty then
-                use clrParent = conn.CreateCommand()
-                clrParent.Transaction <- txn
+                let pSymbolFullName = tmCmd.Parameters.Add("@symbolFullName", SqliteType.Text)
+                let pTestProject = tmCmd.Parameters.Add("@testProject", SqliteType.Text)
+                let pTestClass = tmCmd.Parameters.Add("@testClass", SqliteType.Text)
+                let pTestMethod = tmCmd.Parameters.Add("@testMethod", SqliteType.Text)
+                let pTestFile = tmCmd.Parameters.Add("@sourceFile", SqliteType.Text)
 
-                clrParent.CommandText <-
-                    $"UPDATE symbols SET parent_symbol_id = NULL WHERE id IN (SELECT symbol_id FROM symbol_occurrences WHERE source_file IN (%s{nameSet}))"
-
-                bindNameSet clrParent sourceFiles
-                clrParent.ExecuteNonQuery() |> ignore
-
-            // Populate parent_symbol_id from analyzer-supplied links. Only members of
-            // non-module types produce links, so module bindings stay with NULL parents
-            // and aggregate-type invalidation doesn't fan out across module siblings.
-            use plCmd = conn.CreateCommand()
-            plCmd.Transaction <- txn
-
-            plCmd.CommandText <-
-                """
-                UPDATE symbols
-                SET parent_symbol_id = (SELECT id FROM symbols p WHERE p.full_name = @parent)
-                WHERE full_name = @child
-                """
-
-            let pPlChild = plCmd.Parameters.Add("@child", SqliteType.Text)
-            let pPlParent = plCmd.Parameters.Add("@parent", SqliteType.Text)
-
-            for result in results do
-                for link in result.ParentLinks do
-                    pPlChild.Value <- link.Child
-                    pPlParent.Value <- link.Parent
-                    plCmd.ExecuteNonQuery() |> ignore
-
-            // Dependencies are inserted after all symbols so cross-project edges resolve
-            use depCmd = conn.CreateCommand()
-            depCmd.Transaction <- txn
-
-            depCmd.CommandText <-
-                """
-                INSERT OR IGNORE INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source, source_file_id)
-                SELECT f.id, t.id, @depKind, @source, @sourceFileId
-                FROM symbols f, symbols t
-                WHERE f.full_name = @fromSymbol AND t.full_name = @toSymbol
-                """
-
-            let pFromSymbol = depCmd.Parameters.Add("@fromSymbol", SqliteType.Text)
-            let pToSymbol = depCmd.Parameters.Add("@toSymbol", SqliteType.Text)
-            let pDepKind = depCmd.Parameters.Add("@depKind", SqliteType.Text)
-            let pSource = depCmd.Parameters.Add("@source", SqliteType.Text)
-            let pDepFile = depCmd.Parameters.Add("@sourceFileId", SqliteType.Integer)
-
-            let ownedDeps =
-                results
-                |> List.collect (fun result ->
+                for result in results do
                     let owner = factOwner result
-                    result.Dependencies |> List.map (fun dep -> dep, owner (dependencyAnchor dep)))
 
-            let fileIds = internSourceFiles conn txn (ownedDeps |> List.map snd)
+                    for tm in result.TestMethods do
+                        pSymbolFullName.Value <- tm.SymbolFullName
+                        pTestProject.Value <- tm.TestProject
+                        pTestClass.Value <- tm.TestClass
+                        pTestMethod.Value <- tm.TestMethod
+                        pTestFile.Value <- owner tm.SymbolFullName
+                        tmCmd.ExecuteNonQuery() |> ignore
 
-            for dep, ownerFile in ownedDeps do
-                pFromSymbol.Value <- dep.FromSymbol
-                pToSymbol.Value <- dep.ToSymbol
-                pDepKind.Value <- depKindToString dep.Kind
-                pSource.Value <- dep.Source
-                pDepFile.Value <- fileIds[ownerFile]
-                depCmd.ExecuteNonQuery() |> ignore
+                use attrCmd = conn.CreateCommand()
+                attrCmd.Transaction <- txn
 
-            // A literal node is shared by every test/producer that contains its decoded
-            // value, so no one file owns its row. Collect it only after every fresh edge
-            // has been inserted, and only when neither side of any edge still mentions it.
-            // Prefix + is_extern keeps this sweep away from ordinary extern placeholders.
-            use delUnusedLiteralNodes = conn.CreateCommand()
-            delUnusedLiteralNodes.Transaction <- txn
+                attrCmd.CommandText <-
+                    """
+                    INSERT OR IGNORE INTO symbol_attributes (symbol_id, attribute_name, args_json, source_file)
+                    SELECT id, @attrName, @argsJson, @sourceFile
+                    FROM symbols WHERE full_name = @symbolFullName
+                    """
 
-            delUnusedLiteralNodes.CommandText <-
-                """
-                DELETE FROM symbols
-                WHERE is_extern = 1
-                  AND substr(full_name, 1, length(@literalPrefix)) = @literalPrefix
-                  AND NOT EXISTS (
-                      SELECT 1 FROM dependencies
-                      WHERE from_symbol_id = symbols.id OR to_symbol_id = symbols.id
-                  )
-                """
+                let pAttrSymbol = attrCmd.Parameters.Add("@symbolFullName", SqliteType.Text)
+                let pAttrName = attrCmd.Parameters.Add("@attrName", SqliteType.Text)
+                let pArgsJson = attrCmd.Parameters.Add("@argsJson", SqliteType.Text)
+                let pAttrFile = attrCmd.Parameters.Add("@sourceFile", SqliteType.Text)
 
-            delUnusedLiteralNodes.Parameters.AddWithValue("@literalPrefix", SyntheticLiteralPrefix)
-            |> ignore
+                for result in results do
+                    let owner = factOwner result
 
-            delUnusedLiteralNodes.ExecuteNonQuery() |> ignore
+                    for attr in result.Attributes do
+                        pAttrSymbol.Value <- attr.SymbolFullName
+                        pAttrName.Value <- attr.AttributeName
+                        pArgsJson.Value <- attr.ArgsJson
+                        pAttrFile.Value <- owner attr.SymbolFullName
+                        attrCmd.ExecuteNonQuery() |> ignore
 
-            use tmCmd = conn.CreateCommand()
-            tmCmd.Transaction <- txn
+                // Cache keys go in this same transaction, so they can never claim a file is
+                // indexed when its symbols rolled back.
+                match fileKeys with
+                | Some keys when not keys.IsEmpty ->
+                    use fkCmd = conn.CreateCommand()
+                    fkCmd.Transaction <- txn
 
-            tmCmd.CommandText <-
-                """
-                INSERT OR REPLACE INTO test_methods (symbol_id, test_project, test_class, test_method, source_file)
-                SELECT id, @testProject, @testClass, @testMethod, @sourceFile
-                FROM symbols WHERE full_name = @symbolFullName
-                """
+                    fkCmd.CommandText <-
+                        "INSERT OR REPLACE INTO file_keys (source_file, key) VALUES (@sourceFile, @key)"
 
-            let pSymbolFullName = tmCmd.Parameters.Add("@symbolFullName", SqliteType.Text)
-            let pTestProject = tmCmd.Parameters.Add("@testProject", SqliteType.Text)
-            let pTestClass = tmCmd.Parameters.Add("@testClass", SqliteType.Text)
-            let pTestMethod = tmCmd.Parameters.Add("@testMethod", SqliteType.Text)
-            let pTestFile = tmCmd.Parameters.Add("@sourceFile", SqliteType.Text)
+                    let pFkFile = fkCmd.Parameters.Add("@sourceFile", SqliteType.Text)
+                    let pFkKey = fkCmd.Parameters.Add("@key", SqliteType.Text)
 
-            for result in results do
-                let owner = factOwner result
+                    for (file, key) in keys do
+                        pFkFile.Value <- file
+                        pFkKey.Value <- key
+                        fkCmd.ExecuteNonQuery() |> ignore
+                | _ -> ()
 
-                for tm in result.TestMethods do
-                    pSymbolFullName.Value <- tm.SymbolFullName
-                    pTestProject.Value <- tm.TestProject
-                    pTestClass.Value <- tm.TestClass
-                    pTestMethod.Value <- tm.TestMethod
-                    pTestFile.Value <- owner tm.SymbolFullName
-                    tmCmd.ExecuteNonQuery() |> ignore
+                match projectKeys with
+                | Some keys when not keys.IsEmpty ->
+                    use pkCmd = conn.CreateCommand()
+                    pkCmd.Transaction <- txn
 
-            use attrCmd = conn.CreateCommand()
-            attrCmd.Transaction <- txn
+                    pkCmd.CommandText <-
+                        "INSERT OR REPLACE INTO project_keys (project_name, key) VALUES (@projectName, @key)"
 
-            attrCmd.CommandText <-
-                """
-                INSERT OR IGNORE INTO symbol_attributes (symbol_id, attribute_name, args_json, source_file)
-                SELECT id, @attrName, @argsJson, @sourceFile
-                FROM symbols WHERE full_name = @symbolFullName
-                """
+                    let pPkName = pkCmd.Parameters.Add("@projectName", SqliteType.Text)
+                    let pPkKey = pkCmd.Parameters.Add("@key", SqliteType.Text)
 
-            let pAttrSymbol = attrCmd.Parameters.Add("@symbolFullName", SqliteType.Text)
-            let pAttrName = attrCmd.Parameters.Add("@attrName", SqliteType.Text)
-            let pArgsJson = attrCmd.Parameters.Add("@argsJson", SqliteType.Text)
-            let pAttrFile = attrCmd.Parameters.Add("@sourceFile", SqliteType.Text)
+                    for (name, key) in keys do
+                        pPkName.Value <- name
+                        pPkKey.Value <- key
+                        pkCmd.ExecuteNonQuery() |> ignore
+                | _ -> ()
 
-            for result in results do
-                let owner = factOwner result
-
-                for attr in result.Attributes do
-                    pAttrSymbol.Value <- attr.SymbolFullName
-                    pAttrName.Value <- attr.AttributeName
-                    pArgsJson.Value <- attr.ArgsJson
-                    pAttrFile.Value <- owner attr.SymbolFullName
-                    attrCmd.ExecuteNonQuery() |> ignore
-
-            // Cache keys go in this same transaction, so they can never claim a file is
-            // indexed when its symbols rolled back.
-            match fileKeys with
-            | Some keys when not keys.IsEmpty ->
-                use fkCmd = conn.CreateCommand()
-                fkCmd.Transaction <- txn
-
-                fkCmd.CommandText <- "INSERT OR REPLACE INTO file_keys (source_file, key) VALUES (@sourceFile, @key)"
-
-                let pFkFile = fkCmd.Parameters.Add("@sourceFile", SqliteType.Text)
-                let pFkKey = fkCmd.Parameters.Add("@key", SqliteType.Text)
-
-                for (file, key) in keys do
-                    pFkFile.Value <- file
-                    pFkKey.Value <- key
-                    fkCmd.ExecuteNonQuery() |> ignore
-            | _ -> ()
-
-            match projectKeys with
-            | Some keys when not keys.IsEmpty ->
-                use pkCmd = conn.CreateCommand()
-                pkCmd.Transaction <- txn
-
-                pkCmd.CommandText <-
-                    "INSERT OR REPLACE INTO project_keys (project_name, key) VALUES (@projectName, @key)"
-
-                let pPkName = pkCmd.Parameters.Add("@projectName", SqliteType.Text)
-                let pPkKey = pkCmd.Parameters.Add("@key", SqliteType.Text)
-
-                for (name, key) in keys do
-                    pPkName.Value <- name
-                    pPkKey.Value <- key
-                    pkCmd.ExecuteNonQuery() |> ignore
-            | _ -> ()
-
-            txn.Commit()
-        with ex ->
-            txn.Rollback()
-            raise ex
+                txn.Commit()
+            with ex ->
+                txn.Rollback()
+                raise ex)
 
     /// Replace every edge `extensionName` contributed with `edges`, in one transaction.
     ///
@@ -1060,95 +1112,96 @@ type Database(dbPath: string, policy: Domain.WalkPolicy) =
     /// last one, and rewriting tens of thousands of unchanged rows on every build would
     /// cost more than computing them.
     member _.ReplaceExtensionEdges(extensionName: string, edges: Dependency list) =
-        let owner = extensionEdgeOwner extensionName
+        writing (fun () ->
+            let owner = extensionEdgeOwner extensionName
 
-        let wanted =
-            edges
-            |> List.map (fun dep -> dep.FromSymbol, dep.ToSymbol, depKindToString dep.Kind, dep.Source)
-            |> HashSet
+            let wanted =
+                edges
+                |> List.map (fun dep -> dep.FromSymbol, dep.ToSymbol, depKindToString dep.Kind, dep.Source)
+                |> HashSet
 
-        use conn = openConnection dbPath
-        use txn = conn.BeginTransaction()
+            use conn = openConnection dbPath
+            use txn = conn.BeginTransaction()
 
-        try
-            let ownerId = (internSourceFiles conn txn [ owner ])[owner]
+            try
+                let ownerId = (internSourceFiles conn txn [ owner ])[owner]
 
-            let stored =
-                use readCmd = conn.CreateCommand()
-                readCmd.Transaction <- txn
+                let stored =
+                    use readCmd = conn.CreateCommand()
+                    readCmd.Transaction <- txn
 
-                readCmd.CommandText <-
+                    readCmd.CommandText <-
+                        """
+                        SELECT d.from_symbol_id, d.to_symbol_id, d.dep_kind, d.source, f.full_name, t.full_name
+                        FROM dependencies d
+                        JOIN symbols f ON f.id = d.from_symbol_id
+                        JOIN symbols t ON t.id = d.to_symbol_id
+                        WHERE d.source_file_id = @ownerId
+                        """
+
+                    readCmd.Parameters.AddWithValue("@ownerId", ownerId) |> ignore
+                    use reader = readCmd.ExecuteReader()
+
+                    [ while reader.Read() do
+                          yield
+                              (reader.GetInt64 0, reader.GetInt64 1, reader.GetString 2),
+                              (reader.GetString 4, reader.GetString 5, reader.GetString 2, reader.GetString 3) ]
+
+                use delCmd = conn.CreateCommand()
+                delCmd.Transaction <- txn
+
+                delCmd.CommandText <-
                     """
-                    SELECT d.from_symbol_id, d.to_symbol_id, d.dep_kind, d.source, f.full_name, t.full_name
-                    FROM dependencies d
-                    JOIN symbols f ON f.id = d.from_symbol_id
-                    JOIN symbols t ON t.id = d.to_symbol_id
-                    WHERE d.source_file_id = @ownerId
+                    DELETE FROM dependencies
+                    WHERE from_symbol_id = @fromId AND to_symbol_id = @toId
+                      AND dep_kind = @depKind AND source_file_id = @ownerId
                     """
 
-                readCmd.Parameters.AddWithValue("@ownerId", ownerId) |> ignore
-                use reader = readCmd.ExecuteReader()
+                let pFromId = delCmd.Parameters.Add("@fromId", SqliteType.Integer)
+                let pToId = delCmd.Parameters.Add("@toId", SqliteType.Integer)
+                let pDelKind = delCmd.Parameters.Add("@depKind", SqliteType.Text)
+                delCmd.Parameters.AddWithValue("@ownerId", ownerId) |> ignore
 
-                [ while reader.Read() do
-                      yield
-                          (reader.GetInt64 0, reader.GetInt64 1, reader.GetString 2),
-                          (reader.GetString 4, reader.GetString 5, reader.GetString 2, reader.GetString 3) ]
+                let kept = HashSet()
 
-            use delCmd = conn.CreateCommand()
-            delCmd.Transaction <- txn
+                for (fromId, toId, depKind), key in stored do
+                    if wanted.Contains key then
+                        kept.Add key |> ignore
+                    else
+                        pFromId.Value <- fromId
+                        pToId.Value <- toId
+                        pDelKind.Value <- depKind
+                        delCmd.ExecuteNonQuery() |> ignore
 
-            delCmd.CommandText <-
-                """
-                DELETE FROM dependencies
-                WHERE from_symbol_id = @fromId AND to_symbol_id = @toId
-                  AND dep_kind = @depKind AND source_file_id = @ownerId
-                """
+                use insCmd = conn.CreateCommand()
+                insCmd.Transaction <- txn
 
-            let pFromId = delCmd.Parameters.Add("@fromId", SqliteType.Integer)
-            let pToId = delCmd.Parameters.Add("@toId", SqliteType.Integer)
-            let pDelKind = delCmd.Parameters.Add("@depKind", SqliteType.Text)
-            delCmd.Parameters.AddWithValue("@ownerId", ownerId) |> ignore
+                insCmd.CommandText <-
+                    """
+                    INSERT OR IGNORE INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source, source_file_id)
+                    SELECT f.id, t.id, @depKind, @source, @ownerId
+                    FROM symbols f, symbols t
+                    WHERE f.full_name = @fromSymbol AND t.full_name = @toSymbol
+                    """
 
-            let kept = HashSet()
+                let pFromSymbol = insCmd.Parameters.Add("@fromSymbol", SqliteType.Text)
+                let pToSymbol = insCmd.Parameters.Add("@toSymbol", SqliteType.Text)
+                let pInsKind = insCmd.Parameters.Add("@depKind", SqliteType.Text)
+                let pSource = insCmd.Parameters.Add("@source", SqliteType.Text)
+                insCmd.Parameters.AddWithValue("@ownerId", ownerId) |> ignore
 
-            for (fromId, toId, depKind), key in stored do
-                if wanted.Contains key then
-                    kept.Add key |> ignore
-                else
-                    pFromId.Value <- fromId
-                    pToId.Value <- toId
-                    pDelKind.Value <- depKind
-                    delCmd.ExecuteNonQuery() |> ignore
+                for (fromSymbol, toSymbol, depKind, source) as key in wanted do
+                    if not (kept.Contains key) then
+                        pFromSymbol.Value <- fromSymbol
+                        pToSymbol.Value <- toSymbol
+                        pInsKind.Value <- depKind
+                        pSource.Value <- source
+                        insCmd.ExecuteNonQuery() |> ignore
 
-            use insCmd = conn.CreateCommand()
-            insCmd.Transaction <- txn
-
-            insCmd.CommandText <-
-                """
-                INSERT OR IGNORE INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source, source_file_id)
-                SELECT f.id, t.id, @depKind, @source, @ownerId
-                FROM symbols f, symbols t
-                WHERE f.full_name = @fromSymbol AND t.full_name = @toSymbol
-                """
-
-            let pFromSymbol = insCmd.Parameters.Add("@fromSymbol", SqliteType.Text)
-            let pToSymbol = insCmd.Parameters.Add("@toSymbol", SqliteType.Text)
-            let pInsKind = insCmd.Parameters.Add("@depKind", SqliteType.Text)
-            let pSource = insCmd.Parameters.Add("@source", SqliteType.Text)
-            insCmd.Parameters.AddWithValue("@ownerId", ownerId) |> ignore
-
-            for (fromSymbol, toSymbol, depKind, source) as key in wanted do
-                if not (kept.Contains key) then
-                    pFromSymbol.Value <- fromSymbol
-                    pToSymbol.Value <- toSymbol
-                    pInsKind.Value <- depKind
-                    pSource.Value <- source
-                    insCmd.ExecuteNonQuery() |> ignore
-
-            txn.Commit()
-        with ex ->
-            txn.Rollback()
-            raise ex
+                txn.Commit()
+            with ex ->
+                txn.Rollback()
+                raise ex)
 
     /// Find test methods transitively depending on the given changed symbol names,
     /// ignoring `[<TestPrune.CompositionRoot>]` markers. `QueryAffectedTests` uses it for
@@ -1574,41 +1627,45 @@ type Database(dbPath: string, policy: Domain.WalkPolicy) =
 
     /// Persist a fail-closed marker when an index attempt cannot produce a complete graph.
     member internal _.MarkIndexIncomplete() : string =
-        let token = Guid.NewGuid().ToString("N")
-        use conn = openConnection dbPath
-        use cmd = conn.CreateCommand()
+        writing (fun () ->
+            let token = Guid.NewGuid().ToString("N")
+            use conn = openConnection dbPath
+            use cmd = conn.CreateCommand()
 
-        cmd.CommandText <- "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('index_incomplete', @value)"
+            cmd.CommandText <- "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('index_incomplete', @value)"
 
-        cmd.Parameters.AddWithValue("@value", token) |> ignore
+            cmd.Parameters.AddWithValue("@value", token) |> ignore
 
-        cmd.ExecuteNonQuery() |> ignore
-        token
+            cmd.ExecuteNonQuery() |> ignore
+            token)
 
     /// Complete an index attempt only while it still owns the durable marker. A newer
     /// concurrent attempt supersedes an older one, whose success must not make selection
     /// trust a graph that the newer attempt may still be mutating.
     member internal _.CompleteIndex(token: string) : bool =
-        use conn = openConnection dbPath
-        use transaction = conn.BeginTransaction()
-        use cmd = conn.CreateCommand()
-        cmd.Transaction <- transaction
+        writing (fun () ->
+            use conn = openConnection dbPath
+            use transaction = conn.BeginTransaction()
+            use cmd = conn.CreateCommand()
+            cmd.Transaction <- transaction
 
-        cmd.CommandText <- "DELETE FROM index_metadata WHERE key = 'index_incomplete' AND value = @token"
+            cmd.CommandText <- "DELETE FROM index_metadata WHERE key = 'index_incomplete' AND value = @token"
 
-        cmd.Parameters.AddWithValue("@token", token) |> ignore
-        let ownsAttempt = cmd.ExecuteNonQuery() = 1
+            cmd.Parameters.AddWithValue("@token", token) |> ignore
+            let ownsAttempt = cmd.ExecuteNonQuery() = 1
 
-        if ownsAttempt then
-            cmd.Parameters.Clear()
-            cmd.CommandText <- "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('index_completed', @value)"
+            if ownsAttempt then
+                cmd.Parameters.Clear()
 
-            cmd.Parameters.AddWithValue("@value", token) |> ignore
+                cmd.CommandText <-
+                    "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('index_completed', @value)"
 
-            cmd.ExecuteNonQuery() |> ignore
+                cmd.Parameters.AddWithValue("@value", token) |> ignore
 
-        transaction.Commit()
-        ownsAttempt
+                cmd.ExecuteNonQuery() |> ignore
+
+            transaction.Commit()
+            ownsAttempt)
 
     /// Whether the last index attempt failed before producing a complete graph.
     member internal this.IsIndexIncomplete() : bool =
@@ -1711,17 +1768,18 @@ type Database(dbPath: string, policy: Domain.WalkPolicy) =
 
     /// Insert an audit event into the analysis_events table.
     member _.InsertEvent(runId: string, timestamp: string, eventType: string, eventData: string) =
-        use conn = openConnection dbPath
-        use cmd = conn.CreateCommand()
+        writing (fun () ->
+            use conn = openConnection dbPath
+            use cmd = conn.CreateCommand()
 
-        cmd.CommandText <-
-            "INSERT INTO analysis_events (run_id, timestamp, event_type, event_data) VALUES (@runId, @ts, @type, @data)"
+            cmd.CommandText <-
+                "INSERT INTO analysis_events (run_id, timestamp, event_type, event_data) VALUES (@runId, @ts, @type, @data)"
 
-        cmd.Parameters.AddWithValue("@runId", runId) |> ignore
-        cmd.Parameters.AddWithValue("@ts", timestamp) |> ignore
-        cmd.Parameters.AddWithValue("@type", eventType) |> ignore
-        cmd.Parameters.AddWithValue("@data", eventData) |> ignore
-        cmd.ExecuteNonQuery() |> ignore
+            cmd.Parameters.AddWithValue("@runId", runId) |> ignore
+            cmd.Parameters.AddWithValue("@ts", timestamp) |> ignore
+            cmd.Parameters.AddWithValue("@type", eventType) |> ignore
+            cmd.Parameters.AddWithValue("@data", eventData) |> ignore
+            cmd.ExecuteNonQuery() |> ignore)
 
     /// Get all events for a given run ID, ordered by insertion order.
     member _.GetEvents(runId: string) : (string * string * string) list =
@@ -1738,11 +1796,12 @@ type Database(dbPath: string, policy: Domain.WalkPolicy) =
 
     /// Delete all events for a given run ID.
     member _.ClearEvents(runId: string) =
-        use conn = openConnection dbPath
-        use cmd = conn.CreateCommand()
-        cmd.CommandText <- "DELETE FROM analysis_events WHERE run_id = @runId"
-        cmd.Parameters.AddWithValue("@runId", runId) |> ignore
-        cmd.ExecuteNonQuery() |> ignore
+        writing (fun () ->
+            use conn = openConnection dbPath
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "DELETE FROM analysis_events WHERE run_id = @runId"
+            cmd.Parameters.AddWithValue("@runId", runId) |> ignore
+            cmd.ExecuteNonQuery() |> ignore)
 
     /// Get distinct edge sources in the transitive closure reachable from changed symbols.
     member _.QueryEdgeSourcesForTest(changedSymbolNames: string list) : string list =
@@ -1872,24 +1931,25 @@ type Database(dbPath: string, policy: Domain.WalkPolicy) =
     /// partial run can never lower a previously-observed hit count. If no symbol
     /// spans the line it is a no-op (per-file fallback is a later phase).
     member this.RecordCoverage(sourceFile: string, line: int, hits: int) : unit =
-        match this.FindSymbolContainingLine(sourceFile, line) with
-        | None -> ()
-        | Some(symbolId, lineStart) ->
-            use conn = openConnection dbPath
-            use cmd = conn.CreateCommand()
+        writing (fun () ->
+            match this.FindSymbolContainingLine(sourceFile, line) with
+            | None -> ()
+            | Some(symbolId, lineStart) ->
+                use conn = openConnection dbPath
+                use cmd = conn.CreateCommand()
 
-            cmd.CommandText <-
-                """
-                INSERT INTO coverage_points (occurrence_id, line_offset, kind, hits)
-                VALUES (@s, @o, 'line', @h)
-                ON CONFLICT(occurrence_id, line_offset, kind)
-                DO UPDATE SET hits = MAX(hits, excluded.hits)
-                """
+                cmd.CommandText <-
+                    """
+                    INSERT INTO coverage_points (occurrence_id, line_offset, kind, hits)
+                    VALUES (@s, @o, 'line', @h)
+                    ON CONFLICT(occurrence_id, line_offset, kind)
+                    DO UPDATE SET hits = MAX(hits, excluded.hits)
+                    """
 
-            cmd.Parameters.AddWithValue("@s", symbolId) |> ignore
-            cmd.Parameters.AddWithValue("@o", line - lineStart) |> ignore
-            cmd.Parameters.AddWithValue("@h", hits) |> ignore
-            cmd.ExecuteNonQuery() |> ignore
+                cmd.Parameters.AddWithValue("@s", symbolId) |> ignore
+                cmd.Parameters.AddWithValue("@o", line - lineStart) |> ignore
+                cmd.Parameters.AddWithValue("@h", hits) |> ignore
+                cmd.ExecuteNonQuery() |> ignore)
 
     /// Ingest many `(sourceFile, line, hits)` rows in ONE connection + transaction,
     /// reusing a single lookup command and a single upsert command across every row.
@@ -1899,155 +1959,160 @@ type Database(dbPath: string, policy: Domain.WalkPolicy) =
     /// nearest preceding declaration and is max-merged symbol-relative; a line with no
     /// preceding symbol is skipped. Returns `(ingested, skipped)`.
     member _.RecordCoverageBatch(rows: (string * int * int) seq) : int * int =
-        use conn = openConnection dbPath
-        use txn = conn.BeginTransaction()
+        writing (fun () ->
+            use conn = openConnection dbPath
+            use txn = conn.BeginTransaction()
 
-        use findCmd = conn.CreateCommand()
-        findCmd.Transaction <- txn
+            use findCmd = conn.CreateCommand()
+            findCmd.Transaction <- txn
 
-        findCmd.CommandText <-
-            """
-            SELECT id, line_start FROM symbol_occurrences
-            WHERE source_file = @f AND line_start <= @l
-            ORDER BY line_start DESC
-            LIMIT 1
-            """
+            findCmd.CommandText <-
+                """
+                SELECT id, line_start FROM symbol_occurrences
+                WHERE source_file = @f AND line_start <= @l
+                ORDER BY line_start DESC
+                LIMIT 1
+                """
 
-        let pFindFile = findCmd.Parameters.Add("@f", SqliteType.Text)
-        let pFindLine = findCmd.Parameters.Add("@l", SqliteType.Integer)
+            let pFindFile = findCmd.Parameters.Add("@f", SqliteType.Text)
+            let pFindLine = findCmd.Parameters.Add("@l", SqliteType.Integer)
 
-        use insCmd = conn.CreateCommand()
-        insCmd.Transaction <- txn
+            use insCmd = conn.CreateCommand()
+            insCmd.Transaction <- txn
 
-        insCmd.CommandText <-
-            """
-            INSERT INTO coverage_points (occurrence_id, line_offset, kind, hits)
-            VALUES (@s, @o, 'line', @h)
-            ON CONFLICT(occurrence_id, line_offset, kind)
-            DO UPDATE SET hits = MAX(hits, excluded.hits)
-            """
+            insCmd.CommandText <-
+                """
+                INSERT INTO coverage_points (occurrence_id, line_offset, kind, hits)
+                VALUES (@s, @o, 'line', @h)
+                ON CONFLICT(occurrence_id, line_offset, kind)
+                DO UPDATE SET hits = MAX(hits, excluded.hits)
+                """
 
-        let pInsSym = insCmd.Parameters.Add("@s", SqliteType.Integer)
-        let pInsOff = insCmd.Parameters.Add("@o", SqliteType.Integer)
-        let pInsHits = insCmd.Parameters.Add("@h", SqliteType.Integer)
+            let pInsSym = insCmd.Parameters.Add("@s", SqliteType.Integer)
+            let pInsOff = insCmd.Parameters.Add("@o", SqliteType.Integer)
+            let pInsHits = insCmd.Parameters.Add("@h", SqliteType.Integer)
 
-        let mutable ingested = 0
-        let mutable skipped = 0
+            let mutable ingested = 0
+            let mutable skipped = 0
 
-        for (sourceFile, line, hits) in rows do
-            pFindFile.Value <- sourceFile
-            pFindLine.Value <- line
+            for (sourceFile, line, hits) in rows do
+                pFindFile.Value <- sourceFile
+                pFindLine.Value <- line
 
-            let resolved =
-                use reader = findCmd.ExecuteReader()
+                let resolved =
+                    use reader = findCmd.ExecuteReader()
 
-                if reader.Read() then
-                    Some(reader.GetInt64(0), reader.GetInt32(1))
-                else
-                    None
+                    if reader.Read() then
+                        Some(reader.GetInt64(0), reader.GetInt32(1))
+                    else
+                        None
 
-            match resolved with
-            | Some(symbolId, lineStart) ->
-                pInsSym.Value <- symbolId
-                pInsOff.Value <- line - lineStart
-                pInsHits.Value <- hits
-                insCmd.ExecuteNonQuery() |> ignore
-                ingested <- ingested + 1
-            | None -> skipped <- skipped + 1
+                match resolved with
+                | Some(symbolId, lineStart) ->
+                    pInsSym.Value <- symbolId
+                    pInsOff.Value <- line - lineStart
+                    pInsHits.Value <- hits
+                    insCmd.ExecuteNonQuery() |> ignore
+                    ingested <- ingested + 1
+                | None -> skipped <- skipped + 1
 
-        txn.Commit()
-        (ingested, skipped)
+            txn.Commit()
+            (ingested, skipped))
 
     /// Durably revoke one test project's runtime evidence before a new complete
     /// receipt is parsed. Deleting both the positive map and its availability
     /// watermark in one transaction makes a crash or parse failure conservative:
     /// reopening the DB cannot resurrect stale evidence as current.
     member _.InvalidateRuntimeCoverage(testProject: string) : unit =
-        use conn = openConnection dbPath
-        use txn = conn.BeginTransaction()
+        writing (fun () ->
+            use conn = openConnection dbPath
+            use txn = conn.BeginTransaction()
 
-        use coverageCmd = conn.CreateCommand()
-        coverageCmd.Transaction <- txn
-        coverageCmd.CommandText <- "DELETE FROM runtime_coverage WHERE test_project = @project"
-        coverageCmd.Parameters.AddWithValue("@project", testProject) |> ignore
-        coverageCmd.ExecuteNonQuery() |> ignore
+            use coverageCmd = conn.CreateCommand()
+            coverageCmd.Transaction <- txn
+            coverageCmd.CommandText <- "DELETE FROM runtime_coverage WHERE test_project = @project"
+            coverageCmd.Parameters.AddWithValue("@project", testProject) |> ignore
+            coverageCmd.ExecuteNonQuery() |> ignore
 
-        use baselineCmd = conn.CreateCommand()
-        baselineCmd.Transaction <- txn
-        baselineCmd.CommandText <- "DELETE FROM runtime_coverage_baselines WHERE test_project = @project"
-        baselineCmd.Parameters.AddWithValue("@project", testProject) |> ignore
-        baselineCmd.ExecuteNonQuery() |> ignore
+            use baselineCmd = conn.CreateCommand()
+            baselineCmd.Transaction <- txn
+            baselineCmd.CommandText <- "DELETE FROM runtime_coverage_baselines WHERE test_project = @project"
+            baselineCmd.Parameters.AddWithValue("@project", testProject) |> ignore
+            baselineCmd.ExecuteNonQuery() |> ignore
 
-        txn.Commit()
+            txn.Commit())
 
     /// Replace one test project's runtime file map with a complete, successful
     /// coverage baseline. Absence is meaningful only for a full run, so replacement
     /// and its baseline watermark commit in one transaction.
     member _.ReplaceRuntimeCoverage(testProject: string, runId: string, sourceFiles: string seq) : unit =
-        use conn = openConnection dbPath
-        use txn = conn.BeginTransaction()
+        writing (fun () ->
+            use conn = openConnection dbPath
+            use txn = conn.BeginTransaction()
 
-        use deleteCmd = conn.CreateCommand()
-        deleteCmd.Transaction <- txn
-        deleteCmd.CommandText <- "DELETE FROM runtime_coverage WHERE test_project = @project"
-        deleteCmd.Parameters.AddWithValue("@project", testProject) |> ignore
-        deleteCmd.ExecuteNonQuery() |> ignore
+            use deleteCmd = conn.CreateCommand()
+            deleteCmd.Transaction <- txn
+            deleteCmd.CommandText <- "DELETE FROM runtime_coverage WHERE test_project = @project"
+            deleteCmd.Parameters.AddWithValue("@project", testProject) |> ignore
+            deleteCmd.ExecuteNonQuery() |> ignore
 
-        use insertCmd = conn.CreateCommand()
-        insertCmd.Transaction <- txn
+            use insertCmd = conn.CreateCommand()
+            insertCmd.Transaction <- txn
 
-        insertCmd.CommandText <-
-            "INSERT OR IGNORE INTO runtime_coverage (test_project, source_file) VALUES (@project, @file)"
+            insertCmd.CommandText <-
+                "INSERT OR IGNORE INTO runtime_coverage (test_project, source_file) VALUES (@project, @file)"
 
-        let projectParameter = insertCmd.Parameters.Add("@project", SqliteType.Text)
-        let fileParameter = insertCmd.Parameters.Add("@file", SqliteType.Text)
+            let projectParameter = insertCmd.Parameters.Add("@project", SqliteType.Text)
+            let fileParameter = insertCmd.Parameters.Add("@file", SqliteType.Text)
 
-        for sourceFile in sourceFiles |> Seq.distinct do
-            projectParameter.Value <- testProject
-            fileParameter.Value <- sourceFile
-            insertCmd.ExecuteNonQuery() |> ignore
+            for sourceFile in sourceFiles |> Seq.distinct do
+                projectParameter.Value <- testProject
+                fileParameter.Value <- sourceFile
+                insertCmd.ExecuteNonQuery() |> ignore
 
-        use baselineCmd = conn.CreateCommand()
-        baselineCmd.Transaction <- txn
+            use baselineCmd = conn.CreateCommand()
+            baselineCmd.Transaction <- txn
 
-        baselineCmd.CommandText <-
-            """
-            INSERT INTO runtime_coverage_baselines (test_project, run_id, observed_at)
-            VALUES (@project, @run, @observedAt)
-            ON CONFLICT(test_project) DO UPDATE SET
-                run_id = excluded.run_id,
-                observed_at = excluded.observed_at
-            """
+            baselineCmd.CommandText <-
+                """
+                INSERT INTO runtime_coverage_baselines (test_project, run_id, observed_at)
+                VALUES (@project, @run, @observedAt)
+                ON CONFLICT(test_project) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    observed_at = excluded.observed_at
+                """
 
-        baselineCmd.Parameters.AddWithValue("@project", testProject) |> ignore
-        baselineCmd.Parameters.AddWithValue("@run", runId) |> ignore
+            baselineCmd.Parameters.AddWithValue("@project", testProject) |> ignore
+            baselineCmd.Parameters.AddWithValue("@run", runId) |> ignore
 
-        baselineCmd.Parameters.AddWithValue("@observedAt", DateTimeOffset.UtcNow.ToString("O"))
-        |> ignore
+            baselineCmd.Parameters.AddWithValue("@observedAt", DateTimeOffset.UtcNow.ToString("O"))
+            |> ignore
 
-        baselineCmd.ExecuteNonQuery() |> ignore
-        txn.Commit()
+            baselineCmd.ExecuteNonQuery() |> ignore
+            txn.Commit())
 
     /// Add positive runtime observations from an impact-filtered run. A partial run
     /// cannot prove a file is no longer covered, so it never deletes rows or advances
     /// the complete-baseline watermark.
     member _.MergeRuntimeCoverage(testProject: string, sourceFiles: string seq) : unit =
-        use conn = openConnection dbPath
-        use txn = conn.BeginTransaction()
-        use cmd = conn.CreateCommand()
-        cmd.Transaction <- txn
+        writing (fun () ->
+            use conn = openConnection dbPath
+            use txn = conn.BeginTransaction()
+            use cmd = conn.CreateCommand()
+            cmd.Transaction <- txn
 
-        cmd.CommandText <- "INSERT OR IGNORE INTO runtime_coverage (test_project, source_file) VALUES (@project, @file)"
+            cmd.CommandText <-
+                "INSERT OR IGNORE INTO runtime_coverage (test_project, source_file) VALUES (@project, @file)"
 
-        let projectParameter = cmd.Parameters.Add("@project", SqliteType.Text)
-        let fileParameter = cmd.Parameters.Add("@file", SqliteType.Text)
+            let projectParameter = cmd.Parameters.Add("@project", SqliteType.Text)
+            let fileParameter = cmd.Parameters.Add("@file", SqliteType.Text)
 
-        for sourceFile in sourceFiles |> Seq.distinct do
-            projectParameter.Value <- testProject
-            fileParameter.Value <- sourceFile
-            cmd.ExecuteNonQuery() |> ignore
+            for sourceFile in sourceFiles |> Seq.distinct do
+                projectParameter.Value <- testProject
+                fileParameter.Value <- sourceFile
+                cmd.ExecuteNonQuery() |> ignore
 
-        txn.Commit()
+            txn.Commit())
 
     /// Test projects with positive runtime observations for any changed file.
     member _.GetRuntimeCoverageProjects(sourceFiles: string list) : string list =

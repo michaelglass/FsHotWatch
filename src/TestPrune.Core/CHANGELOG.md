@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: the SQLite busy timeout is explicit and named. `Database.BusyTimeout` (30 s, the
+  value Microsoft.Data.Sqlite applied implicitly before) is set on every connection
+  `Database` and `openPluginConnection` open, and a write that waits it out on a lock another
+  connection holds raises `DatabaseBusyException` naming the database and the bound. Before,
+  it failed with SQLite's bare "database is locked", which names neither. The new exception
+  is a `SqliteException` carrying the same error codes, so code that catches a lock by
+  `SqliteErrorCode` (5 or 6) still catches it.
+
 ## 13.4.1 - 2026-10-25
 
 - build: FSharp.Compiler.Service is pinned exactly at 43.12.402 (it floated at `43.*`; 13.4.0 shipped with a floor of 43.12.401), matching the FCS fshotwatch.cli ships.

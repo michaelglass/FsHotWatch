@@ -2838,3 +2838,73 @@ module ``GetProjectKey reserved lookup keys`` =
 
             test <@ db.CompleteIndex token @>
             test <@ db.GetProjectKey IndexGenerationLookupKey = Some token @>)
+
+/// SQLite fails a statement with `SQLITE_BUSY` once another connection has held the lock for
+/// the connection's busy timeout. That bound is set explicitly and named (`BusyTimeout`), and a
+/// write that runs out of it says so, naming the database and the bound, instead of SQLite's
+/// bare "database is locked".
+module ``Busy timeout`` =
+
+    let private oneFile =
+        { Symbols =
+            [ { FullName = "Lib.value"
+                Kind = Value
+                SourceFile = "src/Lib.fs"
+                LineStart = 1
+                LineEnd = 1
+                ContentHash = "h"
+                IsExtern = false } ]
+          Dependencies = []
+          TestMethods = []
+          Attributes = []
+          ParentLinks = []
+          Diagnostics = AnalysisDiagnostics.Zero }
+
+    [<Fact>]
+    let ``every connection the database opens carries the named busy timeout`` () =
+        withDbPath (fun path db ->
+            test <@ BusyTimeout = TimeSpan.FromSeconds 30.0 @>
+
+            use conn = db.OpenConnection()
+            test <@ conn.DefaultTimeout = int BusyTimeout.TotalSeconds @>
+
+            use plugin = openPluginConnection path
+            test <@ plugin.DefaultTimeout = int BusyTimeout.TotalSeconds @>
+
+            // Set on the connection, not in its string: the pool key callers clear is unchanged.
+            test <@ conn.ConnectionString = $"Data Source=%s{path}" @>)
+
+    [<Fact>]
+    let ``a write blocked by another connection's BEGIN IMMEDIATE fails at the bound, naming it`` () =
+        withDbPath (fun path _ ->
+            let bound = TimeSpan.FromSeconds 1.0
+            let db = Database(path, TestPrune.Domain.WalkPolicy.FollowAll, bound)
+
+            use holder = openRawConnection path
+            let hold = holder.BeginTransaction(deferred = false)
+
+            let clock = Diagnostics.Stopwatch.StartNew()
+
+            let refused =
+                Assert.Throws<DatabaseBusyException>(fun () -> db.RebuildProjects [ oneFile ])
+
+            clock.Stop()
+
+            // It waited out the bound, and gave up long before the 30s library default.
+            test <@ clock.Elapsed >= bound @>
+            test <@ clock.Elapsed < TimeSpan.FromSeconds 20.0 @>
+
+            test <@ refused.DbPath = path @>
+            test <@ refused.BusyTimeout = bound @>
+            test <@ refused.Message.Contains path @>
+            test <@ refused.Message.Contains "1s busy timeout" @>
+
+            // Still the SQLite busy error, so a caller matching on the code keeps matching.
+            test <@ refused.SqliteErrorCode = 5 @>
+            test <@ refused.Message.Contains "database is locked" @>
+
+            // Positive control: the lock was the only obstacle. Released, the same write lands.
+            hold.Rollback()
+            hold.Dispose()
+            db.RebuildProjects [ oneFile ]
+            test <@ (db.GetSymbolsInFile "src/Lib.fs").Length = 1 @>)
