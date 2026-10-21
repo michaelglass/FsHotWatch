@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **feat!: agent mode can be set in `.fshw.json`.** `"agent": true` renders every command
+  for an agent, as `--agent` does, with no flag and no env var, so it reaches callers
+  that never exported `FS_HOT_WATCH_AGENT`. A new `--no-agent` flag (env
+  `FS_HOT_WATCH_NO_AGENT`) opts back out. Precedence: flag > env var > config > off; an
+  explicit `--compact` also beats the config. A value other than `true` / `false` /
+  `null` is a config error. Breaking: `GlobalOptions.AgentMode` is now `bool option`
+  (`None` = no explicit choice), and `DaemonConfiguration` has a new field, `AgentMode`.
+
 ## 0.14.0-alpha.122 - 2026-10-19
 
 - **feat!: the verdict file's `scope` records `selectedBy`**, which cause selected each

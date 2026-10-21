@@ -129,7 +129,8 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
       BeforeRun = None
       AfterRun = None
       RunHookTimeoutSec = None
-      RunHookCommands = DefaultRunHookCommands }
+      RunHookCommands = DefaultRunHookCommands
+      AgentMode = false }
 
 /// Serialize a DaemonConfiguration to a pretty-printed JSON string.
 let serializeConfig (config: DaemonConfiguration) : string =

@@ -454,6 +454,12 @@ type DaemonConfiguration =
         /// it is warned about at load, because silently un-gating is the dangerous
         /// direction.
         RunHookCommands: Set<RunHookCommand>
+        /// Agent mode, from the top-level `agent` key: `true` renders every command's
+        /// output for an agent, as `--agent` does, without anyone passing the flag.
+        /// Absent / `false` / `null` → `false`. Precedence, resolved in the CLI
+        /// (`Program.resolveAgentMode`): `--agent` / `--no-agent` > their env vars
+        /// (`FS_HOT_WATCH_AGENT` / `FS_HOT_WATCH_NO_AGENT`) > this key > off.
+        AgentMode: bool
     }
 
 let private defaultConfigFor (repoRoot: string) =
@@ -483,7 +489,8 @@ let private defaultConfigFor (repoRoot: string) =
       BeforeRun = None
       AfterRun = None
       RunHookTimeoutSec = None
-      RunHookCommands = DefaultRunHookCommands }
+      RunHookCommands = DefaultRunHookCommands
+      AgentMode = false }
 
 /// Raised when `.fshw.json` cannot be read, parsed, or validated.
 /// Carries a user-facing message.
@@ -508,6 +515,32 @@ let private refuseUnknown (key: string) (bad: string) (accepted: string list) : 
 
 /// JSON string literals, for `refuseUnknown`'s accepted list.
 let private jsonStrings (values: string list) = values |> List.map (sprintf "\"%s\"")
+
+/// The top-level `agent` key of a parsed `.fshw.json`: `true` → on; `false` or `null`
+/// → off; absent → `fallback`. Any other value, a string `"true"` included, is refused:
+/// a mistyped mode must fail the load, not quietly render for the wrong reader.
+let private parseAgentMode (root: JsonElement) (fallback: bool) : bool =
+    match root.TryGetProperty "agent" with
+    | false, _ -> fallback
+    | true, v when v.ValueKind = JsonValueKind.True -> true
+    | true, v when v.ValueKind = JsonValueKind.False || v.ValueKind = JsonValueKind.Null -> false
+    | true, v -> refuseUnknown "agent" (describeValue v) [ "true"; "false" ]
+
+/// Whether `.fshw.json`'s text sets `"agent": true`, for a command that renders without
+/// loading the configuration (a root-level plugin passthrough). Empty, malformed or
+/// invalid text reads as `false`: the next command that loads the configuration
+/// refuses it with the full message.
+let agentConfigured (configText: string) : bool =
+    if String.IsNullOrWhiteSpace configText then
+        false
+    else
+        try
+            use doc = JsonDocument.Parse configText
+
+            doc.RootElement.ValueKind = JsonValueKind.Object
+            && parseAgentMode doc.RootElement false
+        with _ ->
+            false
 
 /// A `weaveTests` value at `key`: `"sites"` or `"full"` (case-insensitive), else refused.
 let private parseWeaveTests (key: string) (v: JsonElement) =
@@ -1470,6 +1503,9 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             if n > 0 then Some n else None
         | _ -> None
 
+    // `agent`: render for an agent without the flag. See `parseAgentMode`.
+    let agentMode = parseAgentMode root defaults.AgentMode
+
     // `runHookCommands`: which verbs the run-level hooks bracket. An unknown verb or a
     // wrong shape is a `ConfigErrorException`: dropping a typo used to un-bracket the verb it was
     // meant to name, silently but for a warning. Only an explicitly empty array can
@@ -1536,7 +1572,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       BeforeRun = beforeRun
       AfterRun = afterRun
       RunHookTimeoutSec = runHookTimeoutSec
-      RunHookCommands = runHookCommands }
+      RunHookCommands = runHookCommands
+      AgentMode = agentMode }
 
 /// WHERE THE DAEMON LOG IS — one answer, taken from the configuration.
 ///

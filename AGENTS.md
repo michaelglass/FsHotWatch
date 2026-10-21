@@ -11,6 +11,7 @@ wait ~500ms before querying.
 ## Global flags
 
 - `-a` / `--agent` — parseable, no ANSI, `name: state [summary="..."]` per plugin, with a `next:` hint. Use this.
+  A repo whose `.fshw.json` sets `"agent": true` gets it with no flag; `--no-agent` opts back out.
 - `-q` / `--compact` — terse human output
 - `--verbose` — full output
 

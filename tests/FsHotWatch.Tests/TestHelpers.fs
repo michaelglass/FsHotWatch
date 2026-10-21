@@ -585,7 +585,8 @@ let defaultTestConfig () : FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
       BeforeRun = None
       AfterRun = None
       RunHookTimeoutSec = None
-      RunHookCommands = FsHotWatch.Cli.DaemonConfig.DefaultRunHookCommands }
+      RunHookCommands = FsHotWatch.Cli.DaemonConfig.DefaultRunHookCommands
+      AgentMode = false }
 
 let errorEntry msg (sev: FsHotWatch.ErrorLedger.DiagnosticSeverity) : FsHotWatch.ErrorLedger.ErrorEntry =
     { Message = msg

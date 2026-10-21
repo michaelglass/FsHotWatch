@@ -74,6 +74,16 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### cli: agent mode can be set in `.fshw.json`
+
+- `"agent": true` in `.fshw.json` renders every command for an agent, as `--agent` does,
+  with no flag and no env var. An env var applies only where it was exported, so callers
+  started from another shell, directory or parent process got the human output; the key
+  travels with the repository. `--no-agent` (env `FS_HOT_WATCH_NO_AGENT`) opts back out.
+  Precedence is flag > env var > config > off, and an explicit `--compact` also beats the
+  config. A value other than `true` / `false` / `null` fails the config load. Tests pin
+  each precedence step, and a run with the key set, no flag and both env vars absent.
+
 ### rules, tests, test-prune: no recursive directory walk may follow a symlink (FSHW-WALK-001)
 
 - A new house rule, **FSHW-WALK-001**, fails the check on `SearchOption.AllDirectories`,

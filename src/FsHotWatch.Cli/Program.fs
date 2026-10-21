@@ -308,6 +308,7 @@ type GlobalFlag =
     | [<CmdFlag(Description = "Treat warnings as non-fatal (errors still fail)")>] NoWarnFail
     | [<CmdFlag(Short = "q", Description = "Compact one-line-per-plugin output")>] Compact
     | [<CmdFlag(Short = "a", Description = "Agent-friendly parseable output with next-step hint")>] Agent
+    | [<CmdFlag(Description = "Human output even where .fshw.json sets \"agent\": true")>] NoAgent
 
 let globalSpec =
     CommandReflection.fromUnionWithGlobalsAndEnv<Command, GlobalFlag>
@@ -1871,7 +1872,11 @@ type GlobalOptions =
     {
         NoCache: bool
         NoWarnFail: bool
-        AgentMode: bool
+        /// The agent-mode choice made on the command line (`--agent` / `--no-agent`) or
+        /// by their env vars (`FS_HOT_WATCH_AGENT` / `FS_HOT_WATCH_NO_AGENT`). `None`
+        /// when neither said anything: `.fshw.json`'s `agent` key then decides. See
+        /// `resolveAgentMode`.
+        AgentMode: bool option
         CompactMode: bool
         /// Global `-v/--verbose` was set. Drives debug logging AND `dead-code`'s
         /// "why is this unreachable" reasons (the standalone test-prune CLI spells
@@ -1883,10 +1888,24 @@ type GlobalOptions =
 let defaultGlobalOptions =
     { NoCache = false
       NoWarnFail = false
-      AgentMode = false
+      AgentMode = None
       CompactMode = false
       Verbose = false
       DaemonExtraArgs = "" }
+
+/// Whether a command renders for an agent. Precedence: an explicit choice (`--agent` /
+/// `--no-agent`, or their env vars — `GlobalOptions.AgentMode`) > the configuration's
+/// `agent` key > off. An explicit `--compact` asks for a human render, so it also beats
+/// the configured agent mode; an explicit `--agent` still beats `--compact`.
+let internal resolveAgentMode (explicitAgent: bool option) (compactMode: bool) (configured: bool) : bool =
+    match explicitAgent with
+    | Some explicitChoice -> explicitChoice
+    | None -> configured && not compactMode
+
+/// The render mode for `opts` on a repository whose configuration sets the `agent` key
+/// to `configuredAgent`.
+let internal renderModeFor (opts: GlobalOptions) (configuredAgent: bool) : ProgressRenderer.RenderMode =
+    pickMode (resolveAgentMode opts.AgentMode opts.CompactMode configuredAgent) opts.CompactMode
 
 /// Delete a file, swallowing any exception: in a bulk cleanup loop one bad item
 /// shouldn't halt the rest. The exception class is logged at debug so failures are
@@ -3191,7 +3210,7 @@ let internal executeCommandWatchingConfig
     (config: DaemonConfiguration)
     (startupTimeoutSeconds: float)
     : int =
-    let mode = pickMode opts.AgentMode opts.CompactMode
+    let mode = renderModeFor opts config.AgentMode
     let noWarnFail = opts.NoWarnFail
 
     // State-dir hygiene BEFORE any daemon decision:
@@ -4061,7 +4080,9 @@ let executePluginCommand
     (cmd: string)
     (argsStr: string)
     : PluginCommandOutcome =
-    let mode = pickMode opts.AgentMode opts.CompactMode
+    // The passthrough loads no configuration: its caller folds the `agent` key into
+    // `opts.AgentMode` before forwarding.
+    let mode = renderModeFor opts false
 
     try
         let result = ipc.RunCommand pipeName cmd argsStr |> Async.RunSynchronously
@@ -4126,8 +4147,17 @@ let applyGlobalFlags (globals: GlobalFlag list) : GlobalOptions =
             opts, $"--log-level %s{level}" :: parts
         | NoCache -> { opts with NoCache = true }, "--no-cache" :: parts
         | NoWarnFail -> { opts with NoWarnFail = true }, parts
-        // --agent and --compact are client-side render selectors; don't forward to the daemon.
-        | Agent -> { opts with AgentMode = true }, parts
+        // --agent / --no-agent and --compact are client-side render selectors; don't
+        // forward them to the daemon. The FIRST agent choice wins: CommandTree lists
+        // command-line flags before the env-derived ones, so a flag beats an env var.
+        | Agent ->
+            { opts with
+                AgentMode = Some(defaultArg opts.AgentMode true) },
+            parts
+        | NoAgent ->
+            { opts with
+                AgentMode = Some(defaultArg opts.AgentMode false) },
+            parts
         | Compact -> { opts with CompactMode = true }, parts
 
     let opts, parts = globals |> List.fold folder (defaultGlobalOptions, [])
@@ -4400,10 +4430,30 @@ let private runCli (args: string array) : int =
             | RootUnknownCommand(input, rest, err) ->
                 let argsStr = rest |> String.concat " "
 
+                let compact = argList |> List.exists (fun a -> a = "--compact" || a = "-q")
+
+                let explicitAgent =
+                    argList
+                    |> List.tryPick (fun a ->
+                        match a with
+                        | "--agent"
+                        | "-a" -> Some true
+                        | "--no-agent" -> Some false
+                        | _ -> None)
+
+                // No configuration is loaded on this path, so the `agent` key is read
+                // from the file's text directly; an unreadable file reads as unset.
+                let configText =
+                    try
+                        File.ReadAllText(Path.Combine(repoRoot, ".fshw.json"))
+                    with _ ->
+                        ""
+
                 let opts =
                     { defaultGlobalOptions with
-                        AgentMode = argList |> List.exists (fun a -> a = "--agent" || a = "-a")
-                        CompactMode = argList |> List.exists (fun a -> a = "--compact" || a = "-q") }
+                        AgentMode =
+                            Some(resolveAgentMode explicitAgent compact (DaemonConfig.agentConfigured configText))
+                        CompactMode = compact }
 
                 let ipc =
                     passthroughIpc (
