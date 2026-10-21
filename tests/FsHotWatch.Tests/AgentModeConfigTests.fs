@@ -166,8 +166,7 @@ let ``--no-agent parses as a global flag and opts out of the config`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``a command-line flag beats the env var`` () =
-    withAgentEnv (Some "1") None (fun () ->
-        test <@ (optionsFor [| "--no-agent"; "check" |]).AgentMode = Some false @>)
+    withAgentEnv (Some "1") None (fun () -> test <@ (optionsFor [| "--no-agent"; "check" |]).AgentMode = Some false @>)
 
     withAgentEnv None (Some "1") (fun () -> test <@ (optionsFor [| "--agent"; "check" |]).AgentMode = Some true @>)
 

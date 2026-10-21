@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **feat!: agent mode is machine-only.** In agent mode, `check`, `confirm`, `verdict`,
+  `status`, `scan`, `format`, `rerun`, `test-rerun`, `stop`, `invalidate`, `config` and
+  `coverage` print one compact JSON line on stdout and nothing on stderr. The line is the
+  agent envelope, `fshw-agent-v1` (`AgentEnvelope`): command, exit, outcome, scope and
+  reasons. The human output goes to `.fshw/agent-output.log`, which the envelope names.
+  `verdict --agent` used to print the full verdict JSON, symbol lists included, and then
+  the human block on stderr as well. A filtered green carries a `caveat`. A failing exit
+  that no verdict of this run explains takes its reasons from the transcript's tail.
+  Breaking: agent-mode output changed shape, and the scripts that parsed the old
+  `name: state` lines or `next:` hint must read the envelope (`status` keeps those lines
+  in `lines`). `ScanHeartbeat.emitLine` is now a function, so it writes to the stderr of
+  the moment it prints.
+
 - **feat!: agent mode can be set in `.fshw.json`.** `"agent": true` renders every command
   for an agent, as `--agent` does, with no flag and no env var, so it reaches callers
   that never exported `FS_HOT_WATCH_AGENT`. A new `--no-agent` flag (env

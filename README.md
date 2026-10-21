@@ -170,6 +170,32 @@ README](src/FsHotWatch.Cli/README.md#machine-readable-state-for-agents-and-ci),
 [ADR-021](docs/adr-021-a-green-is-relative-to-a-full-suite-baseline.md) (a green names
 the full-suite run the tests it skipped were last executed in).
 
+### Agent mode — one line out, nothing on stderr
+
+With `--agent`, `FS_HOT_WATCH_AGENT=1` or `"agent": true` in `.fshw.json`, `check`,
+`confirm`, `verdict`, `status`, `scan`, `format`, `rerun`, `test-rerun`, `stop`,
+`invalidate`, `config` and `coverage` print **one compact JSON line** on stdout and
+**nothing on stderr**. What they would have shown a person is written to
+`.fshw/agent-output.log`, and the line names that file. `start`, `init`, `dead-code`
+and `completions` are not affected.
+
+```json
+{"fshw":"fshw-agent-v1","command":"check","exit":1,"outcome":"red",
+ "scope":{"kind":"filtered","ran":1,"total":6},
+ "reasons":["lint: fail — 1 error","lint src/A.fs: unused open"],
+ "verdict":".fshw/verdict.json","output":".fshw/agent-output.log"}
+```
+
+(Shown wrapped; the real envelope is one line.) `outcome` is the verdict's (`green`
+`red` `incomplete` `model-unavailable` `stale` `in-flight` `no-verdict`). It falls back
+to the exit code's meaning when no verdict of this run is on disk. A green from an
+impact-filtered run carries a `caveat` saying how many test projects ran. `reasons` lists
+the failing plugins and red causes, at most `MaxRedCauses`. The count of the rest is in
+`reasonsOmitted`. A failing exit that no verdict explains takes its reasons from the last
+lines of the transcript, marked `"reasonsFrom":"output"`. Verbs that answer with no
+verdict carry their own cleaned output in `lines`, at most 40. The full contract is in
+`src/FsHotWatch.Cli/AgentEnvelope.fs`. `--no-agent` gives the human output back.
+
 ### `.fshw/heartbeat` — is this daemon still *working*?
 
 `.fshw/daemon.pid` answers "is a daemon resident?", which is the wrong question: a

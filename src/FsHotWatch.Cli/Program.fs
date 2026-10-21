@@ -319,6 +319,62 @@ let commandTree = globalSpec.Tree
 
 let cliName = "fshw"
 
+/// How a verb behaves in agent mode (see `AgentEnvelope`).
+[<RequireQualifiedAccess>]
+type AgentGate =
+    /// `check` / `confirm`: run with the human output sent to the transcript, then
+    /// report the verdict on disk, when it is this run's answer.
+    | VerdictAfterRun
+    /// `verdict`: read the report and print the envelope. Nothing is rendered.
+    | VerdictRead
+    /// The verb's own output, cleaned, is its answer.
+    | OwnOutput
+    /// Never gated: `start` (the daemon's own process, whose stderr is its log), and the
+    /// verbs whose output is the product a person or a file asked for.
+    | Ungated
+
+/// The agent gate of `command`. Total, so a new verb is classified by an explicit edit.
+let internal agentGateFor (command: Command) : AgentGate =
+    match command with
+    | Command.Check _
+    | Command.Confirm _ -> AgentGate.VerdictAfterRun
+    | Command.Verdict -> AgentGate.VerdictRead
+    | Command.Stop _
+    | Command.TestRerun _
+    | Command.Format _
+    | Command.Status _
+    | Command.Scan
+    | Command.Invalidate
+    | Command.Rerun _
+    | Command.Config _
+    | Command.Coverage _ -> AgentGate.OwnOutput
+    | Command.Start
+    | Command.Init
+    | Command.DeadCode _
+    | Command.Completions
+    | Command.Host _ -> AgentGate.Ungated
+
+/// The verb as the CLI spells it, for the agent envelope's `command`.
+let internal commandToken (command: Command) : string =
+    match command with
+    | Command.Start -> "start"
+    | Command.Stop _ -> "stop"
+    | Command.Check _ -> "check"
+    | Command.Confirm _ -> "confirm"
+    | Command.Verdict -> "verdict"
+    | Command.TestRerun _ -> "test-rerun"
+    | Command.Format _ -> "format"
+    | Command.Status _ -> "status"
+    | Command.Scan -> "scan"
+    | Command.Invalidate -> "invalidate"
+    | Command.Rerun _ -> "rerun"
+    | Command.Init -> "init"
+    | Command.Config _ -> "config"
+    | Command.Coverage _ -> "coverage"
+    | Command.DeadCode _ -> "dead-code"
+    | Command.Completions -> "completions"
+    | Command.Host _ -> "host"
+
 let private isRunOnce = List.contains RunOnce
 
 let private confirmsRunOnce = List.contains ConfirmFlag.RunOnce
@@ -3194,10 +3250,8 @@ let internal hostSessionLink (host: HostLink) (attachedHere: bool) : DaemonLink 
 let internal configEventStops (currentIdentity: string) (loadedIdentity: string) : bool =
     currentIdentity <> loadedIdentity
 
-/// `executeCommandWith` with the `.fshw.json` watcher a direct `Start` stops on
-/// supplied — so a lifecycle test can fire the config edit itself instead of racing live
-/// FSEvents delivery, which has no latency bound on a loaded machine.
-let internal executeCommandWatchingConfig
+/// `executeCommandWatchingConfig` as a person sees it: every verb's own rendering.
+let private executeCommandRendered
     (watchConfig: string -> (string -> unit) -> IDisposable)
     (link: DaemonLink)
     (loadedConfigIdentity: string)
@@ -3982,6 +4036,74 @@ let internal executeCommandWatchingConfig
             | Error reason ->
                 eprintfn "Could not install fish completions: %s" reason
                 1
+
+/// `executeCommandWith` with the `.fshw.json` watcher a direct `Start` stops on
+/// supplied — so a lifecycle test can fire the config edit itself instead of racing live
+/// FSEvents delivery, which has no latency bound on a loaded machine.
+///
+/// In agent mode a gated verb (`agentGateFor`) prints ONE line, the agent envelope, on
+/// stdout and nothing on stderr; its human output goes to the transcript the envelope
+/// names. See `AgentEnvelope`.
+let internal executeCommandWatchingConfig
+    (watchConfig: string -> (string -> unit) -> IDisposable)
+    (link: DaemonLink)
+    (loadedConfigIdentity: string)
+    (createDaemon: string -> Daemon)
+    (ipc: IpcOps)
+    (repoRoot: string)
+    (pipeName: string)
+    (command: Command)
+    (opts: GlobalOptions)
+    (config: DaemonConfiguration)
+    (startupTimeoutSeconds: float)
+    : int =
+    let rendered () =
+        executeCommandRendered
+            watchConfig
+            link
+            loadedConfigIdentity
+            createDaemon
+            ipc
+            repoRoot
+            pipeName
+            command
+            opts
+            config
+            startupTimeoutSeconds
+
+    let token = commandToken command
+
+    match renderModeFor opts config.AgentMode, agentGateFor command with
+    | ProgressRenderer.Agent, AgentGate.VerdictRead ->
+        let report, _ = Verdict.reportWithCoverage repoRoot config.Exclude
+        let exitCode = Verdict.reportExitCode report
+
+        let facts =
+            AgentEnvelope.factsOf (AgentEnvelope.Evidence.ByVerdictVerb report) exitCode
+
+        printfn "%s" (AgentEnvelope.render token exitCode (AgentEnvelope.Shape.VerdictBacked facts) None)
+        exitCode
+    | ProgressRenderer.Agent, AgentGate.VerdictAfterRun ->
+        let exitCode, transcript = AgentEnvelope.capture repoRoot rendered
+
+        // The verdict on disk answers for this run only when it applies to this tree and
+        // records this exit code (`AgentEnvelope.factsOf`); otherwise the exit code and
+        // the transcript's tail speak.
+        let facts =
+            try
+                let report, _ = Verdict.reportWithCoverage repoRoot config.Exclude
+                AgentEnvelope.factsOf (AgentEnvelope.Evidence.AfterRun report) exitCode
+            with ex ->
+                FsHotWatch.Logging.debug "agent" $"verdict unreadable after the run: %s{ex.Message}"
+                None
+
+        printfn "%s" (AgentEnvelope.render token exitCode (AgentEnvelope.Shape.VerdictBacked facts) (Some transcript))
+        exitCode
+    | ProgressRenderer.Agent, AgentGate.OwnOutput ->
+        let exitCode, transcript = AgentEnvelope.capture repoRoot rendered
+        printfn "%s" (AgentEnvelope.render token exitCode AgentEnvelope.Shape.OutputBacked (Some transcript))
+        exitCode
+    | _ -> rendered ()
 
 let executeCommandWith
     (link: DaemonLink)

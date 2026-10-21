@@ -74,6 +74,21 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### cli: agent mode prints one line and nothing on stderr
+
+- `--agent` was supposed to mean output for a machine. `verdict --agent` printed a large
+  JSON document, symbol lists included, and then the human block on stderr as well. That
+  was more output than the human mode, not less. In agent mode the gated verbs now print
+  ONE compact JSON line, the agent envelope (`fshw-agent-v1`): `command`, `exit`,
+  `outcome`, `scope`, `reasons`, and the paths of the verdict file and the transcript. The
+  human output goes to `.fshw/agent-output.log` instead of the terminal. A filtered green
+  carries a `caveat` naming how many test projects ran. A failing exit that no verdict of
+  this run explains takes its reasons from the transcript's last lines, so a red is never
+  reported bare. When a verdict's red cause is itself only a pointer at the daemon log,
+  the envelope carries that pointer. `start`, `init`, `dead-code` and `completions` are
+  unaffected. Tests assert that the human block is absent in agent mode and present
+  without it.
+
 ### cli: agent mode can be set in `.fshw.json`
 
 - `"agent": true` in `.fshw.json` renders every command for an agent, as `--agent` does,

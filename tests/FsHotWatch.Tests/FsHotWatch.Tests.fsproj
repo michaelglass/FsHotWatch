@@ -228,6 +228,7 @@
     <Compile Include="SourceRefTests.fs" />
     <Compile Include="CliTests.fs" />
     <Compile Include="AgentModeConfigTests.fs" />
+    <Compile Include="AgentEnvelopeTests.fs" />
     <Compile Include="ScanHeartbeatTests.fs" />
     <Compile Include="CliGrammarRootTests.fs" />
     <Compile Include="HookStepSubtaskTests.fs" />
