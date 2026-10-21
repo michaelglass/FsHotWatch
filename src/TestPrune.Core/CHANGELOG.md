@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- fix (selection soundness): a property declared with accessors (`member _.P with get () =
+  …`) or as an auto-property (`member val P = … with get, set`) hashes its whole text. Before,
+  its hash covered only the line naming it, so an edit to a getter or setter body, or to an
+  initializer, on any later line changed no hash and selected none of the property's tests.
+  Such a property is now cut out of its type's header like a method, so the edit changes the
+  property, and the walk still lifts it to the type's consumers. Uses inside a property stay
+  attributed as before: an auto-property's initializer runs at construction, so its edges
+  stay on the type.
+- test: the binding-form audit edits every form it tracks and requires the edit to reach
+  that symbol's stored hash, and an edit outside the form not to. Class `let` bindings, `val`
+  fields and nested types are pinned as exclusions with the type hash that covers them, and
+  a property edit is followed through to a selected test, with a control that holds the
+  hash still and selects nothing.
+- Index schema 22 (`SchemaVersion` 21 -> 22): every existing index is recreated on first
+  open, so the first run re-indexes the whole repository, and recorded traces are not read
+  under the new schema until the next full run re-records them.
+
 ## 13.4.0 - 2026-10-13
 
 - feat: `Domain.WalkPolicy` says which stored edges the affected-test walk follows.
