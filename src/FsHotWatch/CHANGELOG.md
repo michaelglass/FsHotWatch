@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: memory pressure is detected on macOS, so an idle workspace daemon there quits
+  after the 2-min pressure floor instead of holding its memory for the full 30 min. The
+  GC's reading is blind on macOS (it reported `MemoryLoadBytes = 0` while the kernel was
+  at pressure level 2 with 84 MB free). New `IdleExit.readMemoryPressure` reads the
+  kernel's `kern.memorystatus_vm_pressure_level` on macOS (2 or 4 is pressure) and the
+  GC's high-load mark elsewhere; the daemon's idle-exit and the disconnect pressure note
+  now use it. New `IdleExit.readKernelPressureLevel` and the pure `IdleExit.pressureFrom`.
+  `readGcPressure` is unchanged.
+
 - fix: a CTRF report from a crashed test host is read with as many failures as its rows
   mark failed. xUnit v3 takes the summary counters only from the assembly-finished
   message, which a crashed host never sends, so such a report listed thousands of failed
