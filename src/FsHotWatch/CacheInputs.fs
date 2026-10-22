@@ -14,19 +14,17 @@ open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Symbols
 open FsHotWatch.Events
 
-/// Every `configFileName` a walk-up discovery could find for `files`: one per directory
-/// from the repository root down to each file's directory, as (label, content) pairs for
-/// a cache key. `label` prefixes the repo-relative path, so the same file produces the
-/// same input in every checkout of the repository.
-///
-/// A tool setting is an input to the verdict exactly as the source bytes are; a key that
-/// omitted it would replay the old verdict across a config edit.
-let configChainInputs
+/// Every place a walk-up discovery could find `configFileName` for `files`: one per
+/// directory from the repository root down to each file's directory, as
+/// (`label:<repo-relative path>`, content when the file exists). An absent candidate is
+/// listed too, so a caller that remembers what it saw can tell a config CREATED where
+/// none was from one it has never looked at.
+let configChainCandidates
     (repoRoot: string)
     (configFileName: string)
     (label: string)
     (files: string list)
-    : (string * string) list =
+    : (string * string option) list =
     let root = Path.GetFullPath repoRoot
 
     let dirsOf (file: string) =
@@ -46,16 +44,35 @@ let configChainInputs
     files
     |> List.collect dirsOf
     |> List.distinct
-    |> List.choose (fun dir ->
+    |> List.map (fun dir ->
         let candidate = Path.Combine(dir, configFileName)
+        let key = CachePathIdentity.keyOf (Some root) candidate
 
         // A config that exists but cannot be read THROWS: keying it as absent would
         // name the verdict as if no config applied.
-        if File.Exists candidate then
-            let key = CachePathIdentity.keyOf (Some root) candidate
-            Some($"%s{label}:%s{key}", File.ReadAllText candidate)
-        else
-            None)
+        let content =
+            if File.Exists candidate then
+                Some(File.ReadAllText candidate)
+            else
+                None
+
+        $"%s{label}:%s{key}", content)
+
+/// Every `configFileName` a walk-up discovery could find for `files`: one per directory
+/// from the repository root down to each file's directory, as (label, content) pairs for
+/// a cache key. `label` prefixes the repo-relative path, so the same file produces the
+/// same input in every checkout of the repository.
+///
+/// A tool setting is an input to the verdict exactly as the source bytes are; a key that
+/// omitted it would replay the old verdict across a config edit.
+let configChainInputs
+    (repoRoot: string)
+    (configFileName: string)
+    (label: string)
+    (files: string list)
+    : (string * string) list =
+    configChainCandidates repoRoot configFileName label files
+    |> List.choose (fun (key, content) -> content |> Option.map (fun text -> key, text))
 
 /// The `.editorconfig` files that apply to `files`, labelled `editorconfig:<path>`.
 let editorConfigInputs (repoRoot: string) (files: string list) : (string * string) list =
@@ -274,13 +291,25 @@ let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (result
 
     lines |> Seq.sort |> String.concat "\n"
 
+/// What `usedSignaturesHash` answered for one check, and for which root and project.
+[<NoComparison; NoEquality>]
+type private UsedSignaturesMemo =
+    { RepoRoot: string option
+      Options: FSharpProjectOptions
+      Hash: string option }
+
+/// Held weakly by the check results it describes, so an entry lives exactly as long as
+/// that check does.
+let private usedSignaturesMemo =
+    System.Runtime.CompilerServices.ConditionalWeakTable<FSharpCheckFileResults, UsedSignaturesMemo>()
+
 /// A hash of the public SHAPE of everything a file's type check resolved outside the
 /// file: each upstream value's and member's signature, and the declaration of each type
 /// from this repository the file names or reaches through such a signature (kind,
 /// fields, union cases, base types, interfaces, attributes) — never a body, a position or
 /// a path.
 ///
-/// A file's analyzer verdict depends on other files only through what its check
+/// A file's analyzer or typed lint verdict depends on other files only through what its check
 /// resolved there. Its diagnostics do not record that: a type in an earlier file or a
 /// referenced project can change from a record to a union while this file still compiles
 /// cleanly, and a typed analyzer then answers differently. Hashing those files' content
@@ -289,6 +318,10 @@ let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (result
 /// Symbols from outside the repository contribute only their name and their assembly's
 /// qualified name (which carries its version). The cost is proportional to the symbols
 /// this file uses, not to the size of the project above it.
+///
+/// Every plugin that keys a `FileChecked` event (analyzers, lint) is handed the same check
+/// results, so the hash is remembered against them and the walk runs once per event, not
+/// once per plugin. A different root or project is computed afresh.
 let usedSignaturesHash
     (repoRoot: string option)
     (options: FSharpProjectOptions)
@@ -298,10 +331,23 @@ let usedSignaturesHash
     | ParseOnly -> Some "parse-only"
     | FullCheck results when isNull (box results) -> Some "full-check-null"
     | FullCheck results ->
-        // FCS can throw from a symbol property on partially-checked code. A shape that
-        // cannot be described leaves no key, so the caller runs rather than replays.
-        try
-            Some(usedShapes repoRoot options results |> CheckCache.sha256Hex)
-        with ex ->
-            Logging.debug "cache" $"used-signatures unavailable (%s{ex.GetType().Name}): %s{ex.Message}"
-            None
+        match usedSignaturesMemo.TryGetValue results with
+        | true, memo when memo.RepoRoot = repoRoot && obj.ReferenceEquals(memo.Options, options) -> memo.Hash
+        | _ ->
+            // FCS can throw from a symbol property on partially-checked code. A shape that
+            // cannot be described leaves no key, so the caller runs rather than replays.
+            let hash =
+                try
+                    Some(usedShapes repoRoot options results |> CheckCache.sha256Hex)
+                with ex ->
+                    Logging.debug "cache" $"used-signatures unavailable (%s{ex.GetType().Name}): %s{ex.Message}"
+                    None
+
+            usedSignaturesMemo.AddOrUpdate(
+                results,
+                { RepoRoot = repoRoot
+                  Options = options
+                  Hash = hash }
+            )
+
+            hash

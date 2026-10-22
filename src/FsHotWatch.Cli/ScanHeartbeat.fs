@@ -45,5 +45,8 @@ let emitLineTo (interactive: bool) (write: string -> unit) (line: string) : unit
     else
         write $"  %s{line}\n"
 
-/// Print one progress line to stderr.
-let emitLine: string -> unit = emitLineTo UI.isInteractive Console.Error.Write
+/// Print one progress line to stderr — the stderr of the moment it prints, so agent
+/// mode's transcript (`AgentEnvelope.capture`) receives it. A value bound to
+/// `Console.Error.Write` would keep whichever writer was current when it was first read.
+let emitLine (line: string) : unit =
+    emitLineTo UI.isInteractive (fun text -> Console.Error.Write(text: string)) line

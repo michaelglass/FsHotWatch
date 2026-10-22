@@ -25,6 +25,7 @@
 
   <ItemGroup>
     <Compile Include="AnalyzerIdentity.fs" />
+    <Compile Include="AnalyzerLoad.fs" />
     <Compile Include="AnalyzersPlugin.fs" />
   </ItemGroup>
 

@@ -330,7 +330,8 @@ so its first check runs the suite again.
 | `--no-cache` | Disable the on-disk task result cache. |
 | `--no-warn-fail` | Treat warnings as non-fatal (errors still fail the check). |
 | `-q`, `--compact` | One line per plugin instead of per-file detail. |
-| `-a`, `--agent` | Agent-friendly parseable output with a next-step hint. |
+| `-a`, `--agent` | Machine-only output: one compact JSON line on stdout (the agent envelope, `fshw-agent-v1`), nothing on stderr; the human output goes to `.fshw/agent-output.log`. On by default where `.fshw.json` sets `"agent": true`. |
+| `--no-agent` | Human output even where `.fshw.json` sets `"agent": true`. A command-line flag beats `FS_HOT_WATCH_AGENT` / `FS_HOT_WATCH_NO_AGENT`, which beat the config key. |
 
 ## Examples
 

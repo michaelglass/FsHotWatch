@@ -110,8 +110,9 @@ let private fsharpLintVersion =
 /// own version.
 [<Literal>]
 // v2 orphans every entry written under the path-ABSOLUTE key (v1), which no other
-// checkout could have read anyway.
-let private PluginCacheSalt = "lint-merkle-v2"
+// checkout could have read anyway. v3 orphans every entry keyed without the shape of
+// what the file resolved upstream (`used-signatures`).
+let private PluginCacheSalt = "lint-merkle-v3"
 
 /// The generation of the model the host currently publishes, when it is available.
 /// `None` while no model is observable (never discovered, mid-rediscovery, or
@@ -153,7 +154,8 @@ let private ignoredBy (configPath: string) : string -> bool =
 
 /// Creates a framework plugin handler that lints files using pre-parsed AST
 /// and check results from the daemon's warm FSharpChecker. Cache key is
-/// content-merkle (file source + tool/config hashes); jj commit_id is not
+/// content-merkle (file source, tool/config hashes, and the shape of every symbol the
+/// file's check resolved outside the file); jj commit_id is not
 /// consulted.
 let create
     (repoRoot: string option)
@@ -199,12 +201,10 @@ let create
     let cacheKey (event: PluginEvent<unit>) : ContentHash option =
         match event with
         | FileChecked r ->
-            // the FCS check signature, so a change to an upstream symbol's
-            // signature invalidates this file's entry even though its own source
-            // bytes are unchanged — a source-only key serves stale lint results.
-            let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature r.CheckResults
-
-            Some(
+            // A shape that cannot be described leaves no key: the lint runs and nothing
+            // is read from or written to the cache.
+            FsHotWatch.CacheInputs.usedSignaturesHash repoRoot r.ProjectOptions r.CheckResults
+            |> Option.map (fun usedSignatures ->
                 FsHotWatch.TaskCache.merkleCacheKey
                     [ "plugin-version", PluginCacheSalt
                       "tool", fsharpLintVersion
@@ -216,8 +216,14 @@ let create
                       // only reason two workspaces could not share a lint result.
                       "file", FsHotWatch.CachePathIdentity.keyOf repoRoot (AbsFilePath.value r.File)
                       "source", r.Source
-                      "fcs-signature", fcsSignature ]
-            )
+                      // A typed rule (NoPartialFunctions, say) reads the types this
+                      // file resolved in other files. Neither the source nor the
+                      // file's own diagnostics move when one of those changes shape
+                      // and the file still compiles.
+                      "used-signatures", usedSignatures
+                      // The file's own diagnostics: a check that newly fails or
+                      // recovers changes what the typed tree holds.
+                      "fcs-signature", FsHotWatch.CheckCache.fcsCheckSignature r.CheckResults ])
         | _ -> None
 
 

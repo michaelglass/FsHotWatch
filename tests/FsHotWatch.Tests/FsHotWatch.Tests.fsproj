@@ -66,6 +66,7 @@
     <Compile Include="TestEvidenceKeyTests.fs" />
     <Compile Include="TestEvidenceStoreTests.fs" />
     <Compile Include="AnalyzerCacheKeyTests.fs" />
+    <Compile Include="LintCacheKeyTests.fs" />
     <Compile Include="FileStampTests.fs" />
     <Compile Include="CheckCacheTests.fs" />
     <Compile Include="CacheInputsTests.fs" />
@@ -189,6 +190,7 @@
     <Compile Include="NewFileSelectionTests.fs" />
     <Compile Include="FlakinessTests.fs" />
     <Compile Include="AnalyzersPluginTests.fs" />
+    <Compile Include="AnalyzerReloadTests.fs" />
     <Compile Include="LintPluginTests.fs" />
     <Compile Include="LintConfigShapeTests.fs" />
     <Compile Include="FantomasToolTests.fs" />
@@ -227,6 +229,8 @@
     <Compile Include="ActivityIntegrationTests.fs" />
     <Compile Include="SourceRefTests.fs" />
     <Compile Include="CliTests.fs" />
+    <Compile Include="AgentModeConfigTests.fs" />
+    <Compile Include="AgentEnvelopeTests.fs" />
     <Compile Include="ScanHeartbeatTests.fs" />
     <Compile Include="CliGrammarRootTests.fs" />
     <Compile Include="HookStepSubtaskTests.fs" />
@@ -262,6 +266,11 @@
          compatibility test invokes it without rebuilding. Its assemblies and package
          graph do not flow into this xUnit 3 test host. -->
     <ProjectReference Include="../Fixtures/Xunit4RunnerFixture/Xunit4RunnerFixture.fsproj"
+                      ReferenceOutputAssembly="false" />
+    <!-- The config-caching analyzer AnalyzerReloadTests loads from its own bin
+         directory. Never referenced as an assembly: the test host must not have it
+         in its default load context. -->
+    <ProjectReference Include="../Fixtures/ConfigCacheAnalyzer/ConfigCacheAnalyzer.fsproj"
                       ReferenceOutputAssembly="false" />
     <ProjectReference Include="../../src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch/FsHotWatch.fsproj" />

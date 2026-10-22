@@ -64,6 +64,7 @@
         <Compile Include="ScopeCommands.fs" />
         <Compile Include="CheckVerdict.fs" />
         <Compile Include="Verdict.fs" />
+        <Compile Include="AgentEnvelope.fs" />
         <Compile Include="ConfirmTraces.fs" />
         <Compile Include="ProgressRenderer.fs" />
         <Compile Include="IpcOutput.fs" />

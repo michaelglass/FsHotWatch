@@ -10,7 +10,8 @@ wait ~500ms before querying.
 
 ## Global flags
 
-- `-a` / `--agent` — parseable, no ANSI, `name: state [summary="..."]` per plugin, with a `next:` hint. Use this.
+- `-a` / `--agent` — ONE compact JSON line on stdout (`{"fshw":"fshw-agent-v1","command","exit","outcome","scope","reasons",...}`), nothing on stderr; the human output goes to `.fshw/agent-output.log`, which the line names. Use this.
+  A repo whose `.fshw.json` sets `"agent": true` gets it with no flag; `--no-agent` opts back out.
 - `-q` / `--compact` — terse human output
 - `--verbose` — full output
 

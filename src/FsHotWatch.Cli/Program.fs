@@ -308,6 +308,7 @@ type GlobalFlag =
     | [<CmdFlag(Description = "Treat warnings as non-fatal (errors still fail)")>] NoWarnFail
     | [<CmdFlag(Short = "q", Description = "Compact one-line-per-plugin output")>] Compact
     | [<CmdFlag(Short = "a", Description = "Agent-friendly parseable output with next-step hint")>] Agent
+    | [<CmdFlag(Description = "Human output even where .fshw.json sets \"agent\": true")>] NoAgent
 
 let globalSpec =
     CommandReflection.fromUnionWithGlobalsAndEnv<Command, GlobalFlag>
@@ -317,6 +318,62 @@ let globalSpec =
 let commandTree = globalSpec.Tree
 
 let cliName = "fshw"
+
+/// How a verb behaves in agent mode (see `AgentEnvelope`).
+[<RequireQualifiedAccess>]
+type AgentGate =
+    /// `check` / `confirm`: run with the human output sent to the transcript, then
+    /// report the verdict on disk, when it is this run's answer.
+    | VerdictAfterRun
+    /// `verdict`: read the report and print the envelope. Nothing is rendered.
+    | VerdictRead
+    /// The verb's own output, cleaned, is its answer.
+    | OwnOutput
+    /// Never gated: `start` (the daemon's own process, whose stderr is its log), and the
+    /// verbs whose output is the product a person or a file asked for.
+    | Ungated
+
+/// The agent gate of `command`. Total, so a new verb is classified by an explicit edit.
+let internal agentGateFor (command: Command) : AgentGate =
+    match command with
+    | Command.Check _
+    | Command.Confirm _ -> AgentGate.VerdictAfterRun
+    | Command.Verdict -> AgentGate.VerdictRead
+    | Command.Stop _
+    | Command.TestRerun _
+    | Command.Format _
+    | Command.Status _
+    | Command.Scan
+    | Command.Invalidate
+    | Command.Rerun _
+    | Command.Config _
+    | Command.Coverage _ -> AgentGate.OwnOutput
+    | Command.Start
+    | Command.Init
+    | Command.DeadCode _
+    | Command.Completions
+    | Command.Host _ -> AgentGate.Ungated
+
+/// The verb as the CLI spells it, for the agent envelope's `command`.
+let internal commandToken (command: Command) : string =
+    match command with
+    | Command.Start -> "start"
+    | Command.Stop _ -> "stop"
+    | Command.Check _ -> "check"
+    | Command.Confirm _ -> "confirm"
+    | Command.Verdict -> "verdict"
+    | Command.TestRerun _ -> "test-rerun"
+    | Command.Format _ -> "format"
+    | Command.Status _ -> "status"
+    | Command.Scan -> "scan"
+    | Command.Invalidate -> "invalidate"
+    | Command.Rerun _ -> "rerun"
+    | Command.Init -> "init"
+    | Command.Config _ -> "config"
+    | Command.Coverage _ -> "coverage"
+    | Command.DeadCode _ -> "dead-code"
+    | Command.Completions -> "completions"
+    | Command.Host _ -> "host"
 
 let private isRunOnce = List.contains RunOnce
 
@@ -1871,7 +1928,11 @@ type GlobalOptions =
     {
         NoCache: bool
         NoWarnFail: bool
-        AgentMode: bool
+        /// The agent-mode choice made on the command line (`--agent` / `--no-agent`) or
+        /// by their env vars (`FS_HOT_WATCH_AGENT` / `FS_HOT_WATCH_NO_AGENT`). `None`
+        /// when neither said anything: `.fshw.json`'s `agent` key then decides. See
+        /// `resolveAgentMode`.
+        AgentMode: bool option
         CompactMode: bool
         /// Global `-v/--verbose` was set. Drives debug logging AND `dead-code`'s
         /// "why is this unreachable" reasons (the standalone test-prune CLI spells
@@ -1883,10 +1944,24 @@ type GlobalOptions =
 let defaultGlobalOptions =
     { NoCache = false
       NoWarnFail = false
-      AgentMode = false
+      AgentMode = None
       CompactMode = false
       Verbose = false
       DaemonExtraArgs = "" }
+
+/// Whether a command renders for an agent. Precedence: an explicit choice (`--agent` /
+/// `--no-agent`, or their env vars — `GlobalOptions.AgentMode`) > the configuration's
+/// `agent` key > off. An explicit `--compact` asks for a human render, so it also beats
+/// the configured agent mode; an explicit `--agent` still beats `--compact`.
+let internal resolveAgentMode (explicitAgent: bool option) (compactMode: bool) (configured: bool) : bool =
+    match explicitAgent with
+    | Some explicitChoice -> explicitChoice
+    | None -> configured && not compactMode
+
+/// The render mode for `opts` on a repository whose configuration sets the `agent` key
+/// to `configuredAgent`.
+let internal renderModeFor (opts: GlobalOptions) (configuredAgent: bool) : ProgressRenderer.RenderMode =
+    pickMode (resolveAgentMode opts.AgentMode opts.CompactMode configuredAgent) opts.CompactMode
 
 /// Delete a file, swallowing any exception: in a bulk cleanup loop one bad item
 /// shouldn't halt the rest. The exception class is logged at debug so failures are
@@ -3175,10 +3250,8 @@ let internal hostSessionLink (host: HostLink) (attachedHere: bool) : DaemonLink 
 let internal configEventStops (currentIdentity: string) (loadedIdentity: string) : bool =
     currentIdentity <> loadedIdentity
 
-/// `executeCommandWith` with the `.fshw.json` watcher a direct `Start` stops on
-/// supplied — so a lifecycle test can fire the config edit itself instead of racing live
-/// FSEvents delivery, which has no latency bound on a loaded machine.
-let internal executeCommandWatchingConfig
+/// `executeCommandWatchingConfig` as a person sees it: every verb's own rendering.
+let private executeCommandRendered
     (watchConfig: string -> (string -> unit) -> IDisposable)
     (link: DaemonLink)
     (loadedConfigIdentity: string)
@@ -3191,7 +3264,7 @@ let internal executeCommandWatchingConfig
     (config: DaemonConfiguration)
     (startupTimeoutSeconds: float)
     : int =
-    let mode = pickMode opts.AgentMode opts.CompactMode
+    let mode = renderModeFor opts config.AgentMode
     let noWarnFail = opts.NoWarnFail
 
     // State-dir hygiene BEFORE any daemon decision:
@@ -3964,6 +4037,74 @@ let internal executeCommandWatchingConfig
                 eprintfn "Could not install fish completions: %s" reason
                 1
 
+/// `executeCommandWith` with the `.fshw.json` watcher a direct `Start` stops on
+/// supplied — so a lifecycle test can fire the config edit itself instead of racing live
+/// FSEvents delivery, which has no latency bound on a loaded machine.
+///
+/// In agent mode a gated verb (`agentGateFor`) prints ONE line, the agent envelope, on
+/// stdout and nothing on stderr; its human output goes to the transcript the envelope
+/// names. See `AgentEnvelope`.
+let internal executeCommandWatchingConfig
+    (watchConfig: string -> (string -> unit) -> IDisposable)
+    (link: DaemonLink)
+    (loadedConfigIdentity: string)
+    (createDaemon: string -> Daemon)
+    (ipc: IpcOps)
+    (repoRoot: string)
+    (pipeName: string)
+    (command: Command)
+    (opts: GlobalOptions)
+    (config: DaemonConfiguration)
+    (startupTimeoutSeconds: float)
+    : int =
+    let rendered () =
+        executeCommandRendered
+            watchConfig
+            link
+            loadedConfigIdentity
+            createDaemon
+            ipc
+            repoRoot
+            pipeName
+            command
+            opts
+            config
+            startupTimeoutSeconds
+
+    let token = commandToken command
+
+    match renderModeFor opts config.AgentMode, agentGateFor command with
+    | ProgressRenderer.Agent, AgentGate.VerdictRead ->
+        let report, _ = Verdict.reportWithCoverage repoRoot config.Exclude
+        let exitCode = Verdict.reportExitCode report
+
+        let facts =
+            AgentEnvelope.factsOf (AgentEnvelope.Evidence.ByVerdictVerb report) exitCode
+
+        printfn "%s" (AgentEnvelope.render token exitCode (AgentEnvelope.Shape.VerdictBacked facts) None)
+        exitCode
+    | ProgressRenderer.Agent, AgentGate.VerdictAfterRun ->
+        let exitCode, transcript = AgentEnvelope.capture repoRoot rendered
+
+        // The verdict on disk answers for this run only when it applies to this tree and
+        // records this exit code (`AgentEnvelope.factsOf`); otherwise the exit code and
+        // the transcript's tail speak.
+        let facts =
+            try
+                let report, _ = Verdict.reportWithCoverage repoRoot config.Exclude
+                AgentEnvelope.factsOf (AgentEnvelope.Evidence.AfterRun report) exitCode
+            with ex ->
+                FsHotWatch.Logging.debug "agent" $"verdict unreadable after the run: %s{ex.Message}"
+                None
+
+        printfn "%s" (AgentEnvelope.render token exitCode (AgentEnvelope.Shape.VerdictBacked facts) (Some transcript))
+        exitCode
+    | ProgressRenderer.Agent, AgentGate.OwnOutput ->
+        let exitCode, transcript = AgentEnvelope.capture repoRoot rendered
+        printfn "%s" (AgentEnvelope.render token exitCode AgentEnvelope.Shape.OutputBacked (Some transcript))
+        exitCode
+    | _ -> rendered ()
+
 let executeCommandWith
     (link: DaemonLink)
     (loadedConfigIdentity: string)
@@ -4061,7 +4202,9 @@ let executePluginCommand
     (cmd: string)
     (argsStr: string)
     : PluginCommandOutcome =
-    let mode = pickMode opts.AgentMode opts.CompactMode
+    // The passthrough loads no configuration: its caller folds the `agent` key into
+    // `opts.AgentMode` before forwarding.
+    let mode = renderModeFor opts false
 
     try
         let result = ipc.RunCommand pipeName cmd argsStr |> Async.RunSynchronously
@@ -4126,8 +4269,17 @@ let applyGlobalFlags (globals: GlobalFlag list) : GlobalOptions =
             opts, $"--log-level %s{level}" :: parts
         | NoCache -> { opts with NoCache = true }, "--no-cache" :: parts
         | NoWarnFail -> { opts with NoWarnFail = true }, parts
-        // --agent and --compact are client-side render selectors; don't forward to the daemon.
-        | Agent -> { opts with AgentMode = true }, parts
+        // --agent / --no-agent and --compact are client-side render selectors; don't
+        // forward them to the daemon. The FIRST agent choice wins: CommandTree lists
+        // command-line flags before the env-derived ones, so a flag beats an env var.
+        | Agent ->
+            { opts with
+                AgentMode = Some(defaultArg opts.AgentMode true) },
+            parts
+        | NoAgent ->
+            { opts with
+                AgentMode = Some(defaultArg opts.AgentMode false) },
+            parts
         | Compact -> { opts with CompactMode = true }, parts
 
     let opts, parts = globals |> List.fold folder (defaultGlobalOptions, [])
@@ -4400,10 +4552,30 @@ let private runCli (args: string array) : int =
             | RootUnknownCommand(input, rest, err) ->
                 let argsStr = rest |> String.concat " "
 
+                let compact = argList |> List.exists (fun a -> a = "--compact" || a = "-q")
+
+                let explicitAgent =
+                    argList
+                    |> List.tryPick (fun a ->
+                        match a with
+                        | "--agent"
+                        | "-a" -> Some true
+                        | "--no-agent" -> Some false
+                        | _ -> None)
+
+                // No configuration is loaded on this path, so the `agent` key is read
+                // from the file's text directly; an unreadable file reads as unset.
+                let configText =
+                    try
+                        File.ReadAllText(Path.Combine(repoRoot, ".fshw.json"))
+                    with _ ->
+                        ""
+
                 let opts =
                     { defaultGlobalOptions with
-                        AgentMode = argList |> List.exists (fun a -> a = "--agent" || a = "-a")
-                        CompactMode = argList |> List.exists (fun a -> a = "--compact" || a = "-q") }
+                        AgentMode =
+                            Some(resolveAgentMode explicitAgent compact (DaemonConfig.agentConfigured configText))
+                        CompactMode = compact }
 
                 let ipc =
                     passthroughIpc (

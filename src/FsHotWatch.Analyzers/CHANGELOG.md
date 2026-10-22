@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: a config edit reaches an analyzer that caches its config in a static. When a
+  `.editorconfig` or `fsharplint.json` the analyzers read changes on a warm daemon, the
+  analyzer paths that read it (`fsharplint.json`: the FSharpLint shim; `.editorconfig`:
+  every other analyzer) are reloaded into fresh load contexts before the next analysis;
+  the others keep their Clients. Detection is over the repository's config set, so
+  nested `.editorconfig` files do not cause reloads by themselves.
+- fix: analyzers load into COLLECTIBLE load contexts, one Client per configured path.
+  The SDK's `Client.LoadAnalyzers` never unloads what it loaded, so every reload
+  (including the existing DLL-change reload) leaked the previous copy of the analyzer
+  assemblies; a retired path is now unloaded, as is every path at handler teardown.
+
 ## 0.7.0-alpha.48 - 2026-10-16
 
 - fix!: a #nowarn file no longer turns the evidence receipt red after an edit
