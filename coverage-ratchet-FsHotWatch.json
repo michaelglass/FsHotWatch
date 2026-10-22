@@ -1434,6 +1434,13 @@
         "branch": 100,
         "reason": "Explicit so that a report which drops this file fails coverage-check instead of passing (a file with no floor leaves no name to miss). Floor = the measured value, the same on both platforms: the file is pure (JSON walked against FSharpLint record types by reflection), with no platform-dependent path. Measured on macOS by the unit suite (mise run coverage-check, 2026-10-18): line 100%, branch 18/18. Not yet measured on Linux CI; lower it there only with a CI run in hand."
       }
+    ],
+    "AnalyzerLoad.fs": [
+      {
+        "line": 97,
+        "branch": 81,
+        "reason": "new file (AUTOMATION-1276: analyzer paths loaded into collectible load contexts, one Client per path). Floor = the measured value rounded down. Measured 2026-10-22 on macOS by the unit suite (mise run test-direct): line 97.6% (the two lines of the failwith that fires only when an FSharp.Analyzers.SDK release renames Client.analyzersFromType or Client.registeredAnalyzers), branch 13/16 (81.25%): that failwith's match arms (2), and the non-BadImageFormatException edge of loadCollectible's typed handler (an exception the SDK's loader also lets through). Every loaded / skipped / excluded / missing / unloaded path is pinned by AnalyzerReloadTests. Not yet measured on Linux CI: the code is platform-neutral (no path-separator or file-system-event dependence), so the same floor applies to both; re-baseline from CI if Linux measures lower."
+      }
     ]
   },
   "countFloors": {

@@ -326,6 +326,38 @@ let internal buildAnalyzerProjectOptions
 let internal analyzerConfigFiles =
     [ ".editorconfig", "editorconfig"; "fsharplint.json", "fsharplint" ]
 
+let private isFSharpLintAssembly (name: string) =
+    name.Contains("FSharpLint", StringComparison.OrdinalIgnoreCase)
+
+/// Which analyzer assemblies read each config file in `analyzerConfigFiles`, by label
+/// and DLL file name: `fsharplint.json` is the FSharpLint shim's, and `.editorconfig`
+/// is every other analyzer's (MichaelGlass.FSharp.Analyzers reads its `mga_*` keys
+/// there). A config edit reloads only the paths holding one of its readers.
+let internal analyzerConfigReaders: (string * (string -> bool)) list =
+    [ "editorconfig", (isFSharpLintAssembly >> not)
+      "fsharplint", isFSharpLintAssembly ]
+
+/// Whether `loaded` holds an analyzer that reads the config file labelled `label`.
+let internal readsConfig (label: string) (loaded: AnalyzerLoad.LoadedPath) : bool =
+    analyzerConfigReaders
+    |> List.exists (fun (reader, reads) -> reader = label && List.exists reads loaded.Assemblies)
+
+/// The labels of the config files whose content differs from what `observed` last
+/// saw. A candidate never seen before is not a change: nothing has read it yet. A
+/// file created where one was seen absent is.
+let internal changedConfigLabels
+    (observed: Map<string, string option>)
+    (chain: (string * (string * string option) list) list)
+    : string list =
+    chain
+    |> List.filter (fun (_, candidates) ->
+        candidates
+        |> List.exists (fun (key, digest) ->
+            match Map.tryFind key observed with
+            | Some seen -> seen <> digest
+            | None -> false))
+    |> List.map fst
+
 /// A finding at or above the failure threshold becomes an Error, and the message
 /// records what it was BEFORE promotion so the provenance is not lost.
 ///
@@ -444,13 +476,21 @@ let private currentModelGeneration (ctx: PluginCtx<'Msg>) =
     | FsHotWatch.ProjectModel.Observation.Rediscovering _
     | FsHotWatch.ProjectModel.Observation.Unavailable _ -> None
 
-/// Runs the loaded analyzer set over one file's context. Production uses the SDK's
-/// `RunAnalyzersSafely`, which hands a raising analyzer's exception back as that
-/// analyzer's result instead of throwing.
-type internal AnalyzerRunner = Client<CliAnalyzerAttribute, CliContext> -> CliContext -> Async<AnalysisResult list>
+/// Runs the loaded analyzer set — one Client per configured path — over one file's
+/// context. Production uses the SDK's `RunAnalyzersSafely`, which hands a raising
+/// analyzer's exception back as that analyzer's result instead of throwing.
+type internal AnalyzerRunner = Client<CliAnalyzerAttribute, CliContext> list -> CliContext -> Async<AnalysisResult list>
 
 let internal runSafely: AnalyzerRunner =
-    fun client context -> client.RunAnalyzersSafely context
+    fun clients context ->
+        async {
+            let! perPath =
+                clients
+                |> List.map (fun client -> client.RunAnalyzersSafely context)
+                |> Async.Parallel
+
+            return List.concat perPath
+        }
 
 /// The handler, with two test seams: `slowHook` is invoked inside the
 /// timeout-guarded region before the analyzers run, and `runAnalyzersOver` stands in
@@ -463,13 +503,6 @@ let internal createWithSeams
     (slowHook: (unit -> unit) option)
     (runAnalyzersOver: AnalyzerRunner)
     : PluginHandler<AnalyzersState, AnalyzersMsg> =
-    // The SDK Client holds the loaded analyzer set in private state. A reload swaps
-    // in a FRESH Client rather than re-loading the existing one: a fresh Client
-    // picks up a newly-added analyzer for RunAnalyzersSafely, and can never replay a
-    // now-removed/changed analyzer instance from prior private state. Volatile per
-    // the plugin's thread-safety convention (concurrent FileChecked events read it
-    // under the semaphore).
-    let mutable client = Client<CliAnalyzerAttribute, CliContext>()
     let concurrencyLimit = 4
     let semaphore = new SemaphoreSlim(concurrencyLimit, concurrencyLimit)
     // Only one synchronous analyzer callback may be alive at a time. Normal
@@ -480,26 +513,44 @@ let internal createWithSeams
 
 
 
-    // LoadAnalyzers reflects over every DLL in the directory — see
-    // `knownNonAnalyzerPrefixes`.
-    let excludeKnownDeps =
-        ExcludeInclude.ExcludeFilter(isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes)
+    // One Client per configured path, each in its own collectible load contexts (see
+    // `AnalyzerLoad`), so a path reloads alone and what it replaced is unloaded. A
+    // reload swaps in a FRESH Client rather than re-loading the existing one: it
+    // picks up a newly-added analyzer, and can never replay a now-removed/changed
+    // analyzer instance — or the statics it built from a config since edited. Volatile
+    // per the plugin's thread-safety convention.
+    let loadOne =
+        AnalyzerLoad.loadPath (isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes)
+
+    let mutable loaded = analyzerPaths |> List.map loadOne
 
     // Per-path load result (path, count). A non-existent path counts 0 without
     // touching the loader; both 0-cases are silent-skips the fail-loud guard
     // turns RED.
-    let loadInto (c: Client<CliAnalyzerAttribute, CliContext>) =
-        analyzerPaths
-        |> List.map (fun path ->
-            if Directory.Exists(path) then
-                let stats = c.LoadAnalyzers(path, excludeInclude = excludeKnownDeps)
-                path, stats.Analyzers
-            else
-                path, 0)
-
-    let loadedByPath = loadInto client
+    let loadedByPath =
+        loaded
+        |> List.map (fun (path: AnalyzerLoad.LoadedPath) -> path.Path, path.Count)
 
     let loadedCount = loadedByPath |> List.sumBy snd
+
+    /// Load the paths `stale` selects again, swap the fresh Clients in, and unload the
+    /// ones they replace. Returns how many analyzers the reloaded paths now hold.
+    let reloadWhere (stale: AnalyzerLoad.LoadedPath -> bool) : int =
+        let next =
+            Volatile.Read(&loaded)
+            |> List.map (fun path ->
+                if stale path then
+                    Some path, loadOne path.Path
+                else
+                    None, path)
+
+        Volatile.Write(&loaded, next |> List.map snd)
+
+        next
+        |> List.iter (fun (retired, _) -> retired |> Option.iter AnalyzerLoad.unload)
+
+        next
+        |> List.sumBy (fun (retired, path) -> if retired.IsSome then path.Count else 0)
 
     info "analyzers" $"Loaded %d{loadedCount} analyzers from %d{analyzerPaths.Length} paths"
 
@@ -575,13 +626,9 @@ let internal createWithSeams
         let current = Volatile.Read(&snapshot)
 
         if onDisk <> current.Materialization then
-            // Load the current set into a FRESH client and swap it in, so the added
+            // Load the current set into FRESH clients and swap them in, so the added
             // analyzer is live (and any removed/changed one is gone) before we analyze.
-            let fresh = Client<CliAnalyzerAttribute, CliContext>()
-            let reloaded = loadInto fresh
-            let reloadedCount = reloaded |> List.sumBy snd
-
-            Volatile.Write(&client, fresh)
+            let reloadedCount = reloadWhere (fun _ -> true)
 
             info
                 "analyzers"
@@ -595,6 +642,65 @@ let internal createWithSeams
             match retaken.Inputs with
             | Result.Error refusals -> warnOnce refusals
             | Result.Ok _ -> ()
+
+    // Every config file the analyzers could read, as the walk-up from each analyzed
+    // file found it: label, then (`label:<repo-relative path>`, content if present).
+    let configChain (file: string) : (string * (string * string option) list) list =
+        // Analyzers read configuration by walking up from the file, not by being told:
+        // MichaelGlass.FSharp.Analyzers reads `mga_*` keys from `.editorconfig`, and the
+        // FSharpLint shim reads `fsharplint.json`. Without a repository root the walk
+        // has no floor, so it runs to the filesystem root.
+        let root =
+            repoRoot
+            |> Option.defaultWith (fun () -> Path.GetPathRoot(Path.GetFullPath file))
+
+        analyzerConfigFiles
+        |> List.map (fun (fileName, label) ->
+            label, FsHotWatch.CacheInputs.configChainCandidates root fileName label [ file ])
+
+    // What each candidate held when last seen, as a digest (None = absent). Kept for
+    // the REPOSITORY's config set, not per file: the key below hashes each file's own
+    // chain, and two files under different nested `.editorconfig`s must not read as an
+    // edit to each other.
+    let mutable observedConfigs: Map<string, string option> = Map.empty
+
+    // An analyzer may cache what it read from its config in a static (the FSharpLint
+    // shim did), so a re-run under the new cache key can still answer from the old
+    // config. Never rely on an analyzer noticing: when a config it reads changes,
+    // reload the paths that read it into fresh load contexts, and only those.
+    //
+    // Returns the chain it read, so the cache key is computed from the same bytes.
+    let refreshConfigs (file: string) : (string * (string * string option) list) list =
+        let found = configChain file
+
+        let chain =
+            found
+            |> List.map (fun (label, candidates) ->
+                label,
+                candidates
+                |> List.map (fun (key, content) -> key, content |> Option.map FsHotWatch.CheckCache.sha256Hex))
+
+        let observed = Volatile.Read(&observedConfigs)
+        let changed = changedConfigLabels observed chain
+
+        Volatile.Write(
+            &observedConfigs,
+            chain
+            |> List.collect snd
+            |> List.fold (fun seen (key, digest) -> Map.add key digest seen) observed
+        )
+
+        if not (List.isEmpty changed) then
+            let stopwatch = Diagnostics.Stopwatch.StartNew()
+
+            let reloadedCount =
+                reloadWhere (fun path -> changed |> List.exists (fun label -> readsConfig label path))
+
+            info
+                "analyzers"
+                $"""Analyzer config changed (%s{String.concat ", " changed}) — reloaded %d{reloadedCount} analyzers that read it in %d{stopwatch.ElapsedMilliseconds}ms"""
+
+        found
 
     let analyzerTimeout =
         let secs = defaultArg timeoutSec AnalyzersTimeoutDefaultSec
@@ -653,6 +759,7 @@ let internal createWithSeams
                     else
 
                         refreshAnalyzerSet ()
+                        refreshConfigs fileStr |> ignore
 
                         let checkResultsObj =
                             match result.CheckResults with
@@ -696,7 +803,7 @@ let internal createWithSeams
                                                         // Drive the run under the timeout's token so a stuck
                                                         // analyzer is actually cancelled on expiry rather than
                                                         // orphaned holding the semaphore slot.
-                                                        let activeClient = Volatile.Read(&client)
+                                                        let activeClients = Volatile.Read(&loaded) |> List.map _.Client
 
                                                         // Checked under a virtual root, every range in
                                                         // the results names the file by its virtual
@@ -714,7 +821,7 @@ let internal createWithSeams
                                                                 (box result.ProjectOptions)
 
                                                         Async.RunSynchronously(
-                                                            runAnalyzersOver activeClient context,
+                                                            runAnalyzersOver activeClients context,
                                                             cancellationToken = workCt
                                                         )
 
@@ -900,19 +1007,13 @@ let internal createWithSeams
                      |> List.sort)
             )
 
-        let analyzerConfigHash (file: string) =
-            // Analyzers read configuration by walking up from the file, not by being told:
-            // MichaelGlass.FSharp.Analyzers reads `mga_*` keys from `.editorconfig`, and the
-            // FSharpLint shim reads `fsharplint.json`. Without a repository root the walk
-            // has no floor, so it runs to the filesystem root.
-            let root =
-                repoRoot
-                |> Option.defaultWith (fun () -> Path.GetPathRoot(Path.GetFullPath file))
-
-            analyzerConfigFiles
-            |> List.collect (fun (fileName, label) ->
-                FsHotWatch.CacheInputs.configChainInputs root fileName label [ file ])
-            |> List.map (fun (label, content) -> $"%s{label} %s{FsHotWatch.CheckCache.sha256Hex content}")
+        // The present config files of a file's chain, by repo-relative path and content.
+        let analyzerConfigHash (chain: (string * (string * string option) list) list) =
+            chain
+            |> List.collect snd
+            |> List.choose (fun (key, content) ->
+                content
+                |> Option.map (fun text -> $"%s{key} %s{FsHotWatch.CheckCache.sha256Hex text}"))
             |> String.concat "\n"
             |> FsHotWatch.CheckCache.sha256Hex
 
@@ -921,15 +1022,18 @@ let internal createWithSeams
 
             match event with
             | FileChecked result ->
+                let file = AbsFilePath.value result.File
+
                 // The key is computed once per event on the plugin's own loop, before
                 // the lookup and the run, so refreshing here is what makes the entry
-                // looked up and the analyzers that run describe the same set on disk.
+                // looked up and the analyzers that run describe the same set on disk —
+                // and, for a config edit, analyzers loaded since it.
                 refreshAnalyzerSet ()
+                let chain = refreshConfigs file
 
                 match (Volatile.Read(&snapshot)).Inputs with
                 | Result.Error _ -> None
                 | Result.Ok analyzerInputs ->
-                    let file = AbsFilePath.value result.File
                     Volatile.Write(&replayPending, true)
 
                     // A shape that cannot be described leaves no key: the analyzers
@@ -945,7 +1049,7 @@ let internal createWithSeams
                               // Entries are stored AFTER promotion, so the same finding is
                               // a failure under one threshold and a pass under another.
                               "fail-on-severity", DiagnosticSeverity.toString failOnSeverity
-                              "analyzer-config", analyzerConfigHash file
+                              "analyzer-config", analyzerConfigHash chain
                               "file", FsHotWatch.CachePathIdentity.keyOf repoRoot file
                               "source", result.Source
                               // A typed analyzer sees the types this file resolved in
@@ -963,7 +1067,11 @@ let internal createWithSeams
             // a token-ignoring synchronous analyzer may still be unwinding: its
             // completion continuation owns the retained execution-fence permit.
             // These small managed objects become collectible with the handler.
-            cts.Cancel()) }
+            cts.Cancel()
+            // A handler replaced by a config reload must not keep its analyzers loaded.
+            // Unloading is cooperative too: a still-running analyzer keeps its context
+            // alive until it returns.
+            Volatile.Read(&loaded) |> List.iter AnalyzerLoad.unload) }
 
 /// Creates a framework plugin handler that hosts F# analyzers in-process
 /// using the warm checker's results. Per-event work is bounded by

@@ -11,6 +11,7 @@
   <Project Path="tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj" />
   <Project Path="tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj" />
   <Project Path="tests/Fixtures/Xunit4RunnerFixture/Xunit4RunnerFixture.fsproj" />
+  <Project Path="tests/Fixtures/ConfigCacheAnalyzer/ConfigCacheAnalyzer.fsproj" />
   <Folder Name="/examples/">
     <Project Path="examples/PluginExample/PluginExample.fsproj" />
     <Project Path="examples/FullPipelineExample/FullPipelineExample.fsproj" />

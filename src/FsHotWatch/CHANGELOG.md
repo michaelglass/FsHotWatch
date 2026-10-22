@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `CacheInputs.configChainCandidates` lists every walk-up config candidate,
+  absent ones included, so a caller can tell a created config from an unseen one.
+  `configChainInputs` is now its present subset (unchanged output).
+
 ## 0.10.0-alpha.89 - 2026-10-19
 
 - feat(rules): FSHW-WALK-001 bans walks that can follow a directory symlink

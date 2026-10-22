@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- A test FIXTURE, not a suite: an analyzer that caches the configuration it
+         reads in a STATIC, keyed by directory, the way FSharpLintAnalyzerShim's
+         configCache did. FsHotWatch.Tests builds it through a project reference
+         (ReferenceOutputAssembly=false) and loads the DLL from this bin directory
+         through the real AnalyzersPlugin load path. The file name must match the
+         SDK's `*Analyzer*.dll` glob. -->
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="ConfigCacheAnalyzer.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Update="FSharp.Core" Version="10.1.*" />
+    <PackageReference Include="FSharp.Analyzers.SDK" Version="0.39.2" />
+    <PackageReference Include="FSharp.Compiler.Service" Version="43.12.400" />
+  </ItemGroup>
+</Project>

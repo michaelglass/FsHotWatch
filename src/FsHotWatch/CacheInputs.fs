@@ -14,19 +14,17 @@ open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Symbols
 open FsHotWatch.Events
 
-/// Every `configFileName` a walk-up discovery could find for `files`: one per directory
-/// from the repository root down to each file's directory, as (label, content) pairs for
-/// a cache key. `label` prefixes the repo-relative path, so the same file produces the
-/// same input in every checkout of the repository.
-///
-/// A tool setting is an input to the verdict exactly as the source bytes are; a key that
-/// omitted it would replay the old verdict across a config edit.
-let configChainInputs
+/// Every place a walk-up discovery could find `configFileName` for `files`: one per
+/// directory from the repository root down to each file's directory, as
+/// (`label:<repo-relative path>`, content when the file exists). An absent candidate is
+/// listed too, so a caller that remembers what it saw can tell a config CREATED where
+/// none was from one it has never looked at.
+let configChainCandidates
     (repoRoot: string)
     (configFileName: string)
     (label: string)
     (files: string list)
-    : (string * string) list =
+    : (string * string option) list =
     let root = Path.GetFullPath repoRoot
 
     let dirsOf (file: string) =
@@ -46,16 +44,35 @@ let configChainInputs
     files
     |> List.collect dirsOf
     |> List.distinct
-    |> List.choose (fun dir ->
+    |> List.map (fun dir ->
         let candidate = Path.Combine(dir, configFileName)
+        let key = CachePathIdentity.keyOf (Some root) candidate
 
         // A config that exists but cannot be read THROWS: keying it as absent would
         // name the verdict as if no config applied.
-        if File.Exists candidate then
-            let key = CachePathIdentity.keyOf (Some root) candidate
-            Some($"%s{label}:%s{key}", File.ReadAllText candidate)
-        else
-            None)
+        let content =
+            if File.Exists candidate then
+                Some(File.ReadAllText candidate)
+            else
+                None
+
+        $"%s{label}:%s{key}", content)
+
+/// Every `configFileName` a walk-up discovery could find for `files`: one per directory
+/// from the repository root down to each file's directory, as (label, content) pairs for
+/// a cache key. `label` prefixes the repo-relative path, so the same file produces the
+/// same input in every checkout of the repository.
+///
+/// A tool setting is an input to the verdict exactly as the source bytes are; a key that
+/// omitted it would replay the old verdict across a config edit.
+let configChainInputs
+    (repoRoot: string)
+    (configFileName: string)
+    (label: string)
+    (files: string list)
+    : (string * string) list =
+    configChainCandidates repoRoot configFileName label files
+    |> List.choose (fun (key, content) -> content |> Option.map (fun text -> key, text))
 
 /// The `.editorconfig` files that apply to `files`, labelled `editorconfig:<path>`.
 let editorConfigInputs (repoRoot: string) (files: string list) : (string * string) list =
