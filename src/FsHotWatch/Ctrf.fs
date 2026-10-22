@@ -72,10 +72,46 @@ let private tryGetNumber (node: JsonNode) (key: string) : float option =
         with _ ->
             None
 
+let private objectOf (node: JsonNode) : JsonObject option =
+    match node with
+    | :? JsonObject as o -> Some o
+    | _ -> None
+
+/// How many of a report's rows are marked `failed`. Zero when there is no tests array.
+let private failedRows (rows: JsonNode) : int =
+    let isFailed (row: JsonNode) =
+        match objectOf row |> Option.map (fun o -> o.["status"]) with
+        | Some(:? JsonValue as status) ->
+            match status.TryGetValue<string>() with
+            | true, "failed" -> true
+            | _ -> false
+        | _ -> false
+
+    match rows with
+    | :? JsonArray as rows -> rows |> Seq.filter isFailed |> Seq.length
+    | _ -> 0
+
+/// Raise `Failed` to the number of rows marked failed; never lower it (AUTOMATION-1110).
+///
+/// xUnit v3's CTRF writer takes its summary counters ONLY from the assembly-finished
+/// message, and writes a row as each test finishes. A host that crashes never sends
+/// that message, so its report lists every failed row beside a summary of zero failures
+/// (`other` holds the crash). A failed row is a failure that happened, so no reader may
+/// count fewer. The summary still outranks the rows the other way: a raw throw is counted
+/// in `failed` and gets no row.
+///
+/// Only `Failed` moves. The crashing test has no row, so a crashed host's rows are a lower
+/// bound on an incomplete run: raising `Total` or `Passed` to them would let the
+/// completeness guards (`rows = Total`) accept it as a whole run.
+let private countingFailedRows (rows: JsonNode) (summary: Summary) : Summary =
+    { summary with
+        Failed = max summary.Failed (failedRows rows) }
+
 /// Parse a CTRF report's SUMMARY counts. `None` when the JSON is unparseable or
 /// carries no summary object — the signal the verdict logic reads as "no usable
 /// report", so a truncated or never-flushed report is never mistaken for a clean
-/// run. Reads ONLY the summary; the per-test array is unreliable for totals.
+/// run. Reads the summary; the per-test array is unreliable for totals, and is
+/// consulted only to count failed rows the summary missed (`countingFailedRows`).
 /// The summary is nested under `results.summary` in real MTP/xUnit.v3 output,
 /// with a top-level fallback for flattened variants.
 let trySummary (json: string) : Summary option =
@@ -83,23 +119,24 @@ let trySummary (json: string) : Summary option =
         match JsonNode.Parse(json) with
         | null -> None
         | root ->
-            let summary =
+            let body =
                 match root.["results"] with
-                | null -> root.["summary"]
-                | results -> results.["summary"]
+                | null -> root
+                | results -> results
 
-            match summary with
+            match body.["summary"] with
             | null -> None
             | s ->
                 let getInt key =
                     tryGetNumber s key |> Option.map int |> Option.defaultValue 0
 
-                Some
-                    { Total = getInt "tests"
-                      Passed = getInt "passed"
-                      Failed = getInt "failed"
-                      Skipped = getInt "skipped"
-                      Other = getInt "other" }
+                { Total = getInt "tests"
+                  Passed = getInt "passed"
+                  Failed = getInt "failed"
+                  Skipped = getInt "skipped"
+                  Other = getInt "other" }
+                |> countingFailedRows body.["tests"]
+                |> Some
     with
     | :? JsonException
     | :? InvalidOperationException -> None
@@ -119,11 +156,6 @@ type VerdictReport = private VerdictReport of Summary
 module VerdictReport =
     /// The validated counts. Reading them grants no way to construct a report.
     let summary (VerdictReport summary) : Summary = summary
-
-let private objectOf (node: JsonNode) : JsonObject option =
-    match node with
-    | :? JsonObject as o -> Some o
-    | _ -> None
 
 let private counter (summary: JsonObject) (key: string) : Result<int, string> =
     match summary.[key] with
@@ -156,16 +188,18 @@ let private counters (summary: JsonObject) : Result<Map<string, int>, string> =
         (Ok Map.empty)
 
 let private reconcile (counts: Map<string, int>) (rows: JsonNode) : Result<VerdictReport, string> =
-    let verdict =
-        VerdictReport
-            { Total = counts["tests"]
-              Passed = counts["passed"]
-              Failed = counts["failed"]
-              Skipped = counts["skipped"]
-              Other = counts["other"] }
+    let summary =
+        { Total = counts["tests"]
+          Passed = counts["passed"]
+          Failed = counts["failed"]
+          Skipped = counts["skipped"]
+          Other = counts["other"] }
+
+    let verdict = VerdictReport summary
 
     if counts["failed"] > 0 || counts["other"] > 0 then
-        Ok verdict
+        // A red summary is authoritative, but never for fewer failures than its rows show.
+        Ok(VerdictReport(countingFailedRows rows summary))
     else
         match rows with
         | :? JsonArray as rows ->

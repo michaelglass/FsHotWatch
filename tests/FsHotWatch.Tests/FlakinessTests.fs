@@ -389,6 +389,40 @@ let ``verdict evidence preserves captured raw exception red summary`` () =
         test <@ summary.Other = 1 @>
     | Error reason -> failwith reason
 
+/// What xUnit v3's CTRF writer flushes for a host that crashed after running four tests,
+/// three of them failed (AUTOMATION-1110). Its summary counters come ONLY from the
+/// assembly-finished message, which a crashed host never sends, so they stay zero; the
+/// crash itself is the one `other`. The rows are written per test as each finishes.
+let private crashedHostReport =
+    """{"results":{"summary":{"tests":0,"passed":0,"failed":0,"pending":0,"skipped":0,"other":1},"tests":[{"name":"A.one","status":"failed"},{"name":"A.two","status":"passed"},{"name":"A.three","status":"failed"},{"name":"A.four","status":"failed"}]}}"""
+
+[<Fact(Timeout = 5000)>]
+let ``verdict evidence counts the failed rows of a crashed host whose summary says zero`` () =
+    match parseVerdictSummary crashedHostReport with
+    | Ok summary ->
+        test <@ summary.Failed = 3 @>
+        test <@ summary.Other = 1 @>
+        // NOT raised: the crashing test has no row, so the rows are a lower bound on an
+        // incomplete run, and every completeness guard (`rows = Total`) must keep refusing it.
+        test <@ summary.Total = 0 @>
+        test <@ summary.Passed = 0 @>
+    | Error reason -> failwith reason
+
+[<Fact(Timeout = 5000)>]
+let ``the diagnostic summary counts the failed rows of a crashed host whose summary says zero`` () =
+    let summary = (FsHotWatch.Ctrf.trySummary crashedHostReport).Value
+    test <@ summary.Failed = 3 @>
+    test <@ summary.Total = 0 @>
+
+[<Fact(Timeout = 5000)>]
+let ``a summary counting more failures than it has failed rows keeps its count`` () =
+    // A raw throw is counted in `failed` with no row: the rows only ever RAISE the count.
+    let json =
+        """{"results":{"summary":{"tests":2,"passed":0,"failed":2,"pending":0,"skipped":0,"other":1},"tests":[{"name":"A.one","status":"failed"}]}}"""
+
+    test <@ (FsHotWatch.Ctrf.trySummary json).Value.Failed = 2 @>
+    test <@ (parseVerdictSummary json |> Result.map _.Failed) = Ok 2 @>
+
 [<Theory(Timeout = 5000)>]
 [<InlineData(true)>]
 [<InlineData(false)>]

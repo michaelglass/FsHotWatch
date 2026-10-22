@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a CTRF report from a crashed test host is read with as many failures as its rows
+  mark failed. xUnit v3 takes the summary counters only from the assembly-finished
+  message, which a crashed host never sends, so such a report listed thousands of failed
+  rows under a summary of zero failures. `Ctrf.trySummary` and `Ctrf.tryVerdictReport`
+  now raise `Failed` to the failed-row count and never lower it. `Total` and `Passed` are
+  left as written, so a crashed host's partial rows are still not read as a complete run.
+
 ## 0.10.0-alpha.89 - 2026-10-19
 
 - feat(rules): FSHW-WALK-001 bans walks that can follow a directory symlink
