@@ -20,6 +20,8 @@ let ``the child tree is every descendant of the root, and nothing beside it`` ()
     test <@ HangEvidence.descendants 10 rows |> List.map fst = [ 11; 12 ] @>
     test <@ snd (List.head (HangEvidence.descendants 10 rows)) = "11    10  00:04 S  dotnet run" @>
     test <@ List.isEmpty (HangEvidence.descendants 13 rows) @>
+    // A row naming the root as its own parent is the root, never a child of it.
+    test <@ List.isEmpty (HangEvidence.descendants 10 (HangEvidence.parsePs "  10    10  00:01 S  x\n")) @>
 
 let private alive (pid: int) =
     try
@@ -96,8 +98,11 @@ let ``a capture lists a live child, takes its stacks, and keeps the named logs``
             child.Kill()
             child.WaitForExit())
 
-[<Fact(Timeout = 30000)>]
-let ``a child that exits between the listing and its stacks is a skip, not an error`` () =
+[<Theory(Timeout = 30000)>]
+// 4242 is the test host's own pid on the Linux CI run that failed (AUTOMATION-1147).
+[<InlineData 4242>]
+[<InlineData 4243>]
+let ``a child that exits between the listing and its stacks is a skip, not an error`` (root: int) =
     // In a parallel suite the tree holds other tests' short-lived children: one listed by
     // `ps` can be gone by the time `sample` or `createdump` reaches it. That is a race the
     // capture expects, not a failure of it.
@@ -105,25 +110,26 @@ let ``a child that exits between the listing and its stacks is a skip, not an er
     // test that leaned on it held there and failed on Linux.
     for onMac in [ true; false ] do
         withTempDir "hang-evidence-gone" (fun dir ->
-            let gone = 4242
+            // Never the root: `descendants` leaves the root out of its own tree, so a "child"
+            // sharing its pid is never listed, and the capture then skips nothing at all.
+            let gone = root + 1
 
             let run: HangEvidence.Runner =
                 fun command _ ->
                     match command with
-                    | "ps" -> Ok $"%d{gone} %d{Environment.ProcessId} 00:01 S dotnet Lib.Tests.dll\n"
+                    | "ps" -> Ok $"%d{gone} %d{root} 00:01 S dotnet Lib.Tests.dll\n"
                     | other -> Error $"%s{other}: no longer appears to be running"
 
             let out = Path.Combine(dir, "evidence")
 
-            let errors =
-                HangEvidence.captureToOn onMac run (fun pid -> pid <> gone) out Environment.ProcessId []
+            let errors = HangEvidence.captureToOn onMac run (fun pid -> pid <> gone) out root []
 
             test <@ List.isEmpty errors @>
             test <@ not (File.Exists(Path.Combine(out, "capture-errors.txt"))) @>
 
-            // This once failed on Linux with the skips file missing and nothing else wrong,
-            // which this deterministic capture cannot produce by itself. Say which branch
-            // failed and what the capture left, so the next one names its state.
+            // This once failed on Linux with the skips file missing and nothing else wrong: the
+            // root was the test host's own pid, which on that run was the hard-coded child pid
+            // 4242. Say which branch failed and what the capture left, if it ever recurs.
             let skips = Path.Combine(out, "capture-skips.txt")
 
             if not (File.Exists skips) then
@@ -139,13 +145,7 @@ let ``a child that exits between the listing and its stacks is a skip, not an er
 
             // A child still alive whose stacks could not be taken is a real failure.
             let stillThere =
-                HangEvidence.captureToOn
-                    onMac
-                    run
-                    (fun _ -> true)
-                    (Path.Combine(dir, "again"))
-                    Environment.ProcessId
-                    []
+                HangEvidence.captureToOn onMac run (fun _ -> true) (Path.Combine(dir, "again")) root []
 
             // Every platform dumps the .NET child; only macOS also samples it.
             let failedSteps =
