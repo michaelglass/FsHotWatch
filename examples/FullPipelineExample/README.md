@@ -92,6 +92,7 @@ let runFullPipeline (repoRoot: string) =
                     ClassJoin = " "
                     TimeoutSec = None
                     ReportVerificationFormat = AutoDetect
+                    Starvation = None
                     AlwaysClasses = [] } ]) // testConfigs
             None // buildExtensions
             None // beforeRun

@@ -104,3 +104,14 @@ because a cold scan spends minutes in project discovery, build settlement and th
 check tiers with no plugin work owned, and under the pressure floor a daemon was read
 as idle and terminated mid-scan. The scan holds its lease for its whole span and releases
 it on every exit (`ScanActivity`). The pressure-trim deletion it records stands.
+
+## Amendment (2026-10-22): on macOS the kernel, not the GC, reports pressure
+
+The decision above chose `GC.GetGCMemoryInfo()` as the signal. On macOS that reading is
+blind: the GC reported `MemoryLoadBytes = 0` against a 32.4 GB high-load mark while the
+kernel's `kern.memorystatus_vm_pressure_level` was 2 (warning) with 84 MB free, so the
+2-min pressure exit never fired and idle daemons held ~10 GB for their full 30 min. The
+signal is now `IdleExit.readMemoryPressure`: on macOS the kernel's level decides (2 or 4
+is pressure, 1 is not) and the GC is not consulted; where the kernel offers no level
+(Linux, Windows) the GC's high-load mark decides as before. The decision itself is the
+pure `IdleExit.pressureFrom`, so both readings are injectable in tests.

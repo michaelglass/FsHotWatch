@@ -91,6 +91,7 @@ let private configs =
           ClassJoin = " "
           TimeoutSec = Some 30
           ReportVerificationFormat = Ctrf
+          Starvation = None
           AlwaysClasses = [] })
 
 /// The model the host publishes: every project, its references, and an identity per

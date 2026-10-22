@@ -1953,7 +1953,7 @@ let pollAndRenderForInvocation
         // (when this was last benchmarked at 3 GB settled) to 2047.
         UI.fail (
             "Check aborted: the daemon shut down before producing a verdict — nothing was verified. Re-run `fshw check` (the next command auto-restarts the daemon)."
-            + FsHotWatch.IdleExit.disconnectPressureNote (FsHotWatch.IdleExit.readGcPressure ())
+            + FsHotWatch.IdleExit.disconnectPressureNote (FsHotWatch.IdleExit.readMemoryPressure ())
         )
 
         abortExitCode

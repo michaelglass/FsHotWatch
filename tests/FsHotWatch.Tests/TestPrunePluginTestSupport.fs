@@ -179,6 +179,7 @@ let withSingleProjectHarness (tmpDir: string) (projectName: string) =
             ClassJoin = " "
             TimeoutSec = None
             ReportVerificationFormat = AutoDetect
+            Starvation = None
             AlwaysClasses = [] } ]
 
     let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -333,6 +334,7 @@ module PendingQueueHelpers =
           ClassJoin = " "
           TimeoutSec = None
           ReportVerificationFormat = AutoDetect
+          Starvation = None
           AlwaysClasses = [] }
 
     /// The durable pending-verification queue for a repo root. An UNREADABLE ledger is a
@@ -355,6 +357,7 @@ let testConfigNamed (project: string) : TestConfig =
       ClassJoin = " "
       TimeoutSec = None
       ReportVerificationFormat = AutoDetect
+      Starvation = None
       AlwaysClasses = [] }
 
 /// Recording ctx over the plugin: captures terminal statuses and models the shared error

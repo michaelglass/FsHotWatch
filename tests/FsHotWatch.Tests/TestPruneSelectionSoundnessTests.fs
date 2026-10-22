@@ -52,6 +52,7 @@ let private runner (tmpDir: string) (project: string) (failedTest: string) : Tes
       ClassJoin = " "
       TimeoutSec = None
       ReportVerificationFormat = AutoDetect
+      Starvation = None
       AlwaysClasses = [] }
 
 let private runsOf (tmpDir: string) (project: string) : int =

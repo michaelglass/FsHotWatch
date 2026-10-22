@@ -532,3 +532,95 @@ let ``a tick in flight when the timer is disposed shuts down before the daemon's
                   Log = ignore })
 
     test <@ seen = None @>
+
+// --- the pressure signal: the kernel's level on macOS, the GC's mark elsewhere ---
+//
+// AUTOMATION-1309. On macOS `GC.GetGCMemoryInfo()` reports MemoryLoadBytes = 0 while
+// the box thrashes (kernel pressure level 2, 84 MB free), so a GC-only signal never
+// reported pressure there and the 2-min idle exit never fired. The kernel's
+// `kern.memorystatus_vm_pressure_level` (1 normal, 2 warning, 4 critical) is the
+// macOS reading; the GC's high-load mark stays the signal where there is no kernel
+// level (Linux, Windows).
+
+[<Fact>]
+let ``kernel pressure level 2 is pressure even when the GC reports none`` () =
+    test <@ pressureFrom (Some 2) (fun () -> false) @>
+
+[<Fact>]
+let ``kernel pressure level 4 (critical) is pressure`` () =
+    test <@ pressureFrom (Some 4) (fun () -> false) @>
+
+[<Fact>]
+let ``kernel pressure level 1 is no pressure`` () =
+    // POSITIVE CONTROL for the two above: a normal kernel level must read as no
+    // pressure, so they cannot pass by any `Some` reading as pressure.
+    test <@ not (pressureFrom (Some 1) (fun () -> false)) @>
+
+[<Fact>]
+let ``a kernel level is authoritative over the GC's mark`` () =
+    // Where the kernel answers, its answer decides; the GC's mark is not consulted.
+    let mutable gcAsked = false
+
+    let gc () =
+        gcAsked <- true
+        true
+
+    test <@ not (pressureFrom (Some 1) gc) @>
+    test <@ not gcAsked @>
+
+[<Fact>]
+let ``without a kernel level the GC's high-load mark decides`` () =
+    test <@ pressureFrom None (fun () -> true) @>
+    test <@ not (pressureFrom None (fun () -> false)) @>
+
+[<Fact>]
+let ``the kernel pressure level is read on macOS and only there`` () =
+    match readKernelPressureLevel (), OperatingSystem.IsMacOS() with
+    | Some level, true -> test <@ level = 1 || level = 2 || level = 4 @>
+    | None, false -> ()
+    | reading, isMac -> failwith $"kernel level %A{reading} on isMacOS=%b{isMac}"
+
+[<Fact>]
+let ``off macOS the kernel probe is never run`` () =
+    let mutable probed = false
+
+    let probe () =
+        probed <- true
+        Some 4
+
+    test <@ kernelPressureLevelOn false probe = None @>
+    test <@ not probed @>
+    test <@ kernelPressureLevelOn true probe = Some 4 @>
+
+[<Fact>]
+let ``a sysctl answer is a level only when the call succeeded with four bytes`` () =
+    let four, eight = 4un, 8un
+    test <@ decodeInt32Sysctl 0 four 2 = Some 2 @>
+    test <@ decodeInt32Sysctl -1 four 2 = None @>
+    test <@ decodeInt32Sysctl 0 eight 2 = None @>
+
+[<Fact>]
+let ``the GC's high-load mark is pressure at or above it, never against a zero mark`` () =
+    test <@ gcPressureFrom 100L 100L @>
+    test <@ gcPressureFrom 100L 150L @>
+    test <@ not (gcPressureFrom 100L 99L) @>
+    // Some hosts report a zero threshold; that is no reading, not constant pressure.
+    test <@ not (gcPressureFrom 0L 0L) @>
+
+[<Fact>]
+let ``the live GC reading is the pure decision over the GC's own numbers`` () =
+    // On macOS the daemon no longer consults this reading, so nothing else exercises
+    // it there; it is still the signal on Linux and Windows. GC numbers change only
+    // when a collection completes, so bracket the read and compare only when no
+    // collection landed in between.
+    let before = GC.GetGCMemoryInfo()
+    let live = readGcPressure ()
+    let after = GC.GetGCMemoryInfo()
+
+    if before.Index <> after.Index then
+        Assert.Skip "a GC completed during the read; the comparison would be meaningless"
+
+    let expected =
+        gcPressureFrom before.HighMemoryLoadThresholdBytes before.MemoryLoadBytes
+
+    test <@ live = expected @>

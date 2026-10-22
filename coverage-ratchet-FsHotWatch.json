@@ -7,6 +7,13 @@
         "reason": "new file (AUTOMATION-410 agent envelope). Explicit so that a report which drops this file fails coverage-check instead of passing. Floor = the measured value rounded down. Measured 2026-10-22 on macOS by the unit suite (mise run test-direct + coverageratchet check): line 100%, branch 98.6% (73/74). The one uncovered edge is on the `match v.Outcome with` in ofVerdict (line 120, 4/5): every one of the four Outcome cases is exercised (green, red, incomplete, model-unavailable in AgentEnvelopeTests); the fifth is the compiler-generated default edge of the tag switch, which no value can reach. Platform-neutral; Linux not yet measured, refresh from the first CI run."
       }
     ],
+    "Starvation.fs": [
+      {
+        "line": 95,
+        "branch": 88,
+        "reason": "new file (declared starvation policy, load sampler, rerun-alone decision and its record). Floor = the measured value rounded down. Measured 2026-10-22 on macOS by StarvationTests + TestPruneStarvationRerunTests with coverage: line 95.4% (210/220), branch 88% (110/125). Uncovered: the sampler timer callback (a test cannot wait out the 5 s interval without becoming a timing test; the start and stop samples it shares `take` with are covered), the non-string-value arm of `field`, the IOException/UnauthorizedAccessException arms of `setAside` and `write` (a failed move or write is logged and skipped), and compiler-generated edges of the parse match. Platform-neutral, so no platform tag."
+      }
+    ],
     "GroupSchedule.fs": [
       {
         "line": 100,

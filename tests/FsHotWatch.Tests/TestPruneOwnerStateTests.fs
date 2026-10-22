@@ -62,6 +62,7 @@ let private config (project: string) : TestConfig =
       ClassJoin = "|"
       TimeoutSec = None
       ReportVerificationFormat = AutoDetect
+      Starvation = None
       AlwaysClasses = [] }
 
 let private finished (results: (string * TestResult) list) (launch: TestRunLaunch) =

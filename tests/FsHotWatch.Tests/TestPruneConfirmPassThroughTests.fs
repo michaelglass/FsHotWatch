@@ -339,6 +339,7 @@ let private runScenario (root: string) (setup: Setup) =
                 // Only a hang ends the held run: its release waits on real checks.
                 TimeoutSec = Some(RealCheckTestCapMs / 1000)
                 ReportVerificationFormat = Ctrf
+                Starvation = None
                 AlwaysClasses = [] } ]
 
         let coveragePaths _ =
@@ -578,6 +579,7 @@ let private scopeSequence name (steps: string option list) =
               ClassJoin = " "
               TimeoutSec = None
               ReportVerificationFormat = AutoDetect
+              Starvation = None
               AlwaysClasses = [] }
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir

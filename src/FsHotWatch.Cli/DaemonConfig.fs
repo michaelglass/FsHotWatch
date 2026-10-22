@@ -264,6 +264,9 @@ type TestProjectConfig =
         /// This project's own `traces.weaveTests` (`"traces": { "weaveTests": ... }`);
         /// `None` takes `tests.traces.weaveTests`.
         TraceWeave: FsHotWatch.TestPrune.TraceWeaveTests option
+        /// `starvation`: what a timeout under measured CPU starvation means for this
+        /// project. `None` when absent: every timeout is reported as it is.
+        Starvation: FsHotWatch.TestPrune.Starvation.Policy option
     }
 
 /// Configuration for Falco route attribution.
@@ -751,6 +754,17 @@ let private parseTestProject (p: JsonElement) : TestProjectConfig =
     | Result.Ok _ -> ()
     | Result.Error e -> raise (ConfigErrorException $"tests.projects[%s{project}].%s{e}")
 
+    // `starvation`: a timeout under measured CPU starvation is re-run alone once
+    // (`Starvation`). Refused unless it parses: a typo read as "no declaration"
+    // would silently report every starved timeout red, the defect it exists to fix.
+    let starvation =
+        match p.TryGetProperty("starvation") with
+        | false, _ -> None
+        | true, v ->
+            match FsHotWatch.TestPrune.Starvation.Policy.parse $"tests.projects[%s{project}].starvation" v with
+            | Result.Ok policy -> Some policy
+            | Result.Error e -> raise (ConfigErrorException e)
+
     { Project = project
       Command = command
       Args = args
@@ -765,7 +779,8 @@ let private parseTestProject (p: JsonElement) : TestProjectConfig =
       ReportVerificationFormat = reportVerificationFormat
       AlwaysClasses = alwaysClasses
       Traces = traces
-      TraceWeave = traceWeave }
+      TraceWeave = traceWeave
+      Starvation = starvation }
 
 /// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
 let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
@@ -2449,7 +2464,8 @@ let registerPluginsIn
                   ClassJoin = p.ClassJoin
                   TimeoutSec = p.TimeoutSec
                   ReportVerificationFormat = p.ReportVerificationFormat
-                  AlwaysClasses = p.AlwaysClasses })
+                  AlwaysClasses = p.AlwaysClasses
+                  Starvation = p.Starvation })
 
         // fail LOUD and SPECIFIC. `runShellSteps` names the step,
         // its exit code and its output; raising `describe` means the plugin's

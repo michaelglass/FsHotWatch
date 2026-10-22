@@ -54,6 +54,7 @@ let private echoConfig: TestConfig =
       ClassJoin = " "
       TimeoutSec = None
       ReportVerificationFormat = AutoDetect
+      Starvation = None
       AlwaysClasses = [] }
 
 /// Index Lib + Tests with `extensions`, edit the handler's body, and return the

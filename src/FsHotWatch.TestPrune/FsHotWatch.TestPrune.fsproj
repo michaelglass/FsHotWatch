@@ -49,6 +49,7 @@
     <Compile Include="TestMode.fs" />
     <Compile Include="TraceRun.fs" />
     <Compile Include="TimeoutMarker.fs" />
+    <Compile Include="Starvation.fs" />
     <Compile Include="TestEvidenceRun.fs" />
     <Compile Include="GroupSchedule.fs" />
     <Compile Include="TestPrunePlugin.fs" />

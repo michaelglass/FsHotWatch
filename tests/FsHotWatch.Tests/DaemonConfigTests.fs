@@ -1104,6 +1104,29 @@ let ``parseConfig tests alwaysClasses reads the class names, and none when absen
 
     test <@ declared = [ "A.Scan"; "A.Census+Nested group" ] @>
 
+[<Fact(Timeout = 15000)>]
+let ``parseConfig tests starvation reads the declaration, none when absent, and refuses a typo`` () =
+    let parse json =
+        (parseConfig json defaults).Tests.Value.Projects.[0].Starvation
+
+    test <@ parse """{"tests": {"projects": [{"project": "T"}]}}""" = None @>
+
+    let declared =
+        parse
+            """{"tests": {"projects": [{"project": "T", "starvation": {"onTimeout": "rerun-alone", "classes": ["A.Slow"]}}]}}"""
+
+    test <@ declared = Some(FsHotWatch.TestPrune.Starvation.Policy.rerunAlone [ "A.Slow" ]) @>
+
+    // Read as "no declaration", a typo would silently report every starved timeout red.
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () ->
+            parseConfig
+                """{"tests": {"projects": [{"project": "T", "starvation": {"onTimeout": "retry"}}]}}"""
+                defaults
+            |> ignore)
+
+    test <@ ex.message.Contains "tests.projects[T].starvation" @>
+
 [<Theory(Timeout = 15000)>]
 [<InlineData("\"A.Scan\"", "A.Scan")>]
 [<InlineData("[\"A.Scan\", 3]", "3")>]

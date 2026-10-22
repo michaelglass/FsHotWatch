@@ -100,9 +100,13 @@ input: while the machine is tight, an already-eligible daemon's idle window is
 shortened to `min(idleExitMin, pressureIdleFloorMin)`, so a 30-min daemon quits
 after just 2 min of idleness.
 
-Pressure is the runtime GC's own high-load mark — it's "true" when
-`GC.GetGCMemoryInfo().MemoryLoadBytes` reaches `HighMemoryLoadThresholdBytes`
-(no percentage knob). It's re-evaluated on every 30s tick, not latched: if
+Pressure is the operating system's own signal, with no percentage knob. On macOS it
+is the kernel's memory-pressure level (`kern.memorystatus_vm_pressure_level`):
+warning (2) or critical (4) is pressure, normal (1) is not. Elsewhere it is the
+runtime GC's high-load mark: "true" when `GC.GetGCMemoryInfo().MemoryLoadBytes`
+reaches `HighMemoryLoadThresholdBytes`. The GC's reading is not used on macOS
+because it is blind there: it reports a memory load of 0 while the machine
+thrashes. It's re-evaluated on every 30s tick, not latched: if
 pressure subsides before the daemon goes idle long enough, the full window is
 restored.
 

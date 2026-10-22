@@ -639,7 +639,8 @@ let ``verdict round-trips through the file — the CLI reads what it wrote`` () 
                             Passed = 60
                             Failed = 3
                             Skipped = 0
-                            ReusedFrom = None } ] }
+                            ReusedFrom = None
+                            StarvedRerun = None } ] }
 
         Verdict.write root written
 
@@ -671,7 +672,8 @@ let ``a reused suite round-trips naming the run that earned it, and an executed 
               Passed = 3
               Failed = 0
               Skipped = 0
-              ReusedFrom = from }
+              ReusedFrom = from
+              StarvedRerun = None }
 
         let written =
             build
@@ -1147,7 +1149,8 @@ let private reportedVerdict (runs: (Guid option * string list) list) =
                               Passed = 3
                               Failed = 0
                               Skipped = 0
-                              ReusedFrom = None }) }) }
+                              ReusedFrom = None
+                              StarvedRerun = None }) }) }
 
 [<Fact>]
 let ``a verdict naming reports in an ABSENT run directory says they are missing, not where they are`` () =
@@ -1634,14 +1637,16 @@ let ``the agent hint names the verdict file and THIS run's real CTRF paths`` () 
                     Passed = 5136
                     Failed = 0
                     Skipped = 0
-                    ReusedFrom = None }
+                    ReusedFrom = None
+                    StarvedRerun = None }
                   { Project = "Intelligence.Tests.Integration"
                     Ctrf = ".fshw/test-runs/Intelligence.Tests.Integration-7134d9cfbee943df9cdf24d622dc31ca.ctrf.json"
                     Total = 210
                     Passed = 210
                     Failed = 0
                     Skipped = 0
-                    ReusedFrom = None } ] }
+                    ReusedFrom = None
+                    StarvedRerun = None } ] }
 
     let lines = hintsFor v
     let text = String.concat "\n" lines
@@ -1782,7 +1787,8 @@ let ``a no-suite run names the prior verdict that DID verify this same tree`` ()
                         Passed = 63
                         Failed = 0
                         Skipped = 0
-                        ReusedFrom = None } ] }
+                        ReusedFrom = None
+                        StarvedRerun = None } ] }
 
     // THIS run selected nothing, over the SAME tree.
     let current =
@@ -1814,7 +1820,8 @@ let ``a no-suite run does NOT name a prior verdict from a different tree`` () =
                         Passed = 63
                         Failed = 0
                         Skipped = 0
-                        ReusedFrom = None } ] }
+                        ReusedFrom = None
+                        StarvedRerun = None } ] }
 
     let current =
         build
@@ -1844,7 +1851,8 @@ let ``a no-suite run names the CHANGE that triggered the prior run`` () =
                         Passed = 63
                         Failed = 0
                         Skipped = 0
-                        ReusedFrom = None } ]
+                        ReusedFrom = None
+                        StarvedRerun = None } ]
                 Seeds = [ "Lib.Config.deployVars" ] }
 
     let current =
@@ -1875,7 +1883,8 @@ let ``a truncated trigger says how many seeds it is not showing`` () =
                         Passed = 4
                         Failed = 0
                         Skipped = 0
-                        ReusedFrom = None } ]
+                        ReusedFrom = None
+                        StarvedRerun = None } ]
                 Seeds = [ "Lib.A.one"; "Lib.B.two" ]
                 SeedTotal = 5 }
 
@@ -3231,7 +3240,8 @@ let ``a confirm that ran the full suite is told nothing extra — the hint is a 
                     Passed = 10
                     Failed = 0
                     Skipped = 0
-                    ReusedFrom = None } ] }
+                    ReusedFrom = None
+                    StarvedRerun = None } ] }
 
     let lines = hintsFor v
     let text = String.concat "\n" lines
@@ -3744,7 +3754,8 @@ let ``a full-suite green over THIS tree, from THIS binary, still applies`` () =
                         Passed = 1965
                         Failed = 0
                         Skipped = 0
-                        ReusedFrom = None } ] }
+                        ReusedFrom = None
+                        StarvedRerun = None } ] }
 
         match Verdict.priorConfirmation root [] with
         | Verdict.PriorConfirmation.StillApplies(v, covered) ->
@@ -4053,14 +4064,16 @@ let private allSuitesGreen: Verdict.SuiteVerdict list =
         Passed = 5559
         Failed = 0
         Skipped = 0
-        ReusedFrom = None }
+        ReusedFrom = None
+        StarvedRerun = None }
       { Project = "Intelligence.Tests.Integration"
         Ctrf = ".fshw/test-runs/x/Intelligence.Tests.Integration.ctrf.json"
         Total = 575
         Passed = 575
         Failed = 0
         Skipped = 0
-        ReusedFrom = None } ]
+        ReusedFrom = None
+        StarvedRerun = None } ]
 
 [<Fact>]
 let ``a red run with every suite green NAMES the failing plugin — the test table alone reads as a pass`` () =
@@ -6904,3 +6917,100 @@ let ``a verdict file whose selection attribution names a cause this build does n
                 """{"kind":"full","ranProjects":6,"totalProjects":6,"selectedBy":[{"project":"ProjA","causes":["a-cause-from-another-version"]}]}"""
 
         test <@ TestScope.isUnreadable v.Scope @>)
+
+// ---------------------------------------------------------------------------
+// Starvation: a suite re-run alone is recorded apart from a clean pass
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``a suite re-run under starvation carries its record, and a clean suite carries none`` () =
+    withTempDir "verdict-starved" (fun root ->
+        makeRepo root
+        let runId = Guid.NewGuid()
+        writeReport root runId "Slow.Tests" 12 0 |> ignore
+        writeReport root runId "Quick.Tests" 5 0 |> ignore
+
+        let runDir = Ctrf.runDir root runId
+
+        FsHotWatch.TestPrune.Starvation.write
+            (FsHotWatch.TestPrune.Starvation.Policy.rerunAlone [])
+            runDir
+            { Project = "Slow.Tests"
+              TimedOut = FsHotWatch.TestPrune.Starvation.ProjectTimedOut(TimeSpan.FromSeconds 600.0)
+              FirstAttempt =
+                { Cores = 12
+                  Samples = [ { At = DateTime.UtcNow; Load = 65.0 } ] }
+              Rerun =
+                { Cores = 12
+                  Samples = [ { At = DateTime.UtcNow; Load = 4.0 } ] }
+              RerunOutcome = "passed"
+              PassedAlone = true
+              AttemptDir = Path.Combine(runDir, FsHotWatch.TestPrune.Starvation.AttemptDirName) }
+
+        let suites = Verdict.suiteVerdicts root (Some runId)
+
+        let starved =
+            suites
+            |> List.map (fun s -> s.Project, s.StarvedRerun |> Option.map _.PassedAlone)
+
+        test <@ starved = [ "Quick.Tests", None; "Slow.Tests", Some true ] @>
+
+        // It survives the file: written, read back, and named on the wire.
+        let tree = TreeHash.compute root []
+
+        let written =
+            build
+                { greenVerdict tree.Hash tree.FileCount with
+                    Suites = suites }
+
+        Verdict.write root written
+        let json = File.ReadAllText(Verdict.path root)
+        test <@ json.Contains "\"starvedRerun\"" @>
+        test <@ json.Contains "starved, then passed alone" @>
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v -> test <@ v = written @>
+        | other -> failwith $"expected a readable verdict, got %A{other}"
+
+        // A verdict with no starved suite has no such field at all.
+        let plain =
+            build
+                { greenVerdict tree.Hash tree.FileCount with
+                    Suites = suites |> List.filter (fun s -> s.Project = "Quick.Tests") }
+
+        test <@ not ((Verdict.serialize plain).Contains "starvedRerun") @>)
+
+[<Fact>]
+let ``a green that still applies names the suites that passed only alone, after starvation`` () =
+    withTempDir "confirm-still-applies-starved" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+
+        let suite (project: string) (starved: FsHotWatch.TestPrune.Starvation.Stored option) : Verdict.SuiteVerdict =
+            { Project = project
+              Ctrf = $".fshw/test-runs/x/%s{project}.ctrf.json"
+              Total = 3
+              Passed = 3
+              Failed = 0
+              Skipped = 0
+              ReusedFrom = None
+              StarvedRerun = starved }
+
+        let passedAlone: FsHotWatch.TestPrune.Starvation.Stored =
+            { PassedAlone = true
+              Summary = "Slow.Tests: starved, then passed alone"
+              FirstAttempt = "the project timed out after 600s"
+              Load = "load 40.0–90.0 on 12 cores" }
+
+        writeSpec
+            root
+            { greenVerdict tree.Hash tree.FileCount with
+                Scope = FullSuite(2, None)
+                Suites = [ suite "Quick.Tests" None; suite "Slow.Tests" (Some passedAlone) ] }
+
+        match Verdict.priorConfirmation root [] with
+        | Verdict.PriorConfirmation.StillApplies(v, covered) ->
+            let described = Verdict.describeStillApplies v covered
+            test <@ described.Contains "1 starved, then passed alone: Slow.Tests" @>
+            test <@ not (described.Contains "Quick.Tests") @>
+        | Verdict.PriorConfirmation.MustEarn -> failwith "a full-suite green over this very tree must still apply")

@@ -1092,6 +1092,9 @@ type TestConfig =
         /// changed (`.fshw.json` `alwaysClasses`). For tests that read the source
         /// tree as data, which no symbol edge leads to. See `AlwaysClasses`.
         AlwaysClasses: string list
+        /// `starvation`: what a timeout under measured CPU starvation means for this project
+        /// (`Starvation.Policy`). `None`, the default, reports every timeout as it is.
+        Starvation: Starvation.Policy option
     }
 
 /// A test project's configuration as one canonical JSON document: every field, in a fixed
@@ -5933,6 +5936,640 @@ let private executeTests
                 Logging.info "test-prune" $"launching at most %d{cap} test group(s) at once, in order: %s{order}"
                 ordered
 
+        /// Launch one project as configured and classify what it did: the per-project body
+        /// of the run, shared by the first launch and a starvation re-run. Returns the
+        /// project's result and its CTRF report text (when one was requested and read).
+        let launchProject
+            (runToken: Threading.CancellationToken)
+            (config: TestConfig)
+            : Async<TestResult * string option> =
+            async {
+                // Collect extra args (filter + coverage) to append
+                let extraArgs = ResizeArray<string>()
+
+                let filterArgs = buildFilterArgs config affectedClassesByProject
+
+                match filterArgs with
+                | Some f -> extraArgs.Add(f)
+                | None -> ()
+
+                // Raw passthrough filter (from run-tests command)
+                match rawFilter with
+                | Some f -> extraArgs.Add(f)
+                | None -> ()
+
+                let wasFiltered = Option.isSome filterArgs || Option.isSome rawFilter
+
+                // Resolve per-project coverage paths (if coverage is configured for
+                // this project). wasFiltered determines which file coverlet writes
+                // to; the post-test step reads those files back to produce cobertura.
+                let projectCoveragePaths = Map.tryFind config.Project coveragePathsByProject
+
+                let projectCoverageLaunch =
+                    projectCoveragePaths
+                    |> Option.map (fun paths ->
+                        let rawPath = if wasFiltered then paths.Partial else paths.Baseline
+
+                        let launch =
+                            prepareCoverageArtifact config.Project paths.IncludeInRatchet wasFiltered rawPath
+
+                        extraArgs.Add(buildCoverageArgs paths wasFiltered)
+                        launch)
+
+                // xUnit's runner supports a major-specific CTRF switch, which fshw
+                // reads back as the AUTHORITATIVE pass/fail verdict (and for
+                // flakiness history). An UNSUPPORTED `--report-*` flag is
+                // FATAL (the runner exits "invalid command line" and runs
+                // zero tests), so injection is scoped: `Disabled` never
+                // injects, `Ctrf` always does, `AutoDetect` injects iff the
+                // runner's restored package graph resolves to a supported xUnit
+                // major. Forced `Ctrf` keeps the xUnit 3 switches as its fallback
+                // for explicitly-configured custom runners, but uses the resolved
+                // xUnit 4 switches whenever the project graph identifies v4.
+                let ctrfRunnerFamily =
+                    match config.ReportVerificationFormat with
+                    | Disabled -> None
+                    | Ctrf -> detectCtrfRunnerFamily config.Args repoRoot |> Option.orElse (Some Xunit3)
+                    | AutoDetect -> detectCtrfRunnerFamily config.Args repoRoot
+
+                // ONE DIRECTORY PER RUN. A run's reports live in
+                // `.fshw/test-runs/<runId>/` and nothing else does, so membership is
+                // a fact about where a file IS, never an inference from its mtime.
+                //
+                // The run-dir is created whether or not any project reports, so an
+                // executed run that produced nothing leaves an EMPTY DIRECTORY —
+                // distinguishable from a run that never happened.
+                let ctrfPath =
+                    match ctrfRunnerFamily with
+                    | Some family ->
+                        Directory.CreateDirectory(runDir) |> ignore
+                        // The dir already names the run, so the file need only name
+                        // the project. No guid to guess at, nothing to parse.
+                        let ctrfName = $"{config.Project}{Ctrf.ReportSuffix}"
+
+                        extraArgs.Add(ctrfArguments family ctrfName runDir)
+
+                        Some(Path.Combine(runDir, ctrfName))
+                    | None -> None
+
+                let finalArgs =
+                    if extraArgs.Count > 0 then
+                        let extra = String.concat " " extraArgs
+                        $"%s{config.Args} %s{extra}"
+                    else
+                        config.Args
+
+                // TRACES. Decided here, after the preflight certified the build
+                // output fresh and before the spawn: a traced project launches its
+                // woven copy; a refused one launches exactly as configured, and the
+                // refusal is stored with its reason after the run.
+                let decided =
+                    match traces with
+                    | None -> Untraced None
+                    | Some host ->
+                        // Weaving and JIT verification can take minutes: held as a
+                        // subtask, so a wait line names it rather than the run.
+                        use _ =
+                            host.HoldSubtask $"{config.Project}:traces" $"preparing traces for {config.Project}"
+
+                        host.TraceWiring.Decide
+                            runToken
+                            host.TraceRuntime
+                            { Project = config.Project
+                              Command = config.Command
+                              Args = config.Args
+                              Environment = config.Environment
+                              Target = deriveProjectBin config.Args repoRoot
+                              CtrfPath = ctrfPath
+                              TraceWeave = host.TraceWiring.WeaveOverrides.TryFind config.Project }
+                            runDir
+                            (List.ofSeq extraArgs)
+
+                match decided with
+                | Untraced(Some reason) ->
+                    Logging.warn
+                        "test-prune"
+                        $"%s{config.Project}: not tracing this run, launching as configured — %s{reason}"
+                | Traced(spec, _) ->
+                    Logging.info "test-prune" $"%s{config.Project}: tracing, launching %s{spec.Command}"
+                | Untraced None -> ()
+
+                // A ref: the untraced retry below replaces it from inside `runOnce`.
+                let traceDecision = ref decided
+
+                Logging.info "test-prune" $"Running: %s{config.Command} %s{finalArgs}"
+
+                let timeoutSpan =
+                    match config.TimeoutSec with
+                    | Some s -> TimeSpan.FromSeconds(float s)
+                    | None -> System.Threading.Timeout.InfiniteTimeSpan
+
+                let projectSw = Stopwatch.StartNew()
+
+                // THE RUN LOG. Opened for EVERY project on every
+                // run, before the spawn — which project will need explaining is not
+                // knowable in advance and the artifact costs a file handle.
+                //
+                // STREAMED, not buffered (see `RunLog`): the failure that needs it
+                // most is the suite SIGKILLed at its timeout, which reaches no
+                // writer at all and whose in-memory capture the kill truncates.
+                let runLog = RunLog.openFor runDir config.Project
+
+                match runLog.Ref with
+                | RunLog.Ref.Written path ->
+                    Logging.info "test-prune" $"%s{config.Project}: streaming run output to %s{path}"
+                | RunLog.Ref.Unavailable reason ->
+                    Logging.warn
+                        "test-prune"
+                        $"%s{config.Project}: NOT saving a run log — %s{reason}. The run proceeds; only \
+                      the console tail will be available if it fails."
+
+                let outputSink =
+                    match runLog.Ref with
+                    | RunLog.Ref.Written _ -> Some runLog.Write
+                    | RunLog.Ref.Unavailable _ -> None
+
+                // A test runner STREAMS (discovery banner, progress, per-test
+                // lines), so its first byte is a sound liveness proof and the
+                // launch deadline can bound the spawn even when the config sets
+                // no TimeoutSec at all.
+                //
+                // A host that overruns is asked to stop before it is killed
+                // (`TestHostStop`); the teardown is kept for the timeout marker.
+                let spawnedAt = ref DateTime.UtcNow
+                let lastTeardown: TreeTeardown option ref = ref None
+
+                let launch (decision: TraceDecision) =
+                    async {
+                        let command, args, environment =
+                            TraceRun.launchOf decision (config.Command, finalArgs, config.Environment)
+
+                        spawnedAt.Value <- DateTime.UtcNow
+
+                        let outcome, teardown =
+                            runProcessToStopping
+                                TestHostStop
+                                outputSink
+                                command
+                                args
+                                repoRoot
+                                environment
+                                (ProcessBounds.streaming timeoutSpan launchDeadline)
+
+                        lastTeardown.Value <- teardown
+                        return outcome
+                    }
+
+                let runOnce = async { return! launch traceDecision.Value }
+
+                // A traced launch that verified nothing is repeated untraced,
+                // unless it timed out (see `TraceRun.untracedRetry`): tracing
+                // cannot turn a crash red, and a timeout is not run twice.
+                let runOnceTracedOrNot =
+                    async {
+                        let announce followUp =
+                            let reason, seam =
+                                match followUp with
+                                | RelaunchUntraced reason ->
+                                    reason,
+                                    "the traced launch failed without writing a test report; relaunching \
+                                     untraced. Everything above is the TRACED attempt, everything below the \
+                                     untraced one."
+                                | KeepTimeout reason ->
+                                    reason,
+                                    "the traced launch was killed at the project timeout; not relaunching \
+                                     untraced, so the timeout is this project's outcome. `\"traces\": false` \
+                                     on the project runs it untraced."
+
+                            Logging.warn "test-prune" $"%s{config.Project}: %s{reason}"
+                            RunLog.note runLog seam
+
+                        let! outcome, decision =
+                            TraceRun.launchTracedOrNot
+                                traceDecision.Value
+                                (fun () -> ctrfPath |> Option.exists File.Exists)
+                                announce
+                                launch
+
+                        traceDecision.Value <- decision
+                        return outcome
+                    }
+
+                // See `tryApphostPresent`; `looksLikeApphostMissing` is the
+                // fallback for a command with no derivable project.
+                let detectApphostMissing (outcome: ProcessOutcome) : bool =
+                    // A clean exit means the apphost ran — never a
+                    // launch-ordering problem, regardless of artifacts.
+                    if isSucceeded outcome then
+                        false
+                    else
+                        match tryApphostPresent config.Args repoRoot with
+                        | Some present -> not present
+                        | None ->
+                            // Not derivable — fall back to the text sniff.
+                            match outcome with
+                            | ProcessOutcome.Failed(_, out) -> looksLikeApphostMissing (ProcessOutput.text out)
+                            | _ -> false
+
+                // Cold-start apphost-missing retry. The BuildCompleted→TestPrune
+                // ordering already gates the launch on a successful build, but a
+                // narrow race can still fire `--no-build` before the apphost
+                // lands. Retry ONCE after a short wait; a still-missing apphost
+                // is DEFERRED ("waiting on build"), never FAILED.
+                let runTestWithRetry =
+                    async {
+                        let! first = runOnceTracedOrNot
+
+                        if detectApphostMissing first then
+                            Logging.warn
+                                "test-prune"
+                                $"%s{config.Project}: apphost missing at launch (build not settled yet); retrying once after a short wait"
+
+                            // Both attempts stream into the SAME log, so mark the
+                            // seam — otherwise two runs read as one confusing run.
+                            RunLog.note
+                                runLog
+                                "apphost missing at launch; relaunching once. Everything above is the \
+                             FIRST attempt, everything below the second."
+
+                            do! Async.Sleep 750
+                            let! second = runOnce
+                            return second
+                        else
+                            return first
+                    }
+
+                // `finally`, not a close after the bind: a launch stall RE-RAISES
+                // out of this block, and a run log whose handle leaked on the one
+                // path where the child never came back is a log of nothing.
+                let! processResult =
+                    async {
+                        try
+                            try
+                                let! outcome =
+                                    match ctx with
+                                    | Some c ->
+                                        PluginCtxHelpers.withSubtask
+                                            c
+                                            config.Project
+                                            $"testing {config.Project}"
+                                            runTestWithRetry
+                                    | None -> runTestWithRetry
+
+                                // A host torn down at its timeout wrote no report and its
+                                // log ends wherever the kill caught it: say why, in the
+                                // log and beside it (`TimeoutMarker`).
+                                match outcome with
+                                | ProcessOutcome.TimedOut(after, _, kill) ->
+                                    let facts: TimeoutMarker.Facts =
+                                        { Project = config.Project
+                                          After = after
+                                          SpawnedAt = spawnedAt.Value
+                                          Kill = kill
+                                          Teardown = lastTeardown.Value }
+
+                                    RunLog.note runLog (TimeoutMarker.message facts)
+                                    TimeoutMarker.write runDir facts
+                                | _ -> ()
+
+                                return outcome
+                            with LaunchStalledException reason ->
+                                // The watchdog killed a child that never showed a
+                                // sign of life within the launch deadline. Re-raise
+                                // NAMING the config and elapsed so the run's Aborted
+                                // lifecycle (built by the caller's `with ex ->`)
+                                // carries a legible diagnostic. A launch stall means
+                                // this project NEVER RAN, so the whole run must
+                                // abort → PluginStatus.Failed → `check` exits
+                                // non-green rather than wedging at Running. A child
+                                // that EXITS is not a stall — the poll observes the
+                                // exit and classifies it normally.
+                                return
+                                    raise (
+                                        LaunchStalledException
+                                            $"%s{config.Project}: %s{reason} (after %.0f{projectSw.Elapsed.TotalSeconds}s)"
+                                    )
+                        finally
+                            // The pumps are done by the time `runProcessTo`
+                            // returns (it drains them), so nothing is still
+                            // writing when this closes.
+                            runLog.Close()
+                    }
+
+                projectSw.Stop()
+                let projectElapsed = projectSw.Elapsed
+
+                let apphostMissing = detectApphostMissing processResult
+
+                // A filtered run that matched zero tests in this project is
+                // not a failure (see `isZeroTestsUnderFilter`) — treat it
+                // like an impact-skip.
+                let zeroTestsUnderFilter = isZeroTestsUnderFilter wasFiltered processResult
+
+                let output = outputOf processResult
+
+                // Read the structured report ONCE (when one was requested
+                // from a capable runner). It is BOTH the authoritative
+                // pass/fail signal (summary counts) AND the flakiness
+                // source (per-test records). Read BEFORE the verdict so
+                // the REPORT — not the exit code — decides green/red.
+                let reportJson =
+                    match ctrfPath with
+                    | Some p ->
+                        try
+                            Some(File.ReadAllText p)
+                        with
+                        | :? IOException
+                        | :? UnauthorizedAccessException -> None
+                    | None -> None
+
+                let reportEvidence =
+                    match ctrfPath, reportJson with
+                    | None, _ -> NoReportRequested
+                    | Some _, Some json -> ReportRequested(Ctrf.tryVerdictReport json)
+                    | Some p, None -> ReportRequested(Error $"no readable report at %s{p}")
+
+                let result =
+                    if apphostMissing then
+                        // Tests NEVER RAN — the apphost wasn't produced.
+                        // A dedicated `TestsDeferred`, NOT a pass
+                        // (`verdict` = `NothingVerified` → never a silent
+                        // false-green) and NOT a real failure: surfaced as an honest
+                        // "waiting on build" diagnostic. Carries no
+                        // elapsed/wasFiltered, so it never lowers a
+                        // coverage baseline.
+                        TestsDeferred "apphost not produced; tests did not run"
+                    elif zeroTestsUnderFilter then
+                        // Not a failure — per project, a filter selecting
+                        // nothing is not that project's fault, so it is never
+                        // reported as one. Its own case (rather than a passing
+                        // result wearing a marker prefix) so that every fold
+                        // must decide it; see `TestResult.verdict` and
+                        // `verificationOf`.
+                        TestsNoMatch(output, projectElapsed)
+                    else
+                        classifyTestOutcome reportEvidence wasFiltered projectElapsed processResult
+
+                // Log driven off the AUTHORITATIVE verdict (not the raw
+                // exit code) so the console line can never disagree with
+                // the recorded result.
+                match result with
+                | TestsDeferred _ ->
+                    logToCtx $"{config.Project}: waiting on build (apphost not yet produced)"
+
+                    Logging.warn
+                        "test-prune"
+                        $"%s{config.Project}: apphost still missing after retry — surfacing as 'waiting on build', not FAILED (a build-ordering issue, never a test failure)"
+                | TestsNoMatch _ ->
+                    logToCtx $"{config.Project}: no tests matched the filter — skipped"
+
+                    Logging.info
+                        "test-prune"
+                        $"%s{config.Project}: no tests matched the active filter — skipped, not FAILED (a filtered run that selects nothing here is not a test failure)"
+                | TestsPassed _ ->
+                    logToCtx $"{config.Project}: passed"
+                    Logging.info "test-prune" $"%s{config.Project}: PASSED"
+                | TestsErrored reason ->
+                    logToCtx $"{config.Project}: ABORTED (nothing verified) — {reason}"
+
+                    Logging.error
+                        "test-prune"
+                        $"%s{config.Project}: ABORTED — %s{reason} Nothing was verified; this is NOT a test failure and NOT a pass — re-run (e.g. `dotnet fshw test-rerun`)."
+                | TestsFailed _ ->
+                    logToCtx $"{config.Project}: failed"
+                    Logging.error "test-prune" $"%s{config.Project}: FAILED"
+                | TestsTimedOut(_, after, _, _) ->
+                    logToCtx $"{config.Project}: timed out (infrastructure)"
+
+                    Logging.error
+                        "test-prune"
+                        $"%s{config.Project}: TIMED OUT (infrastructure) after %d{int after.TotalSeconds}s"
+
+                // Report the outcome in full. The two reports are DIFFERENT
+                // documents on purpose: a failure report
+                // counts the runner's `failed ...` lines and calls them
+                // failures, which is true of a run that finished and false —
+                // expensively, alarmingly false — of one that was killed
+                // holding a half-written transcript.
+                match result with
+                | TestsFailed _
+                | TestsTimedOut _ ->
+                    let ctrfFailedRows =
+                        reportJson |> Option.map failedRowsOfReport |> Option.defaultValue []
+
+                    for line in
+                        formatFailureReport
+                            (RedRunEnding.ofResult result)
+                            ctrfFailedRows
+                            config.Project
+                            runLog.Ref
+                            output do
+                        Logging.error "test-prune" line
+                | TestsErrored reason ->
+                    for line in formatAbortReport config.Project runLog.Ref reason output do
+                        Logging.error "test-prune" line
+                | TestsPassed _
+                | TestsDeferred _
+                | TestsNoMatch _ -> ()
+
+                projectCoverageLaunch |> Option.iter (keepRunCoverage runDir)
+
+                // Collect this project's raw runner cobertura for SERIAL
+                // ingest after Async.Parallel (a parallel DB write +
+                // shared-file write would race). A run that never executed
+                // (apphost missing) contributes NO input, so a partial file
+                // cannot lower coverage.
+                match
+                    projectCoverageLaunch
+                    |> Option.map (coverageReceiptFromReceipt (TestResult.verifiedGreen result))
+                with
+                | Some(CoverageReceiptAccepted input) ->
+                    lock coverageRawPathsLock (fun () -> coverageInputs <- input :: coverageInputs)
+                | Some(CoverageReceiptFailed failure) ->
+                    lock coverageRawPathsLock (fun () -> coverageReceiptFailures <- failure :: coverageReceiptFailures)
+                | Some CoverageReceiptAbsent
+                | None -> ()
+
+                // Per-test flakiness tracking: reuse the report content
+                // already read for the verdict; COLLECT this project's
+                // per-test records for the single post-parallel write (see
+                // `flakinessRecords`). Best-effort — exceptions never fail
+                // the run.
+                //
+                // The report is RETAINED — the verdict file POINTS at these
+                // reports rather than deleting them once their records are
+                // folded into the flakiness history. `Ctrf.tidyRunsDir`
+                // (post-run) keeps the newest few per project, so retention
+                // stays bounded.
+                match ctrfPath, reportJson with
+                | Some _, Some json ->
+                    try
+                        let records = Flakiness.parseCtrfTests json
+
+                        if not records.IsEmpty then
+                            lock flakinessLock (fun () -> flakinessRecords <- flakinessRecords @ records)
+                    with
+                    | :? IOException
+                    | :? UnauthorizedAccessException
+                    | :? JsonException as ex ->
+                        Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}"
+                | Some p, None ->
+                    // Report requested but unreadable (missing — the host
+                    // aborted before flushing — or locked). Nothing to retain;
+                    // its ABSENCE already drove the Errored verdict.
+                    try
+                        File.Delete p
+                    with
+                    | :? IOException
+                    | :? UnauthorizedAccessException -> ()
+                | None, _ -> ()
+
+                if Option.isSome traces then
+                    let traced: TracedProjectRun =
+                        { Project = config.Project
+                          Decision = traceDecision.Value
+                          Filtered = wasFiltered
+                          CtrfPath = ctrfPath }
+
+                    lock traceRunsLock (fun () -> traceRuns <- traced :: traceRuns)
+
+                return result, reportJson
+            }
+
+        // STARVATION. A project that declared `starvation` is sampled while it runs; a
+        // timeout on a starved box is held back from the group's results and re-run alone
+        // once every group has finished (`rerunStarved`). See `Starvation`.
+        let mutable starvedProjects: (TestConfig * Starvation.TimedOut * Starvation.Reading) list =
+            []
+
+        let starvedLock = obj ()
+
+        /// The classes the run filtered `config`'s project to; `None` when it runs in full
+        /// or under a raw filter, whose classes are not known.
+        let selectionOf (config: TestConfig) : string list option =
+            match rawFilter, Map.tryFind config.Project affectedClassesByProject with
+            | None, Some(_ :: _ as classes) -> Some classes
+            | _ -> None
+
+        /// `launchProject`, with the load sampled while it runs.
+        let launchSampled (runToken: Threading.CancellationToken) (config: TestConfig) =
+            async {
+                let sampler =
+                    Starvation.Sampler.start Starvation.Sampler.DefaultInterval OperationWatchdog.loadAverage
+
+                let samples = ref []
+
+                let! result, reportJson =
+                    async {
+                        try
+                            return! launchProject runToken config
+                        finally
+                            samples.Value <- Starvation.Sampler.stop sampler
+                    }
+
+                let reading: Starvation.Reading =
+                    { Cores = Environment.ProcessorCount
+                      Samples = samples.Value }
+
+                return result, reportJson, reading
+            }
+
+        /// Launch `config`'s project; `None` when it timed out under starvation and is
+        /// held back for its re-run alone.
+        let launchWatched (runToken: Threading.CancellationToken) (config: TestConfig) : Async<TestResult option> =
+            async {
+                match config.Starvation with
+                | None ->
+                    let! result, _ = launchProject runToken config
+                    return Some result
+                | Some policy ->
+                    let! result, reportJson, reading = launchSampled runToken config
+
+                    match Starvation.decide (Some policy) (selectionOf config) result reportJson reading with
+                    | Starvation.RerunAlone(timedOut, firstReading) ->
+                        let line =
+                            $"%s{config.Project}: %s{Starvation.TimedOut.describe timedOut} under CPU starvation \
+                              (%s{Starvation.Reading.describe policy firstReading}); re-running it ALONE once the \
+                              rest of the run has finished — its re-run is the result reported"
+
+                        Logging.warn "test-prune" line
+                        logToCtx line
+
+                        lock starvedLock (fun () ->
+                            starvedProjects <- (config, timedOut, firstReading) :: starvedProjects)
+
+                        return None
+                    | Starvation.Report why ->
+                        why
+                        |> Option.iter (fun reason ->
+                            Logging.info "test-prune" $"%s{config.Project}: starvation declared; %s{reason}")
+
+                        return Some result
+            }
+
+        /// Re-run every held-back project, one at a time, after every group has finished:
+        /// alone, as far as this run is concerned. The first attempt's report, log and
+        /// timeout marker are set aside first, so the run directory's report for the
+        /// project is the re-run's; `<Project>.starved.json` records both attempts.
+        let rerunStarved () : Async<(string * TestResult) list> =
+            async {
+                let pending = lock starvedLock (fun () -> List.rev starvedProjects)
+                let! runToken = Async.CancellationToken
+                let mutable rerun = []
+
+                for (config, timedOut, firstReading) in pending do
+                    let policy =
+                        config.Starvation |> Option.defaultValue (Starvation.Policy.rerunAlone [])
+
+                    // `runCoveragePath`'s suffix: the copy of the raw coverage a run keeps.
+                    Starvation.setAside
+                        runDir
+                        config.Project
+                        [ Ctrf.ReportSuffix
+                          RunLog.Suffix
+                          TimeoutMarker.Suffix
+                          ".coverage.cobertura.xml" ]
+                    |> ignore
+
+                    // The first attempt's trace, if any, describes a run that is no longer
+                    // the project's result.
+                    lock traceRunsLock (fun () ->
+                        traceRuns <- traceRuns |> List.filter (fun t -> t.Project <> config.Project))
+
+                    let! result, _, reading = launchSampled runToken config
+
+                    let outcome =
+                        match result with
+                        | TestsPassed _ -> "passed"
+                        | TestsFailed _ -> "failed"
+                        | TestsTimedOut _ -> "timed out again"
+                        | TestsErrored _ -> "aborted"
+                        | TestsDeferred _ -> "was deferred"
+                        | TestsNoMatch _ -> "matched no test"
+
+                    let record: Starvation.Record =
+                        { Project = config.Project
+                          TimedOut = timedOut
+                          FirstAttempt = firstReading
+                          Rerun = reading
+                          RerunOutcome = outcome
+                          PassedAlone = TestResult.verifiedGreen result
+                          AttemptDir = Path.Combine(runDir, Starvation.AttemptDirName) }
+
+                    Starvation.write policy runDir record
+                    let line = Starvation.summary record
+
+                    if record.PassedAlone then
+                        Logging.warn "test-prune" line
+                    else
+                        Logging.error "test-prune" line
+
+                    logToCtx line
+                    rerun <- (config.Project, result) :: rerun
+
+                return List.rev rerun
+            }
+
         /// The normal path: every target certified fresh, so the groups launch in
         /// parallel (at most `maxParallelProjects` at a time) and fold their results into
         /// the shared accumulator as they finish, in whatever order that is.
@@ -5946,9 +6583,6 @@ let private executeTests
                     let mutable results = []
 
                     for config in groupConfigs do
-                        // Collect extra args (filter + coverage) to append
-                        let extraArgs = ResizeArray<string>()
-
                         // FRESHNESS IS ALREADY SETTLED. The preflight above
                         // asked `ArtifactFreshness.stale` about every config in this run before
                         // the first spawn and refused the whole run if any answer was stale, so
@@ -5968,501 +6602,11 @@ let private executeTests
                             results <- skippedResultOf config :: results
                         | false when filed -> ()
                         | false ->
-                            let filterArgs = buildFilterArgs config affectedClassesByProject
+                            let! settled = launchWatched runToken config
 
-                            match filterArgs with
-                            | Some f -> extraArgs.Add(f)
+                            match settled with
+                            | Some result -> results <- (config.Project, result) :: results
                             | None -> ()
-
-                            // Raw passthrough filter (from run-tests command)
-                            match rawFilter with
-                            | Some f -> extraArgs.Add(f)
-                            | None -> ()
-
-                            let wasFiltered = Option.isSome filterArgs || Option.isSome rawFilter
-
-                            // Resolve per-project coverage paths (if coverage is configured for
-                            // this project). wasFiltered determines which file coverlet writes
-                            // to; the post-test step reads those files back to produce cobertura.
-                            let projectCoveragePaths = Map.tryFind config.Project coveragePathsByProject
-
-                            let projectCoverageLaunch =
-                                projectCoveragePaths
-                                |> Option.map (fun paths ->
-                                    let rawPath = if wasFiltered then paths.Partial else paths.Baseline
-
-                                    let launch =
-                                        prepareCoverageArtifact
-                                            config.Project
-                                            paths.IncludeInRatchet
-                                            wasFiltered
-                                            rawPath
-
-                                    extraArgs.Add(buildCoverageArgs paths wasFiltered)
-                                    launch)
-
-                            // xUnit's runner supports a major-specific CTRF switch, which fshw
-                            // reads back as the AUTHORITATIVE pass/fail verdict (and for
-                            // flakiness history). An UNSUPPORTED `--report-*` flag is
-                            // FATAL (the runner exits "invalid command line" and runs
-                            // zero tests), so injection is scoped: `Disabled` never
-                            // injects, `Ctrf` always does, `AutoDetect` injects iff the
-                            // runner's restored package graph resolves to a supported xUnit
-                            // major. Forced `Ctrf` keeps the xUnit 3 switches as its fallback
-                            // for explicitly-configured custom runners, but uses the resolved
-                            // xUnit 4 switches whenever the project graph identifies v4.
-                            let ctrfRunnerFamily =
-                                match config.ReportVerificationFormat with
-                                | Disabled -> None
-                                | Ctrf -> detectCtrfRunnerFamily config.Args repoRoot |> Option.orElse (Some Xunit3)
-                                | AutoDetect -> detectCtrfRunnerFamily config.Args repoRoot
-
-                            // ONE DIRECTORY PER RUN. A run's reports live in
-                            // `.fshw/test-runs/<runId>/` and nothing else does, so membership is
-                            // a fact about where a file IS, never an inference from its mtime.
-                            //
-                            // The run-dir is created whether or not any project reports, so an
-                            // executed run that produced nothing leaves an EMPTY DIRECTORY —
-                            // distinguishable from a run that never happened.
-                            let ctrfPath =
-                                match ctrfRunnerFamily with
-                                | Some family ->
-                                    Directory.CreateDirectory(runDir) |> ignore
-                                    // The dir already names the run, so the file need only name
-                                    // the project. No guid to guess at, nothing to parse.
-                                    let ctrfName = $"{config.Project}{Ctrf.ReportSuffix}"
-
-                                    extraArgs.Add(ctrfArguments family ctrfName runDir)
-
-                                    Some(Path.Combine(runDir, ctrfName))
-                                | None -> None
-
-                            let finalArgs =
-                                if extraArgs.Count > 0 then
-                                    let extra = String.concat " " extraArgs
-                                    $"%s{config.Args} %s{extra}"
-                                else
-                                    config.Args
-
-                            // TRACES. Decided here, after the preflight certified the build
-                            // output fresh and before the spawn: a traced project launches its
-                            // woven copy; a refused one launches exactly as configured, and the
-                            // refusal is stored with its reason after the run.
-                            let decided =
-                                match traces with
-                                | None -> Untraced None
-                                | Some host ->
-                                    // Weaving and JIT verification can take minutes: held as a
-                                    // subtask, so a wait line names it rather than the run.
-                                    use _ =
-                                        host.HoldSubtask
-                                            $"{config.Project}:traces"
-                                            $"preparing traces for {config.Project}"
-
-                                    host.TraceWiring.Decide
-                                        runToken
-                                        host.TraceRuntime
-                                        { Project = config.Project
-                                          Command = config.Command
-                                          Args = config.Args
-                                          Environment = config.Environment
-                                          Target = deriveProjectBin config.Args repoRoot
-                                          CtrfPath = ctrfPath
-                                          TraceWeave = host.TraceWiring.WeaveOverrides.TryFind config.Project }
-                                        runDir
-                                        (List.ofSeq extraArgs)
-
-                            match decided with
-                            | Untraced(Some reason) ->
-                                Logging.warn
-                                    "test-prune"
-                                    $"%s{config.Project}: not tracing this run, launching as configured — %s{reason}"
-                            | Traced(spec, _) ->
-                                Logging.info "test-prune" $"%s{config.Project}: tracing, launching %s{spec.Command}"
-                            | Untraced None -> ()
-
-                            // A ref: the untraced retry below replaces it from inside `runOnce`.
-                            let traceDecision = ref decided
-
-                            Logging.info "test-prune" $"Running: %s{config.Command} %s{finalArgs}"
-
-                            let timeoutSpan =
-                                match config.TimeoutSec with
-                                | Some s -> TimeSpan.FromSeconds(float s)
-                                | None -> System.Threading.Timeout.InfiniteTimeSpan
-
-                            let projectSw = Stopwatch.StartNew()
-
-                            // THE RUN LOG. Opened for EVERY project on every
-                            // run, before the spawn — which project will need explaining is not
-                            // knowable in advance and the artifact costs a file handle.
-                            //
-                            // STREAMED, not buffered (see `RunLog`): the failure that needs it
-                            // most is the suite SIGKILLed at its timeout, which reaches no
-                            // writer at all and whose in-memory capture the kill truncates.
-                            let runLog = RunLog.openFor runDir config.Project
-
-                            match runLog.Ref with
-                            | RunLog.Ref.Written path ->
-                                Logging.info "test-prune" $"%s{config.Project}: streaming run output to %s{path}"
-                            | RunLog.Ref.Unavailable reason ->
-                                Logging.warn
-                                    "test-prune"
-                                    $"%s{config.Project}: NOT saving a run log — %s{reason}. The run proceeds; only \
-                                  the console tail will be available if it fails."
-
-                            let outputSink =
-                                match runLog.Ref with
-                                | RunLog.Ref.Written _ -> Some runLog.Write
-                                | RunLog.Ref.Unavailable _ -> None
-
-                            // A test runner STREAMS (discovery banner, progress, per-test
-                            // lines), so its first byte is a sound liveness proof and the
-                            // launch deadline can bound the spawn even when the config sets
-                            // no TimeoutSec at all.
-                            //
-                            // A host that overruns is asked to stop before it is killed
-                            // (`TestHostStop`); the teardown is kept for the timeout marker.
-                            let spawnedAt = ref DateTime.UtcNow
-                            let lastTeardown: TreeTeardown option ref = ref None
-
-                            let launch (decision: TraceDecision) =
-                                async {
-                                    let command, args, environment =
-                                        TraceRun.launchOf decision (config.Command, finalArgs, config.Environment)
-
-                                    spawnedAt.Value <- DateTime.UtcNow
-
-                                    let outcome, teardown =
-                                        runProcessToStopping
-                                            TestHostStop
-                                            outputSink
-                                            command
-                                            args
-                                            repoRoot
-                                            environment
-                                            (ProcessBounds.streaming timeoutSpan launchDeadline)
-
-                                    lastTeardown.Value <- teardown
-                                    return outcome
-                                }
-
-                            let runOnce = async { return! launch traceDecision.Value }
-
-                            // A traced launch that verified nothing is repeated untraced,
-                            // unless it timed out (see `TraceRun.untracedRetry`): tracing
-                            // cannot turn a crash red, and a timeout is not run twice.
-                            let runOnceTracedOrNot =
-                                async {
-                                    let announce followUp =
-                                        let reason, seam =
-                                            match followUp with
-                                            | RelaunchUntraced reason ->
-                                                reason,
-                                                "the traced launch failed without writing a test report; relaunching \
-                                                 untraced. Everything above is the TRACED attempt, everything below the \
-                                                 untraced one."
-                                            | KeepTimeout reason ->
-                                                reason,
-                                                "the traced launch was killed at the project timeout; not relaunching \
-                                                 untraced, so the timeout is this project's outcome. `\"traces\": false` \
-                                                 on the project runs it untraced."
-
-                                        Logging.warn "test-prune" $"%s{config.Project}: %s{reason}"
-                                        RunLog.note runLog seam
-
-                                    let! outcome, decision =
-                                        TraceRun.launchTracedOrNot
-                                            traceDecision.Value
-                                            (fun () -> ctrfPath |> Option.exists File.Exists)
-                                            announce
-                                            launch
-
-                                    traceDecision.Value <- decision
-                                    return outcome
-                                }
-
-                            // See `tryApphostPresent`; `looksLikeApphostMissing` is the
-                            // fallback for a command with no derivable project.
-                            let detectApphostMissing (outcome: ProcessOutcome) : bool =
-                                // A clean exit means the apphost ran — never a
-                                // launch-ordering problem, regardless of artifacts.
-                                if isSucceeded outcome then
-                                    false
-                                else
-                                    match tryApphostPresent config.Args repoRoot with
-                                    | Some present -> not present
-                                    | None ->
-                                        // Not derivable — fall back to the text sniff.
-                                        match outcome with
-                                        | ProcessOutcome.Failed(_, out) ->
-                                            looksLikeApphostMissing (ProcessOutput.text out)
-                                        | _ -> false
-
-                            // Cold-start apphost-missing retry. The BuildCompleted→TestPrune
-                            // ordering already gates the launch on a successful build, but a
-                            // narrow race can still fire `--no-build` before the apphost
-                            // lands. Retry ONCE after a short wait; a still-missing apphost
-                            // is DEFERRED ("waiting on build"), never FAILED.
-                            let runTestWithRetry =
-                                async {
-                                    let! first = runOnceTracedOrNot
-
-                                    if detectApphostMissing first then
-                                        Logging.warn
-                                            "test-prune"
-                                            $"%s{config.Project}: apphost missing at launch (build not settled yet); retrying once after a short wait"
-
-                                        // Both attempts stream into the SAME log, so mark the
-                                        // seam — otherwise two runs read as one confusing run.
-                                        RunLog.note
-                                            runLog
-                                            "apphost missing at launch; relaunching once. Everything above is the \
-                                         FIRST attempt, everything below the second."
-
-                                        do! Async.Sleep 750
-                                        let! second = runOnce
-                                        return second
-                                    else
-                                        return first
-                                }
-
-                            // `finally`, not a close after the bind: a launch stall RE-RAISES
-                            // out of this block, and a run log whose handle leaked on the one
-                            // path where the child never came back is a log of nothing.
-                            let! processResult =
-                                async {
-                                    try
-                                        try
-                                            let! outcome =
-                                                match ctx with
-                                                | Some c ->
-                                                    PluginCtxHelpers.withSubtask
-                                                        c
-                                                        config.Project
-                                                        $"testing {config.Project}"
-                                                        runTestWithRetry
-                                                | None -> runTestWithRetry
-
-                                            // A host torn down at its timeout wrote no report and its
-                                            // log ends wherever the kill caught it: say why, in the
-                                            // log and beside it (`TimeoutMarker`).
-                                            match outcome with
-                                            | ProcessOutcome.TimedOut(after, _, kill) ->
-                                                let facts: TimeoutMarker.Facts =
-                                                    { Project = config.Project
-                                                      After = after
-                                                      SpawnedAt = spawnedAt.Value
-                                                      Kill = kill
-                                                      Teardown = lastTeardown.Value }
-
-                                                RunLog.note runLog (TimeoutMarker.message facts)
-                                                TimeoutMarker.write runDir facts
-                                            | _ -> ()
-
-                                            return outcome
-                                        with LaunchStalledException reason ->
-                                            // The watchdog killed a child that never showed a
-                                            // sign of life within the launch deadline. Re-raise
-                                            // NAMING the config and elapsed so the run's Aborted
-                                            // lifecycle (built by the caller's `with ex ->`)
-                                            // carries a legible diagnostic. A launch stall means
-                                            // this project NEVER RAN, so the whole run must
-                                            // abort → PluginStatus.Failed → `check` exits
-                                            // non-green rather than wedging at Running. A child
-                                            // that EXITS is not a stall — the poll observes the
-                                            // exit and classifies it normally.
-                                            return
-                                                raise (
-                                                    LaunchStalledException
-                                                        $"%s{config.Project}: %s{reason} (after %.0f{projectSw.Elapsed.TotalSeconds}s)"
-                                                )
-                                    finally
-                                        // The pumps are done by the time `runProcessTo`
-                                        // returns (it drains them), so nothing is still
-                                        // writing when this closes.
-                                        runLog.Close()
-                                }
-
-                            projectSw.Stop()
-                            let projectElapsed = projectSw.Elapsed
-
-                            let apphostMissing = detectApphostMissing processResult
-
-                            // A filtered run that matched zero tests in this project is
-                            // not a failure (see `isZeroTestsUnderFilter`) — treat it
-                            // like an impact-skip.
-                            let zeroTestsUnderFilter = isZeroTestsUnderFilter wasFiltered processResult
-
-                            let output = outputOf processResult
-
-                            // Read the structured report ONCE (when one was requested
-                            // from a capable runner). It is BOTH the authoritative
-                            // pass/fail signal (summary counts) AND the flakiness
-                            // source (per-test records). Read BEFORE the verdict so
-                            // the REPORT — not the exit code — decides green/red.
-                            let reportJson =
-                                match ctrfPath with
-                                | Some p ->
-                                    try
-                                        Some(File.ReadAllText p)
-                                    with
-                                    | :? IOException
-                                    | :? UnauthorizedAccessException -> None
-                                | None -> None
-
-                            let reportEvidence =
-                                match ctrfPath, reportJson with
-                                | None, _ -> NoReportRequested
-                                | Some _, Some json -> ReportRequested(Ctrf.tryVerdictReport json)
-                                | Some p, None -> ReportRequested(Error $"no readable report at %s{p}")
-
-                            let result =
-                                if apphostMissing then
-                                    // Tests NEVER RAN — the apphost wasn't produced.
-                                    // A dedicated `TestsDeferred`, NOT a pass
-                                    // (`verdict` = `NothingVerified` → never a silent
-                                    // false-green) and NOT a real failure: surfaced as an honest
-                                    // "waiting on build" diagnostic. Carries no
-                                    // elapsed/wasFiltered, so it never lowers a
-                                    // coverage baseline.
-                                    TestsDeferred "apphost not produced; tests did not run"
-                                elif zeroTestsUnderFilter then
-                                    // Not a failure — per project, a filter selecting
-                                    // nothing is not that project's fault, so it is never
-                                    // reported as one. Its own case (rather than a passing
-                                    // result wearing a marker prefix) so that every fold
-                                    // must decide it; see `TestResult.verdict` and
-                                    // `verificationOf`.
-                                    TestsNoMatch(output, projectElapsed)
-                                else
-                                    classifyTestOutcome reportEvidence wasFiltered projectElapsed processResult
-
-                            // Log driven off the AUTHORITATIVE verdict (not the raw
-                            // exit code) so the console line can never disagree with
-                            // the recorded result.
-                            match result with
-                            | TestsDeferred _ ->
-                                logToCtx $"{config.Project}: waiting on build (apphost not yet produced)"
-
-                                Logging.warn
-                                    "test-prune"
-                                    $"%s{config.Project}: apphost still missing after retry — surfacing as 'waiting on build', not FAILED (a build-ordering issue, never a test failure)"
-                            | TestsNoMatch _ ->
-                                logToCtx $"{config.Project}: no tests matched the filter — skipped"
-
-                                Logging.info
-                                    "test-prune"
-                                    $"%s{config.Project}: no tests matched the active filter — skipped, not FAILED (a filtered run that selects nothing here is not a test failure)"
-                            | TestsPassed _ ->
-                                logToCtx $"{config.Project}: passed"
-                                Logging.info "test-prune" $"%s{config.Project}: PASSED"
-                            | TestsErrored reason ->
-                                logToCtx $"{config.Project}: ABORTED (nothing verified) — {reason}"
-
-                                Logging.error
-                                    "test-prune"
-                                    $"%s{config.Project}: ABORTED — %s{reason} Nothing was verified; this is NOT a test failure and NOT a pass — re-run (e.g. `dotnet fshw test-rerun`)."
-                            | TestsFailed _ ->
-                                logToCtx $"{config.Project}: failed"
-                                Logging.error "test-prune" $"%s{config.Project}: FAILED"
-                            | TestsTimedOut(_, after, _, _) ->
-                                logToCtx $"{config.Project}: timed out (infrastructure)"
-
-                                Logging.error
-                                    "test-prune"
-                                    $"%s{config.Project}: TIMED OUT (infrastructure) after %d{int after.TotalSeconds}s"
-
-                            // Report the outcome in full. The two reports are DIFFERENT
-                            // documents on purpose: a failure report
-                            // counts the runner's `failed ...` lines and calls them
-                            // failures, which is true of a run that finished and false —
-                            // expensively, alarmingly false — of one that was killed
-                            // holding a half-written transcript.
-                            match result with
-                            | TestsFailed _
-                            | TestsTimedOut _ ->
-                                let ctrfFailedRows =
-                                    reportJson |> Option.map failedRowsOfReport |> Option.defaultValue []
-
-                                for line in
-                                    formatFailureReport
-                                        (RedRunEnding.ofResult result)
-                                        ctrfFailedRows
-                                        config.Project
-                                        runLog.Ref
-                                        output do
-                                    Logging.error "test-prune" line
-                            | TestsErrored reason ->
-                                for line in formatAbortReport config.Project runLog.Ref reason output do
-                                    Logging.error "test-prune" line
-                            | TestsPassed _
-                            | TestsDeferred _
-                            | TestsNoMatch _ -> ()
-
-                            projectCoverageLaunch |> Option.iter (keepRunCoverage runDir)
-
-                            // Collect this project's raw runner cobertura for SERIAL
-                            // ingest after Async.Parallel (a parallel DB write +
-                            // shared-file write would race). A run that never executed
-                            // (apphost missing) contributes NO input, so a partial file
-                            // cannot lower coverage.
-                            match
-                                projectCoverageLaunch
-                                |> Option.map (coverageReceiptFromReceipt (TestResult.verifiedGreen result))
-                            with
-                            | Some(CoverageReceiptAccepted input) ->
-                                lock coverageRawPathsLock (fun () -> coverageInputs <- input :: coverageInputs)
-                            | Some(CoverageReceiptFailed failure) ->
-                                lock coverageRawPathsLock (fun () ->
-                                    coverageReceiptFailures <- failure :: coverageReceiptFailures)
-                            | Some CoverageReceiptAbsent
-                            | None -> ()
-
-                            // Per-test flakiness tracking: reuse the report content
-                            // already read for the verdict; COLLECT this project's
-                            // per-test records for the single post-parallel write (see
-                            // `flakinessRecords`). Best-effort — exceptions never fail
-                            // the run.
-                            //
-                            // The report is RETAINED — the verdict file POINTS at these
-                            // reports rather than deleting them once their records are
-                            // folded into the flakiness history. `Ctrf.tidyRunsDir`
-                            // (post-run) keeps the newest few per project, so retention
-                            // stays bounded.
-                            match ctrfPath, reportJson with
-                            | Some _, Some json ->
-                                try
-                                    let records = Flakiness.parseCtrfTests json
-
-                                    if not records.IsEmpty then
-                                        lock flakinessLock (fun () -> flakinessRecords <- flakinessRecords @ records)
-                                with
-                                | :? IOException
-                                | :? UnauthorizedAccessException
-                                | :? JsonException as ex ->
-                                    Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}"
-                            | Some p, None ->
-                                // Report requested but unreadable (missing — the host
-                                // aborted before flushing — or locked). Nothing to retain;
-                                // its ABSENCE already drove the Errored verdict.
-                                try
-                                    File.Delete p
-                                with
-                                | :? IOException
-                                | :? UnauthorizedAccessException -> ()
-                            | None, _ -> ()
-
-                            if Option.isSome traces then
-                                let traced: TracedProjectRun =
-                                    { Project = config.Project
-                                      Decision = traceDecision.Value
-                                      Filtered = wasFiltered
-                                      CtrfPath = ctrfPath }
-
-                                lock traceRunsLock (fun () -> traceRuns <- traced :: traceRuns)
-
-                            results <- (config.Project, result) :: results
 
                     // Atomically fold this group's results into the shared
                     // accumulator and emit a cumulative snapshot. Groups that
@@ -6482,6 +6626,14 @@ let private executeTests
         // `cumulative` (populated under the lock inside foldAndEmit) is the
         // canonical run-wide aggregate.
         groupResults |> ignore
+
+        // STARVATION: the held-back projects, re-run alone now that every group is done.
+        let! rerunResults = rerunStarved ()
+
+        if not rerunResults.IsEmpty then
+            foldAndEmit rerunResults
+
+        let rerunProjects = rerunResults |> List.map fst |> Set.ofList
 
         // TEST EVIDENCE, at completion. One fresh walk keys every candidate again. A reuse
         // whose key moved while the run was in flight no longer describes this tree: its
@@ -6570,8 +6722,11 @@ let private executeTests
         |> Option.iter (fun (plan, r) ->
             let finalNow = lock accumulatorLock (fun () -> cumulative)
 
+            // A project re-run under starvation is not published: its green was earned on a
+            // second attempt, which the stored evidence could not say.
             let runOf (candidate: TestEvidenceRun.Candidate) : TestEvidenceRun.ProducedRun option =
                 Map.tryFind candidate.Project finalNow
+                |> Option.filter (fun _ -> not (rerunProjects.Contains candidate.Project))
                 |> Option.map (fun result ->
                     let coveragePath = runCoveragePath runDir candidate.Project
 

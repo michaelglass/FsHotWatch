@@ -3471,8 +3471,8 @@ type Daemon
                 //
                 // The decision logic lives in the pure, unit-tested `IdleExit`
                 // module; injected here are the live clock/busy/activity/pressure
-                // and the shutdown action. Memory pressure (a live
-                // `GC.GetGCMemoryInfo()` read) SHORTENS the effective window to
+                // and the shutdown action. Memory pressure (`readMemoryPressure`:
+                // the macOS kernel level, else the GC mark) SHORTENS the window to
                 // `min(N, pressureFloor)` per tick so a tight machine sheds idle
                 // workspace daemons fast; the default workspace stays exempt
                 // because its `idleExitMin` is `None` and pressure never creates a
@@ -3483,7 +3483,7 @@ type Daemon
                         let deps: IdleExit.IdleExitDeps =
                             { BaseThresholdMin = minutes
                               PressureFloorMin = pressureIdleFloorMin
-                              Pressure = IdleExit.readGcPressure
+                              Pressure = IdleExit.readMemoryPressure
                               Now = fun () -> System.DateTime.UtcNow
                               // Inhibited by plugin work in flight (mailbox events
                               // or an exclusive background run), a client blocked

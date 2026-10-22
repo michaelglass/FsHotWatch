@@ -917,7 +917,7 @@ let ipcErrorHeadline (inner: exn) : string =
         // agent harness's low-memory killer. Saying so costs one GC read and
         // turns four different-looking failures into one named cause.
         let pressure =
-            FsHotWatch.IdleExit.disconnectPressureNote (FsHotWatch.IdleExit.readGcPressure ())
+            FsHotWatch.IdleExit.disconnectPressureNote (FsHotWatch.IdleExit.readMemoryPressure ())
 
         $"Could not connect to daemon: %s{inner.Message}%s{pressure}"
 

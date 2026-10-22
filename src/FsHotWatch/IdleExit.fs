@@ -1,6 +1,7 @@
 module FsHotWatch.IdleExit
 
 open System
+open System.Runtime.InteropServices
 open System.Threading
 
 /// How the daemon's idle-exit feature is configured in `.fshw.json` via the
@@ -54,16 +55,75 @@ let resolvePressureFloor (config: PressureFloorConfig) : int option =
     | PressureFloorConfig.Disabled -> None
     | PressureFloorConfig.Minutes n -> if n > 0 then Some n else None
 
-/// Read the live memory-pressure signal from the runtime GC: true when
-/// `MemoryLoadBytes` has reached the GC's own `HighMemoryLoadThresholdBytes`. No
-/// percentage knob — we reuse the GC's high-load mark. A 0 threshold (some hosts report
-/// it) never counts as pressure. Injected in the daemon wiring so the scheduler is
-/// unit-testable without a real GC.
+/// Pure: the GC's high-load decision. True when `memoryLoad` has reached the GC's own
+/// `highLoadThreshold`. No percentage knob — we reuse the GC's high-load mark. A 0
+/// threshold (some hosts report it) never counts as pressure.
+let gcPressureFrom (highLoadThreshold: int64) (memoryLoad: int64) : bool =
+    highLoadThreshold > 0L && memoryLoad >= highLoadThreshold
+
+/// Read the GC's memory-pressure signal (`gcPressureFrom` over a live
+/// `GC.GetGCMemoryInfo()`).
+///
+/// This is the signal where the kernel offers none (Linux, Windows). On macOS it is
+/// blind: the GC reports `MemoryLoadBytes = 0` while the machine thrashes, so
+/// `readMemoryPressure` asks the kernel there instead.
 let readGcPressure () : bool =
     let info = System.GC.GetGCMemoryInfo()
+    gcPressureFrom info.HighMemoryLoadThresholdBytes info.MemoryLoadBytes
 
-    info.HighMemoryLoadThresholdBytes > 0L
-    && info.MemoryLoadBytes >= info.HighMemoryLoadThresholdBytes
+[<DllImport("libc", EntryPoint = "sysctlbyname", SetLastError = true)>]
+extern int private sysctlByNameInt32(
+    string name,
+    int& value,
+    unativeint& length,
+    nativeint newValue,
+    unativeint newLength
+)
+
+/// Pure: decode a `sysctlbyname` answer for a 32-bit integer — the value only when the
+/// call succeeded (`status = 0`) and wrote exactly four bytes.
+let internal decodeInt32Sysctl (status: int) (length: unativeint) (value: int) : int option =
+    if status = 0 && length = unativeint sizeof<int> then
+        Some value
+    else
+        None
+
+/// `kern.memorystatus_vm_pressure_level` straight from the kernel. macOS only.
+let private sysctlKernelPressureLevel () : int option =
+    let mutable level = 0
+    let mutable length = unativeint sizeof<int>
+
+    let status =
+        sysctlByNameInt32 ("kern.memorystatus_vm_pressure_level", &level, &length, IntPtr.Zero, 0un)
+
+    decodeInt32Sysctl status length level
+
+/// The kernel level with the platform and the probe passed in: the probe runs only on
+/// macOS, the one kernel that has this sysctl.
+let internal kernelPressureLevelOn (isMacOS: bool) (probe: unit -> int option) : int option =
+    if isMacOS then probe () else None
+
+/// The macOS kernel's memory-pressure level, `kern.memorystatus_vm_pressure_level`:
+/// 1 normal, 2 warning, 4 critical — the level `memory_pressure(1)` prints and
+/// `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE` fires on. `None` off macOS, or when the
+/// sysctl does not answer.
+let readKernelPressureLevel () : int option =
+    kernelPressureLevelOn (OperatingSystem.IsMacOS()) sysctlKernelPressureLevel
+
+/// Pure: the machine is under memory pressure. Where the kernel reports a level, the
+/// kernel decides — warning (2) or critical (4) is pressure, normal (1) is not — and
+/// the GC's mark is not consulted. Without a kernel level the GC's high-load mark
+/// decides. Both readings are passed in so the decision is testable without either.
+let pressureFrom (kernelLevel: int option) (gcPressure: unit -> bool) : bool =
+    match kernelLevel with
+    | Some level -> level >= 2
+    | None -> gcPressure ()
+
+/// Read the live memory-pressure signal: the kernel's level on macOS, the GC's
+/// high-load mark elsewhere. Injected in the daemon wiring so the scheduler is
+/// unit-testable without a real machine under pressure.
+let readMemoryPressure () : bool =
+    pressureFrom (readKernelPressureLevel ()) readGcPressure
 
 /// Pure: the sentence appended to a daemon-disconnect or aborted-check message
 /// when the MACHINE is under memory pressure.
@@ -82,7 +142,7 @@ let disconnectPressureNote (pressure: bool) : string =
     if not pressure then
         ""
     else
-        " The machine is under memory pressure (the GC reports memory load at or above its own high-load mark). \
+        " The machine is under memory pressure (the kernel pressure level, or the GC high-load mark). \
           fshw's footprint is dominated by native FCS allocations and scales with the size of the tree, so on a \
           machine the tree has outgrown this is what running out looks like rather than an out-of-memory error. \
           Measure with `footprint <daemon pid>` — `ps` refuses the field on macOS and `top`'s MEM column is a \
@@ -247,7 +307,7 @@ type IdleExitDeps =
         PressureFloorMin: int option
         /// Current memory-pressure signal. Re-evaluated each tick (a live
         /// current-state read, not latched): if pressure subsides the full window
-        /// is restored. Production wires `IdleExit.readGcPressure`.
+        /// is restored. Production wires `IdleExit.readMemoryPressure`.
         Pressure: unit -> bool
         /// Current UTC time.
         Now: unit -> DateTime

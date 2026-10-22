@@ -274,6 +274,7 @@ let private runnerConfig (script: string) (project: string) : TestPrunePlugin.Te
       ClassJoin = " "
       TimeoutSec = None
       ReportVerificationFormat = TestPrunePlugin.AutoDetect
+      Starvation = None
       AlwaysClasses = [] }
 
 let private runAll (tmpDir: string) (cap: int option) (configs: TestPrunePlugin.TestConfig list) =

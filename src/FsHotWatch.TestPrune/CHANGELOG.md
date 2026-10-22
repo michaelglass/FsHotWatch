@@ -12,6 +12,17 @@
   by run, newest first and bounded at `SessionRunLedger`; `check-reach` takes an optional
   run id and answers for that run (the newest without one, as before).
 
+- **feat!: a declared timeout under measured CPU starvation is re-run alone, once.** A test
+  project may declare `starvation` (`{ "onTimeout": "rerun-alone" }`, optional `classes`,
+  `loadPerCore`, `share`). The plugin samples the 1-minute load average while it runs; a
+  result whose every failure is a timeout (the project's `timeoutSec`, or a CTRF report whose
+  every failed row is an xUnit per-test timeout in a declared class), on a box starved for at
+  least `share` of the samples, is re-run once after every other project of the run, and the
+  re-run is the result reported. An assertion failure is never re-run. The first attempt's
+  artifacts move to `starved-attempt/` in the run directory and `<Project>.starved.json`
+  records both attempts and their load (`Starvation` module). A green earned that way is not
+  published as test evidence. Breaking: `TestConfig` has a new field, `Starvation`.
+
 ## 0.13.0-alpha.89 - 2026-10-19
 
 - **feat!: every launch says which cause selected each test project.** A run's
