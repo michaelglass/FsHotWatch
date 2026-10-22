@@ -886,6 +886,80 @@ let ``completion publishes real CTRF recall through check-reach IPC`` () =
             test <@ reading.Recall = FsHotWatch.Cli.IpcParsing.FailureRecallMeasured(1, 2, 1.0, false) @>
         | other -> Assert.Fail($"the completed run must publish a measured recall sample, got %A{other}"))
 
+/// `confirm` grades the run its receipt names, and a LATER completion can
+/// leave that receipt standing — the zero-selection "already verified" skip the confirm's
+/// own scan provokes is the common one. The reach must still be served for the GRADED
+/// run, asked for by id; answering with the newest completion's reach made every such
+/// recall "names run X, but the graded run is Y".
+[<Fact(Timeout = 20000)>]
+let ``check-reach answers for the requested run after a later skip completes`` () =
+    withTempDir "recall-graded-run" (fun repoRoot ->
+        let project = "Acme.Tests"
+        let reachedClass = "Acme.Tests.ReachedTests"
+        let missedClass = "Acme.Tests.MissedTests"
+
+        let handler =
+            create ":memory:" repoRoot (Some [ projConfig project ]) None None None None []
+
+        let report =
+            ctrfReport [ $"%s{reachedClass}.fails", "failed"; $"%s{missedClass}.also fails", "failed" ]
+
+        let launch =
+            { fullSuiteLaunch [ project ] with
+                WouldHaveRun = Some(Map.ofList [ project, ProjectClasses(Set.ofList [ reachedClass ]) ]) }
+
+        let graded =
+            testsFinishedEventWithReports
+                repoRoot
+                [ project, report ]
+                [ project,
+                  TestsFailed(
+                      $"failed %s{reachedClass}.fails (1ms)\nfailed %s{missedClass}.also fails (1ms)",
+                      false,
+                      TimeSpan.FromMilliseconds 2.0
+                  ) ]
+                launch
+
+        let gradedRunId =
+            match graded with
+            | Custom(TestsFinished(_, completed, _)) -> completed.RunId
+            | other -> failwithf "expected a TestsFinished, got %A" other
+
+        let skip =
+            testsFinishedEvent
+                []
+                { fullSuiteLaunch [ project ] with
+                    Selection = Map.empty
+                    SelectedBy = []
+                    WouldHaveRun = None
+                    ZeroSelection = ZeroSelection.AlreadyVerified }
+
+        let pluginCtx, _, _ = makeTestPruneRecordingCtx ()
+
+        let state =
+            [ graded; skip ]
+            |> List.fold (fun s e -> handler.Update pluginCtx s e |> Async.RunSynchronously) handler.Init
+
+        let command = handler.Commands |> List.find (fst >> (=) "check-reach") |> snd
+
+        let commandCtx: FsHotWatch.PluginFramework.CommandCtx<TestPruneMsg> =
+            { RepoRoot = repoRoot
+              Log = ignore
+              Post = ignore
+              EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
+              IsRunning = fun _ -> false
+              ProjectGraph = pluginCtx.ProjectGraph }
+
+        let json =
+            PluginCommand.invoke command commandCtx state [| gradedRunId.ToString("N") |]
+            |> Async.RunSynchronously
+
+        match FsHotWatch.Cli.IpcParsing.parseCheckReach json with
+        | FsHotWatch.Cli.IpcParsing.ReachRecorded reading ->
+            test <@ reading.RunId = Some gradedRunId @>
+            test <@ reading.Recall = FsHotWatch.Cli.IpcParsing.FailureRecallMeasured(1, 2, 1.0, false) @>
+        | other -> Assert.Fail($"the graded run's reach must be served by id, got %A{other}"))
+
 [<Fact(Timeout = 10000)>]
 let ``a class that RAN AND FAILED is claimed by nothing, not even its own passes`` () =
     // Per-class judgement on that class's own evidence: a class with a failure is not

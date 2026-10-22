@@ -977,8 +977,12 @@ let internal readTestRun (ipc: IpcOps) (pipeName: string) : TestRunReport =
     ScopeCommands.readTestRun (scopeSend ipc pipeName)
 
 /// `ScopeCommands.readCheckReach` over the daemon.
-let internal readCheckReach (ipc: IpcOps) (pipeName: string) : IpcParsing.CheckReachReading =
-    ScopeCommands.readCheckReach (scopeSend ipc pipeName)
+let internal readCheckReach
+    (ipc: IpcOps)
+    (pipeName: string)
+    (gradedRun: System.Guid option)
+    : IpcParsing.CheckReachReading =
+    ScopeCommands.readCheckReach (scopeSend ipc pipeName) gradedRun
 
 /// `ScopeCommands.requestFullSuiteScope` over the daemon.
 let internal requestFullSuiteScope (ipc: IpcOps) (pipeName: string) : unit =
@@ -1135,7 +1139,7 @@ let private ensureAndQueryErrors
                     (fun () -> readTestRun ipc pipeName)
                     // What `check` would have reached in the run this
                     // confirm did not have to escalate. Read at publish time, not here.
-                    (fun () -> readCheckReach ipc pipeName)
+                    (readCheckReach ipc pipeName)
                     // `confirm`'s teeth — see `CheckVerdict.confirmNeedsFullRun`.
                     (fun () -> forceFullSuiteRun ipc pipeName))
 

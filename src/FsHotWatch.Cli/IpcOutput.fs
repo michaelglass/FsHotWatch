@@ -1538,8 +1538,10 @@ let pollAndRenderForInvocation
     // What `check`'s impact selection WOULD have reached in the run this
     // `confirm` did not have to escalate. Read ONCE, at publish time, so a forced run
     // provoked after the first reading cannot leave the verdict holding an earlier run's
-    // projection — and checked against the run id either way.
-    (getCheckReach: unit -> IpcParsing.CheckReachReading)
+    // projection — and checked against the run id either way. Asked FOR the graded run:
+    // a later completion that left the receipt standing (a zero-selection skip) is the
+    // daemon's newest, and its projection is about a run this verdict does not grade.
+    (getCheckReach: Guid option -> IpcParsing.CheckReachReading)
     // Run EVERY configured test project, now, and don't come back until it is done
     // (`run-tests` with no filter). Invoked ONLY in `Confirmation`, and only when the
     // settled scope is not already full-suite — see the "CONFIRM EARNS ITS EVIDENCE"
@@ -1766,8 +1768,8 @@ let pollAndRenderForInvocation
         // never compares, so there is nothing to ask the daemon for.
         let checkScoped =
             match impactScoped.Value, checkMode with
-            | Some reading, _ -> Verdict.ExecutedReading(reading, getCheckReach ())
-            | None, CheckVerdict.Confirmation -> Verdict.ProjectedThrough(getCheckReach ())
+            | Some reading, _ -> Verdict.ExecutedReading(reading, getCheckReach finalRun.Value.RunId)
+            | None, CheckVerdict.Confirmation -> Verdict.ProjectedThrough(getCheckReach finalRun.Value.RunId)
             | None, CheckVerdict.InnerLoop -> Verdict.NoReading
 
         // The exit code is the one `publishVerdict` WROTE, not a second
@@ -1970,7 +1972,7 @@ let pollAndRender
     (getStatus: unit -> string)
     (getErrors: unit -> string)
     (getTestRun: unit -> TestRunReport)
-    (getCheckReach: unit -> IpcParsing.CheckReachReading)
+    (getCheckReach: Guid option -> IpcParsing.CheckReachReading)
     (forceFullRun: unit -> unit)
     : int =
     pollAndRenderForInvocation
