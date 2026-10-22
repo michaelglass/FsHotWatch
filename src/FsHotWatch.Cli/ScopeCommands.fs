@@ -81,9 +81,20 @@ let readTestRun (send: Send) : TestRunReport =
 /// such command (no test projects, or a plugin build that predates the projection), a
 /// fault, a reply this build cannot read — and each reaches the verdict as "no sample",
 /// never as "they agreed".
-let readCheckReach (send: Send) : CheckReachReading =
+///
+/// `gradedRun` is the run the verdict grades, and the projection is asked for BY it: the
+/// daemon's newest completion need not be that run (a zero-selection skip after the full
+/// run leaves the receipt where it was), and a projection for any other run is refused
+/// downstream as incomparable. `None` asks for the newest, as a daemon that predates the
+/// argument always answers.
+let readCheckReach (send: Send) (gradedRun: System.Guid option) : CheckReachReading =
+    let args =
+        gradedRun
+        |> Option.map (fun runId -> runId.ToString("N"))
+        |> Option.defaultValue ""
+
     try
-        match send CheckReachCommand "" with
+        match send CheckReachCommand args with
         | None ->
             ReachUnavailable
                 $"there is no `%s{CheckReachCommand}` command — no test projects are configured, or the plugin \

@@ -23,6 +23,12 @@
   `null` is a config error. Breaking: `GlobalOptions.AgentMode` is now `bool option`
   (`None` = no explicit choice), and `DaemonConfiguration` has a new field, `AgentMode`.
 
+- **fix!: `confirm` asks `check-reach` for the run its verdict grades**, so the projected
+  check-vs-confirm sample and conditional failure recall are measured against that run's
+  retained impact selection instead of being refused because a later run completed.
+  Breaking: `ScopeCommands.readCheckReach` and `pollAndRender`'s `getCheckReach` take the
+  graded run id (`Guid option`).
+
 ## 0.14.0-alpha.122 - 2026-10-19
 
 - **feat!: the verdict file's `scope` records `selectedBy`**, which cause selected each

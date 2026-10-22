@@ -27,8 +27,8 @@ let internal readTestRun (host: PluginHost.PluginHost) : TestRunReport =
     ScopeCommands.readTestRun (ScopeCommands.inProcess host)
 
 /// `ScopeCommands.readCheckReach` over the in-process host.
-let internal readCheckReach (host: PluginHost.PluginHost) : CheckReachReading =
-    ScopeCommands.readCheckReach (ScopeCommands.inProcess host)
+let internal readCheckReach (host: PluginHost.PluginHost) (gradedRun: System.Guid option) : CheckReachReading =
+    ScopeCommands.readCheckReach (ScopeCommands.inProcess host) gradedRun
 
 /// `ScopeCommands.requestFullSuiteScope` over the in-process host.
 let internal requestFullSuiteScope (host: PluginHost.PluginHost) : unit =
@@ -360,8 +360,9 @@ let private runOnceAndVerdictIn
         // the selection retained at the widening; a `check` offers nothing.
         let checkScoped =
             match impactScoped, checkMode with
-            | Some reading, _ -> Verdict.ExecutedReading(reading, readCheckReach daemon.Host)
-            | None, CheckVerdict.Confirmation -> Verdict.ProjectedThrough(readCheckReach daemon.Host)
+            | Some reading, _ -> Verdict.ExecutedReading(reading, readCheckReach daemon.Host finalRun.Value.RunId)
+            | None, CheckVerdict.Confirmation ->
+                Verdict.ProjectedThrough(readCheckReach daemon.Host finalRun.Value.RunId)
             | None, CheckVerdict.InnerLoop -> Verdict.NoReading
 
         // Take the code `publishVerdict` WROTE. The comment above

@@ -3323,7 +3323,7 @@ let ``both transports say and decide the same thing for the same scope-command a
             let inProcess =
                 observeAll (
                     (fun () -> RunOnceCheck.readTestRun host),
-                    (fun () -> RunOnceCheck.readCheckReach host),
+                    (fun () -> RunOnceCheck.readCheckReach host None),
                     (fun () -> RunOnceCheck.requestFullSuiteScope host),
                     (fun () -> RunOnceCheck.requestFullRun host)
                 )
@@ -3331,7 +3331,7 @@ let ``both transports say and decide the same thing for the same scope-command a
             let overDaemon =
                 observeAll (
                     (fun () -> readTestRun ipc "pipe"),
-                    (fun () -> readCheckReach ipc "pipe"),
+                    (fun () -> readCheckReach ipc "pipe" None),
                     (fun () -> requestFullSuiteScope ipc "pipe"),
                     (fun () -> forceFullSuiteRun ipc "pipe")
                 )

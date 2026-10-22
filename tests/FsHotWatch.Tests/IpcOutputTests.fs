@@ -824,7 +824,7 @@ let ``pollAndRender waits for the test-prune verdict before deciding (no false g
                 (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
                 // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
-                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                (fun _ -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore) // forceFullRun: never fires — the scope is already full-suite
 
     // The authoritative settle MUST have been consulted...
@@ -885,7 +885,7 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
                     (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
                     // No projection on offer. `InnerLoop` never asks, and a
                     // `Confirmation` that gets this records "no sample", never an agreement.
-                    (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                    (fun _ -> IpcParsing.ReachUnavailable "this drive offers no projection")
                     ignore // forceFullRun: never fires — the scope is already full-suite
 
             let recorded =
@@ -961,7 +961,7 @@ let private driveWithModel
                 (fun () -> statusJsonFor true)
                 (fun () -> diagnostics)
                 (fun () -> run)
-                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                (fun _ -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore
 
         let raw = System.IO.File.ReadAllText(Verdict.path repoRoot)
@@ -1147,7 +1147,7 @@ let ``a check whose daemon ran the tests TWICE publishes a verdict covering BOTH
                 getStatus
                 cleanDiagnostics
                 getTestRun
-                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                (fun _ -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore
             |> ignore
 
@@ -1263,7 +1263,7 @@ let ``pollAndRender returns exit 2 when the daemon drops mid-wait`` () =
                 (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
                 // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
-                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                (fun _ -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore) // forceFullRun: never fires — the scope is already full-suite
 
     test <@ exitCode = 2 @>
@@ -1318,7 +1318,7 @@ let ``pollAndRender returns exit 2 when the verdict deadline is breached`` () =
                 (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
                 // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
-                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                (fun _ -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore) // forceFullRun: never fires — the scope is already full-suite
 
     test <@ exitCode = 2 @>
@@ -1362,7 +1362,7 @@ let private driveConfirm (checkMode: CheckVerdict.CheckMode) : int * int =
                 getTestRun
                 // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
-                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                (fun _ -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 (fun () -> forceCalls <- forceCalls + 1)) // forceFullRun
 
     exitCode, forceCalls
@@ -1400,7 +1400,7 @@ let ``a confirm that already has full-suite evidence does NOT run the suite twic
                 (fun () -> BaselineFixtures.reportOf (FullSuite(1, None)))
                 // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
-                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                (fun _ -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 (fun () -> forceCalls <- forceCalls + 1))
 
     test <@ forceCalls = 0 @>
@@ -1465,7 +1465,7 @@ let private driveFresh
                 (fun () ->
                     """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""")
                 getTestRun
-                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                (fun _ -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 (fun () -> forceCalls <- forceCalls + 1)
 
         match Verdict.read repoRoot with
@@ -1560,7 +1560,7 @@ let ``confirm --fresh cannot prove a run new without a baseline, so it forces on
                 (fun () ->
                     """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""")
                 getTestRun
-                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                (fun _ -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 (fun () -> forceCalls <- forceCalls + 1))
 
     test <@ forceCalls = 1 @>
@@ -1579,7 +1579,7 @@ let private driveRunId = System.Guid.Parse("11111111-1111-1111-1111-111111111111
 let private driveConfirmForVerdict
     (checkMode: CheckVerdict.CheckMode)
     (firstScope: TestScope)
-    (getCheckReach: unit -> IpcParsing.CheckReachReading)
+    (getCheckReach: System.Guid option -> IpcParsing.CheckReachReading)
     : Verdict.Verdict =
     let mutable forceCalls = 0
 
@@ -1617,14 +1617,18 @@ let private driveConfirmForVerdict
         | other -> failwithf "the drive must leave a readable verdict, got %A" other)
 
 /// A daemon that has a projection to offer, for the run this drive grades.
-let private offering (reach: IpcParsing.CheckReach) (scope: TestScope) () : IpcParsing.CheckReachReading =
+let private offering
+    (reach: IpcParsing.CheckReach)
+    (scope: TestScope)
+    (_: System.Guid option)
+    : IpcParsing.CheckReachReading =
     IpcParsing.ReachRecorded
         { RunId = Some driveRunId
           Scope = scope
           Reach = reach
           Recall = IpcParsing.FailureRecallNotMeasurable "test fixture" }
 
-let private offersNothing () : IpcParsing.CheckReachReading =
+let private offersNothing (_: System.Guid option) : IpcParsing.CheckReachReading =
     IpcParsing.ReachUnavailable "this drive offers no projection"
 
 [<Fact(Timeout = 15000)>]
@@ -1665,6 +1669,38 @@ let ``a confirm that did NOT escalate records the PROJECTED sample, not a bare "
         // The scope `check` WOULD have covered — not the full suite this verdict rests on.
         test <@ pre.Scope = ImpactFiltered(1, 1) @>
     | None -> failwith "a non-escalating confirm must record the projected reading"
+
+[<Fact(Timeout = 15000)>]
+let ``a confirm asks for the GRADED run's projection, so recall measures when a later run completed`` () =
+    // The daemon completed another run after the one this verdict grades (the
+    // zero-selection skip a confirm's own scan provokes leaves the receipt standing). Its
+    // newest projection is that later run's; only the graded run's carries the recall.
+    let laterRun = System.Guid.Parse("22222222-2222-2222-2222-222222222222")
+    let measured = IpcParsing.FailureRecallMeasured(2, 2, 1.0, true)
+    let mutable asked = []
+
+    let daemon (requested: System.Guid option) : IpcParsing.CheckReachReading =
+        asked <- requested :: asked
+
+        match requested with
+        | Some runId when runId = driveRunId ->
+            IpcParsing.ReachRecorded
+                { RunId = Some driveRunId
+                  Scope = ImpactFiltered(1, 1)
+                  Reach = IpcParsing.NoFailuresToReach
+                  Recall = measured }
+        | _ ->
+            IpcParsing.ReachRecorded
+                { RunId = Some laterRun
+                  Scope = ScopeUnreadable "a skip retains no selection"
+                  Reach = IpcParsing.ReachUnknown "a skip retains no selection"
+                  Recall = IpcParsing.FailureRecallNotMeasurable "a skip retains no selection" }
+
+    let v = driveConfirmForVerdict CheckVerdict.Confirmation (FullSuite(1, None)) daemon
+
+    test <@ asked |> List.forall ((=) (Some driveRunId)) && not (List.isEmpty asked) @>
+    test <@ v.ConditionalFailureRecall = Some measured @>
+    test <@ v.Divergence = Verdict.Divergence.Agreed @>
 
 [<Fact(Timeout = 15000)>]
 let ``a confirm with no projection on offer says nothing was compared, and a check records no comparison at all`` () =
@@ -1978,7 +2014,7 @@ let private driveWithTreeMovedMidCheck (moveTree: bool) : int * Verdict.Verdict 
                 (fun () -> BaselineFixtures.reportOf (FullSuite(1, None)))
                 // No projection on offer. `InnerLoop` never asks, and a
                 // `Confirmation` that gets this records "no sample", never an agreement.
-                (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                (fun _ -> IpcParsing.ReachUnavailable "this drive offers no projection")
                 ignore // forceFullRun: never fires — the scope is already full-suite
 
         // Read inside the temp dir's lifetime: the verdict dies with it.
@@ -2411,7 +2447,7 @@ let ``daemon check and confirm overwrite green on discovery failure before diagn
                     diagnosticsReads <- diagnosticsReads + 1
                     """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""")
                 (fun () -> BaselineFixtures.reportOf (ImpactFiltered(1, 3)))
-                (fun () -> IpcParsing.ReachUnavailable "must not be read")
+                (fun _ -> IpcParsing.ReachUnavailable "must not be read")
                 (fun () -> forcedRuns <- forcedRuns + 1)
 
         test <@ exitCode = 2 @>
@@ -2489,7 +2525,7 @@ let ``pollAndRender returns exit 7 and PUBLISHES when the result is lost after t
                     (fun () -> "{}")
                     getErrors
                     (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
-                    (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                    (fun _ -> IpcParsing.ReachUnavailable "this drive offers no projection")
                     ignore
 
             code, Verdict.read repoRoot)
@@ -2535,7 +2571,7 @@ let ``a memory fault BEFORE the run settles is NOT claimed as a lost result`` ()
                     (fun () ->
                         """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}""")
                     (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
-                    (fun () -> IpcParsing.ReachUnavailable "this drive offers no projection")
+                    (fun _ -> IpcParsing.ReachUnavailable "this drive offers no projection")
                     ignore
             @>
 
@@ -3164,7 +3200,7 @@ let ``an incomplete read is the answer: one read, no re-scan, even where a later
                 (fun () -> "{}")
                 getErrors
                 (fun () -> BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
-                (fun () -> IpcParsing.ReachUnavailable "not used")
+                (fun _ -> IpcParsing.ReachUnavailable "not used")
                 (fun () -> failwith "an inner-loop check must not force a full run")
 
         // Incomplete coverage is the answer, and it is exit 2 — "could not complete, retry".

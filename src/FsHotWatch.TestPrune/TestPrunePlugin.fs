@@ -2042,10 +2042,16 @@ type TestPruneState =
         /// `SessionRunLedger`. `test-scope` declares them so a check can name each batch
         /// it ran.
         CompletedRuns: Guid list
-        /// The last completion's check-vs-confirm projection: its run, the selection
-        /// `check` would have used, and whether that reached a failure the run saw.
-        /// `None` until a run completes.
-        CheckReach: (Guid * Map<string, ProjectSelection> option * CheckReach * FailureRecall) option
+        /// Each completion's check-vs-confirm projection, NEWEST FIRST and keyed by its run:
+        /// the selection `check` would have used, and whether that reached a failure the run
+        /// saw. Bounded at `SessionRunLedger`. Empty until a run completes.
+        ///
+        /// Keyed by run, not the newest alone: `confirm` grades the run its RECEIPT names,
+        /// and a later completion that leaves the receipt standing — the zero-selection
+        /// "already verified" skip its own scan provokes — replaced the graded run's
+        /// projection with one for a run nothing grades, so every recall read "names run X,
+        /// but the graded run is Y". `check-reach` is asked for the graded run by id.
+        CheckReaches: (Guid * Map<string, ProjectSelection> option * CheckReach * FailureRecall) list
         /// Command replies this state owes, resolved only after the state is published
         /// (`PrepareCommit`'s `Finalize`). Each event starts with none.
         Replies: (Tasks.TaskCompletionSource<string> * string) list
@@ -8195,7 +8201,7 @@ let internal createWithEvidenceAndQueries
           AwaitingDiff = None
           OwedRunHeld = false
           CompletedRuns = []
-          CheckReach = None
+          CheckReaches = []
           Replies = []
           PendingAnalysis = Map.empty
           AnalysisModelGeneration = None
@@ -9600,17 +9606,44 @@ let internal createWithEvidenceAndQueries
                 // that has never heard of this command returns the unknown-command
                 // sentinel, which the CLI reads as "no sample" — never as agreement.
                 "check-reach",
-                PluginCommand.Observe(fun (_ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->
+                //
+                // The optional argument is the run to answer for — the run the verdict
+                // GRADES, which need not be the newest completion. Without one, the newest.
+                PluginCommand.Observe(fun (_ctx: CommandReadCtx) (state: TestPruneState) (args: string array) ->
                     async {
-                        match state.CheckReach with
-                        | None ->
-                            return
-                                JsonSerializer.Serialize(
-                                    {| recorded = false
-                                       reason =
-                                        "no test run has completed in this session, so there is no result to project" |}
-                                )
-                        | Some(runId, wouldHaveRun, reach, recall) ->
+                        let notRecorded (reason: string) =
+                            JsonSerializer.Serialize({| recorded = false; reason = reason |})
+
+                        let requested =
+                            match args |> Array.tryHead |> Option.map _.Trim() with
+                            | None
+                            | Some "" -> Ok None
+                            | Some text ->
+                                match Guid.TryParse text with
+                                | true, runId -> Ok(Some runId)
+                                | _ -> Error $"'%s{text}' is not a run id"
+
+                        let entry =
+                            match requested with
+                            | Error why -> Error why
+                            | Ok None ->
+                                match List.tryHead state.CheckReaches with
+                                | Some found -> Ok found
+                                | None ->
+                                    Error "no test run has completed in this session, so there is no result to project"
+                            | Ok(Some wanted) ->
+                                match state.CheckReaches |> List.tryFind (fun (id, _, _, _) -> id = wanted) with
+                                | Some found -> Ok found
+                                | None ->
+                                    let wantedId = wanted.ToString("N")
+
+                                    Error
+                                        $"run %s{wantedId} has no retained projection in this session — it never \
+                                           completed here, or it is older than the last %d{SessionRunLedger} completions"
+
+                        match entry with
+                        | Error why -> return notRecorded why
+                        | Ok(runId, wouldHaveRun, reach, recall) ->
                             let projects = allConfigs |> List.map (fun c -> c.Project)
 
                             let kind, ranProjects, totalProjects =
@@ -11380,8 +11413,11 @@ let internal createWithEvidenceAndQueries
                     let state =
                         { state with
                             CompletedRuns = completedRuns
-                            CheckReach =
-                                Some(completed.RunId, launch.WouldHaveRun, checkReach, conditionalFailureRecall)
+                            CheckReaches =
+                                (completed.RunId, launch.WouldHaveRun, checkReach, conditionalFailureRecall)
+                                :: (state.CheckReaches
+                                    |> List.filter (fun (id, _, _, _) -> id <> completed.RunId)
+                                    |> List.truncate (SessionRunLedger - 1))
                             OutstandingFailures = outstandingFailures
                             LastCoverage = coverage
                             LastZeroSelection = launch.ZeroSelection

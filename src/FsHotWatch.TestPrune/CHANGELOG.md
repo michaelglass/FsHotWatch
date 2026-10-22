@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **fix!: `check-reach` answers for the run it is asked about.** The plugin kept only the
+  newest completion's check-vs-confirm projection, and `confirm` grades the run its
+  receipt names. A later completion that leaves the receipt standing — the zero-selection
+  "already verified" skip a confirm's own scan provokes — replaced the graded run's
+  projection with one for a run nothing grades, so conditional failure recall never
+  measured on a real confirm ("check-reach recall names run X, but the graded run is Y").
+  `TestPruneState.CheckReach` becomes `CheckReaches`, every completion's projection keyed
+  by run, newest first and bounded at `SessionRunLedger`; `check-reach` takes an optional
+  run id and answers for that run (the newest without one, as before).
+
 ## 0.13.0-alpha.89 - 2026-10-19
 
 - **feat!: every launch says which cause selected each test project.** A run's
