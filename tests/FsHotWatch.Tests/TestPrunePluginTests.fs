@@ -2163,6 +2163,76 @@ let ``ParseOnly FileChecked fails closed and reports the file as unanalysable`` 
         test <@ entries.Head.Message.Contains("full type-check results are required") @>)
 
 [<Fact(Timeout = 60000)>]
+let ``a FullCheck whose parse failed is unanalysable, not analysed from a recovered tree`` () =
+    // AUTOMATION-779. FCS recovers from a syntax error and still completes a type check,
+    // so the FileChecked arrives as a FullCheck, not ParseOnly. Symbols extracted from
+    // that recovered tree would be present and fabricated, so the file must take the
+    // unanalysable path (full-suite fallback, ledger warning) rather than be indexed.
+    // Nothing in this plugin inspects the parse: the refusal comes from TestPrune.Core's
+    // `analyzeSourceFromResults`, which returns `Error "Parse errors: …"` for any
+    // Error-severity parse diagnostic. This pins that end to end through a real FCS
+    // check, so a TestPrune.Core upgrade that stops refusing goes red here.
+    // The fixture is the shape the ticket's 60 "impossible" syntax errors match: a
+    // working copy holding jj conflict markers (`1 of 1` gives an unexpected `of`; the
+    // commit id `5919b6df` gives "not a valid numeric literal"; then an offside cascade).
+    withTempDir "tp-parse-failed" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let libFile = Path.Combine(tmpDir, "Lib.fsx")
+
+        let conflicted =
+            "module Lib\n"
+            + "let view x =\n"
+            + "    match x with\n"
+            + "<<<<<<< conflict 1 of 1\n"
+            + "%%%%%%% diff from: tuqkpurx 5919b6df \"base\"\n"
+            + "\\\\\\\\\\\\\\        to: vpyuoozl 3fb68ab5 \"left\"\n"
+            + "-    | 1 -> \"a\"\n"
+            + "+    | 1 -> \"aa\"\n"
+            + "+++++++ lqqwwswy 2846983a \"right\"\n"
+            + "    | 1 -> \"b\"\n"
+            + ">>>>>>> conflict 1 of 1 ends\n"
+            + "    | _ -> \"z\"\n"
+
+        File.WriteAllText(libFile, conflicted)
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+        let host = createModelHost checker tmpDir
+        let handler = create dbPath tmpDir None None None None None []
+        host.RegisterHandler(handler)
+
+        let options = getScriptOptions checker libFile conflicted |> Async.RunSynchronously
+        pipeline.RegisterProject(libFile, options)
+
+        let checkedResult =
+            match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
+            | Some r -> r
+            | None -> failwith "CheckFile returned no result"
+
+        // The observation the ticket asked for: the check is NOT aborted. It is a
+        // FullCheck whose parse had errors, the case `markUnanalysable` never saw.
+        test <@ checkedResult.ParseResults.ParseHadErrors @>
+
+        test
+            <@
+                match checkedResult.CheckResults with
+                | FullCheck _ -> true
+                | ParseOnly -> false
+            @>
+
+        host.EmitFileChecked(stampFixture checkedResult)
+        waitForPluginTerminal host "test-prune" 30.0
+
+        match host.GetStatus("test-prune") with
+        | Some(Failed(summary, _, _)) -> test <@ summary.Contains("Analysis failed: Parse errors") @>
+        | other -> Assert.Fail($"Expected a parse failure to fail closed, got: %A{other}")
+
+        let key = AbsFilePath.value checkedResult.File
+        let errors = host.GetErrorsByPlugin("test-prune")
+        test <@ errors |> Map.containsKey key @>
+        test <@ errors[key].Head.Message.Contains("symbol analysis failed") @>)
+
+[<Fact(Timeout = 60000)>]
 let ``affected-tests computes lazily on demand from ChangedSymbols`` () =
     // FileChecked accumulates state.ChangedSymbols but does NOT eagerly
     // QueryAffectedTests; the IPC command runs the SQL on demand. Hence the deliberate
