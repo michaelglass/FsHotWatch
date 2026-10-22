@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: a cached lint result is no longer replayed after a type it depends on changes
+  shape in an earlier file or a referenced project. The key's only cross-file input was the
+  file's own compiler diagnostics, which stay the same when, say, an option field becomes a
+  record and the file still compiles; a typed FSharpLint rule (NoPartialFunctions on
+  `x.Value`) then answers differently, and the cache served the old answer. The key now
+  names the public shape of every symbol the file's check resolved outside the file
+  (`used-signatures`), as the analyzers key does. An upstream edit that changes only
+  bodies, comments or line positions still hits. A file whose used signatures cannot be
+  read has no key: it is linted and nothing is cached. Salt bumped to `lint-merkle-v3`, so
+  every existing entry is re-run once.
+
 ## 0.7.0-alpha.34 - 2026-10-18
 
 - fix: files matched by `ignoreFiles` in fsharplint.json are no longer linted.

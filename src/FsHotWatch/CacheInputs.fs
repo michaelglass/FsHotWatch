@@ -274,13 +274,25 @@ let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (result
 
     lines |> Seq.sort |> String.concat "\n"
 
+/// What `usedSignaturesHash` answered for one check, and for which root and project.
+[<NoComparison; NoEquality>]
+type private UsedSignaturesMemo =
+    { RepoRoot: string option
+      Options: FSharpProjectOptions
+      Hash: string option }
+
+/// Held weakly by the check results it describes, so an entry lives exactly as long as
+/// that check does.
+let private usedSignaturesMemo =
+    System.Runtime.CompilerServices.ConditionalWeakTable<FSharpCheckFileResults, UsedSignaturesMemo>()
+
 /// A hash of the public SHAPE of everything a file's type check resolved outside the
 /// file: each upstream value's and member's signature, and the declaration of each type
 /// from this repository the file names or reaches through such a signature (kind,
 /// fields, union cases, base types, interfaces, attributes) — never a body, a position or
 /// a path.
 ///
-/// A file's analyzer verdict depends on other files only through what its check
+/// A file's analyzer or typed lint verdict depends on other files only through what its check
 /// resolved there. Its diagnostics do not record that: a type in an earlier file or a
 /// referenced project can change from a record to a union while this file still compiles
 /// cleanly, and a typed analyzer then answers differently. Hashing those files' content
@@ -289,6 +301,10 @@ let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (result
 /// Symbols from outside the repository contribute only their name and their assembly's
 /// qualified name (which carries its version). The cost is proportional to the symbols
 /// this file uses, not to the size of the project above it.
+///
+/// Every plugin that keys a `FileChecked` event (analyzers, lint) is handed the same check
+/// results, so the hash is remembered against them and the walk runs once per event, not
+/// once per plugin. A different root or project is computed afresh.
 let usedSignaturesHash
     (repoRoot: string option)
     (options: FSharpProjectOptions)
@@ -298,10 +314,23 @@ let usedSignaturesHash
     | ParseOnly -> Some "parse-only"
     | FullCheck results when isNull (box results) -> Some "full-check-null"
     | FullCheck results ->
-        // FCS can throw from a symbol property on partially-checked code. A shape that
-        // cannot be described leaves no key, so the caller runs rather than replays.
-        try
-            Some(usedShapes repoRoot options results |> CheckCache.sha256Hex)
-        with ex ->
-            Logging.debug "cache" $"used-signatures unavailable (%s{ex.GetType().Name}): %s{ex.Message}"
-            None
+        match usedSignaturesMemo.TryGetValue results with
+        | true, memo when memo.RepoRoot = repoRoot && obj.ReferenceEquals(memo.Options, options) -> memo.Hash
+        | _ ->
+            // FCS can throw from a symbol property on partially-checked code. A shape that
+            // cannot be described leaves no key, so the caller runs rather than replays.
+            let hash =
+                try
+                    Some(usedShapes repoRoot options results |> CheckCache.sha256Hex)
+                with ex ->
+                    Logging.debug "cache" $"used-signatures unavailable (%s{ex.GetType().Name}): %s{ex.Message}"
+                    None
+
+            usedSignaturesMemo.AddOrUpdate(
+                results,
+                { RepoRoot = repoRoot
+                  Options = options
+                  Hash = hash }
+            )
+
+            hash

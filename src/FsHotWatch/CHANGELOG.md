@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- perf: `CacheInputs.usedSignaturesHash` remembers its answer against the check results
+  it describes, so the analyzers and lint plugins keying one `FileChecked` event walk its
+  symbol uses once, not once each. A different repository root or project is computed
+  afresh.
+
 ## 0.10.0-alpha.89 - 2026-10-19
 
 - feat(rules): FSHW-WALK-001 bans walks that can follow a directory symlink

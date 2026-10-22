@@ -324,3 +324,38 @@ let ``an assembly is described in full when it is a referenced project or under 
         test <@ everything.Contains "private" @>
         // Without a root only the project and its references are.
         test <@ usedShapes None result.ProjectOptions check = external @>)
+
+// The hash is remembered against the check, so the analyzers and lint keys of one event
+// share one walk. A remembered answer must never stand in for a different root or project.
+[<Fact(Timeout = 120000)>]
+let ``the used-signatures hash of one check answers for the root and project it is asked about`` () =
+    withTempDir "shapes-memo" (fun root ->
+        let result, check = checkDownstream root EarlierFile upstream downstream
+
+        let fresh repoRoot options =
+            Some(usedShapes repoRoot options check |> FsHotWatch.CheckCache.sha256Hex)
+
+        let hash repoRoot options =
+            usedSignaturesHash repoRoot options (FullCheck check)
+
+        let project = result.ProjectOptions
+        let wholeDisk = Some(Path.GetPathRoot root)
+
+        let claimed =
+            { project with
+                ReferencedProjects =
+                    [| FSharpReferencedProject.ILModuleReference(
+                           Path.Combine(root, "FSharp.Core.dll"),
+                           (fun () -> DateTime.MinValue),
+                           (fun () -> failwith "never read")
+                       ) |] }
+
+        // Each pair below describes the check differently, so a stale answer would show.
+        test <@ fresh wholeDisk project <> fresh (Some root) project @>
+        test <@ fresh (Some root) claimed <> fresh (Some root) project @>
+
+        test <@ hash (Some root) project = fresh (Some root) project @>
+        test <@ hash (Some root) project = fresh (Some root) project @>
+        test <@ hash wholeDisk project = fresh wholeDisk project @>
+        test <@ hash (Some root) claimed = fresh (Some root) claimed @>
+        test <@ hash (Some root) project = fresh (Some root) project @>)

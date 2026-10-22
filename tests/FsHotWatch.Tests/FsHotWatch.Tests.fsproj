@@ -66,6 +66,7 @@
     <Compile Include="TestEvidenceKeyTests.fs" />
     <Compile Include="TestEvidenceStoreTests.fs" />
     <Compile Include="AnalyzerCacheKeyTests.fs" />
+    <Compile Include="LintCacheKeyTests.fs" />
     <Compile Include="FileStampTests.fs" />
     <Compile Include="CheckCacheTests.fs" />
     <Compile Include="CacheInputsTests.fs" />
