@@ -1480,6 +1480,7 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
                 ClassJoin = " "
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
+                Starvation = None
                 AlwaysClasses = [] } ]
 
         let handler =
@@ -1524,6 +1525,7 @@ let ``TestPrunePlugin with failing test reports failure`` () =
                 ClassJoin = " "
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
+                Starvation = None
                 AlwaysClasses = [] } ]
 
         let handler =
@@ -1763,6 +1765,7 @@ let ``Full pipeline: format → build → test`` () =
                 ClassJoin = " "
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
+                Starvation = None
                 AlwaysClasses = [] } ]
 
         let testPruneHandler =
@@ -1907,6 +1910,7 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
                 ClassJoin = " "
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
+                Starvation = None
                 AlwaysClasses = [] } ]
 
         let handler =
@@ -2094,6 +2098,7 @@ let ``TestPrune honors per-project TimeoutSec and records TimedOut`` () =
                 ClassJoin = " "
                 TimeoutSec = Some 1
                 ReportVerificationFormat = AutoDetect
+                Starvation = None
                 AlwaysClasses = [] } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
@@ -2278,6 +2283,7 @@ let ``run summary names the slowest project when 2+ projects ran`` () =
                 ClassJoin = " "
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
+                Starvation = None
                 AlwaysClasses = [] }
               { TestPrunePlugin.TestConfig.Project = "SlowProj"
                 Command = "sh"
@@ -2288,6 +2294,7 @@ let ``run summary names the slowest project when 2+ projects ran`` () =
                 ClassJoin = " "
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
+                Starvation = None
                 AlwaysClasses = [] } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir

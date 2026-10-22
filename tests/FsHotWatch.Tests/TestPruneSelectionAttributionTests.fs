@@ -150,6 +150,7 @@ let private config (project: string) (always: string list) : TestConfig =
       ClassJoin = "|"
       TimeoutSec = None
       ReportVerificationFormat = AutoDetect
+      Starvation = None
       AlwaysClasses = always }
 
 let private configs =

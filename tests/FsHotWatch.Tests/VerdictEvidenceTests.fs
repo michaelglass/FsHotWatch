@@ -666,6 +666,7 @@ let private gatedTestHost (repoRoot: string) (release: string) =
                     ClassJoin = " "
                     TimeoutSec = None
                     ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                    Starvation = None
                     AlwaysClasses = [] } ])
             None
             None

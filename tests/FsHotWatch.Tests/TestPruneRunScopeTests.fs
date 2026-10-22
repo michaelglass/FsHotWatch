@@ -62,6 +62,7 @@ let private projConfig (project: string) : TestConfig =
       ClassJoin = "|"
       TimeoutSec = None
       ReportVerificationFormat = AutoDetect
+      Starvation = None
       AlwaysClasses = [] }
 
 /// A `TestsFinished` for a completed run: per-project results plus the SCOPE it was
@@ -2350,6 +2351,7 @@ let private markerRunner (project: string) (marker: string) (projFile: string) :
       ClassJoin = " "
       TimeoutSec = None
       ReportVerificationFormat = Disabled
+      Starvation = None
       AlwaysClasses = [] }
 
 /// Drive one real run of both projects and return the repo root's marker facts.
@@ -2595,6 +2597,7 @@ let ``a cached test-prune replay clears the whole ledger, exactly as its real ru
                 ClassJoin = " "
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
+                Starvation = None
                 AlwaysClasses = [] } ]
 
         let handler =

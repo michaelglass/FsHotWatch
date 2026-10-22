@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **feat!: `tests.projects[].starvation` and the verdict's `starvedRerun`.** The config key
+  declares that a timeout under measured CPU starvation is re-run alone once (see
+  FsHotWatch.TestPrune); a typo is a config error. A suite re-run that way carries
+  `starvedRerun` (`passedAlone`, `summary`, `firstAttempt`, `load`) in the verdict file, and a
+  green that still applies names the suites that passed only alone. Breaking: `SuiteVerdict`
+  and `TestProjectConfig` have new fields, `StarvedRerun` and `Starvation`.
+
 ## 0.14.0-alpha.122 - 2026-10-19
 
 - **feat!: the verdict file's `scope` records `selectedBy`**, which cause selected each

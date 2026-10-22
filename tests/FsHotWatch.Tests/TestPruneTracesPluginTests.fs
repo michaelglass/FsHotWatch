@@ -123,6 +123,7 @@ let private config project command args : TestConfig =
       ClassJoin = " "
       TimeoutSec = Some 60
       ReportVerificationFormat = Ctrf
+      Starvation = None
       AlwaysClasses = [] }
 
 /// Run `run-tests` once over `configs` with `traces`, returning the command's JSON and

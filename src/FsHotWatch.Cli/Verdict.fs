@@ -483,6 +483,10 @@ type SuiteVerdict =
         /// `Some` when this run did not launch the project and filed another run's
         /// evidence for it instead; `None` for a suite this run executed.
         ReusedFrom: ReusedFrom option
+        /// `Some` when the project timed out under CPU starvation and was re-run alone
+        /// (`Starvation`): the record says whether it then passed alone. A suite that passed
+        /// that way is green, and stays told apart from one that passed the first time.
+        StarvedRerun: FsHotWatch.TestPrune.Starvation.Stored option
     }
 
 /// ONE test run — one `.fshw/test-runs/<runId>/` directory — and the reports it
@@ -2092,7 +2096,8 @@ let private jsonOptions = JsonSerializerOptions(WriteIndented = true)
 /// flattened `suites`, so the two spellings of the same report cannot differ.
 ///
 /// `reusedFrom` is written only for a reused suite, so a verdict with none reads
-/// exactly as it did before evidence could be reused.
+/// exactly as it did before evidence could be reused. `starvedRerun` likewise: only for a
+/// suite re-run alone under CPU starvation.
 let private suiteJson (s: SuiteVerdict) : obj =
     let entry = Collections.Generic.Dictionary<string, obj>()
     entry["project"] <- box s.Project
@@ -2110,6 +2115,16 @@ let private suiteJson (s: SuiteVerdict) : obj =
                    runId = r.RunId
                    earnedAt = r.EarnedAt
                    key = r.Key |}
+    | None -> ()
+
+    match s.StarvedRerun with
+    | Some r ->
+        entry["starvedRerun"] <-
+            box
+                {| passedAlone = r.PassedAlone
+                   summary = r.Summary
+                   firstAttempt = r.FirstAttempt
+                   load = r.Load |}
     | None -> ()
 
     entry :> obj
@@ -2992,7 +3007,17 @@ let private parseSuites (root: JsonElement) : Result<SuiteVerdict list, string> 
                                         { Worktree = tryString r "worktree" |> Option.defaultValue ""
                                           RunId = tryString r "runId" |> Option.defaultValue ""
                                           EarnedAt = tryString r "earnedAt" |> Option.defaultValue ""
-                                          Key = tryString r "key" |> Option.defaultValue "" }) }
+                                          Key = tryString r "key" |> Option.defaultValue "" })
+                                  StarvedRerun =
+                                    tryProp el "starvedRerun"
+                                    |> Option.filter (fun r -> r.ValueKind = JsonValueKind.Object)
+                                    |> Option.map (fun r ->
+                                        { PassedAlone =
+                                            tryProp r "passedAlone"
+                                            |> Option.exists (fun b -> b.ValueKind = JsonValueKind.True)
+                                          Summary = tryString r "summary" |> Option.defaultValue ""
+                                          FirstAttempt = tryString r "firstAttempt" |> Option.defaultValue ""
+                                          Load = tryString r "load" |> Option.defaultValue "" }) }
                                 :: xs
                             )
                         | Error e, _, _, _
@@ -3529,18 +3554,30 @@ let describeStillApplies (v: Verdict) (covered: TreeHash.Coverage) : string =
                 | _ -> $"%s{suite}, %d{passed} passed"
 
             // A green that rests on another checkout's run says so, and whose.
+            let withReused =
+                match
+                    suites
+                    |> List.choose (fun s -> s.ReusedFrom |> Option.map (fun r -> s.Project, r))
+                with
+                | [] -> counted
+                | reused ->
+                    let named =
+                        reused
+                        |> List.map (fun (project, r) -> $"%s{project} from run %s{r.RunId} in %s{r.Worktree}")
+                        |> String.concat ", "
+
+                    $"%s{counted}; %d{List.length reused} reused: %s{named}"
+
+            // A green that needed a re-run alone under starvation says so, and which.
             match
                 suites
-                |> List.choose (fun s -> s.ReusedFrom |> Option.map (fun r -> s.Project, r))
+                |> List.filter (fun s -> s.StarvedRerun |> Option.exists _.PassedAlone)
+                |> List.map _.Project
             with
-            | [] -> counted
-            | reused ->
-                let named =
-                    reused
-                    |> List.map (fun (project, r) -> $"%s{project} from run %s{r.RunId} in %s{r.Worktree}")
-                    |> String.concat ", "
-
-                $"%s{counted}; %d{List.length reused} reused: %s{named}"
+            | [] -> withReused
+            | starved ->
+                let named = starved |> String.concat ", "
+                $"%s{withReused}; %d{List.length starved} starved, then passed alone: %s{named}"
 
     // The baseline is what makes this green auditable as a claim about
     // the whole suite, so it is printed with the evidence. `isFullSuiteGreen` is the only
@@ -3725,7 +3762,11 @@ let suiteVerdicts (repoRoot: string) (runId: Guid option) : SuiteVerdict list =
               Passed = r.Summary.Passed
               Failed = r.Summary.Failed
               Skipped = r.Summary.Skipped
-              ReusedFrom = reusedFromReport r.Path })
+              ReusedFrom = reusedFromReport r.Path
+              StarvedRerun =
+                FsHotWatch.TestPrune.Starvation.tryRead (
+                    FsHotWatch.TestPrune.Starvation.pathIn (Path.GetDirectoryName r.Path) r.Project
+                ) })
 
 /// EVERY batch this check has evidence from, each with the reports it
 /// wrote — the record `create` is handed, and the ONLY way one is built.

@@ -56,6 +56,7 @@ let ``a test host killed at its timeout is stopped from the bottom up, so its co
                 ClassJoin = " "
                 TimeoutSec = Some 1
                 ReportVerificationFormat = AutoDetect
+                Starvation = None
                 AlwaysClasses = [] } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir

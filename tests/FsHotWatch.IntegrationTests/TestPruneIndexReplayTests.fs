@@ -87,6 +87,7 @@ let private config root : TestPrunePlugin.TestConfig =
       ClassJoin = " "
       TimeoutSec = None
       ReportVerificationFormat = TestPrunePlugin.AutoDetect
+      Starvation = None
       AlwaysClasses = [] }
 
 [<Fact(Timeout = 120000)>]

@@ -390,6 +390,7 @@ let ``a daemon that runs tests seals every checkable file without publishing an 
               ClassJoin = " "
               TimeoutSec = None
               ReportVerificationFormat = AutoDetect
+              Starvation = None
               AlwaysClasses = [] }
 
         let handler =

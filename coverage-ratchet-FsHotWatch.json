@@ -1,5 +1,12 @@
 {
   "overrides": {
+    "Starvation.fs": [
+      {
+        "line": 95,
+        "branch": 88,
+        "reason": "new file (declared starvation policy, load sampler, rerun-alone decision and its record). Floor = the measured value rounded down. Measured 2026-10-22 on macOS by StarvationTests + TestPruneStarvationRerunTests with coverage: line 95.4% (210/220), branch 88% (110/125). Uncovered: the sampler timer callback (a test cannot wait out the 5 s interval without becoming a timing test; the start and stop samples it shares `take` with are covered), the non-string-value arm of `field`, the IOException/UnauthorizedAccessException arms of `setAside` and `write` (a failed move or write is logged and skipped), and compiler-generated edges of the parse match. Platform-neutral, so no platform tag."
+      }
+    ],
     "GroupSchedule.fs": [
       {
         "line": 100,

@@ -403,6 +403,7 @@ let ``the canonical config writes every field in full, however long`` () =
           ClassJoin = " "
           TimeoutSec = Some 30
           ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.Ctrf
+          Starvation = None
           AlwaysClasses = [] }
 
     let a = FsHotWatch.TestPrune.TestPrunePlugin.canonicalTestConfig (config "a")
