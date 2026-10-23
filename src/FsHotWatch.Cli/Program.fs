@@ -2929,10 +2929,15 @@ let internal daemonWith
                | FsHotWatch.CommandPreprocessor.Trigger.Matching patterns -> patterns))
         |> List.distinct
 
-    // Resolve the idle-exit threshold from the `idleExitMin` config + this daemon's
-    // repo path (AUTO-on for `/.workspaces/` checkouts). `None` leaves the timer off. A
-    // hosted session that goes idle detaches; the host outlives it.
-    let idleExitMin = FsHotWatch.IdleExit.resolveThreshold config.IdleExitMin root
+    // Resolve the idle-exit threshold from `FSHW_IDLE_EXIT_MIN` in this process's
+    // environment over the `idleExitMin` config + this daemon's repo path (AUTO-on for
+    // `/.workspaces/` checkouts). `None` leaves the timer off. A hosted session that
+    // goes idle detaches; the host outlives it. The variable is read from THIS process:
+    // for a hosted session that is the host's environment, not the attaching client's.
+    let idleExit =
+        FsHotWatch.IdleExit.resolveIdleExit Environment.GetEnvironmentVariable config.IdleExitMin root
+
+    idleExit.Warning |> Option.iter (FsHotWatch.Logging.warn "idle-exit")
 
     // Resolve the pressure floor from `pressureIdleFloorMin` (default-on at 2 min).
     // Under memory pressure this shortens an already-eligible idle window to
@@ -2949,7 +2954,8 @@ let internal daemonWith
             ExcludePatterns = config.Exclude
             ExtraWatchPatterns = extraWatchPatterns
             FsEventsLatencySeconds = float config.FsEventsLatencyMs / 1000.0
-            IdleExitMin = idleExitMin
+            IdleExitMin = idleExit.ThresholdMin
+            IdleExitSource = idleExit.Source
             PressureIdleFloorMin = pressureIdleFloorMin
             CheckerCacheSizeFactor = config.CheckerCacheSizeFactor
             Hosting = hosting }

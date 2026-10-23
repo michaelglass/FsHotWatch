@@ -932,6 +932,34 @@ let ``daemon RunWithIpc without idle-exit threshold creates no timer and stops c
         test <@ task.IsCompleted @>)
 
 [<Fact(Timeout = 20000)>]
+let ``daemon RunWithIpc with idle-exit disabled by FSHW_IDLE_EXIT_MIN creates no timer and stops cleanly`` () =
+    // IdleExitMin None from an Environment source → no timer, and the disabled line
+    // (`IdleExit.disabledLine`, unit-tested in IdleExitTests) is logged instead.
+    withTempDir "daemon-idle-exit-env-off" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let cts = new CancellationTokenSource()
+        let pipeName = $"fshw-test-{Guid.NewGuid():N}"
+
+        let daemon =
+            Daemon.createWith
+                nullChecker
+                tmpDir
+                { oneShotDaemonOptions with
+                    IdleExitMin = None
+                    IdleExitSource = FsHotWatch.IdleExit.ThresholdSource.Environment }
+
+        let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
+        daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+        cts.Cancel()
+
+        try
+            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with :? AggregateException ->
+            ()
+
+        test <@ task.IsCompleted @>)
+
+[<Fact(Timeout = 20000)>]
 let ``daemon RunWithIpc responds to IPC queries`` () =
     withTempDir "daemon-ipc" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **feat!: an idle-exit window can come from `FSHW_IDLE_EXIT_MIN`.** New
+  `IdleExit.OverrideEnvVar`, `IdleExit.parseOverride` (`OverrideValue`),
+  `IdleExit.resolveIdleExit` (`ResolvedIdleExit`: window, `ThresholdSource` and a warning
+  for an unreadable value), `IdleExit.ThresholdSource.describe` and
+  `IdleExit.disabledLine`. The override follows the `idleExitMin` rules and beats it;
+  unset, the result equals `resolveThreshold`. Breaking: `IdleExitDeps` has a new
+  `Source` field, named on the enable line, and `Daemon.DaemonOptions` a new
+  `IdleExitSource` (default `ThresholdSource.Auto`).
+
 - fix: memory pressure is detected on macOS, so an idle workspace daemon there quits
   after the 2-min pressure floor instead of holding its memory for the full 30 min. The
   GC's reading is blind on macOS (it reported `MemoryLoadBytes = 0` while the kernel was
