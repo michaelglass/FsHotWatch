@@ -1048,6 +1048,17 @@ let RealFantomasTestCapMs = 360_000
 [<Literal>]
 let SyncHangBackstopMs = 60_000
 
+/// The xUnit cap for an FsCheck property: thousands of generated cases of CPU-bound
+/// in-process work, so its run time scales with the box's load and with the coverage
+/// instrumentation CI runs it under, and its cap can only report a hang. Measured
+/// 2026-10-23, each class run alone under `--coverage` at 1-min load 22-38: one test of
+/// `EvidencePropertyTests` (20 000 chained mints) took 2.3-13.1 s, one of
+/// `WorkLedgerPropertyTests` (600 sequences of up to 120 transitions) 1.1-3.1 s. A full
+/// `mise run ci` on a loaded box stretched both past an earlier 30 s cap. This cap is nine
+/// times the slowest solo reading.
+[<Literal>]
+let PropertyTestCapMs = 120_000
+
 /// A wait, inside a test capped at `SyncHangBackstopMs`, for in-process work or one
 /// trivial child (`echo`, `false`, `sh -c true`) to reach the state it awaits. Neither
 /// has a product bound to sit above. Alone they finish in under a second; a loaded full

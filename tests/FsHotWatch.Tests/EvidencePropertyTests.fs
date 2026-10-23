@@ -13,6 +13,7 @@ open System
 open Xunit
 open FsCheck
 open FsCheck.FSharp
+open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.Events
 
 let private projects = [ "A"; "B"; "C" ]
@@ -244,7 +245,7 @@ let private checkReaching (tests: int) (floor: int) (relied: Mint -> bool) (mint
 
     leaning.Value
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = PropertyTestCapMs)>]
 let ``a refusal-free receipt can only be minted from a completion that earned it`` () =
     checkReaching 10000 60 (fun _ -> false) (mintGen None) |> ignore
 
@@ -253,14 +254,14 @@ let private leansOnBaseline (m: Mint) =
     m.Expected
     |> Set.exists (fun project -> not (Map.tryFind project m.Completed.Results |> Option.exists isWholePass))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = PropertyTestCapMs)>]
 let ``a baseline carried from an earlier receipt never lets an unverified project through`` () =
     let leaning = checkReaching 20000 100 leansOnBaseline chainedGen
 
     if leaning < 10 then
         fail $"only %d{leaning} green(s) leaned on a carried baseline: the chain is not exercised"
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = PropertyTestCapMs)>]
 let ``no later handling of a receipt drops a refusal it carries`` () =
     let handled =
         gen {

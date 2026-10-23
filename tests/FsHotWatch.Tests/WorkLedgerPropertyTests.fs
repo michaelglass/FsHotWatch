@@ -22,6 +22,7 @@ open System.Threading.Tasks
 open Xunit
 open FsCheck
 open FsCheck.FSharp
+open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.PluginWorkOwner
 
 /// One generated transition. Picks are resolved against every identity seen so far,
@@ -480,25 +481,25 @@ type private Harness() =
         units.Values |> Seq.filter (fun tracked -> tracked.Retired.IsNone) |> Seq.length
 
     /// Everything the owner publishes must agree with the ledger, after every step.
-    let check (after: string) =
+    let check (after: unit -> string) =
         let snapshot = owner.Snapshot
         let owed = owed ()
 
         if snapshot.IsBusy <> (owed > 0) then
-            fail $"after %s{after}: owner busy=%b{snapshot.IsBusy} while the ledger owes %d{owed} unit(s)"
+            fail $"after %s{after ()}: owner busy=%b{snapshot.IsBusy} while the ledger owes %d{owed} unit(s)"
 
         if owner.Store.Snapshot.IsBusy <> snapshot.IsBusy then
-            fail $"after %s{after}: the host's rest answer disagrees with its owner's"
+            fail $"after %s{after ()}: the host's rest answer disagrees with its owner's"
 
         if snapshot.CompletedEvents <> committed then
-            fail $"after %s{after}: %d{snapshot.CompletedEvents} commit(s) published, %d{committed} made"
+            fail $"after %s{after ()}: %d{snapshot.CompletedEvents} commit(s) published, %d{committed} made"
 
         if snapshot.ExecutorFault.IsSome <> faulted then
-            fail $"after %s{after}: executor fault published=%b{snapshot.ExecutorFault.IsSome}, made=%b{faulted}"
+            fail $"after %s{after ()}: executor fault published=%b{snapshot.ExecutorFault.IsSome}, made=%b{faulted}"
 
         if List.ofSeq delivered <> List.ofSeq expectedDelivered then
             fail
-                $"after %s{after}: delivered %A{List.ofSeq delivered}, the ledger expected %A{List.ofSeq expectedDelivered}"
+                $"after %s{after ()}: delivered %A{List.ofSeq delivered}, the ledger expected %A{List.ofSeq expectedDelivered}"
 
         for key in keys do
             let held, running =
@@ -508,30 +509,33 @@ type private Harness() =
 
             if snapshot.IsHeld key <> held || snapshot.IsRunning key <> running then
                 fail
-                    $"after %s{after}: key %s{key} held=%b{snapshot.IsHeld key} running=%b{snapshot.IsRunning key}, ledger held=%b{held} running=%b{running}"
+                    $"after %s{after ()}: key %s{key} held=%b{snapshot.IsHeld key} running=%b{snapshot.IsRunning key}, ledger held=%b{held} running=%b{running}"
 
         // Exactly one terminal outcome per receipt, settled with its unit and not before.
         for tracked in units.Values do
             match tracked.Receipt, tracked.Retired with
             | Some receipt, None when receipt.IsCompleted ->
-                fail $"after %s{after}: a receipt settled while its unit is still owed"
+                fail $"after %s{after ()}: a receipt settled while its unit is still owed"
             | Some receipt, Some _ when not receipt.IsCompleted ->
-                fail $"after %s{after}: a unit retired and its receipt never settled"
+                fail $"after %s{after ()}: a unit retired and its receipt never settled"
             | Some receipt, Some Succeeded when not receipt.IsCompletedSuccessfully ->
-                fail $"after %s{after}: a unit that committed settled its receipt as a failure"
+                fail $"after %s{after ()}: a unit that committed settled its receipt as a failure"
             | Some receipt, Some Refused when receipt.IsCompletedSuccessfully ->
-                fail $"after %s{after}: a unit that failed settled its receipt as a success"
+                fail $"after %s{after ()}: a unit that failed settled its receipt as a success"
             | _ -> ()
 
     /// One transition, then the delivery it handed on: a poisoned delivery must raise out of
-    /// exactly the transition that freed its key, and leave the executor faulted.
-    let transition (label: string) (act: unit -> unit) =
+    /// exactly the transition that freed its key, and leave the executor faulted. The label
+    /// is formatted only for a failure message: `sprintf "%A"` on every generated command
+    /// was most of this property's run time (15-27 s of a solo class run, against 1-3 s
+    /// without it), which pushed it past its cap on a loaded box.
+    let transition (label: unit -> string) (act: unit -> unit) =
         poisonExpected <- false
         poisonRaised <- false
         act ()
 
         if poisonExpected <> poisonRaised then
-            fail $"%s{label}: a poisoned delivery was expected=%b{poisonExpected}, raised=%b{poisonRaised}"
+            fail $"%s{label ()}: a poisoned delivery was expected=%b{poisonExpected}, raised=%b{poisonRaised}"
 
         if poisonExpected then
             applyFault ()
@@ -557,10 +561,11 @@ type private Harness() =
                 )
 
             match next with
-            | Some(KeyValue(id, tracked)) when tracked.Kind = KWorker -> transition "drain" (fun () -> completeRun id)
+            | Some(KeyValue(id, tracked)) when tracked.Kind = KWorker ->
+                transition (fun () -> "drain") (fun () -> completeRun id)
             | Some(KeyValue(id, tracked)) when tracked.Stage = Prepared ->
-                transition "drain" (fun () -> settle id false)
-            | Some(KeyValue(id, _)) -> transition "drain" (fun () -> commit id)
+                transition (fun () -> "drain") (fun () -> settle id false)
+            | Some(KeyValue(id, _)) -> transition (fun () -> "drain") (fun () -> commit id)
             | None -> fail $"drain: %d{owed ()} queued unit(s) wait on a key nothing holds"
 
         match owner.Snapshot.Phase with
@@ -568,10 +573,10 @@ type private Harness() =
         | Working _ -> fail "drain: nothing is owed and the owner is not resting"
 
     member _.Run(commands: Cmd list) =
-        check "start"
+        check (fun () -> "start")
 
         for command in commands do
-            transition (sprintf "%A" command) (fun () -> step command)
+            transition (fun () -> sprintf "%A" command) (fun () -> step command)
 
         drain ()
 
@@ -605,7 +610,7 @@ let private cmdGen =
 let private commands =
     Arb.fromGenShrink (Gen.listOf cmdGen, (ArbMap.defaults |> ArbMap.arbitrary<Cmd list>).Shrinker)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = PropertyTestCapMs)>]
 let ``every accepted unit of work reaches exactly one terminal outcome, and the owner rests only when none is owed``
     ()
     =
@@ -616,7 +621,7 @@ let ``every accepted unit of work reaches exactly one terminal outcome, and the 
 
 /// The executor fault is the transition that retires the most at once, so a run that
 /// faults in every sequence keeps that path from being sampled only rarely.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = PropertyTestCapMs)>]
 let ``an executor fault retires every non-worker unit once, and the workers it leaves still retire`` () =
     let faulting =
         Arb.fromGen (Gen.map2 (fun before after -> before @ [ Fault ] @ after) (Gen.listOf cmdGen) (Gen.listOf cmdGen))
