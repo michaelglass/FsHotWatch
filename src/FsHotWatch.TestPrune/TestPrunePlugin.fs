@@ -4431,11 +4431,11 @@ let internal formatFailureReport
 
           match runLog with
           | RunLog.Ref.Written path ->
-              $"%s{projectName}: run failed but no per-test 'failed' line was parsed. The FULL output was streamed \
+              $"%s{projectName}: %s{RedRunEnding.describe ending} but no per-test 'failed' line was parsed. The FULL output was streamed \
                 to %s{path}. The first %d{head.Length} of its %d{nonBlank.Length} non-blank lines follow — the \
                 HEAD is where a killed, wedged or refused run states its cause:"
           | RunLog.Ref.Unavailable reason ->
-              $"%s{projectName}: run failed but no per-test 'failed' line was parsed, and NO output log was saved \
+              $"%s{projectName}: %s{RedRunEnding.describe ending} but no per-test 'failed' line was parsed, and NO output log was saved \
                 (%s{reason}) — so the lines below are ALL there is. The first %d{head.Length} of %d{nonBlank.Length} \
                 non-blank lines — the HEAD is where a killed, wedged or refused run states its cause:"
 
@@ -4563,9 +4563,13 @@ let internal classifyTestOutcome
         let reportNote =
             match evidence with
             | ReportRequested(Ok report) ->
+                // Counted from the ROWS (AUTOMATION-294): a crashed host never sends the
+                // message its summary is written from, so `summary.tests` reads 0 beside a
+                // report listing thousands. The summary's own counts follow, named as such.
+                let listed = Ctrf.VerdictReport.rows report
                 let r = Ctrf.VerdictReport.summary report
 
-                $" It had flushed a PARTIAL report ({r.Total} row(s), {r.Failed} of them marked failed) before it                    died; those rows are a transcript of a killed run, NOT results — a test the host never reached                    is written out the same way as one that ran."
+                $" It had flushed a PARTIAL report (%d{listed.Rows} row(s), %d{listed.FailedRows} of them marked failed; its summary counts %d{r.Total} test(s), %d{r.Failed} failed) before it died; those rows are a transcript of a killed run, NOT results — a test the host never reached is written out the same way as one that ran."
             | ReportRequested(Error reason) -> $" It wrote no usable report: %s{reason}."
             | NoReportRequested -> " No structured report was requested from this runner."
 

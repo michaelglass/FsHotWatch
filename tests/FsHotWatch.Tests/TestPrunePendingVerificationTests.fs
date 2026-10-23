@@ -1226,6 +1226,40 @@ let ``a SIGKILLed host is an ABORT even though it flushed a report full of failu
     test <@ reason.Contains "139" @>
 
 [<Fact(Timeout = 5000)>]
+let ``a killed host's partial report is described by its ROWS, not by a summary that never arrived`` () =
+    // xUnit v3 writes a row as each test finishes but takes its summary counters only from
+    // the assembly-finished message, which a crashed host never sends. Its report therefore
+    // lists every row it reached beside a summary of zero tests (`other` holds the crash).
+    // Describing that report by `summary.tests` told the reader "0 row(s)" about a report
+    // that listed thousands (AUTOMATION-294 / AUTOMATION-1110).
+    let rows =
+        [ """{"name":"T.a","status":"passed"}"""
+          """{"name":"T.b","status":"passed"}"""
+          """{"name":"T.c","status":"failed"}""" ]
+        |> String.concat ","
+
+    let crashedHostReport =
+        FsHotWatch.Ctrf.tryVerdictReport (
+            """{"results":{"summary":{"tests":0,"passed":0,"failed":0,"pending":0,"skipped":0,"other":1},"tests":["""
+            + rows
+            + "]}}"
+        )
+
+    test <@ Result.isOk crashedHostReport @>
+
+    let result =
+        classifyTestOutcome
+            (ReportRequested crashedHostReport)
+            false
+            TimeSpan.Zero
+            (ProcessOutcome.Failed(137, ProcessOutput.Drained ""))
+
+    test <@ TestResult.isErrored result @>
+    let reason = TestResult.output result
+    test <@ reason.Contains "3 row(s), 1 of them marked failed" @>
+    test <@ not (reason.Contains "0 row(s)") @>
+
+[<Fact(Timeout = 5000)>]
 let ``THE OTHER DIRECTION — a real mass failure is still RED, not an abort`` () =
     // Same report, same counts, same 139 failures. The ONLY difference is that the runner
     // reached its own exit and chose the code (MTP's 2 = "at least one test failed")

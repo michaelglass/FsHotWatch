@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `Ctrf.VerdictReport.rows` returns a `Ctrf.ReportRows` (`Rows`, `FailedRows`)
+  counted from the report's `tests` array. A crashed xUnit v3 host's partial report lists
+  every row it reached beside a summary of zero tests, so `Summary.Total` cannot describe
+  it; the row counts can. The summary stays the verdict input.
+
 - fix: memory pressure is detected on macOS, so an idle workspace daemon there quits
   after the 2-min pressure floor instead of holding its memory for the full 30 min. The
   GC's reading is blind on macOS (it reported `MemoryLoadBytes = 0` while the kernel was

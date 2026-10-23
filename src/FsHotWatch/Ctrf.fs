@@ -141,6 +141,26 @@ let trySummary (json: string) : Summary option =
     | :? JsonException
     | :? InvalidOperationException -> None
 
+/// What a report's per-test array actually lists, counted from the rows themselves.
+///
+/// Not a substitute for the summary — the rows omit a raw throw — but the only honest
+/// description of a PARTIAL report: a crashed xUnit v3 host lists every row it reached
+/// beside a summary of zero tests, so `Summary.Total` reads 0 for a report of thousands.
+type ReportRows =
+    {
+        /// Entries in the report's `tests` array; 0 when it has none.
+        Rows: int
+        /// Of those, the rows whose status is `failed`.
+        FailedRows: int
+    }
+
+let private reportRowsOf (rows: JsonNode) : ReportRows =
+    { Rows =
+        match rows with
+        | :? JsonArray as rows -> rows.Count
+        | _ -> 0
+      FailedRows = failedRows rows }
+
 /// A report that may decide a verdict: every counter is a nonnegative integer, and a
 /// CLEAN summary is accounted for by its rows. Opaque, so the only way to hold one is to
 /// have passed `tryVerdictReport`.
@@ -151,11 +171,15 @@ let trySummary (json: string) : Summary option =
 /// that threw a raw exception is counted in `failed` and `other` and gets no row, so a
 /// red summary stays authoritative without reconciliation. Coherence proves nothing about
 /// scope or ownership, and a coherent report of zero tests does not prove a test ran.
-type VerdictReport = private VerdictReport of Summary
+type VerdictReport = private VerdictReport of Summary * ReportRows
 
 module VerdictReport =
     /// The validated counts. Reading them grants no way to construct a report.
-    let summary (VerdictReport summary) : Summary = summary
+    let summary (VerdictReport(summary, _)) : Summary = summary
+
+    /// What the report's rows list (AUTOMATION-294). Describe a partial report by this,
+    /// never by `summary.Total`.
+    let rows (VerdictReport(_, rows)) : ReportRows = rows
 
 let private counter (summary: JsonObject) (key: string) : Result<int, string> =
     match summary.[key] with
@@ -195,11 +219,12 @@ let private reconcile (counts: Map<string, int>) (rows: JsonNode) : Result<Verdi
           Skipped = counts["skipped"]
           Other = counts["other"] }
 
-    let verdict = VerdictReport summary
+    let listed = reportRowsOf rows
+    let verdict = VerdictReport(summary, listed)
 
     if counts["failed"] > 0 || counts["other"] > 0 then
         // A red summary is authoritative, but never for fewer failures than its rows show.
-        Ok(VerdictReport(countingFailedRows rows summary))
+        Ok(VerdictReport(countingFailedRows rows summary, listed))
     else
         match rows with
         | :? JsonArray as rows ->
