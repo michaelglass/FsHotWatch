@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.49 - 2026-10-24
+
 - fix: a config edit reaches an analyzer that caches its config in a static. When a
   `.editorconfig` or `fsharplint.json` the analyzers read changes on a warm daemon, the
   analyzer paths that read it (`fsharplint.json`: the FSharpLint shim; `.editorconfig`:

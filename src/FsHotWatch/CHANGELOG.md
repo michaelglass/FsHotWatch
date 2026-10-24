@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.90 - 2026-10-24
+
 - **feat!: an idle-exit window can come from `FSHW_IDLE_EXIT_MIN`.** New
   `IdleExit.OverrideEnvVar`, `IdleExit.parseOverride` (`OverrideValue`),
   `IdleExit.resolveIdleExit` (`ResolvedIdleExit`: window, `ThresholdSource` and a warning

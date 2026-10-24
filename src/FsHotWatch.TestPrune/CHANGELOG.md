@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.90 - 2026-10-24
+
 - fix: a killed host's abort reason counts the rows its partial CTRF report lists. It
   printed `summary.tests` as the row count, so a crashed host's report listing thousands
   of rows read "0 row(s)". It now gives the row and failed-row counts, then the summary's

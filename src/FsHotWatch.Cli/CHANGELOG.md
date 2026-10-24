@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.123 - 2026-10-24
+
 - feat: `FSHW_IDLE_EXIT_MIN` in a daemon's environment overrides `.fshw.json`'s
   `idleExitMin` for that daemon (same values; unset or blank defers to the file, an
   unreadable value is ignored with a warning). Read once at start, so it never triggers
