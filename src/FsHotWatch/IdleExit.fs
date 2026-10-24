@@ -189,6 +189,111 @@ let resolveThreshold (config: IdleExitConfig) (repoRoot: string) : int option =
     | IdleExitConfig.Disabled -> None
     | IdleExitConfig.Minutes n -> if n > 0 then Some n else None
 
+/// The environment variable that overrides `.fshw.json`'s `idleExitMin` for the one
+/// daemon started with it. `.fshw.json` is shared and tracked, and an edit to it stops
+/// every daemon of the repository ("config changed, stopping"), so a single workspace's
+/// window cannot be set there. The variable is read once, when the daemon starts; it is
+/// not a file, so setting it never triggers that restart.
+[<Literal>]
+let OverrideEnvVar = "FSHW_IDLE_EXIT_MIN"
+
+/// What `FSHW_IDLE_EXIT_MIN` holds.
+[<RequireQualifiedAccess>]
+type OverrideValue =
+    /// Not set, or blank: `.fshw.json` decides.
+    | Unset
+    /// A value with the same meaning it has as `idleExitMin` in `.fshw.json`.
+    | Set of IdleExitConfig
+    /// Neither an integer nor a boolean. Ignored (`.fshw.json` decides), and reported.
+    | Invalid of string
+
+/// Parse `FSHW_IDLE_EXIT_MIN` under the `idleExitMin` rules: a positive integer is a
+/// window in minutes; `0`, a negative integer, `false` and `true` disable idle-exit
+/// (`true` is not an implicit window, exactly as in `.fshw.json`). Case-insensitive,
+/// surrounding whitespace ignored.
+let parseOverride (raw: string) : OverrideValue =
+    if String.IsNullOrWhiteSpace raw then
+        OverrideValue.Unset
+    else
+        let value = raw.Trim()
+
+        match
+            Int32.TryParse(
+                value,
+                Globalization.NumberStyles.AllowLeadingSign,
+                Globalization.CultureInfo.InvariantCulture
+            )
+        with
+        | true, n when n > 0 -> OverrideValue.Set(IdleExitConfig.Minutes n)
+        | true, _ -> OverrideValue.Set IdleExitConfig.Disabled
+        | false, _ ->
+            match value.ToLowerInvariant() with
+            | "false"
+            | "true" -> OverrideValue.Set IdleExitConfig.Disabled
+            | _ -> OverrideValue.Invalid value
+
+/// Where a daemon's idle-exit window came from. Named on the `[idle-exit] enabled:`
+/// line so a log answers "why did this daemon (not) quit?" without reading the config
+/// and the environment it was started in.
+[<RequireQualifiedAccess>]
+type ThresholdSource =
+    /// `idleExitMin` absent: AUTO, keyed on whether the root is a `/.workspaces/` checkout.
+    | Auto
+    /// An explicit `idleExitMin` in `.fshw.json`.
+    | ConfigFile
+    /// `FSHW_IDLE_EXIT_MIN` in the daemon's environment.
+    | Environment
+
+module ThresholdSource =
+    /// The name a user sets to change this source's answer.
+    let describe (source: ThresholdSource) : string =
+        match source with
+        | ThresholdSource.Auto -> "AUTO (idleExitMin absent: 30min in /.workspaces/ checkouts, else off)"
+        | ThresholdSource.ConfigFile -> ".fshw.json idleExitMin"
+        | ThresholdSource.Environment -> OverrideEnvVar
+
+/// A daemon's resolved idle-exit window, where it came from, and the warning for an
+/// override that could not be read.
+type ResolvedIdleExit =
+    { ThresholdMin: int option
+      Source: ThresholdSource
+      Warning: string option }
+
+/// Resolve the idle-exit window from `FSHW_IDLE_EXIT_MIN` (read through `getEnv`) over
+/// the `.fshw.json` value. A set override wins everywhere; an unset one leaves
+/// `resolveThreshold`'s answer — including AUTO's default-workspace exemption — exactly
+/// as it was; an unreadable one is ignored with a warning rather than silently.
+let resolveIdleExit (getEnv: string -> string) (config: IdleExitConfig) (repoRoot: string) : ResolvedIdleExit =
+    let fromFile warning =
+        { ThresholdMin = resolveThreshold config repoRoot
+          Source =
+            match config with
+            | IdleExitConfig.Absent -> ThresholdSource.Auto
+            | IdleExitConfig.Disabled
+            | IdleExitConfig.Minutes _ -> ThresholdSource.ConfigFile
+          Warning = warning }
+
+    match parseOverride (getEnv OverrideEnvVar) with
+    | OverrideValue.Unset -> fromFile None
+    | OverrideValue.Set overrideConfig ->
+        { ThresholdMin = resolveThreshold overrideConfig repoRoot
+          Source = ThresholdSource.Environment
+          Warning = None }
+    | OverrideValue.Invalid value ->
+        fromFile (
+            Some
+                $"[idle-exit] ignoring %s{OverrideEnvVar}=%s{value}: expected a positive number of minutes, 0 or false; using .fshw.json"
+        )
+
+/// The line a daemon logs when its override turned idle-exit off. A daemon with no
+/// window otherwise logs nothing, which for the file's own settings is the long-standing
+/// behaviour; an override that disables it must be visible in the log it is diagnosed from.
+let disabledLine (source: ThresholdSource) : string option =
+    match source with
+    | ThresholdSource.Environment -> Some $"[idle-exit] disabled by %s{OverrideEnvVar} (overrides .fshw.json)"
+    | ThresholdSource.Auto
+    | ThresholdSource.ConfigFile -> None
+
 /// Atomic fire-once latch. `0` = armed, `1` = fired. `Interlocked.CompareExchange`
 /// means that under concurrent timer ticks exactly one caller observes the
 /// armed-to-fired transition; every other caller is rejected.
@@ -301,6 +406,9 @@ type IdleExitDeps =
         /// `idleExitMin` threshold (`IdleExit.resolveThreshold`). Memory pressure
         /// can SHORTEN this per tick to `min(BaseThresholdMin, PressureFloorMin)`.
         BaseThresholdMin: int
+        /// Where `BaseThresholdMin` came from (`resolveIdleExit`), named on the
+        /// enable line.
+        Source: ThresholdSource
         /// Resolved pressure floor (minutes), or `None` when pressure-shortening
         /// is disabled (`resolvePressureFloor`). Re-read against `Pressure` each
         /// tick — it never lengthens a window already smaller than it.
@@ -393,7 +501,7 @@ let createTimerWith (period: TimeSpan) (deps: IdleExitDeps) : IDisposable =
         | _ -> ""
 
     deps.Log
-        $"[idle-exit] enabled: will shut down after %d{deps.BaseThresholdMin}min idle (checked every 30s)%s{floorNote}"
+        $"[idle-exit] enabled: will shut down after %d{deps.BaseThresholdMin}min idle (checked every 30s)%s{floorNote} — from %s{ThresholdSource.describe deps.Source}"
 
     DrainedTimer.every period (fun () -> runTick deps latch |> ignore)
 

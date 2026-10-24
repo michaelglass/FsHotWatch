@@ -3000,6 +3000,7 @@ type Daemon
         formatAllFn: (unit -> Async<string>) option,
         excludePatterns: string list,
         idleExitMin: int option,
+        idleExitSource: IdleExit.ThresholdSource,
         pressureIdleFloorMin: int option,
         // How often a running daemon checks that its root still exists (`VanishedRoot`).
         vanishedRootCheckEvery: TimeSpan,
@@ -3482,6 +3483,7 @@ type Daemon
                     | Some minutes when minutes > 0 ->
                         let deps: IdleExit.IdleExitDeps =
                             { BaseThresholdMin = minutes
+                              Source = idleExitSource
                               PressureFloorMin = pressureIdleFloorMin
                               Pressure = IdleExit.readMemoryPressure
                               Now = fun () -> System.DateTime.UtcNow
@@ -3505,6 +3507,8 @@ type Daemon
 
                         IdleExit.createTimer deps
                     | _ ->
+                        IdleExit.disabledLine idleExitSource |> Option.iter (Logging.info "idle-exit")
+
                         // No-op disposable when idle-exit is off.
                         { new IDisposable with
                             member _.Dispose() = () }
@@ -4560,6 +4564,10 @@ module Daemon =
             /// created. Resolution from the `idleExitMin` config + repo path is
             /// done by the caller (`IdleExit.resolveThreshold`).
             IdleExitMin: int option
+            /// Where `IdleExitMin` came from (`IdleExit.resolveIdleExit`): named on the
+            /// `[idle-exit] enabled:` line, and an `Environment` source that disables
+            /// idle-exit logs that it did.
+            IdleExitSource: IdleExit.ThresholdSource
             /// Resolved memory-pressure idle floor (minutes). When idle-exit is
             /// eligible (`IdleExitMin = Some n`) AND the machine is under memory
             /// pressure, the effective idle window is shortened to `min(n,
@@ -4594,6 +4602,7 @@ module Daemon =
               ExtraWatchPatterns = []
               FsEventsLatencySeconds = 0.25
               IdleExitMin = None
+              IdleExitSource = IdleExit.ThresholdSource.Auto
               PressureIdleFloorMin = None
               VanishedRootCheckEvery = VanishedRoot.DefaultCheckEvery
               CheckerCacheSizeFactor = DefaultCheckerCacheSizeFactor
@@ -5047,6 +5056,7 @@ module Daemon =
                 Some formatAllViaAgent,
                 excludePatterns,
                 opts.IdleExitMin,
+                opts.IdleExitSource,
                 opts.PressureIdleFloorMin,
                 opts.VanishedRootCheckEvery,
                 scanLeases,

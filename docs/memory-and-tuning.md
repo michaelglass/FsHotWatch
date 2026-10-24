@@ -11,7 +11,7 @@ All optional, set in `.fshw.json`:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `idleExitMin` | `int \| false` | *auto* | Minutes of idleness after which the daemon shuts down to reclaim memory. See [Idle exit](#idle-exit). |
+| `idleExitMin` | `int \| false` | *auto* | Minutes of idleness after which the daemon shuts down to reclaim memory. See [Idle exit](#idle-exit). Overridden per daemon by `FSHW_IDLE_EXIT_MIN`. |
 | `pressureIdleFloorMin` | `int \| false` | `2` | Under memory pressure, shorten an already-eligible idle-exit window to this many minutes. See [Pressure-shortened idle exit](#pressure-shortened-idle-exit). |
 | `fsEventsLatencyMs` | `int` | `250` | macOS only: the FSEvents coalescing window in milliseconds. Higher = more event coalescing and lower `fseventsd` load per change, at the cost of slightly higher change-to-rebuild latency. `0` disables coalescing; ignored off macOS. |
 | `checker.cacheSizeFactor` | `int` | `100` | Scales the FCS TransparentCompiler caches (FCS's own default is 100; FsAutoComplete uses 10). The factor sets how many ENTRIES are kept, not bytes: a smaller factor holds less memory and re-typechecks more. It does not bound the per-file type-checks of the files being checked: the daemon keeps every current one, because a project whose upstream files' type-checks were released while downstream ones were kept reports its own types as incompatible with themselves. Must be a positive integer. The daemon logs the effective value at startup as `[config] checker: cacheSizeFactor=N`. |
@@ -89,6 +89,27 @@ Configure it with `idleExitMin`:
 // Explicit opt-out: never auto-quit, even in a /.workspaces/ checkout.
 { "idleExitMin": false }
 ```
+
+### One workspace's window: `FSHW_IDLE_EXIT_MIN`
+
+`.fshw.json` is shared by every checkout, and editing it stops every running daemon
+("config changed, stopping"). To change the window of **one** daemon, start it with
+`FSHW_IDLE_EXIT_MIN` in its environment. It takes the `idleExitMin` values (a positive
+integer is minutes; `0`, a negative integer, `false` or `true` disables) and beats the
+file's value, AUTO included. Unset or blank, the file decides; any other value is
+ignored with a warning in the daemon log. The variable is read once, when the daemon
+starts, so setting it restarts nothing — and a daemon that is already running keeps the
+window it started with (`fshw stop` first). For a session of a repository host it is
+read from the host's environment.
+
+```sh
+# Keep this workspace's daemon up between bursts of work, whatever .fshw.json says.
+FSHW_IDLE_EXIT_MIN=0 fshw check
+```
+
+The daemon log's `[idle-exit] enabled:` line names where its window came from
+(`AUTO`, `.fshw.json idleExitMin` or `FSHW_IDLE_EXIT_MIN`); an override that disables
+idle-exit logs `[idle-exit] disabled by FSHW_IDLE_EXIT_MIN`.
 
 ## Pressure-shortened idle exit
 

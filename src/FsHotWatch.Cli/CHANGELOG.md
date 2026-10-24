@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `FSHW_IDLE_EXIT_MIN` in a daemon's environment overrides `.fshw.json`'s
+  `idleExitMin` for that daemon (same values; unset or blank defers to the file, an
+  unreadable value is ignored with a warning). Read once at start, so it never triggers
+  the config-changed restart. For a hosted session it is the host's environment.
+
 - **feat!: agent mode is machine-only.** In agent mode, `check`, `confirm`, `verdict`,
   `status`, `scan`, `format`, `rerun`, `test-rerun`, `stop`, `invalidate`, `config` and
   `coverage` print one compact JSON line on stdout and nothing on stderr. The line is the

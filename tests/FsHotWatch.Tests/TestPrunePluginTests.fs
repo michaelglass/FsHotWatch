@@ -3175,7 +3175,17 @@ let ``a project killed at its timeout is logged TIMED OUT (infrastructure), neve
         test <@ logged.Contains "TestProject: TIMED OUT (infrastructure) after 1s" @>
         test <@ logged.Contains "TestProject: run timed out after 1s and its host was killed" @>
         test <@ not (logged.Contains "TestProject: FAILED") @>
-        test <@ not (logged.Contains "ran to completion") @>)
+        test <@ not (logged.Contains "ran to completion") @>
+        // The no-parsed-failure explanation is about a TIMED-OUT run too: it must not
+        // re-label the timeout "run failed" two lines after the TIMED OUT headline
+        // (AUTOMATION-294).
+        test <@ not (logged.Contains "TestProject: run failed") @>
+
+        test
+            <@
+                logged.Contains
+                    "TestProject: run timed out after 1s and its host was killed but no per-test 'failed' line"
+            @>)
 
 // --- isZeroTestsUnderFilter ---
 //

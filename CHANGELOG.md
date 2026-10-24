@@ -74,6 +74,22 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### cli: `FSHW_IDLE_EXIT_MIN` sets one daemon's idle-exit window without touching `.fshw.json`
+
+- `idleExitMin` could only be set in `.fshw.json`, which is shared and tracked, and an
+  edit to it stops every daemon of the repository ("config changed, stopping"). So one
+  workspace could not keep its daemon up (or let it quit sooner) without changing every
+  other checkout's window and cold-restarting them all. `FSHW_IDLE_EXIT_MIN` in the
+  environment a daemon starts in now overrides `idleExitMin` for that daemon. It takes the
+  same values: a positive integer is a window in minutes; `0`, a negative integer,
+  `false` and `true` disable idle-exit. Blank or unset leaves `.fshw.json` (and the AUTO
+  default-workspace exemption) in charge; any other value is ignored with a warning. The
+  variable is read once at start, so setting it restarts nothing. The
+  `[idle-exit] enabled:` line now names where its window came from, and a daemon whose
+  override disabled idle-exit logs `[idle-exit] disabled by FSHW_IDLE_EXIT_MIN`. For a
+  session of a repository host the variable is read from the host's environment. Tests
+  pin each value, the precedence, the unchanged AUTO exemption and the enable line.
+
 ### cli: agent mode prints one line and nothing on stderr
 
 - `--agent` was supposed to mean output for a machine. `verdict --agent` printed a large

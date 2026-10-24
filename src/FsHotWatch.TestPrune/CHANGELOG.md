@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a killed host's abort reason counts the rows its partial CTRF report lists. It
+  printed `summary.tests` as the row count, so a crashed host's report listing thousands
+  of rows read "0 row(s)". It now gives the row and failed-row counts, then the summary's
+  own counts, named as the summary's.
+
+- fix: a timed-out project with no parsed `failed` line is no longer called "run failed"
+  in the daemon log. The explanation that follows the `TIMED OUT (infrastructure)` line
+  now says "run timed out after Ns and its host was killed but no per-test 'failed' line
+  was parsed". An exited red still reads "run failed".
+
 - **fix!: `check-reach` answers for the run it is asked about.** The plugin kept only the
   newest completion's check-vs-confirm projection, and `confirm` grades the run its
   receipt names. A later completion that leaves the receipt standing — the zero-selection
