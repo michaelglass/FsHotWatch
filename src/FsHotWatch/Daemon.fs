@@ -5165,6 +5165,15 @@ module Daemon =
         =
         createWithCore checker repoRoot opts (Some loader) mapProjectOptions None watcherFactory
 
+    /// EXPERIMENT (exp-fcs-rc, AUTOMATION-936): FCS 43.13's process-wide imported-assembly
+    /// cache (dotnet/fsharp #20296). `FSHW_SHARE_IMPORTED_ASSEMBLIES=0` turns it off, so one
+    /// build measures both arms; unset or any other value keeps FCS's own default, on.
+    let ShareImportedAssembliesEnvVar = "FSHW_SHARE_IMPORTED_ASSEMBLIES"
+
+    /// Whether checkers built now share imported assemblies (see `ShareImportedAssembliesEnvVar`).
+    let shareImportedAssemblies () =
+        Environment.GetEnvironmentVariable ShareImportedAssembliesEnvVar <> "0"
+
     /// The warm checker a daemon runs on.
     ///
     /// `keepAssemblyContents = true` is what lets an analyzer walk a TYPED TREE:
@@ -5210,7 +5219,8 @@ module Daemon =
                 keepAllBackgroundResolutions = false,
                 parallelReferenceResolution = true,
                 useTransparentCompiler = true,
-                transparentCompilerCacheSizes = cacheSizes
+                transparentCompilerCacheSizes = cacheSizes,
+                shareImportedAssemblies = shareImportedAssemblies ()
             )
 
         FcsBootstraps.attach checker
@@ -5250,6 +5260,7 @@ module Daemon =
         (opts: DaemonOptions)
         =
         Logging.info "config" $"checker: cacheSizeFactor=%d{opts.CheckerCacheSizeFactor}"
+        Logging.info "config" $"checker sharing: shareImportedAssemblies=%b{shareImportedAssemblies ()}"
 
         let makeChecker = (DaemonHosting.seams opts.Hosting).Checker makeChecker
 

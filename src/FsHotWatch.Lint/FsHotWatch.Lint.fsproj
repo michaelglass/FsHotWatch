@@ -34,7 +34,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.303" PrivateAssets="All" />
-    <PackageReference Update="FSharp.Core" Version="10.1.*" />
+    <PackageReference Update="FSharp.Core" Version="11.0.101-rc2.26504.105" />
     <!-- FSharpLint.Core comes from the analyzer shim, which bundles a build compiled against
          FCS 43.12.202+ (the same build the analyzers path loads). The published
          FSharpLint.Core packages are compiled against older FCS signatures: 0.27.0 against

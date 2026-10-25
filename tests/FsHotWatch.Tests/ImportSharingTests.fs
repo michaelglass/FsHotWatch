@@ -236,7 +236,10 @@ let ``identical sessions under one virtual root hold one import of an assembly o
 
 [<Fact(Timeout = 120000)>]
 let ``sessions at their own paths each hold their own import of an assembly outside the worktrees`` () =
-    // Positive control for the probe: two bootstraps, two units.
+    // Positive control for the probe: two bootstraps, two units, on FCS 43.12 or with
+    // FSHW_SHARE_IMPORTED_ASSEMBLIES=0. exp-fcs-rc: FCS 43.13's shared imports
+    // (dotnet/fsharp #20296) hand both bootstraps ONE unit for an assembly outside every
+    // worktree, with no virtual root, because its closure resolves to the same files.
     withTempDir "import-sharing-control" (fun dir ->
         let checker = Daemon.Daemon.createChecker ()
         let hasher = CheckCache.FileContentHasher()
@@ -248,7 +251,10 @@ let ``sessions at their own paths each hold their own import of an assembly outs
         let unitA = unitIn false checker hasher a "Unquote"
         let unitB = unitIn false checker hasher b "Unquote"
 
-        test <@ not (obj.ReferenceEquals(unitA, unitB)) @>)
+        if Daemon.Daemon.shareImportedAssemblies () then
+            test <@ obj.ReferenceEquals(unitA, unitB) @>
+        else
+            test <@ not (obj.ReferenceEquals(unitA, unitB)) @>)
 
 [<Fact(Timeout = 120000)>]
 let ``identical hosted sessions, each through its own pipeline, hold one import of an assembly outside the worktrees``
@@ -320,8 +326,10 @@ let ``vendored assemblies of different bytes are never one import, even under on
 
 [<Fact(Timeout = 120000)>]
 let ``sessions whose reference sets differ hold their own imports, even of identical bytes`` () =
-    // FCS 43.12 imports per project bootstrap, keyed by the whole reference set. A
-    // checker sharing imports across bootstraps would key each by its closure instead.
+    // FCS 43.12 (and 43.13 with FSHW_SHARE_IMPORTED_ASSEMBLIES=0) imports per project
+    // bootstrap, keyed by the whole reference set. exp-fcs-rc: 43.13's shared imports
+    // (dotnet/fsharp #20296) key each import by its closure instead, so the extra -r: in
+    // one session no longer separates an assembly whose closure is equal: ONE unit.
     withTempDir "import-sharing-vendored-extra" (fun dir ->
         let w = vendoredWorld dir vendoredSource vendoredSource true
         let place = w.Store.PlaceReference
@@ -329,7 +337,10 @@ let ``sessions whose reference sets differ hold their own imports, even of ident
         let unitA = unitPlaced place true w.Checker w.Hasher w.A "Vendored"
         let unitB = unitPlaced place true w.Checker w.Hasher w.B "Vendored"
 
-        test <@ not (obj.ReferenceEquals(unitA, unitB)) @>)
+        if Daemon.Daemon.shareImportedAssemblies () then
+            test <@ obj.ReferenceEquals(unitA, unitB) @>
+        else
+            test <@ not (obj.ReferenceEquals(unitA, unitB)) @>)
 
 [<Fact(Timeout = 120000)>]
 let ``a second identical session under the virtual root starts no second bootstrap`` () =

@@ -78,6 +78,9 @@ type Config =
         ScanTimeout: TimeSpan
         TestTimeout: TimeSpan
         KeepWorktrees: bool
+        /// Existing, already prepared worktrees to run in (`<prefix>1..<prefix>N`): none is
+        /// created, prepared or removed. exp-fcs-rc, so each matrix cell can be gated alone.
+        Reuse: string option
         AllowContended: bool
         /// Keep each walk's raw trace in this directory, for offline graph analysis.
         KeepTraces: string option
@@ -741,16 +744,21 @@ let runMatrix (cfg: Config) : int =
 
     let worktrees =
         [ for i in 1..maxSessions ->
-              let name = $"bench-%s{runId}-%d{i}"
-              name, Path.Combine(wtRoot, name) ]
+              match cfg.Reuse with
+              | Some prefix -> $"%s{Path.GetFileName prefix}%d{i}", $"%s{prefix}%d{i}"
+              | None ->
+                  let name = $"bench-%s{runId}-%d{i}"
+                  name, Path.Combine(wtRoot, name) ]
 
     try
         for i, (name, path) in List.indexed worktrees do
             log $"worktree %d{i + 1}: %s{path} at %s{cfg.Rev}"
-            addWorktree cfg name path
+            if cfg.Reuse.IsNone then
+                addWorktree cfg name path
+
             overrideConfig path cfg.Strip cfg.Set
 
-            if not (String.IsNullOrWhiteSpace cfg.Prepare) then
+            if cfg.Reuse.IsNone && not (String.IsNullOrWhiteSpace cfg.Prepare) then
                 log $"prepare: %s{cfg.Prepare}"
 
                 match sh cfg.Prepare path (TimeSpan.FromMinutes 30.0) with
@@ -1180,7 +1188,7 @@ let runMatrix (cfg: Config) : int =
 
         0
     finally
-        if not cfg.KeepWorktrees then
+        if not cfg.KeepWorktrees && cfg.Reuse.IsNone then
             for name, path in worktrees do
                 removeWorktree cfg name path
 

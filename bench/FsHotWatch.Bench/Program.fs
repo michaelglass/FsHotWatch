@@ -142,6 +142,7 @@ let main argv =
                   TestTimeout =
                     TimeSpan.FromMinutes(one opts "test-timeout-min" |> Option.map float |> Option.defaultValue 120.0)
                   KeepWorktrees = flag opts "keep-worktrees"
+                  Reuse = one opts "reuse-worktrees" |> Option.map Path.GetFullPath
                   AllowContended = flag opts "allow-contended"
                   KeepTraces = one opts "keep-traces"
                   Retention = not (flag opts "no-retention")

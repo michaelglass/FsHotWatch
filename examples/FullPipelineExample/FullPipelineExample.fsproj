@@ -12,7 +12,7 @@
     <Compile Include="FullPipelineExample.fs" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Update="FSharp.Core" Version="10.1.*" />
+    <PackageReference Update="FSharp.Core" Version="11.0.101-rc2.26504.105" />
     <ProjectReference Include="../../src/FsHotWatch/FsHotWatch.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch.Build/FsHotWatch.Build.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj" />

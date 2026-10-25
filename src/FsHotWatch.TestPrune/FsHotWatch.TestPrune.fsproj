@@ -61,10 +61,10 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.303" PrivateAssets="All" />
-    <PackageReference Update="FSharp.Core" Version="10.1.*" />
-    <PackageReference Include="TestPrune.Core" Version="13.4.0" />
+    <PackageReference Update="FSharp.Core" Version="11.0.101-rc2.26504.105" />
+    <ProjectReference Include="/Users/michaelglass/Developer/opensource/TestPrune/.workspaces/arc/src/TestPrune.Core/TestPrune.Core.fsproj" />
     <!-- Per-test trace recording (`tests.traces`): the weaver, shadow bin, ingestion and
          trace store. Needs the TestPrune.Core it was built against (13.4.x). -->
-    <PackageReference Include="TestPrune.Trace" Version="0.7.3" />
+    <ProjectReference Include="/Users/michaelglass/Developer/opensource/TestPrune/.workspaces/arc/src/TestPrune.Trace/TestPrune.Trace.fsproj" />
   </ItemGroup>
 </Project>
