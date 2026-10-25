@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.91 - 2026-10-25
+
 - **feat!: `ErrorEntry.Code`.** A ledger entry names the rule that produced it, when its
   producer names one: analyzers set it from `Message.Code`. Every record literal now sets
   it (`Code = None` elsewhere). The task-cache entry format moves to 6, so entries written

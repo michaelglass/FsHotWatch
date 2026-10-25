@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.91 - 2026-10-25
+
+- Finish: AUTOMATION-1313 fshw findings: tree-bound analyzer findings with codes
+- Finish: AUTOMATION-1288 coverage argsTemplate expands {repoRoot}
+
+
 ## 0.13.0-alpha.90 - 2026-10-24
 
 - fix: a killed host's abort reason counts the rows its partial CTRF report lists. It

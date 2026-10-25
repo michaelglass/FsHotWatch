@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.124 - 2026-10-25
+
 - feat: a `tests.projects[].coverage.argsTemplate` may use `{repoRoot}`, which the daemon
   replaces with the absolute repository root (no trailing separator) before the run;
   `{output}` is unchanged. Microsoft.Testing.Platform 2.5 coverage hosts cannot resolve a

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.50 - 2026-10-25
+
 - **feat: analyses are stamped, and served through `analyzer-findings`.** Each file's
   analysis records the inputs it was computed from (`AnalyzerFindings.AnalyzedFile`):
   source hash, analyzer-set identity, config-chain digest, and whether the check was typed.

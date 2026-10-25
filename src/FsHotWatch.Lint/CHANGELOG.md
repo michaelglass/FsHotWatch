@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.36 - 2026-10-25
+
+- Finish: AUTOMATION-1313 fshw findings: tree-bound analyzer findings with codes
+
+
 ## 0.7.0-alpha.35 - 2026-10-24
 
 - fix: a cached lint result is no longer replayed after a type it depends on changes

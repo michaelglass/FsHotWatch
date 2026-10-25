@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.48 - 2026-10-25
+
+- Finish: AUTOMATION-1313 fshw findings: tree-bound analyzer findings with codes
+
+
 ## 0.7.0-alpha.47 - 2026-10-18
 
 - style(lint): enable canBeReplacedWithComposition
