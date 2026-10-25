@@ -1445,6 +1445,48 @@ let ``parseConfig test project with coverage as object captures argsTemplate`` (
     test <@ p.Coverage = true @>
     test <@ p.CoverageArgsTemplate = Some "--altcover --out \"{output}\"" @>
 
+// --- coverageArgsTemplateFor: {repoRoot} expansion ---
+
+[<Fact(Timeout = 15000)>]
+let ``coverageArgsTemplateFor expands {repoRoot} to the absolute repo root and keeps {output}`` () =
+    // MTP 2.5's coverage child host cannot resolve a RELATIVE --coverage-settings
+    // ("Provided settings file doesn't exist or is invalid"), aborting the host with
+    // exit 5 and no report. {repoRoot} lets a template name the file absolutely
+    // without hard-coding a machine-specific path.
+    let root = Path.Combine(Path.GetTempPath(), "fshw-repo-root-placeholder")
+
+    let template =
+        "--coverage --coverage-settings \"{repoRoot}/.coverage-settings.xml\" --coverage-output \"{output}\""
+
+    let expanded = coverageArgsTemplateFor root (Some template)
+    let abs = Path.TrimEndingDirectorySeparator(Path.GetFullPath root)
+
+    test
+        <@
+            expanded = $"--coverage --coverage-settings \"%s{abs}/.coverage-settings.xml\" --coverage-output \"{{output}}\""
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``coverageArgsTemplateFor makes a relative repo root absolute and drops a trailing separator`` () =
+    let relative = "some-relative-root" + string Path.DirectorySeparatorChar
+
+    let expanded =
+        coverageArgsTemplateFor relative (Some "{repoRoot}|{repoRoot}|{output}")
+
+    let abs = Path.TrimEndingDirectorySeparator(Path.GetFullPath relative)
+    test <@ Path.IsPathRooted abs @>
+    test <@ not (abs.EndsWith(string Path.DirectorySeparatorChar)) @>
+    test <@ expanded = $"%s{abs}|%s{abs}|{{output}}" @>
+
+[<Fact(Timeout = 15000)>]
+let ``coverageArgsTemplateFor leaves a template without {repoRoot} unchanged and defaults to the MTP template`` () =
+    let root = Path.GetTempPath()
+    let custom = "--altcover --out \"{output}\""
+
+    test <@ coverageArgsTemplateFor root (Some custom) = custom @>
+
+    test <@ coverageArgsTemplateFor root None = FsHotWatch.TestPrune.TestPrunePlugin.DefaultCoverageArgsTemplate @>
+
 [<Fact(Timeout = 15000)>]
 let ``parseConfig test project with coverage object enabled=false disables coverage`` () =
     let json =

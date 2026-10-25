@@ -425,7 +425,7 @@ setting needs no re-index.
 | `coverage` | `bool \| object` | `true` | A boolean controls both collection and consumer-ratchet participation. Use the object form to separate them. |
 | `coverage.enabled` | `bool` | `true` | Include this project's raw report in the shared consumer coverage snapshot. |
 | `coverage.collectForImpact` | `bool` | value of `enabled` | Retain source-file → test-project runtime evidence for impact selection. `{ "enabled": false, "collectForImpact": true }` is the integration-test adoption shape. |
-| `coverage.argsTemplate` | `string` | MTP Cobertura template | Runner arguments containing the required `{output}` placeholder. |
+| `coverage.argsTemplate` | `string` | MTP Cobertura template | Runner arguments containing the required `{output}` placeholder. `{repoRoot}` is replaced with the absolute repository root (no trailing separator), so a file the runner reads can be named absolutely without a machine-specific path: `--coverage-settings "{repoRoot}/.coverage-settings.xml"`. Microsoft.Testing.Platform 2.5 coverage hosts cannot resolve a relative `--coverage-settings` path. |
 
 Only a full project run replaces its runtime file map. A filtered run adds
 positive evidence. Missing complete evidence, or a complete baseline older than

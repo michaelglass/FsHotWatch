@@ -60,7 +60,7 @@
         "classJoin": " ",
         "group": "default",
         "coverage": {
-          "argsTemplate": "--coverage --coverage-output-format cobertura --coverage-output \"{output}\" --coverage-settings coverage.settings"
+          "argsTemplate": "--coverage --coverage-output-format cobertura --coverage-output \"{output}\" --coverage-settings \"{repoRoot}/coverage.settings\""
         }
       },
       {

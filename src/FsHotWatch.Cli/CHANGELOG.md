@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: a `tests.projects[].coverage.argsTemplate` may use `{repoRoot}`, which the daemon
+  replaces with the absolute repository root (no trailing separator) before the run;
+  `{output}` is unchanged. Microsoft.Testing.Platform 2.5 coverage hosts cannot resolve a
+  relative `--coverage-settings` path ("Provided settings file doesn't exist or is
+  invalid", exit 5, no report), so name it `"{repoRoot}/.coverage-settings.xml"`.
+  Templates without the placeholder are passed through as before. New:
+  `DaemonConfig.RepoRootPlaceholder`, `DaemonConfig.coverageArgsTemplateFor`.
+
 ## 0.14.0-alpha.123 - 2026-10-24
 
 - feat: `FSHW_IDLE_EXIT_MIN` in a daemon's environment overrides `.fshw.json`'s

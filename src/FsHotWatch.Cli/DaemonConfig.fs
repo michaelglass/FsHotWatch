@@ -233,7 +233,8 @@ let DefaultLogDir = "logs"
 ///
 /// `CoverageArgsTemplate` is the command-line template the daemon appends
 /// when collecting coverage. `{output}` is substituted with the per-run
-/// baseline or partial file path. `None` means use the MTP-cobertura default
+/// baseline or partial file path, and `{repoRoot}` with the absolute repository
+/// root (`coverageArgsTemplateFor`). `None` means use the MTP-cobertura default
 /// (`FsHotWatch.TestPrune.TestPrunePlugin.DefaultCoverageArgsTemplate`).
 /// For other test runners (coverlet.collector, AltCover, etc.), provide
 /// your own template.
@@ -2271,6 +2272,24 @@ let internal buildTestExtensions
 let testImpactDbPath (repoRoot: string) =
     Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-impact.db")
 
+/// The placeholder a `coverage.argsTemplate` may use for the repository root.
+[<Literal>]
+let RepoRootPlaceholder = "{repoRoot}"
+
+/// The coverage args template a test project runs with: its configured
+/// `coverage.argsTemplate`, or the MTP-cobertura default, with every `{repoRoot}`
+/// replaced by the absolute repository root (no trailing separator). `{output}` is left
+/// for the TestPrune plugin to fill on each run.
+let coverageArgsTemplateFor (repoRoot: string) (configured: string option) : string =
+    let template =
+        configured
+        |> Option.defaultValue FsHotWatch.TestPrune.TestPrunePlugin.DefaultCoverageArgsTemplate
+
+    if template.Contains(RepoRootPlaceholder) then
+        template.Replace(RepoRootPlaceholder, Path.TrimEndingDirectorySeparator(Path.GetFullPath repoRoot))
+    else
+        template
+
 /// Register plugins on the daemon based on the loaded configuration, with the test-prune
 /// session starting in `testMode`.
 let registerPluginsIn
@@ -2516,7 +2535,7 @@ let registerPluginsIn
                     let argsTemplate =
                         Map.tryFind project projectsByName
                         |> Option.bind (fun p -> p.CoverageArgsTemplate)
-                        |> Option.defaultValue FsHotWatch.TestPrune.TestPrunePlugin.DefaultCoverageArgsTemplate
+                        |> coverageArgsTemplateFor repoRoot
 
                     Some
                         { FsHotWatch.TestPrune.TestPrunePlugin.CoveragePaths.Baseline =
