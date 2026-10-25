@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 13.4.1 - 2026-10-25
+
+- fix(core): hash accessor and auto-properties over their whole text
+- Merge the exact FCS pin and whole-text property hashing
+- Pin FCS exactly to the fshw host's FCS; bump fshw to alpha.123
+
+
 ## 13.4.0 - 2026-10-13
 
 - feat(sql): reachability-gated SQL coupling as a walk policy

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.6 - 2026-10-25
+
 - Analyzers: compiled against FSharp.Compiler.Service 43.12.402 exactly, the FCS fshotwatch.cli 0.14.0-alpha.111 and later supply to analyzers. A host carrying a different FCS patch cannot load it.
 
 ## 0.1.0-alpha.5 - 2026-09-26

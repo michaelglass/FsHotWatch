@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 13.4.1 - 2026-10-25
+
 - build: FSharp.Compiler.Service is pinned exactly at 43.12.402 (it floated at `43.*`; 13.4.0 shipped with a floor of 43.12.401), matching the FCS fshotwatch.cli ships.
 - fix (selection soundness): a property declared with accessors (`member _.P with get () =
   …`) or as an auto-property (`member val P = … with get, set`) hashes its whole text. Before,
