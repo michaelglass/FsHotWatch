@@ -946,3 +946,147 @@ let ``a host whose only worktree is deleted ends that session, and then exits id
         finally
             cts.Cancel()
             running.Wait(TimeSpan.FromSeconds 30.0) |> ignore)
+
+// ---------------------------------------------------------------------------
+// Observing the host: footprint and lifecycle (AUTOMATION-939)
+// ---------------------------------------------------------------------------
+
+let private lifecycleOf (host: RepositoryHost) =
+    JsonNode.Parse(host.ListSessions())["lifecycle"]
+
+let private count (node: JsonNode) (name: string) = node[name].GetValue<int64>()
+
+[<Fact(Timeout = 60000)>]
+let ``the host lists its footprint, when it started, and when each session attached`` () =
+    withHost settingsFor daemonFactory (fun fx host ->
+        let before = DateTime.UtcNow
+        attachedId (attachVia host (requestFrom fx.Primary "a")) |> ignore
+        let listed = JsonNode.Parse(host.ListSessions())
+        let footprint = listed["footprint"]
+        test <@ footprint["workingSetBytes"].GetValue<int64>() > 0L @>
+        test <@ footprint["managedBytes"].GetValue<int64>() > 0L @>
+        test <@ footprint["gcCommittedBytes"].GetValue<int64>() > 0L @>
+
+        let startedAt =
+            DateTime.Parse(listed["startedAt"].GetValue<string>()).ToUniversalTime()
+
+        let now = DateTime.UtcNow
+        test <@ startedAt <= now @>
+        let session = listed["sessions"].AsArray()[0]
+
+        let attachedAt =
+            DateTime.Parse(session["attachedAt"].GetValue<string>()).ToUniversalTime()
+
+        let earliest = before.AddSeconds(-1.0)
+        let latest = DateTime.UtcNow
+        test <@ attachedAt >= earliest && attachedAt <= latest @>)
+
+[<Fact(Timeout = 60000)>]
+let ``the host counts each attach by its disposition and each refusal by its kind`` () =
+    withHost settingsFor daemonFactory (fun fx host ->
+        attachedId (attachVia host (requestFrom fx.Primary "a")) |> ignore
+        attachedId (attachVia host (requestFrom fx.Primary "a")) |> ignore
+        attachedId (attachVia host (requestFrom fx.Primary "a-edited")) |> ignore
+
+        let foreign =
+            { requestFrom fx.Secondary "b" with
+                Protocol =
+                    { ProtocolIdentity.current () with
+                        Binary =
+                            { Version = "0.0.1"
+                              ContentHash = "deadbeef" } } }
+
+        test <@ refusalKind (attachVia host foreign) = "binary-mismatch" @>
+        let lifecycle = lifecycleOf host
+        test <@ count lifecycle "attached" = 1L @>
+        test <@ count lifecycle "rejoined" = 1L @>
+        test <@ count lifecycle "reloaded" = 1L @>
+        test <@ count lifecycle["refused"] "binary-mismatch" = 1L @>
+        // The reload replaced the first incarnation: that one ended, stopped.
+        test <@ waitUntilTrue (fun () -> count ((lifecycleOf host)["ended"]) "stopped" = 1L) 10000 @>)
+
+[<Fact(Timeout = 60000)>]
+let ``the host counts a detached session as stopped, a faulted one as faulted, and a lost answer as undelivered`` () =
+    withRepository (fun fx ->
+        let faulting: SessionRun =
+            fun daemon serve startedAt cts ->
+                async {
+                    if daemon.RepoRoot = fx.Secondary.Root.Value then
+                        failwith "session B crashed"
+
+                    return! defaultRun daemon serve startedAt cts
+                }
+
+        use registry = new SessionRegistry(daemonFactory, faulting)
+
+        let host =
+            RepositoryHost(settingsFor fx, registry, ignore, TimeSpan.FromSeconds 10.0)
+
+        let a = attachedId (attachVia host (requestFrom fx.Primary "a"))
+        attachedId (attachVia host (requestFrom fx.Secondary "b")) |> ignore
+        test <@ waitUntilTrue (fun () -> count ((lifecycleOf host)["ended"]) "faulted" = 1L) 20000 @>
+        test <@ registry.Detach a @>
+        test <@ waitUntilTrue (fun () -> count ((lifecycleOf host)["ended"]) "stopped" = 1L) 10000 @>
+
+        let answer = host.Handlers.Attach(encodeRequest (requestFrom fx.Primary "a"))
+        host.Handlers.Undelivered answer
+        test <@ count (lifecycleOf host) "undelivered" = 1L @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a running host records its start, each attach and its stop in the repository's event log`` () =
+    withRepository (fun fx ->
+        let settings = settingsFor fx
+        let log = HostLifecycle.eventLogPath settings.Control
+        use cts = new CancellationTokenSource()
+        let run = runHost settings (TimeSpan.FromMinutes 5.0) cts
+
+        let reply =
+            RepositoryIpc.attach settings.Control.Endpoint (encodeRequest (requestFrom fx.Primary "a"))
+            |> Async.RunSynchronously
+            |> Result.defaultWith (exchangeException >> raise)
+            |> decodeResponse
+
+        test <@ reply |> Result.map attachedId |> Result.isOk @>
+
+        RepositoryIpc.invoke settings.Control.Endpoint (Preamble.Repository(InvocationId.mint ())) "StopHost" [||]
+        |> Async.RunSynchronously
+        |> Result.defaultWith (exchangeException >> raise)
+        |> ignore
+
+        test <@ run.Wait(TimeSpan.FromSeconds 60.0) @>
+
+        let events =
+            File.ReadAllLines log
+            |> Array.filter (fun l -> l <> "")
+            |> Array.map JsonNode.Parse
+            |> List.ofArray
+
+        let names = events |> List.map (fun e -> e["event"].GetValue<string>())
+        test <@ List.head names = "hostStarted" @>
+        test <@ List.contains "attached" names && List.contains "sessionEnded" names @>
+        test <@ List.last names = "hostStopped" @>
+        let last = List.last events
+        test <@ last["reason"].GetValue<string>() = "requested" @>
+
+        test
+            <@
+                events
+                |> List.forall (fun e -> e["hostPid"].GetValue<int>() = Environment.ProcessId)
+            @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a host that exits idle says so in its event log`` () =
+    withRepository (fun fx ->
+        let settings = settingsFor fx
+        use cts = new CancellationTokenSource()
+
+        test <@ RepositoryHost.run settings daemonFactory (TimeSpan.FromMilliseconds 200.0) cts = HostRun.Stopped @>
+
+        let last =
+            File.ReadAllLines(HostLifecycle.eventLogPath settings.Control)
+            |> Array.filter (fun l -> l <> "")
+            |> Array.last
+            |> JsonNode.Parse
+
+        test <@ last["event"].GetValue<string>() = "hostStopped" @>
+        test <@ last["reason"].GetValue<string>() = "idle" @>)

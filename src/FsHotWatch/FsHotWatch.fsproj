@@ -152,6 +152,7 @@
     <Compile Include="ScanMetrics.fs" />
     <Compile Include="Daemon.fs" />
     <Compile Include="SessionRegistry.fs" />
+    <Compile Include="HostLifecycle.fs" />
     <Compile Include="RepositoryHost.fs" />
   </ItemGroup>
 

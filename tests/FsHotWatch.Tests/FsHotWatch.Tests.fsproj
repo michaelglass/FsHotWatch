@@ -117,6 +117,7 @@
     <Compile Include="HostingSeamTests.fs" />
     <Compile Include="SessionRegistryTests.fs" />
     <Compile Include="RepositoryIpcTests.fs" />
+    <Compile Include="HostLifecycleTests.fs" />
     <Compile Include="RepositoryHostTests.fs" />
     <Compile Include="RepositoryHostModeTests.fs" />
     <Compile Include="RepositoryHostIsolationTests.fs" />

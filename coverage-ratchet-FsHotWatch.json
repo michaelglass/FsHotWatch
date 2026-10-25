@@ -1323,6 +1323,13 @@
         "reason": "Explicit so that a report which drops this file fails coverage-check instead of passing (a file with no floor leaves no name to miss). Floor = the measured value rounded down, the same on both platforms. Measured on macOS by the unit suite (mise run coverage-check, 2026-10-17 on main a0658598): line 12/12, branch 2/2; and on Linux by CI run 39059935111 (commit 3cd92ed9, coverage-thresholds artifact): line 100%, branch 100%."
       }
     ],
+    "HostLifecycle.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "new file (AUTOMATION-939, the repository host's lifecycle record and event log). Explicit so that a report which drops this file fails coverage-check instead of passing. Floor = the 100% default for new files, the same on both platforms: the module is file and JSON handling with no platform-specific path. Measured 2026-10-25 on macOS by HostLifecycleTests + RepositoryHostTests with coverage: every line and branch covered (104/104 branch points as Coverlet counts them). Linux is not yet measured; CI's coverage-thresholds artifact confirms or corrects it."
+      }
+    ],
     "FcsBootstraps.fs": [
       {
         "line": 100,

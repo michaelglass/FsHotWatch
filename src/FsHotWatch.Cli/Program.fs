@@ -2862,7 +2862,16 @@ let internal renderRepositoryStatus (json: string) : string list =
     let pid = node["hostPid"].GetValue<int>()
     let endpoint = text node "endpoint"
 
-    [ yield $"Repository host pid %d{pid} on %s{endpoint}: %d{sessions.Length} session(s)"
+    // A host older than its lifecycle record sends neither time.
+    let since (n: System.Text.Json.Nodes.JsonNode) (name: string) (label: string) =
+        match n[name] with
+        | null -> ""
+        | at -> $", %s{label} %s{at.GetValue<string>()}"
+
+    let upSince = since node "startedAt" "up since"
+
+    [ yield $"Repository host pid %d{pid} on %s{endpoint}: %d{sessions.Length} session(s)%s{upSince}"
+      yield! RepositoryHostMode.hostHealthLines node
       for s in sessions do
           let state =
               if s["serving"].GetValue<bool>() then
@@ -2872,7 +2881,8 @@ let internal renderRepositoryStatus (json: string) : string list =
 
           let generation = s["scanGeneration"].GetValue<int64>()
           let root = text s "root"
-          yield $"  %s{root}  %s{state}, scan generation %d{generation}"
+          let attached = since s "attachedAt" "attached"
+          yield $"  %s{root}  %s{state}, scan generation %d{generation}%s{attached}"
       match node["watch"] with
       | null -> ()
       | watch ->

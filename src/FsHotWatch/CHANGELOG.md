@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- feat: a repository host keeps a lifecycle record. New `HostLifecycle` module:
+  `EventLog` counts attaches by disposition, refusals by kind, session ends by outcome and
+  lost answers (`Tally`, `Tally.toJson`). With a path, it appends each event (`HostEvent`)
+  as one JSON line to `eventLogPath control` (`host-events.jsonl` in the control
+  directory). `Start` records `PreviousHostUnclean` when the last host it can read never
+  recorded its stop, and rotates a log past `DefaultMaxBytes` to `<log>.1`. A log that
+  cannot be written still counts. `RepositoryHost` takes an optional `events` log. `ListSessions` adds `startedAt`, `footprint` (new
+  `RepositoryHost.footprint`: working set, managed heap, GC-committed bytes), `lifecycle`
+  and each session's `attachedAt`. `RepositoryHost.run` writes the repository's event log,
+  ending it with `hostStopped` (`idle` or `requested`) after every session has ended. New
+  `WorktreeSession.AttachedAt` and `SessionRegistry.OnSessionEnded`. Listeners are called
+  before `Ended` completes, and one that throws is logged and skipped.
+
 - **feat!: `ErrorEntry.Code`.** A ledger entry names the rule that produced it, when its
   producer names one: analyzers set it from `Message.Code`. Every record literal now sets
   it (`Code = None` elsewhere). The task-cache entry format moves to 6, so entries written

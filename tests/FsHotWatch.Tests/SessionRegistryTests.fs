@@ -402,3 +402,23 @@ let ``a resource that fails to release does not stop the others, or the session'
         test <@ registry.Detach session.Id @>
         test <@ disposed.Value = 1 @>
         test <@ logs.Of "a" |> List.exists (fun l -> l.Contains "lock already gone") @>)
+
+[<Fact(Timeout = 60000)>]
+let ``every listener hears a session end before Ended completes, and a listener that throws delays nothing`` () =
+    withTwoWorktrees (fun a _ ->
+        use registry = new SessionRegistry(daemonFactory (fun _ _ -> ()))
+        let heard = System.Collections.Concurrent.ConcurrentQueue<SessionId * SessionEnd>()
+        registry.OnSessionEnded(fun _ -> failwith "a listener that throws")
+        registry.OnSessionEnded(fun (session, how) -> heard.Enqueue((session.Id, how)))
+        let logs = Logs()
+        let id = sessionIdFor a
+
+        let session =
+            Result.toOption (registry.Start(id, specFor logs "a" a [])) |> Option.get
+
+        serving session |> ignore
+        test <@ (session.AttachedAt - DateTime.UtcNow).Duration() < TimeSpan.FromMinutes 1.0 @>
+        test <@ registry.Detach id @>
+        test <@ session.Ended.Result = SessionEnd.Stopped @>
+        test <@ List.ofSeq heard = [ id, SessionEnd.Stopped ] @>
+        test <@ logs.Of "a" |> List.exists (fun l -> l.Contains "a listener that throws") @>)

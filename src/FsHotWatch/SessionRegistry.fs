@@ -71,12 +71,16 @@ type WorktreeSession
         daemon: Daemon.Daemon,
         cts: CancellationTokenSource,
         serving: Task<DaemonRpcConfig>,
-        ended: Task<SessionEnd>
+        ended: Task<SessionEnd>,
+        attachedAt: DateTime
     ) =
     member _.Id = id
     member _.Worktree = spec.Worktree
     member _.Config = spec.Config
     member _.Daemon = daemon
+
+    /// When the session was started (UTC).
+    member _.AttachedAt = attachedAt
 
     /// The daemon's RPC configuration, once it serves. Canceled when the session ends
     /// before serving.
@@ -119,6 +123,8 @@ type SessionRegistry internal (factory: SessionFactory, run: SessionRun) =
 
     let current () = Volatile.Read(&sessions)
 
+    let mutable endListeners: (WorktreeSession * SessionEnd -> unit) list = []
+
     let remove (session: WorktreeSession) =
         locked (fun () -> sessions <- sessions |> Map.filter (fun _ live -> not (obj.ReferenceEquals(live, session))))
 
@@ -146,7 +152,9 @@ type SessionRegistry internal (factory: SessionFactory, run: SessionRun) =
             let ended =
                 TaskCompletionSource<SessionEnd>(TaskCreationOptions.RunContinuationsAsynchronously)
 
-            let session = WorktreeSession(id, spec, daemon, cts, serving.Task, ended.Task)
+            let session =
+                WorktreeSession(id, spec, daemon, cts, serving.Task, ended.Task, startedAt)
+
             locked (fun () -> sessions <- sessions.Add(spec.Worktree.Worktree, session))
 
             let body =
@@ -166,6 +174,14 @@ type SessionRegistry internal (factory: SessionFactory, run: SessionRun) =
                     // Idempotent: a run that ended normally has disposed it already.
                     release [ daemon :> IDisposable ]
                     release spec.Owned
+                    // Before `Ended` completes, so a waiter on it sees the end already told.
+                    // A listener that throws keeps neither its siblings nor `Ended` waiting.
+                    for listener in Volatile.Read(&endListeners) do
+                        try
+                            listener (session, how)
+                        with ex ->
+                            Logging.warn "session" $"a session-ended listener failed: %s{ex.Message}"
+
                     ended.SetResult how
                 }
 
@@ -214,6 +230,12 @@ type SessionRegistry internal (factory: SessionFactory, run: SessionRun) =
         |> Option.map (fun s -> { Session = s.Id; Config = s.Config })
 
     member _.Sessions: WorktreeSession list = current () |> Map.values |> List.ofSeq
+
+    /// Call `listener` once for each session that ends from now on, with how it ended:
+    /// after the session has released what it owned and before its `Ended` completes, on
+    /// the thread that ended it. A listener that throws is logged and skipped.
+    member _.OnSessionEnded(listener: WorktreeSession * SessionEnd -> unit) : unit =
+        locked (fun () -> endListeners <- endListeners @ [ listener ])
 
     /// Stop session `id` and wait (bounded) for it to end. False when no such
     /// incarnation is live.
