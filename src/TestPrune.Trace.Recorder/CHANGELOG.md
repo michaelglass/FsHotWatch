@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.4 - 2026-10-25
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.7.3 - 2026-10-13
 
 - fix(trace): recall matches a backticked test method to its trace
