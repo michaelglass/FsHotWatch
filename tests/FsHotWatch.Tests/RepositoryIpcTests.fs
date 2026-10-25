@@ -251,9 +251,10 @@ let ``an attach that outlasts the preamble bound is still answered`` () =
 /// `preambleBound`, with its log lines captured: no accept loop and no scheduling of it,
 /// so what the opener does with a connection is the only thing a test observes. `client`
 /// runs against the connected client end; the opener's answer and its log follow.
-let private openOnce
+/// `handlersFor` is handed the host's end of the connection.
+let private openOnceWith
     (preambleBound: TimeSpan)
-    (handlers: EndpointHandlers)
+    (handlersFor: IO.Stream -> EndpointHandlers)
     (client: IO.Pipes.NamedPipeClientStream -> unit)
     : Threading.Tasks.Task<FsHotWatch.Ipc.IpcServer.Served option> * Collections.Concurrent.ConcurrentQueue<string> =
     let endpoint = "fshw-test-" + Guid.NewGuid().ToString "N"
@@ -287,7 +288,7 @@ let private openOnce
             server.WaitForConnection()
 
             try
-                openerWithin preambleBound handlers watchdog server CancellationToken.None
+                openerWithin preambleBound (handlersFor server) watchdog server CancellationToken.None
                 |> Async.RunSynchronously
             finally
                 server.Dispose())
@@ -305,25 +306,41 @@ let private openOnce
     pipe.Dispose()
     opened, logged
 
+/// `openOnceWith`, for handlers that need nothing of the connection.
+let private openOnce (preambleBound: TimeSpan) (handlers: EndpointHandlers) client =
+    openOnceWith preambleBound (fun _ -> handlers) client
+
+/// Block until the client has left as the HOST sees it: end-of-stream on the host's end.
+///
+/// The client disposing its end is not that moment. Its descriptor is closed only once
+/// every copy of it is, and a process another test in this host forks in the meantime
+/// holds a copy until it execs. Until then the socket is open, so the host's answer is
+/// written into it and nothing reports it undelivered. Measured with a thread spawning
+/// `sh` alongside: 18 of 1200 attaches answered into a "closed" client went undetected
+/// when the host waited for the client's dispose, and 0 of 600 without the spawner.
+/// End-of-stream arrives only after the last copy closes, and every answer written after
+/// it fails: 0 of 600 with the spawner.
+let private untilClientGone (hostEnd: IO.Stream) =
+    let buffer = Array.zeroCreate<byte> 1
+    test <@ hostEnd.Read(buffer, 0, 1) = 0 @>
+
 [<Fact(Timeout = 60000)>]
 let ``an attach whose client left before the answer is undone`` () =
     // Driven through the opener directly, with no bound on the preamble for the test's
     // own timing to race: the client sends its attach and closes, the host answers into
     // the closed pipe, and the attach it started is undone.
-    let clientGone = new ManualResetEventSlim(false)
     let undone = Threading.Tasks.TaskCompletionSource<string>()
 
-    let handlers =
+    let handlers hostEnd =
         { refusingHandlers (fun _ ->
-              clientGone.Wait() |> ignore
+              untilClientGone hostEnd
               "attached") with
             Undelivered = fun answer -> undone.TrySetResult answer |> ignore }
 
     let opened, logged =
-        openOnce (TimeSpan.FromMinutes 5.0) handlers (fun client ->
+        openOnceWith (TimeSpan.FromMinutes 5.0) handlers (fun client ->
             (writeFrame client attachPreamble CancellationToken.None).Wait()
-            client.Dispose()
-            clientGone.Set())
+            client.Dispose())
 
     test <@ opened.Wait(TimeSpan.FromSeconds 30.0) && opened.Result.IsNone @>
     test <@ undone.Task.IsCompleted && undone.Task.Result = "attached" @>
@@ -333,27 +350,24 @@ let ``an attach whose client left before the answer is undone`` () =
 let ``a session call whose client left before it was accepted is not served`` () =
     // The client sends its preamble and hangs up while the host looks the session up: the
     // acceptance cannot be sent, and the connection closes instead of being served.
-    let clientGone = new ManualResetEventSlim(false)
-
-    let handlers =
+    let handlers hostEnd =
         { refusingHandlers (fun _ -> "attached") with
             Session =
                 fun _ _ ->
                     Threading.Tasks.Task.Run(fun () ->
-                        clientGone.Wait() |> ignore
+                        untilClientGone hostEnd
                         // Never served: the acceptance cannot reach the client.
                         Ok Unchecked.defaultof<FsHotWatch.Ipc.DaemonRpcConfig>) }
 
     let opened, logged =
-        openOnce (TimeSpan.FromMinutes 5.0) handlers (fun client ->
+        openOnceWith (TimeSpan.FromMinutes 5.0) handlers (fun client ->
             (writeFrame
                 client
                 (encodePreamble (Preamble.Session(session, InvocationId.mint ())))
                 CancellationToken.None)
                 .Wait()
 
-            client.Dispose()
-            clientGone.Set())
+            client.Dispose())
 
     test <@ opened.Wait(TimeSpan.FromSeconds 30.0) && opened.Result.IsNone @>
     test <@ logged |> Seq.exists (fun line -> line.Contains "could not be sent") @>

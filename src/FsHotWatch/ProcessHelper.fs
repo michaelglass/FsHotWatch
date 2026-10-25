@@ -1354,12 +1354,17 @@ let internal liveEscalationOps: EscalationOps =
       Pause = fun () -> Thread.Sleep EscalationPause
       Attempts = EscalationAttempts }
 
-/// The escalation for a child recorded at launch, or `None` when its identity could not
-/// be recorded: without it, no signal could be proven to reach OUR process.
-let internal escalationFor (owned: Result<OwnedPid, string>) : (unit -> Escalation) option =
+/// The escalation for a child recorded at launch against `ops`, or `None` when its
+/// identity could not be recorded: without it, no signal could be proven to reach OUR
+/// process.
+let internal escalationWith (ops: EscalationOps) (owned: Result<OwnedPid, string>) : (unit -> Escalation) option =
     match owned with
-    | Ok root -> Some(fun () -> escalateWith liveEscalationOps root)
+    | Ok root -> Some(fun () -> escalateWith ops root)
     | Error _ -> None
+
+/// `escalationWith` the real OS.
+let internal escalationFor (owned: Result<OwnedPid, string>) : (unit -> Escalation) option =
+    escalationWith liveEscalationOps owned
 
 /// What the registry runs when a shutdown's kill of this child does not return
 /// (`ProcessRegistry.IOwnedChild.Escalate`): the escalation's survivors. `None` without a

@@ -220,6 +220,16 @@ let private runGenerations (scenario: Scenario) : Outcome =
 
         let published = Collections.Concurrent.ConcurrentQueue<string * string>()
 
+        // The order in which build requests and build results reached this recorder:
+        // the sequence number of the latest of each. A request is answered once a result
+        // arrives after it.
+        let sequence = ref 0L
+        let lastRequest = ref 0L
+        let lastResult = ref 0L
+
+        let stamp (latest: int64 ref) =
+            Volatile.Write(&latest.contents, Interlocked.Increment(&sequence.contents))
+
         daemon.RegisterHandler
             { Name = PluginName.create "ceiling-recorder"
               Init = ()
@@ -228,12 +238,14 @@ let private runGenerations (scenario: Scenario) : Outcome =
                     async {
                         match event with
                         | FileChecked result -> published.Enqueue(AbsFilePath.value result.File, result.Source)
+                        | FileChanged _ -> stamp lastRequest
+                        | BuildCompleted _ -> stamp lastResult
                         | _ -> ()
 
                         return state
                     }
               Commands = []
-              Subscriptions = Set.ofList [ SubscribeFileChecked ]
+              Subscriptions = Set.ofList [ SubscribeFileChecked; SubscribeFileChanged; SubscribeBuildCompleted ]
               CacheKey = None
               PrepareCommit = None
               Teardown = None }
@@ -297,11 +309,22 @@ let private runGenerations (scenario: Scenario) : Outcome =
         for generation in 1..generations do
             armed.Value <- generation
             published.Clear()
+            let before = Volatile.Read(&sequence.contents)
             daemon.ScanAll() |> Async.RunSynchronously
 
+            // Settled means the build this scan asked for has ANSWERED, not only that no
+            // work was owned at the instant of one poll. Read on that alone, a loaded run
+            // (train-1022b, load ~17) counted 1, 1, 2, 3, 4 launches for a scenario whose
+            // log shows a build requested by every scan: a generation was read before its
+            // build had answered. Every scenario's scan requests a build, run or
+            // replayed, and every request is followed by a result.
+            let answered () =
+                let request = Volatile.Read(&lastRequest.contents)
+                request > before && Volatile.Read(&lastResult.contents) > request
+
             Assert.True(
-                waitUntilTrue (fun () -> not (daemon.Host.AnyPluginBusy())) RealCheckWaitMs,
-                $"generation %d{generation}: the work the scan started never settled"
+                waitUntilTrue (fun () -> answered () && not (daemon.Host.AnyPluginBusy())) RealCheckWaitMs,
+                $"generation %d{generation}: the work the scan started never settled (build answered: %b{answered ()}, busy: %A{daemon.Host.BusyPluginNames()})"
             )
 
             Assert.True(
