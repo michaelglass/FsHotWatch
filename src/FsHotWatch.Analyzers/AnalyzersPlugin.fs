@@ -42,6 +42,7 @@ let internal crashFinding (crash: AnalyzerCrash) : ErrorEntry =
       Severity = DiagnosticSeverity.Error
       Line = 1
       Column = 0
+      Code = None
       Detail = Some crash.Trace }
 
 /// The crash a ledger entry records, when it is one `crashFinding` wrote. A replayed
@@ -66,6 +67,39 @@ let internal crashOfFinding (entry: ErrorEntry) : AnalyzerCrash option =
                   Trace = trace }
     | _ -> None
 
+/// The stamp of an analysis of `result` under `analyzerSet` and the config chain whose
+/// digest is `configDigest`.
+let internal stampOf
+    (result: FileCheckResult)
+    (analyzerSet: string option)
+    (configDigest: string)
+    : FsHotWatch.Analyzers.AnalyzerFindings.AnalyzedFile =
+    { SourceHash = FsHotWatch.Analyzers.AnalyzerFindings.sourceHashOf result.Source
+      ModelGeneration = result.ModelGeneration
+      AnalyzerSet = analyzerSet
+      ConfigDigest = configDigest
+      Typed =
+        match result.CheckResults with
+        | FullCheck _ -> true
+        | ParseOnly -> false }
+
+/// The inputs a cache key named for each file, handed from the key computation to the
+/// fold that records a replay of it. A replayed analysis IS the analysis its key names,
+/// so its stamp is the key's analyzer set and config chain; the replay fold has no
+/// other route to them, since the state cannot read the handler's closure.
+[<Sealed>]
+type ReplayStamps internal () =
+    let pending =
+        Collections.Concurrent.ConcurrentDictionary<string, string option * string>(StringComparer.Ordinal)
+
+    member internal _.Put(file: string, analyzerSet: string option, configDigest: string) =
+        pending[file] <- (analyzerSet, configDigest)
+
+    member internal _.Take(file: string) : (string option * string) option =
+        match pending.TryRemove file with
+        | true, inputs -> Some inputs
+        | false, _ -> None
+
 type AnalyzersState =
     {
         /// Every entry this plugin reported to the ledger for each file: the analyzers'
@@ -80,6 +114,12 @@ type AnalyzersState =
         /// analyzer DLLs — both are silent-skip cases the fail-loud guard catches.
         LoadedByPath: (string * int) list
         RunAnalyzed: int
+        /// The inputs each file's `DiagnosticsByFile` entry was computed from — what
+        /// `fshw findings` compares with the disk before it trusts the entry. A file
+        /// whose latest analysis did not complete (timed out) has none.
+        AnalyzedByFile: Map<AbsFilePath, FsHotWatch.Analyzers.AnalyzerFindings.AnalyzedFile>
+        /// See `ReplayStamps`.
+        Stamps: ReplayStamps
     }
 
     // A replayed analysis is recorded by the rule a live fold applies: only a result
@@ -90,11 +130,19 @@ type AnalyzersState =
         member this.Replayed _ currentModel result analysis =
             match analysis with
             | Result.Ok entries when result.ModelGeneration.IsSome && result.ModelGeneration = currentModel ->
+                let analyzed =
+                    match this.Stamps.Take(AbsFilePath.value result.File) with
+                    | Some(analyzerSet, configDigest) ->
+                        this.AnalyzedByFile
+                        |> Map.add result.File (stampOf result analyzerSet configDigest)
+                    | None -> this.AnalyzedByFile |> Map.remove result.File
+
                 { this with
                     DiagnosticsByFile = this.DiagnosticsByFile |> Map.add result.File entries
                     CrashesByFile =
                         this.CrashesByFile
-                        |> Map.add result.File (entries |> List.choose crashOfFinding) }
+                        |> Map.add result.File (entries |> List.choose crashOfFinding)
+                    AnalyzedByFile = analyzed }
             | Result.Ok _
             | Result.Error _ -> this
 
@@ -323,8 +371,7 @@ let internal buildAnalyzerProjectOptions
 /// The configuration files analyzers find by walking up from the analyzed file, as
 /// (file name, cache-key label). Each one found between the repository root and the
 /// file is an input to the verdict.
-let internal analyzerConfigFiles =
-    [ ".editorconfig", "editorconfig"; "fsharplint.json", "fsharplint" ]
+let internal analyzerConfigFiles = FsHotWatch.Analyzers.AnalyzerFindings.configFiles
 
 let private isFSharpLintAssembly (name: string) =
     name.Contains("FSharpLint", StringComparison.OrdinalIgnoreCase)
@@ -650,13 +697,8 @@ let internal createWithSeams
         // MichaelGlass.FSharp.Analyzers reads `mga_*` keys from `.editorconfig`, and the
         // FSharpLint shim reads `fsharplint.json`. Without a repository root the walk
         // has no floor, so it runs to the filesystem root.
-        let root =
-            repoRoot
-            |> Option.defaultWith (fun () -> Path.GetPathRoot(Path.GetFullPath file))
-
-        analyzerConfigFiles
-        |> List.map (fun (fileName, label) ->
-            label, FsHotWatch.CacheInputs.configChainCandidates root fileName label [ file ])
+        // The same walk `fshw findings` reads the disk with (`AnalyzerFindings.configChain`).
+        FsHotWatch.Analyzers.AnalyzerFindings.configChain repoRoot file
 
     // What each candidate held when last seen, as a digest (None = absent). Kept for
     // the REPOSITORY's config set, not per file: the key below hashes each file's own
@@ -702,6 +744,8 @@ let internal createWithSeams
 
         found
 
+    let stamps = ReplayStamps()
+
     let analyzerTimeout =
         let secs = defaultArg timeoutSec AnalyzersTimeoutDefaultSec
         TimeSpan.FromSeconds(float secs)
@@ -712,7 +756,9 @@ let internal createWithSeams
           CrashesByFile = Map.empty
           LoadedCount = loadedCount
           LoadedByPath = loadedByPath
-          RunAnalyzed = 0 }
+          RunAnalyzed = 0
+          AnalyzedByFile = Map.empty
+          Stamps = stamps }
       Update =
         fun ctx state event ->
             async {
@@ -759,7 +805,14 @@ let internal createWithSeams
                     else
 
                         refreshAnalyzerSet ()
-                        refreshConfigs fileStr |> ignore
+                        let chain = refreshConfigs fileStr
+
+                        // What this analysis is computed from, recorded with its findings.
+                        // Read now, beside the refresh: the set this event's analyzers run with.
+                        let analyzedUnder = (Volatile.Read(&snapshot)).Inputs |> Result.toOption
+
+                        let stamp () =
+                            stampOf result analyzedUnder (FsHotWatch.Analyzers.AnalyzerFindings.configDigestOf chain)
 
                         let checkResultsObj =
                             match result.CheckResults with
@@ -868,6 +921,11 @@ let internal createWithSeams
                                                                 | Severity.Hint -> DiagnosticSeverity.Hint
                                                               Line = m.Range.StartLine
                                                               Column = m.Range.StartColumn
+                                                              Code =
+                                                                if String.IsNullOrEmpty m.Code then
+                                                                    None
+                                                                else
+                                                                    Some m.Code
                                                               Detail = None }
 
                                                         let findings, crashes = foldResults toEntry results
@@ -904,8 +962,13 @@ let internal createWithSeams
 
                         match analysisOutcome with
                         | Choice1Of3() ->
-                            // Timed out — terminal status already reported, state unchanged.
-                            return state
+                            // Timed out — terminal status already reported. The file's
+                            // previous entries stay in the ledger, but no analysis of THESE
+                            // inputs completed, so it keeps no stamp: `fshw findings` reads
+                            // it as missing rather than as an answer about its new bytes.
+                            return
+                                { state with
+                                    AnalyzedByFile = state.AnalyzedByFile |> Map.remove result.File }
                         | Choice2Of3(entries, crashes) ->
                             // completeWith must run inside this event's window so the
                             // framework writes the cache for FileChecked.
@@ -925,7 +988,8 @@ let internal createWithSeams
                                 { state with
                                     DiagnosticsByFile = updated
                                     CrashesByFile = crashesByFile
-                                    RunAnalyzed = analyzed }
+                                    RunAnalyzed = analyzed
+                                    AnalyzedByFile = state.AnalyzedByFile |> Map.add result.File (stamp ()) }
                         | Choice3Of3 errMsg ->
                             let entries = [ ErrorEntry.error $"Analyzer crashed: %s{errMsg}" ]
                             ctx.ReportErrors fileStr entries
@@ -942,7 +1006,8 @@ let internal createWithSeams
                             return
                                 { state with
                                     DiagnosticsByFile = state.DiagnosticsByFile |> Map.add result.File entries
-                                    CrashesByFile = state.CrashesByFile |> Map.add result.File [] }
+                                    CrashesByFile = state.CrashesByFile |> Map.add result.File []
+                                    AnalyzedByFile = state.AnalyzedByFile |> Map.add result.File (stamp ()) }
                 | Custom(AnalysisComplete(file, entries)) ->
                     // Report/clear so the gated ledger set and the summary agree, and
                     // replace this file's map entry — see `summarize`.
@@ -959,17 +1024,22 @@ let internal createWithSeams
                     // as "no timing shown", never a fabricated measurement.
                     PluginCtxHelpers.completeWith ctx (summarizeRun analyzed updated crashesByFile) TimeSpan.Zero
 
+                    // Analyzed outside this handler, from inputs it cannot name: no stamp.
                     return
                         { state with
                             DiagnosticsByFile = updated
                             CrashesByFile = crashesByFile
-                            RunAnalyzed = analyzed }
+                            RunAnalyzed = analyzed
+                            AnalyzedByFile = state.AnalyzedByFile |> Map.remove (AbsFilePath.create file) }
                 | Custom(AnalysisFailed(file, error)) ->
                     ctx.ReportErrors file [ ErrorEntry.error $"Analyzer crashed: %s{error}" ]
 
                     ctx.EndSubtask PrimarySubtaskKey
                     PluginCtxHelpers.completeWith ctx $"analyzer crashed on {Path.GetFileName file}" TimeSpan.Zero
-                    return state
+
+                    return
+                        { state with
+                            AnalyzedByFile = state.AnalyzedByFile |> Map.remove (AbsFilePath.create file) }
                 | _ -> return state
             }
       PrepareCommit = None
@@ -988,6 +1058,41 @@ let internal createWithSeams
                              files = state.DiagnosticsByFile.Count
                              diagnostics = totalDiags |}
                       )
+              })
+          // `fshw findings`: every stamped analysis with its entries, the files the current
+          // model says must be accounted for, and the analyzer set on disk NOW — read, not
+          // reloaded, so observing changes nothing the next analysis will see.
+          FsHotWatch.Analyzers.AnalyzerFindings.CommandName,
+          PluginCommand.Observe(fun ctx state _args ->
+              async {
+                  let generation, expected =
+                      match ctx.ProjectGraph.ObserveCheckableFiles() with
+                      | Some(generation, files) ->
+                          Some generation,
+                          files
+                          |> Seq.map AbsFilePath.value
+                          |> Seq.filter (FsHotWatch.PathFilter.isOutsideRepoScoped repoRoot >> not)
+                          |> Seq.sort
+                          |> Seq.toList
+                      | None -> None, []
+
+                  let onDisk = snapshotAnalyzerSet repoRoot knownNonAnalyzerPrefixes analyzerPaths
+
+                  return
+                      FsHotWatch.Analyzers.AnalyzerFindings.serializeReply
+                          { ModelGeneration = generation
+                            Expected = expected
+                            AnalyzerSet = onDisk.Inputs |> Result.mapError describeRefusals
+                            FailOnSeverity = failOnSeverity
+                            ScopeRoot = repoRoot
+                            AnalyzerCount = state.LoadedCount
+                            Files =
+                              state.AnalyzedByFile
+                              |> Map.toList
+                              |> List.map (fun (file, analyzed) ->
+                                  { File = AbsFilePath.value file
+                                    Analyzed = analyzed
+                                    Entries = state.DiagnosticsByFile |> Map.tryFind file |> Option.defaultValue [] }) }
               }) ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey =
@@ -1007,15 +1112,9 @@ let internal createWithSeams
                      |> List.sort)
             )
 
-        // The present config files of a file's chain, by repo-relative path and content.
-        let analyzerConfigHash (chain: (string * (string * string option) list) list) =
-            chain
-            |> List.collect snd
-            |> List.choose (fun (key, content) ->
-                content
-                |> Option.map (fun text -> $"%s{key} %s{FsHotWatch.CheckCache.sha256Hex text}"))
-            |> String.concat "\n"
-            |> FsHotWatch.CheckCache.sha256Hex
+        // The present config files of a file's chain, by repo-relative path and content —
+        // the digest `fshw findings` compares a file's stamp with.
+        let analyzerConfigHash = FsHotWatch.Analyzers.AnalyzerFindings.configDigestOf
 
         let cacheKey (event: PluginEvent<AnalyzersMsg>) : ContentHash option =
             countPendingReplay ()
@@ -1035,6 +1134,8 @@ let internal createWithSeams
                 | Result.Error _ -> None
                 | Result.Ok analyzerInputs ->
                     Volatile.Write(&replayPending, true)
+                    // A hit on this key replays the analysis it names; its stamp is this.
+                    stamps.Put(file, Some analyzerInputs, analyzerConfigHash chain)
 
                     // A shape that cannot be described leaves no key: the analyzers
                     // run and nothing is read from or written to the cache.

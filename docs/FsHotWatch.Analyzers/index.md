@@ -133,7 +133,17 @@ class of bug goes to be caught in the meantime.
 ```bash
 # Query analyzer diagnostics
 fshw diagnostics
+
+# Every finding, with its analyzer code, as an answer about the tree on disk (or a
+# refusal: stale, incomplete, no daemon). Starts nothing.
+fshw findings --json --wait
 ```
+
+Each file's analysis is stamped with the inputs it was computed from: the source hash,
+the analyzer set's identity and the `.editorconfig` / `fsharplint.json` chain. The
+plugin serves the stamps through its `analyzer-findings` command
+(`AnalyzerFindings.Reply`), and `fshw findings` refuses any stamp that disagrees with
+the disk. See the [CLI README](../FsHotWatch.Cli/README.md#fshw-findings--the-warm-daemons-analyzer-findings-tied-to-the-tree).
 
 ## Programmatic usage
 

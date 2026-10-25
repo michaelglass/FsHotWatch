@@ -17,6 +17,7 @@ let parseMSBuildDiagnostics (output: string) : ErrorEntry list =
             Severity = severity
             Line = int m.Groups.[2].Value
             Column = int m.Groups.[3].Value
+            Code = None
             Detail = None } ]
 
 open System.IO

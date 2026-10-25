@@ -178,6 +178,10 @@ type DaemonRpcConfig =
         FormatAll: unit -> Async<string>
         WaitForScanGeneration: int64 -> Task<unit>
         WaitForAllTerminal: TimeSpan -> Task<unit>
+        /// Settle: return once the host owns no work, faulting with `TimeoutException`
+        /// at the bound. Asks nothing about evidence and starts nothing — the wait a
+        /// reader such as `fshw findings` needs, where `WaitForAllTerminal` is a check's.
+        WaitForRest: TimeSpan -> Task<unit>
         RerunPlugin: string -> Async<Result<unit, string>>
         /// Drop every persisted task-result entry for this workspace. The task
         /// boundary keeps filesystem enumeration off the RPC dispatch thread.
@@ -605,6 +609,37 @@ type DaemonRpcTarget
                 return this.GetStatus()
             })
 
+    /// Whether the host owns no work, waiting up to `timeoutMs` for it to come to rest:
+    /// `"rest"`, or `"busy: <why>"` when it still owned work at the bound. `timeoutMs <= 0`
+    /// answers at once without waiting.
+    ///
+    /// The READER's wait. `WaitForComplete` is a check's: it also waits for test evidence
+    /// about the current model, re-checks suspect files once per tree and prunes vanished
+    /// paths from the ledger. A reader must neither start work nor wait on a run nobody
+    /// asked for, so this asks the one question both share — is anything still owned? —
+    /// and nothing else. A wedged or dead plugin answers `busy` with the detector's words.
+    member _.WaitForRest(timeoutMs: int) : Task<string> =
+        trackedTask "WaitForRest" (fun _ ->
+            task {
+                if timeoutMs <= 0 then
+                    return
+                        if config.Host.WorkSnapshot.IsBusy then
+                            "busy: the daemon owns work"
+                        else
+                            "rest"
+                else
+                    // Bounded below the RPC seam's own deadline, so the answer is this
+                    // method's rather than the seam's timeout fault.
+                    let timeout =
+                        min (TimeSpan.FromMilliseconds(float timeoutMs)) (ambientRpcDeadline ())
+
+                    try
+                        do! config.WaitForRest timeout
+                        return "rest"
+                    with :? TimeoutException as ex ->
+                        return $"busy: %s{ex.Message}"
+            })
+
     /// Trigger a build by emitting SourceChanged for all registered files, then wait for completion.
     member this.TriggerBuild() : Task<string> =
         // The build it triggers is a plugin run, shared like any other.
@@ -1019,6 +1054,11 @@ module IpcClient =
     /// timeoutMs <= 0 means no client-imposed timeout.
     let waitForComplete (pipeName: string) (timeoutMs: int) : Async<string> =
         invoke pipeName "WaitForComplete" [| timeoutMs |]
+
+    /// Whether the daemon owns no work, waiting up to `timeoutMs` (`<= 0`: answer at once).
+    /// `"rest"`, or `"busy: <why>"`.
+    let waitForRest (pipeName: string) (timeoutMs: int) : Async<string> =
+        invoke pipeName "WaitForRest" [| timeoutMs |]
 
     /// Trigger a build and wait for it to complete.
     let triggerBuild (pipeName: string) : Async<string> = invoke pipeName "TriggerBuild" [||]

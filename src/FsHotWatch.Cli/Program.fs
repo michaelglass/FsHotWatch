@@ -231,6 +231,18 @@ type DeadCodeFlag =
                 Repeatable = true)>] Entry of string
     | [<CmdFlag(Description = "Include symbols from test files in the report", Name = "include-tests")>] IncludeTests
 
+/// Flags for `fshw findings`. See `Findings`.
+[<RequireQualifiedAccess>]
+type FindingsFlag =
+    | [<CmdFlag(Description = "Print the versioned fshw-findings-v1 JSON document instead of the human answer")>] Json
+    | [<CmdFlag(Description = "Wait for the daemon to finish checking the tree on disk, and retry a stale answer, until --timeout-sec. Without it, a daemon that is still working or holds a stale answer is refused (exit 4) at once")>] Wait
+    | [<CmdFlag(Description = "Seconds --wait may take before refusing (default 300)", Name = "timeout-sec")>] TimeoutSec of
+        int
+
+/// `findings --wait`'s default bound.
+[<Literal>]
+let DefaultFindingsTimeoutSec = 300
+
 /// `--repository`: act on the repository host and every worktree it serves.
 type RepositoryFlag =
     | [<CmdFlag(Description = "Act on the repository host and every worktree it serves, not only this worktree")>] Repository
@@ -286,6 +298,9 @@ type Command =
         CmdExample("", "build", "test-prune", "--repository");
         Cmd("Show current status")>] Status of plugin: string option * flags: RepositoryFlag list
     | [<Cmd("Scan for file changes")>] Scan
+    | [<CmdExample("", "--json --wait");
+        Cmd("The warm daemon's analyzer findings, with codes, as an answer about the tree on disk or not at all. Never starts a daemon (exit 5), never triggers a run; refuses a stale answer (exit 4) or an incomplete one (exit 2). Exit 0 clean, 1 failing findings, 6 refused")>] Findings of
+        FindingsFlag list
     | [<Cmd("Invalidate cached task results without stopping the daemon")>] Invalidate
     | [<CmdArg("plugin name");
         CmdExample("build", "test-prune", "analyzers");
@@ -350,6 +365,8 @@ let internal agentGateFor (command: Command) : AgentGate =
     | Command.Coverage _ -> AgentGate.OwnOutput
     | Command.Start
     | Command.Init
+    // `findings` prints the answer a caller asked for, JSON with `--json`.
+    | Command.Findings _
     | Command.DeadCode _
     | Command.Completions
     | Command.Host _ -> AgentGate.Ungated
@@ -366,6 +383,7 @@ let internal commandToken (command: Command) : string =
     | Command.Format _ -> "format"
     | Command.Status _ -> "status"
     | Command.Scan -> "scan"
+    | Command.Findings _ -> "findings"
     | Command.Invalidate -> "invalidate"
     | Command.Rerun _ -> "rerun"
     | Command.Init -> "init"
@@ -593,6 +611,9 @@ type IpcOps =
         GetDiagnostics: string -> string -> Async<string>
         WaitForScan: string -> int64 -> Async<string>
         WaitForComplete: string -> int -> Async<string>
+        /// `WaitForRest` on `pipe`: `"rest"` once the daemon owns no work, `"busy: …"` at
+        /// the bound (`<= 0`: answer at once). The reader's wait; starts nothing.
+        WaitForRest: string -> int -> Async<string>
         TriggerBuild: string -> Async<string>
         FormatAll: string -> Async<string>
         RerunPlugin: string -> string -> Async<string>
@@ -617,6 +638,7 @@ let defaultIpcOps: IpcOps =
       GetDiagnostics = IpcClient.getDiagnostics
       WaitForScan = IpcClient.waitForScan
       WaitForComplete = IpcClient.waitForComplete
+      WaitForRest = IpcClient.waitForRest
       TriggerBuild = IpcClient.triggerBuild
       FormatAll = IpcClient.formatAll
       RerunPlugin = IpcClient.rerunPlugin
@@ -2804,6 +2826,7 @@ let sessionIpcOps (link: HostLink) : IpcOps =
       GetDiagnostics = fun _ filter -> call "GetDiagnostics" [| filter |]
       WaitForScan = fun _ after -> call "WaitForScan" [| after |]
       WaitForComplete = fun _ timeoutMs -> call "WaitForComplete" [| timeoutMs |]
+      WaitForRest = fun _ timeoutMs -> call "WaitForRest" [| timeoutMs |]
       TriggerBuild = fun _ -> call "TriggerBuild" [||]
       FormatAll = fun _ -> call "FormatAll" [||]
       RerunPlugin = fun _ name -> call "RerunPlugin" [| name |]
@@ -3318,6 +3341,7 @@ let private executeCommandRendered
         | Scan
         | Invalidate
         | Status _
+        | Findings _
         | Init
         | Config _
         | Coverage _
@@ -3621,6 +3645,46 @@ let private executeCommandRendered
                     let result = ipc.Invalidate pipeName |> Async.RunSynchronously
                     UI.success $"Cache %s{result}; daemon preserved"
                     0)
+        | Findings flags ->
+            // A reader: no `link.Ensure`, no self-heal restart, no scan. A daemon that is
+            // not there, or that faults, is a non-answer the caller falls back from.
+            let timeoutSec =
+                flags
+                |> List.tryPick (fun flag ->
+                    match flag with
+                    | FindingsFlag.TimeoutSec seconds -> Some seconds
+                    | _ -> None)
+                |> Option.defaultValue DefaultFindingsTimeoutSec
+
+            let seams: FsHotWatch.Cli.Findings.Seams =
+                { IsRunning = fun () -> ipc.IsRunning pipeName
+                  WaitForRest = fun bound -> ipc.WaitForRest pipeName bound |> Async.RunSynchronously
+                  ReadReply =
+                    fun () ->
+                        ipc.RunCommand pipeName FsHotWatch.Analyzers.AnalyzerFindings.CommandName ""
+                        |> Async.RunSynchronously
+                  TreeHash = fun () -> TreeHash.compute repoRoot config.Exclude
+                  Disk = fun reply -> FsHotWatch.Analyzers.AnalyzerFindings.diskView reply.ScopeRoot
+                  Now = fun () -> DateTime.UtcNow
+                  Sleep = fun span -> Thread.Sleep span }
+
+            let answer =
+                try
+                    FsHotWatch.Cli.Findings.answer
+                        seams
+                        { Wait = List.contains FindingsFlag.Wait flags
+                          Timeout = TimeSpan.FromSeconds(float timeoutSec)
+                          WarningsAreFailures = not noWarnFail }
+                with ex ->
+                    FsHotWatch.Cli.Findings.refused (ipcErrorHeadline (unwrapIpcException ex))
+
+            if List.contains FindingsFlag.Json flags then
+                printfn "%s" (FsHotWatch.Cli.Findings.toJson repoRoot answer)
+            else
+                for line in FsHotWatch.Cli.Findings.render repoRoot answer do
+                    printfn "%s" line
+
+            FsHotWatch.Cli.Findings.Outcome.exitCode answer.Outcome
         | Status(_, flags) when List.contains Repository flags ->
             repositoryStatus (mode = ProgressRenderer.Agent) repoRoot
         | Status(pluginName, _) ->
@@ -4371,6 +4435,8 @@ let internal needsDaemon (command: Command) : bool =
     | Format flags when isRunOnce flags -> false
     | Confirm flags when confirmsRunOnce flags -> false
     | Status _
+    // A reader of the daemon that is there: it never brings one up.
+    | Findings _
     | Stop _
     | Verdict
     | Init
@@ -4432,6 +4498,7 @@ let private chooseLink
 
     match command, live with
     // Observing and detaching need no attach: the worktree's record names its session.
+    | Findings _, Some record -> linkTo record.Endpoint record.Session
     | Status(_, flags), Some record
     | Stop flags, Some record when not (List.contains Repository flags) -> linkTo record.Endpoint record.Session
     | _ when not (needsDaemon command) -> ownDaemon

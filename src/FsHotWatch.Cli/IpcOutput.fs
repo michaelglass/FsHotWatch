@@ -99,6 +99,7 @@ let formatDiagnosticsResponse
                       Severity = d.Severity
                       Line = d.Line
                       Column = d.Column
+                      Code = None
                       Detail = d.Detail }))
 
         sb.Append(RunOnceOutput.formatErrors errorMap) |> ignore

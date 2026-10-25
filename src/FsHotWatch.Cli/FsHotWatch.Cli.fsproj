@@ -72,6 +72,7 @@
         <Compile Include="SourceRef.fs" />
         <Compile Include="RunOnceCheck.fs" />
         <Compile Include="DeadCode.fs" />
+        <Compile Include="Findings.fs" />
         <Compile Include="Program.fs" />
     </ItemGroup>
 

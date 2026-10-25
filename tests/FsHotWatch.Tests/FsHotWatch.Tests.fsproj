@@ -192,6 +192,8 @@
     <Compile Include="NewFileSelectionTests.fs" />
     <Compile Include="FlakinessTests.fs" />
     <Compile Include="AnalyzersPluginTests.fs" />
+    <Compile Include="AnalyzerFindingsTests.fs" />
+    <Compile Include="FindingsCommandTests.fs" />
     <Compile Include="AnalyzerReloadTests.fs" />
     <Compile Include="LintPluginTests.fs" />
     <Compile Include="LintConfigShapeTests.fs" />

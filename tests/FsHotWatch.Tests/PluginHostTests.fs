@@ -448,6 +448,7 @@ let ``plugin can report and query errors via host`` () =
                                 Severity = DiagnosticSeverity.Warning
                                 Line = 1
                                 Column = 0
+                                Code = None
                                 Detail = None } ]
                     | _ -> ()
 
@@ -492,6 +493,7 @@ let ``plugin ClearErrors removes errors from ledger`` () =
                                 Severity = DiagnosticSeverity.Error
                                 Line = 5
                                 Column = 0
+                                Code = None
                                 Detail = None } ]
 
                         return true
@@ -525,6 +527,7 @@ let ``GetErrorsByPlugin returns only that plugin's errors`` () =
             Severity = DiagnosticSeverity.Error
             Line = 1
             Column = 0
+            Code = None
             Detail = None } ]
     )
 
@@ -535,6 +538,7 @@ let ``GetErrorsByPlugin returns only that plugin's errors`` () =
             Severity = DiagnosticSeverity.Error
             Line = 1
             Column = 0
+            Code = None
             Detail = None } ]
     )
 
@@ -757,6 +761,7 @@ let ``ReportErrors with version passes through to ledger`` () =
             Severity = DiagnosticSeverity.Error
             Line = 1
             Column = 0
+            Code = None
             Detail = None } ],
         version = 2L
     )
@@ -769,6 +774,7 @@ let ``ReportErrors with version passes through to ledger`` () =
             Severity = DiagnosticSeverity.Error
             Line = 1
             Column = 0
+            Code = None
             Detail = None } ],
         version = 1L
     )
@@ -795,6 +801,7 @@ let ``ClearErrors with version passes through to ledger`` () =
             Severity = DiagnosticSeverity.Error
             Line = 1
             Column = 0
+            Code = None
             Detail = None } ],
         version = 2L
     )
@@ -1599,6 +1606,7 @@ let ``HasFailingReasons distinguishes warnings from errors`` () =
             Severity = DiagnosticSeverity.Warning
             Line = 1
             Column = 0
+            Code = None
             Detail = None } ]
     )
 
@@ -1618,6 +1626,7 @@ let ``HasFailingReasons distinguishes warnings from errors`` () =
             Severity = DiagnosticSeverity.Error
             Line = 5
             Column = 0
+            Code = None
             Detail = None } ]
     )
 
@@ -1897,6 +1906,7 @@ let private ghostEntry message =
         Severity = DiagnosticSeverity.Error
         Line = 1
         Column = 0
+        Code = None
         Detail = None } ]
 
 [<Fact(Timeout = 20000)>]

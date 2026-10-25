@@ -2633,6 +2633,7 @@ let ``a cached whole-run replay leaves findings for files outside the batch`` ()
               Severity = DiagnosticSeverity.Error
               Line = 1
               Column = 0
+              Code = None
               Detail = None }
 
         // The handler reports ONLY about the file in its batch — the shape a

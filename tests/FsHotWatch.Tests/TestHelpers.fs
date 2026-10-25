@@ -593,6 +593,7 @@ let errorEntry msg (sev: FsHotWatch.ErrorLedger.DiagnosticSeverity) : FsHotWatch
       Severity = sev
       Line = 0
       Column = 0
+      Code = None
       Detail = None }
 
 /// Construct an FSharpProjectOptions with sensible defaults for tests that only care about

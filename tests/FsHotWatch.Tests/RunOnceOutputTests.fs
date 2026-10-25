@@ -223,12 +223,14 @@ let ``formatErrors groups by file with plugin prefix`` () =
                    Severity = Warning
                    Line = 17
                    Column = 0
+                   Code = None
                    Detail = None })
                 ("build",
                  { Message = "type error"
                    Severity = Error
                    Line = 42
                    Column = 5
+                   Code = None
                    Detail = None }) ] ]
 
     let result = formatErrors errors
@@ -248,12 +250,14 @@ let ``formatErrors shows severity labels for error and warning`` () =
                    Severity = Error
                    Line = 42
                    Column = 5
+                   Code = None
                    Detail = None })
                 ("lint",
                  { Message = "bad name"
                    Severity = Warning
                    Line = 17
                    Column = 0
+                   Code = None
                    Detail = None }) ] ]
 
     let result = formatErrors errors
@@ -272,6 +276,7 @@ let ``formatErrors shows count summary`` () =
                    Severity = Warning
                    Line = 1
                    Column = 0
+                   Code = None
                    Detail = None }) ]
               "src/B.fs",
               [ ("build",
@@ -279,6 +284,7 @@ let ``formatErrors shows count summary`` () =
                    Severity = Error
                    Line = 2
                    Column = 0
+                   Code = None
                    Detail = None }) ] ]
 
     let result = formatErrors errors
@@ -294,18 +300,21 @@ let ``formatErrors labels a deferral and an abort, and counts neither as an erro
                    Severity = Deferred
                    Line = 1
                    Column = 0
+                   Code = None
                    Detail = None })
                 ("test-prune",
                  { Message = "the test host died"
                    Severity = HostAborted
                    Line = 2
                    Column = 0
+                   Code = None
                    Detail = None })
                 ("lint",
                  { Message = "an info note is not actionable"
                    Severity = Info
                    Line = 3
                    Column = 0
+                   Code = None
                    Detail = None }) ] ]
 
     let result = formatErrors errors
@@ -329,6 +338,7 @@ let ``formatErrors hides info-severity entries from output`` () =
                    Severity = Info
                    Line = 3
                    Column = 0
+                   Code = None
                    Detail = None }) ] ]
 
     let result = formatErrors errors
@@ -345,6 +355,7 @@ let ``formatErrors hides hint-severity entries from output`` () =
                    Severity = Hint
                    Line = 5
                    Column = 0
+                   Code = None
                    Detail = None }) ] ]
 
     let result = formatErrors errors
@@ -361,12 +372,14 @@ let ``formatErrors shows warnings but hides info in same file`` () =
                    Severity = Info
                    Line = 3
                    Column = 0
+                   Code = None
                    Detail = None })
                 ("format-check",
                  { Message = "File is not formatted"
                    Severity = Warning
                    Line = 1
                    Column = 0
+                   Code = None
                    Detail = None }) ] ]
 
     let result = formatErrors errors
@@ -384,6 +397,7 @@ let ``formatErrors excludes files with only info entries from file count`` () =
                    Severity = Info
                    Line = 3
                    Column = 0
+                   Code = None
                    Detail = None }) ]
               "src/B.fs",
               [ ("lint",
@@ -391,6 +405,7 @@ let ``formatErrors excludes files with only info entries from file count`` () =
                    Severity = Warning
                    Line = 1
                    Column = 0
+                   Code = None
                    Detail = None }) ] ]
 
     let result = formatErrors errors

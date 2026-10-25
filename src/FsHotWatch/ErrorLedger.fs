@@ -32,6 +32,10 @@ type ErrorEntry =
         Severity: DiagnosticSeverity
         Line: int
         Column: int
+        /// The rule that produced the entry, when its producer names one: an analyzer's
+        /// `Message.Code` (`FL0065`, `MGA-ERROR-REPORT-001`). `None` for entries no rule
+        /// produced — a build line, a test failure, an analyzer that crashed.
+        Code: string option
         /// Optional full output (e.g. complete test stdout for println debugging).
         Detail: string option
     }
@@ -103,6 +107,7 @@ module ErrorEntry =
           Severity = Error
           Line = 0
           Column = 0
+          Code = None
           Detail = None }
 
     /// Create an Error-severity entry with detail (e.g. full test output).
@@ -111,6 +116,7 @@ module ErrorEntry =
           Severity = Error
           Line = 0
           Column = 0
+          Code = None
           Detail = Some detail }
 
     /// Create a Warning-severity entry with detail. For conditions that deny a
@@ -122,6 +128,7 @@ module ErrorEntry =
           Severity = Warning
           Line = 0
           Column = 0
+          Code = None
           Detail = Some detail }
 
     /// Create a `Deferred`-severity entry with detail — a test project whose build
@@ -131,6 +138,7 @@ module ErrorEntry =
           Severity = Deferred
           Line = 0
           Column = 0
+          Code = None
           Detail = Some detail }
 
     /// Create a `HostAborted`-severity entry with detail — a test host that was KILLED
@@ -140,6 +148,7 @@ module ErrorEntry =
           Severity = HostAborted
           Line = 0
           Column = 0
+          Code = None
           Detail = Some detail }
 
 /// How much of the ledger a single mirror of it — a file on disk, an IPC reply — is

@@ -120,6 +120,7 @@ let ``Report ignores stale version`` () =
           Severity = DiagnosticSeverity.Error
           Line = 1
           Column = 0
+          Code = None
           Detail = None }
 
     let staleEntry =
@@ -127,6 +128,7 @@ let ``Report ignores stale version`` () =
           Severity = DiagnosticSeverity.Error
           Line = 2
           Column = 0
+          Code = None
           Detail = None }
 
     ledger.Report("fcs", "/tmp/Lib.fs", [ newEntry ], version = 2L)
@@ -146,6 +148,7 @@ let ``Clear ignores stale version`` () =
           Severity = DiagnosticSeverity.Error
           Line = 1
           Column = 0
+          Code = None
           Detail = None }
 
     ledger.Report("fcs", "/tmp/Lib.fs", [ e ], version = 2L)
@@ -162,6 +165,7 @@ let ``Report without version always updates`` () =
           Severity = DiagnosticSeverity.Error
           Line = 1
           Column = 0
+          Code = None
           Detail = None }
 
     let entry2 =
@@ -169,6 +173,7 @@ let ``Report without version always updates`` () =
           Severity = DiagnosticSeverity.Error
           Line = 2
           Column = 0
+          Code = None
           Detail = None }
 
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry1 ], version = 5L)
@@ -187,6 +192,7 @@ let ``Report accepts newer version after initial versioned report`` () =
           Severity = DiagnosticSeverity.Error
           Line = 1
           Column = 0
+          Code = None
           Detail = None }
 
     let entry2 =
@@ -194,6 +200,7 @@ let ``Report accepts newer version after initial versioned report`` () =
           Severity = DiagnosticSeverity.Error
           Line = 2
           Column = 0
+          Code = None
           Detail = None }
 
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry1 ], version = 1L)
@@ -213,6 +220,7 @@ let ``Report accepts equal version as update`` () =
           Severity = DiagnosticSeverity.Error
           Line = 1
           Column = 0
+          Code = None
           Detail = None }
 
     let entry2 =
@@ -220,6 +228,7 @@ let ``Report accepts equal version as update`` () =
           Severity = DiagnosticSeverity.Error
           Line = 2
           Column = 0
+          Code = None
           Detail = None }
 
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry1 ], version = 3L)
@@ -240,6 +249,7 @@ let ``Clear accepts newer version after initial versioned report`` () =
           Severity = DiagnosticSeverity.Error
           Line = 1
           Column = 0
+          Code = None
           Detail = None }
 
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry1 ], version = 1L)

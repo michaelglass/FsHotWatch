@@ -4012,6 +4012,7 @@ module internal OutstandingFailure =
                                   Severity = severity
                                   Line = int "line"
                                   Column = int "column"
+                                  Code = None
                                   Detail = None } }
                 | _ -> Error $"an entry missing `project`, `file`, `message` or `severity` (%s{node.ToJsonString()})"
             with ex ->
