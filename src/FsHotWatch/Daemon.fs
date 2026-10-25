@@ -2948,14 +2948,15 @@ let private describeElapsed (elapsed: System.TimeSpan) : string =
 /// currently-checked), so the rendered `complete:`/`incomplete:` numbers never
 /// rot after incremental edits. A running scan also says how long it has run (read
 /// against `now`) and what the check-result cache has done for it (`cache`, counted
-/// from the scan's start). The line prefixes are load-bearing:
+/// from the scan's start; None when this daemon runs no check-result cache). The line
+/// prefixes are load-bearing:
 /// `status`/`WaitForScan`/external tooling greps `complete:`/`incomplete:`/
 /// `scanning:`.
 let internal formatScanStatusWith
     (registered: int)
     (unchecked: int)
     (now: System.DateTime)
-    (cache: CheckCacheTally.CacheTally)
+    (cache: CheckCacheTally.CacheTally option)
     (scanState: ScanState)
     : string =
     match scanState with
@@ -2966,9 +2967,13 @@ let internal formatScanStatusWith
         $"scanning: discovering projects, %s{describeElapsed (now - startedAt)} elapsed"
     | Scanning(total, completed, startedAt) ->
         let pct = if total > 0 then completed * 100 / total else 0
-        let misses = CheckCacheTally.CacheTally.misses cache
 
-        $"scanning: %d{completed}/%d{total} files (%d{pct}%%), %s{describeElapsed (now - startedAt)} elapsed, cache %d{cache.Hits} hit / %d{misses} miss"
+        let cacheText =
+            match cache with
+            | Some cache -> $"cache %d{cache.Hits} hit / %d{CheckCacheTally.CacheTally.misses cache} miss"
+            | None -> "check-result cache off"
+
+        $"scanning: %d{completed}/%d{total} files (%d{pct}%%), %s{describeElapsed (now - startedAt)} elapsed, %s{cacheText}"
     | ScanComplete elapsed ->
         if unchecked > 0 then
             // Non-ok: a truncated or stale-incomplete scan must not present as
@@ -3314,7 +3319,10 @@ type Daemon
             registered
             unchecked
             System.DateTime.UtcNow
-            (CheckCacheTally.CacheTally.since row.CacheAtScanStart pipeline.CacheTally)
+            (if pipeline.HasCheckCache then
+                 Some(CheckCacheTally.CacheTally.since row.CacheAtScanStart pipeline.CacheTally)
+             else
+                 None)
             row.ScanState
 
     /// Run the daemon with IPC server on the given pipe name.

@@ -507,6 +507,10 @@ type CheckPipeline
     /// two of these is one scan's. Empty while no cache is configured.
     member internal _.CacheTally: CacheTally = cacheTally.Snapshot
 
+    /// Whether this pipeline runs a check-result cache at all: false when none is
+    /// configured or `cache.scope` leaves this checkout out, so its tally stays empty.
+    member internal _.HasCheckCache: bool = cacheBackend.IsSome
+
     /// This pipeline's turn at the slots its checks are admitted by.
     member internal _.Admission: WorkScheduler.Lane = admission
 

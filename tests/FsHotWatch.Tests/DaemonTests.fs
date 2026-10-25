@@ -1192,7 +1192,7 @@ let private cacheTally (hits: int64) (misses: int64) : CheckCacheTally.CacheTall
 
 [<Fact(Timeout = 15000)>]
 let ``formatScanStatusWith renders idle for ScanIdle`` () =
-    test <@ formatScanStatusWith 0 0 scanNow CheckCacheTally.CacheTally.empty ScanIdle = "idle" @>
+    test <@ formatScanStatusWith 0 0 scanNow (Some CheckCacheTally.CacheTally.empty) ScanIdle = "idle" @>
 
 // A cold scan ran six to eight minutes behind a bare "Scanning…": the client could not
 // tell a slow scan from a stuck one. The answer carries how long it has run and whether
@@ -1200,22 +1200,37 @@ let ``formatScanStatusWith renders idle for ScanIdle`` () =
 [<Fact(Timeout = 15000)>]
 let ``formatScanStatusWith renders scanning progress with elapsed time and cache hits and misses`` () =
     let status =
-        formatScanStatusWith 0 0 scanNow (cacheTally 3L 2L) (Scanning(10, 5, scanNow.AddSeconds -42.0))
+        formatScanStatusWith 0 0 scanNow (Some(cacheTally 3L 2L)) (Scanning(10, 5, scanNow.AddSeconds -42.0))
 
     test <@ status = "scanning: 5/10 files (50%), 42s elapsed, cache 3 hit / 2 miss" @>
 
 [<Fact(Timeout = 15000)>]
 let ``formatScanStatusWith renders a long scan's elapsed time in minutes`` () =
     let status =
-        formatScanStatusWith 0 0 scanNow (cacheTally 0L 120L) (Scanning(800, 120, scanNow.AddSeconds -372.0))
+        formatScanStatusWith 0 0 scanNow (Some(cacheTally 0L 120L)) (Scanning(800, 120, scanNow.AddSeconds -372.0))
 
     test <@ status = "scanning: 120/800 files (15%), 6m 12s elapsed, cache 0 hit / 120 miss" @>
+
+// A daemon with no check-result cache (none configured, or `cache.scope` leaves this
+// checkout out) looks nothing up. "cache 0 hit / 0 miss" over a 46-minute cold scan read
+// as a cache that is wired but never consulted; the line says there is none.
+[<Fact(Timeout = 15000)>]
+let ``formatScanStatusWith says the check-result cache is off when this daemon runs none`` () =
+    let status =
+        formatScanStatusWith 0 0 scanNow None (Scanning(2553, 20, scanNow.AddSeconds -874.0))
+
+    test <@ status = "scanning: 20/2553 files (0%), 14m 34s elapsed, check-result cache off" @>
 
 // Before discovery has registered a file, "0/0 files (0%)" reads as an empty tree.
 [<Fact(Timeout = 15000)>]
 let ``formatScanStatusWith names project discovery while no file is registered yet`` () =
     let status =
-        formatScanStatusWith 0 0 scanNow CheckCacheTally.CacheTally.empty (Scanning(0, 0, scanNow.AddSeconds -12.0))
+        formatScanStatusWith
+            0
+            0
+            scanNow
+            (Some CheckCacheTally.CacheTally.empty)
+            (Scanning(0, 0, scanNow.AddSeconds -12.0))
 
     test <@ status = "scanning: discovering projects, 12s elapsed" @>
 
@@ -1231,7 +1246,12 @@ let ``scanProgress keeps the scan's start across progress updates`` () =
 [<Fact(Timeout = 15000)>]
 let ``formatScanStatusWith renders complete when nothing unchecked`` () =
     let status =
-        formatScanStatusWith 70 0 scanNow CheckCacheTally.CacheTally.empty (ScanComplete(TimeSpan.FromSeconds(15.5)))
+        formatScanStatusWith
+            70
+            0
+            scanNow
+            (Some CheckCacheTally.CacheTally.empty)
+            (ScanComplete(TimeSpan.FromSeconds(15.5)))
 
     test <@ status = "complete: 70 files checked in 15.5s" @>
 
@@ -1413,7 +1433,12 @@ let ``runChecksWithRetry on an empty cohort converges with no rounds`` () =
 [<Fact(Timeout = 15000)>]
 let ``formatScanStatusWith surfaces unchecked count as non-ok when incomplete`` () =
     let status =
-        formatScanStatusWith 70 5 scanNow CheckCacheTally.CacheTally.empty (ScanComplete(TimeSpan.FromSeconds(15.5)))
+        formatScanStatusWith
+            70
+            5
+            scanNow
+            (Some CheckCacheTally.CacheTally.empty)
+            (ScanComplete(TimeSpan.FromSeconds(15.5)))
 
     // Must not read as clean: surfaces the unchecked files explicitly, with the
     // checked count as (registered - unchecked).

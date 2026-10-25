@@ -24,6 +24,10 @@
   stale green where `status analyzers` said `ok` for 296 s after an edit that added a
   finding. See ADR-041.
 
+- fix: `fshw check`'s scan progress says `check-result cache off` when the daemon runs
+  no check-result cache (e.g. a secondary workspace under `cache.scope:
+  "default-workspace"`), instead of `cache 0 hit / 0 miss`.
+
 ## 0.14.0-alpha.123 - 2026-10-24
 
 - feat: `FSHW_IDLE_EXIT_MIN` in a daemon's environment overrides `.fshw.json`'s

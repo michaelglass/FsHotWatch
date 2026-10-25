@@ -11,6 +11,12 @@
   host owns no work, or `"busy: …"` at the bound, and `0` answers at once. Unlike
   `WaitForComplete`, it waits for no test evidence, re-checks nothing and prunes nothing.
 
+- fix: a scan in a daemon that runs no check-result cache (none configured, or
+  `cache.scope: "default-workspace"` leaves this checkout out) reads
+  `scanning: 20/2553 files (0%), 14m 34s elapsed, check-result cache off`, not
+  `cache 0 hit / 0 miss`, which read as a cache that is wired but never consulted.
+  Internal: `formatScanStatusWith` takes `CacheTally option`.
+
 ## 0.10.0-alpha.90 - 2026-10-24
 
 - **feat!: an idle-exit window can come from `FSHW_IDLE_EXIT_MIN`.** New
