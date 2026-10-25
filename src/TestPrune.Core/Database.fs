@@ -401,6 +401,12 @@ let private openConnection (dbPath: string) =
 ///          `idx_deps_by_file`), which made the edge tables most of the file. The
 ///          redundant `idx_deps_from` is gone: the primary key starts with
 ///          `from_symbol_id` and serves the same lookups.
+/// v22    — no schema text change; a REBUILD, because stored hashes changed meaning for
+///          properties. A property declared with `with get`/`and set` or as `member val`
+///          now hashes its whole text, and is cut out of its type's header like a method.
+///          Before, its hash covered only the line naming it, so an edit to an accessor
+///          body or initializer below that line changed no property hash. A file not
+///          re-indexed would keep those one-line hashes.
 ///
 /// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
 /// table too — core cannot migrate a table it does not know about. That is safe only
@@ -416,7 +422,7 @@ let private openConnection (dbPath: string) =
 /// the newer open path. A consumer that only needs its own plugin table needs no probe:
 /// `Ports.pluginStoreAt` opens the file without core's version check or DDL.
 [<Literal>]
-let SchemaVersion = 21
+let SchemaVersion = 22
 
 /// The `source_files.path` that owns the edges an extension contributes
 /// (see `Database.ReplaceExtensionEdges`). The leading underscore keeps it out of the

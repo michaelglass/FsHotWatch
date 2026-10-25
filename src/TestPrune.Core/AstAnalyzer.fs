@@ -1082,6 +1082,66 @@ let private extractMemberName (pat: SynPat) : string option =
         let i = n.LastIndexOf('.')
         if i >= 0 then n.[i + 1 ..] else n)
 
+let private rangeWithAttributes (attributes: SynAttributes) (r: range) =
+    attributes
+    |> List.fold (fun acc (list: SynAttributeList) -> Range.unionRanges acc list.Range) r
+
+/// The name and full span of a property declared with accessors (`member _.P with get
+/// () = … and set v = …`, a `SynMemberDefn.GetSetMember`) or as an auto-property
+/// (`member val P = … with get, set`, a `SynMemberDefn.AutoProperty`). Neither is a
+/// `SynMemberDefn.Member`, so without this a property's hash fell back to the line
+/// naming it, and an edit to an accessor body or initializer on any later line changed
+/// no stored hash: the property was indexed and edged but could never be selected.
+let private propertyMemberRange (memberDefn: SynMemberDefn) : (string * range) option =
+    match memberDefn with
+    | SynMemberDefn.GetSetMember(memberDefnForGet = getter; memberDefnForSet = setter; range = memberRange) ->
+        let accessors = List.choose id [ getter; setter ]
+
+        let name =
+            accessors
+            |> List.tryPick (fun (SynBinding(headPat = headPat)) -> extractMemberName headPat)
+
+        let attributes =
+            accessors
+            |> List.collect (fun (SynBinding(attributes = attributes)) -> attributes)
+
+        // Union in each accessor's body as well, in case the member's own range ever
+        // stops short of the last one.
+        let fullRange =
+            accessors
+            |> List.fold (fun acc (SynBinding(expr = body)) -> Range.unionRanges acc body.Range) memberRange
+
+        name |> Option.map (fun n -> n, rangeWithAttributes attributes fullRange)
+    | SynMemberDefn.AutoProperty(attributes = attributes; ident = id; synExpr = initializer; range = memberRange) ->
+        Some(id.idText, rangeWithAttributes attributes (Range.unionRanges memberRange initializer.Range))
+    | _ -> None // INT-WILDCARD-001:ok — only the two property forms above are handled here
+
+/// Walk the parsed AST to collect each accessor property and auto-property with its full
+/// range (see `propertyMemberRange`). Used to hash a property over its whole text and to
+/// cut it out of its type's header; it is NOT an enclosing range for edge attribution.
+let internal collectPropertyRanges (tree: ParsedInput) : (string * range) list =
+    let results = ResizeArray()
+
+    let rec walkMember (memberDefn: SynMemberDefn) =
+        match memberDefn with
+        | SynMemberDefn.Interface(members = Some members) -> List.iter walkMember members
+        // INT-WILDCARD-001:ok — `propertyMemberRange` picks out the property forms.
+        | _ -> propertyMemberRange memberDefn |> Option.iter (fun entry -> results.Add entry)
+
+    walkImplDecls tree (fun decl ->
+        match decl with
+        | SynModuleDecl.Types(typeDefns = typeDefns) ->
+            for SynTypeDefn(typeRepr = typeRepr; members = extraMembers) in typeDefns do
+                List.iter walkMember extraMembers
+
+                match typeRepr with
+                | SynTypeDefnRepr.ObjectModel(members = members) -> List.iter walkMember members
+                | _ -> () // INT-WILDCARD-001:ok — records and unions declare properties only in `with` members
+        | SynModuleDecl.Exception(exnDefn = SynExceptionDefn(members = members)) -> List.iter walkMember members
+        | _ -> ()) // INT-WILDCARD-001:ok — only types and exceptions declare properties
+
+    results |> Seq.toList
+
 /// Walk the parsed AST to collect module-level binding names and their full ranges.
 /// Each binding's range covers from the `let` keyword to the end of its body,
 /// which correctly encompasses nested local bindings.
@@ -1124,9 +1184,18 @@ let collectTypeMemberRanges (tree: ParsedInput) : (string * range) list =
         | SynMemberDefn.AbstractSlot(slotSig = SynValSig(ident = SynIdent(id, _)); range = slotRange) ->
             results.Add(id.idText, slotRange)
 
-        // INT-WILDCARD-001:ok — local `let` bindings and implicit constructors
-        // deliberately do NOT contribute names: a local is not a symbol, and a
-        // constructor's content is covered by its declaring type's hash range.
+        // INT-WILDCARD-001:ok — class `let`/`static let` bindings, `val` fields, implicit
+        // constructors and nested types deliberately do NOT contribute names: a class
+        // `let` is not a member, a `val` field is an `FSharpField` (never a symbol), a
+        // constructor is reported against its type, and F# rejects nested types. Each
+        // stays in its declaring type's header hash; `BindingFormAuditTests` pins every
+        // one of these exclusions together with the compensating hash change.
+        //
+        // Accessor properties and auto-properties are hashed over their whole text by
+        // `collectPropertyRanges`, but are deliberately NOT enclosing ranges here. An
+        // auto-property's initializer runs when the type is CONSTRUCTED, so a use inside
+        // it must stay attributed to the type (whose constructors' callers depend on it),
+        // not to a property nobody may ever read.
         | _ -> ()
 
     walkImplDecls tree (fun decl ->
@@ -1184,10 +1253,6 @@ type internal TypeDefnShape =
         Children: TypeChild list
     }
 
-let private rangeWithAttributes (attributes: SynAttributes) (r: range) =
-    attributes
-    |> List.fold (fun acc (list: SynAttributeList) -> Range.unionRanges acc list.Range) r
-
 let private isStructAttribute (attributes: SynAttributes) =
     attributes
     |> List.exists (fun list ->
@@ -1215,10 +1280,16 @@ let internal collectTypeDefnShapes (tree: ParsedInput) : TypeDefnShape list =
         | SynMemberDefn.Interface(members = Some members) ->
             for m in members do
                 walkMember children m
+        // A property's own symbol hashes its whole text (`propertyMemberRange`), so it is
+        // a child like a method: an accessor or initializer edit changes the property,
+        // and the walk lifts a changed member to this type for the type's consumers.
+        | SynMemberDefn.GetSetMember _
+        | SynMemberDefn.AutoProperty _ ->
+            propertyMemberRange memberDefn
+            |> Option.iter (fun (n, r) -> children.Add { Name = n; Range = r; IsCase = false })
         // INT-WILDCARD-001:ok — every other member form (implicit constructor,
-        // `let`/`do` bindings, `inherit`, `val` fields, auto-properties,
-        // get/set properties, abstract slots) has no symbol hashing its whole
-        // text, so it stays in the type's header.
+        // `let`/`do` bindings, `inherit`, `val` fields, abstract slots, nested types)
+        // has no symbol hashing its whole text, so it stays in the type's header.
         | _ -> ()
 
     let sortedChildren (children: ResizeArray<TypeChild>) =
@@ -1949,6 +2020,11 @@ let private extractResults
             let allBindingRangeMap = groupRangesByName memberBindingRanges
             let typeDefnRangeMap = groupRangesByName typeDefnRanges
 
+            // Accessor properties and auto-properties, for hashing only: see
+            // `collectPropertyRanges` for why they are not enclosing ranges.
+            let propertyRangeMap =
+                groupRangesByName (collectPropertyRanges parseResults.ParseTree)
+
             // From the candidate ranges sharing a short name, pick the narrowest one that
             // contains the given use range, falling back to the first candidate for the
             // rare case where the FCS use range sits just outside every AST binding range.
@@ -1975,6 +2051,10 @@ let private extractResults
                 | Type
                 | Module
                 | DuCase
+                // A property is kept even when no syntax range names it: dropping it would
+                // sever every consumer edge, while keeping it costs at worst a hash that
+                // covers only its identifier's line. `spanOf` gives every property form
+                // the audit knows its whole text (`BindingFormAuditTests`).
                 | Property -> true
                 | Function
                 | Value ->
@@ -2006,8 +2086,18 @@ let private extractResults
                 match kind with
                 | Type -> pickFrom typeDefnRangeMap |> Option.map lines |> Option.defaultValue fallback
                 | Function
-                | Value
-                | Property -> pickFrom allBindingRangeMap |> Option.map lines |> Option.defaultValue fallback
+                | Value -> pickFrom allBindingRangeMap |> Option.map lines |> Option.defaultValue fallback
+                | Property ->
+                    // `member _.P = …` is a binding; `with get`/`and set` and `member val`
+                    // are not, so both maps are candidates. Without the second, those two
+                    // forms hashed only the line naming the property.
+                    let candidates =
+                        [ allBindingRangeMap; propertyRangeMap ]
+                        |> List.collect (Map.tryFind sn >> Option.defaultValue [])
+
+                    pickRangeFor u.Range candidates
+                    |> Option.map lines
+                    |> Option.defaultValue fallback
                 | DuCase -> pickFrom unionCaseRangeMap |> Option.map Exact |> Option.defaultValue fallback
                 | Module
                 | ExternRef -> fallback
