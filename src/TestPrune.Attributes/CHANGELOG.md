@@ -17,8 +17,10 @@
     failure. See TestPrune.Core's changelog for the measured effect and,
     importantly, for when NOT to apply it. Requires TestPrune.Core with
     composition-root support.
-- Targets `netstandard2.0` and `net10.0`. Zero runtime dependencies; the
-  attributes have no behavior, they're metadata for indexing.
+- Targets `netstandard2.0` and `net10.0`. The only runtime dependency is FSharp.Core,
+  declared explicitly with low floors (`6.0.7` for netstandard2.0, `10.1.201` for net10.0)
+  so referencing the package never raises a consumer's FSharp.Core; the attributes have
+  no behavior, they're metadata for indexing.
 - **This package is not published to NuGet, and does not need to be.** TestPrune
   matches all four attributes by type NAME off the syntax tree — the namespace is
   ignored and the assembly is never loaded — so a consumer declares the ones it

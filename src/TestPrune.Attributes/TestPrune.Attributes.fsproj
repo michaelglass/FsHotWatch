@@ -21,6 +21,14 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- Central Package Management makes the F# SDK set DisableImplicitFSharpCoreReference,
+             so without this the project restores NO FSharp.Core: design-time builds hand FCS no
+             FSharp.Core reference (FCS then substitutes its host's, giving false errors), and the
+             packed nuspec declares no FSharp.Core dependency although the assembly needs one.
+             Floors are LOW on purpose — a PackageReference version is a minimum, and a marker
+             package must never raise its consumer's FSharp.Core. -->
+        <PackageReference Include="FSharp.Core" VersionOverride="6.0.7" Condition="'$(TargetFramework)' == 'netstandard2.0'" />
+        <PackageReference Include="FSharp.Core" VersionOverride="10.1.201" Condition="'$(TargetFramework)' == 'net10.0'" />
         <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
     </ItemGroup>
 

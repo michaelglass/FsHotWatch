@@ -80,6 +80,7 @@
     <Compile Include="ReleaseOrchestrationTests.fs" />
     <Compile Include="NuGetPublicationBarrierTests.fs" />
     <Compile Include="ToolchainPinTests.fs" />
+    <Compile Include="AttributesFSharpCoreTests.fs" />
     <Compile Include="AnonymousRecordAnalyzerTests.fs" />
     <!-- Impact-selection soundness harness. -->
     <Compile Include="SoundnessHarnessTests.fs" />
