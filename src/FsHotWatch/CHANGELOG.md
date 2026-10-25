@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: a repository host shares a project that only NAMES `__SOURCE_DIRECTORY__`,
+  `__SOURCE_FILE__` or a `#line` directive in a comment or a string.
+  `FrameExclusions.constructIn` used to match the text anywhere, so a doc comment naming
+  `__SOURCE_DIRECTORY__`, or a `# 30,204` line inside a triple-quoted string, kept that
+  project and every project downstream of it at its own paths, and every further session
+  bootstrapped all of them again. On one 24-project repository that was 11 more
+  bootstraps per session (35 at two sessions, 57 at four). It now counts only what FCS's
+  lexer reads as code: comments and string text are blanked out before the match, and
+  inactive `#if` code and interpolation fills still count.
 - **feat!: `ErrorEntry.Code`.** A ledger entry names the rule that produced it, when its
   producer names one: analyzers set it from `Message.Code`. Every record literal now sets
   it (`Code = None` elsewhere). The task-cache entry format moves to 6, so entries written

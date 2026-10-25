@@ -11,6 +11,10 @@
 /// - `--version:@file`, `--load`, `--use` and response files are read relative to the
 ///   project's directory.
 ///
+/// A source construct counts only where FCS's lexer reads it as code. Named in a comment
+/// or in a string's text, it changes nothing, and counting it would keep a project and
+/// everything downstream of it at its own paths, bootstrapped again by every session.
+///
 /// Such a project, and through its output path every project that references it, is
 /// checked where it is.
 module FsHotWatch.FrameExclusions
@@ -22,6 +26,7 @@ open System.Reflection.Metadata
 open System.Reflection.PortableExecutable
 open System.Text.RegularExpressions
 open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Tokenization
 
 /// A construct that keeps a project at its own paths, and where it was found.
 [<NoComparison>]
@@ -38,8 +43,8 @@ let private sourceIdentifiers = [ "__SOURCE_DIRECTORY__"; "__SOURCE_FILE__" ]
 let private lineDirective =
     Regex(@"^[ \t]*#[ \t]*(line[ \t]+)?[0-9]+", RegexOptions.Multiline)
 
-/// The first construct in `text` that makes a check depend on its path.
-let constructIn (text: string) : string option =
+/// The first construct `text` names anywhere, comments and strings included.
+let private namedIn (text: string) : string option =
     match
         sourceIdentifiers
         |> List.tryFind (fun token -> text.Contains(token, StringComparison.Ordinal))
@@ -47,6 +52,50 @@ let constructIn (text: string) : string option =
     | Some token -> Some token
     | None when lineDirective.IsMatch text -> Some "#line"
     | None -> None
+
+/// Whether FCS's lexer reads a token as a comment or as the text of a string: words that
+/// change nothing the compiler computes. Inactive `#if` code is not, so a construct there
+/// still counts: whether it is active depends on defines this scan does not know.
+let private isProse (token: FSharpTokenInfo) =
+    token.TokenName <> "INACTIVECODE"
+    && (token.CharClass = FSharpTokenCharKind.Comment
+        || token.CharClass = FSharpTokenCharKind.LineComment
+        || token.CharClass = FSharpTokenCharKind.String)
+
+/// `line` with each prose token blanked out, and the lexer state after it.
+let private codeOfLine (tokenizer: FSharpSourceTokenizer) (state: FSharpTokenizerLexState) (line: string) =
+    let chars = line.ToCharArray()
+    let lineTokenizer = tokenizer.CreateLineTokenizer line
+
+    let rec scan lexState =
+        match lineTokenizer.ScanToken lexState with
+        | Some token, next ->
+            if isProse token then
+                for column in token.LeftColumn .. min token.RightColumn (chars.Length - 1) do
+                    chars[column] <- ' '
+
+            scan next
+        | None, next -> next
+
+    let after = scan state
+    String chars, after
+
+/// `text` with every comment and string text blanked out, as FCS's lexer reads it, and
+/// its lines kept. What is left is code plus anything the lexer did not call prose, so a
+/// construct found in it can be a false alarm but is never a use missed.
+let private codeOf (text: string) : string =
+    let tokenizer = FSharpSourceTokenizer([], None, None, None)
+
+    text.Split('\n')
+    |> Array.mapFold (codeOfLine tokenizer) FSharpTokenizerLexState.Initial
+    |> fst
+    |> String.concat "\n"
+
+/// The first construct in `text` that makes a check depend on its path. Only code
+/// counts: a construct named in a comment or a string changes nothing FCS computes.
+let constructIn (text: string) : string option =
+    // Lexing is only for the few files that name a construct at all.
+    namedIn text |> Option.bind (fun _ -> namedIn (codeOf text))
 
 /// Options read relative to the project's directory.
 let private optionReadsFromProjectDirectory (option: string) =
