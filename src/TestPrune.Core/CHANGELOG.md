@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- build: FSharp.Compiler.Service is pinned exactly at 43.12.402 (it floated at `43.*`; 13.4.0 shipped with a floor of 43.12.401), matching the FCS fshotwatch.cli ships.
+
 ## 13.4.0 - 2026-10-13
 
 - feat: `Domain.WalkPolicy` says which stored edges the affected-test walk follows.

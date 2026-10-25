@@ -10,9 +10,15 @@
         <!-- FCS declares an EXACT FSharp.Core dependency (e.g. 43.12.204 requires = 10.1.204),
              so floating FSharp.Core above it trips NU1608. A higher patch within the same
              minor is binary-compatible, so projects suppress NU1608 (same arrangement as
-             FsHotWatch) and both packages float. -->
+             FsHotWatch) and FSharp.Core floats. -->
         <PackageVersion Include="FSharp.Core" Version="10.1.*" />
-        <PackageVersion Include="FSharp.Compiler.Service" Version="43.*" />
+        <!-- FCS is EXACT, never floated: the fshw host supplies FCS to
+             TestPrune.Analyzers at load time, and FCS's assembly version carries the patch
+             (43.12.402.0), so an analyzer built against any other patch fails to load in the
+             gate. Keep this equal to the FSharp.Compiler.Service in the pinned fshotwatch.cli's
+             deps.json (.config/dotnet-tools.json) and move the two together;
+             ToolchainPinTests fails when they diverge. -->
+        <PackageVersion Include="FSharp.Compiler.Service" Version="43.12.402" />
         <PackageVersion Include="Ionide.ProjInfo" Version="0.74.2" />
         <PackageVersion Include="Ionide.ProjInfo.FCS" Version="0.74.2" />
         <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.11" />

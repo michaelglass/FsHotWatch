@@ -52,7 +52,7 @@
       "rollForward": false
     },
     "fshotwatch.cli": {
-      "version": "0.14.0-alpha.78",
+      "version": "0.14.0-alpha.123",
       "commands": [
         "fshw"
       ],
