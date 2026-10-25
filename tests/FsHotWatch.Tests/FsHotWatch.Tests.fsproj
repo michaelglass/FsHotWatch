@@ -30,6 +30,8 @@
          quotation statics on one thread before tests run in parallel. See the file. -->
     <Compile Include="QuotationStaticInit.fs" />
     <Compile Include="TestHelpers.fs" />
+    <!-- After TestHelpers: fails the test after which the process working directory is gone. -->
+    <Compile Include="ProcessWorkingDirectoryGuard.fs" />
     <!-- After TestHelpers (uses withTempDir + probeLoop), before every test file
          that watches a directory. -->
     <Compile Include="WatchedDir.fs" />
