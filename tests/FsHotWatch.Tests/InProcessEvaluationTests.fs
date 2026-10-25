@@ -96,3 +96,105 @@ let ``overlapping evaluations leave the process standing where it stood`` () =
             test <@ Task.WaitAll([| firstRun; secondRun |], TimeSpan.FromSeconds 30.0) @>
             test <@ deleteWhileWritten (Path.Combine(root, "first")) 10000 @>
             test <@ processWorkingDirectoryExists () @>))
+
+[<Fact(Timeout = 60000)>]
+let ``an evaluation in flight when a test moves back cannot leave the process in the test's scratch tree`` () =
+    // The cascade behind AUTOMATION-1295, in one test. The host verb stands the process in
+    // its control directory, inside the test's scratch tree; a session's evaluation starts
+    // there and notes it; the test moves the process back while that evaluation runs; the
+    // evaluation then puts back the directory IT noted; and the scratch tree is deleted
+    // with the process standing in it. Every relative path and `Process.Start` in the test
+    // host fails after that, in whichever test runs next.
+    withProcessWorkingDirectory None (fun () ->
+        let original = Directory.GetCurrentDirectory()
+        let mutable afterEvaluation = ""
+
+        withTempDir "eval-inflight" (fun root ->
+            let projectDir = repository root "inflight"
+            use entered = new ManualResetEventSlim(false)
+            use release = new ManualResetEventSlim(false)
+
+            let loader =
+                DirectoryMovingLoader(
+                    projectDir,
+                    ignore,
+                    fun () ->
+                        entered.Set()
+                        release.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+                )
+
+            use daemon =
+                Daemon.createWithWorkspaceLoader
+                    Unchecked.defaultof<FSharpChecker>
+                    (Path.Combine(root, "inflight"))
+                    oneShotDaemonOptions
+                    loader
+                    (fun _ -> [])
+
+            let evaluation =
+                withProcessWorkingDirectory (Some root) (fun () ->
+                    let run =
+                        Task.Run(fun () -> daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously |> ignore)
+
+                    test <@ entered.Wait(TimeSpan.FromSeconds 30.0) @>
+                    // The evaluation finishes only once the test is on its way back out.
+                    Task.Delay(500).ContinueWith(fun (_: Task) -> release.Set()) |> ignore
+                    run)
+
+            test <@ evaluation.Wait(TimeSpan.FromSeconds 30.0) @>
+            afterEvaluation <- Directory.GetCurrentDirectory())
+
+        test <@ processWorkingDirectoryExists () @>
+        test <@ afterEvaluation = original @>)
+
+[<Fact(Timeout = 60000)>]
+let ``deleting a scratch tree the process stands in fails the test that did it and moves the process out`` () =
+    // A test that leaves the process standing in its own scratch tree (as the host verb
+    // does) must fail ITSELF, with the process moved somewhere that exists, rather than
+    // delete the directory and break every test after it.
+    withProcessWorkingDirectory None (fun () ->
+        let mutable scratch = ""
+
+        let raised =
+            try
+                withTempDir "stood-in" (fun dir ->
+                    scratch <- dir
+                    let control = Path.Combine(dir, "state", "control")
+                    Directory.CreateDirectory control |> ignore
+                    standLikeTheHostVerb control)
+
+                None
+            with :? InvalidOperationException as ex ->
+                Some ex.Message
+
+        test <@ processWorkingDirectoryExists () @>
+        test <@ raised |> Option.exists (fun message -> message.Contains scratch) @>
+        test <@ not (Directory.Exists scratch) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``after a test that leaves the process in a deleted directory, the guard fails it and moves the process out`` () =
+    withProcessWorkingDirectory None (fun () ->
+        let gone = Path.Combine(Path.GetTempPath(), $"fshw-gone-{Guid.NewGuid():N}")
+        Directory.CreateDirectory gone |> ignore
+        standLikeTheHostVerb gone
+        Directory.Delete gone
+
+        let failure = ProcessWorkingDirectoryGuard.check "the test that left"
+
+        test <@ processWorkingDirectoryExists () @>
+
+        test
+            <@
+                failure
+                |> Option.exists (fun message -> message.Contains "'the test that left'")
+            @>
+        // The tests after it find a working directory, and pass the guard.
+        test <@ ProcessWorkingDirectoryGuard.check "the test after it" = None @>)
+
+[<Fact(Timeout = 15000)>]
+let ``the test assembly guards the process working directory after every test`` () =
+    let guards =
+        Reflection.Assembly.GetExecutingAssembly().GetCustomAttributes(true)
+        |> Array.filter (fun a -> a :? ProcessWorkingDirectoryGuard.ProcessWorkingDirectoryGuardAttribute)
+
+    test <@ guards.Length = 1 @>

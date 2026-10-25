@@ -24,6 +24,7 @@ let private noIpc () : IpcOps =
       GetDiagnostics = fun _ _ -> async { return "{}" }
       WaitForScan = fun _ _ -> async { return "" }
       WaitForComplete = fun _ _ -> async { return "{}" }
+      WaitForRest = fun _ _ -> async { return "rest" }
       TriggerBuild = fun _ -> async { return "" }
       FormatAll = fun _ -> async { return "" }
       RerunPlugin = fun _ _ -> async { return "" }

@@ -38,6 +38,7 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       FormatAll = fun () -> async { return "formatted 0 files" }
       WaitForScanGeneration = fun _ -> Task.FromResult(())
       WaitForAllTerminal = fun _ -> Task.FromResult(())
+      WaitForRest = fun _ -> Task.FromResult(())
       RerunPlugin = fun _ -> async { return Result.Ok() }
       InvalidateCache = fun () -> Task.FromResult(())
       GetUncheckedCount = fun () -> 0
@@ -1039,6 +1040,7 @@ let ``DaemonRpcTarget.GetDiagnostics returns all errors when filter is empty`` (
             Severity = DiagnosticSeverity.Error
             Line = 10
             Column = 5
+            Code = None
             Detail = None } ]
     )
 
@@ -1059,6 +1061,7 @@ let ``DaemonRpcTarget.GetDiagnostics filters by plugin name`` () =
             Severity = DiagnosticSeverity.Warning
             Line = 1
             Column = 0
+            Code = None
             Detail = None } ]
     )
 
@@ -1069,6 +1072,7 @@ let ``DaemonRpcTarget.GetDiagnostics filters by plugin name`` () =
             Severity = DiagnosticSeverity.Info
             Line = 2
             Column = 0
+            Code = None
             Detail = None } ]
     )
 
@@ -1110,6 +1114,7 @@ let ``GetDiagnostics drops a late finding for the old side of a rename`` () =
                 Severity = DiagnosticSeverity.Error
                 Line = 1
                 Column = 0
+                Code = None
                 Detail = None } ]
         )
 
@@ -1120,6 +1125,7 @@ let ``GetDiagnostics drops a late finding for the old side of a rename`` () =
                 Severity = DiagnosticSeverity.Error
                 Line = 1
                 Column = 0
+                Code = None
                 Detail = None } ]
         )
 
@@ -2268,3 +2274,47 @@ let ``cache-clear reaches the host's task cache with each filter`` () =
             serverTask.Wait(TimeSpan.FromSeconds(3.0)) |> ignore
         with _ ->
             ()
+
+// --- WaitForRest: the reader's wait (`fshw findings`) ---
+
+[<Fact(Timeout = 15000)>]
+let ``WaitForRest with no bound answers rest at once from an idle host, without waiting`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let waited = ref false
+
+    let target =
+        DaemonRpcTarget(
+            { defaultRpcConfig host with
+                WaitForRest =
+                    fun _ ->
+                        waited.Value <- true
+                        Task.FromResult(()) }
+        )
+
+    test <@ target.WaitForRest(0).Result = "rest" @>
+    test <@ not waited.Value @>
+
+[<Fact(Timeout = 15000)>]
+let ``WaitForRest answers busy, naming why, when the host is still working at its bound`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let target =
+        DaemonRpcTarget(
+            { defaultRpcConfig host with
+                WaitForRest = fun _ -> Task.FromException<unit>(TimeoutException "still running: analyzers") }
+        )
+
+    test <@ target.WaitForRest(50).Result = "busy: still running: analyzers" @>
+
+[<Fact(Timeout = 15000)>]
+let ``WaitForRest never waits on the check's verdict wait`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let never = TaskCompletionSource<unit>()
+
+    let target =
+        DaemonRpcTarget(
+            { defaultRpcConfig host with
+                WaitForAllTerminal = fun _ -> never.Task }
+        )
+
+    test <@ target.WaitForRest(1000).Result = "rest" @>

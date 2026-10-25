@@ -593,6 +593,7 @@ let errorEntry msg (sev: FsHotWatch.ErrorLedger.DiagnosticSeverity) : FsHotWatch
       Severity = sev
       Line = 0
       Column = 0
+      Code = None
       Detail = None }
 
 /// Construct an FSharpProjectOptions with sensible defaults for tests that only care about
@@ -654,12 +655,60 @@ let private deleteTempDirResilient (tmpDir: string) =
             else
                 System.Threading.Thread.Sleep(25)
 
+/// The directory the process stands in, or None once it no longer exists: reading a
+/// deleted one throws, which is how every relative path and `Process.Start` then fails.
+let processWorkingDirectory () : string option =
+    try
+        let cwd = Directory.GetCurrentDirectory()
+        if Directory.Exists cwd then Some cwd else None
+    with :? FileNotFoundException ->
+        None
+
+/// Move the process somewhere that outlives every test, the test assembly's own
+/// directory, and say where: for a test host left standing in a directory that is gone,
+/// or about to go.
+let moveProcessToRefuge () : string =
+    let refuge = AppContext.BaseDirectory
+    Directory.SetCurrentDirectory refuge
+    refuge
+
+/// `path` with every symlink resolved, the way `getcwd` already answers the process
+/// working directory (`/private/var/…` on macOS for a `/var/…` temp directory); `path`
+/// itself when it cannot be resolved.
+let private realPath (path: string) : string =
+    match FsHotWatch.RepositoryIdentity.canonicalize path with
+    | Ok canonical -> canonical.Value
+    | Error _ -> Path.GetFullPath path
+
+let private isWithin (dir: string) (path: string) : bool =
+    let dir = Path.TrimEndingDirectorySeparator dir
+
+    path = dir
+    || path.StartsWith(dir + string Path.DirectorySeparatorChar, StringComparison.Ordinal)
+
 /// Delete a test's scratch tree, the way `withTempDir` does when its body returns. Its
 /// daemon may still be re-evaluating a project change in it, and deleting a directory an
 /// evaluation stands in leaves the whole test host in a directory that no longer exists,
 /// so the deletion waits out any evaluation in flight.
+///
+/// A test that leaves the process standing inside the tree it is deleting fails itself
+/// instead (AUTOMATION-1295): the process is moved out first (`moveProcessToRefuge`), the
+/// tree is deleted, and the deletion raises naming the directory, so every other test
+/// still finds a working directory that exists.
 let deleteTempDir (tmpDir: string) =
-    FsHotWatch.Daemon.whileNoEvaluationRuns (fun () -> deleteTempDirResilient tmpDir)
+    FsHotWatch.Daemon.whileNoEvaluationRuns (fun () ->
+        let stoodIn =
+            processWorkingDirectory ()
+            |> Option.filter (fun cwd -> isWithin tmpDir cwd || isWithin (realPath tmpDir) cwd)
+
+        let moved = stoodIn |> Option.map (fun cwd -> cwd, moveProcessToRefuge ())
+
+        deleteTempDirResilient tmpDir
+
+        moved
+        |> Option.iter (fun (cwd, refuge) ->
+            invalidOp
+                $"the process stood in %s{cwd}, inside the scratch tree %s{tmpDir}, when the tree was deleted. It was moved to %s{refuge} first; whatever stood it there must move it back (withProcessWorkingDirectory)."))
 
 /// Delete `dir` and everything under it while something may still be writing there (a
 /// running daemon's `.fshw/`), retrying for up to `timeoutMs`. True once it is gone.
@@ -680,14 +729,23 @@ let deleteWhileWritten (dir: string) (timeoutMs: int) : bool =
 /// process started meanwhile, by any test, inherits it, and a directory deleted while the
 /// process stands in it breaks every relative path until the process moves. Callers
 /// belong to the LogGlobal collection, which runs alone.
+///
+/// Both moves wait out any in-process evaluation in flight. An evaluation puts back the
+/// directory it found when it started, so one that started in `dir` and outlived `body`
+/// (a repository host's session, still evaluating when its test ends) would otherwise
+/// put the process back in `dir` after this moved it out, and `dir` is usually deleted
+/// next (AUTOMATION-1295).
 let withProcessWorkingDirectory (dir: string option) (body: unit -> 'a) : 'a =
-    let original = Directory.GetCurrentDirectory()
+    let original =
+        FsHotWatch.Daemon.whileNoEvaluationRuns (fun () ->
+            let found = Directory.GetCurrentDirectory()
+            dir |> Option.iter Directory.SetCurrentDirectory
+            found)
 
     try
-        dir |> Option.iter Directory.SetCurrentDirectory
         body ()
     finally
-        Directory.SetCurrentDirectory original
+        FsHotWatch.Daemon.whileNoEvaluationRuns (fun () -> Directory.SetCurrentDirectory original)
 
 /// What an in-process MSBuild evaluation does to the process working directory: note
 /// where the process stands, stand it in `projectDir`, run `meanwhile`, then put back
@@ -699,13 +757,13 @@ let evaluateInProjectDirectory (projectDir: string) (meanwhile: unit -> unit) : 
     meanwhile ()
     Directory.SetCurrentDirectory found
 
-/// Whether the directory the process stands in still exists. Reading a deleted one
-/// throws, which is how every relative path and `Process.Start` then fails.
-let processWorkingDirectoryExists () : bool =
-    try
-        Directory.Exists(Directory.GetCurrentDirectory())
-    with :? FileNotFoundException ->
-        false
+/// What `fshw host` does to the process it runs in (`runHostVerb`): stand it in `dir`,
+/// its control directory, and never move it back. Run inside
+/// `withProcessWorkingDirectory`, which does.
+let standLikeTheHostVerb (dir: string) : unit = Directory.SetCurrentDirectory dir
+
+/// Whether the directory the process stands in still exists.
+let processWorkingDirectoryExists () : bool = (processWorkingDirectory ()).IsSome
 
 let withTempDir (prefix: string) (body: string -> 'a) =
     // Canonicalize so /var/folders/... and /private/var/folders/... don't diverge

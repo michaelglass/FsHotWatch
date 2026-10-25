@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **feat!: `ErrorEntry.Code`.** A ledger entry names the rule that produced it, when its
+  producer names one: analyzers set it from `Message.Code`. Every record literal now sets
+  it (`Code = None` elsewhere). The task-cache entry format moves to 6, so entries written
+  without codes are read as misses once and re-run.
+- **feat!: `WaitForRest`, the reader's wait.** New RPC `DaemonRpcTarget.WaitForRest(timeoutMs)`
+  (`IpcClient.waitForRest`) and `DaemonRpcConfig.WaitForRest`. It answers `"rest"` once the
+  host owns no work, or `"busy: …"` at the bound, and `0` answers at once. Unlike
+  `WaitForComplete`, it waits for no test evidence, re-checks nothing and prunes nothing.
+
 ## 0.10.0-alpha.90 - 2026-10-24
 
 - **feat!: an idle-exit window can come from `FSHW_IDLE_EXIT_MIN`.** New

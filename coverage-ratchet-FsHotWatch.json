@@ -1,5 +1,19 @@
 {
   "overrides": {
+    "Findings.fs": [
+      {
+        "line": 99,
+        "branch": 90,
+        "reason": "new file (AUTOMATION-1313 `fshw findings`: the answer, its exit codes, the human and fshw-findings-v1 renderings). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-25 on macOS by FindingsCommandTests + AnalyzerFindingsTests with coverage: line 99.3% (149/150), branch ~91.8%. Uncovered: the `Clean -> 0` arm of Outcome.exitCode (Clean is asserted by outcome, not by code) and compiler-generated edges of the outcome and Option matches. The decision is pure (Seams are injected), so platform-neutral."
+      }
+    ],
+    "AnalyzerFindings.fs": [
+      {
+        "line": 99,
+        "branch": 90,
+        "reason": "new file (AUTOMATION-1313 analyzer stamps, the analyzer-findings reply wire format, judge, the disk view). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-25 on macOS by AnalyzerFindingsTests + FindingsCommandTests with coverage: line 99.4% (164/165), branch ~91.4%. Uncovered: the `None, None` arm of the analyzer-set read (a reply naming neither a set nor a refusal, which serializeReply cannot write), plus compiler-generated edges of the JSON null matches. Platform-neutral: no platform-specific path."
+      }
+    ],
     "AgentEnvelope.fs": [
       {
         "line": 100,

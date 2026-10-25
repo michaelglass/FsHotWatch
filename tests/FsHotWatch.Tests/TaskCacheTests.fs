@@ -389,6 +389,7 @@ let ``plugin skips Update on cache hit and replays errors`` () =
                Severity = DiagnosticSeverity.Warning
                Line = 1
                Column = 0
+               Code = None
                Detail = None } ]) ]
 
     let cachedResult: TaskCacheResult =
@@ -1192,6 +1193,7 @@ let ``FileTaskCache roundtrips error entries with detail`` () =
               Severity = DiagnosticSeverity.Error
               Line = 42
               Column = 7
+              Code = None
               Detail = Some "full detail" }
 
         let result =
@@ -1211,6 +1213,35 @@ let ``FileTaskCache roundtrips error entries with detail`` () =
         test <@ e.Line = 42 @>
         test <@ e.Column = 7 @>
         test <@ e.Detail = Some "full detail" @>)
+
+/// A replayed analyzer finding must still name its rule: `fshw findings` reports each
+/// finding with its code, and a warm daemon answers mostly from replays.
+[<Fact(Timeout = 15000)>]
+let ``FileTaskCache roundtrips an error entry's rule code`` () =
+    withTempDir "ftc-code" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+
+        let entry: ErrorEntry =
+            { Message = "Use List.isEmpty"
+              Severity = DiagnosticSeverity.Error
+              Line = 69
+              Column = 4
+              Code = Some "FL0065"
+              Detail = None }
+
+        let result =
+            { CacheKey = hash "k"
+              Errors = [ "/src/X.fs", [ entry ] ]
+              Status = cachedFileDone
+              EmittedEvents = [] }
+
+        (cache :> ITaskCache).Set (ck "analyzers" "/src/X.fs") (hash "k") result
+
+        let r =
+            (FileTaskCache(tmpDir) :> ITaskCache).TryGet (ck "analyzers" "/src/X.fs") (hash "k")
+
+        test <@ r.IsSome @>
+        test <@ (r.Value.Errors.[0] |> snd |> List.head).Code = Some "FL0065" @>)
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache ClearPlugin removes only matching files`` () =
@@ -1585,6 +1616,7 @@ let ``cache replay does not stomp a Running status while an exclusive run is in 
                   Severity = DiagnosticSeverity.Warning
                   Line = 1
                   Column = 0
+                  Code = None
                   Detail = None } ] ]
           Status = cachedFileDone
           EmittedEvents = [] }

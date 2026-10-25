@@ -1143,6 +1143,7 @@ let private scanStatusAnswered (state: ScanState) : string * string list =
                   FormatAll = fun () -> async { return "formatted 0 files" }
                   WaitForScanGeneration = fun _ -> Task.FromResult(())
                   WaitForAllTerminal = fun _ -> Task.FromResult(())
+                  WaitForRest = fun _ -> Task.FromResult(())
                   RerunPlugin = fun _ -> async { return Result.Ok() }
                   InvalidateCache = fun () -> Task.FromResult(())
                   GetUncheckedCount = fun () -> 0
@@ -5980,6 +5981,7 @@ let private suspectEntry: ErrorLedger.ErrorEntry =
       Severity = ErrorLedger.DiagnosticSeverity.Error
       Line = 2
       Column = 4
+      Code = None
       Detail = None }
 
 /// The settle a `check` grades after, with a bound fit for a test.

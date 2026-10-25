@@ -533,61 +533,70 @@ type HostVerbInProcess() =
                         withProcessWorkingDirectory None (fun () ->
                             let run = Task.Run(fun () -> runHostVerb defaultGlobalOptions root)
 
-                            let config = File.ReadAllText(Path.Combine(root, ".fshw.json"))
+                            // A failed assertion still stops the host before the process moves
+                            // back and the scratch tree goes: the host stood the process in its
+                            // control directory, inside that tree, and a host left serving keeps
+                            // evaluating there (AUTOMATION-1295).
+                            try
+                                let config = File.ReadAllText(Path.Combine(root, ".fshw.json"))
 
-                            let endpoint, session =
-                                match
-                                    RepositoryHostMode.attach
-                                        stateHome
-                                        ignore
-                                        (TimeSpan.FromSeconds 60.0)
-                                        root
-                                        config
-                                with
-                                | RepositoryHostMode.Attach.Serving(endpoint, session) -> endpoint, session
-                                | other -> failwith $"%A{other}"
+                                let endpoint, session =
+                                    match
+                                        RepositoryHostMode.attach
+                                            stateHome
+                                            ignore
+                                            (TimeSpan.FromSeconds 60.0)
+                                            root
+                                            config
+                                    with
+                                    | RepositoryHostMode.Attach.Serving(endpoint, session) -> endpoint, session
+                                    | other -> failwith $"%A{other}"
 
-                            let link: HostLink =
-                                { Endpoint = endpoint
-                                  Session = fun () -> session
-                                  Reattach = fun () -> true }
+                                let link: HostLink =
+                                    { Endpoint = endpoint
+                                      Session = fun () -> session
+                                      Reattach = fun () -> true }
 
-                            let ipc = sessionIpcOps link
-                            test <@ ipc.IsRunning "ignored" @>
+                                let ipc = sessionIpcOps link
+                                test <@ ipc.IsRunning "ignored" @>
 
-                            test
-                                <@
-                                    not (
-                                        String.IsNullOrWhiteSpace(
-                                            ipc.GetStatus "ignored" |> Async.RunSynchronously
+                                test
+                                    <@
+                                        not (
+                                            String.IsNullOrWhiteSpace(
+                                                ipc.GetStatus "ignored" |> Async.RunSynchronously
+                                            )
                                         )
-                                    )
-                                @>
+                                    @>
 
-                            test
-                                <@
-                                    not (
-                                        String.IsNullOrWhiteSpace(
-                                            ipc.ScanStatus "ignored" |> Async.RunSynchronously
+                                test
+                                    <@
+                                        not (
+                                            String.IsNullOrWhiteSpace(
+                                                ipc.ScanStatus "ignored" |> Async.RunSynchronously
+                                            )
                                         )
-                                    )
-                                @>
+                                    @>
 
-                            test <@ repositoryStatus false root = 0 @>
-                            test <@ repositoryStatus true root = 0 @>
+                                test <@ repositoryStatus false root = 0 @>
+                                test <@ repositoryStatus true root = 0 @>
 
-                            // The session's own log names the host behind it.
-                            let log = File.ReadAllText(Path.Combine(root, "logs", "daemon.log"))
-                            test <@ log.Contains $"session=%s{SessionId.render session}" @>
-                            // …and whether it checks under the repository's virtual root.
-                            test <@ log.Contains $"virtualRoot=%s{logged}" @>
-                            // …and whether it reads in-repository references from the store.
-                            test <@ log.Contains $"importStore=%s{logged}" @>
+                                // The session's own log names the host behind it.
+                                let log = File.ReadAllText(Path.Combine(root, "logs", "daemon.log"))
+                                test <@ log.Contains $"session=%s{SessionId.render session}" @>
+                                // …and whether it checks under the repository's virtual root.
+                                test <@ log.Contains $"virtualRoot=%s{logged}" @>
+                                // …and whether it reads in-repository references from the store.
+                                test <@ log.Contains $"importStore=%s{logged}" @>
 
-                            test <@ stopRepositoryHost root = 0 @>
-                            test <@ run.Wait(TimeSpan.FromSeconds 60.0) && run.Result = 0 @>
-                            test <@ repositoryStatus false root = 0 @>
-                            test <@ stopRepositoryHost root = 0 @>)))))
+                                test <@ stopRepositoryHost root = 0 @>
+                                test <@ run.Wait(TimeSpan.FromSeconds 60.0) && run.Result = 0 @>
+                                test <@ repositoryStatus false root = 0 @>
+                                test <@ stopRepositoryHost root = 0 @>
+                            finally
+                                if not run.IsCompleted then
+                                    stopRepositoryHost root |> ignore
+                                    run.Wait(TimeSpan.FromSeconds 60.0) |> ignore)))))
 
     [<Fact(Timeout = 60000)>]
     member _.``the host verb refuses a root it cannot resolve``() =

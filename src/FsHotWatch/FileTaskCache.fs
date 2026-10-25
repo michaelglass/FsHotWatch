@@ -22,6 +22,10 @@ let private serializeErrorEntry (e: ErrorEntry) =
     obj["line"] <- e.Line
     obj["column"] <- e.Column
 
+    match e.Code with
+    | Some code -> obj["code"] <- code
+    | None -> ()
+
     match e.Detail with
     | Some d -> obj["detail"] <- d
     | None -> ()
@@ -33,6 +37,10 @@ let private deserializeErrorEntry (obj: JsonObject) : ErrorEntry =
       Severity = obj["severity"].GetValue<string>() |> stringToSeverity
       Line = obj["line"].GetValue<int>()
       Column = obj["column"].GetValue<int>()
+      Code =
+        match obj.ContainsKey("code") with
+        | true -> Some(obj["code"].GetValue<string>())
+        | false -> None
       Detail =
         match obj.ContainsKey("detail") with
         | true -> Some(obj["detail"].GetValue<string>())
@@ -336,7 +344,7 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
 /// rejected one layer deeper by a field read throwing, which reports every stale
 /// entry as a parse FAILURE. The cost of a bump is a one-time re-run.
 [<Literal>]
-let private EntryFormatVersion = 5
+let private EntryFormatVersion = 6
 
 /// The marker a run writes when it cleared its WHOLE ledger. Not a path, so it is
 /// exempt from path encoding on the way out and on the way back in.

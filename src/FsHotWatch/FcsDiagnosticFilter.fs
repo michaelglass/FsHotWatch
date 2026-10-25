@@ -301,6 +301,7 @@ let classifyDiagnostic
                   Severity = severity
                   Line = line
                   Column = column
+                  Code = None
                   Detail = None }
 
 /// The warn line each self-incompatible diagnostic is logged under. Answers
@@ -338,6 +339,7 @@ let internal selfIncompatibleLedgerEntries
           Severity = DiagnosticSeverity.Info
           Line = d.Line
           Column = d.Column
+          Code = None
           Detail = None })
 
 /// The ledger entries the OTHER diagnostics of a suspect check become: a check

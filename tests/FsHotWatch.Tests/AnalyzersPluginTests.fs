@@ -963,6 +963,7 @@ let ``promoteIfFailing promotes hint to error with prefix when threshold is hint
           Severity = DiagnosticSeverity.Hint
           Line = 1
           Column = 0
+          Code = None
           Detail = None }
 
     let result = promoteIfFailing DiagnosticSeverity.Hint entry
@@ -976,6 +977,7 @@ let ``promoteIfFailing promotes info to error with prefix when threshold is info
           Severity = DiagnosticSeverity.Info
           Line = 1
           Column = 0
+          Code = None
           Detail = None }
 
     let result = promoteIfFailing DiagnosticSeverity.Info entry
@@ -989,6 +991,7 @@ let ``promoteIfFailing leaves hint untouched when threshold is info`` () =
           Severity = DiagnosticSeverity.Hint
           Line = 1
           Column = 0
+          Code = None
           Detail = None }
 
     let result = promoteIfFailing DiagnosticSeverity.Info entry
@@ -1002,6 +1005,7 @@ let ``promoteIfFailing leaves error untouched regardless of threshold`` () =
           Severity = DiagnosticSeverity.Error
           Line = 1
           Column = 0
+          Code = None
           Detail = None }
 
     let result = promoteIfFailing DiagnosticSeverity.Hint entry
@@ -1015,6 +1019,7 @@ let ``promoteIfFailing leaves warning untouched when threshold is error`` () =
           Severity = DiagnosticSeverity.Warning
           Line = 1
           Column = 0
+          Code = None
           Detail = None }
 
     let result = promoteIfFailing DiagnosticSeverity.Error entry
@@ -1034,6 +1039,7 @@ let ``summarize derives findings from the live map, not an accumulator`` () =
           Severity = DiagnosticSeverity.Error
           Line = 1
           Column = 0
+          Code = None
           Detail = None }
 
     let mkWarn msg =
@@ -1041,6 +1047,7 @@ let ``summarize derives findings from the live map, not an accumulator`` () =
           Severity = DiagnosticSeverity.Warning
           Line = 1
           Column = 0
+          Code = None
           Detail = None }
 
     let map =
@@ -1122,11 +1129,13 @@ let ``regression: clean cycle after a findings cycle renders 0, not the stale co
             Severity = DiagnosticSeverity.Error
             Line = 10
             Column = 1
+            Code = None
             Detail = None }
           { Message = "rule Y"
             Severity = DiagnosticSeverity.Error
             Line = 20
             Column = 1
+            Code = None
             Detail = None } ]
 
     let state1 =
@@ -1166,11 +1175,13 @@ let ``diagnostics command sums findings across files in a populated state`` () =
             Severity = DiagnosticSeverity.Error
             Line = 10
             Column = 1
+            Code = None
             Detail = None }
           { Message = "rule Y"
             Severity = DiagnosticSeverity.Warning
             Line = 20
             Column = 1
+            Code = None
             Detail = None } ]
 
     let populated =
@@ -1767,6 +1778,7 @@ let private plainEntry (m: FSharp.Analyzers.SDK.Message) : ErrorEntry =
       Severity = DiagnosticSeverity.Warning
       Line = m.Range.StartLine
       Column = m.Range.StartColumn
+      Code = None
       Detail = None }
 
 [<Fact>]

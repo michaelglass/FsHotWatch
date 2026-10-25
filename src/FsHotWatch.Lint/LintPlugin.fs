@@ -363,6 +363,7 @@ let create
                                                       Severity = DiagnosticSeverity.Warning
                                                       Line = w.Details.Range.StartLine
                                                       Column = w.Details.Range.StartColumn
+                                                      Code = None
                                                       Detail = None })
 
                                             PluginCtxHelpers.reportOrClearFile ctx fileStr entries

@@ -3430,6 +3430,8 @@ type Daemon
                       // A check that settles holding suspect answers re-checks them once
                       // for this tree before it is graded (`SettleForVerdict`).
                       WaitForAllTerminal = fun timeout -> this.SettleForVerdict(timeout, cts.Token)
+                      // A reader's wait (`fshw findings`): settle, nothing else.
+                      WaitForRest = fun timeout -> waitForAllTerminal host timeout cts.Token
                       RerunPlugin = rerunPlugin
                       InvalidateCache =
                         fun () ->

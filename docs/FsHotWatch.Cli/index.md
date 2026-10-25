@@ -85,6 +85,7 @@ names are `sql` and `sql-hydra`; any other name or shape fails configuration.
 | `confirm [--run-once] [--fresh]` | **Run the full suite and confirm `check` told the truth.** Same checks as `check`, but the tests run UNFILTERED — and a green is refused unless they actually did. Exits 0/1/2 as `check`, plus **3** (`unearned scope`: nothing failed, but the run did not produce the evidence a merge verdict is made of). On an unchanged tree it answers from the evidence already earned; `--fresh` runs the suite again — see [Running the suite again](#running-the-suite-again). See [Disagreement is a bug](#disagreement-is-a-bug). |
 | `verdict` | **Read the last verdict** from `.fshw/verdict.json` and report whether it still applies to the tree on disk. Contacts no daemon, triggers no run — reading cannot perturb. Exits 0/1/2/3 as the verdict itself, plus **4** (STALE: the verdict describes a different tree) and **5** (no usable verdict). |
 | `status [plugin]` | **The observer.** Show the daemon's current plugin statuses and accumulated errors WITHOUT triggering a run. Optionally filter to one plugin. |
+| `findings [--json] [--wait] [--timeout-sec N]` | **The analyzer findings of the warm daemon, as an answer about the tree on disk or not at all.** Never starts a daemon, never triggers a run. Each finding carries its analyzer code. Exits 0 (clean), 1 (failing findings), 2 (incomplete: an expected file has no complete analysis), 4 (STALE: some analysis is about other bytes than the disk's, or the daemon is still working), 5 (no daemon), 6 (refused). See [`fshw findings`](#fshw-findings--the-warm-daemons-analyzer-findings-tied-to-the-tree). |
 | `start` | Start daemon in foreground (auto-scans on boot, Ctrl+C to stop). |
 | `stop` | Gracefully stop the running daemon, then **wait for its process to actually exit** before reporting anything. Exits 0 (stopped, or nothing was running), 1 (the daemon is still there — it names the pid and what to do about it), or 2 (it could not tell). |
 | `scan` | Re-scan all files. |
@@ -651,6 +652,52 @@ is not the one this build computes is `applies: false` with exit **4**, reported
 different *scheme* rather than a different tree — a `v2` hash and a `v3` hash address
 different sets of files, so comparing them as strings would answer a question nobody
 asked. It is checked before the hashes are compared.
+
+### `fshw findings` — the warm daemon's analyzer findings, tied to the tree
+
+`fshw status analyzers` answers from whatever the daemon has folded so far, so right
+after an edit it can still say `ok` — for minutes, on a daemon busy with an earlier
+re-check — while the file on disk has a finding in it. `findings` is the reader that
+cannot do that: it answers about **the tree on disk** or refuses.
+
+```bash
+fshw findings --json --wait   # stdout: one fshw-findings-v1 document; exit code: the answer
+# 0 clean · 1 failing findings · 2 incomplete · 4 STALE · 5 no daemon · 6 refused
+```
+
+- **It never starts a daemon** (exit 5) and never triggers a scan, a build or an
+  analyzer run. A caller with no warm daemon falls back to its own analyzer host.
+- It waits only until the daemon **owns no work** (`WaitForRest`), the settle half of
+  `check`'s wait. It does not wait for test evidence or re-check anything
+  ([ADR-041](../../docs/adr-041-findings-reads-the-daemon-it-never-drives-it.md)).
+- Every file's analysis carries a **stamp**: the hash of the source it analyzed, the
+  analyzer set's identity and the digest of the `.editorconfig` / `fsharplint.json`
+  chain that applied. A stamp that disagrees with the disk is **stale** (exit 4). An
+  expected file with no complete analysis (never analyzed, parse-only check, timed
+  out) makes the answer **incomplete** (exit 2). Without `--wait` both refuse at once.
+  With `--wait`, a stale answer is retried until `--timeout-sec` (default 300).
+- The tree hash is taken before the read and after the judgement. If the tree moved
+  between them, the answer is stale.
+
+Findings are printed only when the answer is current. Each one carries its analyzer
+**code**. The human form matches `fsharp-analyzers`:
+`src/A.fs(69,4): error FL0065: [promoted from warning] …`.
+
+`fshw-findings-v1`, paths repo-relative:
+
+| field | meaning |
+|---|---|
+| `schema` | `"fshw-findings-v1"` |
+| `outcome`, `exit` | `clean` 0 · `findings` 1 · `incomplete` 2 · `stale` 4 · `no-daemon` 5 · `refused` 6 |
+| `reasons` | why the answer is what it is, one line each |
+| `treeHash`, `treeHashAlgorithm` | the tree the answer is about (`.fshw/verdict.json`'s recipe); `null` when nothing was judged |
+| `modelGeneration` | the project-model generation the expected set came from |
+| `analyzerSet`, `analyzers` | the analyzer set's semantic identity (the `analyzer-inputs` cache-key slot) and how many analyzers are loaded |
+| `failOnSeverity` | `analyzers.failOnSeverity`; entries at or above it were promoted to `error` |
+| `expectedFiles` | the current model's checkable files in scope: what a whole-tree answer must cover |
+| `analyzedFiles` | the expected files with a complete, typed analysis |
+| `missingFiles`, `staleFiles` | the files behind an `incomplete` / `stale` refusal |
+| `findings` | `[{ file, line, column, severity, code, message }]`, sorted; empty unless `clean`/`findings`. `code` is `null` for an entry no rule produced (an analyzer crash) |
 
 ### `.fshw/test-runs/<runId>/` — per-suite detail. **The directory IS the run.**
 

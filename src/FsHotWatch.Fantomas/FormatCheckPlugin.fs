@@ -291,6 +291,7 @@ let internal createFormatCheckWith
                                         Severity = FsHotWatch.ErrorLedger.Error
                                         Line = 1
                                         Column = 0
+                                        Code = None
                                         Detail = None } ]
                                 | None when isUnformatted ->
                                     ctx.Log $"unformatted: {Path.GetFileName file}"
@@ -299,6 +300,7 @@ let internal createFormatCheckWith
                                         Severity = FsHotWatch.ErrorLedger.Warning
                                         Line = 1
                                         Column = 0
+                                        Code = None
                                         Detail = None } ]
                                 | None -> []
 

@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- feat: a `tests.projects[].coverage.argsTemplate` may use `{repoRoot}`, which the daemon
+  replaces with the absolute repository root (no trailing separator) before the run;
+  `{output}` is unchanged. Microsoft.Testing.Platform 2.5 coverage hosts cannot resolve a
+  relative `--coverage-settings` path ("Provided settings file doesn't exist or is
+  invalid", exit 5, no report), so name it `"{repoRoot}/.coverage-settings.xml"`.
+  Templates without the placeholder are passed through as before. New:
+  `DaemonConfig.RepoRootPlaceholder`, `DaemonConfig.coverageArgsTemplateFor`.
+
+- **feat: `fshw findings`, the warm daemon's analyzer findings as an answer about the tree
+  on disk.** `fshw findings [--json] [--wait] [--timeout-sec N]` never starts a daemon
+  (exit 5) and never triggers a scan, build or analyzer run. It waits only until the
+  daemon owns no work (`--wait`). It then judges the analyzers plugin's stamped reply
+  against the disk. Any file whose source, analyzer set or analyzer config moved since its
+  analysis makes the answer STALE (exit 4), and `--wait` retries it until the timeout. An
+  expected file with no complete analysis makes it incomplete (exit 2). A tree that moves
+  while the answer is read is stale too. Only a current answer carries findings, each
+  with its analyzer code: exit 0 clean, 1 failing findings, 6 refused. `--json` prints
+  the versioned `fshw-findings-v1` document: tree hash, model generation, analyzer-set
+  identity, `failOnSeverity`, expected and analyzed file sets, findings. This closes the
+  stale green where `status analyzers` said `ok` for 296 s after an edit that added a
+  finding. See ADR-041.
+
 ## 0.14.0-alpha.123 - 2026-10-24
 
 - feat: `FSHW_IDLE_EXIT_MIN` in a daemon's environment overrides `.fshw.json`'s

@@ -205,6 +205,14 @@ type private StartedChecks() =
 
 /// A one-file project at `root/src/Lib` whose check takes FCS long enough to cancel
 /// mid-way: a chain of inferred bindings, then a planted type error.
+///
+/// The test's whole duration is this ONE shared check: every wait in it ends when the
+/// check does (measured: B starts ~0.1 s after A, and A's cancelled check returns with
+/// B's, at the end). Its cost is CPU-bound, so it scales with the box's load: 800 bindings
+/// took ~9 s idle, 20-33 s under one `yes` per core, and up to 3m45s on a loaded CI box
+/// against the 300 s cap. 300 bindings (~3 s idle) still outlast B's start some thirty
+/// times over, and `bFinishedBeforeCancel` fails the test, rather than passing it
+/// vacuously, on a box where they do not.
 let private slowProject (checker: FSharpChecker) (root: string) =
     let dir = Path.Combine(root, "src", "Lib")
     Directory.CreateDirectory dir |> ignore
@@ -214,7 +222,7 @@ let private slowProject (checker: FSharpChecker) (root: string) =
         file,
         [| yield "module Lib"
            yield "let f0 (x: int) = [ x ]"
-           for i in 1..800 do
+           for i in 1..300 do
                yield $"let f%d{i} x = f%d{i - 1} x |> List.map (fun v -> v + %d{i}) |> List.rev"
            yield "let answer: int = \"no\"" |]
     )

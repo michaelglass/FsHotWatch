@@ -412,6 +412,56 @@ let private startShell (script: string) : Process =
     Assert.Equal("ready", p.StandardOutput.ReadLine())
     p
 
+/// The real OS operations, with the two waits that raced the box's load replaced by the
+/// events they stand for.
+///
+/// - A table read is retried until `ps` answers. `liveEscalationOps` bounds each read by
+///   `EscalationTableBudget`, and a loaded box misses it: with one `yes` per core this
+///   host's reads took over 2 s, and a missed read leaves every member unproven, which
+///   escalation rightly never signals. The tests then asserted the box's load
+///   (`KillTimedOut` for a killable tree, or the 30 s cap), not the escalation.
+/// - The pause after SIGKILL waits until every member the escalation recorded is gone,
+///   instead of trusting a loaded scheduler to run their exits within 200 ms. The pause
+///   after SIGTERM is the production one: these trees ignore SIGTERM by construction,
+///   so there is nothing to wait for.
+///
+/// Two polls per signal are then enough, so the SIGTERM round, which cannot succeed,
+/// costs three table reads instead of eleven.
+let private settledOps () : EscalationOps =
+    let recorded = Collections.Concurrent.ConcurrentBag<int>()
+    let lastSignal = ref 0
+
+    let rec read () =
+        match liveEscalationOps.ReadTable() with
+        | Ok rows -> Ok rows
+        | Error _ -> read ()
+
+    let allGone () =
+        match read () with
+        | Ok rows ->
+            recorded
+            |> Seq.forall (fun pid -> rows |> List.forall (fun r -> r.Pid <> pid || r.Zombie))
+        | Error _ -> false
+
+    { liveEscalationOps with
+        ReadTable = read
+        StartTimeOf =
+            fun pid ->
+                recorded.Add pid
+                liveEscalationOps.StartTimeOf pid
+        Signal =
+            fun pid signum ->
+                lastSignal.Value <- signum
+                liveEscalationOps.Signal pid signum
+        Pause =
+            fun () ->
+                if lastSignal.Value = 9 then
+                    while not (allGone ()) do
+                        Threading.Thread.Sleep 10
+                else
+                    liveEscalationOps.Pause()
+        Attempts = 2 }
+
 /// Kill a child THIS test started, if it is still running.
 let private cleanUp (p: Process) =
     try
@@ -441,7 +491,7 @@ let ``LIVE: a real tree that ignores SIGTERM, behind a kill that hangs, is SIGKI
                 p.Id
                 (fun () -> $"`sh` (pid %d{p.Id})")
                 kill
-                (escalationFor owned)
+                (escalationWith (settledOps ()) owned)
 
         Assert.Equal(KillOutcome.Killed, outcome)
         Assert.True(p.WaitForExit 5000, "the escalated child is still running")
@@ -462,9 +512,9 @@ let ``LIVE: a pid whose recorded start time does not match is left alone`` () =
             { Pid = p.Id
               StartedAt = DateTime.UtcNow.AddDays -1.0 }
 
-        let e = escalateWith liveEscalationOps stranger
+        let e = escalateWith (settledOps ()) stranger
 
-        Assert.Equal<int list>([ p.Id ], e.Recycled)
+        Assert.True((e.Recycled = [ p.Id ]), $"recycled is not [%d{p.Id}]: %A{e}")
         Assert.Empty(e.Sent)
         Assert.False(p.WaitForExit 500, "a process that was not provably ours was killed")
     finally

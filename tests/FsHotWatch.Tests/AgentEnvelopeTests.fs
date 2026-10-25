@@ -513,6 +513,7 @@ let fakeIpc () : IpcOps =
       GetDiagnostics = fun _ _ -> async { return """{"count": 0, "files": {}}""" }
       WaitForScan = fun _ _ -> async { return "idle" }
       WaitForComplete = fun _ _ -> async { return "{}" }
+      WaitForRest = fun _ _ -> async { return "rest" }
       TriggerBuild = fun _ -> async { return "{}" }
       FormatAll = fun _ -> async { return "formatted 0 files" }
       RerunPlugin = fun _ _ -> async { return "{}" }

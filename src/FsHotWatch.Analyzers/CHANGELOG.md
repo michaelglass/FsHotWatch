@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **feat: analyses are stamped, and served through `analyzer-findings`.** Each file's
+  analysis records the inputs it was computed from (`AnalyzerFindings.AnalyzedFile`):
+  source hash, analyzer-set identity, config-chain digest, and whether the check was typed.
+  A cache replay is stamped with what its key named, and a timed-out analysis leaves no
+  stamp. The `analyzer-findings` `Observe` command serves the stamps, the entries, the
+  current model's expected files and the analyzer set on disk.
+  `AnalyzerFindings.judge` turns a reply and a `DiskView` into `Current`, `Stale`,
+  `Incomplete` or `Refused`. Findings now carry their analyzer `Code`.
+
 ## 0.7.0-alpha.49 - 2026-10-24
 
 - fix: a config edit reaches an analyzer that caches its config in a static. When a

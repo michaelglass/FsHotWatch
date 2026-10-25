@@ -116,6 +116,8 @@ This matters more than the feature list, so it is stated up front:
 | `fshw confirm` | **The unfiltered verb.** Same checks, but the tests run unfiltered — and a green is refused unless they did. Exits 0/1/2 as `check`, plus **3** (unearned scope). `--run-once` for CI. On an unchanged tree it answers from the full-suite evidence already earned; `--fresh` launches a new full-suite run instead. A daemon `confirm` had to start is stopped before it returns (`--keep-daemon` keeps it); one that was already running is left alone. |
 | `fshw verdict` | Read `.fshw/verdict.json` and report whether it still applies to the tree on disk. Contacts no daemon, triggers no run. |
 | `fshw status [plugin]` | Show the daemon's current status (optionally for one plugin). Triggers nothing. |
+| `fshw findings` | The warm daemon's analyzer findings, each with its code, as a versioned JSON answer (`--json`) about the tree on disk, or a refusal: stale (4), incomplete (2), no daemon (5). Starts nothing; `--wait` waits for the daemon to catch up. See the [CLI README](src/FsHotWatch.Cli/README.md#fshw-findings--the-warm-daemons-analyzer-findings-tied-to-the-tree). |
+| `fshw findings` | The warm daemon's analyzer findings, each with its code, as a versioned JSON answer (`--json`) about the tree on disk — or a refusal: stale (4), incomplete (2), no daemon (5). Starts nothing; `--wait` waits for the daemon to catch up. See the [CLI README](src/FsHotWatch.Cli/README.md#fshw-findings--the-warm-daemons-analyzer-findings-tied-to-the-tree). |
 | `fshw start` | Run the daemon in the foreground (Ctrl+C to stop). Optional — `check`/`status` start it for you. |
 | `fshw stop` | Stop the running daemon. **Not a cache reset** — the task cache is on disk and survives it; see below. |
 | `fshw format` | Format the code (Fantomas). |
@@ -425,7 +427,7 @@ setting needs no re-index.
 | `coverage` | `bool \| object` | `true` | A boolean controls both collection and consumer-ratchet participation. Use the object form to separate them. |
 | `coverage.enabled` | `bool` | `true` | Include this project's raw report in the shared consumer coverage snapshot. |
 | `coverage.collectForImpact` | `bool` | value of `enabled` | Retain source-file → test-project runtime evidence for impact selection. `{ "enabled": false, "collectForImpact": true }` is the integration-test adoption shape. |
-| `coverage.argsTemplate` | `string` | MTP Cobertura template | Runner arguments containing the required `{output}` placeholder. |
+| `coverage.argsTemplate` | `string` | MTP Cobertura template | Runner arguments containing the required `{output}` placeholder. `{repoRoot}` is replaced with the absolute repository root (no trailing separator), so a file the runner reads can be named absolutely without a machine-specific path: `--coverage-settings "{repoRoot}/.coverage-settings.xml"`. Microsoft.Testing.Platform 2.5 coverage hosts cannot resolve a relative `--coverage-settings` path. |
 
 Only a full project run replaces its runtime file map. A filtered run adds
 positive evidence. Missing complete evidence, or a complete baseline older than
