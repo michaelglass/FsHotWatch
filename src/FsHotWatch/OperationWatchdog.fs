@@ -195,12 +195,36 @@ let defaultHeapValvePolicy () : HeapValvePolicy =
       Quiet = TimeSpan.FromMinutes 2.0 }
 
 /// What the valve has seen: the gen2 count at the last reading and when it last moved,
-/// and when the valve last fired.
+/// when the valve last fired, and `Floor` — the heap its last firing could not get
+/// below, when that firing reclaimed little (see `afterHeapValveFiring`).
 [<NoComparison>]
 type HeapValveState =
     { Gen2: int
       Gen2MovedAt: DateTime
-      LastFired: DateTime option }
+      LastFired: DateTime option
+      Floor: int64 option }
+
+/// A firing reclaimed little when it freed less than a tenth of the heap it found.
+let private reclaimedLittle (heapBefore: int64) (heapAfter: int64) =
+    heapBefore - heapAfter < heapBefore / 10L
+
+/// After an unproductive firing, the heap has to grow by a quarter over what that
+/// firing left before the valve fires again.
+let private regrown (floor: int64) = floor + floor / 4L
+
+/// `state` after a firing that found `heapBefore` and left `heapAfter`. A firing that
+/// reclaimed little measured the live set itself above the threshold: forcing the same
+/// collection every quiet interval would reclaim nothing again, at a multi-second
+/// blocking compaction (and, on a host that has paged the idle heap out, a page-in of
+/// all of it) each time. So it records that heap as the `Floor`, and the valve waits for
+/// the heap to grow past `regrown floor`. A firing that reclaimed real garbage clears it.
+let afterHeapValveFiring (state: HeapValveState) (heapBefore: int64) (heapAfter: int64) : HeapValveState =
+    { state with
+        Floor =
+            if reclaimedLittle heapBefore heapAfter then
+                Some heapAfter
+            else
+                None }
 
 /// `state` updated with `reading`, taken at `now`.
 let observeGen2 (state: HeapValveState) (now: DateTime) (reading: ResourceReading) : HeapValveState =
@@ -212,10 +236,14 @@ let observeGen2 (state: HeapValveState) (now: DateTime) (reading: ResourceReadin
         state
 
 /// Whether the valve fires on `reading` at `now`, given `state` already updated with it:
-/// the heap is above the threshold, no gen2 has run for the quiet interval, and the valve
-/// itself has not fired within it — so it can never collect in a loop.
+/// the heap is above the threshold (and above `regrown` of the last unproductive firing's
+/// `Floor`), no gen2 has run for the quiet interval, and the valve itself has not fired
+/// within it — so it can never collect in a loop.
 let heapValveFires (policy: HeapValvePolicy) (state: HeapValveState) (now: DateTime) (reading: ResourceReading) : bool =
     reading.HeapBytes > policy.Threshold
+    && (match state.Floor with
+        | Some floor -> reading.HeapBytes > regrown floor
+        | None -> true)
     && now - state.Gen2MovedAt >= policy.Quiet
     && (match state.LastFired with
         | Some fired -> now - fired >= policy.Quiet
@@ -234,7 +262,13 @@ let private gb (bytes: int64) = float bytes / 1073741824.0
 
 /// The loud line the valve logs when it fires.
 let heapValveLogLine (policy: HeapValvePolicy) (firing: HeapValveFiring) : string =
-    $"HEAP VALVE FIRED (#%d{firing.Count}): heap %.2f{gb firing.HeapBefore} GB above %.2f{gb policy.Threshold} GB with no gen2 collection for %d{int firing.QuietFor.TotalSeconds}s; forced one compacting gen2, heap now %.2f{gb firing.HeapAfter} GB. This is a backstop: the check bound, the shared snapshots or the GC configuration has regressed"
+    let fired =
+        $"HEAP VALVE FIRED (#%d{firing.Count}): heap %.2f{gb firing.HeapBefore} GB above %.2f{gb policy.Threshold} GB with no gen2 collection for %d{int firing.QuietFor.TotalSeconds}s; forced one compacting gen2, heap now %.2f{gb firing.HeapAfter} GB."
+
+    if reclaimedLittle firing.HeapBefore firing.HeapAfter then
+        $"%s{fired} It reclaimed under 10%%: the live set itself is above the threshold, so the valve holds until the heap passes %.2f{gb (regrown firing.HeapAfter)} GB"
+    else
+        $"%s{fired} This is a backstop: the check bound, the shared snapshots or the GC configuration has regressed"
 
 /// The `status` line for the valve, once it has fired.
 let heapValveReport (firing: HeapValveFiring) : string =
@@ -298,7 +332,8 @@ type Watchdog
     let mutable valveState =
         { Gen2 = lastResources.Gen2
           Gen2MovedAt = now ()
-          LastFired = None }
+          LastFired = None
+          Floor = None }
 
     let mutable lastFiring: HeapValveFiring option = None
 
@@ -374,6 +409,9 @@ type Watchdog
                     (match Volatile.Read(&lastFiring) with
                      | Some previous -> previous.Count + 1
                      | None -> 1) }
+
+            Locking.locked gate (fun () ->
+                valveState <- afterHeapValveFiring valveState firing.HeapBefore firing.HeapAfter)
 
             Volatile.Write(&lastFiring, Some firing)
             log (heapValveLogLine heapValve firing)

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **fix!: the heap valve backs off after a firing that reclaimed little.**
+  `OperationWatchdog.HeapValveState` has a new `Floor: int64 option` (set it to `None`
+  in a literal). New `OperationWatchdog.afterHeapValveFiring state heapBefore heapAfter`
+  records `Floor = Some heapAfter` when the firing freed under a tenth of the heap and
+  clears it otherwise; `heapValveFires` then also requires the heap above 1.25× the
+  floor. `heapValveLogLine` says when a firing reclaimed under 10% and what the valve
+  now waits for.
 - **feat!: `ErrorEntry.Code`.** A ledger entry names the rule that produced it, when its
   producer names one: analyzers set it from `Message.Code`. Every record literal now sets
   it (`Code = None` elsewhere). The task-cache entry format moves to 6, so entries written

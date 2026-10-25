@@ -74,6 +74,20 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core: the heap valve no longer refires on a live set it cannot shrink
+
+- The valve forces a compacting gen2 when the heap is over a quarter of the memory the GC
+  may use and no gen2 has run for two minutes. When the daemon's LIVE set is itself over
+  that line, the collection reclaims nothing, and the valve fired again every quiet
+  interval. One long-lived daemon of a ~2,200-file solution on a 32 GB host logged 842
+  firings in 44 hours; 825 of them freed under 0.5 GB, and each was a blocking
+  compaction of the whole ~8–10 GB heap (median pause 3.6 s) that also paged an idle,
+  swapped-out heap back in. A firing that reclaims under a tenth of the heap now records
+  what it left, and the valve holds until the heap grows past 1.25× that; its log line
+  says so and names the figure. A firing that reclaims real garbage keeps the plain
+  threshold. Tests pin both cases, the log line, and a watchdog whose collection frees
+  nothing firing once across several quiet intervals.
+
 ### cli: `FSHW_IDLE_EXIT_MIN` sets one daemon's idle-exit window without touching `.fshw.json`
 
 - `idleExitMin` could only be set in `.fshw.json`, which is shared and tracked, and an
