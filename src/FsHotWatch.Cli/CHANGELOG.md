@@ -12,6 +12,13 @@
   New: `RepositoryHostMode.Attach.Unavailable`, `RepositoryHostMode.Unavailable`,
   `RepositoryHostMode.recordFallback`.
 
+- fix: `fshw scan` with no daemon up starts this worktree's own daemon first, as every
+  other command that needs one does. It sent its call to a pipe nothing listened on, so
+  a worktree the repository host left to its own daemon (the fallback above) printed
+  "using this worktree's own daemon" and then "Could not connect to daemon: The
+  operation has timed out." A running daemon is still only restarted when its binary is
+  stale.
+
 - feat: `FSHW_CHECK_CACHE` in a daemon's environment overrides `.fshw.json`'s
   `cache.scope` for that daemon: `on`/`true`/`1` runs the configured cache in this
   checkout whatever its scope (the default in-memory cache when none is configured),

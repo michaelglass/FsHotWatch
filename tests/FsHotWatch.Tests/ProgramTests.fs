@@ -881,6 +881,41 @@ let ``executeCommand Format returns 1 when daemon startup fails`` () = assertFai
 let ``executeCommand Rerun returns 1 when daemon startup fails`` () =
     assertFailsWhenDaemonDown (Rerun "coverage-ratchet")
 
+[<Fact(Timeout = 15000)>]
+let ``executeCommand Scan returns 1 when daemon startup fails`` () = assertFailsWhenDaemonDown Scan
+
+[<Fact(Timeout = 15000)>]
+let ``executeCommand Scan with no daemon up starts one, then scans it`` () =
+    // AUTOMATION-1333: the scan went straight to a pipe nothing listened on.
+    withTempDir "prog-scan-start" (fun tmpDir ->
+        let launched = ref false
+        let scanned = ref false
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> launched.Value
+                LaunchDaemon = fun _ _ _ -> launched.Value <- true
+                Scan =
+                    fun _ _ ->
+                        async {
+                            scanned.Value <- launched.Value
+                            return "scan started"
+                        } }
+
+        let result =
+            executeCommand
+                ""
+                (fun _ -> Unchecked.defaultof<_>)
+                ipc
+                tmpDir
+                "pipe"
+                Scan
+                defaultGlobalOptions
+                fakeConfig
+                5.0
+
+        test <@ result = 0 && launched.Value && scanned.Value @>)
+
 /// The banner is a hardcoded string: without this test a typo, rename or removed
 /// subcommand would advertise a command that no longer exists.
 [<Fact>]

@@ -555,10 +555,37 @@ let private runCli (stateHome: string) (root: string) (args: string list) : int 
     p.WaitForExit()
     p.ExitCode, String.concat Environment.NewLine output
 
-/// `runCli`, failing with everything the CLI printed unless it exits 0.
+/// The log and event log of the repository host serving `root`'s repository under
+/// `stateHome`. The failure a host explains is reported from inside a scratch tree that
+/// is deleted with the test, so a failure message that only names the log names a file
+/// nobody can read.
+let private hostLogs (stateHome: string) (root: string) : string =
+    match resolveWorktree root with
+    | Error e -> $"(no repository identity: %s{IdentityError.describe e})"
+    | Ok worktree ->
+        let control = repositoryControlPaths stateHome worktree.Repository
+
+        [ control.HostLog; HostLifecycle.eventLogPath control ]
+        |> List.map (fun f ->
+            let text =
+                if File.Exists f then
+                    try
+                        File.ReadAllText f
+                    with ex ->
+                        $"(unreadable: %s{ex.Message})"
+                else
+                    "(absent)"
+
+            $"--- %s{f}\n%s{text}")
+        |> String.concat "\n"
+
+/// `runCli`, failing with everything the CLI printed, and the repository host's logs,
+/// unless it exits 0.
 let private runCliOk (stateHome: string) (root: string) (args: string list) : unit =
     let exitCode, output = runCli stateHome root args
-    Assert.True((exitCode = 0), $"fshw %A{args} exited %d{exitCode}:\n%s{output}")
+
+    if exitCode <> 0 then
+        Assert.Fail $"fshw %A{args} exited %d{exitCode}:\n%s{output}\n%s{hostLogs stateHome root}"
 
 /// Kill every host this test may have started for `root`: the pids it saw, and the one
 /// the repository's pid file names now, which a command that failed part-way leaves
@@ -961,6 +988,71 @@ let ``an attach reply the host cannot have written is a stop, naming why`` () =
             cts.Cancel()
             server.Wait(TimeSpan.FromSeconds 10.0) |> ignore)
 
+[<Fact(Timeout = 600000)>]
+let ``a scan whose host stops answering during the attach starts this worktree's own daemon`` () =
+    // AUTOMATION-1333. The fallback said "using this worktree's own daemon", and then
+    // `scan` sent its call to a pipe nothing had started: it timed out connecting
+    // ("Could not connect to daemon: The operation has timed out."), where every other
+    // command that falls back brings that daemon up first.
+    if not (OperatingSystem.IsWindows()) then
+        withRepository (fun root stateHome ->
+            let worktree =
+                match resolveWorktree root with
+                | Ok w -> w
+                | Error e -> failwith (IdentityError.describe e)
+
+            let control = repositoryControlPaths stateHome worktree.Repository
+
+            // A host that reads every attach and hangs up without answering.
+            let opener: Ipc.IpcServer.ConnectionOpener =
+                fun pipe _ ->
+                    async {
+                        do!
+                            RepositoryIpc.readFrame pipe CancellationToken.None
+                            |> Async.AwaitTask
+                            |> Async.Ignore
+
+                        return None
+                    }
+
+            use cts = new CancellationTokenSource()
+
+            let server =
+                Async.StartImmediateAsTask(
+                    Ipc.IpcServer.serveConnections (TimeSpan.FromSeconds 5.0) control.Endpoint opener cts
+                )
+
+            let since = DateTime.UtcNow.AddSeconds -1.0
+
+            try
+                test <@ Ipc.IpcServer.acceptsConnection control.Endpoint @>
+
+                let exitCode, output = runCli stateHome root [ "scan" ]
+
+                Assert.True(
+                    (exitCode = 0
+                     && output.Contains "using this worktree's own daemon"
+                     && output.Contains "stopped answering during attach"),
+                    $"fshw scan exited %d{exitCode}:\n%s{output}"
+                )
+            finally
+                cts.Cancel()
+                server.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+                // The worktree's own daemon, which the scan started.
+                let pidFile = Path.Combine(root, ".fshw", "daemon.pid")
+
+                match
+                    Int32.TryParse(
+                        try
+                            File.ReadAllText(pidFile).Trim()
+                        with _ ->
+                            ""
+                    )
+                with
+                | true, pid -> reapHosts since stateHome root [ pid ] |> ignore
+                | _ -> ())
+
 // ---------------------------------------------------------------------------
 // Plugin passthrough
 // ---------------------------------------------------------------------------
@@ -1004,7 +1096,9 @@ let ``a plugin command reaches the session of the worktree it is run in, and no 
                 runCliOk stateHome sibling [ "scan" ]
 
                 let record worktree =
-                    (RepositoryHost.HostSessionRecord.tryReadLive RepositoryHost.processAlive worktree).Value
+                    match RepositoryHost.HostSessionRecord.tryReadLive RepositoryHost.processAlive worktree with
+                    | Some r -> r
+                    | None -> failwith $"no host session serves %s{worktree}:\n%s{hostLogs stateHome worktree}"
 
                 // One host serves both worktrees, each as its own session.
                 test <@ (record root).HostPid = (record sibling).HostPid @>
