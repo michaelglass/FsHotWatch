@@ -1483,6 +1483,13 @@
         "branch": 95,
         "reason": "new file (AUTOMATION-1320 whole-project evidence record: load/save of .fshw/test-prune/whole-project-evidence.json). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-26 on macOS by TestPruneModelChangeTests with coverage (coverageratchet check): line 97.7%, branch 95.8% (23/24). Uncovered: a compiler-generated closure line of the entry fold and one edge of the JSON node type tests. Platform-neutral: no platform-specific path."
       }
+    ],
+    "CoverageNotIngested.fs": [
+      {
+        "line": 100,
+        "branch": 95,
+        "reason": "new file (AUTOMATION-1320 record of runtime coverage that did not ingest: load/save/arm of .fshw/test-prune/runtime-coverage-not-ingested.json). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-26 on macOS by TestPruneModelChangeTests + TestPrunePluginTests with coverage (coverageratchet check): line 100%, branch 95% (19/20). Uncovered: one compiler-generated edge of the JSON node type tests. Platform-neutral: no platform-specific path."
+      }
     ]
   },
   "countFloors": {

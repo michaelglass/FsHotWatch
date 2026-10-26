@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **fix!: runtime coverage that did not ingest is that project's debt, not the suite's.**
+  One project's ingest failure (`SQLite Error 5: 'database is locked'`) made what is owed
+  unknown for the whole suite: every run was FULL SUITE until one passed every project,
+  and the marker it left made the next daemon start the same way (six hours of full-suite
+  lands on one machine). What is unknown is that project's runtime coverage, so it now
+  runs in full until a run of it passes and ingests; every other project selects as usual,
+  before and after a restart. The failure is recorded in
+  `.fshw/test-prune/runtime-coverage-not-ingested.json` (project → reason) before the
+  owner hears of it, and removed when no project owes; an unreadable record is unknown
+  debt, named. A cached green is refused while a project owes. **Breaking (API):**
+  `VerificationDebt` has a new `CoverageNotIngested: Map<string, string>` field;
+  `armRuntimeCoverageUnknownDebt` is `armCoverageNotIngested`; `zeroAffectedWidening` takes
+  the owed projects and `ZeroAffectedWidening` has a `CoverageNotIngested` case.
+
 - **fix!: a full suite widened for unknown verification debt says why.** Every cause of
   unknown debt (an unreadable pending-verification or outstanding-failures ledger, an
   unfinished runtime-obligation write, an unfinished debt publication, runtime coverage

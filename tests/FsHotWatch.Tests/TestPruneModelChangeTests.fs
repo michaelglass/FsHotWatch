@@ -571,16 +571,19 @@ let private withLogLines (body: unit -> 'T) : 'T * string list =
 
 [<Fact(Timeout = 30000)>]
 let ``a full suite widened for unknown debt names the cause, not the pending-verification ledger`` () =
+    // The cause the land daemon carried across its restart: a runtime-obligation write
+    // that did not finish (in that incident, the marker a failed ingest used to leave).
     let f = fixture ()
     let verified = verifiedUnderModelOne f
+    publish f f.Handler.Init verified
+    let marker = runtimeCoverageRecoveryPath f.Ctx.RepoRoot
+    Directory.CreateDirectory(Path.GetDirectoryName marker) |> ignore
+    File.WriteAllText(marker, "runtime obligation write in progress")
 
-    let unknown =
-        update
-            f
-            verified
-            (Custom(RuntimeCoverageFailed("ProjB", "SqliteException: SQLite Error 5: 'database is locked'")))
+    let next = restarted f
 
-    let _, lines = withLogLines (fun () -> buildAndLaunch f (withChangeToLibF unknown))
+    let _, lines =
+        withLogLines (fun () -> buildAndLaunch next (withChangeToLibF next.Handler.Init))
 
     let scope = lines |> List.filter (fun line -> line.Contains "Scope: FULL SUITE")
     test <@ not scope.IsEmpty @>
@@ -591,7 +594,11 @@ let ``a full suite widened for unknown debt names the cause, not the pending-ver
             |> List.forall (fun line -> not (line.Contains "pending-verification ledger"))
         @>
 
-    test <@ scope |> List.exists (fun line -> line.Contains "runtime coverage for ProjB") @>
+    test
+        <@
+            scope
+            |> List.exists (fun line -> line.Contains "runtime coverage obligation ledger")
+        @>
 
 [<Fact(Timeout = 30000)>]
 let ``a daemon that starts over an unfinished debt record names that record as the cause`` () =
@@ -607,3 +614,130 @@ let ``a daemon that starts over an unfinished debt record names that record as t
     test <@ causes.Head.Contains "runtime coverage obligation ledger" @>
     test <@ causes.Head.Contains(runtimeCoverageObligationsPath f.Ctx.RepoRoot) @>
     test <@ not (causes.Head.Contains "pending-verification") @>
+
+// ---------------------------------------------------------------------------
+// Runtime coverage that did not ingest is ITS project's debt (AUTOMATION-1320). One
+// project's ingest failure ("database is locked") made what is owed unknown for the whole
+// suite: every run was FULL SUITE until one passed every project, and the marker it left
+// made the next daemon start the same way. What is unknown is that one project's runtime
+// coverage, so that project runs in full until a run of it ingests; the rest select as
+// usual, before and after a restart.
+// ---------------------------------------------------------------------------
+
+let private lockedIngest = "SqliteException: SQLite Error 5: 'database is locked'"
+
+[<Fact(Timeout = 30000)>]
+let ``a project whose runtime coverage did not ingest runs in full, and only it`` () =
+    let f = fixture ()
+    let verified = verifiedUnderModelOne f
+
+    let failed =
+        update f verified (Custom(RuntimeCoverageFailed("ProjB", lockedIngest)))
+
+    let _, launch = buildAndLaunch f (withChangeToLibF failed)
+
+    test
+        <@ launch.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests"); "ProjB", ProjectInFull ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``a restarted daemon still owes only the project whose runtime coverage did not ingest`` () =
+    let identities = identitiesOf [ "ProjA", "a1"; "ProjB", "b1" ]
+    let f = fixture () |> withIdentities identities
+    let verified = verifiedUnderModelOne f
+    publish f f.Handler.Init verified
+
+    // As a run does: the durable record first, then the owner hears of it.
+    armCoverageNotIngested
+        ignore
+        (CoverageNotIngested.sidecarPath f.Ctx.RepoRoot)
+        { Project = "ProjB"
+          Reason = lockedIngest }
+
+    let failed =
+        update f verified (Custom(RuntimeCoverageFailed("ProjB", lockedIngest)))
+
+    publish f verified failed
+
+    let next = restarted f
+    test <@ List.isEmpty next.Handler.Init.Debt.UnknownDebt @>
+
+    let _, launch = buildAndLaunch next (withChangeToLibF next.Handler.Init)
+
+    test
+        <@ launch.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests"); "ProjB", ProjectInFull ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``a passing whole-project run of that project discharges its runtime coverage debt`` () =
+    let f = fixture ()
+    let verified = verifiedUnderModelOne f
+
+    let failed =
+        update f verified (Custom(RuntimeCoverageFailed("ProjB", lockedIngest)))
+
+    let launched, launch = buildAndLaunch f (withChangeToLibF failed)
+    let settled = update f launched (finishedGreen launch)
+
+    let _, next = buildAndLaunch f (withChangeToLibF settled)
+
+    test <@ next.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests") ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``CoverageNotIngested: arm keeps every project recorded, and an empty record removes the file`` () =
+    let root = isolatedRoot ()
+    let path = CoverageNotIngested.sidecarPath root
+    test <@ CoverageNotIngested.load root = CoverageNotIngested.LoadedRecord.Loaded Map.empty @>
+
+    let notified = ref 0
+    CoverageNotIngested.arm (fun () -> notified.Value <- notified.Value + 1) path "ProjA" "locked"
+    CoverageNotIngested.arm (fun () -> notified.Value <- notified.Value + 1) path "ProjB" "malformed"
+
+    test <@ notified.Value = 2 @>
+
+    test
+        <@
+            CoverageNotIngested.load root = CoverageNotIngested.LoadedRecord.Loaded(
+                Map.ofList [ "ProjA", "locked"; "ProjB", "malformed" ]
+            )
+        @>
+
+    CoverageNotIngested.save root Map.empty
+    test <@ not (File.Exists path) @>
+    CoverageNotIngested.save root Map.empty
+    test <@ not (File.Exists path) @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("{ torn")>]
+[<InlineData("[]")>]
+[<InlineData("null")>]
+[<InlineData("{\"ProjA\": 7}")>]
+[<InlineData("{\"ProjA\": {}}")>]
+let ``CoverageNotIngested: a record that cannot be read is Unreadable, and arm leaves it so`` (text: string) =
+    let root = isolatedRoot ()
+    let path = CoverageNotIngested.sidecarPath root
+    Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+    File.WriteAllText(path, text)
+
+    let unreadable () =
+        match CoverageNotIngested.load root with
+        | CoverageNotIngested.LoadedRecord.Unreadable _ -> true
+        | CoverageNotIngested.LoadedRecord.Loaded _ -> false
+
+    test <@ unreadable () @>
+
+    let notified = ref false
+    CoverageNotIngested.arm (fun () -> notified.Value <- true) path "ProjA" "locked"
+
+    test <@ notified.Value @>
+    test <@ unreadable () @>
+    test <@ File.ReadAllText path = text @>
+
+[<Fact(Timeout = 30000)>]
+let ``a daemon that starts over an unreadable ingest record owes unknown debt, naming it`` () =
+    let f = fixture ()
+    let path = CoverageNotIngested.sidecarPath f.Ctx.RepoRoot
+    Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+    File.WriteAllText(path, "{ torn")
+
+    let causes = (restarted f).Handler.Init.Debt.UnknownDebt
+
+    test <@ causes.Length = 1 && causes.Head.Contains path @>

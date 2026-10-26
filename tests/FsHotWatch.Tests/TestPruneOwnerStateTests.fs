@@ -489,7 +489,7 @@ let ``run-tests reports a refused intent instead of waiting for a run that canno
     Assert.Contains("executor stopped", response)
 
 [<Fact(Timeout = 15000)>]
-let ``a failed coverage ingest makes the owner's debt unknown`` () =
+let ``a failed coverage ingest makes the owner owe that project, and refuses the cache`` () =
     let handler =
         create ":memory:" (isolatedRoot ()) (Some [ config "ProjA" ]) None None None None []
 
@@ -502,7 +502,14 @@ let ``a failed coverage ingest makes the owner's debt unknown`` () =
             handler.Init
             (Custom(RuntimeCoverageFailed("ProjA", "SqliteException: database is locked")))
 
-    Assert.True(failed.Debt.RecoveryOutstanding)
+    // That project's debt, not unknown debt for the suite (AUTOMATION-1320).
+    Assert.False(failed.Debt.RecoveryOutstanding)
+
+    Assert.Equal<Map<string, string>>(
+        Map.ofList [ "ProjA", "SqliteException: database is locked" ],
+        failed.Debt.CoverageNotIngested
+    )
+
     Assert.True((buildKey handler failed).IsNone)
 
 /// A plugin context whose intents and shared claims are recorded.
