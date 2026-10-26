@@ -3859,8 +3859,11 @@ let private executeCommandRendered
                         | Some json ->
                             IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail json
                         | None ->
-                            eprintfn "fshw test-rerun: no test projects are configured, so there is nothing to run."
-                            1
+                            // Same answer as the daemon's unknown-command reply: nothing
+                            // ran, so no verdict (AUTOMATION-1337).
+                            eprintfn "fshw test-rerun: %s" (IpcOutput.unknownCommandMessage IpcParsing.RunTestsCommand)
+
+                            IpcOutput.NoVerdictExitCode
 
             match baselineDecision with
             | RerunBaseline.Decision.Proceed -> rerun ()

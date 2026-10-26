@@ -1744,6 +1744,19 @@ let ``executeCommand TestRerun with no flags sends default waitSec and no filter
     test <@ not (capturedArgs.Contains("filter")) @>
 
 [<Fact(Timeout = 15000)>]
+let ``executeCommand TestRerun exits 3 when the daemon has no test-prune plugin (unknown-command sentinel)`` () =
+    // AUTOMATION-1337: a worktree whose `.fshw.json` has no `tests` config registers no
+    // test-prune plugin, so the daemon answers `run-tests` with the unknown-command
+    // sentinel. `test-rerun` printed it and exited 0 — a false green: nothing ran.
+    let ipc =
+        { fakeIpc () with
+            RunCommand = fun _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name } }
+
+    let result = exec ipc (TestRerun [])
+
+    test <@ result = 3 @>
+
+[<Fact(Timeout = 15000)>]
 let ``executeCommand TestRerun --filter-class forwards filter to run-tests IPC`` () =
     let mutable capturedArgs = ""
 
