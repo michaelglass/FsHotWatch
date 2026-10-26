@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: a client that falls back from the repository host is recorded. New
+  `HostLifecycle.recordFallback path at clientPid fallback` appends a `fellBack` line
+  (`Fallback.toJsonLine`: `clientPid`, `hostPid` when known, `reason`, `detail`, `root`)
+  to the event log, creating its directory, and returns false instead of raising when it
+  cannot. New `FallbackReason` (`HostDidNotStart`, `HostStoppedAnswering`) and `Fallback`.
+  A `fellBack` line never marks a host: a log holding only fallbacks, or one after a
+  host's stop, no longer makes the next host record `PreviousHostUnclean`.
+
 - feat: a repository host keeps a lifecycle record. New `HostLifecycle` module:
   `EventLog` counts attaches by disposition, refusals by kind, session ends by outcome and
   lost answers (`Tally`, `Tally.toJson`). With a path, it appends each event (`HostEvent`)

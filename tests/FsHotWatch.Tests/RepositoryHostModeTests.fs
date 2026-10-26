@@ -162,13 +162,14 @@ let ``a directory that cannot be resolved is refused before anything is launched
     test <@ not launched.Value @>
 
 [<Fact(Timeout = 30000)>]
-let ``a host that never comes up is refused within the bound, naming its log`` () =
+let ``a host that never comes up leaves the worktree to its own daemon within the bound, naming its log`` () =
     withTempDir "mode-nohost" (fun dir ->
         Directory.CreateDirectory(Path.Combine(dir, ".jj", "repo")) |> ignore
 
         match RepositoryHostMode.attach (Path.Combine(dir, "state")) ignore (TimeSpan.FromSeconds 2.0) dir "" with
-        | RepositoryHostMode.Attach.Refused message ->
-            test <@ message.Contains "did not start" && message.Contains "host.log" @>
+        | RepositoryHostMode.Attach.Unavailable u ->
+            test <@ u.Reason = HostLifecycle.FallbackReason.HostDidNotStart @>
+            test <@ u.Message.Contains "did not start" && u.Message.Contains "host.log" @>
         | other -> failwith $"%A{other}")
 
 /// A resolvable jj primary at `dir`, and the reply a host serving it would send.
@@ -231,14 +232,21 @@ let ``a host that leaves between the probe and the reply is relaunched once`` ()
         test <@ launches.Value = 1 && exchanges.Value = 2 @>)
 
 [<Fact(Timeout = 30000)>]
-let ``a host that never answers the attach is refused once, naming its log`` () =
+let ``a host that never answers the attach is asked once more, then left to the worktree's own daemon`` () =
     withTempDir "mode-silent" (fun dir ->
         attachedReplyFor dir |> ignore
         let launches = ref 0
         let exchanges = ref 0
 
+        let stoppedAnswering (outcome: RepositoryHostMode.Attach) =
+            match outcome with
+            | RepositoryHostMode.Attach.Unavailable u ->
+                test <@ u.Reason = HostLifecycle.FallbackReason.HostStoppedAnswering @>
+                u.Message
+            | other -> failwith $"%A{other}"
+
         // Still answering the probe, so nothing is launched over it; one retry, then a
-        // refusal rather than an exception.
+        // fallback rather than an exception.
         let outcome =
             RepositoryHostMode.attachWith
                 (fun _ -> true)
@@ -253,15 +261,13 @@ let ``a host that never answers the attach is refused once, naming its log`` () 
                 dir
                 ""
 
-        match outcome with
-        | RepositoryHostMode.Attach.Refused message ->
-            test <@ message.Contains "stopped answering" && message.Contains "host.log" @>
-        | other -> failwith $"%A{other}"
+        let message = stoppedAnswering outcome
+        test <@ message.Contains "stopped answering" && message.Contains "host.log" @>
 
         test <@ launches.Value = 0 && exchanges.Value = 2 @>
 
-        // Gone after the failed exchange, and a relaunch that does not come up: refused
-        // without asking again.
+        // Gone after the failed exchange, and a relaunch that does not come up: left to
+        // the worktree's own daemon without asking again.
         let gone =
             RepositoryHostMode.attachWith
                 (fun _ -> exchanges.Value = 2)
@@ -276,14 +282,12 @@ let ``a host that never answers the attach is refused once, naming its log`` () 
                 dir
                 ""
 
-        match gone with
-        | RepositoryHostMode.Attach.Refused message -> test <@ message.Contains "stopped answering" @>
-        | other -> failwith $"%A{other}"
+        test <@ (stoppedAnswering gone).Contains "stopped answering" @>
 
         test <@ launches.Value = 1 && exchanges.Value = 3 @>)
 
 [<Fact(Timeout = 60000)>]
-let ``a host that hangs up mid-frame during the attach is refused, not a crash`` () =
+let ``a host that hangs up mid-frame during the attach is left to the worktree's own daemon, not a crash`` () =
     // The crash under load: the host's endpoint accepted the attach and closed while the
     // CLI was still writing it. The write failed with a broken pipe, which escaped attach
     // and ended the CLI with an unhandled exception. A frame larger than any socket
@@ -330,8 +334,8 @@ let ``a host that hangs up mid-frame during the attach is refused, not a crash``
                     ""
 
             match outcome with
-            | RepositoryHostMode.Attach.Refused message ->
-                test <@ message.Contains "stopped answering" && message.Contains "hung up" @>
+            | RepositoryHostMode.Attach.Unavailable u ->
+                test <@ u.Message.Contains "stopped answering" && u.Message.Contains "hung up" @>
             | other -> failwith $"%A{other}"
 
             // Asked once more, as for any host that left mid-exchange.
@@ -339,6 +343,140 @@ let ``a host that hangs up mid-frame during the attach is refused, not a crash``
         finally
             cts.Cancel()
             server.Wait(TimeSpan.FromSeconds 10.0) |> ignore)
+
+/// `attachWith` against a host that is up and answers every attach with `reply`.
+let private attachAnswered (dir: string) (reply: string) =
+    RepositoryHostMode.attachWith
+        (fun _ -> true)
+        (fun _ _ -> async { return Ok reply })
+        (Path.Combine(dir, "state"))
+        ignore
+        (TimeSpan.FromSeconds 5.0)
+        dir
+        ""
+
+[<Fact(Timeout = 30000)>]
+let ``a host of a different fshw build is still a stop, and no fallback is recorded`` () =
+    withTempDir "mode-otherbuild" (fun dir ->
+        attachedReplyFor dir |> ignore
+
+        let worktree =
+            match resolveWorktree dir with
+            | Ok w -> w
+            | Error e -> failwith (IdentityError.describe e)
+
+        let protocol = AttachHandshake.ProtocolIdentity.current ()
+
+        let host: AttachHandshake.HostIdentity =
+            { Protocol =
+                { protocol with
+                    Binary =
+                        { protocol.Binary with
+                            ContentHash = "another-build" } }
+              Repository = worktree.Repository }
+
+        let reply =
+            AttachHandshake.encodeResponse (
+                AttachHandshake.Refused(
+                    AttachHandshake.AttachRefusal.BinaryMismatch(protocol.Binary, host.Protocol.Binary),
+                    host
+                )
+            )
+
+        match attachAnswered dir reply with
+        | RepositoryHostMode.Attach.Refused message -> test <@ message.Contains "NOT be restarted" @>
+        | other -> failwith $"%A{other}"
+
+        let control =
+            repositoryControlPaths (Path.Combine(dir, "state")) worktree.Repository
+
+        test <@ not (File.Exists(HostLifecycle.eventLogPath control)) @>)
+
+[<Fact(Timeout = 30000)>]
+let ``a host that stopped answering but still holds this worktree's session is a stop, naming its pid`` () =
+    // Its own daemon cannot take the worktree while that session holds its lock, so a
+    // fallback would only fail later, and less clearly.
+    withTempDir "mode-held" (fun dir ->
+        let id, _ = attachedReplyFor dir
+        let record = RepositoryHost.HostSessionRecord.path dir
+        Directory.CreateDirectory(Path.GetDirectoryName record) |> ignore
+
+        File.WriteAllText(
+            record,
+            RepositoryHost.HostSessionRecord.render
+                { HostPid = Environment.ProcessId
+                  Endpoint = "fshw-repo-held"
+                  Session = id }
+        )
+
+        let outcome =
+            RepositoryHostMode.attachWith
+                (fun _ -> true)
+                (fun _ _ -> async { return Error(RepositoryIpc.ExchangeError.Unreachable "no connection") })
+                (Path.Combine(dir, "state"))
+                ignore
+                (TimeSpan.FromSeconds 5.0)
+                dir
+                ""
+
+        match outcome with
+        | RepositoryHostMode.Attach.Refused message ->
+            test <@ message.Contains "stopped answering" @>
+
+            test
+                <@
+                    message.Contains $"pid %d{Environment.ProcessId}"
+                    && message.Contains "own daemon cannot"
+                @>
+        | other -> failwith $"%A{other}")
+
+[<Fact(Timeout = 30000)>]
+let ``a fallback is recorded in the repository's event log, naming the host's pid when one is recorded`` () =
+    withTempDir "mode-fellback" (fun dir ->
+        attachedReplyFor dir |> ignore
+
+        let unavailable =
+            match
+                RepositoryHostMode.attachWith
+                    (fun _ -> false)
+                    (fun _ _ -> async { return Error(RepositoryIpc.ExchangeError.Unreachable "unused") })
+                    (Path.Combine(dir, "state"))
+                    ignore
+                    (TimeSpan.FromMilliseconds 200.0)
+                    dir
+                    ""
+            with
+            | RepositoryHostMode.Attach.Unavailable u -> u
+            | other -> failwith $"%A{other}"
+
+        let log = HostLifecycle.eventLogPath unavailable.Control
+        let at = DateTime(2026, 10, 26, 9, 0, 0, DateTimeKind.Utc)
+
+        // No pid file: the host never got far enough to write one.
+        test <@ RepositoryHostMode.recordFallback at unavailable @>
+        Directory.CreateDirectory unavailable.Control.Directory |> ignore
+        File.WriteAllText(unavailable.Control.PidFile, "77\n")
+        test <@ RepositoryHostMode.recordFallback at unavailable @>
+
+        let written = File.ReadAllLines log |> Array.filter (fun l -> l <> "")
+        test <@ written.Length = 2 @>
+
+        let field (line: string) (name: string) =
+            use doc = Text.Json.JsonDocument.Parse line
+
+            match doc.RootElement.TryGetProperty name with
+            | true, v -> Some(v.ToString())
+            | _ -> None
+
+        for line in written do
+            test <@ field line "event" = Some "fellBack" @>
+            test <@ field line "reason" = Some "host-did-not-start" @>
+            test <@ field line "clientPid" = Some(string Environment.ProcessId) @>
+            test <@ field line "root" = Some unavailable.Root @>
+            test <@ field line "detail" = Some unavailable.Message @>
+
+        test <@ field written[0] "hostPid" = None @>
+        test <@ field written[1] "hostPid" = Some "77" @>)
 
 // ---------------------------------------------------------------------------
 // Real host processes

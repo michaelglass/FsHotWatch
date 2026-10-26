@@ -4496,6 +4496,9 @@ let private chooseLink
                     | RepositoryHostMode.Attach.Serving(_, id) ->
                         current.Value <- id
                         true
+                    | RepositoryHostMode.Attach.Unavailable u ->
+                        eprintfn $"fshw: %s{u.Message}"
+                        false
                     | RepositoryHostMode.Attach.OwnDaemon reason
                     | RepositoryHostMode.Attach.Refused reason ->
                         eprintfn $"fshw: %s{reason}"
@@ -4524,6 +4527,15 @@ let private chooseLink
         | RepositoryHostMode.Attach.Serving(endpoint, session) -> linkTo endpoint session
         | RepositoryHostMode.Attach.OwnDaemon reason ->
             eprintfn $"fshw: using this worktree's own daemon: %s{reason}"
+            ownDaemon
+        // The host is not there, or stopped answering: this worktree is served all the
+        // same, and the fallback is counted where a rollout reads the host's health.
+        | RepositoryHostMode.Attach.Unavailable u ->
+            if not (RepositoryHostMode.recordFallback DateTime.UtcNow u) then
+                eprintfn
+                    $"fshw: this fallback could not be recorded in %s{FsHotWatch.HostLifecycle.eventLogPath u.Control}"
+
+            eprintfn $"fshw: using this worktree's own daemon: %s{u.Message}"
             ownDaemon
         | RepositoryHostMode.Attach.Refused reason ->
             eprintfn $"fshw: %s{reason}"

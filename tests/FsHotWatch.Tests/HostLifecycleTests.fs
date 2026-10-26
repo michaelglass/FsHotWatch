@@ -270,3 +270,75 @@ let ``a log that cannot be read says nothing of the previous host, and the host 
         let log = EventLog(Some path, 11, (fun () -> at))
         log.Start()
         test <@ log.Tally.PreviousUnclean = None @>)
+
+// ---------------------------------------------------------------------------
+// A client's fallback to its worktree's own daemon
+// ---------------------------------------------------------------------------
+
+let private fallback (hostPid: int option) : Fallback =
+    { Reason = FallbackReason.HostStoppedAnswering
+      Detail = "no reply"
+      Root = "/r"
+      HostPid = hostPid }
+
+[<Fact(Timeout = 5000)>]
+let ``a fallback is one JSON line naming the client, the host it could not use, and why`` () =
+    withTempDir "lifecycle" (fun dir ->
+        // The control directory need not exist yet: a host that never started made none.
+        let path = Path.Combine(dir, "control", "host-events.jsonl")
+        test <@ recordFallback path at 5 (fallback (Some 77)) @>
+
+        test
+            <@
+                recordFallback
+                    path
+                    at
+                    6
+                    { fallback None with
+                        Reason = FallbackReason.HostDidNotStart }
+            @>
+
+        let written = lines path
+        test <@ written.Length = 2 @>
+        let first = written[0]
+        test <@ field first "event" = "fellBack" @>
+        test <@ DateTime.Parse(field first "at").ToUniversalTime() = at @>
+        test <@ field first "clientPid" = "5" @>
+        test <@ field first "hostPid" = "77" @>
+        test <@ field first "reason" = "host-stopped-answering" @>
+        test <@ field first "detail" = "no reply" @>
+        test <@ field first "root" = "/r" @>
+        test <@ field written[1] "reason" = "host-did-not-start" @>
+        test <@ not (written[1].Contains "hostPid") @>)
+
+[<Fact(Timeout = 5000)>]
+let ``a fallback that cannot be written says so, and never raises`` () =
+    withTempDir "lifecycle" (fun dir ->
+        let path = Path.Combine(dir, "host-events.jsonl")
+        Directory.CreateDirectory path |> ignore
+        test <@ not (recordFallback path at 5 (fallback None)) @>)
+
+[<Fact(Timeout = 5000)>]
+let ``a client's fallback is not a host, and never reads as one that exited uncleanly`` () =
+    withTempDir "lifecycle" (fun dir ->
+        // A host that never started leaves only its clients' fallbacks.
+        let path = Path.Combine(dir, "host-events.jsonl")
+        recordFallback path at 5 (fallback None) |> ignore
+        // A blank line is no host's either.
+        File.AppendAllText(path, "\n  \n")
+        let first = EventLog(Some path, 10, (fun () -> at))
+        first.Start()
+        test <@ first.Tally.PreviousUnclean = None @>
+
+        // A fallback after the host's stop leaves the exit clean…
+        first.Record(HostEvent.HostStopped StopReason.Idle)
+        recordFallback path at 5 (fallback (Some 10)) |> ignore
+        let second = EventLog(Some path, 11, (fun () -> at))
+        second.Start()
+        test <@ second.Tally.PreviousUnclean = None @>
+
+        // …and one after a host that never stopped does not hide that it did not.
+        recordFallback path at 5 (fallback (Some 11)) |> ignore
+        let third = EventLog(Some path, 12, (fun () -> at))
+        third.Start()
+        test <@ third.Tally.PreviousUnclean = Some(Some 11) @>)

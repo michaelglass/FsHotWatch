@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **feat: a repository host that does not start, or stops answering during attach,
+  no longer stops the command.** It exited 2 before; now the command runs on the
+  worktree's own daemon, prints why, and appends a `fellBack` event (reason, the host's
+  pid when its pid file names one) to `host-events.jsonl`. A host of a different fshw
+  build, a reply that cannot be read, and a session the host cannot start still stop the
+  command (exit 2), as does a host that stopped answering while it still holds this
+  worktree's session, whose lock the own daemon would need; that message names the pid.
+  New: `RepositoryHostMode.Attach.Unavailable`, `RepositoryHostMode.Unavailable`,
+  `RepositoryHostMode.recordFallback`.
+
 - feat: `fshw status --repository` reports on the host itself: when it started, its
   footprint (working set, managed heap, GC-committed bytes), its lifecycle counts
   (attached, rejoined, reloaded, refused by kind, ended and faulted, undelivered), when
