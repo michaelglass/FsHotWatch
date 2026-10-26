@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: the operation watchdog no longer logs one host suspension twice. Its timer
+  started a tick while the previous one was still running. A tick that read the clocks
+  before the suspension, but recorded them after a later tick had logged it, rewound
+  the previous-tick reading, so the next tick logged the suspension again. Ticks no
+  longer overlap: a tick that is due while one is running is skipped.
 - feat: a client that falls back from the repository host is recorded. New
   `HostLifecycle.recordFallback path at clientPid fallback` appends a `fellBack` line
   (`Fallback.toJsonLine`: `clientPid`, `hostPid` when known, `reason`, `detail`, `root`)
