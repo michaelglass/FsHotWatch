@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **feat!: a repository host says why each project is checked at its own paths.**
+  `SessionFrames.choice` now takes a `SessionFrames.Report`, and its session's log names
+  the reason once per project and reason: `ReadsItsLocation` (the construct and the file),
+  `ReferencesOwnPaths` (the upstream projects that are themselves at their own paths) or
+  `NotCanonical` (another worktree checks different content of it under the virtual
+  root, and which). Only the first was ever logged, so a measurement could not tell which
+  projects a second session bootstrapped again, or why. `PathFrame.FrameChoice` takes a
+  third argument, the project files of the upstreams at their own paths: the choice is
+  now asked for such a project too, and the snapshot still checks it at its own paths
+  whatever it answers. New: `CanonicalProjects.Registry.HoldersOf`, `SessionFrames.Reports`.
+
 - feat: a client that falls back from the repository host is recorded. New
   `HostLifecycle.recordFallback path at clientPid fallback` appends a `fellBack` line
   (`Fallback.toJsonLine`: `clientPid`, `hostPid` when known, `reason`, `detail`, `root`)

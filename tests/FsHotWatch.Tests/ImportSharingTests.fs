@@ -101,7 +101,7 @@ let private unitPlaced
             (ProjectSnapshots.generationOf checker)
             hasher.Hash
             (Some s.Root)
-            (fun _ _ -> frame)
+            (fun _ _ _ -> frame)
             place
             (ProjectSnapshots.readOpenFile hasher.Hash s.Source)
             s.Options
@@ -131,7 +131,7 @@ let private unitThroughPipeline
         CheckPipeline(
             checker,
             repoRoot = s.Root,
-            frames = SessionFrames.choice canonical s.Root virtualRoot ignore,
+            frames = SessionFrames.choice canonical (SessionFrames.Report()) s.Root virtualRoot ignore,
             imports = place
         )
 
@@ -448,7 +448,7 @@ let ``a hosted check names each reference it read from the store by the worktree
                 CheckPipeline(
                     w.Checker,
                     repoRoot = s.Root,
-                    frames = SessionFrames.choice canonical s.Root w.VirtualRoot ignore,
+                    frames = SessionFrames.choice canonical (SessionFrames.Report()) s.Root w.VirtualRoot ignore,
                     imports = place
                 )
 

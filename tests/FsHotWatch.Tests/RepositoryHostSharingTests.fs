@@ -116,7 +116,12 @@ let private withWorldUnder (framesOn: bool) (body: World -> unit) =
                             inertWatcher
                             partitions.For
                             (if framesOn then
-                                 SessionFrames.choice canonicalProjects root virtualRoot logged.Enqueue
+                                 SessionFrames.choice
+                                     canonicalProjects
+                                     (SessionFrames.Report())
+                                     root
+                                     virtualRoot
+                                     logged.Enqueue
                              else
                                  PathFrame.realPaths)
                             checks }

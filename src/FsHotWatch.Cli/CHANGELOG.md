@@ -21,6 +21,11 @@
   `DaemonConfig.CheckCacheEnvVar`, `CheckCacheOverride`, `parseCheckCacheOverride`,
   `checkCacheOverrideWarning`, `createCacheComponentsWith`.
 
+- feat: `status --repository` says which projects each worktree checks at its own paths,
+  and why, in its JSON (`ownPaths`: `{root: [{project, reason, ...}]}`, reason
+  `reads-its-location`, `references-own-paths` or `not-canonical`) and in its human
+  lines.
+
 ## 0.14.0-alpha.125 - 2026-10-25
 
 - **fix: the tool bundles exactly FSharp.Compiler.Service 43.12.402 and FSharp.Core

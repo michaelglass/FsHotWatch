@@ -97,6 +97,24 @@ type Unavailable =
         Root: string
     }
 
+/// The lines `status --repository` prints about the projects each worktree checks at its
+/// own paths, from its `ListSessions` answer's `ownPaths`: nothing for a worktree with none,
+/// or from a host that does not send them.
+let ownPathsLines (node: JsonNode) : string list =
+    match node["ownPaths"] with
+    | null -> []
+    | ownPaths ->
+        [ for KeyValue(root, entries) in ownPaths.AsObject() do
+              let atOwnPaths =
+                  entries.AsArray() |> Seq.choose SessionFrames.AtOwnPaths.ofJson |> List.ofSeq
+
+              if not atOwnPaths.IsEmpty then
+                  yield $"  %s{root} checks %d{atOwnPaths.Length} project(s) at its own paths:"
+
+                  for project, reason in atOwnPaths do
+                      let why = SessionFrames.AtOwnPaths.describe reason
+                      yield $"    %s{project}: %s{why}" ]
+
 /// What attaching a worktree came to.
 [<RequireQualifiedAccess>]
 type Attach =

@@ -190,7 +190,7 @@ let ``framed worktrees whose referenced dlls differ in bytes share one cache ent
             let frame = FsHotWatch.PathFrame.create tree.Root virtualRoot
 
             let pipeline, checks =
-                pipelineOver checker tree (Some cache) (fun _ _ -> Some frame)
+                pipelineOver checker tree (Some cache) (fun _ _ _ -> Some frame)
 
             tree, pipeline, checks
 

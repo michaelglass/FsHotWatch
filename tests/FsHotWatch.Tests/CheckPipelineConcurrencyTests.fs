@@ -267,7 +267,7 @@ let ``work two sessions share survives one of them cancelling`` () =
                     checker,
                     activity = sink,
                     repoRoot = root,
-                    frames = SessionFrames.choice canonical root virtualRoot ignore,
+                    frames = SessionFrames.choice canonical (SessionFrames.Report()) root virtualRoot ignore,
                     admission = scheduler.Lane name
                 )
 

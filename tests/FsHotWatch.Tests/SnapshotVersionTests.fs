@@ -884,7 +884,7 @@ let private sharedFrameTree (worktrees: string) (library: string) =
             (FsHotWatch.ProjectSnapshots.generationOf checker)
             hasher.Hash
             (Some root)
-            (fun _ _ -> Some frame)
+            (fun _ _ _ -> Some frame)
             (FsHotWatch.ProjectSnapshots.readOpenFile hasher.Hash source)
             options)
             .Snapshot.ReferencesOnDisk
@@ -1074,7 +1074,7 @@ let ``framed worktrees share a project reference's stamp whatever their outputs 
                 firstGeneration
                 hasher.Hash
                 (Some root)
-                (fun _ _ -> Some frame)
+                (fun _ _ _ -> Some frame)
                 (FsHotWatch.ProjectSnapshots.readOpenFile hasher.Hash appSource)
                 app)
                 .Snapshot.ReferencesOnDisk
@@ -1092,3 +1092,37 @@ let ``framed worktrees share a project reference's stamp whatever their outputs 
         // fixture; production relies on the host refusing to start while its virtual
         // root exists (`HostRun.VirtualRootExists`, RepositoryHost.fs).
         test <@ a |> List.forall (fun (path, _) -> not (File.Exists path)) @>)
+
+[<Fact>]
+let ``a project is told which of its upstreams are checked at their own paths, and is checked at its own paths too``
+    ()
+    =
+    // The frame choice used not to be asked at all for such a project, so nothing could
+    // say why it was checked where it is.
+    withTempDir "snapshot-upstream-own-paths" (fun worktrees ->
+        let root = Path.Combine(worktrees, "a")
+        let appSource, _, app = libAndApp root
+        let frame = FsHotWatch.PathFrame.create root (Path.Combine(worktrees, "virtual"))
+        let hasher = FsHotWatch.CheckCache.FileContentHasher()
+        let asked = System.Collections.Concurrent.ConcurrentQueue<string * string list>()
+
+        let choose (options: FSharpProjectOptions) (_: string) (upstreams: string list) =
+            asked.Enqueue(Path.GetFileName options.ProjectFileName, upstreams |> List.map Path.GetFileName)
+
+            if options.ProjectFileName.EndsWith "Lib.fsproj" then
+                None
+            else
+                // Answered whatever the upstreams: the snapshot must not frame it anyway.
+                Some frame
+
+        let built =
+            FsHotWatch.ProjectSnapshots.buildFramed
+                firstGeneration
+                hasher.Hash
+                (Some root)
+                choose
+                (FsHotWatch.ProjectSnapshots.readOpenFile hasher.Hash appSource)
+                app
+
+        test <@ built.Frame = None @>
+        test <@ List.ofSeq asked = [ "Lib.fsproj", []; "App.fsproj", [ "Lib.fsproj" ] ] @>)
