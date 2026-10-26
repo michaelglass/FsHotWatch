@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- chore: FSharp.Core is pinned exactly at `[10.1.402]` instead of floating within `10.1.*`.
+
 ## 0.7.0-alpha.30 - 2026-10-17
 
 - **fix!: a full-suite check fails when a file with a configured floor has no row in the

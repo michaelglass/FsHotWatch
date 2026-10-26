@@ -4,6 +4,11 @@
 
 ## 0.10.0-alpha.92 - 2026-10-25
 
+- **fix: FSharp.Compiler.Service and FSharp.Core are pinned exactly** (`[43.12.402]`,
+  `[10.1.402]`) instead of floating within `43.*` / `10.1.*`. A fresh restore had started
+  resolving FCS 43.12.403 with no source change, while analyzers built on
+  FSharp.Analyzers.SDK pin FCS 43.12.402 exactly and fail to load in a host on any other
+  FCS. `ToolchainPinTests` keeps every project exact and the CLI bundle equal to the pins.
 - **fix!: the heap valve backs off after a firing that reclaimed little.**
   `OperationWatchdog.HeapValveState` has a new `Floor: int64 option` (set it to `None`
   in a literal). New `OperationWatchdog.afterHeapValveFiring state heapBefore heapAfter`

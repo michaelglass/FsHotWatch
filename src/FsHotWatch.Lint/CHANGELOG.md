@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- chore: FSharp.Core is pinned exactly at `[10.1.402]` instead of floating within `10.1.*`.
+
 ## 0.7.0-alpha.36 - 2026-10-25
 
 - Finish: AUTOMATION-1313 fshw findings: tree-bound analyzer findings with codes

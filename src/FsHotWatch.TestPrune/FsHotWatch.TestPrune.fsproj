@@ -61,7 +61,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.303" PrivateAssets="All" />
-    <PackageReference Update="FSharp.Core" Version="10.1.*" />
+    <PackageReference Update="FSharp.Core" Version="[10.1.402]" />
     <PackageReference Include="TestPrune.Core" Version="13.4.0" />
     <!-- Per-test trace recording (`tests.traces`): the weaver, shadow bin, ingestion and
          trace store. Needs the TestPrune.Core it was built against (13.4.x). -->

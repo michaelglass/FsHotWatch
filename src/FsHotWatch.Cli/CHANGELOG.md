@@ -4,6 +4,10 @@
 
 ## 0.14.0-alpha.125 - 2026-10-25
 
+- **fix: the tool bundles exactly FSharp.Compiler.Service 43.12.402 and FSharp.Core
+  10.1.402.** Both used to float, so a release could pick up a newer FCS than the
+  analyzers it hosts were compiled against (FSharp.Analyzers.SDK pins FCS 43.12.402
+  exactly) and fail to load them.
 - feat: `fshw status --repository` reports on the host itself: when it started, its
   footprint (working set, managed heap, GC-committed bytes), its lifecycle counts
   (attached, rejoined, reloaded, refused by kind, ended and faulted, undelivered), when

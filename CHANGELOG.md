@@ -74,6 +74,15 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### build: FSharp.Compiler.Service and FSharp.Core are pinned exactly
+
+- FCS is pinned at `[43.12.402]` and FSharp.Core at `[10.1.402]` in every project, instead
+  of floating within `43.*` / `10.1.*`. A fresh restore had started resolving FCS
+  43.12.403 with no source change, and analyzers built on FSharp.Analyzers.SDK pin FCS
+  43.12.402 exactly, so a CLI that drifted would fail to load them. `ToolchainPinTests`
+  asserts every pin is exact and that the CLI bundles exactly those versions. Move both
+  pins together, deliberately, when the hosted analyzer ecosystem moves.
+
 ### core: the heap valve no longer refires on a live set it cannot shrink
 
 - The valve forces a compacting gen2 when the heap is over a quarter of the memory the GC
