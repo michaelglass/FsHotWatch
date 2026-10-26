@@ -318,7 +318,7 @@ hand. Every field is optional — sensible defaults apply when omitted.
 | `timeoutSec` | `number \| false` | `1200` | Default bound (seconds) on every build, test project, file command and preprocessor run; a per-entry `timeoutSec` overrides it. `0` or `false` disables it. See [Memory & tuning](docs/memory-and-tuning.md#per-task-timeouts). |
 | `format` | `bool` | `true` | Enable Fantomas format-on-save preprocessor. |
 | `lint` | `bool` | `true` | Enable FSharpLint plugin. Uses `fsharplint.json` if found. |
-| `cache` | `string \| bool` | `"file"` | Cache strategy: `"none"`, `"memory"`, or `"file"`. (`"jj"` is a legacy alias for `"file"`.) |
+| `cache` | `string \| bool \| object` | none | Check-result cache: `"none"`/`false`, `"memory"`/`true`, or `{ "maxEntries", "scope", "include", "exclude" }` (`scope`: `"all"` or `"default-workspace"`). The removed `"file"`/`"jj"` backends fail the load. Overridden per daemon by `FSHW_CHECK_CACHE`; see [Memory & tuning](docs/memory-and-tuning.md#one-workspaces-check-result-cache-fshw_check_cache). |
 | `tests` | `object` | — | Test runner config. See below. |
 | `coverage` | `object` | — | Coverage threshold checking. |
 | `analyzers` | `object` | — | F# Analyzers SDK integration. |

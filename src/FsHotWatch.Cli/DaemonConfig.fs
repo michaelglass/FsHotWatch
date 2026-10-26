@@ -63,6 +63,15 @@ let defaultInMemoryCache =
       Include = []
       Exclude = [] }
 
+/// What `resolveWorktree` read this checkout as, for a startup line.
+let private describeCheckout
+    (kind: Result<FsHotWatch.RepositoryIdentity.CheckoutKind, FsHotWatch.RepositoryIdentity.IdentityError>)
+    : string =
+    match kind with
+    | Result.Ok kind -> FsHotWatch.RepositoryIdentity.CheckoutKind.describe kind
+    | Result.Error error ->
+        $"a checkout whose layout cannot be read (%s{FsHotWatch.RepositoryIdentity.IdentityError.describe error})"
+
 /// Whether `scope` runs a cache in a checkout of `kind`, and the scope and detected
 /// checkout the startup line names. A checkout whose layout cannot be read is not
 /// provably the default workspace, so `"default-workspace"` leaves it off.
@@ -70,11 +79,7 @@ let resolveCacheScope
     (scope: CacheScope)
     (kind: Result<FsHotWatch.RepositoryIdentity.CheckoutKind, FsHotWatch.RepositoryIdentity.IdentityError>)
     : bool * string =
-    let detected =
-        match kind with
-        | Result.Ok kind -> FsHotWatch.RepositoryIdentity.CheckoutKind.describe kind
-        | Result.Error error ->
-            $"a checkout whose layout cannot be read (%s{FsHotWatch.RepositoryIdentity.IdentityError.describe error})"
+    let detected = describeCheckout kind
 
     let secondaryOrUnknown =
         kind
@@ -114,6 +119,30 @@ let cacheAdmits (repoRoot: string) (includes: string list) (excludes: string lis
         else
             included relative && not (excluded relative)
 
+/// A running in-memory cache of `settings`' size and project filter; `scope` is the
+/// reason its startup line gives for running here.
+let private inMemorySetup
+    (repoRoot: string)
+    (settings: InMemoryCacheSettings)
+    (scope: string)
+    : FsHotWatch.InMemoryCheckCache.CheckCacheSetup =
+    let capacity =
+        match settings.MaxEntries with
+        | CacheSize.Entries n -> FsHotWatch.InMemoryCheckCache.CacheCapacity.Entries n
+        | CacheSize.All -> FsHotWatch.InMemoryCheckCache.CacheCapacity.WorkingSet
+
+    let cache =
+        FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(
+            capacity,
+            cacheAdmits repoRoot settings.Include settings.Exclude
+        )
+
+    FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(
+        cache,
+        Some(TimestampCacheKeyProvider() :> ICacheKeyProvider),
+        Some scope
+    )
+
 /// The check-result cache `config` runs in `repoRoot`. Logs nothing: the daemon states
 /// the result in one startup line (`describeCheckCache`).
 let createCacheComponents
@@ -131,22 +160,89 @@ let createCacheComponents
         if not on then
             FsHotWatch.InMemoryCheckCache.CheckCacheSetup.OffInThisCheckout scope
         else
-            let capacity =
-                match settings.MaxEntries with
-                | CacheSize.Entries n -> FsHotWatch.InMemoryCheckCache.CacheCapacity.Entries n
-                | CacheSize.All -> FsHotWatch.InMemoryCheckCache.CacheCapacity.WorkingSet
+            inMemorySetup repoRoot settings scope
 
-            let cache =
-                FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(
-                    capacity,
-                    cacheAdmits repoRoot settings.Include settings.Exclude
-                )
+/// The environment variable that overrides `.fshw.json`'s `cache.scope` for the one
+/// daemon started with it. `.fshw.json` is shared by every checkout, and an edit to it
+/// stops every daemon of the repository ("config changed, stopping"), so one workspace
+/// cannot be given the cache there without giving it to all of them. Read once, when the
+/// daemon starts; it is not a file, so setting it never triggers that restart.
+[<Literal>]
+let CheckCacheEnvVar = "FSHW_CHECK_CACHE"
 
-            FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(
-                cache,
-                Some(TimestampCacheKeyProvider() :> ICacheKeyProvider),
-                Some scope
-            )
+/// What `FSHW_CHECK_CACHE` holds.
+[<RequireQualifiedAccess>]
+type CheckCacheOverride =
+    /// Not set, or blank: `.fshw.json` decides.
+    | Unset
+    /// `on`: run the check-result cache in this checkout whatever `cache.scope` says.
+    | ForcedOn
+    /// `off`: run no check-result cache.
+    | ForcedOff
+    /// Anything else. Ignored (`.fshw.json` decides), and warned about.
+    | Invalid of string
+
+/// Parse `FSHW_CHECK_CACHE`: `on`/`true`/`1` and `off`/`false`/`0`, case-insensitive,
+/// surrounding whitespace ignored.
+let parseCheckCacheOverride (raw: string) : CheckCacheOverride =
+    if System.String.IsNullOrWhiteSpace raw then
+        CheckCacheOverride.Unset
+    else
+        let value = raw.Trim()
+
+        match value.ToLowerInvariant() with
+        | "on"
+        | "true"
+        | "1" -> CheckCacheOverride.ForcedOn
+        | "off"
+        | "false"
+        | "0" -> CheckCacheOverride.ForcedOff
+        | _ -> CheckCacheOverride.Invalid value
+
+/// The warning a daemon logs for an `FSHW_CHECK_CACHE` it could not read.
+let checkCacheOverrideWarning (cacheOverride: CheckCacheOverride) : string option =
+    match cacheOverride with
+    | CheckCacheOverride.Invalid value ->
+        Some $"ignoring %s{CheckCacheEnvVar}=%s{value}: expected on or off; using .fshw.json"
+    | CheckCacheOverride.Unset
+    | CheckCacheOverride.ForcedOn
+    | CheckCacheOverride.ForcedOff -> None
+
+/// `createCacheComponents` under `FSHW_CHECK_CACHE`. `ForcedOn` runs the configured
+/// cache (its size and project filter) in this checkout whatever its scope, or the
+/// default in-memory cache when `.fshw.json` configures none; `ForcedOff` runs none.
+/// Either way the startup line names the variable as the source. `Unset` and `Invalid`
+/// leave the file's answer exactly as it was.
+let createCacheComponentsWith
+    (cacheOverride: CheckCacheOverride)
+    (repoRoot: string)
+    (config: CacheBackendConfig)
+    : FsHotWatch.InMemoryCheckCache.CheckCacheSetup =
+    match cacheOverride with
+    | CheckCacheOverride.Unset
+    | CheckCacheOverride.Invalid _ -> createCacheComponents repoRoot config
+    | CheckCacheOverride.ForcedOff ->
+        FsHotWatch.InMemoryCheckCache.CheckCacheSetup.OffInThisCheckout
+            $"%s{CheckCacheEnvVar}=off in this daemon's environment (overrides .fshw.json \"cache\")"
+    | CheckCacheOverride.ForcedOn ->
+        let settings, overridden =
+            match config with
+            | InMemory settings ->
+                let scope =
+                    match settings.Scope with
+                    | CacheScope.AllCheckouts -> "all"
+                    | CacheScope.DefaultWorkspaceOnly -> "default-workspace"
+
+                settings, $"cache.scope \"%s{scope}\""
+            | NoCache -> defaultInMemoryCache, "no cache in .fshw.json (running the default in-memory cache)"
+
+        let checkout =
+            describeCheckout (FsHotWatch.RepositoryIdentity.resolveWorktree repoRoot |> Result.map _.Kind)
+
+        inMemorySetup
+            repoRoot
+            settings
+            $"%s{CheckCacheEnvVar}=on in this daemon's environment overrides %s{overridden}; this checkout is %s{checkout}"
 
 /// Every `check-result cache:` line a daemon started on `config` in `repoRoot` logs:
 /// `createCacheComponents` logs nothing, and the daemon logs `describeCheckCache` of

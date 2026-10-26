@@ -10,6 +10,12 @@
   A `fellBack` line never marks a host: a log holding only fallbacks, or one after a
   host's stop, no longer makes the next host record `PreviousHostUnclean`.
 
+- **feat!: a scan's measurement record says whether the daemon ran a check-result
+  cache.** `ScanMetrics.ScanSample` has a new `CheckCache: bool option` field (breaking for
+  record literals), written as `"checkCache": "on" | "off"`. A line without the field, or
+  with an unknown value, parses as `None`. The daemon fills it from
+  `CheckPipeline.HasCheckCache`.
+
 ## 0.10.0-alpha.92 - 2026-10-25
 
 - **fix: FSharp.Compiler.Service and FSharp.Core are pinned exactly** (`[43.12.402]`,

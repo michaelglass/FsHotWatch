@@ -117,6 +117,41 @@ The daemon log's `[idle-exit] enabled:` line names where its window came from
 (`AUTO`, `.fshw.json idleExitMin` or `FSHW_IDLE_EXIT_MIN`); an override that disables
 idle-exit logs `[idle-exit] disabled by FSHW_IDLE_EXIT_MIN`.
 
+## One workspace's check-result cache: `FSHW_CHECK_CACHE`
+
+The check-result cache costs about 250 KB per file beyond what the checker keeps, so
+`.fshw.json`'s `"cache": { "scope": "default-workspace" }` keeps it to the jj default
+workspace (or git main checkout) and out of short-lived task workspaces. A secondary
+workspace that does long-lived, repeated work, a merge-queue checkout for example, then
+runs with none. `"scope": "all"` would give the cache to every checkout, and editing the
+shared file stops every daemon of the repository.
+
+To decide for **one** daemon, start it with `FSHW_CHECK_CACHE` in its environment:
+
+| Value | Effect |
+|-------|--------|
+| `on`, `true`, `1` | Run the configured cache (its `maxEntries`, `include`, `exclude`) in this checkout, whatever `scope` says. With no cache in `.fshw.json`, run the default in-memory cache. |
+| `off`, `false`, `0` | Run no check-result cache. |
+| unset or blank | `.fshw.json` decides. |
+| anything else | Ignored with a warning in the daemon log; `.fshw.json` decides. |
+
+Values are case-insensitive. `--no-cache` on the command line beats the variable. It is
+read once, when the daemon starts, so setting it restarts nothing. A daemon that is
+already running keeps the cache it started with, so run `fshw stop` first. For a session
+of a repository host it is read from the host's environment.
+
+```sh
+# Give this (secondary) workspace's daemon the cache the shared config reserves for the default one.
+FSHW_CHECK_CACHE=on fshw check
+```
+
+The daemon's startup `check-result cache:` line names the variable when it decided, e.g.
+`check-result cache: in-memory, sized to the working set (every file it caches) —
+FSHW_CHECK_CACHE=on in this daemon's environment overrides cache.scope
+"default-workspace"; this checkout is a secondary jj workspace …`. Each record in
+`.fshw/scan-metrics.jsonl` carries `checkCache: "on" | "off"`, so `cacheHits: 0,
+cacheMisses: 0` can be read as "no cache" or "nothing looked up".
+
 ## Pressure-shortened idle exit
 
 [Idle exit](#idle-exit) reclaims memory from daemons that have gone *quiet*, but

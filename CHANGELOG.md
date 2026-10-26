@@ -99,6 +99,30 @@ All notable changes to FsHotWatch packages are documented here.
   `tests.traces` on, recorded traces are not read under the new schema until the next full
   run re-records them.
 
+### cli: `FSHW_CHECK_CACHE` turns one daemon's check-result cache on or off without touching `.fshw.json`
+
+- `cache.scope` is the only switch for the check-result cache, and `.fshw.json` is shared
+  and tracked. With `"default-workspace"`, a secondary workspace that does long-lived,
+  repeated work (a merge-queue checkout, say) runs with no cache. `"all"` would give the
+  cache, about 250 KB per file, to every short-lived task workspace. Editing the file
+  also stops every daemon of the repository. `FSHW_CHECK_CACHE` in the environment a
+  daemon starts in now overrides it for that daemon. `on` (or `true`, `1`) runs the
+  configured cache, with its `maxEntries`, `include` and `exclude`, in this checkout
+  whatever its scope says. With no cache configured, `on` runs the default in-memory
+  cache. `off` (or `false`, `0`) runs none. Blank or unset leaves `.fshw.json` in charge.
+  Any other value is ignored with a warning. `--no-cache` still wins. The variable is read
+  once at start, so setting it restarts nothing. The startup `check-result cache:` line
+  names it as the source, e.g. `check-result cache: in-memory, sized to the working set
+  (every file it caches) — FSHW_CHECK_CACHE=on in this daemon's environment overrides
+  cache.scope "default-workspace"; this checkout is a secondary jj workspace …`. For a
+  session of a repository host the variable is read from the host's environment.
+
+### core: `scan-metrics.jsonl` says whether the daemon ran a check-result cache
+
+- `cacheHits: 0, cacheMisses: 0` read the same for a daemon that runs no cache and for a
+  cache nothing was looked up in. Each record now carries `checkCache: "on" | "off"`. A
+  record written before the field existed reads as not recorded.
+
 ### core: the heap valve no longer refires on a live set it cannot shrink
 
 - The valve forces a compacting gen2 when the heap is over a quarter of the memory the GC

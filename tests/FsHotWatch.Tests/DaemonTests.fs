@@ -4390,6 +4390,38 @@ let ``five scan generations emit five parseable, fittable measurement records`` 
             test <@ bound = FsHotWatch.ScanMetrics.DefaultRetentionBound @>
             test <@ Double.IsFinite slope @>)
 
+[<Fact(Timeout = 60000)>]
+let ``a scan's measurement record says whether the daemon ran a check-result cache`` () =
+    // 0 hits / 0 misses is what both a cacheless daemon and an idle cache record; the
+    // record has to carry which one it was.
+    let running =
+        FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(
+            FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(
+                FsHotWatch.InMemoryCheckCache.CacheCapacity.WorkingSet,
+                fun _ -> true
+            ),
+            None,
+            None
+        )
+
+    for setup, expected in [ FsHotWatch.InMemoryCheckCache.CheckCacheSetup.Off, false; running, true ] do
+        withTempDir "scan-metrics-cache-flag" (fun tmpDir ->
+            Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+            use daemon =
+                Daemon.createWith
+                    nullChecker
+                    tmpDir
+                    { oneShotDaemonOptions with
+                        CheckCache = setup }
+
+            daemon.ScanAll() |> Async.RunSynchronously
+
+            let series =
+                FsHotWatch.ScanMetrics.readSeries (FsHotWatch.ScanMetrics.recordPath tmpDir)
+
+            test <@ series |> List.map (fun s -> s.CheckCache) = [ Some expected ] @>)
+
 // --- timing attribution rework: the scan and discovery are named phases ---
 
 /// The cold scan is the largest phase a `check` waits on and no plugin owns it. After

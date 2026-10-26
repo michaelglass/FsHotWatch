@@ -12,6 +12,15 @@
   New: `RepositoryHostMode.Attach.Unavailable`, `RepositoryHostMode.Unavailable`,
   `RepositoryHostMode.recordFallback`.
 
+- feat: `FSHW_CHECK_CACHE` in a daemon's environment overrides `.fshw.json`'s
+  `cache.scope` for that daemon: `on`/`true`/`1` runs the configured cache in this
+  checkout whatever its scope (the default in-memory cache when none is configured),
+  `off`/`false`/`0` runs none. Unset or blank defers to the file; any other value is
+  ignored with a warning. `--no-cache` wins. Read once at start, so it never triggers the
+  config-changed restart. The startup `check-result cache:` line names the variable. New:
+  `DaemonConfig.CheckCacheEnvVar`, `CheckCacheOverride`, `parseCheckCacheOverride`,
+  `checkCacheOverrideWarning`, `createCacheComponentsWith`.
+
 ## 0.14.0-alpha.125 - 2026-10-25
 
 - **fix: the tool bundles exactly FSharp.Compiler.Service 43.12.402 and FSharp.Core

@@ -777,6 +777,129 @@ let ``createCacheComponents passes maxEntries and the project filter to the cach
             test <@ scoped.Admits(Path.Combine(tmpDir, "src", "App", "App.fsproj")) @>
         | other -> failwith $"expected an InMemoryCheckCache, got %A{other}")
 
+// --- FSHW_CHECK_CACHE: one daemon's check-result cache, outside the shared config ---
+
+/// A secondary jj workspace at `tmpDir`: `.jj/repo` is a file naming the store.
+let private makeSecondaryWorkspace (tmpDir: string) =
+    let store =
+        Directory.CreateDirectory(Path.Combine(tmpDir, "default", ".jj", "repo"))
+
+    Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
+    File.WriteAllText(Path.Combine(tmpDir, ".jj", "repo"), store.FullName)
+
+let private defaultWorkspaceScope =
+    InMemory
+        { defaultInMemoryCache with
+            Scope = CacheScope.DefaultWorkspaceOnly }
+
+[<Fact(Timeout = 15000)>]
+let ``FSHW_CHECK_CACHE parses on and off, case- and whitespace-insensitively`` () =
+    for raw in [ "on"; "ON"; " On "; "true"; "1" ] do
+        test <@ parseCheckCacheOverride raw = CheckCacheOverride.ForcedOn @>
+
+    for raw in [ "off"; "OFF"; " off "; "false"; "0" ] do
+        test <@ parseCheckCacheOverride raw = CheckCacheOverride.ForcedOff @>
+
+    for raw in [ null; ""; "   " ] do
+        test <@ parseCheckCacheOverride raw = CheckCacheOverride.Unset @>
+
+    test <@ parseCheckCacheOverride " sometimes " = CheckCacheOverride.Invalid "sometimes" @>
+
+[<Fact(Timeout = 15000)>]
+let ``FSHW_CHECK_CACHE=on runs the cache in a secondary workspace the scope leaves out, and the line names it`` () =
+    // The land workspace is a secondary jj workspace of a repository whose shared
+    // .fshw.json says "default-workspace"; scope "all" would cost every daemon the cache.
+    withTempDir "cfg-cc-env-on" (fun tmpDir ->
+        makeSecondaryWorkspace tmpDir
+
+        let setup =
+            createCacheComponentsWith CheckCacheOverride.ForcedOn tmpDir defaultWorkspaceScope
+
+        match setup with
+        | CheckCacheSetup.On((:? FsHotWatch.InMemoryCheckCache.InMemoryCheckCache), _, Some _) ->
+            let line = describeCheckCache setup
+
+            test
+                <@
+                    line.Contains "in-memory"
+                    && line.Contains "FSHW_CHECK_CACHE=on"
+                    && line.Contains "default-workspace"
+                    && line.Contains "secondary jj workspace"
+                @>
+        | other -> failwith $"expected a running in-memory cache, got %A{other}")
+
+[<Fact(Timeout = 15000)>]
+let ``FSHW_CHECK_CACHE=on keeps the configured size and project filter`` () =
+    withTempDir "cfg-cc-env-on-settings" (fun tmpDir ->
+        makeSecondaryWorkspace tmpDir
+
+        match
+            createCacheComponentsWith
+                CheckCacheOverride.ForcedOn
+                tmpDir
+                (InMemory
+                    { defaultInMemoryCache with
+                        Scope = CacheScope.DefaultWorkspaceOnly
+                        MaxEntries = CacheSize.Entries 42
+                        Exclude = [ "src/Libs/" ] })
+        with
+        | CheckCacheSetup.On((:? FsHotWatch.InMemoryCheckCache.InMemoryCheckCache as cache), _, _) ->
+            test <@ cache.Capacity = 42 @>
+            let scoped = cache :> FsHotWatch.CheckCache.IScopedCheckCache
+            test <@ not (scoped.Admits(Path.Combine(tmpDir, "src", "Libs", "L", "L.fsproj"))) @>
+        | other -> failwith $"expected an InMemoryCheckCache, got %A{other}")
+
+[<Fact(Timeout = 15000)>]
+let ``FSHW_CHECK_CACHE=on with no cache configured runs the default in-memory cache, and says so`` () =
+    withTempDir "cfg-cc-env-on-nocache" (fun tmpDir ->
+        let setup = createCacheComponentsWith CheckCacheOverride.ForcedOn tmpDir NoCache
+
+        match setup with
+        | CheckCacheSetup.On((:? FsHotWatch.InMemoryCheckCache.InMemoryCheckCache), _, Some _) ->
+            let line = describeCheckCache setup
+            test <@ line.Contains "FSHW_CHECK_CACHE=on" && line.Contains "no cache" @>
+        | other -> failwith $"expected a running in-memory cache, got %A{other}")
+
+[<Fact(Timeout = 15000)>]
+let ``FSHW_CHECK_CACHE=off turns off a cache the scope would run, and the line names it`` () =
+    // Scope "all" in a plain directory: the file alone would cache here.
+    withTempDir "cfg-cc-env-off" (fun tmpDir ->
+        for config in [ InMemory defaultInMemoryCache; NoCache ] do
+            let setup = createCacheComponentsWith CheckCacheOverride.ForcedOff tmpDir config
+
+            match setup with
+            | CheckCacheSetup.OffInThisCheckout _ ->
+                let line = describeCheckCache setup
+                test <@ line.Contains "OFF" && line.Contains "FSHW_CHECK_CACHE=off" @>
+            | other -> failwith $"expected the cache off, got %A{other}")
+
+[<Fact(Timeout = 15000)>]
+let ``an unset or unreadable FSHW_CHECK_CACHE leaves the scope's answer exactly as it was`` () =
+    withTempDir "cfg-cc-env-unset" (fun tmpDir ->
+        makeSecondaryWorkspace tmpDir
+
+        for ov in [ CheckCacheOverride.Unset; CheckCacheOverride.Invalid "maybe" ] do
+            let expected =
+                describeCheckCache (createCacheComponents tmpDir defaultWorkspaceScope)
+
+            let actual =
+                describeCheckCache (createCacheComponentsWith ov tmpDir defaultWorkspaceScope)
+
+            test <@ actual = expected @>
+            test <@ not (actual.Contains "FSHW_CHECK_CACHE") @>)
+
+[<Fact(Timeout = 15000)>]
+let ``only an unreadable FSHW_CHECK_CACHE is warned about, naming the variable and the value`` () =
+    match checkCacheOverrideWarning (CheckCacheOverride.Invalid "maybe") with
+    | Some warning -> test <@ warning.Contains "FSHW_CHECK_CACHE=maybe" && warning.Contains "on or off" @>
+    | None -> failwith "an unreadable value must be warned about, not silently ignored"
+
+    for ov in
+        [ CheckCacheOverride.Unset
+          CheckCacheOverride.ForcedOn
+          CheckCacheOverride.ForcedOff ] do
+        test <@ checkCacheOverrideWarning ov = None @>
+
 // `"cache": "file"` / `"jj"` selected an on-disk FCS check cache that could never
 // produce a hit. A warning was not enough — it scrolls past in a 10-minute gate, and the
 // dead key sat in a real repo's .fshw.json for weeks. Dead config now FAILS the load.
