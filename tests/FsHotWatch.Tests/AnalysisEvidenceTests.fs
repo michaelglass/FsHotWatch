@@ -391,6 +391,7 @@ let ``a daemon that runs tests seals every checkable file without publishing an 
               TimeoutSec = None
               ReportVerificationFormat = AutoDetect
               Starvation = None
+              CheckSkip = None
               AlwaysClasses = [] }
 
         let handler =

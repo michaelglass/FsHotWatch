@@ -848,12 +848,59 @@ let ``the selection attribution reaches the verdict scope from the test-scope re
                 [ { FsHotWatch.TestPrune.ProjectAttribution.Project = "ProjA"
                     Causes =
                       [ FsHotWatch.TestPrune.SelectionCause.DependencyFanout
-                        FsHotWatch.TestPrune.SelectionCause.ChangedSymbols ] } ]
+                        FsHotWatch.TestPrune.SelectionCause.ChangedSymbols ]
+                    SkippedClasses = [] } ]
         @>
 
     let scope = VerdictFixtures.scopeOnTheWire report
     test <@ scope.["selectedBy"].[0].["project"].GetValue<string>() = "ProjA" @>
     test <@ scope.["selectedBy"].[0].["causes"].[1].GetValue<string>() = "changed-symbols" @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``classes a check skipped reach the verdict scope, and the check output names them`` () =
+    let report =
+        parseTestRunReport
+            """{"kind":"filtered","ranProjects":1,"totalProjects":2,"selectedBy":[{"project":"ProjA","causes":["runtime-coverage"],"skippedClasses":["ProjA.LandTests","ProjA.GateTests"]}]}"""
+
+    test <@ not (TestScope.isFullSuite report.Scope) @>
+
+    test
+        <@
+            report.SelectedBy = Some
+                [ { FsHotWatch.TestPrune.ProjectAttribution.Project = "ProjA"
+                    Causes = [ FsHotWatch.TestPrune.SelectionCause.RuntimeCoverage ]
+                    SkippedClasses = [ "ProjA.LandTests"; "ProjA.GateTests" ] } ]
+        @>
+
+    let scope = VerdictFixtures.scopeOnTheWire report
+    test <@ scope.["kind"].GetValue<string>() = "filtered" @>
+    test <@ scope.["selectedBy"].[0].["skippedClasses"].[1].GetValue<string>() = "ProjA.GateTests" @>
+
+    let lines =
+        FsHotWatch.Cli.ProgressRenderer.AgentHints.forVerdict
+            (fun _ -> false)
+            None
+            (VerdictFixtures.checkVerdict report)
+
+    test
+        <@
+            lines
+            |> List.exists (fun line ->
+                line.Contains "ProjA"
+                && line.Contains "ProjA.LandTests, ProjA.GateTests"
+                && line.Contains "checkSkipClasses")
+        @>
+
+[<Theory(Timeout = SyncHangBackstopMs)>]
+[<InlineData(""""skippedClasses":"ProjA.LandTests" """)>]
+[<InlineData(""""skippedClasses":[3]""")>]
+let ``skipped classes this build cannot read fail closed to an unreadable scope`` (field: string) =
+    let report =
+        parseTestRunReport (
+            fullReply $""","selectedBy":[{{"project":"ProjA","causes":["runtime-coverage"],%s{field}}}]"""
+        )
+
+    test <@ TestScope.isUnreadable report.Scope @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a reply with no selection attribution says nothing, which is not an empty one`` () =

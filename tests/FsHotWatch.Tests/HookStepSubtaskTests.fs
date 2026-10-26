@@ -81,6 +81,7 @@ let ``a held-open tests.beforeRun step is named by index, command and pid in the
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let beforeRun =

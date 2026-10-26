@@ -54,6 +54,7 @@ let private newHost (tmpDir: string) : PluginHost =
             TimeoutSec = None
             ReportVerificationFormat = AutoDetect
             Starvation = None
+            CheckSkip = None
             AlwaysClasses = [] } ]
 
     let host = createModelHost sharedChecker.Value tmpDir

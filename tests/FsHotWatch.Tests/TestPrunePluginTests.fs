@@ -223,6 +223,7 @@ let ``a zero-symbol FileChecked forces its runtime-covered project in full`` () 
               TimeoutSec = Some 10
               ReportVerificationFormat = Disabled
               Starvation = None
+              CheckSkip = None
               AlwaysClasses = [] }
 
         let coveragePaths _ =
@@ -331,6 +332,7 @@ let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
             TimeoutSec = None
             ReportVerificationFormat = AutoDetect
             Starvation = None
+            CheckSkip = None
             AlwaysClasses = [] } ]
 
     let handler =
@@ -366,6 +368,7 @@ let ``extension is invoked via AnalyzeEdges during test run`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -404,6 +407,7 @@ let ``extension error is caught and reported to the ledger, not swallowed`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -544,6 +548,7 @@ let ``FileChecked does not set Running status`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -596,6 +601,7 @@ let ``FileChecked exception while tests running surfaces in the ledger without s
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -687,6 +693,7 @@ let ``FileChecked replaces test-run Completed status with error state`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -743,6 +750,7 @@ let ``run-tests command runs all projects and returns results`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -773,6 +781,7 @@ let ``run-tests with project filter runs only named project`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] }
               { Project = "Beta"
                 Command = "echo"
@@ -784,6 +793,7 @@ let ``run-tests with project filter runs only named project`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -814,6 +824,7 @@ let ``run-tests with filter passes raw filter args through to the test command``
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -849,6 +860,7 @@ let ``run-tests with only-failed reruns failed projects`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] }
               { Project = "Fails"
                 Command = "false"
@@ -860,6 +872,7 @@ let ``run-tests with only-failed reruns failed projects`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -997,6 +1010,7 @@ let ``test failures are reported to error ledger`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -1029,6 +1043,7 @@ let ``test errors are cleared when all tests pass`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -1076,6 +1091,7 @@ let ``RerunQueued path records previous run outcome to history before starting r
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -1186,6 +1202,7 @@ let ``FileChecked reports Completed when testConfigs provided (analysis done, aw
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
@@ -1274,6 +1291,7 @@ let beta () = ()
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let handler = create dbPath tmpDir (Some testConfigs) None None None None []
@@ -1359,6 +1377,7 @@ let computeTest () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let handler = create dbPath tmpDir (Some testConfigs) None None None None []
@@ -1453,6 +1472,7 @@ let ``cross-file type change only runs affected test classes`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
@@ -1817,6 +1837,7 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -1888,6 +1909,7 @@ let ``a cold cycle whose changes have no covering test runs once for evidence an
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         // The orphan must be INDEXED, not merely absent: only an index that knows the
@@ -1970,6 +1992,7 @@ let ``a pending symbol orphaned by a DB recreate must not discharge as a zero-te
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         // A healthy index: `Lib.foo` exists and `Tests.myTest` in `TestProject` covers it.
@@ -2073,6 +2096,7 @@ let ``a queued symbol the index has never heard of must not discharge as a zero-
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         // `user_version` is never bumped, so the plugin's open below is a COMPATIBLE
@@ -2301,6 +2325,7 @@ let lazyComputeTest () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let handler = create dbPath tmpDir (Some testConfigs) None None None None []
@@ -2369,6 +2394,7 @@ let ``BuildCompleted queries affected tests after flush`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -2401,6 +2427,7 @@ let ``skip tests when 0 affected classes and not cold start`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -2476,6 +2503,7 @@ let ``dependency-fingerprint change force-runs the dependent test project`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -2532,6 +2560,7 @@ let ``a rebuild of a referenced project whose package graph did not move does no
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -2575,6 +2604,7 @@ let ``no dependency change and no symbol change still skips (no regression)`` ()
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -3161,6 +3191,7 @@ let ``a project killed at its timeout is logged TIMED OUT (infrastructure), neve
                 TimeoutSec = Some 1
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -3301,6 +3332,7 @@ let ``run-tests with a filter that matches nothing reports no-tests-matched dist
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -3367,6 +3399,7 @@ let ``run-tests puts the ACTIVE FILTER and the per-project TEST COUNTS on the wi
                 // which AutoDetect could learn its flag family.
                 ReportVerificationFormat = Ctrf
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -3416,6 +3449,7 @@ let ``run-tests emits a NULL counts field for a project that wrote no report`` (
                 TimeoutSec = None
                 ReportVerificationFormat = Disabled
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -3451,6 +3485,7 @@ let ``run-tests with a filter that matches tests executes and reports a real pas
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -3484,6 +3519,7 @@ let ``run-tests force-executes after an in-flight run finishes instead of instan
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -3548,6 +3584,7 @@ let ``buildFilterArgs returns None when no classes for project`` () =
           TimeoutSec = None
           ReportVerificationFormat = AutoDetect
           Starvation = None
+          CheckSkip = None
           AlwaysClasses = [] }
 
     let result = buildFilterArgs config Map.empty
@@ -3566,6 +3603,7 @@ let ``buildFilterArgs returns None when no FilterTemplate configured`` () =
           TimeoutSec = None
           ReportVerificationFormat = AutoDetect
           Starvation = None
+          CheckSkip = None
           AlwaysClasses = [] }
 
     let classesByProject = Map.ofList [ "TestProj", [ "TestClassA"; "TestClassB" ] ]
@@ -3585,6 +3623,7 @@ let ``buildFilterArgs applies template with ClassJoin`` () =
           TimeoutSec = None
           ReportVerificationFormat = AutoDetect
           Starvation = None
+          CheckSkip = None
           AlwaysClasses = [] }
 
     let classesByProject = Map.ofList [ "TestProj", [ "ClassA"; "ClassB" ] ]
@@ -3604,6 +3643,7 @@ let ``buildFilterArgs applies template with default space join`` () =
           TimeoutSec = None
           ReportVerificationFormat = AutoDetect
           Starvation = None
+          CheckSkip = None
           AlwaysClasses = [] }
 
     let classesByProject = Map.ofList [ "TestProj", [ "ClassA"; "ClassB" ] ]
@@ -3623,6 +3663,7 @@ let ``buildFilterArgs ignores classes from other projects`` () =
           TimeoutSec = None
           ReportVerificationFormat = AutoDetect
           Starvation = None
+          CheckSkip = None
           AlwaysClasses = [] }
 
     let classesByProject =
@@ -3644,6 +3685,7 @@ let ``buildFilterArgs leaves an unspaced class name byte-for-byte unchanged`` ()
           TimeoutSec = None
           ReportVerificationFormat = AutoDetect
           Starvation = None
+          CheckSkip = None
           AlwaysClasses = [] }
 
     let classesByProject =
@@ -3667,6 +3709,7 @@ let ``buildFilterArgs quotes a spaced class name so the runner receives it as on
           TimeoutSec = None
           ReportVerificationFormat = AutoDetect
           Starvation = None
+          CheckSkip = None
           AlwaysClasses = [] }
 
     let spaced = "Ns.Type+Every background job declares its idempotence"
@@ -3796,6 +3839,7 @@ let ``executeTests emits a TestProgress per group as groups finish`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] }
               { Project = "ProjFastB"
                 Command = "echo"
@@ -3807,6 +3851,7 @@ let ``executeTests emits a TestProgress per group as groups finish`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] }
               { Project = "ProjSlow"
                 Command = "sleep"
@@ -3818,6 +3863,7 @@ let ``executeTests emits a TestProgress per group as groups finish`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -3875,6 +3921,7 @@ let ``full run (no filter) produces TestResult with WasFiltered = false`` () =
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -3932,6 +3979,7 @@ let ``a test project KILLED at its timeout still leaves its partial run log`` ()
                 // an unsupported flag on its command line.
                 ReportVerificationFormat = Disabled
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -3977,6 +4025,7 @@ let ``a PASSING project gets a run log too — no special-casing the suspect sui
                 TimeoutSec = None
                 ReportVerificationFormat = Disabled
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] }
               { Project = "ProjGreenB"
                 Command = "echo"
@@ -3988,6 +4037,7 @@ let ``a PASSING project gets a run log too — no special-casing the suspect sui
                 TimeoutSec = None
                 ReportVerificationFormat = Disabled
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -4705,6 +4755,7 @@ cp "%s{source}" "$output"
               TimeoutSec = Some 10
               ReportVerificationFormat = Disabled
               Starvation = None
+              CheckSkip = None
               AlwaysClasses = [] }
 
         let configs = [ configFor "UnitTests" 10; configFor "IntegrationTests" 11 ]
@@ -5110,6 +5161,7 @@ let ``full run (no filter) emits TestRunCompleted verified as Ran FullSuite`` ()
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -5149,6 +5201,7 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -5312,6 +5365,7 @@ let ``a project-scoped rerun cannot satisfy the next whole-suite check`` () =
               TimeoutSec = None
               ReportVerificationFormat = AutoDetect
               Starvation = None
+              CheckSkip = None
               AlwaysClasses = [] }
 
         let handler =
@@ -5708,6 +5762,7 @@ let ``a failed test run is not cached, so a later run on the same key is a miss 
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -5798,6 +5853,7 @@ let ``test-results JSON exposes per-project elapsedMs after a successful run`` (
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -5925,6 +5981,7 @@ let ``a cold-start BuildCompleted must NOT replay a test result from the task ca
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         do

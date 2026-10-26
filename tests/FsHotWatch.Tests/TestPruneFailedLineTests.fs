@@ -87,6 +87,7 @@ let private projConfig: TestConfig =
       TimeoutSec = None
       ReportVerificationFormat = AutoDetect
       Starvation = None
+      CheckSkip = None
       AlwaysClasses = [] }
 
 /// A completed run whose CTRF report sits where the runner writes it.

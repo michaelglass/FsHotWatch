@@ -38,6 +38,7 @@ let private config (project: string) : TestConfig =
       TimeoutSec = None
       ReportVerificationFormat = AutoDetect
       Starvation = None
+      CheckSkip = None
       AlwaysClasses = [] }
 
 let private configs = [ config "ProjA"; config "ProjB" ]
@@ -108,7 +109,8 @@ let private finishedGreen (launch: TestRunLaunch) =
         |> Map.map (fun _ selection ->
             match selection with
             | ProjectInFull -> TestsPassed("ok", false, TimeSpan.FromSeconds 1.0)
-            | ProjectClasses _ -> TestsPassed("ok", true, TimeSpan.FromSeconds 1.0))
+            | ProjectClasses _
+            | ProjectExcept _ -> TestsPassed("ok", true, TimeSpan.FromSeconds 1.0))
 
     let runId = Guid.NewGuid()
 

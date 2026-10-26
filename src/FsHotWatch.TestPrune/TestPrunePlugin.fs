@@ -882,6 +882,9 @@ type ProjectSelection =
     | ProjectInFull
     /// Launched under a class filter — only these classes were asked to run.
     | ProjectClasses of Set<string>
+    /// Launched under an EXCLUDE filter (`checkSkipClasses`): every class but these was
+    /// asked to run. A filtered launch: it covers only the classes its report shows ran.
+    | ProjectExcept of Set<string>
 
 /// Changed symbols that DO have covering tests — in a test project
 /// `tests.projects` does not list, so this daemon can never run them. Keyed by symbol,
@@ -1091,6 +1094,10 @@ type TestConfig =
         /// `starvation`: what a timeout under measured CPU starvation means for this project
         /// (`Starvation.Policy`). `None`, the default, reports every timeout as it is.
         Starvation: Starvation.Policy option
+        /// `checkSkipClasses`: the classes a `check` leaves out when it widens this project
+        /// to whole-project for a reason the change did not cause (`CheckSkip`). `None`,
+        /// the default, runs every class on every widening.
+        CheckSkip: CheckSkip option
     }
 
 /// A test project's configuration as one canonical JSON document: every field, in a fixed
@@ -1129,6 +1136,7 @@ let internal canonicalTestConfig (c: TestConfig) : string =
     o["reportVerificationFormat"] <- sprintf "%A" c.ReportVerificationFormat
     // `AlwaysClasses` is deliberately absent: it changes which classes a FILTERED run
     // selects, never what a project's full green means, and only full greens are reused.
+    // So is `CheckSkip`: a run that skipped classes is filtered, and is never published.
     o.ToJsonString()
 
 /// Why runtime evidence could not safely exclude a configured project.
@@ -2460,6 +2468,11 @@ module CheckReach =
         match Map.tryFind failure.Project selection with
         | None -> Missed MissCause.ProjectNotSelected
         | Some ProjectInFull -> Reached
+        | Some(ProjectExcept skipped) ->
+            match failure.Class with
+            | Some cls when Set.contains cls skipped -> Missed MissCause.ClassNotInFilter
+            | Some _ -> Reached
+            | None -> Undecidable
         | Some(ProjectClasses classes) ->
             match failure.Class with
             | Some cls when Set.contains cls classes -> Reached
@@ -3216,7 +3229,10 @@ module RunCoverage =
                 match Map.tryFind project selection with
                 | None -> None
                 | Some(ProjectClasses classes) when not (Set.isEmpty classes) -> Some(project, CoveredClasses classes)
+                // An exclude filter (`checkSkipClasses`) names what did NOT run, so the
+                // run's own report says what did.
                 | Some(ProjectClasses _)
+                | Some(ProjectExcept _)
                 | Some ProjectInFull -> fromEvidence ())
         |> Map.ofList
 
@@ -3715,6 +3731,127 @@ let internal selectionOf
             | Some classes -> Some(c.Project, ProjectClasses(Set.ofList classes)))
         |> Map.ofList
 
+/// `checkSkipClasses` at launch: which projects the run takes whole, why, and so which of
+/// their declared classes it leaves out (`CheckSkip`).
+module internal CheckSkipLaunch =
+
+    /// Every widening of one launch that can take a project whole, kept apart so each
+    /// reason a project runs whole can be named.
+    type Widenings =
+        {
+            /// `confirm`: every project, every class.
+            FullSuiteRequested: bool
+            LedgerUnreadable: bool
+            /// No valid full-suite baseline. Only a run of every class earns one, so a
+            /// skip here would leave `check` owing it forever.
+            NoFullSuiteBaseline: bool
+            /// The impact graph has a hole: an unanalysable or unindexed file, a failed
+            /// extension.
+            CoarseGaps: bool
+            EvidenceGap: Set<string>
+            DependencyFanout: Set<string>
+            RuntimeCoverage: Set<string>
+            /// Projects an outstanding red that names no class puts in the run whole.
+            ProjectLevelReds: Set<string>
+            /// `Some` when the selection was EMPTY, which runs every project whole: every
+            /// reason the zero-affected skip was refused (`zeroAffectedWidening`).
+            EmptySelection: ZeroAffectedWidening list option
+        }
+
+    /// Every reason `project` runs whole under `widenings`.
+    let causesOf (widenings: Widenings) (project: string) : WholeCause list =
+        [ if widenings.FullSuiteRequested then
+              WholeCause.Unskippable "confirm runs every class"
+          if widenings.LedgerUnreadable then
+              WholeCause.Unskippable "the pending-verification ledger could not be read"
+          if widenings.NoFullSuiteBaseline then
+              WholeCause.Unskippable "no full-suite baseline, which only a run of every class earns"
+          if widenings.CoarseGaps then
+              WholeCause.Unskippable "the impact graph has a hole"
+          if Set.contains project widenings.EvidenceGap then
+              WholeCause.Unskippable "no whole-project run under the current project model"
+          if Set.contains project widenings.DependencyFanout then
+              WholeCause.Skippable SkipWidening.DependencyFanout
+          if Set.contains project widenings.RuntimeCoverage then
+              WholeCause.Skippable SkipWidening.RuntimeCoverageDebt
+          if Set.contains project widenings.ProjectLevelReds then
+              WholeCause.Unskippable "an outstanding red that names no class"
+          match widenings.EmptySelection with
+          | None -> ()
+          | Some [] -> WholeCause.Unskippable "an empty selection nothing owed explains"
+          | Some refusals ->
+              for refusal in refusals do
+                  match refusal with
+                  | ZeroAffectedWidening.NoSessionBaseline -> WholeCause.Skippable SkipWidening.NoSessionBaseline
+                  | ZeroAffectedWidening.RuntimeCoverageDebt _ -> WholeCause.Skippable SkipWidening.RuntimeCoverageDebt
+                  | other -> WholeCause.Unskippable(ZeroAffectedWidening.describe other) ]
+
+    /// The classes each project of `selection` that runs whole leaves out, and every
+    /// project that declared some with the reasons it runs whole. `named` is each
+    /// project's classes the run selected by name, which it never leaves out.
+    let decide
+        (configs: TestConfig list)
+        (widenings: Widenings)
+        (named: Map<string, Set<string>>)
+        (selection: Map<string, ProjectSelection>)
+        : Map<string, string list * WholeCause list> =
+        configs
+        |> List.choose (fun config ->
+            match config.CheckSkip, Map.tryFind config.Project selection with
+            | Some skip, Some ProjectInFull ->
+                let causes = causesOf widenings config.Project
+
+                let excluded =
+                    CheckSkip.excluded skip causes (Map.tryFind config.Project named |> Option.defaultValue Set.empty)
+
+                Some(config.Project, (excluded, causes))
+            | _ -> None)
+        |> Map.ofList
+
+    /// The classes each project leaves out; projects that leave out none are absent.
+    let excludedOf (decisions: Map<string, string list * WholeCause list>) : Map<string, string list> =
+        decisions
+        |> Map.map (fun _ (excluded, _) -> excluded)
+        |> Map.filter (fun _ excluded -> not (List.isEmpty excluded))
+
+    /// `selection` with every project that leaves out classes launched under its exclude
+    /// filter instead of in full.
+    let narrow
+        (excluded: Map<string, string list>)
+        (selection: Map<string, ProjectSelection>)
+        : Map<string, ProjectSelection> =
+        selection
+        |> Map.map (fun project chosen ->
+            match chosen, Map.tryFind project excluded with
+            | ProjectInFull, Some classes -> ProjectExcept(Set.ofList classes)
+            | _ -> chosen)
+
+    /// `attribution` with the classes each project left out.
+    let attribute
+        (excluded: Map<string, string list>)
+        (attribution: ProjectAttribution list)
+        : ProjectAttribution list =
+        attribution
+        |> List.map (fun entry ->
+            { entry with
+                SkippedClasses = Map.tryFind entry.Project excluded |> Option.defaultValue [] })
+
+    /// One line per project that declared `checkSkipClasses` and runs whole: what it left
+    /// out and why, or why it runs every class.
+    let describe (decisions: Map<string, string list * WholeCause list>) : string list =
+        decisions
+        |> Map.toList
+        |> List.map (fun (project, (excluded, causes)) ->
+            let because =
+                match causes with
+                | [] -> "no widening it can name"
+                | causes -> causes |> List.map CheckSkip.describeCause |> String.concat ", "
+
+            match excluded with
+            | [] -> $"checkSkipClasses: %s{project} runs every class — it runs whole for %s{because}"
+            | classes ->
+                $"""checkSkipClasses: %s{project} runs whole for %s{because}, WITHOUT %s{String.concat ", " classes} — `confirm` runs them""")
+
 /// The sources a launch's selection is the union of, each as the projects it put in the
 /// run. Kept apart until the launch is attributed, because once unioned no one can tell
 /// a wide selection that is honest from one that is a defect.
@@ -3789,7 +3926,8 @@ module SelectionAttribution =
         |> Map.keys
         |> Seq.map (fun project ->
             { Project = project
-              Causes = causesOf project })
+              Causes = causesOf project
+              SkippedClasses = [] })
         |> List.ofSeq
 
 /// What `check` would have launched over this tree — the run's own
@@ -4137,6 +4275,21 @@ let internal buildFilterArgs (config: TestConfig) (classesByProject: Map<string,
 
         let result = template.Replace("{classes}", joined)
         Logging.info "test-prune" $"Filter: %s{result}"
+        Some result
+
+/// The exclude-filter arg string for a project a `check` runs whole without `excluded`
+/// (`checkSkipClasses`), through its `excludeFilterTemplate`. Quoted and joined exactly as
+/// `buildFilterArgs` does. `None` when it leaves out nothing.
+let internal buildExcludeArgs (config: TestConfig) (excluded: string list) : string option =
+    match excluded, config.CheckSkip with
+    | [], _
+    | _, None -> None
+    | classes, Some skip ->
+        let joined =
+            classes |> List.map ProcessHelper.quoteArg |> String.concat config.ClassJoin
+
+        let result = skip.ExcludeTemplate.Replace("{classes}", joined)
+        Logging.info "test-prune" $"Exclude filter (checkSkipClasses): %s{result}"
         Some result
 
 /// Microsoft.Testing.Platform exit code for "no tests matched / zero tests ran".
@@ -5618,6 +5771,9 @@ let private executeTests
     (configuredCoverageProjects: TestConfig list)
     (configs: TestConfig list)
     (affectedClassesByProject: Map<string, string list>)
+    // `checkSkipClasses` a project run whole leaves out, through its exclude template
+    // (`buildExcludeArgs`). Empty for every run that skips nothing.
+    (excludedClassesByProject: Map<string, string list>)
     (rawFilter: string option)
     // The test-evidence plan made at launch (`TestEvidenceRun.plan`): the projects this
     // run reuses instead of launching, and every key it publishes against. `None` runs
@@ -5641,12 +5797,18 @@ let private executeTests
         | :? UnauthorizedAccessException as ex ->
             Logging.warn "test-prune" $"could not create the run directory %s{runDir}: %s{ex.Message}"
 
-        let isFilteredRun = not affectedClassesByProject.IsEmpty || Option.isSome rawFilter
+        let skipsClasses =
+            excludedClassesByProject
+            |> Map.exists (fun _ classes -> not (List.isEmpty classes))
+
+        let isFilteredRun =
+            not affectedClassesByProject.IsEmpty || Option.isSome rawFilter || skipsClasses
 
         // Every configured project launched, none of them filtered: a full run whatever
         // mode launched it.
         let runsEveryProjectInFull =
             Option.isNone rawFilter
+            && not skipsClasses
             && configuredCoverageProjects
                |> List.forall (fun configured ->
                    configs |> List.exists (fun c -> c.Project = configured.Project)
@@ -5982,7 +6144,15 @@ let private executeTests
                 // Collect extra args (filter + coverage) to append
                 let extraArgs = ResizeArray<string>()
 
-                let filterArgs = buildFilterArgs config affectedClassesByProject
+                // A project the selection runs whole may still leave out its
+                // `checkSkipClasses`; a class filter, when there is one, already names
+                // every class that runs.
+                let filterArgs =
+                    buildFilterArgs config affectedClassesByProject
+                    |> Option.orElseWith (fun () ->
+                        excludedClassesByProject
+                        |> Map.tryFind config.Project
+                        |> Option.bind (buildExcludeArgs config))
 
                 match filterArgs with
                 | Some f -> extraArgs.Add(f)
@@ -9007,7 +9177,70 @@ let internal createWithEvidenceAndQueries
                 /// full, a project present with classes runs filtered, and a project
                 /// ABSENT is skipped entirely (and recorded as a filtered pass that
                 /// proves nothing — the laundering vector).
-                let selection: Map<string, ProjectSelection> = selectionOf configs affectedByProject
+                let wholeSelection: Map<string, ProjectSelection> =
+                    selectionOf configs affectedByProject
+
+                // CHECK-SKIP CLASSES. A project this launch takes whole only for widenings
+                // its `checkSkipOn` lists runs without its `checkSkipClasses`, under its
+                // exclude filter; any other reason runs them. `confirm` is such a reason, so
+                // it never skips. The classes the run selected by name always run.
+                let checkSkipWidenings: CheckSkipLaunch.Widenings =
+                    { FullSuiteRequested = scopeIsFullSuite
+                      LedgerUnreadable = ledgerUnreadable
+                      NoFullSuiteBaseline = Option.isSome baselineInvalid
+                      CoarseGaps = not (Set.isEmpty coarseGaps)
+                      EvidenceGap = evidenceGap
+                      DependencyFanout = fanoutProjects
+                      RuntimeCoverage = runtimeForceProjects
+                      ProjectLevelReds =
+                        quarantinedAffectedByProject
+                        |> Map.filter (fun _ classes -> List.isEmpty classes)
+                        |> Map.keys
+                        |> Set.ofSeq
+                      EmptySelection =
+                        if Map.isEmpty affectedByProject then
+                            Some(
+                                zeroAffectedWidening
+                                    hasCachedResults
+                                    inputs.Debt.UnknownDebt
+                                    (Set.count inputs.Debt.PendingQueue)
+                                    inputs.Debt.RuntimeObligations
+                                    (inputs.Debt.CoverageNotIngested |> Map.keys |> Set.ofSeq)
+                                    (List.length inputs.OutstandingFailures)
+                                    baselineInvalid
+                                    evidenceGap
+                                    (not (
+                                        ReceiptInputTree.matches
+                                            inputs.EvidenceTree
+                                            (inputTree |> Option.map _.Identity)
+                                    ))
+                            )
+                        else
+                            None }
+
+                let namedClasses: Map<string, Set<string>> =
+                    let symbolFreeClasses =
+                        match symbolFreeEdit with
+                        | Some(SymbolFreeEdit.Covering(_, _, classes)) -> classes
+                        | _ -> Map.empty
+
+                    [ quarantinedAffectedByProject; AlwaysClasses.only configs; symbolFreeClasses ]
+                    |> List.collect Map.toList
+                    |> List.groupBy fst
+                    |> List.map (fun (project, entries) -> project, entries |> List.collect snd |> Set.ofList)
+                    |> Map.ofList
+
+                let checkSkipDecisions =
+                    CheckSkipLaunch.decide configs checkSkipWidenings namedClasses wholeSelection
+
+                let excludedByProject = CheckSkipLaunch.excludedOf checkSkipDecisions
+
+                for line in CheckSkipLaunch.describe checkSkipDecisions do
+                    Logging.info "test-prune" line
+
+                let selection: Map<string, ProjectSelection> =
+                    CheckSkipLaunch.narrow excludedByProject wholeSelection
+
 
                 // Which cause put each project in this run. Every source is kept apart
                 // up to here; unioned, a wide selection cannot be told from an honest one.
@@ -9038,6 +9271,7 @@ let internal createWithEvidenceAndQueries
                           AlwaysClasses = AlwaysClasses.only configs |> Map.keys |> Set.ofSeq }
 
                     SelectionAttribution.attribute sources affectedByProject selection
+                    |> CheckSkipLaunch.attribute excludedByProject
 
                 // The SAME derivation with the full-suite widening taken
                 // back out — what `check` would have launched over this tree, this
@@ -9062,6 +9296,20 @@ let internal createWithEvidenceAndQueries
                             (Set.union (coarseFallbackProjects configs coarseGaps fanoutProjects) evidenceGap)
                             runtimeForceProjects
                             ledgerUnreadable
+                        // What `check` would have left out of the projects it took whole:
+                        // the same decision, without the full-suite widening.
+                        |> fun projected ->
+                            let checkWidenings =
+                                { checkSkipWidenings with
+                                    FullSuiteRequested = false
+                                    NoFullSuiteBaseline = false
+                                    EmptySelection = None }
+
+                            CheckSkipLaunch.narrow
+                                (CheckSkipLaunch.excludedOf (
+                                    CheckSkipLaunch.decide configs checkWidenings namedClasses projected
+                                ))
+                                projected
                         |> Some
 
                 let launch =
@@ -9243,10 +9491,11 @@ let internal createWithEvidenceAndQueries
                             // project runs UNFILTERED, the exact opposite of "nothing
                             // selected". `describeMany` leads with the exact count.
                             let rendered =
-                                if List.isEmpty classes then
-                                    "ALL (unfiltered — force-run)"
-                                else
-                                    describeMany classes
+                                match classes, Map.tryFind proj excludedByProject with
+                                | [], Some skipped ->
+                                    $"ALL but %d{List.length skipped} checkSkipClasses (whole-project, exclude filter)"
+                                | [], None -> "ALL (unfiltered — force-run)"
+                                | classes, _ -> describeMany classes
 
                             Logging.info "test-prune" $"Affected classes for %s{proj}: %s{rendered}"
 
@@ -9281,6 +9530,7 @@ let internal createWithEvidenceAndQueries
                             configuredTestProjects
                             configs
                             affectedByProject
+                            excludedByProject
                             None
                             evidencePlan
 
@@ -9394,7 +9644,8 @@ let internal createWithEvidenceAndQueries
                 configs
                 |> List.map (fun c ->
                     { Project = c.Project
-                      Causes = [ SelectionCause.ForceRun ] }) }
+                      Causes = [ SelectionCause.ForceRun ]
+                      SkippedClasses = [] }) }
 
         async {
             do! awaitDiscoveryBeforeLaunch ctx
@@ -9436,6 +9687,7 @@ let internal createWithEvidenceAndQueries
                             afterRun
                             configuredTestProjects
                             configs
+                            Map.empty
                             Map.empty
                             filter
                             // A `run-tests` force run is an explicit request to run: it

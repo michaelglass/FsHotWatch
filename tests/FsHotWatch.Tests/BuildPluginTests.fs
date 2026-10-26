@@ -607,6 +607,7 @@ let ``file changes observed during a test host defer the build until that run co
                             TimeoutSec = None
                             ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
                             Starvation = None
+                            CheckSkip = None
                             AlwaysClasses = [] } ])
                     None
                     None
@@ -752,6 +753,7 @@ let ``a force-run cancelled after it started still releases the build deferral``
                             TimeoutSec = None
                             ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
                             Starvation = None
+                            CheckSkip = None
                             AlwaysClasses = [] } ])
                     None
                     None
@@ -891,6 +893,7 @@ let private manualTestWaitsForBuild () =
                             TimeoutSec = None
                             ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
                             Starvation = None
+                            CheckSkip = None
                             AlwaysClasses = [] } ])
                     None
                     None
@@ -1019,6 +1022,7 @@ let ``failed build rejects queued and later manual hosts until a success drains 
                         TimeoutSec = None
                         ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
                         Starvation = None
+                        CheckSkip = None
                         AlwaysClasses = [] } ])
                 None
                 None
@@ -1124,6 +1128,7 @@ let ``queued template build preserves changes for a second project root`` () =
                         TimeoutSec = None
                         ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
                         Starvation = None
+                        CheckSkip = None
                         AlwaysClasses = [] } ])
                 None
                 None

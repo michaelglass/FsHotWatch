@@ -71,6 +71,7 @@ let ``a cached helper-file analysis cannot relabel a freshly executed test failu
                 TimeoutSec = None
                 ReportVerificationFormat = Disabled
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         // A checkout that has earned its baseline: sealing the helper's cohort owes no run,
@@ -348,6 +349,7 @@ let ``FileChecked with FCS errors persists symbols to DB and stamps sidecar dirt
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
@@ -470,6 +472,7 @@ let ``FileChecked without FCS errors flushes symbols to DB (gate doesn't break c
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
@@ -618,6 +621,7 @@ let ``cold-boot regression: dirty FCS leaves sidecar dirty so detectChanges fall
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         // Phase 1: clean check, flush populates DB.
@@ -786,6 +790,7 @@ let phaseBTest () = ()
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost checker tmpDir
@@ -878,6 +883,7 @@ let ``Item 3: pre-BuildCompleted clean FileChecked → sidecar stays dirty`` () 
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
@@ -933,6 +939,7 @@ let ``Item 3: post-BuildCompleted clean FileChecked → sidecar stamped clean`` 
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
@@ -980,6 +987,7 @@ let ``Item 3: clean check after prior dirty, still pre-build → stays dirty`` (
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
@@ -1247,6 +1255,7 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -2254,6 +2263,7 @@ let ``a present-but-stale apphost defers as 'waiting on build' instead of passin
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -2315,6 +2325,7 @@ let ``stale failures from a prior cycle are cleared when the next cycle supersed
               TimeoutSec = None
               ReportVerificationFormat = AutoDetect
               Starvation = None
+              CheckSkip = None
               AlwaysClasses = [] }
 
         let configs = [ mk "ProjA" flagA; mk "ProjB" flagB ]

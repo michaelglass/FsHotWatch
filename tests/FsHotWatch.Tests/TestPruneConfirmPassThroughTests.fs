@@ -340,6 +340,7 @@ let private runScenario (root: string) (setup: Setup) =
                 TimeoutSec = Some(RealCheckTestCapMs / 1000)
                 ReportVerificationFormat = Ctrf
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let coveragePaths _ =
@@ -580,6 +581,7 @@ let private scopeSequence name (steps: string option list) =
               TimeoutSec = None
               ReportVerificationFormat = AutoDetect
               Starvation = None
+              CheckSkip = None
               AlwaysClasses = [] }
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir

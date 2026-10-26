@@ -946,7 +946,19 @@ module AgentHints =
             else
                 []
 
+        // `checkSkipClasses` this check left out of a project it ran whole: a fact about
+        // what the run verified, so it sits with the other such facts, never in a pointer.
+        let skippedClassLines =
+            v.SelectedBy
+            |> Option.defaultValue []
+            |> List.filter (fun entry -> not (List.isEmpty entry.SkippedClasses))
+            |> List.map (fun entry ->
+                let skipped = String.concat ", " entry.SkippedClasses
+
+                $"    SKIPPED  checkSkipClasses: %s{entry.Project} ran whole-project WITHOUT %s{skipped} — `confirm` runs them")
+
         let scopeAdvice =
+
             match v.Command, v.Scope with
             | Verdict.Check, ImpactFiltered(ran, total) ->
                 [ $"  this check was impact-scoped (%d{ran}/%d{total} test projects) — a green here is not \
@@ -1047,6 +1059,7 @@ module AgentHints =
         @ causeLines
         @ noSuiteFactLines
         @ zeroSelectionLines
+        @ skippedClassLines
         @ hookLines
         @ phaseLines
         @ attributionLines

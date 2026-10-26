@@ -69,6 +69,7 @@ let ``a file created mid-session with a valid full-suite watermark still runs it
                 TimeoutSec = None
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
+                CheckSkip = None
                 AlwaysClasses = [] } ]
 
         let host = createModelHost sharedChecker.Value tmpDir

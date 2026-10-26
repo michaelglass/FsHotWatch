@@ -63,6 +63,7 @@ let private config (project: string) : TestConfig =
       TimeoutSec = None
       ReportVerificationFormat = AutoDetect
       Starvation = None
+      CheckSkip = None
       AlwaysClasses = [] }
 
 let private finished (results: (string * TestResult) list) (launch: TestRunLaunch) =
