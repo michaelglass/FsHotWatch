@@ -461,3 +461,87 @@ let ``EarnedEvidence: a restored record vouches only for projects whose compile 
     test <@ EarnedEvidence.restored Map.empty = None @>
     // It refuses, so on its own it can never support a green.
     test <@ not (List.isEmpty restored.Value.FailureReasons) @>
+
+// ---------------------------------------------------------------------------
+// One project's launch stall (AUTOMATION-1320). "launch produced no live process within
+// 300s — box overloaded" for ONE project used to abort the whole run: the stall raised out
+// of the run, the completion carried no results, and the evidence every other project had
+// just earned was discarded, so the next run ran all of them in full again.
+// ---------------------------------------------------------------------------
+
+/// `configs`, except that ProjB's runner never shows a sign of life: `sleep` writes
+/// nothing, so the launch deadline kills it as a stall.
+let private stallingConfigs =
+    [ config "ProjA"
+      { config "ProjB" with
+          Command = "sleep"
+          Args = "30" } ]
+
+/// A fixture whose ProjB stalls at launch, under a one-second launch deadline, and whose
+/// launches really execute.
+let private stallingFixture () =
+    let f = fixture ()
+    // A baseline already earned, so that what runs in full is the evidence gap's doing alone.
+    seedBaseline f.Ctx.RepoRoot [ "ProjA"; "ProjB" ]
+
+    { f with
+        Handler =
+            createWithLaunchDeadline
+                (TimeSpan.FromSeconds 1.0)
+                None
+                (fun () -> Map.empty)
+                (Path.Combine(f.Ctx.RepoRoot, "tp.db"))
+                TestPrune.Domain.WalkPolicy.FollowAll
+                f.Ctx.RepoRoot
+                (Some stallingConfigs)
+                None
+                None
+                None
+                None
+                []
+                None
+                TestMode.initial }
+
+[<Fact(Timeout = 60000)>]
+let ``one project's launch stall costs only that project's evidence`` () =
+    let f = stallingFixture ()
+    f.Scheduled.Value <- None
+
+    let launched =
+        update f (withChangeToLibF f.Handler.Init) (BuildCompleted BuildSucceeded)
+
+    let finished =
+        match f.Scheduled.Value with
+        | Some work -> work Ready |> Async.RunSynchronously
+        | None -> failwith "the build must reach a launch"
+
+    let completed, launch =
+        match finished with
+        | TestsFinished(_, completed, launch) -> completed, launch
+        | other -> failwith $"expected TestsFinished, got %A{other}"
+
+    // The run completes: ProjB's stall is ProjB's result, not the run's. It used to abort
+    // the run ("runTests failed: ProjB: launch produced no live process"), with no results.
+    test <@ completed.Outcome = Normal @>
+
+    // A cold daemon ran both in full, so each could earn whole-project evidence.
+    test <@ launch.Selection = Map.ofList [ "ProjA", ProjectInFull; "ProjB", ProjectInFull ] @>
+
+    test
+        <@
+            completed.Results
+            |> Map.tryFind "ProjA"
+            |> Option.exists TestResult.verifiedGreen
+        @>
+
+    match Map.tryFind "ProjB" completed.Results with
+    | Some(TestsErrored reason) -> test <@ reason.Contains "no live process" && reason.Contains "ProjB" @>
+    | other -> Assert.Fail($"expected ProjB's stall as its own errored result, got %A{other}")
+
+    let settled = update f launched (Custom finished)
+
+    // The stalled project still owes its whole-project run; the one that ran keeps its.
+    let _, next = buildAndLaunch f (withChangeToLibF settled)
+
+    test
+        <@ next.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests"); "ProjB", ProjectInFull ] @>

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **fix!: one project's launch stall costs only that project's evidence.** A project whose
+  test host showed no sign of life within the launch deadline ("launch produced no live
+  process within 300s — box overloaded") raised out of the whole run, which completed
+  `Aborted` with no results: every other project lost what it had verified (or was
+  cancelled mid-run), and the next run ran all of them in full again. The stall is now
+  that project's own `TestsErrored` result — nothing verified, never a pass — and the run
+  completes with every other project's result, so only the stalled project still owes a
+  whole-project run. **Behaviour:** a run whose only selected project stalls now ends
+  verified-nothing (exit 2, as for a killed host), not `Failed`; the stall reason is in the
+  error ledger and the daemon log.
+
 - **fix!: a restarted daemon keeps the whole-project test evidence the last one earned.**
   Whole-project evidence lived only in the daemon's memory, so every new daemon ran every
   test project in full on its first run ("Evidence gap: 7 project(s) have no whole-project

@@ -5959,7 +5959,7 @@ let private executeTests
         /// Launch one project as configured and classify what it did: the per-project body
         /// of the run, shared by the first launch and a starvation re-run. Returns the
         /// project's result and its CTRF report text (when one was requested and read).
-        let launchProject
+        let launchProjectOrRaise
             (runToken: Threading.CancellationToken)
             (config: TestConfig)
             : Async<TestResult * string option> =
@@ -6256,12 +6256,12 @@ let private executeTests
                             with LaunchStalledException reason ->
                                 // The watchdog killed a child that never showed a
                                 // sign of life within the launch deadline. Re-raise
-                                // NAMING the config and elapsed so the run's Aborted
-                                // lifecycle (built by the caller's `with ex ->`)
-                                // carries a legible diagnostic. A launch stall means
-                                // this project NEVER RAN, so the whole run must
-                                // abort → PluginStatus.Failed → `check` exits
-                                // non-green rather than wedging at Running. A child
+                                // NAMING the config and elapsed, for `launchProject`
+                                // to record as this project's `TestsErrored` result: a
+                                // launch stall means this project NEVER RAN, so it is
+                                // never a pass and `check` exits non-green rather than
+                                // wedging at Running, while the rest of the run keeps
+                                // what it verified. A child
                                 // that EXITS is not a stall — the poll observes the
                                 // exit and classifies it normally.
                                 return
@@ -6463,6 +6463,31 @@ let private executeTests
             []
 
         let starvedLock = obj ()
+
+        /// `launchProjectOrRaise`, with a launch stall answered as THIS project's result.
+        ///
+        /// A stall ("launch produced no live process within Ns") means this project never
+        /// ran. It used to raise out of the whole run, which then completed `Aborted` with
+        /// no results at all: the projects that had run, or were still running, lost what
+        /// they verified, and the next run ran every one of them in full again. Now the
+        /// project is `TestsErrored` — nothing verified, never a pass, so the run is still
+        /// not green — and every other project keeps its own result.
+        let launchProject
+            (runToken: Threading.CancellationToken)
+            (config: TestConfig)
+            : Async<TestResult * string option> =
+            async {
+                try
+                    return! launchProjectOrRaise runToken config
+                with LaunchStalledException reason ->
+                    logToCtx $"{config.Project}: ABORTED (nothing verified) — {reason}"
+
+                    Logging.error
+                        "test-prune"
+                        $"%s{config.Project}: ABORTED — %s{reason}. Nothing was verified for this project; the rest of the run keeps its results. Re-run when the box is quiet."
+
+                    return TestsErrored reason, None
+            }
 
         /// The classes the run filtered `config`'s project to; `None` when it runs in full
         /// or under a raw filter, whose classes are not known.
