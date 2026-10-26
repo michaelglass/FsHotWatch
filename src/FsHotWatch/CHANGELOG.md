@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: a client that falls back from the repository host is recorded. New
+  `HostLifecycle.recordFallback path at clientPid fallback` appends a `fellBack` line
+  (`Fallback.toJsonLine`: `clientPid`, `hostPid` when known, `reason`, `detail`, `root`)
+  to the event log, creating its directory, and returns false instead of raising when it
+  cannot. New `FallbackReason` (`HostDidNotStart`, `HostStoppedAnswering`) and `Fallback`.
+  A `fellBack` line never marks a host: a log holding only fallbacks, or one after a
+  host's stop, no longer makes the next host record `PreviousHostUnclean`.
+
 ## 0.10.0-alpha.92 - 2026-10-25
 
 - **fix: FSharp.Compiler.Service and FSharp.Core are pinned exactly** (`[43.12.402]`,

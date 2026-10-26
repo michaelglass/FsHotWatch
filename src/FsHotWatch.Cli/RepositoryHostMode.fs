@@ -85,6 +85,18 @@ let sdkVersionWithin (bound: TimeSpan) (root: string) (env: SessionEnvironment) 
 let sdkVersion (root: string) (env: SessionEnvironment) : string =
     sdkVersionWithin (TimeSpan.FromSeconds 30.0) root env
 
+/// The repository host could not be used: it did not start, or stopped answering.
+type Unavailable =
+    {
+        Reason: HostLifecycle.FallbackReason
+        /// For the user, naming the host's log.
+        Message: string
+        /// The repository's control paths: where its pid file and event log are.
+        Control: RepositoryControlPaths
+        /// The worktree's canonical root.
+        Root: string
+    }
+
 /// What attaching a worktree came to.
 [<RequireQualifiedAccess>]
 type Attach =
@@ -92,6 +104,9 @@ type Attach =
     | Serving of endpoint: string * session: SessionId
     /// The host cannot serve this worktree; its own daemon should. Why, for the user.
     | OwnDaemon of reason: string
+    /// The host is not there to ask, or stopped answering: its own daemon should serve
+    /// the worktree, and the fallback is recorded (`recordFallback`).
+    | Unavailable of Unavailable
     /// Stop: the host refused in a way no fallback may paper over.
     | Refused of message: string
 
@@ -124,8 +139,26 @@ let internal attachWith
 
             up ()
 
+        /// The host is not there to ask, or stopped answering: this worktree's own daemon
+        /// serves it, unless the host still holds this worktree's session, and with it the
+        /// lock that daemon would take.
+        let unavailable (reason: HostLifecycle.FallbackReason) (message: string) =
+            match RepositoryHost.HostSessionRecord.tryReadLive RepositoryHost.processAlive worktree.Root.Value with
+            | Some held ->
+                Attach.Refused
+                    $"%s{message}; it still holds this worktree's session (pid %d{held.HostPid}), so this \
+                      worktree's own daemon cannot take the worktree until that process exits: stop it \
+                      (`kill %d{held.HostPid}`) and run the command again"
+            | None ->
+                Attach.Unavailable
+                    { Reason = reason
+                      Message = message
+                      Control = control
+                      Root = worktree.Root.Value }
+
         if not (upOrLaunched ()) then
-            Attach.Refused
+            unavailable
+                HostLifecycle.FallbackReason.HostDidNotStart
                 $"the repository host did not start within %.0f{startupBound.TotalSeconds}s; see %s{control.HostLog}"
         else
             let request =
@@ -154,8 +187,31 @@ let internal attachWith
             | Ok(Ok(RefusedReply(_, message, _))) -> Attach.Refused message
             | Ok(Error e) -> Attach.Refused $"the repository host's reply could not be read: %A{e}"
             | Error e ->
-                Attach.Refused
+                unavailable
+                    HostLifecycle.FallbackReason.HostStoppedAnswering
                     $"the repository host stopped answering during attach (%s{RepositoryIpc.ExchangeError.describe e}); see %s{control.HostLog}"
+
+/// Record in the repository's event log that this client fell back to its worktree's own
+/// daemon at `at`, naming the host the repository's pid file names, if it names one.
+/// False when the record cannot be written.
+let recordFallback (at: DateTime) (unavailable: Unavailable) : bool =
+    let hostPid =
+        // MGA-ERROR-REPORT-001:ok — no pid file, or an unreadable one, names no host.
+        try
+            match Int32.TryParse(File.ReadAllText(unavailable.Control.PidFile).Trim()) with
+            | true, pid -> Some pid
+            | _ -> None
+        with _ ->
+            None
+
+    HostLifecycle.recordFallback
+        (HostLifecycle.eventLogPath unavailable.Control)
+        at
+        Environment.ProcessId
+        { Reason = unavailable.Reason
+          Detail = unavailable.Message
+          Root = unavailable.Root
+          HostPid = hostPid }
 
 /// Attach `repoRoot`, launching the host (`launch`) when nothing serves the
 /// repository's endpoint yet, and waiting at most `startupBound` for it. `stateHome`

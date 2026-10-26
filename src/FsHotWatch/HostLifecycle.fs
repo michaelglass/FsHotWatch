@@ -10,6 +10,10 @@
 /// that starts after one whose last line is not its stop records `previousHostUnclean`,
 /// naming that host's pid when the line says it.
 ///
+/// A client that cannot use the host (it did not start, or stopped answering) and falls
+/// back to its worktree's own daemon appends a `fellBack` line to the same log
+/// (`recordFallback`), so a rollout can count how often the host failed its worktrees.
+///
 /// Measurement must never take the host down: a log that cannot be written still
 /// counts, and every failure to append is swallowed after one warning.
 module FsHotWatch.HostLifecycle
@@ -203,9 +207,71 @@ let eventLogPath (control: RepositoryControlPaths) : string =
 [<Literal>]
 let DefaultMaxBytes = 1048576L
 
-/// A line that marks a host's start or stop, read as its event and the host's pid.
+/// Why a client used its worktree's own daemon instead of the repository host.
+[<RequireQualifiedAccess>]
+type FallbackReason =
+    /// Nothing answered the repository's endpoint within the startup bound.
+    | HostDidNotStart
+    /// The host answered the liveness probe, then not the attach, even when asked again.
+    | HostStoppedAnswering
+
+module FallbackReason =
+    /// The line's `reason` field.
+    let kind (reason: FallbackReason) : string =
+        match reason with
+        | FallbackReason.HostDidNotStart -> "host-did-not-start"
+        | FallbackReason.HostStoppedAnswering -> "host-stopped-answering"
+
+/// A client that could not use the repository host and used its worktree's own daemon.
+type Fallback =
+    {
+        Reason: FallbackReason
+        /// What the client told its user.
+        Detail: string
+        /// The worktree's canonical root.
+        Root: string
+        /// The host the repository's pid file names, if it names one.
+        HostPid: int option
+    }
+
+module Fallback =
+    /// The line's `event` field. A client writes it, not a host, so it never marks a
+    /// host's start or stop.
+    [<Literal>]
+    let EventName = "fellBack"
+
+    /// One line of the event log: when, which client, the host it could not use (when
+    /// the repository's pid file named one), why, and for which worktree.
+    let toJsonLine (at: DateTime) (clientPid: int) (fallback: Fallback) : string =
+        let node = JsonObject()
+        node["at"] <- JsonValue.Create(at.ToString "o")
+        node["event"] <- JsonValue.Create EventName
+        node["clientPid"] <- JsonValue.Create clientPid
+
+        fallback.HostPid
+        |> Option.iter (fun pid -> node["hostPid"] <- JsonValue.Create pid)
+
+        node["reason"] <- JsonValue.Create(FallbackReason.kind fallback.Reason)
+        node["detail"] <- JsonValue.Create fallback.Detail
+        node["root"] <- JsonValue.Create fallback.Root
+        node.ToJsonString()
+
+/// Append `fallback`, as client `clientPid` saw it at `at`, to the event log at `path`,
+/// creating its directory: a host that never started made none. False when it cannot be
+/// written; a fallback is never kept from its daemon by its record.
+let recordFallback (path: string) (at: DateTime) (clientPid: int) (fallback: Fallback) : bool =
+    // MGA-ERROR-REPORT-001:ok — the caller reports a record it could not write; measurement
+    // never stops the command it measures.
+    try
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.AppendAllText(path, Fallback.toJsonLine at clientPid fallback + "\n")
+        true
+    with _ ->
+        false
+
+/// A line's event and the pid of the host it names; `None` for a line that does not parse.
 // MGA-ERROR-REPORT-001:ok — a line that does not parse is a torn write, and marks nothing.
-let private marker (line: string) : (string * int option) option =
+let private eventOf (line: string) : (string * int option) option =
     let parsed =
         try
             Some(JsonDocument.Parse line)
@@ -216,20 +282,29 @@ let private marker (line: string) : (string * int option) option =
     |> Option.bind (fun doc ->
         try
             Json.tryString doc.RootElement "event"
-            |> Option.filter (fun event -> event = "hostStarted" || event = "hostStopped")
             |> Option.map (fun event -> event, Json.tryInt doc.RootElement "hostPid")
         finally
             doc.Dispose())
 
+/// A line that marks a host's start or stop, read as its event and the host's pid.
+let private marker (line: string) : (string * int option) option =
+    eventOf line
+    |> Option.filter (fun (event, _) -> event = "hostStarted" || event = "hostStopped")
+
+/// A line a client wrote (`recordFallback`), which says nothing of how any host ended.
+let private byClient (line: string) : bool =
+    eventOf line |> Option.exists (fun (event, _) -> event = Fallback.EventName)
+
 /// How the host that last wrote a log ended, read from its last start or stop line, so
 /// that a session end recorded late, or a torn last line, cannot hide it: `None` when it
-/// recorded its stop or nothing was written; `Some pid` when its last mark is a start;
-/// `Some None` when lines were written but none of them marks a host.
+/// recorded its stop or no host wrote anything; `Some pid` when its last mark is a start;
+/// `Some None` when a host wrote lines but none of them marks it. Clients' fallbacks are
+/// not a host's lines: a repository whose host never started has only those.
 let private previousExit (path: string) : int option option =
     let written =
         if File.Exists path then
             File.ReadAllLines path
-            |> Array.filter (fun l -> not (String.IsNullOrWhiteSpace l))
+            |> Array.filter (fun l -> not (String.IsNullOrWhiteSpace l || byClient l))
         else
             [||]
 

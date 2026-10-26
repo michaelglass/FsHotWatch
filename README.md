@@ -740,6 +740,12 @@ Worth knowing before you opt in:
   own shell's environment and `PATH`.
 - **A different fshw build is refused, never restarted.** Other worktrees may be
   using the host; stop it deliberately with `fshw stop --repository`.
+- **A host that does not start, or stops answering, is not waited on.** When nothing
+  answers the repository's endpoint within 30 seconds of launching the host, or the host
+  stops answering the attach even when asked twice, the command runs on the worktree's
+  own daemon and says why. The fallback is recorded in `host-events.jsonl`. The one
+  exception: a host that stopped answering but still holds this worktree's session also
+  holds the lock that daemon would take. That command stops and names the host's pid.
 
 `fshw status --repository` lists every session the host serves; `fshw stop` detaches
 this worktree; `fshw stop --repository` stops the host.
@@ -758,6 +764,14 @@ The next host notices that the last host it can read never recorded one, adds a
 `previousHostUnclean` line naming that host's pid, and `status --repository` says so. A
 log past 1 MiB moves to `host-events.jsonl.1` when a host starts. A log that cannot be
 written does not stop the host; the counts in `status` still work.
+
+A command that falls back to its worktree's own daemon (see above) appends a `fellBack`
+line to the same log: the time, its own pid (`clientPid`), the pid the host's pid file
+names (`hostPid`, when there is one), the `reason` (`host-did-not-start` or
+`host-stopped-answering`), the message it printed (`detail`) and the worktree (`root`).
+A rollout counts these to see how often the host failed its worktrees. A `fellBack` line
+is a client's and never marks a host: it does not make the next host report the one
+before it as unclean.
 
 ### Test evidence across checkouts
 
