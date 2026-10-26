@@ -102,6 +102,7 @@ let private config: TestConfig =
       // The switches come from the restored xUnit major, as for a real project.
       ReportVerificationFormat = AutoDetect
       Starvation = None
+      CheckSkip = None
       AlwaysClasses = [] }
 
 let private runTests (root: string) (traces: TraceSettings option) =

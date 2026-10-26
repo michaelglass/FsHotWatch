@@ -80,6 +80,7 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
                       TimeoutSec = None
                       ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
                       Starvation = None
+                      CheckSkip = None
                       AlwaysClasses = []
                       Traces = true
                       TraceWeave = None }

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- feat: `TestConfig.CheckSkip` (`CheckSkip`: classes, the `SkipWidening`s that may skip them,
+  an exclude template). When a `check` launch takes a project whole and every reason it does
+  is a listed widening, the project runs under the exclude filter without the listed classes
+  it did not select by name. `confirm`, an evidence gap, a project-level red, a coarse
+  fallback, an unreadable ledger and a missing full-suite baseline always run them. The launch
+  records `ProjectExcept` and its coverage is the classes its report shows ran, so the run
+  never counts as whole-project, full-suite or publishable evidence. The would-have-run
+  projection applies the same decision.
+- feat: `ProjectAttribution.SkippedClasses` names what a run left out; the scope's
+  `selectedBy` entry writes it as `skippedClasses` only when non-empty.
+- Breaking: `TestConfig` has a new field, `CheckSkip`; `ProjectSelection` has a new case,
+  `ProjectExcept`; `ProjectAttribution` has a new field, `SkippedClasses`.
+
 ## 0.13.0-alpha.92 - 2026-10-25
 
 - chore: FSharp.Core is pinned exactly at `[10.1.402]` instead of floating within `10.1.*`.

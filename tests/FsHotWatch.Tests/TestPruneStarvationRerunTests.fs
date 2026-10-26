@@ -31,6 +31,7 @@ let private hangsOnceThenPasses (marker: string) (starvation: Starvation.Policy 
       TimeoutSec = Some 2
       ReportVerificationFormat = Disabled
       Starvation = starvation
+      CheckSkip = None
       AlwaysClasses = [] }
 
 let private alwaysStarved: Starvation.Policy =

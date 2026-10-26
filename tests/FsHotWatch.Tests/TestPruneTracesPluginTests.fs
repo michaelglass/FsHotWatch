@@ -124,6 +124,7 @@ let private config project command args : TestConfig =
       TimeoutSec = Some 60
       ReportVerificationFormat = Ctrf
       Starvation = None
+      CheckSkip = None
       AlwaysClasses = [] }
 
 /// Run `run-tests` once over `configs` with `traces`, returning the command's JSON and

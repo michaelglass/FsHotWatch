@@ -55,6 +55,7 @@ let private config: TestConfig =
       TimeoutSec = None
       ReportVerificationFormat = AutoDetect
       Starvation = None
+      CheckSkip = None
       AlwaysClasses = [] }
 
 let private read (host: FsHotWatch.PluginHost.PluginHost) name =

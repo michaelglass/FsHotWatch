@@ -344,6 +344,7 @@ let ``serializeConfig test project without filterTemplate omits it`` () =
                             TimeoutSec = None
                             ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
                             Starvation = None
+                            CheckSkip = None
                             AlwaysClasses = []
                             Traces = true
                             TraceWeave = None } ]

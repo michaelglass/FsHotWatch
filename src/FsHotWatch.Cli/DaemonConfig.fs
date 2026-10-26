@@ -268,6 +268,9 @@ type TestProjectConfig =
         /// `starvation`: what a timeout under measured CPU starvation means for this
         /// project. `None` when absent: every timeout is reported as it is.
         Starvation: FsHotWatch.TestPrune.Starvation.Policy option
+        /// `checkSkipClasses` (+ `checkSkipOn`, `excludeFilterTemplate`): the classes a
+        /// widened `check` leaves out. `None` when absent.
+        CheckSkip: FsHotWatch.TestPrune.CheckSkip option
     }
 
 /// Configuration for Falco route attribution.
@@ -766,6 +769,13 @@ let private parseTestProject (p: JsonElement) : TestProjectConfig =
             | Result.Ok policy -> Some policy
             | Result.Error e -> raise (ConfigErrorException e)
 
+    // `checkSkipClasses`: refused unless the whole declaration parses — a skip
+    // nobody can honour is never silently "run everything".
+    let checkSkip =
+        match FsHotWatch.TestPrune.CheckSkip.parse project p with
+        | Result.Ok skip -> skip
+        | Result.Error e -> raise (ConfigErrorException e)
+
     { Project = project
       Command = command
       Args = args
@@ -781,7 +791,8 @@ let private parseTestProject (p: JsonElement) : TestProjectConfig =
       AlwaysClasses = alwaysClasses
       Traces = traces
       TraceWeave = traceWeave
-      Starvation = starvation }
+      Starvation = starvation
+      CheckSkip = checkSkip }
 
 /// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
 let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
@@ -2484,7 +2495,8 @@ let registerPluginsIn
                   TimeoutSec = p.TimeoutSec
                   ReportVerificationFormat = p.ReportVerificationFormat
                   AlwaysClasses = p.AlwaysClasses
-                  Starvation = p.Starvation })
+                  Starvation = p.Starvation
+                  CheckSkip = p.CheckSkip })
 
         // fail LOUD and SPECIFIC. `runShellSteps` names the step,
         // its exit code and its output; raising `describe` means the plugin's

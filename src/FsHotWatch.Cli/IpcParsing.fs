@@ -431,9 +431,26 @@ let tryReadSelectedBy (field: JsonElement option) : Result<ProjectAttribution li
                     None
             | _ -> None
 
+        // `skippedClasses` is written only by a run that left `checkSkipClasses` out, so
+        // its absence is "skipped nothing"; present, it must be class names.
+        let skippedOf (entry: JsonElement) =
+            match entry.TryGetProperty "skippedClasses" with
+            | false, _ -> Some []
+            | true, skipped when skipped.ValueKind = JsonValueKind.Array ->
+                let names = skipped.EnumerateArray() |> List.ofSeq
+
+                if names |> List.forall (fun name -> name.ValueKind = JsonValueKind.String) then
+                    Some(names |> List.map _.GetString())
+                else
+                    None
+            | true, _ -> None
+
         let read (entry: JsonElement) =
-            match Json.tryString entry "project", causesOf entry with
-            | Some project, Some causes -> Some { Project = project; Causes = causes }
+            match Json.tryString entry "project", causesOf entry, skippedOf entry with
+            | Some project, Some causes, Some skipped ->
+                Some
+                    { ProjectAttribution.ofCauses project causes with
+                        SkippedClasses = skipped }
             | _ -> None
 
         let entries = value.EnumerateArray() |> List.ofSeq

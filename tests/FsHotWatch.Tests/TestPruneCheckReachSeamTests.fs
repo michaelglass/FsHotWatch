@@ -23,6 +23,7 @@ let private markerRunner (project: string) (marker: string) : TestConfig =
       TimeoutSec = None
       ReportVerificationFormat = AutoDetect
       Starvation = None
+      CheckSkip = None
       AlwaysClasses = [] }
 
 let private seamTree (tmpDir: string) =

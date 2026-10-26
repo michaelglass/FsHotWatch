@@ -30,6 +30,7 @@ let private gatedProject (project: string) (started: string) (release: string) :
       TimeoutSec = None
       ReportVerificationFormat = Disabled
       Starvation = None
+      CheckSkip = None
       AlwaysClasses = [] }
 
 /// A repo root with one source file, so the run binds a readable input tree.
@@ -181,6 +182,7 @@ let private numberedCoverageProject (project: string) (counter: string) : TestCo
       TimeoutSec = None
       ReportVerificationFormat = Disabled
       Starvation = None
+      CheckSkip = None
       AlwaysClasses = [] }
 
 [<Fact(Timeout = 40000)>]

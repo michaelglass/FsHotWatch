@@ -667,6 +667,7 @@ let private gatedTestHost (repoRoot: string) (release: string) =
                     TimeoutSec = None
                     ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
                     Starvation = None
+                    CheckSkip = None
                     AlwaysClasses = [] } ])
             None
             None

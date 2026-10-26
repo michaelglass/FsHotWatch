@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- feat: `tests.projects[].checkSkipClasses` (with `excludeFilterTemplate` and optional
+  `checkSkipOn`) names test classes a `check` leaves out of a project it runs whole only
+  because of the daemon session's first run or runtime-coverage debt (by default; add
+  `dependency-fanout` to `checkSkipOn` to skip on a fanout too). The project runs through the
+  exclude template, e.g. xUnit v3's `--filter-not-class {classes}`. A class the change
+  selects still runs, and `confirm` runs every class. The run is filtered, so its scope is
+  never `full`. `check` prints a `SKIPPED  checkSkipClasses:` line, and the verdict scope's
+  `selectedBy` entry carries `skippedClasses`. A declaration that cannot be honoured (no
+  template, a template without `{classes}`, an unknown widening) is a config error.
+- Breaking: `TestProjectConfig` has a new field, `CheckSkip`.
+
 ## 0.14.0-alpha.125 - 2026-10-25
 
 - **fix: the tool bundles exactly FSharp.Compiler.Service 43.12.402 and FSharp.Core

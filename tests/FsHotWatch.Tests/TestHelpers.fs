@@ -1361,10 +1361,10 @@ module BaselineFixtures =
         | FsHotWatch.Cli.Verdict.ModelUnavailable _ -> false
 
 module VerdictFixtures =
-    /// The `scope` object `.fshw/verdict.json` records for a check graded from `report` —
-    /// for tests about what a test-scope reading puts in the file, not about the outcome.
-    /// The outcome is `Incomplete`, the one outcome no other field constrains.
-    let scopeOnTheWire (report: FsHotWatch.Cli.IpcParsing.TestRunReport) : System.Text.Json.Nodes.JsonNode =
+    /// A check's verdict graded from `report` — for tests about what a test-scope reading
+    /// puts in the verdict, not about the outcome. The outcome is `Incomplete`, the one
+    /// outcome no other field constrains.
+    let checkVerdict (report: FsHotWatch.Cli.IpcParsing.TestRunReport) : FsHotWatch.Cli.Verdict.Verdict =
         let tree: FsHotWatch.TreeHash.Tree =
             { Hash = "sha256:fixture"
               FileCount = 1
@@ -1372,18 +1372,19 @@ module VerdictFixtures =
               DeclaredCount = 0
               AbsentDeclarationCount = 0 }
 
-        let verdict =
-            FsHotWatch.Cli.Verdict.create
-                FsHotWatch.Cli.Verdict.Check
-                report
-                tree
-                (Some [])
-                (FsHotWatch.Cli.Verdict.Incomplete "fixture")
-                2
-                []
-                []
-                FsHotWatch.Cli.Verdict.CheckComparison.notRecorded
-                []
-                ProjectModelFixtures.available
+        FsHotWatch.Cli.Verdict.create
+            FsHotWatch.Cli.Verdict.Check
+            report
+            tree
+            (Some [])
+            (FsHotWatch.Cli.Verdict.Incomplete "fixture")
+            2
+            []
+            []
+            FsHotWatch.Cli.Verdict.CheckComparison.notRecorded
+            []
+            ProjectModelFixtures.available
 
-        (System.Text.Json.Nodes.JsonNode.Parse(FsHotWatch.Cli.Verdict.serialize verdict)).["scope"]
+    /// The `scope` object `.fshw/verdict.json` records for a check graded from `report`.
+    let scopeOnTheWire (report: FsHotWatch.Cli.IpcParsing.TestRunReport) : System.Text.Json.Nodes.JsonNode =
+        (System.Text.Json.Nodes.JsonNode.Parse(FsHotWatch.Cli.Verdict.serialize (checkVerdict report))).["scope"]

@@ -92,6 +92,7 @@ let private configs =
           TimeoutSec = Some 30
           ReportVerificationFormat = Ctrf
           Starvation = None
+          CheckSkip = None
           AlwaysClasses = [] })
 
 /// The model the host publishes: every project, its references, and an identity per

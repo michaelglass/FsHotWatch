@@ -38,9 +38,11 @@ let ``every selection cause has a distinct token that reads back as itself`` () 
 let ``an attribution describes each project and its causes in one log clause`` () =
     let attribution =
         [ { Project = "ProjA"
-            Causes = [ SelectionCause.DependencyFanout; SelectionCause.ChangedSymbols ] }
+            Causes = [ SelectionCause.DependencyFanout; SelectionCause.ChangedSymbols ]
+            SkippedClasses = [] }
           { Project = "ProjB"
-            Causes = [ SelectionCause.AlwaysClasses ] } ]
+            Causes = [ SelectionCause.AlwaysClasses ]
+            SkippedClasses = [] } ]
 
     test
         <@
@@ -75,13 +77,16 @@ let ``each selected project names every source that selected it, widest first`` 
             SelectionAttribution.attribute sources byProject selection = [ { Project = "ProjA"
                                                                              Causes =
                                                                                [ SelectionCause.DependencyFanout
-                                                                                 SelectionCause.ChangedSymbols ] }
+                                                                                 SelectionCause.ChangedSymbols ]
+                                                                             SkippedClasses = [] }
                                                                            { Project = "ProjB"
                                                                              Causes =
                                                                                [ SelectionCause.ChangedSymbols
-                                                                                 SelectionCause.AlwaysClasses ] }
+                                                                                 SelectionCause.AlwaysClasses ]
+                                                                             SkippedClasses = [] }
                                                                            { Project = "ProjC"
-                                                                             Causes = [ SelectionCause.AlwaysClasses ] } ]
+                                                                             Causes = [ SelectionCause.AlwaysClasses ]
+                                                                             SkippedClasses = [] } ]
         @>
 
 [<Fact(Timeout = 10000)>]
@@ -101,9 +106,11 @@ let ``an empty selection that still launched names the empty selection, not a so
     test
         <@
             SelectionAttribution.attribute sources Map.empty selection = [ { Project = "ProjA"
-                                                                             Causes = [ SelectionCause.EmptySelection ] }
+                                                                             Causes = [ SelectionCause.EmptySelection ]
+                                                                             SkippedClasses = [] }
                                                                            { Project = "ProjB"
-                                                                             Causes = [ SelectionCause.EmptySelection ] } ]
+                                                                             Causes = [ SelectionCause.EmptySelection ]
+                                                                             SkippedClasses = [] } ]
         @>
 
 [<Fact(Timeout = 10000)>]
@@ -151,6 +158,7 @@ let private config (project: string) (always: string list) : TestConfig =
       TimeoutSec = None
       ReportVerificationFormat = AutoDetect
       Starvation = None
+      CheckSkip = None
       AlwaysClasses = always }
 
 let private configs =
@@ -221,7 +229,8 @@ let private finishedGreen (launch: TestRunLaunch) =
         |> Map.map (fun _ selection ->
             match selection with
             | ProjectInFull -> TestsPassed("ok", false, TimeSpan.FromSeconds 1.0)
-            | ProjectClasses _ -> TestsPassed("ok", true, TimeSpan.FromSeconds 1.0))
+            | ProjectClasses _
+            | ProjectExcept _ -> TestsPassed("ok", true, TimeSpan.FromSeconds 1.0))
 
     let runId = Guid.NewGuid()
 
@@ -286,9 +295,11 @@ let ``a filtered launch attributes the covering project to the change and the de
     test
         <@
             launch.SelectedBy = [ { Project = "ProjA"
-                                    Causes = [ SelectionCause.ChangedSymbols ] }
+                                    Causes = [ SelectionCause.ChangedSymbols ]
+                                    SkippedClasses = [] }
                                   { Project = "ProjB"
-                                    Causes = [ SelectionCause.AlwaysClasses ] } ]
+                                    Causes = [ SelectionCause.AlwaysClasses ]
+                                    SkippedClasses = [] } ]
         @>
 
 [<Fact(Timeout = 30000)>]

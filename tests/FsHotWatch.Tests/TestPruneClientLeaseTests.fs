@@ -76,6 +76,7 @@ let private hostWithHangingFirstRun (root: string) =
             TimeoutSec = Some 300
             ReportVerificationFormat = AutoDetect
             Starvation = None
+            CheckSkip = None
             AlwaysClasses = [] } ]
 
     let recorder, startedCount, unclosed = lifecycleRecorder ()

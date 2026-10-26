@@ -175,20 +175,50 @@ module SelectionCause =
 
 /// One selected test project and every cause that put it in the run, widest first.
 type ProjectAttribution =
-    { Project: string
-      Causes: SelectionCause list }
+    {
+        Project: string
+        Causes: SelectionCause list
+        /// The `checkSkipClasses` this run left out of the project, which it otherwise ran
+        /// whole. Empty when it left out nothing: a run that skipped classes says so in
+        /// its scope, so it is never mistaken for a whole-project run.
+        SkippedClasses: string list
+    }
 
 module ProjectAttribution =
-    /// The entry on the wire, as both the `test-scope` reply and the verdict file write it.
-    let wire (entry: ProjectAttribution) : obj =
-        {| project = entry.Project
-           causes = entry.Causes |> List.map SelectionCause.token |> Array.ofList |}
-        :> obj
+    /// An attribution that skipped nothing.
+    let ofCauses (project: string) (causes: SelectionCause list) : ProjectAttribution =
+        { Project = project
+          Causes = causes
+          SkippedClasses = [] }
 
-    /// One clause per project, for a log line: `ProjA <- changed-symbols, always-classes`.
+    /// The entry on the wire, as both the `test-scope` reply and the verdict file write it.
+    /// `skippedClasses` is written only when the run skipped some, so every other scope
+    /// reads exactly as before.
+    let wire (entry: ProjectAttribution) : obj =
+        let causes = entry.Causes |> List.map SelectionCause.token |> Array.ofList
+
+        if List.isEmpty entry.SkippedClasses then
+            {| project = entry.Project
+               causes = causes |}
+            :> obj
+        else
+            {| project = entry.Project
+               causes = causes
+               skippedClasses = Array.ofList entry.SkippedClasses |}
+            :> obj
+
+    /// One clause per project, for a log line: `ProjA <- changed-symbols, always-classes`,
+    /// and `(check skipped: A, B)` after a project that ran without its skip classes.
     let describe (attribution: ProjectAttribution list) : string =
         attribution
         |> List.map (fun entry ->
             let causes = entry.Causes |> List.map SelectionCause.token |> String.concat ", "
-            $"%s{entry.Project} <- %s{causes}")
+
+            let skipped =
+                if List.isEmpty entry.SkippedClasses then
+                    ""
+                else
+                    $""" (check skipped: %s{String.concat ", " entry.SkippedClasses})"""
+
+            $"%s{entry.Project} <- %s{causes}%s{skipped}")
         |> String.concat "; "
