@@ -281,14 +281,18 @@ let ``incident: a beforeRun throw in the run-tests command surfaces as Failed, n
         | other -> Assert.Fail($"expected Failed with the hook output surfaced, got %A{other}"))
 
 [<Fact(Timeout = 15000)>]
-let ``incident: a test child that never becomes a live process drives the run to Failed, not a wedge`` () =
+let ``incident: a test child that never becomes a live process ends the run as verified-nothing, not a wedge or a green``
+    ()
+    =
     // The launch gap: between a config's spawn and its first sign of life nothing watched
     // the wait, so an overloaded box left an infinite `WaitForExit` hanging with no child
     // ever appearing — the plugin stayed Running and `check` streamed "Waiting for
     // plugins" for hours. `sleep 30` reproduces it: no output, no exit, so with a tiny
     // a handler-scoped launch deadline the watchdog kills the tree and raises
-    // `LaunchStalledException`, which the command's catch turns into the same Aborted
-    // lifecycle a beforeRun throw does.
+    // `LaunchStalledException`. That used to abort the whole run; since AUTOMATION-1320 it
+    // is the stalled project's own `TestsErrored` result, so a run whose only project
+    // stalled verified nothing — and says so — while a sibling keeps what it verified
+    // (`TestPruneModelChangeTests`).
     //
     // The deadline is injected into THIS handler. A process-global env mutation here used
     // to retroactively shorten already-created handlers' deadlines while the full suite
@@ -334,15 +338,21 @@ let ``incident: a test child that never becomes a live process drives the run to
         await.Wait(TimeSpan.FromSeconds 10.0) |> ignore
 
         test <@ result.IsSome @>
-        test <@ result.Value.Contains("no live process") @>
 
-        // Failed, naming the config and the launch gap — not a stale green, and not a
-        // plugin stuck Running.
+        // Verified nothing, naming the config — not a stale green, and not a plugin stuck
+        // Running.
         match host.GetStatus("test-prune") with
-        | Some(Failed(msg, _, _)) ->
-            test <@ msg.Contains("no live process") @>
-            test <@ msg.Contains("TestProject") @>
-        | other -> Assert.Fail($"expected Failed for a launch-stalled run, got %A{other}"))
+        | Some(Completed(_, outcome)) ->
+            test
+                <@
+                    outcome.NothingVerified
+                    |> Option.exists (fun detail -> detail.Contains "TestProject")
+                @>
+        | other -> Assert.Fail($"expected a verified-nothing terminal for a launch-stalled run, got %A{other}")
+
+        // ... and the launch gap is what the error ledger says happened.
+        let errors = host.GetErrorsByPlugin("test-prune") |> sprintf "%A"
+        test <@ errors.Contains "no live process" @>)
 
 [<Fact(Timeout = 15000)>]
 let ``run-tests command with a passing beforeRun runs normally and reports Completed`` () =

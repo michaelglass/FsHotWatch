@@ -304,3 +304,440 @@ let ``with current evidence a change no test covers runs nothing`` () =
     match launch.ZeroSelection with
     | ZeroSelection.ChangesUncovered _ -> ()
     | other -> Assert.Fail($"expected the nothing-to-verify skip, got %A{other}")
+
+// ---------------------------------------------------------------------------
+// Whole-project evidence across a daemon restart (AUTOMATION-1320). A new daemon used to
+// hold no evidence at all, so every test project it had not yet seen run whole under its
+// own model ran in full: "Evidence gap: 7 project(s) have no whole-project run under the
+// current project model", logged by each cold land daemon. The evidence is keyed on each
+// project's compile-input identity (`ProjectModel.ProjectInputs`), which does not depend
+// on any one daemon's model generation, so a record of it can outlive the daemon.
+// ---------------------------------------------------------------------------
+
+let private fsprojOf (project: string) = $"/repo/%s{project}.fsproj"
+
+/// The fixture, with a model that publishes `identities` as each project's compile-input
+/// identity under whatever generation it holds.
+let private withIdentities (identities: Map<string, string> ref) (f: Fixture) =
+    { f with
+        Ctx =
+            { f.Ctx with
+                ProjectGraph =
+                    { f.Ctx.ProjectGraph with
+                        ObserveProjectInputs = fun () -> Some(f.Generation.Value, identities.Value)
+                        GetAllProjects = fun () -> identities.Value |> Map.keys |> List.ofSeq } } }
+
+/// What the host does with a state the handler produced: make its durable record the one a
+/// restart reads.
+let private publish (f: Fixture) (prior: TestPruneState) (candidate: TestPruneState) =
+    match f.Handler.PrepareCommit with
+    | Some prepare ->
+        let prepared = prepare prior candidate |> Async.RunSynchronously
+        prepared.Finalize |> Async.RunSynchronously
+    | None -> ()
+
+/// A new daemon over the same checkout: a fresh handler, whose model starts again at
+/// generation 1, reading whatever the previous one left on disk.
+let private restarted (f: Fixture) =
+    f.Generation.Value <- 1L
+    f.Scheduled.Value <- None
+
+    { f with
+        Handler = create (Path.Combine(f.Ctx.RepoRoot, "tp.db")) f.Ctx.RepoRoot (Some configs) None None None None [] }
+
+let private identitiesOf (pairs: (string * string) list) =
+    ref (
+        pairs
+        |> List.map (fun (project, identity) -> fsprojOf project, identity)
+        |> Map.ofList
+    )
+
+[<Fact(Timeout = 30000)>]
+let ``a restarted daemon over unchanged compile inputs runs only the classes a change needs`` () =
+    let identities = identitiesOf [ "ProjA", "a1"; "ProjB", "b1" ]
+    let f = fixture () |> withIdentities identities
+    let verified = verifiedUnderModelOne f
+    publish f f.Handler.Init verified
+
+    let next = restarted f
+    let _, launch = buildAndLaunch next (withChangeToLibF next.Handler.Init)
+
+    test <@ launch.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests") ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``a restarted daemon runs in full only the project whose compile inputs moved while it was down`` () =
+    let identities = identitiesOf [ "ProjA", "a1"; "ProjB", "b1" ]
+    let f = fixture () |> withIdentities identities
+    let verified = verifiedUnderModelOne f
+    publish f f.Handler.Init verified
+
+    identities.Value <- Map.add (fsprojOf "ProjB") "b2" identities.Value
+    let next = restarted f
+    let _, launch = buildAndLaunch next (withChangeToLibF next.Handler.Init)
+
+    test
+        <@ launch.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests"); "ProjB", ProjectInFull ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``a restarted daemon whose model publishes no identities trusts no recorded evidence`` () =
+    let identities = identitiesOf [ "ProjA", "a1"; "ProjB", "b1" ]
+    let f = fixture () |> withIdentities identities
+    let verified = verifiedUnderModelOne f
+    publish f f.Handler.Init verified
+
+    let next =
+        let r = restarted f
+
+        { r with
+            Ctx =
+                { r.Ctx with
+                    ProjectGraph =
+                        { r.Ctx.ProjectGraph with
+                            ObserveProjectInputs = fun () -> None } } }
+
+    let _, launch = buildAndLaunch next (withChangeToLibF next.Handler.Init)
+
+    test <@ launch.Selection = Map.ofList [ "ProjA", ProjectInFull; "ProjB", ProjectInFull ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``a restarted daemon whose evidence record cannot be read runs every project in full`` () =
+    let identities = identitiesOf [ "ProjA", "a1"; "ProjB", "b1" ]
+    let f = fixture () |> withIdentities identities
+    let verified = verifiedUnderModelOne f
+    publish f f.Handler.Init verified
+    File.WriteAllText(WholeProjectEvidence.sidecarPath f.Ctx.RepoRoot, "{ torn")
+
+    let next = restarted f
+    let _, launch = buildAndLaunch next (withChangeToLibF next.Handler.Init)
+
+    test <@ launch.Selection = Map.ofList [ "ProjA", ProjectInFull; "ProjB", ProjectInFull ] @>
+
+let private recordOf (root: string) =
+    match WholeProjectEvidence.load root with
+    | WholeProjectEvidence.LoadedRecord.Loaded record -> Ok record
+    | WholeProjectEvidence.LoadedRecord.Unreadable reason -> Error reason
+
+let private writeRecord (root: string) (text: string) =
+    let path = WholeProjectEvidence.sidecarPath root
+    Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+    File.WriteAllText(path, text)
+
+[<Fact(Timeout = 15000)>]
+let ``WholeProjectEvidence: no file is an empty record, and a saved record reads back`` () =
+    let root = isolatedRoot ()
+    test <@ recordOf root = Ok Map.empty @>
+
+    let record =
+        Map.ofList [ "ProjA", ("/repo/ProjA.fsproj", "a1"); "ProjB", ("/repo/ProjB.fsproj", "b1") ]
+
+    WholeProjectEvidence.save root record
+    test <@ recordOf root = Ok record @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("{ torn")>]
+[<InlineData("[]")>]
+[<InlineData("null")>]
+[<InlineData("{}")>]
+[<InlineData("{\"projects\": []}")>]
+[<InlineData("{\"projects\": {\"ProjA\": {\"fsproj\": \"/repo/ProjA.fsproj\"}}}")>]
+[<InlineData("{\"projects\": {\"ProjA\": {\"fsproj\": \"/repo/ProjA.fsproj\", \"identity\": 7}}}")>]
+[<InlineData("{\"projects\": {\"ProjA\": \"a1\"}}")>]
+let ``WholeProjectEvidence: a record that exists and cannot be read is Unreadable, never empty`` (text: string) =
+    let root = isolatedRoot ()
+    writeRecord root text
+    test <@ Result.isError (recordOf root) @>
+
+[<Fact(Timeout = 15000)>]
+let ``EarnedEvidence: a restored record vouches only for projects whose compile inputs are unchanged`` () =
+    let restored =
+        EarnedEvidence.restored (
+            Map.ofList [ "ProjA", ("/repo/ProjA.fsproj", "a1"); "ProjB", ("/repo/ProjB.fsproj", "b1") ]
+        )
+
+    let now = Map.ofList [ "/repo/ProjA.fsproj", "a1"; "/repo/ProjB.fsproj", "b2" ]
+
+    test <@ EarnedEvidence.carriedCoverage (Some 1L) (Some now) restored = Set.singleton "ProjA" @>
+    test <@ EarnedEvidence.carriedCoverage (Some 1L) None restored = Set.empty @>
+    test <@ EarnedEvidence.restored Map.empty = None @>
+    // It refuses, so on its own it can never support a green.
+    test <@ not (List.isEmpty restored.Value.FailureReasons) @>
+
+// ---------------------------------------------------------------------------
+// One project's launch stall (AUTOMATION-1320). "launch produced no live process within
+// 300s — box overloaded" for ONE project used to abort the whole run: the stall raised out
+// of the run, the completion carried no results, and the evidence every other project had
+// just earned was discarded, so the next run ran all of them in full again.
+// ---------------------------------------------------------------------------
+
+/// `configs`, except that ProjB's runner never shows a sign of life: `sleep` writes
+/// nothing, so the launch deadline kills it as a stall.
+let private stallingConfigs =
+    [ config "ProjA"
+      { config "ProjB" with
+          Command = "sleep"
+          Args = "30" } ]
+
+/// A fixture whose ProjB stalls at launch, under a one-second launch deadline, and whose
+/// launches really execute.
+let private stallingFixture () =
+    let f = fixture ()
+    // A baseline already earned, so that what runs in full is the evidence gap's doing alone.
+    seedBaseline f.Ctx.RepoRoot [ "ProjA"; "ProjB" ]
+
+    { f with
+        Handler =
+            createWithLaunchDeadline
+                (TimeSpan.FromSeconds 1.0)
+                None
+                (fun () -> Map.empty)
+                (Path.Combine(f.Ctx.RepoRoot, "tp.db"))
+                TestPrune.Domain.WalkPolicy.FollowAll
+                f.Ctx.RepoRoot
+                (Some stallingConfigs)
+                None
+                None
+                None
+                None
+                []
+                None
+                TestMode.initial }
+
+[<Fact(Timeout = 60000)>]
+let ``one project's launch stall costs only that project's evidence`` () =
+    let f = stallingFixture ()
+    f.Scheduled.Value <- None
+
+    let launched =
+        update f (withChangeToLibF f.Handler.Init) (BuildCompleted BuildSucceeded)
+
+    let finished =
+        match f.Scheduled.Value with
+        | Some work -> work Ready |> Async.RunSynchronously
+        | None -> failwith "the build must reach a launch"
+
+    let completed, launch =
+        match finished with
+        | TestsFinished(_, completed, launch) -> completed, launch
+        | other -> failwith $"expected TestsFinished, got %A{other}"
+
+    // The run completes: ProjB's stall is ProjB's result, not the run's. It used to abort
+    // the run ("runTests failed: ProjB: launch produced no live process"), with no results.
+    test <@ completed.Outcome = Normal @>
+
+    // A cold daemon ran both in full, so each could earn whole-project evidence.
+    test <@ launch.Selection = Map.ofList [ "ProjA", ProjectInFull; "ProjB", ProjectInFull ] @>
+
+    test
+        <@
+            completed.Results
+            |> Map.tryFind "ProjA"
+            |> Option.exists TestResult.verifiedGreen
+        @>
+
+    match Map.tryFind "ProjB" completed.Results with
+    | Some(TestsErrored reason) -> test <@ reason.Contains "no live process" && reason.Contains "ProjB" @>
+    | other -> Assert.Fail($"expected ProjB's stall as its own errored result, got %A{other}")
+
+    let settled = update f launched (Custom finished)
+
+    // The stalled project still owes its whole-project run; the one that ran keeps its.
+    let _, next = buildAndLaunch f (withChangeToLibF settled)
+
+    test
+        <@ next.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests"); "ProjB", ProjectInFull ] @>
+
+// ---------------------------------------------------------------------------
+// Unknown verification debt, said for what it is (AUTOMATION-1320). On 10-25 the land
+// daemon logged "Scope: FULL SUITE (unreadable pending-verification ledger)" for six hours,
+// across a restart, while the pending-verification ledger read fine: the debt was unknown
+// because `Intelligence.Build.Tests`'s runtime coverage did not ingest ("SqliteException:
+// SQLite Error 5: 'database is locked'"), and after the restart because that failure's
+// marker was still on disk. Every cause of unknown debt was printed as the ledger's.
+// ---------------------------------------------------------------------------
+
+/// Run `body` with this context's log lines collected.
+let private withLogLines (body: unit -> 'T) : 'T * string list =
+    let lines = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    let result =
+        using
+            (FsHotWatch.Logging.installSink
+                { Write = lines.Enqueue
+                  Level = FsHotWatch.Logging.LogLevel.Debug
+                  File = None })
+            (fun _ -> body ())
+
+    result, List.ofSeq lines
+
+[<Fact(Timeout = 30000)>]
+let ``a full suite widened for unknown debt names the cause, not the pending-verification ledger`` () =
+    // The cause the land daemon carried across its restart: a runtime-obligation write
+    // that did not finish (in that incident, the marker a failed ingest used to leave).
+    let f = fixture ()
+    let verified = verifiedUnderModelOne f
+    publish f f.Handler.Init verified
+    let marker = runtimeCoverageRecoveryPath f.Ctx.RepoRoot
+    Directory.CreateDirectory(Path.GetDirectoryName marker) |> ignore
+    File.WriteAllText(marker, "runtime obligation write in progress")
+
+    let next = restarted f
+
+    let _, lines =
+        withLogLines (fun () -> buildAndLaunch next (withChangeToLibF next.Handler.Init))
+
+    let scope = lines |> List.filter (fun line -> line.Contains "Scope: FULL SUITE")
+    test <@ not scope.IsEmpty @>
+
+    test
+        <@
+            scope
+            |> List.forall (fun line -> not (line.Contains "pending-verification ledger"))
+        @>
+
+    test
+        <@
+            scope
+            |> List.exists (fun line -> line.Contains "runtime coverage obligation ledger")
+        @>
+
+[<Fact(Timeout = 30000)>]
+let ``a daemon that starts over an unfinished debt record names that record as the cause`` () =
+    let f = fixture ()
+    let marker = runtimeCoverageRecoveryPath f.Ctx.RepoRoot
+    Directory.CreateDirectory(Path.GetDirectoryName marker) |> ignore
+    File.WriteAllText(marker, "runtime obligation write in progress")
+
+    let next = restarted f
+    let causes = next.Handler.Init.Debt.UnknownDebt
+
+    test <@ causes.Length = 1 @>
+    test <@ causes.Head.Contains "runtime coverage obligation ledger" @>
+    test <@ causes.Head.Contains(runtimeCoverageObligationsPath f.Ctx.RepoRoot) @>
+    test <@ not (causes.Head.Contains "pending-verification") @>
+
+// ---------------------------------------------------------------------------
+// Runtime coverage that did not ingest is ITS project's debt (AUTOMATION-1320). One
+// project's ingest failure ("database is locked") made what is owed unknown for the whole
+// suite: every run was FULL SUITE until one passed every project, and the marker it left
+// made the next daemon start the same way. What is unknown is that one project's runtime
+// coverage, so that project runs in full until a run of it ingests; the rest select as
+// usual, before and after a restart.
+// ---------------------------------------------------------------------------
+
+let private lockedIngest = "SqliteException: SQLite Error 5: 'database is locked'"
+
+[<Fact(Timeout = 30000)>]
+let ``a project whose runtime coverage did not ingest runs in full, and only it`` () =
+    let f = fixture ()
+    let verified = verifiedUnderModelOne f
+
+    let failed =
+        update f verified (Custom(RuntimeCoverageFailed("ProjB", lockedIngest)))
+
+    let _, launch = buildAndLaunch f (withChangeToLibF failed)
+
+    test
+        <@ launch.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests"); "ProjB", ProjectInFull ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``a restarted daemon still owes only the project whose runtime coverage did not ingest`` () =
+    let identities = identitiesOf [ "ProjA", "a1"; "ProjB", "b1" ]
+    let f = fixture () |> withIdentities identities
+    let verified = verifiedUnderModelOne f
+    publish f f.Handler.Init verified
+
+    // As a run does: the durable record first, then the owner hears of it.
+    armCoverageNotIngested
+        ignore
+        (CoverageNotIngested.sidecarPath f.Ctx.RepoRoot)
+        { Project = "ProjB"
+          Reason = lockedIngest }
+
+    let failed =
+        update f verified (Custom(RuntimeCoverageFailed("ProjB", lockedIngest)))
+
+    publish f verified failed
+
+    let next = restarted f
+    test <@ List.isEmpty next.Handler.Init.Debt.UnknownDebt @>
+
+    let _, launch = buildAndLaunch next (withChangeToLibF next.Handler.Init)
+
+    test
+        <@ launch.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests"); "ProjB", ProjectInFull ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``a passing whole-project run of that project discharges its runtime coverage debt`` () =
+    let f = fixture ()
+    let verified = verifiedUnderModelOne f
+
+    let failed =
+        update f verified (Custom(RuntimeCoverageFailed("ProjB", lockedIngest)))
+
+    let launched, launch = buildAndLaunch f (withChangeToLibF failed)
+    let settled = update f launched (finishedGreen launch)
+
+    let _, next = buildAndLaunch f (withChangeToLibF settled)
+
+    test <@ next.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests") ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``CoverageNotIngested: arm keeps every project recorded, and an empty record removes the file`` () =
+    let root = isolatedRoot ()
+    let path = CoverageNotIngested.sidecarPath root
+    test <@ CoverageNotIngested.load root = CoverageNotIngested.LoadedRecord.Loaded Map.empty @>
+
+    let notified = ref 0
+    CoverageNotIngested.arm (fun () -> notified.Value <- notified.Value + 1) path "ProjA" "locked"
+    CoverageNotIngested.arm (fun () -> notified.Value <- notified.Value + 1) path "ProjB" "malformed"
+
+    test <@ notified.Value = 2 @>
+
+    test
+        <@
+            CoverageNotIngested.load root = CoverageNotIngested.LoadedRecord.Loaded(
+                Map.ofList [ "ProjA", "locked"; "ProjB", "malformed" ]
+            )
+        @>
+
+    CoverageNotIngested.save root Map.empty
+    test <@ not (File.Exists path) @>
+    CoverageNotIngested.save root Map.empty
+    test <@ not (File.Exists path) @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("{ torn")>]
+[<InlineData("[]")>]
+[<InlineData("null")>]
+[<InlineData("{\"ProjA\": 7}")>]
+[<InlineData("{\"ProjA\": {}}")>]
+let ``CoverageNotIngested: a record that cannot be read is Unreadable, and arm leaves it so`` (text: string) =
+    let root = isolatedRoot ()
+    let path = CoverageNotIngested.sidecarPath root
+    Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+    File.WriteAllText(path, text)
+
+    let unreadable () =
+        match CoverageNotIngested.load root with
+        | CoverageNotIngested.LoadedRecord.Unreadable _ -> true
+        | CoverageNotIngested.LoadedRecord.Loaded _ -> false
+
+    test <@ unreadable () @>
+
+    let notified = ref false
+    CoverageNotIngested.arm (fun () -> notified.Value <- true) path "ProjA" "locked"
+
+    test <@ notified.Value @>
+    test <@ unreadable () @>
+    test <@ File.ReadAllText path = text @>
+
+[<Fact(Timeout = 30000)>]
+let ``a daemon that starts over an unreadable ingest record owes unknown debt, naming it`` () =
+    let f = fixture ()
+    let path = CoverageNotIngested.sidecarPath f.Ctx.RepoRoot
+    Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+    File.WriteAllText(path, "{ torn")
+
+    let causes = (restarted f).Handler.Init.Debt.UnknownDebt
+
+    test <@ causes.Length = 1 && causes.Head.Contains path @>

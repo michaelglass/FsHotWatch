@@ -399,14 +399,10 @@ let internal applyCoverageIngestFailures
                 current)
         results
 
-let internal armRuntimeCoverageUnknownDebt
-    (setUnknown: unit -> unit)
-    (recoveryPath: string)
-    (failure: CoverageIngestFailure)
-    =
-    let message = $"%s{failure.Project}: %s{failure.Reason}"
-    FsHwPaths.atomicWriteAllText recoveryPath message
-    setUnknown ()
+/// Record that `failure.Project`'s runtime coverage did not ingest (`CoverageNotIngested`, at
+/// `path`), then `notify` the owner: that project is owed a whole-project run that ingests.
+let internal armCoverageNotIngested (notify: unit -> unit) (path: string) (failure: CoverageIngestFailure) =
+    CoverageNotIngested.arm notify path failure.Project failure.Reason
 
 [<Literal>]
 let private ProjectRatchetCoverageTable = "fshw_project_ratchet_coverage"
@@ -1356,6 +1352,9 @@ let internal reportRuntimeCoverageWidenings (warn: string -> unit) (selection: R
             warn
                 $"runtime coverage: project '%s{project}' complete baseline from %O{observedAt} is older than %O{RuntimeCoverageMaxAge}; widening to every test in that configured project"
 
+/// The causes of unknown verification debt (`VerificationDebt.UnknownDebt`), in one clause.
+let internal describeUnknownDebt (causes: string list) = String.concat "; " causes
+
 /// Why a cycle that found ZERO symbol-affected classes is running tests
 /// anyway — one arm per debt that can refuse the zero-affected green skip.
 ///
@@ -1375,9 +1374,11 @@ type internal ZeroAffectedWidening =
     /// Runtime-coverage obligations are outstanding over `files` file(s), naming
     /// `projects` project(s) between them.
     | RuntimeCoverageDebt of files: int * projects: int
-    /// The pending-verification ledger could not be read, so what is owed is unknown
-    /// and only a full suite can prove it.
-    | UnreadableLedger
+    /// These projects' runtime coverage did not ingest, so each owes a whole-project run.
+    | CoverageNotIngested of projects: Set<string>
+    /// What is owed is unknown — for each of `causes` (a ledger that could not be read, a
+    /// debt record that did not finish being written) — and only a full suite can prove it.
+    | UnknownDebt of causes: string list
     /// A prior red is outstanding and must be re-executed before anything goes green.
     | OutstandingFailures of count: int
     /// No full-suite baseline vouches for what a filtered run would
@@ -1403,8 +1404,10 @@ module internal ZeroAffectedWidening =
         | ZeroAffectedWidening.QueuedSymbols count -> $"%d{count} symbol(s) still awaiting a green covering run"
         | ZeroAffectedWidening.RuntimeCoverageDebt(files, projects) ->
             $"runtime-coverage debt over %d{files} file(s) naming %d{projects} project(s)"
-        | ZeroAffectedWidening.UnreadableLedger ->
-            "the pending-verification ledger could not be read, so what is owed is UNKNOWN"
+        | ZeroAffectedWidening.CoverageNotIngested projects ->
+            let names = projects |> Set.toList |> String.concat ", "
+            $"runtime coverage did not ingest for %s{names}"
+        | ZeroAffectedWidening.UnknownDebt causes -> $"what is owed is UNKNOWN (%s{describeUnknownDebt causes})"
         | ZeroAffectedWidening.OutstandingFailures count -> $"%d{count} outstanding test failure(s) from a prior run"
         | ZeroAffectedWidening.UnverifiedTree ->
             "no test evidence is bound to the tree as it is now — it changed since the last run that earned any, \
@@ -1423,9 +1426,10 @@ module internal ZeroAffectedWidening =
 /// obligation survived 12 full-suite reruns without leaving a single attributable line.
 let internal zeroAffectedWidening
     (hasSessionBaseline: bool)
-    (ledgerUnreadable: bool)
+    (unknownDebt: string list)
     (queuedSymbols: int)
     (runtimeObligations: RuntimeCoverageObligations)
+    (coverageNotIngested: Set<string>)
     (outstandingFailures: int)
     (fullSuiteBaselineInvalid: string option)
     (evidenceGap: Set<string>)
@@ -1433,12 +1437,12 @@ let internal zeroAffectedWidening
     : ZeroAffectedWidening list =
     [ if not hasSessionBaseline then
           ZeroAffectedWidening.NoSessionBaseline
-      if ledgerUnreadable then
-          ZeroAffectedWidening.UnreadableLedger
-      // An unreadable ledger already invalidates the baseline; naming it twice would
-      // report two debts for one cause.
+      if not (List.isEmpty unknownDebt) then
+          ZeroAffectedWidening.UnknownDebt unknownDebt
+      // Unknown debt already invalidates the baseline; naming it twice would report two
+      // debts for one cause.
       match fullSuiteBaselineInvalid with
-      | Some reason when not ledgerUnreadable -> ZeroAffectedWidening.NoFullSuiteBaseline reason
+      | Some reason when List.isEmpty unknownDebt -> ZeroAffectedWidening.NoFullSuiteBaseline reason
       | _ -> ()
       if queuedSymbols > 0 then
           ZeroAffectedWidening.QueuedSymbols queuedSymbols
@@ -1453,6 +1457,9 @@ let internal zeroAffectedWidening
               runtimeObligations |> Map.filter (fun _ ps -> not (Map.isEmpty ps)) |> Map.count
 
           ZeroAffectedWidening.RuntimeCoverageDebt(files, Set.count namedProjects)
+
+      if not (Set.isEmpty coverageNotIngested) then
+          ZeroAffectedWidening.CoverageNotIngested coverageNotIngested
 
       if outstandingFailures > 0 then
           ZeroAffectedWidening.OutstandingFailures outstandingFailures
@@ -1930,15 +1937,23 @@ type VerificationDebt =
         /// The last revision issued. Every enqueue takes the next one, so an edit to a
         /// symbol already queued is still a newer revision.
         Revision: int64
-        /// A ledger could not be read, or a durable publication did not finish: what is
-        /// owed is unknown. Every run widens to the full suite and the cache is refused
-        /// until a full suite passes every configured project.
-        RecoveryOutstanding: bool
+        /// Why what is owed is unknown, one sentence per cause naming the record and why it
+        /// could not be trusted: a ledger that could not be read, a durable publication that
+        /// did not finish, runtime coverage that did not ingest. While any is held, every run
+        /// widens to the full suite and the cache is refused, until a full suite passes every
+        /// configured project. Empty when the debt is known.
+        UnknownDebt: string list
         /// The full-suite watermark impact-filtered greens are relative to.
         Baseline: FullSuiteBaseline.Baseline option
         /// File-granular runtime coverage obligations, per project generation. Durable.
         RuntimeObligations: RuntimeCoverageObligations
+        /// Projects whose runtime coverage did not ingest, each with why. Each runs in full
+        /// until a run of it passes (and so ingests). Durable (`CoverageNotIngested`).
+        CoverageNotIngested: Map<string, string>
     }
+
+    /// What is owed is unknown (`UnknownDebt`).
+    member this.RecoveryOutstanding = not (List.isEmpty this.UnknownDebt)
 
 /// What a launched run was going to execute, known when it claims the "tests" key.
 type LaunchScope =
@@ -2214,6 +2229,12 @@ type TestPruneState =
         /// covered in full, and every reason it cannot support a green. Minted only by the
         /// completion fold, and published with this state (`IEarnedEvidenceState`).
         Earned: EarnedEvidence option
+        /// Whole-project coverage an earlier daemon recorded for this checkout
+        /// (`WholeProjectEvidence`), restored at start. It vouches for a project only while
+        /// that project's compile inputs are the ones recorded, and only where nothing this
+        /// daemon earned speaks: it closes the evidence gap a restart used to open, and is
+        /// never published as this daemon's evidence.
+        RestoredEvidence: EarnedEvidence option
     }
 
     interface IEarnedEvidenceState with
@@ -2236,6 +2257,13 @@ type TestPruneState =
                             result.File
                             (AnalysisFileEvidence.fromResult suppressedCodes result (Result.map ignore analysis))
                             this.AnalysisFiles }
+
+module TestPruneState =
+    /// The evidence that decides which projects still need a whole-project run: what this
+    /// daemon earned, or — until it has earned any — what an earlier one recorded. Only
+    /// coverage is read from it; the evidence a verdict grades is always `Earned`.
+    let coverageEvidence (state: TestPruneState) : EarnedEvidence option =
+        state.Earned |> Option.orElse state.RestoredEvidence
 
 /// The slice of `TestPruneState` a test RUN reads — and nothing else.
 ///
@@ -2283,8 +2311,10 @@ type TestRunInputs =
         /// Seed receipt captured at dispatch. A later BatchChecked may replace the
         /// live state's LastSeeds while this run is still executing.
         Seeds: string list
-        /// The evidence earned so far. Projects it does not cover whole under the current
-        /// model run in full, so this run's own evidence can support a green.
+        /// The evidence earned so far, or — before this daemon has earned any — what an
+        /// earlier one recorded (`TestPruneState.RestoredEvidence`). Projects it does not
+        /// cover whole under the current model run in full, so this run's own evidence can
+        /// support a green.
         Earned: EarnedEvidence option
         /// The input tree the held test-evidence receipt is bound to; `None` when there
         /// is none. A launch over any other tree has nothing it may skip on.
@@ -2310,7 +2340,7 @@ module TestRunInputs =
           Mode = state.Mode
           ChangedFiles = state.ChangedFiles
           Seeds = state.LastSeeds
-          Earned = state.Earned
+          Earned = TestPruneState.coverageEvidence state
           EvidenceTree = state.EvidenceReceipt |> Option.bind (fun receipt -> receipt.InputTreeHash)
           EvidenceManifest =
             state.EvidenceManifest
@@ -2572,9 +2602,9 @@ type TestPruneMsg =
     /// session that launches only requested runs (`TestMode.armOwedRun`), and launches the
     /// run it held, if any.
     | OwedRunRequested
-    /// A run could not ingest its runtime coverage receipt. Its durable recovery marker is
-    /// already written; this makes the debt unknown in owner state too.
-    | RuntimeCoverageFailed of project: string
+    /// A run could not ingest a project's runtime coverage. Its durable record
+    /// (`CoverageNotIngested`) is already written; this makes the owner owe the project too.
+    | RuntimeCoverageFailed of project: string * reason: string
     /// A `run-tests` IPC command asking the MAILBOX to launch its force-run under the
     /// "tests" key. The command must never execute tests
     /// on the IPC thread itself: a run outside the slot is invisible to the daemon's
@@ -5944,7 +5974,7 @@ let private executeTests
         /// Launch one project as configured and classify what it did: the per-project body
         /// of the run, shared by the first launch and a starvation re-run. Returns the
         /// project's result and its CTRF report text (when one was requested and read).
-        let launchProject
+        let launchProjectOrRaise
             (runToken: Threading.CancellationToken)
             (config: TestConfig)
             : Async<TestResult * string option> =
@@ -6241,12 +6271,12 @@ let private executeTests
                             with LaunchStalledException reason ->
                                 // The watchdog killed a child that never showed a
                                 // sign of life within the launch deadline. Re-raise
-                                // NAMING the config and elapsed so the run's Aborted
-                                // lifecycle (built by the caller's `with ex ->`)
-                                // carries a legible diagnostic. A launch stall means
-                                // this project NEVER RAN, so the whole run must
-                                // abort → PluginStatus.Failed → `check` exits
-                                // non-green rather than wedging at Running. A child
+                                // NAMING the config and elapsed, for `launchProject`
+                                // to record as this project's `TestsErrored` result: a
+                                // launch stall means this project NEVER RAN, so it is
+                                // never a pass and `check` exits non-green rather than
+                                // wedging at Running, while the rest of the run keeps
+                                // what it verified. A child
                                 // that EXITS is not a stall — the poll observes the
                                 // exit and classifies it normally.
                                 return
@@ -6448,6 +6478,31 @@ let private executeTests
             []
 
         let starvedLock = obj ()
+
+        /// `launchProjectOrRaise`, with a launch stall answered as THIS project's result.
+        ///
+        /// A stall ("launch produced no live process within Ns") means this project never
+        /// ran. It used to raise out of the whole run, which then completed `Aborted` with
+        /// no results at all: the projects that had run, or were still running, lost what
+        /// they verified, and the next run ran every one of them in full again. Now the
+        /// project is `TestsErrored` — nothing verified, never a pass, so the run is still
+        /// not green — and every other project keeps its own result.
+        let launchProject
+            (runToken: Threading.CancellationToken)
+            (config: TestConfig)
+            : Async<TestResult * string option> =
+            async {
+                try
+                    return! launchProjectOrRaise runToken config
+                with LaunchStalledException reason ->
+                    logToCtx $"{config.Project}: ABORTED (nothing verified) — {reason}"
+
+                    Logging.error
+                        "test-prune"
+                        $"%s{config.Project}: ABORTED — %s{reason}. Nothing was verified for this project; the rest of the run keeps its results. Re-run when the box is quiet."
+
+                    return TestsErrored reason, None
+            }
 
         /// The classes the run filtered `config`'s project to; `None` when it runs in full
         /// or under a raw filter, whose classes are not known.
@@ -7498,15 +7553,15 @@ let internal createWithEvidenceAndQueries
     /// the first run exactly as in-session reds are. An UNREADABLE file is debt of unknown
     /// membership and takes the unreadable-ledger road: widen to the full suite, which
     /// re-executes every test and rebuilds the list from evidence.
-    let loadedFailures, failuresUnreadable =
+    let loadedFailures, failuresUnreadableReason =
         match OutstandingFailure.load repoRoot with
-        | OutstandingFailure.LoadedFailures.Loaded failures -> failures, false
+        | OutstandingFailure.LoadedFailures.Loaded failures -> failures, None
         | OutstandingFailure.LoadedFailures.Unreadable reason ->
             Logging.warn
                 "test-prune"
                 $"the outstanding-failures ledger (%s{OutstandingFailure.sidecarPath repoRoot}) EXISTS but could not be read: %s{reason}. It records every test still red from earlier runs, so which tests are owed is now UNKNOWN. Every test run is widened to every configured project in full until a full suite has re-executed them all."
 
-            [], true
+            [], Some reason
 
     /// The full-suite watermark this ledger's impact-filtered greens are
     /// relative to. `None` until a full-suite run has accounted for every configured
@@ -7521,31 +7576,75 @@ let internal createWithEvidenceAndQueries
 
             None
 
-    let loadedRuntimeObligations, runtimeObligationsUnreadable =
+    /// Whole-project coverage the previous daemon recorded. Unreadable is no record: the
+    /// projects it might have named run whole again, which costs time and nothing else.
+    let restoredEvidence =
+        match WholeProjectEvidence.load repoRoot with
+        | WholeProjectEvidence.LoadedRecord.Loaded record ->
+            if not (Map.isEmpty record) then
+                let names = record |> Map.keys |> String.concat ", "
+
+                Logging.info
+                    "test-prune"
+                    $"Whole-project evidence recorded by an earlier daemon for %d{Map.count record} project(s) (%s{names}): each stands while its compile inputs are the ones recorded"
+
+            EarnedEvidence.restored record
+        | WholeProjectEvidence.LoadedRecord.Unreadable reason ->
+            Logging.warn
+                "test-prune"
+                $"the whole-project evidence record (%s{WholeProjectEvidence.sidecarPath repoRoot}) EXISTS but could not be read: %s{reason}. Every test project runs in full until this daemon has seen it run whole."
+
+            None
+
+    let loadedRuntimeObligations, runtimeObligationsUnreadableReason =
         match loadRuntimeCoverageObligations repoRoot with
-        | Ok obligations -> obligations, false
+        | Ok obligations -> obligations, None
         | Error reason ->
             Logging.warn
                 "test-prune"
                 $"the runtime coverage obligation ledger could not be read: %s{reason}. Widening to the full suite until a verified full run recovers the unknown debt."
 
-            Map.empty, true
+            Map.empty, Some reason
 
-    /// Arms the durable unknown-debt marker from the run that failed to ingest coverage,
-    /// before the run returns, then tells the owner through a message. A marker that
-    /// cannot be written is logged; the message still makes this session's debt unknown.
+    /// Projects an earlier daemon owed a whole-project run because their runtime coverage did
+    /// not ingest. A record that cannot be read leaves which projects are owed unknown.
+    let loadedNotIngested, notIngestedUnreadableReason =
+        match CoverageNotIngested.load repoRoot with
+        | CoverageNotIngested.LoadedRecord.Loaded record ->
+            if not (Map.isEmpty record) then
+                let owed =
+                    record
+                    |> Map.toList
+                    |> List.map (fun (project, reason) -> $"%s{project} (%s{reason})")
+                    |> String.concat ", "
+
+                Logging.warn
+                    "test-prune"
+                    $"runtime coverage did not ingest for %d{Map.count record} project(s): %s{owed}. Each runs in full until a run of it ingests."
+
+            record, None
+        | CoverageNotIngested.LoadedRecord.Unreadable reason ->
+            Logging.warn
+                "test-prune"
+                $"the record of runtime coverage that did not ingest (%s{CoverageNotIngested.sidecarPath repoRoot}) EXISTS but could not be read: %s{reason}. Which projects are owed is UNKNOWN; widening to the full suite until a full suite passes."
+
+            Map.empty, Some reason
+
+    /// Records, durably and before the run returns, that a project's runtime coverage did
+    /// not ingest, then tells the owner through a message. A record that cannot be written
+    /// is logged; the message still makes this session owe the project.
     let coverageIngestFailed (ctx: PluginCtx<TestPruneMsg>) (failure: CoverageIngestFailure) =
         try
-            armRuntimeCoverageUnknownDebt
-                (fun () -> ctx.Post(RuntimeCoverageFailed failure.Project))
-                (runtimeCoverageRecoveryPath repoRoot)
+            armCoverageNotIngested
+                (fun () -> ctx.Post(RuntimeCoverageFailed(failure.Project, failure.Reason)))
+                (CoverageNotIngested.sidecarPath repoRoot)
                 failure
         with ex ->
-            ctx.Post(RuntimeCoverageFailed failure.Project)
+            ctx.Post(RuntimeCoverageFailed(failure.Project, failure.Reason))
 
             Logging.error
                 "test-prune"
-                $"failed to durably record unknown runtime coverage debt for %s{failure.Project}: %s{ex.Message}"
+                $"failed to durably record that the runtime coverage of %s{failure.Project} did not ingest (%s{CoverageNotIngested.sidecarPath repoRoot}): %s{ex.Message}"
 
     /// How many CONSECUTIVE flush cycles each currently-queued symbol
     /// has seeded, so a symbol that is pinned AND selecting wide can be named out loud
@@ -7592,8 +7691,7 @@ let internal createWithEvidenceAndQueries
         if Set.isEmpty runnableProjects then
             None
         elif debt.RecoveryOutstanding then
-            Some
-                "the verification ledger could not be read, so the full-suite baseline cannot say what changed since it was earned"
+            Some "what is owed is unknown, so the full-suite baseline cannot say what changed since it was earned"
         else
             match debt.Baseline with
             | None -> Some FullSuiteBaseline.absentReason
@@ -7609,6 +7707,7 @@ let internal createWithEvidenceAndQueries
     let nothingOwed (debt: VerificationDebt) =
         Set.isEmpty debt.PendingQueue
         && Map.isEmpty debt.RuntimeObligations
+        && Map.isEmpty debt.CoverageNotIngested
         && not debt.RecoveryOutstanding
         && Option.isNone (baselineInvalidReason debt)
 
@@ -7617,15 +7716,22 @@ let internal createWithEvidenceAndQueries
         let queued = Set.count debt.PendingQueue
 
         if debt.RecoveryOutstanding then
-            $"an UNREADABLE pending-verification ledger (what is owed is UNKNOWN, so only a full suite can prove it) + %d{queued} newly-queued symbol(s)"
+            $"UNKNOWN verification debt (%s{describeUnknownDebt debt.UnknownDebt}), which only a full suite can prove, + %d{queued} newly-queued symbol(s)"
         else
             // A drain owed only to the baseline says so, or a reader sees
             // "0 symbol(s) awaiting verification — draining now" and goes looking for the
             // bug in the queue.
+            let notIngested =
+                if Map.isEmpty debt.CoverageNotIngested then
+                    ""
+                else
+                    let projects = debt.CoverageNotIngested |> Map.keys |> String.concat ", "
+                    $" + a whole-project run of %s{projects}, whose runtime coverage did not ingest"
+
             match baselineInvalidReason debt with
             | Some reason ->
-                $"%d{queued} symbol(s) awaiting verification + a full suite to earn the baseline (%s{reason})"
-            | None -> $"%d{queued} symbol(s) awaiting verification"
+                $"%d{queued} symbol(s) awaiting verification + a full suite to earn the baseline (%s{reason})%s{notIngested}"
+            | None -> $"%d{queued} symbol(s) awaiting verification%s{notIngested}"
 
     /// Write the queue before the analysis flush advances the durable symbol snapshot:
     /// once the snapshot advances, a symbol missing from the durable queue can no longer
@@ -7691,19 +7797,34 @@ let internal createWithEvidenceAndQueries
         { PendingQueue =
             match loadedQueue with
             | PendingVerification.LoadedQueue.Loaded queue -> queue
-            // The owed symbols cannot be NAMED, so none are seeded; `RecoveryOutstanding`
-            // carries the debt instead and widens every run until a full suite proves the
-            // tree. Seeding `empty` is safe ONLY because that flag is set.
+            // The owed symbols cannot be NAMED, so none are seeded; `UnknownDebt` carries
+            // the debt instead and widens every run until a full suite proves the tree.
+            // Seeding `empty` is safe ONLY because that cause is recorded.
             | PendingVerification.LoadedQueue.Unreadable _ -> PendingVerification.empty
           SymbolRevisions = Map.empty
           Revision = 0L
-          RecoveryOutstanding =
-            ledgerUnreadableReason.IsSome
-            || failuresUnreadable
-            || runtimeObligationsUnreadable
-            || interruptedPublication
+          UnknownDebt =
+            [ match ledgerUnreadableReason with
+              | Some reason ->
+                  $"the pending-verification ledger (%s{PendingVerification.sidecarPath repoRoot}) could not be read: %s{reason}"
+              | None -> ()
+              match failuresUnreadableReason with
+              | Some reason ->
+                  $"the outstanding-failures ledger (%s{OutstandingFailure.sidecarPath repoRoot}) could not be read: %s{reason}"
+              | None -> ()
+              match runtimeObligationsUnreadableReason with
+              | Some reason ->
+                  $"the runtime coverage obligation ledger (%s{runtimeCoverageObligationsPath repoRoot}) could not be trusted: %s{reason}"
+              | None -> ()
+              match notIngestedUnreadableReason with
+              | Some reason ->
+                  $"the record of runtime coverage that did not ingest (%s{CoverageNotIngested.sidecarPath repoRoot}) could not be read: %s{reason}"
+              | None -> ()
+              if interruptedPublication then
+                  $"a verification-debt publication did not finish before the previous daemon stopped (%s{debtPublicationPath})" ]
           Baseline = loadedBaseline
-          RuntimeObligations = pruneRuntimeCoverageObligations allowedRuntimeProjects loadedRuntimeObligations }
+          RuntimeObligations = pruneRuntimeCoverageObligations allowedRuntimeProjects loadedRuntimeObligations
+          CoverageNotIngested = loadedNotIngested }
 
     // A project that no longer produces runtime coverage cannot retire an obligation, so
     // its obligations are pruned at load. Written here, before any event, because no
@@ -8394,7 +8515,8 @@ let internal createWithEvidenceAndQueries
           EvidenceReceipt = None
           EvidenceManifest = None
           ReceiptRevoked = None
-          Earned = None }
+          Earned = None
+          RestoredEvidence = restoredEvidence }
 
     /// The generation of the model the host currently publishes, when it is available.
     let observeModelGeneration (ctx: PluginCtx<TestPruneMsg>) =
@@ -8557,8 +8679,19 @@ let internal createWithEvidenceAndQueries
 
             let launchedRuntimeObligations = inputs.Debt.RuntimeObligations
 
+            // A project whose runtime coverage did not ingest runs in full too: what its tests
+            // reach is not known, so no runtime selection of it can be trusted.
             let runtimeForceProjects =
-                launchedRuntimeObligations |> Map.values |> Seq.collect Map.keys |> Set.ofSeq
+                launchedRuntimeObligations
+                |> Map.values
+                |> Seq.collect Map.keys
+                |> Set.ofSeq
+                |> Set.union (
+                    inputs.Debt.CoverageNotIngested
+                    |> Map.keys
+                    |> Set.ofSeq
+                    |> Set.intersect (fullSuiteProjects configs)
+                )
 
             // A project with no whole-project run under the current model can only be
             // vouched for by running it in full: filtered or skipped, it is a refusal in
@@ -8612,7 +8745,7 @@ let internal createWithEvidenceAndQueries
             if ledgerUnreadable then
                 Logging.warn
                     "test-prune"
-                    "Scope: FULL SUITE (unreadable pending-verification ledger) — the record of what still needs testing could not be read, so this run cannot know what it owes. It runs EVERY configured test project in full rather than trust an impact selection made without the ledger. Impact filtering resumes once a full suite passes."
+                    $"Scope: FULL SUITE (verification debt unknown: %s{describeUnknownDebt inputs.Debt.UnknownDebt}) — what still needs testing is not known, so this run cannot know what it owes. It runs EVERY configured test project in full rather than trust an impact selection made without that record. Impact filtering resumes once a full suite passes."
 
             if not (Map.isEmpty inputs.FailedExtensions) then
                 let names = inputs.FailedExtensions |> Map.keys |> String.concat ", "
@@ -9058,9 +9191,10 @@ let internal createWithEvidenceAndQueries
                         let widenings =
                             zeroAffectedWidening
                                 hasCachedResults
-                                ledgerUnreadable
+                                inputs.Debt.UnknownDebt
                                 (Set.count inputs.Debt.PendingQueue)
                                 inputs.Debt.RuntimeObligations
+                                (inputs.Debt.CoverageNotIngested |> Map.keys |> Set.ofSeq)
                                 (List.length inputs.OutstandingFailures)
                                 baselineInvalid
                                 evidenceGap
@@ -10405,6 +10539,7 @@ let internal createWithEvidenceAndQueries
             let obligationsChanged = changed (fun state -> state.Debt.RuntimeObligations)
             let baselineChanged = changed (fun state -> state.Debt.Baseline)
             let recoveryChanged = changed (fun state -> state.Debt.RecoveryOutstanding)
+            let notIngestedChanged = changed (fun state -> state.Debt.CoverageNotIngested)
             let interrupted = File.Exists debtPublicationPath
 
             if
@@ -10414,6 +10549,7 @@ let internal createWithEvidenceAndQueries
                 || obligationsChanged
                 || baselineChanged
                 || recoveryChanged
+                || notIngestedChanged
             then
                 FsHwPaths.atomicWriteAllText debtPublicationPath "verification debt publication in progress"
 
@@ -10429,9 +10565,21 @@ let internal createWithEvidenceAndQueries
                     if rewrite || obligationsChanged then
                         saveRuntimeCoverageObligations repoRoot candidate.Debt.RuntimeObligations
 
+                    if rewrite || notIngestedChanged then
+                        CoverageNotIngested.save repoRoot candidate.Debt.CoverageNotIngested
+
                     match candidate.Debt.Baseline with
                     | Some baseline when rewrite || baselineChanged -> FullSuiteBaseline.save repoRoot baseline
                     | _ -> ()
+
+            // Evidence, not debt: it records which projects ran whole over which compile
+            // inputs, which stays true whatever is owed. A state that earned none leaves
+            // the last record standing, since every entry is checked against the compile
+            // inputs of the daemon that reads it.
+            if changed (fun state -> state.Earned) then
+                match candidate.Earned |> Option.map EarnedEvidence.wholeProjectInputs with
+                | Some record when not (Map.isEmpty record) -> WholeProjectEvidence.save repoRoot record
+                | _ -> ()
 
             return
                 { Finalize =
@@ -11762,6 +11910,38 @@ let internal createWithEvidenceAndQueries
                                         |> Map.filter (fun project _ -> not (Set.contains project absorbedProjects)))
                                     |> Map.filter (fun _ projects -> not (Map.isEmpty projects)) }
 
+                    // A project whose runtime coverage did not ingest is paid by a run that executed
+                    // it in full and passed: a pass means its coverage ingested this time (a run
+                    // that could not ingest it reports the project errored, never passed). A
+                    // filtered or reused result, a red or an abort pays nothing.
+                    let ingested =
+                        if aborted then
+                            Set.empty
+                        else
+                            debt.CoverageNotIngested
+                            |> Map.keys
+                            |> Seq.filter (fun project ->
+                                Map.tryFind project launch.Selection = Some ProjectInFull
+                                && not (Map.containsKey project launch.Reused)
+                                && projectPassed project)
+                            |> Set.ofSeq
+
+                    if not (Set.isEmpty ingested) then
+                        let names = ingested |> Set.toList |> String.concat ", "
+
+                        Logging.info
+                            "test-prune"
+                            $"Runtime coverage ingested again for %s{names} after a whole-project run passed; no longer owed"
+
+                    let debt =
+                        if Set.isEmpty ingested then
+                            debt
+                        else
+                            { debt with
+                                CoverageNotIngested =
+                                    debt.CoverageNotIngested
+                                    |> Map.filter (fun project _ -> not (Set.contains project ingested)) }
+
                     // Discharge an UNREADABLE ledger's debt.
                     //
                     // The debt is owed in FULL, because its membership is unknown: the only
@@ -11798,17 +11978,14 @@ let internal createWithEvidenceAndQueries
 
                     // Obligations this run launched were retired above; any left are newer
                     // than the run and stay owed.
-                    let debt =
-                        if recovers then
-                            { debt with
-                                RecoveryOutstanding = false }
-                        else
-                            debt
-
                     if recovers then
+                        let causes = describeUnknownDebt debt.UnknownDebt
+
                         Logging.info
                             "test-prune"
-                            "A full suite passed every configured project — the unreadable pending-verification ledger has been rewritten and its unknown debt discharged. Impact filtering resumes."
+                            $"A full suite passed every configured project — the unknown verification debt is discharged (%s{causes}), and the ledgers are rewritten from this run. Impact filtering resumes."
+
+                    let debt = if recovers then { debt with UnknownDebt = [] } else debt
 
                     // The full-suite WATERMARK. Written when a full-suite
                     // run has ACCOUNTED for every configured project: passed, or red with
@@ -11880,6 +12057,7 @@ let internal createWithEvidenceAndQueries
                         + owedRuntimeObligations
                         + unanalyzable.Count
                         + outstandingFailures.Length
+                        + Map.count debt.CoverageNotIngested
                         + (if debt.RecoveryOutstanding then 1 else 0)
 
                     // A completion that leaves the receipt standing — a narrower run, or a
@@ -11941,7 +12119,7 @@ let internal createWithEvidenceAndQueries
                                 (ObservedModel.projectFiles ctx.ProjectGraph)
                                 runnableProjects
                                 pendingObligations
-                                state.Earned
+                                (TestPruneState.coverageEvidence state)
                                 completed
 
                     Logging.info
@@ -12466,16 +12644,18 @@ let internal createWithEvidenceAndQueries
 
                     return { state with Mode = mode }
 
-                | Custom(RuntimeCoverageFailed project) ->
+                | Custom(RuntimeCoverageFailed(project, reason)) ->
+                    // What is unknown is what THIS project's tests reach on the tree they ran
+                    // on, so it is this project's debt, not the suite's.
                     Logging.warn
                         "test-prune"
-                        $"runtime coverage for %s{project} could not be ingested; what is owed is unknown until a full suite passes"
+                        $"runtime coverage for %s{project} could not be ingested: %s{reason}; %s{project} runs in full until a run of it ingests"
 
                     return
                         { state with
                             Debt =
                                 { state.Debt with
-                                    RecoveryOutstanding = true } }
+                                    CoverageNotIngested = Map.add project reason state.Debt.CoverageNotIngested } }
 
                 | Custom ImpactRunRequested -> return impactRun ctx state
                 | Custom(DiffWaitExpired id) ->
@@ -12550,6 +12730,12 @@ let internal createWithEvidenceAndQueries
                     // `Some` refuses cache participation outright, as a non-empty queue
                     // does. A constant rather than a hash — there is nothing to hash.
                     Some "unreadable-ledger"
+                elif not (Map.isEmpty state.Debt.CoverageNotIngested) then
+                    // A project owes a whole-project run that ingests: a cached green
+                    // cannot pay it. Refused as a non-empty queue is.
+                    let owed = state.Debt.CoverageNotIngested |> Map.keys |> String.concat ","
+
+                    Some $"coverage-not-ingested:%s{owed}|%s{PendingVerification.hash state.Debt.PendingQueue}"
                 elif Set.isEmpty state.Debt.PendingQueue then
                     None
                 else

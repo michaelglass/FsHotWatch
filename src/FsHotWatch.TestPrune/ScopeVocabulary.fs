@@ -19,8 +19,9 @@ type FullSuiteCause =
     | Requested
     /// A `run-tests` force run with no filter launched every configured project.
     | ForceRun
-    /// The pending-verification ledger could not be read, so what is owed is unknown and
-    /// no selection can be trusted.
+    /// What is owed is unknown — a ledger could not be read, a debt record did not finish
+    /// being written, or runtime coverage did not ingest — so no selection can be trusted.
+    /// (The case name predates the other causes; its wire token is kept.)
     | LedgerUnreadable
     /// There is no valid full-suite baseline (a cold repository, or `tests.projects` grew),
     /// so the tests a filtered run would skip have nothing to be equivalent to.
@@ -65,7 +66,7 @@ module FullSuiteCause =
         match cause with
         | FullSuiteCause.Requested -> "impact filtering was turned off"
         | FullSuiteCause.ForceRun -> "a force run launched every project"
-        | FullSuiteCause.LedgerUnreadable -> "the pending-verification ledger could not be read"
+        | FullSuiteCause.LedgerUnreadable -> "what was owed was unknown (a ledger or debt record could not be trusted)"
         | FullSuiteCause.NoFullSuiteBaseline -> "there was no valid full-suite baseline"
         | FullSuiteCause.CoarseFallback -> "the impact graph had a hole (an unanalysable or unindexed file)"
         | FullSuiteCause.EvidenceGap -> "no project had a whole-project run under the current project model"

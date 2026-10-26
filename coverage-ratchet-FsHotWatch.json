@@ -1476,6 +1476,20 @@
         "branch": 81,
         "reason": "new file (AUTOMATION-1276: analyzer paths loaded into collectible load contexts, one Client per path). Floor = the measured value rounded down. Measured 2026-10-22 on macOS by the unit suite (mise run test-direct): line 97.6% (the two lines of the failwith that fires only when an FSharp.Analyzers.SDK release renames Client.analyzersFromType or Client.registeredAnalyzers), branch 13/16 (81.25%): that failwith's match arms (2), and the non-BadImageFormatException edge of loadCollectible's typed handler (an exception the SDK's loader also lets through). Every loaded / skipped / excluded / missing / unloaded path is pinned by AnalyzerReloadTests. Not yet measured on Linux CI: the code is platform-neutral (no path-separator or file-system-event dependence), so the same floor applies to both; re-baseline from CI if Linux measures lower."
       }
+    ],
+    "WholeProjectEvidence.fs": [
+      {
+        "line": 97,
+        "branch": 95,
+        "reason": "new file (AUTOMATION-1320 whole-project evidence record: load/save of .fshw/test-prune/whole-project-evidence.json). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-26 on macOS by TestPruneModelChangeTests with coverage (coverageratchet check): line 97.7%, branch 95.8% (23/24). Uncovered: a compiler-generated closure line of the entry fold and one edge of the JSON node type tests. Platform-neutral: no platform-specific path."
+      }
+    ],
+    "CoverageNotIngested.fs": [
+      {
+        "line": 100,
+        "branch": 95,
+        "reason": "new file (AUTOMATION-1320 record of runtime coverage that did not ingest: load/save/arm of .fshw/test-prune/runtime-coverage-not-ingested.json). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-26 on macOS by TestPruneModelChangeTests + TestPrunePluginTests with coverage (coverageratchet check): line 100%, branch 95% (19/20). Uncovered: one compiler-generated edge of the JSON node type tests. Platform-neutral: no platform-specific path."
+      }
     ]
   },
   "countFloors": {

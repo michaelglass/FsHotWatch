@@ -4425,9 +4425,10 @@ let ``a zero-affected widening names every outstanding debt`` () =
     let causes =
         zeroAffectedWidening
             false
-            true
+            [ "the pending-verification ledger could not be read" ]
             3
             (Map.ofList [ "src/Traced.fs", Map.ofList [ "IntegrationTests", 1L ] ])
+            (Set.singleton "RuntimeTests")
             2
             None
             (Set.ofList [ "Beta.Tests"; "Alpha.Tests" ])
@@ -4437,9 +4438,10 @@ let ``a zero-affected widening names every outstanding debt`` () =
     test
         <@
             causes = [ ZeroAffectedWidening.NoSessionBaseline
-                       ZeroAffectedWidening.UnreadableLedger
+                       ZeroAffectedWidening.UnknownDebt [ "the pending-verification ledger could not be read" ]
                        ZeroAffectedWidening.QueuedSymbols 3
                        ZeroAffectedWidening.RuntimeCoverageDebt(1, 1)
+                       ZeroAffectedWidening.CoverageNotIngested(Set.singleton "RuntimeTests")
                        ZeroAffectedWidening.OutstandingFailures 2
                        ZeroAffectedWidening.NoCurrentModelEvidence(Set.ofList [ "Alpha.Tests"; "Beta.Tests" ]) ]
         @>
@@ -4458,7 +4460,7 @@ let ``an obligation naming no project is not counted as a reason to widen`` () =
     // suite. Reporting it as a cause would restore exactly the silence this guard closes.
     let phantom = Map.ofList [ "src/Untraced.fs", Map.empty<string, int64> ]
 
-    test <@ List.isEmpty (zeroAffectedWidening true false 0 phantom 0 None Set.empty false) @>
+    test <@ List.isEmpty (zeroAffectedWidening true [] 0 phantom Set.empty 0 None Set.empty false) @>
 
     // And a real obligation beside the phantom is still counted — once, for the file
     // that actually owes something.
@@ -4466,19 +4468,19 @@ let ``an obligation naming no project is not counted as a reason to widen`` () =
 
     test
         <@
-            zeroAffectedWidening true false 0 mixed 0 None Set.empty false = [ ZeroAffectedWidening.RuntimeCoverageDebt(
-                                                                                   1,
-                                                                                   1
-                                                                               ) ]
+            zeroAffectedWidening true [] 0 mixed Set.empty 0 None Set.empty false = [ ZeroAffectedWidening
+                                                                                          .RuntimeCoverageDebt(1, 1) ]
         @>
 
 [<Fact>]
 let ``nothing owed and a baseline in hand is no reason to widen at all`` () =
-    test <@ List.isEmpty (zeroAffectedWidening true false 0 Map.empty 0 None Set.empty false) @>
+    test <@ List.isEmpty (zeroAffectedWidening true [] 0 Map.empty Set.empty 0 None Set.empty false) @>
 
 [<Fact>]
 let ``nothing owed over a tree no evidence is bound to is a named reason to widen`` () =
-    let causes = zeroAffectedWidening true false 0 Map.empty 0 None Set.empty true
+    let causes =
+        zeroAffectedWidening true [] 0 Map.empty Set.empty 0 None Set.empty true
+
     test <@ causes = [ ZeroAffectedWidening.UnverifiedTree ] @>
     test <@ (ZeroAffectedWidening.describeMany causes).Contains "a comment" @>
 
@@ -4924,8 +4926,7 @@ let ``malformed full receipt invalidates prior runtime evidence and denies green
         let markerDirectory = Path.Combine(dir, "recovery-marker-is-a-directory")
         Directory.CreateDirectory markerDirectory |> ignore
 
-        Assert.ThrowsAny<exn>(fun () ->
-            armRuntimeCoverageUnknownDebt ignore markerDirectory (List.exactlyOne failures))
+        Assert.ThrowsAny<exn>(fun () -> armCoverageNotIngested ignore markerDirectory (List.exactlyOne failures))
         |> ignore
 
         // Marker persistence is an additional live-process signal. The database
@@ -4945,13 +4946,19 @@ let ``malformed full receipt invalidates prior runtime evidence and denies green
 
         test <@ reopened.GetRuntimeCoverageProjects([ "src/Prior.fs" ]).IsEmpty @>
 
-        let marker = runtimeCoverageRecoveryPath dir
-        let mutable unknownDebt = false
+        let marker = CoverageNotIngested.sidecarPath dir
+        let mutable owed = false
 
-        armRuntimeCoverageUnknownDebt (fun () -> unknownDebt <- true) marker (List.exactlyOne failures)
+        armCoverageNotIngested (fun () -> owed <- true) marker (List.exactlyOne failures)
 
-        test <@ unknownDebt @>
-        test <@ File.Exists marker @>
+        test <@ owed @>
+
+        test
+            <@
+                CoverageNotIngested.load dir = CoverageNotIngested.LoadedRecord.Loaded(
+                    Map.ofList [ "RuntimeTests", (List.exactlyOne failures).Reason ]
+                )
+            @>
 
         let results =
             Map.ofList [ "RuntimeTests", TestsPassed("", false, TimeSpan.FromSeconds 1.0) ]

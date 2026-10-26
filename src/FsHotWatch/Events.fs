@@ -769,6 +769,40 @@ module internal EarnedEvidence =
             | _ -> Set.empty
         | _ -> Set.empty
 
+    /// Each project `evidence` covered in full whose compile-input identity under the model
+    /// it was earned under is known: its `.fsproj` and identity, by project name. What a
+    /// record of the evidence must keep for `restored` to recognise it in another daemon.
+    let wholeProjectInputs (evidence: EarnedEvidence) : Map<string, string * string> =
+        match evidence.Inputs with
+        | Some inputs ->
+            inputs
+            |> Map.filter (fun project _ -> Set.contains project evidence.WholeProjectCoverage)
+        | None -> Map.empty
+
+    /// Whole-project coverage recorded by an earlier daemon (`wholeProjectInputs`), as
+    /// evidence that vouches for a project only while its compile inputs are the ones
+    /// recorded (`carriedCoverage`). It belongs to no model this daemon publishes, so it
+    /// never matches a generation; and it refuses, so it cannot support a green on its own:
+    /// a run of this daemon must still earn that. `None` when nothing was recorded.
+    let restored (inputs: Map<string, string * string>) : EarnedEvidence option =
+        if Map.isEmpty inputs then
+            None
+        else
+            let projects = inputs |> Map.keys |> Set.ofSeq
+
+            Some
+                { Completion =
+                    { RunId = System.Guid.Empty
+                      TotalElapsed = System.TimeSpan.Zero
+                      Outcome = Normal
+                      Results = Map.empty
+                      Verification = NoProjectsSelected }
+                  ModelGeneration = System.Int64.MinValue
+                  ExpectedProjects = projects
+                  WholeProjectCoverage = projects
+                  Refusals = [ "recorded by an earlier daemon: it vouches for whole-project coverage, not for a green" ]
+                  Inputs = Some inputs }
+
     /// `evidence` as evidence about the model at `generation`: itself under the model it
     /// was earned under, and — re-stamped, every refusal kept — under a later model in
     /// which every project it expected compiles from the same inputs. `None` when any of

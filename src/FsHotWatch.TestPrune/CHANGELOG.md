@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+- **fix!: runtime coverage that did not ingest is that project's debt, not the suite's.**
+  One project's ingest failure (`SQLite Error 5: 'database is locked'`) made what is owed
+  unknown for the whole suite: every run was FULL SUITE until one passed every project,
+  and the marker it left made the next daemon start the same way (six hours of full-suite
+  lands on one machine). What is unknown is that project's runtime coverage, so it now
+  runs in full until a run of it passes and ingests; every other project selects as usual,
+  before and after a restart. The failure is recorded in
+  `.fshw/test-prune/runtime-coverage-not-ingested.json` (project → reason) before the
+  owner hears of it, and removed when no project owes; an unreadable record is unknown
+  debt, named. A cached green is refused while a project owes. **Breaking (API):**
+  `VerificationDebt` has a new `CoverageNotIngested: Map<string, string>` field;
+  `armRuntimeCoverageUnknownDebt` is `armCoverageNotIngested`; `zeroAffectedWidening` takes
+  the owed projects and `ZeroAffectedWidening` has a `CoverageNotIngested` case.
+
+- **fix!: a full suite widened for unknown verification debt says why.** Every cause of
+  unknown debt (an unreadable pending-verification or outstanding-failures ledger, an
+  unfinished runtime-obligation write, an unfinished debt publication, runtime coverage
+  that did not ingest) was logged as "Scope: FULL SUITE (unreadable pending-verification
+  ledger)". On one land daemon that line ran for six hours, across a restart, while the
+  pending-verification ledger read fine: a project's runtime coverage had failed to ingest
+  (`SQLite Error 5: 'database is locked'`). The Scope line, the drain line, the
+  zero-affected widening and the recovery line now name each cause with its record's path
+  and reason. **Breaking (API):** `VerificationDebt.RecoveryOutstanding: bool` is replaced
+  by `UnknownDebt: string list` (a `RecoveryOutstanding` member remains, read-only);
+  `RuntimeCoverageFailed` carries the failure's reason; `ZeroAffectedWidening.UnreadableLedger`
+  is `UnknownDebt of causes`.
+
+- **fix!: one project's launch stall costs only that project's evidence.** A project whose
+  test host showed no sign of life within the launch deadline ("launch produced no live
+  process within 300s — box overloaded") raised out of the whole run, which completed
+  `Aborted` with no results: every other project lost what it had verified (or was
+  cancelled mid-run), and the next run ran all of them in full again. The stall is now
+  that project's own `TestsErrored` result — nothing verified, never a pass — and the run
+  completes with every other project's result, so only the stalled project still owes a
+  whole-project run. **Behaviour:** a run whose only selected project stalls now ends
+  verified-nothing (exit 2, as for a killed host), not `Failed`; the stall reason is in the
+  error ledger and the daemon log.
+
+- **fix!: a restarted daemon keeps the whole-project test evidence the last one earned.**
+  Whole-project evidence lived only in the daemon's memory, so every new daemon ran every
+  test project in full on its first run ("Evidence gap: 7 project(s) have no whole-project
+  run under the current project model"), however little had changed. It is now recorded in
+  `.fshw/test-prune/whole-project-evidence.json`, beside `full-suite-baseline.json`, as each
+  project's compile-input identity (`ProjectModel.ProjectInputs`: its compiler options and
+  those of everything it references, paths spelled relatively). A new daemon restores it,
+  and a project stands as run whole while its compile inputs are the ones recorded; one
+  whose inputs moved runs in full. Changes to sources are still owed through the
+  pending-verification queue, as for the full-suite baseline. The record vouches for
+  coverage only, never for a green, and an unreadable record is treated as none (and
+  logged with its path). **Breaking (API):** `TestPruneState` has a new
+  `RestoredEvidence: EarnedEvidence option` field.
+
 ## 0.13.0-alpha.92 - 2026-10-25
 
 - chore: FSharp.Core is pinned exactly at `[10.1.402]` instead of floating within `10.1.*`.
