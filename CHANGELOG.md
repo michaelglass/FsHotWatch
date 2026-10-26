@@ -74,6 +74,22 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### test-prune: TestPrune.Core 13.4.1 — a property's getter, setter or initializer edit now selects its tests
+
+- build(deps): TestPrune.Core 13.4.0 -> 13.4.1 and TestPrune.Trace 0.7.3 -> 0.7.4 (built
+  against Core 13.4.1). TestPrune.Sql 0.3.1, TestPrune.SqlHydra 0.2.2 and TestPrune.Falco
+  4.0.2 are unchanged. Core 13.4.1 hashes the whole text of a property declared with
+  accessors (`member _.P with get () = …`) or as an auto-property (`member val P = … with
+  get, set`). Before, the hash covered only the line naming the property, so an edit to a
+  getter or setter body, or to an initializer, on a later line changed no hash and the
+  impact-filtered `check` selected none of that property's tests.
+- **The first scan after upgrading re-indexes the whole repository.** The index schema moves
+  21 -> 22, so an existing `test-impact.db` is recreated on first open; the daemon logs
+  `TestPrune DB was recreated (schema change)` and clears the FCS check cache so every file
+  is re-analyzed. Expect that first `check` to take as long as a cold start. With
+  `tests.traces` on, recorded traces are not read under the new schema until the next full
+  run re-records them.
+
 ### core: the heap valve no longer refires on a live set it cannot shrink
 
 - The valve forces a compacting gen2 when the heap is over a quarter of the memory the GC
