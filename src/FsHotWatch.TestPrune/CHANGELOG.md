@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **fix!: a restarted daemon keeps the whole-project test evidence the last one earned.**
+  Whole-project evidence lived only in the daemon's memory, so every new daemon ran every
+  test project in full on its first run ("Evidence gap: 7 project(s) have no whole-project
+  run under the current project model"), however little had changed. It is now recorded in
+  `.fshw/test-prune/whole-project-evidence.json`, beside `full-suite-baseline.json`, as each
+  project's compile-input identity (`ProjectModel.ProjectInputs`: its compiler options and
+  those of everything it references, paths spelled relatively). A new daemon restores it,
+  and a project stands as run whole while its compile inputs are the ones recorded; one
+  whose inputs moved runs in full. Changes to sources are still owed through the
+  pending-verification queue, as for the full-suite baseline. The record vouches for
+  coverage only, never for a green, and an unreadable record is treated as none (and
+  logged with its path). **Breaking (API):** `TestPruneState` has a new
+  `RestoredEvidence: EarnedEvidence option` field.
+
 ## 0.13.0-alpha.91 - 2026-10-25
 
 - Finish: AUTOMATION-1313 fshw findings: tree-bound analyzer findings with codes

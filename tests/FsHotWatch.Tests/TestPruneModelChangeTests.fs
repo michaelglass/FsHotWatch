@@ -304,3 +304,160 @@ let ``with current evidence a change no test covers runs nothing`` () =
     match launch.ZeroSelection with
     | ZeroSelection.ChangesUncovered _ -> ()
     | other -> Assert.Fail($"expected the nothing-to-verify skip, got %A{other}")
+
+// ---------------------------------------------------------------------------
+// Whole-project evidence across a daemon restart (AUTOMATION-1320). A new daemon used to
+// hold no evidence at all, so every test project it had not yet seen run whole under its
+// own model ran in full: "Evidence gap: 7 project(s) have no whole-project run under the
+// current project model", logged by each cold land daemon. The evidence is keyed on each
+// project's compile-input identity (`ProjectModel.ProjectInputs`), which does not depend
+// on any one daemon's model generation, so a record of it can outlive the daemon.
+// ---------------------------------------------------------------------------
+
+let private fsprojOf (project: string) = $"/repo/%s{project}.fsproj"
+
+/// The fixture, with a model that publishes `identities` as each project's compile-input
+/// identity under whatever generation it holds.
+let private withIdentities (identities: Map<string, string> ref) (f: Fixture) =
+    { f with
+        Ctx =
+            { f.Ctx with
+                ProjectGraph =
+                    { f.Ctx.ProjectGraph with
+                        ObserveProjectInputs = fun () -> Some(f.Generation.Value, identities.Value)
+                        GetAllProjects = fun () -> identities.Value |> Map.keys |> List.ofSeq } } }
+
+/// What the host does with a state the handler produced: make its durable record the one a
+/// restart reads.
+let private publish (f: Fixture) (prior: TestPruneState) (candidate: TestPruneState) =
+    match f.Handler.PrepareCommit with
+    | Some prepare ->
+        let prepared = prepare prior candidate |> Async.RunSynchronously
+        prepared.Finalize |> Async.RunSynchronously
+    | None -> ()
+
+/// A new daemon over the same checkout: a fresh handler, whose model starts again at
+/// generation 1, reading whatever the previous one left on disk.
+let private restarted (f: Fixture) =
+    f.Generation.Value <- 1L
+    f.Scheduled.Value <- None
+
+    { f with
+        Handler = create (Path.Combine(f.Ctx.RepoRoot, "tp.db")) f.Ctx.RepoRoot (Some configs) None None None None [] }
+
+let private identitiesOf (pairs: (string * string) list) =
+    ref (
+        pairs
+        |> List.map (fun (project, identity) -> fsprojOf project, identity)
+        |> Map.ofList
+    )
+
+[<Fact(Timeout = 30000)>]
+let ``a restarted daemon over unchanged compile inputs runs only the classes a change needs`` () =
+    let identities = identitiesOf [ "ProjA", "a1"; "ProjB", "b1" ]
+    let f = fixture () |> withIdentities identities
+    let verified = verifiedUnderModelOne f
+    publish f f.Handler.Init verified
+
+    let next = restarted f
+    let _, launch = buildAndLaunch next (withChangeToLibF next.Handler.Init)
+
+    test <@ launch.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests") ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``a restarted daemon runs in full only the project whose compile inputs moved while it was down`` () =
+    let identities = identitiesOf [ "ProjA", "a1"; "ProjB", "b1" ]
+    let f = fixture () |> withIdentities identities
+    let verified = verifiedUnderModelOne f
+    publish f f.Handler.Init verified
+
+    identities.Value <- Map.add (fsprojOf "ProjB") "b2" identities.Value
+    let next = restarted f
+    let _, launch = buildAndLaunch next (withChangeToLibF next.Handler.Init)
+
+    test
+        <@ launch.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests"); "ProjB", ProjectInFull ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``a restarted daemon whose model publishes no identities trusts no recorded evidence`` () =
+    let identities = identitiesOf [ "ProjA", "a1"; "ProjB", "b1" ]
+    let f = fixture () |> withIdentities identities
+    let verified = verifiedUnderModelOne f
+    publish f f.Handler.Init verified
+
+    let next =
+        let r = restarted f
+
+        { r with
+            Ctx =
+                { r.Ctx with
+                    ProjectGraph =
+                        { r.Ctx.ProjectGraph with
+                            ObserveProjectInputs = fun () -> None } } }
+
+    let _, launch = buildAndLaunch next (withChangeToLibF next.Handler.Init)
+
+    test <@ launch.Selection = Map.ofList [ "ProjA", ProjectInFull; "ProjB", ProjectInFull ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``a restarted daemon whose evidence record cannot be read runs every project in full`` () =
+    let identities = identitiesOf [ "ProjA", "a1"; "ProjB", "b1" ]
+    let f = fixture () |> withIdentities identities
+    let verified = verifiedUnderModelOne f
+    publish f f.Handler.Init verified
+    File.WriteAllText(WholeProjectEvidence.sidecarPath f.Ctx.RepoRoot, "{ torn")
+
+    let next = restarted f
+    let _, launch = buildAndLaunch next (withChangeToLibF next.Handler.Init)
+
+    test <@ launch.Selection = Map.ofList [ "ProjA", ProjectInFull; "ProjB", ProjectInFull ] @>
+
+let private recordOf (root: string) =
+    match WholeProjectEvidence.load root with
+    | WholeProjectEvidence.LoadedRecord.Loaded record -> Ok record
+    | WholeProjectEvidence.LoadedRecord.Unreadable reason -> Error reason
+
+let private writeRecord (root: string) (text: string) =
+    let path = WholeProjectEvidence.sidecarPath root
+    Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+    File.WriteAllText(path, text)
+
+[<Fact(Timeout = 15000)>]
+let ``WholeProjectEvidence: no file is an empty record, and a saved record reads back`` () =
+    let root = isolatedRoot ()
+    test <@ recordOf root = Ok Map.empty @>
+
+    let record =
+        Map.ofList [ "ProjA", ("/repo/ProjA.fsproj", "a1"); "ProjB", ("/repo/ProjB.fsproj", "b1") ]
+
+    WholeProjectEvidence.save root record
+    test <@ recordOf root = Ok record @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("{ torn")>]
+[<InlineData("[]")>]
+[<InlineData("null")>]
+[<InlineData("{}")>]
+[<InlineData("{\"projects\": []}")>]
+[<InlineData("{\"projects\": {\"ProjA\": {\"fsproj\": \"/repo/ProjA.fsproj\"}}}")>]
+[<InlineData("{\"projects\": {\"ProjA\": {\"fsproj\": \"/repo/ProjA.fsproj\", \"identity\": 7}}}")>]
+[<InlineData("{\"projects\": {\"ProjA\": \"a1\"}}")>]
+let ``WholeProjectEvidence: a record that exists and cannot be read is Unreadable, never empty`` (text: string) =
+    let root = isolatedRoot ()
+    writeRecord root text
+    test <@ Result.isError (recordOf root) @>
+
+[<Fact(Timeout = 15000)>]
+let ``EarnedEvidence: a restored record vouches only for projects whose compile inputs are unchanged`` () =
+    let restored =
+        EarnedEvidence.restored (
+            Map.ofList [ "ProjA", ("/repo/ProjA.fsproj", "a1"); "ProjB", ("/repo/ProjB.fsproj", "b1") ]
+        )
+
+    let now = Map.ofList [ "/repo/ProjA.fsproj", "a1"; "/repo/ProjB.fsproj", "b2" ]
+
+    test <@ EarnedEvidence.carriedCoverage (Some 1L) (Some now) restored = Set.singleton "ProjA" @>
+    test <@ EarnedEvidence.carriedCoverage (Some 1L) None restored = Set.empty @>
+    test <@ EarnedEvidence.restored Map.empty = None @>
+    // It refuses, so on its own it can never support a green.
+    test <@ not (List.isEmpty restored.Value.FailureReasons) @>

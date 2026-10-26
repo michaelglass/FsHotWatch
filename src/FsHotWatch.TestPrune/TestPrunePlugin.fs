@@ -2214,6 +2214,12 @@ type TestPruneState =
         /// covered in full, and every reason it cannot support a green. Minted only by the
         /// completion fold, and published with this state (`IEarnedEvidenceState`).
         Earned: EarnedEvidence option
+        /// Whole-project coverage an earlier daemon recorded for this checkout
+        /// (`WholeProjectEvidence`), restored at start. It vouches for a project only while
+        /// that project's compile inputs are the ones recorded, and only where nothing this
+        /// daemon earned speaks: it closes the evidence gap a restart used to open, and is
+        /// never published as this daemon's evidence.
+        RestoredEvidence: EarnedEvidence option
     }
 
     interface IEarnedEvidenceState with
@@ -2236,6 +2242,13 @@ type TestPruneState =
                             result.File
                             (AnalysisFileEvidence.fromResult suppressedCodes result (Result.map ignore analysis))
                             this.AnalysisFiles }
+
+module TestPruneState =
+    /// The evidence that decides which projects still need a whole-project run: what this
+    /// daemon earned, or — until it has earned any — what an earlier one recorded. Only
+    /// coverage is read from it; the evidence a verdict grades is always `Earned`.
+    let coverageEvidence (state: TestPruneState) : EarnedEvidence option =
+        state.Earned |> Option.orElse state.RestoredEvidence
 
 /// The slice of `TestPruneState` a test RUN reads — and nothing else.
 ///
@@ -2283,8 +2296,10 @@ type TestRunInputs =
         /// Seed receipt captured at dispatch. A later BatchChecked may replace the
         /// live state's LastSeeds while this run is still executing.
         Seeds: string list
-        /// The evidence earned so far. Projects it does not cover whole under the current
-        /// model run in full, so this run's own evidence can support a green.
+        /// The evidence earned so far, or — before this daemon has earned any — what an
+        /// earlier one recorded (`TestPruneState.RestoredEvidence`). Projects it does not
+        /// cover whole under the current model run in full, so this run's own evidence can
+        /// support a green.
         Earned: EarnedEvidence option
         /// The input tree the held test-evidence receipt is bound to; `None` when there
         /// is none. A launch over any other tree has nothing it may skip on.
@@ -2310,7 +2325,7 @@ module TestRunInputs =
           Mode = state.Mode
           ChangedFiles = state.ChangedFiles
           Seeds = state.LastSeeds
-          Earned = state.Earned
+          Earned = TestPruneState.coverageEvidence state
           EvidenceTree = state.EvidenceReceipt |> Option.bind (fun receipt -> receipt.InputTreeHash)
           EvidenceManifest =
             state.EvidenceManifest
@@ -7521,6 +7536,26 @@ let internal createWithEvidenceAndQueries
 
             None
 
+    /// Whole-project coverage the previous daemon recorded. Unreadable is no record: the
+    /// projects it might have named run whole again, which costs time and nothing else.
+    let restoredEvidence =
+        match WholeProjectEvidence.load repoRoot with
+        | WholeProjectEvidence.LoadedRecord.Loaded record ->
+            if not (Map.isEmpty record) then
+                let names = record |> Map.keys |> String.concat ", "
+
+                Logging.info
+                    "test-prune"
+                    $"Whole-project evidence recorded by an earlier daemon for %d{Map.count record} project(s) (%s{names}): each stands while its compile inputs are the ones recorded"
+
+            EarnedEvidence.restored record
+        | WholeProjectEvidence.LoadedRecord.Unreadable reason ->
+            Logging.warn
+                "test-prune"
+                $"the whole-project evidence record (%s{WholeProjectEvidence.sidecarPath repoRoot}) EXISTS but could not be read: %s{reason}. Every test project runs in full until this daemon has seen it run whole."
+
+            None
+
     let loadedRuntimeObligations, runtimeObligationsUnreadable =
         match loadRuntimeCoverageObligations repoRoot with
         | Ok obligations -> obligations, false
@@ -8394,7 +8429,8 @@ let internal createWithEvidenceAndQueries
           EvidenceReceipt = None
           EvidenceManifest = None
           ReceiptRevoked = None
-          Earned = None }
+          Earned = None
+          RestoredEvidence = restoredEvidence }
 
     /// The generation of the model the host currently publishes, when it is available.
     let observeModelGeneration (ctx: PluginCtx<TestPruneMsg>) =
@@ -10433,6 +10469,15 @@ let internal createWithEvidenceAndQueries
                     | Some baseline when rewrite || baselineChanged -> FullSuiteBaseline.save repoRoot baseline
                     | _ -> ()
 
+            // Evidence, not debt: it records which projects ran whole over which compile
+            // inputs, which stays true whatever is owed. A state that earned none leaves
+            // the last record standing, since every entry is checked against the compile
+            // inputs of the daemon that reads it.
+            if changed (fun state -> state.Earned) then
+                match candidate.Earned |> Option.map EarnedEvidence.wholeProjectInputs with
+                | Some record when not (Map.isEmpty record) -> WholeProjectEvidence.save repoRoot record
+                | _ -> ()
+
             return
                 { Finalize =
                     async {
@@ -11941,7 +11986,7 @@ let internal createWithEvidenceAndQueries
                                 (ObservedModel.projectFiles ctx.ProjectGraph)
                                 runnableProjects
                                 pendingObligations
-                                state.Earned
+                                (TestPruneState.coverageEvidence state)
                                 completed
 
                     Logging.info
