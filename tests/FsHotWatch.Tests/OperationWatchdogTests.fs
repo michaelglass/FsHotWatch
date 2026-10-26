@@ -716,3 +716,74 @@ let ``Watchdog logs a host suspension once, when the wall clock outruns the awak
         @>
 
     test <@ misread.IsEmpty @>
+
+// AUTOMATION-1330: under load the 20ms timer fires again while a tick is still running.
+// A tick that read the clocks BEFORE the lid closed but recorded them AFTER a later tick
+// had logged the suspension rewound the previous-tick reading, and the next tick logged
+// the same suspension a second time. This forces that interleaving: one tick reads the
+// pre-sleep clocks and is held; the clocks move; the held tick is released.
+[<Fact(Timeout = 10000)>]
+let ``Watchdog logs a host suspension once when a tick that read the clocks before it finishes after it`` () =
+    let logged = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    let clocks: FsHotWatch.HostClock.Reading ref =
+        ref
+            { Wall = t0.AddSeconds 30.0
+              Awake = TimeSpan.FromSeconds 1030.0 }
+
+    // Each tick's `now` pins its own snapshot for its `awake`: concurrent ticks must not
+    // read each other's.
+    let pinned = new ThreadLocal<FsHotWatch.HostClock.Reading>()
+    let armed = ref 0
+    use held = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
+
+    let awake () =
+        let reading = pinned.Value
+
+        if Interlocked.Exchange(&armed.contents, 0) = 1 then
+            held.Set()
+            release.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+
+        reading.Awake
+
+    use _w =
+        new Watchdog(
+            threshold,
+            heartbeatEvery = TimeSpan.FromHours(1.0),
+            now =
+                (fun () ->
+                    let reading = clocks.Value
+                    pinned.Value <- reading
+                    reading.Wall),
+            log = logged.Enqueue,
+            tick = TimeSpan.FromMilliseconds(20.0),
+            awake = awake
+        )
+
+    let suspensions () =
+        logged
+        |> Seq.filter (fun line -> line.StartsWith "host was suspended")
+        |> List.ofSeq
+
+    // A tick reads the awake-paced clocks (the ones the watchdog started from) and is
+    // held before it records them.
+    armed.Value <- 1
+    test <@ held.Wait(TimeSpan.FromSeconds 5.0) @>
+
+    // The lid closes while it is held. Other ticks may see it in the meantime.
+    clocks.Value <-
+        { Wall = t0.AddSeconds 424.0
+          Awake = TimeSpan.FromSeconds 1032.0 }
+
+    waitUntilTrue (fun () -> not (List.isEmpty (suspensions ()))) 500 |> ignore
+
+    // The held tick finishes with its stale reading; later ticks read the current clocks.
+    release.Set()
+    waitUntil (fun () -> not (List.isEmpty (suspensions ()))) 5000
+    Thread.Sleep 300
+
+    test
+        <@
+            suspensions () = [ "host was suspended ~392s since the previous watchdog tick (wall clock advanced 394s, awake 2s)" ]
+        @>

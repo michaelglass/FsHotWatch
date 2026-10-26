@@ -288,7 +288,8 @@ let compactingCollect () : unit =
 /// has overrun the threshold logs the structured overrun record ONCE (not every
 /// tick, and not once globally — once PER OP, so a second wedged op is not masked
 /// by the first), plus a heartbeat at a coarser cadence. Thread-safe: mutations and
-/// timer reads share one lock.
+/// timer reads share one lock, and ticks never overlap (a tick due while one runs is
+/// skipped).
 ///
 /// Each heartbeat carries `gcPauseSuffix` for the time since the previous one.
 ///
@@ -417,9 +418,24 @@ type Watchdog
             log (heapValveLogLine heapValve firing)
         | None -> ()
 
+    // 1 while a tick runs. `Timer` starts the next callback on schedule even when the
+    // previous one has not returned (a loaded host, a slow `log`, the valve's blocking
+    // collection), and `onTick` reads the clocks before it takes the lock: a tick that read
+    // them before a suspension but recorded `lastTick` after a later tick logged it rewound
+    // `lastTick`, and the next tick logged the same suspension again (AUTOMATION-1330). A
+    // tick that finds one running is skipped; the next one catches up.
+    let mutable ticking = 0
+
+    let tickOnce () =
+        if Interlocked.CompareExchange(&ticking, 1, 0) = 0 then
+            try
+                onTick ()
+            finally
+                Volatile.Write(&ticking, 0)
+
     let timer =
         let interval = defaultArg tick (TimeSpan.FromSeconds(5.0))
-        new Timer((fun _ -> onTick ()), null, interval, interval)
+        new Timer((fun _ -> tickOnce ()), null, interval, interval)
 
     /// Record `name` as in flight (capturing its start time) and return the token
     /// that retires it.
