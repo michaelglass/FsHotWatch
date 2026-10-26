@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **fix: `fshw test-rerun` no longer exits 0 when no test-prune plugin is registered.**
+  With no `tests` in `.fshw.json` the daemon answers `run-tests` with the
+  unknown-command sentinel; `renderIpcResult` took it for plain-text output, printed
+  `fshw-unknown-command:run-tests` and exited 0 — a green for a run that never happened.
+  `renderIpcResult` now answers ANY unknown-command reply with a message naming the
+  command and the missing plugin/config, and exit 3 (no verdict). The in-process
+  (no-daemon) `test-rerun` path answers the same case the same way (it exited 1).
+  New: `IpcOutput.unknownCommandMessage`, `IpcOutput.NoVerdictExitCode`.
+
 - **feat: a repository host that does not start, or stops answering during attach,
   no longer stops the command.** It exited 2 before; now the command runs on the
   worktree's own daemon, prints why, and appends a `fellBack` event (reason, the host's

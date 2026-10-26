@@ -261,6 +261,19 @@ type private CoverageRead =
     | RanPerCounts
     | Unrecognized of token: string
 
+/// What to say when the daemon answers a command with the unknown-command sentinel: no
+/// registered plugin serves it, so NOTHING ran. Names the command and, for the
+/// test-prune commands, the plugin and the `.fshw.json` key that registers it.
+let unknownCommandMessage (command: string) : string =
+    if List.contains command [ RunTestsCommand; TestScopeCommand; SetScopeCommand; CheckReachCommand ] then
+        $"the daemon has no `%s{command}` command: the test-prune plugin is not registered (no `tests` in .fshw.json), so no tests ran"
+    else
+        $"the daemon has no `%s{command}` command: no plugin configured in .fshw.json serves it, so nothing ran"
+
+/// Exit code for an unknown-command reply to a verb that expected a result: 3, no
+/// verdict. Nothing failed, and nothing ran — never the 0 a plain-text reply gets.
+let NoVerdictExitCode = 3
+
 /// Render a generic IPC result (status JSON or plain text).
 let renderIpcResult
     (mode: ProgressRenderer.RenderMode)
@@ -279,6 +292,11 @@ let renderIpcResult
             None
 
     match doc with
+    // The unknown-command sentinel is plain text too, but it is NOT output: the daemon
+    // has no plugin serving the command, so nothing ran (AUTOMATION-1337).
+    | None when FsHotWatch.Ipc.isUnknownCommandReply result ->
+        UI.fail (unknownCommandMessage (result.Substring FsHotWatch.Ipc.UnknownCommandSentinelPrefix.Length))
+        NoVerdictExitCode
     | None ->
         eprintfn "%s" result
         0

@@ -607,6 +607,29 @@ let ``renderIpcResult with plain text returns 0`` () =
     test <@ result = 0 @>
 
 [<Fact(Timeout = 15000)>]
+let ``renderIpcResult with the unknown-command sentinel returns 3, never a plain-text green`` () =
+    // AUTOMATION-1337. The sentinel is not JSON, so it used to fall into the plain-text
+    // branch above: printed verbatim, exit 0. A verb that asked a plugin for a result and
+    // got "no such command" ran NOTHING — that is no verdict (3), not a pass.
+    let result =
+        renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false (FsHotWatch.Ipc.unknownCommandReply "run-tests")
+
+    test <@ result = 3 @>
+
+[<Fact>]
+let ``unknownCommandMessage names the missing test-prune plugin and its config for run-tests`` () =
+    let message = unknownCommandMessage "run-tests"
+    test <@ message.Contains "run-tests" @>
+    test <@ message.Contains "test-prune" @>
+    test <@ message.Contains "`tests`" && message.Contains ".fshw.json" @>
+
+[<Fact>]
+let ``unknownCommandMessage names the command and the config for any other plugin command`` () =
+    let message = unknownCommandMessage "coverage-report"
+    test <@ message.Contains "coverage-report" @>
+    test <@ message.Contains ".fshw.json" @>
+
+[<Fact(Timeout = 15000)>]
 let ``renderIpcResult with test results JSON containing arrays does not crash`` () =
     let json =
         """{"elapsed":"1.5s","projects":[{"project":"TestProject","status":"passed","output":"ok"}]}"""
