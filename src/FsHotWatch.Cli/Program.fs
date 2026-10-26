@@ -2887,7 +2887,8 @@ let internal renderRepositoryStatus (json: string) : string list =
       | null -> ()
       | watch ->
           let rendered = watch.ToJsonString()
-          yield $"  watch: %s{rendered}" ]
+          yield $"  watch: %s{rendered}"
+      yield! RepositoryHostMode.ownPathsLines node ]
 
 /// `status --repository`: every session the repository's host serves.
 let internal repositoryStatus (agent: bool) (repoRoot: string) : int =
@@ -3038,6 +3039,10 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
         // FCS's work. Which content of each project is shared, and by which sessions.
         let canonical = FsHotWatch.CanonicalProjects.Registry()
 
+        // Which projects each session checks at its own paths, and why: the log says so
+        // once, `status --repository` says so while the session lasts.
+        let ownPaths = FsHotWatch.SessionFrames.Reports()
+
         let control =
             FsHotWatch.RepositoryIdentity.repositoryControlPaths (FsHwPaths.stateHome ()) launchRoot.Repository
 
@@ -3090,6 +3095,7 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
             watch["eventsUnowned"] <- System.Text.Json.Nodes.JsonValue.Create stats.EventsUnowned
             let node = System.Text.Json.Nodes.JsonObject()
             node["watch"] <- watch
+            node["ownPaths"] <- ownPaths.ToJson()
             node
 
         let factory (spec: FsHotWatch.SessionRegistry.SessionSpec) =
@@ -3111,6 +3117,7 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
                 if virtualRootOn then
                     FsHotWatch.SessionFrames.choice
                         canonical
+                        (ownPaths.For worktreeRoot)
                         worktreeRoot
                         control.VirtualRoot
                         (FsHotWatch.Logging.info "host")
@@ -3140,7 +3147,13 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
                       FsHotWatch.TestPrune.ImpactDbPool.clear (DaemonConfig.testImpactDbPath worktree.Root.Value) }
               // An ended session checks nothing: another may take its projects' content over.
               { new IDisposable with
-                  member _.Dispose() = canonical.Release worktree.Root.Value } ]
+                  member _.Dispose() = canonical.Release worktree.Root.Value }
+              // Started here, before the session's daemon is made, and ended with it.
+              let report = ownPaths.Start worktree.Root.Value
+
+              { new IDisposable with
+                  member _.Dispose() =
+                      ownPaths.End(worktree.Root.Value, report) } ]
 
         let settings =
             RepositoryHostMode.hostSettings launchRoot sinkFor watchConfig sessionResources describe

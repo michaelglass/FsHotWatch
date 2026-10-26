@@ -67,3 +67,10 @@ type Registry() =
     /// The canonical content of `project`, if any session has claimed it.
     member _.CanonicalHash(project: string) : string option =
         locked (fun () -> Map.tryFind project entries |> Option.map _.Hash)
+
+    /// The sessions checking `project`'s canonical content under the virtual root, sorted.
+    member _.HoldersOf(project: string) : string list =
+        locked (fun () ->
+            Map.tryFind project entries
+            |> Option.map (fun entry -> Set.toList entry.Holders)
+            |> Option.defaultValue [])

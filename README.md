@@ -746,6 +746,13 @@ Worth knowing before you opt in:
   own daemon and says why. The fallback is recorded in `host-events.jsonl`. The one
   exception: a host that stopped answering but still holds this worktree's session also
   holds the lock that daemon would take. That command stops and names the host's pid.
+- **A project that reads its own location is not shared.** Identical projects of two
+  worktrees are checked once, under one virtual root. A project is instead checked at
+  its own paths, and bootstrapped again by every session, when it uses
+  `__SOURCE_DIRECTORY__`, `__SOURCE_FILE__`, a `#line` directive or a type provider in
+  code; when it references such a project; or when its content differs from what
+  another worktree already checks. Each session's `logs/daemon.log` says which, and why,
+  once; `fshw status --repository` lists them per worktree (`ownPaths` in `-a`).
 
 `fshw status --repository` lists every session the host serves; `fshw stop` detaches
 this worktree; `fshw stop --repository` stops the host.

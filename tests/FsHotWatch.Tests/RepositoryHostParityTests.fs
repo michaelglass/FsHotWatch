@@ -649,7 +649,8 @@ let private runHostedBesideASibling (root: string) =
                 else
                     siblingTransitions
 
-            let frames = SessionFrames.choice canonicalProjects worktreeRoot virtualRoot ignore
+            let frames =
+                SessionFrames.choice canonicalProjects (SessionFrames.Report()) worktreeRoot virtualRoot ignore
 
             build (DaemonHosting.hostedUnderFrames inertWatcher partitions.For frames checks) shared queue worktreeRoot)
 

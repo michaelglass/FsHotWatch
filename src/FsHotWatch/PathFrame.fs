@@ -76,9 +76,13 @@ let textFrom (frame: PathFrame option) (text: string) : string =
     frame |> Option.fold (fun t f -> textToReal f t) text
 
 /// Which frame a project is checked under, given its options and the hash of its
-/// closure (its files, its options, and the closures of the projects it references).
-/// `None`: at its own paths.
-type FrameChoice = FSharpProjectOptions -> string -> PathFrame option
+/// closure (its files, its options, and the closures of the projects it references),
+/// and the project files of the projects it references that are checked at their own
+/// paths. `None`: at its own paths.
+///
+/// A project with any such upstream is checked at its own paths whatever the choice
+/// answers; it is asked anyway, so it can say why.
+type FrameChoice = FSharpProjectOptions -> string -> string list -> PathFrame option
 
 /// Every project at its own paths.
-let realPaths: FrameChoice = fun _ _ -> None
+let realPaths: FrameChoice = fun _ _ _ -> None

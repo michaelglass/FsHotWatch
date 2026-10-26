@@ -1119,3 +1119,20 @@ let ``a plugin command reaches the session of the worktree it is run in, and no 
                 Assert.True((exitCode = 1 && output.Contains unknown), $"exited %d{exitCode}:\n%s{output}")
             finally
                 reapHosts since stateHome root [] |> ignore)
+
+[<Fact(Timeout = 5000)>]
+let ``the repository status says which projects each worktree checks at its own paths, and why`` () =
+    let json =
+        """{"hostPid":7,"endpoint":"e","sessions":[{"root":"/r","serving":true,"scanGeneration":3}],"ownPaths":{"/r":[{"project":"src/App/App.fsproj","reason":"references-own-paths","upstreams":["src/Up/Up.fsproj","src/Other/Other.fsproj"]},{"project":"src/Lib/Lib.fsproj","reason":"not-canonical","heldBy":["/r/.workspaces/b"]},{"project":"src/Up/Up.fsproj","reason":"reads-its-location","construct":"__SOURCE_DIRECTORY__","where":"src/Up/Up.fs"}],"/r/.workspaces/b":[{"project":"src/New/New.fsproj","reason":"a-reason-from-a-later-host"},{"project":"src/Odd/Odd.fsproj"},{"project":"src/C/C.fsproj","reason":"not-canonical"}],"/r/.workspaces/c":[]}}"""
+
+    test
+        <@
+            renderRepositoryStatus json = [ "Repository host pid 7 on e: 1 session(s)"
+                                            "  /r  serving, scan generation 3"
+                                            "  /r checks 3 project(s) at its own paths:"
+                                            "    src/App/App.fsproj: references src/Up/Up.fsproj, src/Other/Other.fsproj, checked at their own paths"
+                                            "    src/Lib/Lib.fsproj: its content differs from what /r/.workspaces/b checks under the virtual root"
+                                            "    src/Up/Up.fsproj: it uses __SOURCE_DIRECTORY__ in src/Up/Up.fs"
+                                            "  /r/.workspaces/b checks 1 project(s) at its own paths:"
+                                            "    src/C/C.fsproj: its content differs from what another worktree checks under the virtual root" ]
+        @>

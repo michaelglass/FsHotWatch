@@ -397,12 +397,23 @@ let private buildTree
         // own paths has a different output path in every worktree, and a dependent
         // sharing one virtual identity across worktrees would then be asked for a
         // different version of it by each, evicting the other's work on every check.
-        // Asked on every check, reused or not: the choice is the caller's to make.
+        // Asked on every check, reused or not: the choice is the caller's to make. Asked
+        // with upstreams at their own paths too, so the caller can say why it is.
+        let upstreamsAtOwnPaths =
+            opts.ReferencedProjects
+            |> Array.toList
+            |> List.choose (function
+                | FSharpReferencedProject.FSharpReference(output, project) ->
+                    match Map.tryFind output upstreamByOutput with
+                    | Some { Frame = None } -> Some project.ProjectFileName
+                    | _ -> None
+                | _ -> None)
+            |> List.distinct
+
         let frame =
-            if upstreamByOutput |> Map.forall (fun _ upstream -> upstream.Frame.IsSome) then
-                choose opts closure
-            else
-                None
+            let chosen = choose opts closure upstreamsAtOwnPaths
+
+            if List.isEmpty upstreamsAtOwnPaths then chosen else None
 
         let name =
             match frame with
