@@ -3,6 +3,10 @@
 ## Unreleased
 
 - chore: FSharp.Core is pinned exactly at `[10.1.402]` instead of floating within `10.1.*`.
+- deps: TestPrune.Core 13.4.1 and TestPrune.Trace 0.7.4. Index schema 21 -> 22: an existing
+  index is recreated on first open (logged as `TestPrune DB was recreated (schema change)`),
+  so the first scan re-indexes every file. A property's accessor or initializer edit now
+  selects its tests.
 
 ## 0.13.0-alpha.91 - 2026-10-25
 

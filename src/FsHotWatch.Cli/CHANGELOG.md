@@ -8,6 +8,10 @@
   10.1.402.** Both used to float, so a release could pick up a newer FCS than the
   analyzers it hosts were compiled against (FSharp.Analyzers.SDK pins FCS 43.12.402
   exactly) and fail to load them.
+- build(deps): TestPrune.Core 13.4.0 -> 13.4.1, TestPrune.Trace 0.7.3 -> 0.7.4. An edit to a
+  property's getter, setter or initializer body now changes its hash and selects its
+  tests. Index schema 21 -> 22: an existing test-impact database is recreated on first
+  open, so the first scan after upgrading re-indexes the whole repository.
 - feat: `fshw status --repository` reports on the host itself: when it started, its
   footprint (working set, managed heap, GC-committed bytes), its lifecycle counts
   (attached, rejoined, reloaded, refused by kind, ended and faulted, undelivered), when
