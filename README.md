@@ -744,6 +744,21 @@ Worth knowing before you opt in:
 `fshw status --repository` lists every session the host serves; `fshw stop` detaches
 this worktree; `fshw stop --repository` stops the host.
 
+`fshw status --repository` also reports on the host itself: when it started, its
+footprint (working set, managed heap and GC-committed bytes, read when you ask), and its
+lifecycle counts: sessions attached, rejoined and reloaded, refusals by kind, sessions
+ended (and how many by a fault), and attaches whose answer was lost. `-a` prints the
+host's JSON (`startedAt`, `footprint`, `lifecycle`, and each session's `attachedAt`).
+
+Every lifecycle event is also appended to `host-events.jsonl` beside `host.log`: one JSON
+line each, naming the time, the host's pid, the event (`hostStarted`, `attached`,
+`refused`, `sessionEnded`, `undelivered`, `hostStopped` with `idle` or `requested`) and
+its session and worktree. A host that crashes, or is killed for memory, writes no stop.
+The next host notices that the last host it can read never recorded one, adds a
+`previousHostUnclean` line naming that host's pid, and `status --repository` says so. A
+log past 1 MiB moves to `host-events.jsonl.1` when a host starts. A log that cannot be
+written does not stop the host; the counts in `status` still work.
+
 ### Test evidence across checkouts
 
 A test project that ran in full and green in one checkout is not run again in another

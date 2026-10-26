@@ -46,7 +46,10 @@ Two defects combined:
 4. The watchdog's heap valve is a backstop, not a mechanism. When the heap exceeds a
    quarter of the memory the GC may use and no gen2 has run for two minutes, it forces
    one compacting gen2, logs `HEAP VALVE FIRED`, and `fshw status` reports it. It fires
-   at most once per two minutes. It firing means 1–3 regressed.
+   at most once per two minutes. It firing means 1–3 regressed. (Amended for
+   AUTOMATION-999: a firing that reclaims under a tenth of the heap measured the live set
+   above the threshold, not a regression; the valve then waits for the heap to pass 1.25×
+   what it left. See `docs/memory-and-tuning.md`.)
 
 ## Measurements
 

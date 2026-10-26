@@ -29,6 +29,7 @@ open System.Threading
 open System.Threading.Tasks
 open FsHotWatch.AttachHandshake
 open FsHotWatch.DaemonIdentity
+open FsHotWatch.HostLifecycle
 open FsHotWatch.RepositoryIdentity
 open FsHotWatch.RepositoryIpc
 open FsHotWatch.SessionRegistry
@@ -159,6 +160,16 @@ type HostSettings =
         Describe: unit -> JsonObject
     }
 
+/// This process's footprint now: its working set, its managed heap, and the memory the GC
+/// has committed. Read on each `status --repository`; no collection is forced.
+let footprint () : JsonObject =
+    let reading = ScanMetrics.readResources false
+    let node = JsonObject()
+    node["workingSetBytes"] <- JsonValue.Create reading.RssBytes
+    node["managedBytes"] <- JsonValue.Create reading.ManagedBytes
+    node["gcCommittedBytes"] <- JsonValue.Create(GC.GetGCMemoryInfo().TotalCommittedBytes)
+    node
+
 /// Repository-level RPCs: the host's own surface, next to each session's.
 type HostRpcTarget(listSessions: unit -> string, stop: unit -> unit) =
     /// Every attached session, and the host process behind them, as JSON.
@@ -171,9 +182,22 @@ type HostRpcTarget(listSessions: unit -> string, stop: unit -> unit) =
 
 /// `servingBound`: how long a session call waits for a just-attached session to begin
 /// serving before it is refused.
-type RepositoryHost(settings: HostSettings, registry: SessionRegistry, stop: unit -> unit, servingBound: TimeSpan) =
+///
+/// `events` is the host's lifecycle record (`HostLifecycle`); without one, the host counts
+/// in memory and writes no log.
+type RepositoryHost
+    (settings: HostSettings, registry: SessionRegistry, stop: unit -> unit, servingBound: TimeSpan, ?events: EventLog) =
     let attaching = new SemaphoreSlim(1, 1)
     let hostPid = Environment.ProcessId
+    let startedAt = DateTime.UtcNow
+
+    let events =
+        events
+        |> Option.defaultWith (fun () -> EventLog(None, hostPid, (fun () -> DateTime.UtcNow)))
+
+    do
+        registry.OnSessionEnded(fun (session, how) ->
+            events.Record(HostEvent.SessionEnded(session.Id, session.Worktree.Root.Value, how)))
 
     /// Set once the host has decided to exit; read and written only under `attaching`.
     let mutable retired = false
@@ -249,37 +273,50 @@ type RepositoryHost(settings: HostSettings, registry: SessionRegistry, stop: uni
             if retired then
                 raise (InvalidOperationException "the repository host is exiting; it starts no session")
 
-            let response =
+            let answer (request: AttachRequest) =
+                let derived = resolveWorktree request.ClaimedRoot
+                let decided = decide settings.Identity derived registry.Live mint request
+
+                match derived with
+                // A worktree that does not resolve is only ever refused.
+                | Error _ -> decided
+                | Ok worktree ->
+                    match decided with
+                    | Attached(id, AttachDisposition.NewSession, _) -> startSession id worktree request
+                    | Attached(live, AttachDisposition.RejoinedConfigChanged, _) ->
+                        // The configuration changed under the live session: replace it
+                        // with a new incarnation, so nothing from the old one survives.
+                        registry.Detach live |> ignore
+
+                        match startSession (freshId worktree) worktree request with
+                        | Attached(id, _, h) -> Attached(id, AttachDisposition.RejoinedConfigChanged, h)
+                        | refused -> refused
+                    | _ -> decided
+
+            // `claimed`, the root the client claimed, is for the lifecycle record: empty
+            // when the request could not be read.
+            let claimed, response =
                 match decodeRequest requestJson with
-                | Error _ ->
-                    // Answered with the refusal naming why it could not be read.
-                    respond settings.Identity resolveWorktree registry.Live mint requestJson
-                | Ok request ->
-                    let derived = resolveWorktree request.ClaimedRoot
-                    let decided = decide settings.Identity derived registry.Live mint request
-
-                    match derived with
-                    // A worktree that does not resolve is only ever refused.
-                    | Error _ -> decided
-                    | Ok worktree ->
-                        match decided with
-                        | Attached(id, AttachDisposition.NewSession, _) -> startSession id worktree request
-                        | Attached(live, AttachDisposition.RejoinedConfigChanged, _) ->
-                            // The configuration changed under the live session: replace it
-                            // with a new incarnation, so nothing from the old one survives.
-                            registry.Detach live |> ignore
-
-                            match startSession (freshId worktree) worktree request with
-                            | Attached(id, _, h) -> Attached(id, AttachDisposition.RejoinedConfigChanged, h)
-                            | refused -> refused
-                        | _ -> decided
+                // Answered with the refusal naming why it could not be read.
+                | Error _ -> "", respond settings.Identity resolveWorktree registry.Live mint requestJson
+                | Ok request -> request.ClaimedRoot, answer request
 
             match response with
             | Refused(refusal, _) ->
                 Logging.warn
                     "host"
                     $"attach refused (%s{AttachRefusal.kind refusal}): %s{AttachRefusal.describe refusal}"
-            | Attached(id, disposition, _) -> Logging.info "host" $"attached %s{SessionId.render id} (%A{disposition})"
+
+                events.Record(HostEvent.Refused(AttachRefusal.kind refusal, claimed))
+            | Attached(id, disposition, _) ->
+                Logging.info "host" $"attached %s{SessionId.render id} (%A{disposition})"
+
+                let root =
+                    registry.TryGet id
+                    |> Option.map (fun s -> s.Worktree.Root.Value)
+                    |> Option.defaultValue claimed
+
+                events.Record(HostEvent.Attached(id, root, disposition))
 
             encodeResponse response
         finally
@@ -295,6 +332,7 @@ type RepositoryHost(settings: HostSettings, registry: SessionRegistry, stop: uni
 
             try
                 Logging.warn "host" $"ending %s{SessionId.render id}: its attach was never answered"
+                events.Record(HostEvent.Undelivered id)
                 registry.Detach id |> ignore
             finally
                 attaching.Release() |> ignore
@@ -327,6 +365,9 @@ type RepositoryHost(settings: HostSettings, registry: SessionRegistry, stop: uni
         node["hostPid"] <- JsonValue.Create hostPid
         node["repository"] <- JsonValue.Create settings.Identity.Repository.Value
         node["endpoint"] <- JsonValue.Create settings.Control.Endpoint
+        node["startedAt"] <- JsonValue.Create(startedAt.ToString "o")
+        node["footprint"] <- footprint ()
+        node["lifecycle"] <- Tally.toJson (defaultArg events.Path "") events.Tally
         let sessions = JsonArray()
 
         for s in registry.Sessions |> List.sortBy (fun s -> s.Worktree.Root.Value) do
@@ -336,6 +377,7 @@ type RepositoryHost(settings: HostSettings, registry: SessionRegistry, stop: uni
             entry["config"] <- JsonValue.Create s.Config.Value
             entry["serving"] <- JsonValue.Create s.Serving.IsCompletedSuccessfully
             entry["scanGeneration"] <- JsonValue.Create(s.Daemon.GetScanGeneration())
+            entry["attachedAt"] <- JsonValue.Create(s.AttachedAt.ToString "o")
             sessions.Add entry
 
         node["sessions"] <- sessions
@@ -429,48 +471,61 @@ let runObserved
             File.WriteAllText(settings.Control.PidFile, string Environment.ProcessId)
             File.WriteAllText(settings.Control.IdentityFile, BinaryIdentity.render settings.Identity.Protocol.Binary)
 
-            using (new SessionRegistry(factory)) (fun registry ->
-                // Not `use`: its null check is a branch no caller can take.
-                let observed = observe registry
+            let events =
+                EventLog(Some(eventLogPath settings.Control), Environment.ProcessId, (fun () -> DateTime.UtcNow))
 
-                try
-                    let host =
-                        RepositoryHost(settings, registry, (fun () -> cts.Cancel()), PreambleBound)
+            events.Start()
+            let reason = ref StopReason.Requested
 
-                    Logging.info
-                        "host"
-                        $"repository host pid=%d{Environment.ProcessId} serving %s{settings.Identity.Repository.Value} on %s{settings.Control.Endpoint}"
+            let ran =
+                using (new SessionRegistry(factory)) (fun registry ->
+                    // Not `use`: its null check is a branch no caller can take.
+                    let observed = observe registry
 
-                    // Started on this thread, so the endpoint accepts attaches before the host
-                    // goes on (see `Daemon.RunWith`).
-                    let serving =
-                        Async.StartImmediateAsTask(RepositoryIpc.serve settings.Control.Endpoint host.Handlers cts)
+                    try
+                        let host =
+                            RepositoryHost(settings, registry, (fun () -> cts.Cancel()), PreambleBound, events)
 
-                    // Idle exit: no session attached for the whole grace period.
-                    let mutable idleSince = DateTime.UtcNow
+                        Logging.info
+                            "host"
+                            $"repository host pid=%d{Environment.ProcessId} serving %s{settings.Identity.Repository.Value} on %s{settings.Control.Endpoint}"
 
-                    while not cts.IsCancellationRequested do
-                        cts.Token.WaitHandle.WaitOne(TimeSpan.FromSeconds 1.0) |> ignore
+                        // Started on this thread, so the endpoint accepts attaches before the host
+                        // goes on (see `Daemon.RunWith`).
+                        let serving =
+                            Async.StartImmediateAsTask(RepositoryIpc.serve settings.Control.Endpoint host.Handlers cts)
 
-                        let busy = not (List.isEmpty registry.Sessions)
+                        // Idle exit: no session attached for the whole grace period.
+                        let mutable idleSince = DateTime.UtcNow
 
-                        match idleTick idleGrace DateTime.UtcNow idleSince busy host.TryRetire with
-                        | Some since -> idleSince <- since
-                        | None ->
-                            Logging.info "host" $"no session for %s{string idleGrace}; exiting"
-                            cts.Cancel()
+                        while not cts.IsCancellationRequested do
+                            cts.Token.WaitHandle.WaitOne(TimeSpan.FromSeconds 1.0) |> ignore
 
-                    serving.Wait(
-                        Ipc.IpcServer.ConnectionDrainBound
-                        + Ipc.IpcServer.ReleaseBound
-                        + TimeSpan.FromSeconds 1.0
-                    )
-                    |> ignore
+                            let busy = not (List.isEmpty registry.Sessions)
 
-                    File.Delete settings.Control.PidFile
-                    HostRun.Stopped
-                finally
-                    observed.Dispose())
+                            match idleTick idleGrace DateTime.UtcNow idleSince busy host.TryRetire with
+                            | Some since -> idleSince <- since
+                            | None ->
+                                Logging.info "host" $"no session for %s{string idleGrace}; exiting"
+                                reason.Value <- StopReason.Idle
+                                cts.Cancel()
+
+                        serving.Wait(
+                            Ipc.IpcServer.ConnectionDrainBound
+                            + Ipc.IpcServer.ReleaseBound
+                            + TimeSpan.FromSeconds 1.0
+                        )
+                        |> ignore
+
+                        File.Delete settings.Control.PidFile
+                        HostRun.Stopped
+                    finally
+                        observed.Dispose())
+
+            // After the registry ended every session, so the stop is the host's last line:
+            // the next host reads it to tell a clean exit from a crash.
+            events.Record(HostEvent.HostStopped reason.Value)
+            ran
         finally
             lock.Dispose()
 

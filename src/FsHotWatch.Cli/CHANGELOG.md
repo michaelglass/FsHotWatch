@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: `fshw status --repository` reports on the host itself: when it started, its
+  footprint (working set, managed heap, GC-committed bytes), its lifecycle counts
+  (attached, rejoined, reloaded, refused by kind, ended and faulted, undelivered), when
+  each session attached, and whether the previous host exited without recording a stop.
+  Every event also goes to `host-events.jsonl` in the repository's control directory.
+  New: `RepositoryHostMode.hostHealthLines`.
+
 ## 0.14.0-alpha.124 - 2026-10-25
 
 - feat: a `tests.projects[].coverage.argsTemplate` may use `{repoRoot}`, which the daemon

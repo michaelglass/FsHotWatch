@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- **fix!: the heap valve backs off after a firing that reclaimed little.**
+  `OperationWatchdog.HeapValveState` has a new `Floor: int64 option` (set it to `None`
+  in a literal). New `OperationWatchdog.afterHeapValveFiring state heapBefore heapAfter`
+  records `Floor = Some heapAfter` when the firing freed under a tenth of the heap and
+  clears it otherwise; `heapValveFires` then also requires the heap above 1.25× the
+  floor. `heapValveLogLine` says when a firing reclaimed under 10% and what the valve
+  now waits for.
+
+- feat: a repository host keeps a lifecycle record. New `HostLifecycle` module:
+  `EventLog` counts attaches by disposition, refusals by kind, session ends by outcome and
+  lost answers (`Tally`, `Tally.toJson`). With a path, it appends each event (`HostEvent`)
+  as one JSON line to `eventLogPath control` (`host-events.jsonl` in the control
+  directory). `Start` records `PreviousHostUnclean` when the last host it can read never
+  recorded its stop, and rotates a log past `DefaultMaxBytes` to `<log>.1`. A log that
+  cannot be written still counts. `RepositoryHost` takes an optional `events` log. `ListSessions` adds `startedAt`, `footprint` (new
+  `RepositoryHost.footprint`: working set, managed heap, GC-committed bytes), `lifecycle`
+  and each session's `attachedAt`. `RepositoryHost.run` writes the repository's event log,
+  ending it with `hostStopped` (`idle` or `requested`) after every session has ended. New
+  `WorktreeSession.AttachedAt` and `SessionRegistry.OnSessionEnded`. Listeners are called
+  before `Ended` completes, and one that throws is logged and skipped.
+
+- fix: a repository host shares a project that only NAMES `__SOURCE_DIRECTORY__`,
+  `__SOURCE_FILE__` or a `#line` directive in a comment or a string.
+  `FrameExclusions.constructIn` used to match the text anywhere, so a doc comment naming
+  `__SOURCE_DIRECTORY__`, or a `# 30,204` line inside a triple-quoted string, kept that
+  project and every project downstream of it at its own paths, and every further session
+  bootstrapped all of them again. On one 24-project repository that was 11 more
+  bootstraps per session (35 at two sessions, 57 at four). It now counts only what FCS's
+  lexer reads as code: comments and string text are blanked out before the match, and
+  inactive `#if` code and interpolation fills still count.
+
 ## 0.10.0-alpha.91 - 2026-10-25
 
 - **feat!: `ErrorEntry.Code`.** A ledger entry names the rule that produced it, when its

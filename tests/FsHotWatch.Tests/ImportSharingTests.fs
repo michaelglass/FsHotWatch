@@ -42,10 +42,17 @@ type private Session =
       Options: FSharpProjectOptions
       Frame: PathFrame.PathFrame }
 
-let private session (framework: string array) (virtualRoot: string) (root: string) (references: string list) =
+/// `session`, with P.fs reading `text`.
+let private sessionWith
+    (text: string)
+    (framework: string array)
+    (virtualRoot: string)
+    (root: string)
+    (references: string list)
+    =
     Directory.CreateDirectory root |> ignore
     let source = Path.Combine(root, "P.fs")
-    File.WriteAllText(source, "module P\nlet answer = 42\n")
+    File.WriteAllText(source, text)
 
     let options =
         makeProjectOptions
@@ -57,6 +64,8 @@ let private session (framework: string array) (virtualRoot: string) (root: strin
       Source = source
       Options = options
       Frame = PathFrame.create root virtualRoot }
+
+let private session = sessionWith "module P\nlet answer = 42\n"
 
 /// The compiler unit for `simpleName` in a check's results.
 let private unitInResults (results: FSharpCheckFileResults) (simpleName: string) =
@@ -365,6 +374,54 @@ let ``a second session at its own paths starts a second bootstrap, for a second 
         let afterA = FcsBootstraps.countsOf checker
         unitIn false checker hasher b "Unquote" |> ignore
         let afterB = FcsBootstraps.countsOf checker
+
+        test <@ afterB.Started > afterA.Started @>
+        test <@ afterB.Projects = afterA.Projects + 1 @>)
+
+/// The bootstraps two identical hosted sessions start, each through its own pipeline,
+/// when P.fs reads `text`: (after the first session's check, after the second's).
+let private hostedBootstraps (dir: string) (text: string) =
+    let checker = Daemon.Daemon.createChecker ()
+    let canonical = CanonicalProjects.Registry()
+    let framework = frameworkOptions checker dir
+    let virtualRoot = Path.Combine(dir, "virtual")
+    let a = sessionWith text framework virtualRoot (Path.Combine(dir, "a")) [ external ]
+    let b = sessionWith text framework virtualRoot (Path.Combine(dir, "b")) [ external ]
+
+    unitThroughPipeline checker canonical virtualRoot ProjectSnapshots.inPlace a "Unquote"
+    |> ignore
+
+    let afterA = FcsBootstraps.countsOf checker
+
+    unitThroughPipeline checker canonical virtualRoot ProjectSnapshots.inPlace b "Unquote"
+    |> ignore
+
+    afterA, FcsBootstraps.countsOf checker
+
+[<Fact(Timeout = 120000)>]
+let ``a second hosted session of a project that only names its location in comments and strings starts no second bootstrap``
+    ()
+    =
+    // Measured on a 24-project repository: a doc comment naming
+    // `__SOURCE_DIRECTORY__` and a `# 30,204` line inside a string kept one project and
+    // the eight that reference it at their own paths, so each further session started
+    // eleven more bootstraps (35 at two sessions, 57 at four, against 24 at one).
+    withTempDir "import-sharing-bootstraps-mentions" (fun dir ->
+        let text =
+            "module P\n/// callers pass a `__SOURCE_DIRECTORY__`-derived path\nlet yaml = \"\"\"\n  # 30,204 series\n\"\"\"\n"
+
+        let afterA, afterB = hostedBootstraps dir text
+
+        test <@ afterA.Started >= 1L && afterA.Projects = 1 @>
+        test <@ afterB = afterA @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a second hosted session of a project that reads its location starts its own bootstrap`` () =
+    // The control: a project that really uses `__SOURCE_DIRECTORY__` stays at its own
+    // paths, so the counter does see a second session's bootstrap.
+    withTempDir "import-sharing-bootstraps-reads" (fun dir ->
+        let afterA, afterB =
+            hostedBootstraps dir "module P\nlet here = __SOURCE_DIRECTORY__\n"
 
         test <@ afterB.Started > afterA.Started @>
         test <@ afterB.Projects = afterA.Projects + 1 @>)

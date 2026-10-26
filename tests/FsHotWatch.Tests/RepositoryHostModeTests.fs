@@ -99,6 +99,47 @@ let ``the repository status names the host, each session and the shared watcher`
             renderRepositoryStatus """{"hostPid":7,"endpoint":"e","sessions":[]}""" = [ "Repository host pid 7 on e: 0 session(s)" ]
         @>
 
+[<Fact(Timeout = 5000)>]
+let ``the repository status names the host's footprint and lifecycle, and when each session attached`` () =
+    let json =
+        """{"hostPid":7,"endpoint":"e","startedAt":"2026-10-25T12:00:00.0000000Z","footprint":{"workingSetBytes":3221225472,"managedBytes":2147483648,"gcCommittedBytes":2684354560},"lifecycle":{"attached":3,"rejoined":2,"reloaded":1,"refused":{"binary-mismatch":2,"toolchain-mismatch":1},"ended":{"stopped":1,"faulted":1},"undelivered":0,"previousHostUnclean":true,"previousHostPid":41,"eventLog":"/s/host-events.jsonl"},"sessions":[{"root":"/r","serving":true,"scanGeneration":3,"attachedAt":"2026-10-25T12:01:00.0000000Z"}]}"""
+
+    test
+        <@
+            renderRepositoryStatus json = [ "Repository host pid 7 on e: 1 session(s), up since 2026-10-25T12:00:00.0000000Z"
+                                            "  footprint: working set 3072 MB, managed 2048 MB, GC committed 2560 MB"
+                                            "  lifecycle: 3 attached, 2 rejoined, 1 reloaded, 3 refused (binary-mismatch 2, toolchain-mismatch 1), 2 ended (1 faulted), 0 undelivered"
+                                            "  the previous host (pid 41) exited without recording a stop; events: /s/host-events.jsonl"
+                                            "  /r  serving, scan generation 3, attached 2026-10-25T12:01:00.0000000Z" ]
+        @>
+
+    let unknownPid = json.Replace(""","previousHostPid":41""", "")
+
+    test
+        <@
+            renderRepositoryStatus unknownPid
+            |> List.contains "  the previous host exited without recording a stop; events: /s/host-events.jsonl"
+        @>
+
+    let clean =
+        json.Replace(""""previousHostUnclean":true""", """"previousHostUnclean":false""")
+
+    test
+        <@
+            renderRepositoryStatus clean
+            |> List.forall (fun l -> not (l.Contains "previous host"))
+        @>
+
+    let quiet =
+        json.Replace(""""refused":{"binary-mismatch":2,"toolchain-mismatch":1}""", """"refused":{}""")
+
+    test
+        <@
+            renderRepositoryStatus quiet
+            |> List.contains
+                "  lifecycle: 3 attached, 2 rejoined, 1 reloaded, 0 refused, 2 ended (1 faulted), 0 undelivered"
+        @>
+
 // ---------------------------------------------------------------------------
 // Attaching
 // ---------------------------------------------------------------------------

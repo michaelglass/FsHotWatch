@@ -54,6 +54,12 @@ collection and logs `HEAP VALVE FIRED`, and `fshw status` warns `HEAP VALVE: fir
 time(s)`. It fires at most once per two minutes. It is a backstop: if you see it, the
 daemon's allocation has regressed; please report it with the heartbeat lines around it.
 
+The exception is a firing that reclaims under a tenth of the heap. That measures the
+live set itself above the threshold (a large solution's warm checker can hold more than a
+quarter of a small host's memory), and forcing the same collection again would reclaim
+nothing. The log line says so, and the valve then holds until the heap passes 1.25× what
+that firing left. A later firing that reclaims real garbage restores the plain threshold.
+
 ## Idle exit
 
 A daemon can shut itself down after a configurable idle period to reclaim its

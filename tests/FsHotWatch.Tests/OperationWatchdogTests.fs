@@ -438,7 +438,8 @@ let private bloated =
 let private startState =
     { Gen2 = bloated.Gen2
       Gen2MovedAt = t0
-      LastFired = None }
+      LastFired = None
+      Floor = None }
 
 [<Fact(Timeout = 5000)>]
 let ``the heap valve holds while the heap is under its threshold`` () =
@@ -470,6 +471,100 @@ let ``the heap valve fires at most once per quiet interval`` () =
 
     test <@ not (heapValveFires valvePolicy fired (t0.AddMinutes 6.0) bloated) @>
     test <@ heapValveFires valvePolicy fired (t0.AddMinutes 7.0) bloated @>
+
+// A daemon whose LIVE set sits above the threshold had every forced collection reclaim
+// nothing, and the valve fired again each quiet interval. Measured on one long-lived
+// daemon: 842 firings in 44 h, 825 of them freeing under 0.5 GB, each a multi-second
+// blocking compaction of the whole heap (median pause 3.6 s).
+
+[<Fact(Timeout = 5000)>]
+let ``after a firing that reclaimed little, the valve waits for the heap to grow past what it left`` () =
+    let fired = { startState with LastFired = Some t0 }
+
+    let unproductive = afterHeapValveFiring fired (gib 12.0) (gib 11.5)
+
+    test <@ unproductive.Floor = Some(gib 11.5) @>
+
+    // Long past the quiet interval with no gen2, still near the heap the collection
+    // left: forcing another one would reclaim nothing again.
+    test <@ not (heapValveFires valvePolicy unproductive (t0.AddMinutes 30.0) { bloated with HeapBytes = gib 12.0 }) @>
+
+    // Grown by more than a quarter over what the collection left: new garbage to take.
+    test <@ heapValveFires valvePolicy unproductive (t0.AddMinutes 30.0) { bloated with HeapBytes = gib 14.5 } @>
+
+[<Fact(Timeout = 5000)>]
+let ``after a firing that reclaimed real garbage, the valve keeps its plain threshold`` () =
+    let fired =
+        { startState with
+            LastFired = Some t0
+            Floor = Some(gib 11.5) }
+
+    let productive = afterHeapValveFiring fired (gib 12.0) (gib 1.5)
+
+    test <@ productive.Floor = None @>
+    test <@ heapValveFires valvePolicy productive (t0.AddMinutes 30.0) bloated @>
+
+[<Fact(Timeout = 5000)>]
+let ``the valve log line says when a firing reclaimed little and what the next one waits for`` () =
+    let firing =
+        { At = t0
+          HeapBefore = gib 8.39
+          HeapAfter = gib 8.39
+          QuietFor = TimeSpan.FromSeconds 130.0
+          Count = 400 }
+
+    let line = heapValveLogLine { valvePolicy with Threshold = gib 8.0 } firing
+
+    test <@ line.StartsWith "HEAP VALVE FIRED (#400): heap 8.39 GB above 8.00 GB" @>
+    test <@ line.Contains "reclaimed under 10%" @>
+    test <@ line.Contains "until the heap passes 10.49 GB" @>
+
+    let productive = heapValveLogLine valvePolicy { firing with HeapAfter = gib 1.5 }
+    test <@ not (productive.Contains "reclaimed under 10%") @>
+
+[<Fact(Timeout = 10000)>]
+let ``Watchdog does not refire the heap valve on a live set its collection cannot shrink`` () =
+    let logged = System.Collections.Concurrent.ConcurrentQueue<string>()
+    let clock = ref t0
+    let reading = ref bloated
+    let collections = ref 0
+
+    // A compacting gen2 that frees nothing: the heap is all live.
+    let collect () =
+        Interlocked.Increment collections |> ignore
+
+        reading.Value <-
+            { reading.Value with
+                Gen2 = reading.Value.Gen2 + 1 }
+
+    use _w =
+        new Watchdog(
+            threshold,
+            heartbeatEvery = TimeSpan.FromSeconds(30.0),
+            now = (fun () -> clock.Value),
+            log = logged.Enqueue,
+            tick = TimeSpan.FromMilliseconds(20.0),
+            gcPauseTotal = (fun () -> TimeSpan.Zero),
+            resources = (fun () -> reading.Value),
+            heapValve = valvePolicy,
+            collect = collect
+        )
+
+    let heartbeats () =
+        logged |> Seq.filter (fun l -> l.StartsWith "heartbeat:") |> Seq.length
+
+    clock.Value <- t0.AddSeconds 150.0
+    waitUntil (fun () -> collections.Value = 1) 5000
+
+    // Several quiet intervals later, the heap unchanged: the old valve fired every one.
+    // (A collection runs after its tick's heartbeat is logged, so the last step is only
+    // there to let the step before it finish.)
+    for minutes in [ 5.0; 8.0; 11.0; 14.0; 14.6 ] do
+        let seen = heartbeats ()
+        clock.Value <- t0.AddMinutes minutes
+        waitUntil (fun () -> heartbeats () > seen) 5000
+
+    test <@ collections.Value = 1 @>
 
 [<Fact(Timeout = 10000)>]
 let ``Watchdog fires the heap valve once, logs it loudly and reports it for status`` () =

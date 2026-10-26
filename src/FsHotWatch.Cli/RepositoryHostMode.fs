@@ -191,3 +191,56 @@ let hostSettings
       WatchConfig = watchConfig
       SessionResources = sessionResources
       Describe = describe }
+
+/// The lines `status --repository` prints about the host itself, from its
+/// `ListSessions` answer: its footprint, its lifecycle counts, and whether the host
+/// before it exited without recording a stop. A field the host did not send prints
+/// nothing.
+let hostHealthLines (node: JsonNode) : string list =
+    let int64Of (n: JsonNode) (name: string) = n[name].GetValue<int64>()
+    let mb (n: JsonNode) (name: string) = int64Of n name / 1048576L
+
+    [ match node["footprint"] with
+      | null -> ()
+      | f ->
+          let workingSet = mb f "workingSetBytes"
+          let managed = mb f "managedBytes"
+          let committed = mb f "gcCommittedBytes"
+          yield $"  footprint: working set %d{workingSet} MB, managed %d{managed} MB, GC committed %d{committed} MB"
+      match node["lifecycle"] with
+      | null -> ()
+      | l ->
+          let refused =
+              l["refused"].AsObject()
+              |> Seq.map (fun kv -> kv.Key, kv.Value.GetValue<int64>())
+              |> List.ofSeq
+
+          let refusedTotal = refused |> List.sumBy snd
+
+          let byKind =
+              match refused with
+              | [] -> ""
+              | kinds ->
+                  let listed = kinds |> List.map (fun (k, n) -> $"%s{k} %d{n}") |> String.concat ", "
+                  $" (%s{listed})"
+
+          let ended = l["ended"]
+          let stopped = int64Of ended "stopped"
+          let faulted = int64Of ended "faulted"
+
+          let attached = int64Of l "attached"
+          let rejoined = int64Of l "rejoined"
+          let reloaded = int64Of l "reloaded"
+          let undelivered = int64Of l "undelivered"
+
+          yield
+              $"  lifecycle: %d{attached} attached, %d{rejoined} rejoined, %d{reloaded} reloaded, %d{refusedTotal} refused%s{byKind}, %d{stopped + faulted} ended (%d{faulted} faulted), %d{undelivered} undelivered"
+
+          if l["previousHostUnclean"].GetValue<bool>() then
+              let who =
+                  match l["previousHostPid"] with
+                  | null -> ""
+                  | pid -> $" (pid %d{pid.GetValue<int>()})"
+
+              let log = l["eventLog"].GetValue<string>()
+              yield $"  the previous host%s{who} exited without recording a stop; events: %s{log}" ]

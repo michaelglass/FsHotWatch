@@ -23,6 +23,37 @@ let ``code that does not read its location is not`` (text: string) =
     // CallerFilePath is a value in the typed tree, never a change to what typechecks.
     test <@ FrameExclusions.constructIn text = None @>
 
+/// Text that only NAMES a construct, in a comment or a string, is not code that uses it.
+/// Found as a substring, each of these once kept a project, and every project referencing
+/// it, off the shared virtual root, so every further session of a repository host
+/// bootstrapped them again.
+[<Theory>]
+[<InlineData("module X\n/// the test passes its `__SOURCE_DIRECTORY__`-derived path\nlet x = 1")>]
+[<InlineData("module X\nlet x = 1 // not __SOURCE_FILE__\n")>]
+[<InlineData("module X\n(* __SOURCE_DIRECTORY__\n   over two lines *)\nlet x = 1")>]
+[<InlineData("module X\n(* nested (* __SOURCE_FILE__ *) still a comment *)\nlet x = 1")>]
+[<InlineData("module X\nlet s = \"__SOURCE_DIRECTORY__ is a word here\"")>]
+[<InlineData("module X\nlet s = @\"C:\\__SOURCE_FILE__\"")>]
+[<InlineData("module X\nlet s = \"\"\"\n  # 30,204 series live in the namespace\n\"\"\"")>]
+[<InlineData("module X\nlet s = \"\n#line 12 \\\"Generated.fs\\\"\n\"")>]
+[<InlineData("module X\nlet s = $\"__SOURCE_DIRECTORY__ {1 + 1}\"")>]
+let ``a construct only named in a comment or a string is not found`` (text: string) =
+    test <@ FrameExclusions.constructIn text = None @>
+
+/// The other direction: a use the lexer must not mistake for a comment or a string. A
+/// miss here would check a project that reads its own location under the shared root.
+[<Theory>]
+[<InlineData("module X\nlet s = $\"{__SOURCE_DIRECTORY__}/data\"", "__SOURCE_DIRECTORY__")>]
+[<InlineData("module X\nlet q = '\"'\nlet here = __SOURCE_DIRECTORY__ // \"", "__SOURCE_DIRECTORY__")>]
+[<InlineData("module X\nlet times = (*) 2 3\nlet here = __SOURCE_FILE__", "__SOURCE_FILE__")>]
+[<InlineData("module X\n(* closed *) let here = __SOURCE_DIRECTORY__", "__SOURCE_DIRECTORY__")>]
+[<InlineData("module X\nlet s = \"a \\\" b\" + __SOURCE_FILE__", "__SOURCE_FILE__")>]
+[<InlineData("module X\n#if SOME_DEFINE\nlet here = __SOURCE_DIRECTORY__\n#endif", "__SOURCE_DIRECTORY__")>]
+[<InlineData("module X\n#if SOME_DEFINE\n# 3 \"Other.fs\"\n#endif\nlet x = 1", "#line")>]
+[<InlineData("module X\nlet x = 1\n  #line 7\nlet y = 2", "#line")>]
+let ``a construct used in code is found however the text around it reads`` (text: string, construct: string) =
+    test <@ FrameExclusions.constructIn text = Some construct @>
+
 let private optionsWith (dir: string) (sources: (string * string) list) (otherOptions: string list) =
     let files =
         sources
@@ -60,6 +91,18 @@ let ``a project is excluded by the first source that reads its location, and say
             let where = Path.Combine(dir, "B.fs")
             test <@ FrameExclusions.Exclusion.describe exclusion = $"__SOURCE_DIRECTORY__ in %s{where}" @>
         | None -> failwith "expected an exclusion")
+
+[<Fact>]
+let ``a project that only mentions its location in comments and strings is checked under the virtual root`` () =
+    withTempDir "frame-exclusion-mentions" (fun dir ->
+        let options =
+            optionsWith
+                dir
+                [ "A.fs", "module A\n/// callers pass their `__SOURCE_DIRECTORY__`\nlet a = 1"
+                  "B.fs", "module B\nlet yaml = \"\"\"\n  # 30,204 series\n\"\"\"" ]
+                []
+
+        test <@ FrameExclusions.exclusionFor File.ReadAllText options = None @>)
 
 [<Fact>]
 let ``an option read relative to the project directory excludes it`` () =
