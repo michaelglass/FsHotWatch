@@ -25,6 +25,7 @@ let private sample generation rss =
       CheckStarts = 1552L
       CacheHits = 0L
       CacheMisses = 0L
+      CheckCache = Some true
       RetryRounds = 0
       RssBytes = rss
       ManagedBytes = rss / 4L
@@ -334,6 +335,34 @@ let ``cache hits and misses are reported beside the check starts`` () =
     test <@ line.Contains "\"cacheHits\":2110" @>
     test <@ line.Contains "\"cacheMisses\":318" @>
     test <@ (tryParseLine line |> Option.map (fun s -> s.CacheHits, s.CacheMisses)) = Some(2110L, 318L) @>
+
+[<Fact>]
+let ``a sample says whether its daemon ran a check-result cache`` () =
+    // `cacheHits: 0, cacheMisses: 0` reads the same for a daemon with no cache and for
+    // a cache nothing was looked up in; only this field tells them apart.
+    for ran, rendered in
+        [ Some false, "\"checkCache\":\"off\""
+          Some true, "\"checkCache\":\"on\""
+          None, "\"checkCache\":null" ] do
+        let original =
+            { sample 1L 1_000L with
+                CheckCache = ran }
+
+        let line = toJsonLine original
+        test <@ line.Contains rendered @>
+        test <@ tryParseLine line = Some original @>
+
+[<Fact>]
+let ``a record written before samples said whether a cache ran reads as not recorded`` () =
+    match tryParseLine legacyLine with
+    | None -> Assert.Fail "a pre-existing record must still parse"
+    | Some parsed -> test <@ parsed.CheckCache = None @>
+
+    // A value this version does not know is not recorded either, rather than a guess.
+    let unknown =
+        (toJsonLine (sample 1L 1L)).Replace("\"checkCache\":\"on\"", "\"checkCache\":\"maybe\"")
+
+    test <@ (tryParseLine unknown |> Option.map _.CheckCache) = Some None @>
 
 [<Fact>]
 let ``bootstrap counts round-trip`` () =

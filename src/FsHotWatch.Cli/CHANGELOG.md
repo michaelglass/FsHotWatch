@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: `FSHW_CHECK_CACHE` in a daemon's environment overrides `.fshw.json`'s
+  `cache.scope` for that daemon: `on`/`true`/`1` runs the configured cache in this
+  checkout whatever its scope (the default in-memory cache when none is configured),
+  `off`/`false`/`0` runs none. Unset or blank defers to the file; any other value is
+  ignored with a warning. `--no-cache` wins. Read once at start, so it never triggers the
+  config-changed restart. The startup `check-result cache:` line names the variable. New:
+  `DaemonConfig.CheckCacheEnvVar`, `CheckCacheOverride`, `parseCheckCacheOverride`,
+  `checkCacheOverrideWarning`, `createCacheComponentsWith`.
+
 - feat: `fshw status --repository` reports on the host itself: when it started, its
   footprint (working set, managed heap, GC-committed bytes), its lifecycle counts
   (attached, rejoined, reloaded, refused by kind, ended and faulted, undelivered), when

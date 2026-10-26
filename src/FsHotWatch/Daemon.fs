@@ -4425,6 +4425,7 @@ let private performScan
                   CheckStarts = pipeline.CheckStarts - checkStartsAtScanStart.Value
                   CacheHits = cacheScan.Hits
                   CacheMisses = CheckCacheTally.CacheTally.misses cacheScan
+                  CheckCache = Some pipeline.HasCheckCache
                   RetryRounds = retryRounds
                   RssBytes = reading.RssBytes
                   ManagedBytes = reading.ManagedBytes

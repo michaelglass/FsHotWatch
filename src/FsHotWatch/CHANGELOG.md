@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **feat!: a scan's measurement record says whether the daemon ran a check-result
+  cache.** `ScanMetrics.ScanSample` has a new `CheckCache: bool option` field (breaking for
+  record literals), written as `"checkCache": "on" | "off"`. A line without the field, or
+  with an unknown value, parses as `None`. The daemon fills it from
+  `CheckPipeline.HasCheckCache`.
+
 - **fix!: the heap valve backs off after a firing that reclaimed little.**
   `OperationWatchdog.HeapValveState` has a new `Floor: int64 option` (set it to `None`
   in a literal). New `OperationWatchdog.afterHeapValveFiring state heapBefore heapAfter`

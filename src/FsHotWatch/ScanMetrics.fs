@@ -59,6 +59,10 @@ type ScanSample =
         /// Check-result cache lookups this scan missed, for any reason; the reasons are in
         /// the scan's `check-result cache:` log line (`CheckCacheTally.describeCacheTally`).
         CacheMisses: int64
+        /// Whether this daemon ran a check-result cache. `Some false` makes `CacheHits` and
+        /// `CacheMisses` 0 because there was no cache, not because nothing was looked up
+        /// (`"checkCache": "off"`). `None` for a record written before the field existed.
+        CheckCache: bool option
         /// Extra rounds `runChecksWithRetry` needed beyond the first pass,
         /// summed over tiers. 0 on a clean scan; the retry amplification
         /// bounds shows up here.
@@ -154,6 +158,11 @@ let toJsonLine (sample: ScanSample) : string =
            checkStarts = sample.CheckStarts
            cacheHits = sample.CacheHits
            cacheMisses = sample.CacheMisses
+           checkCache =
+            match sample.CheckCache with
+            | Some true -> "on"
+            | Some false -> "off"
+            | None -> null
            retryRounds = sample.RetryRounds
            rssBytes = sample.RssBytes
            managedBytes = sample.ManagedBytes
@@ -210,6 +219,14 @@ let tryParseLine (line: string) : ScanSample option =
                   CheckStarts = optionalInt64 "checkStarts"
                   CacheHits = optionalInt64 "cacheHits"
                   CacheMisses = optionalInt64 "cacheMisses"
+                  CheckCache =
+                    match root.TryGetProperty "checkCache" with
+                    | true, value when value.ValueKind = JsonValueKind.String ->
+                        match value.GetString() with
+                        | "on" -> Some true
+                        | "off" -> Some false
+                        | _ -> None
+                    | _ -> None
                   RetryRounds = (field "retryRounds").GetInt32()
                   RssBytes = (field "rssBytes").GetInt64()
                   ManagedBytes = (field "managedBytes").GetInt64()

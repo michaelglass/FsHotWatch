@@ -2946,7 +2946,22 @@ let internal daemonWith
     (root: string)
     : Daemon =
     let cacheConfig = if opts.NoCache then DaemonConfig.NoCache else config.Cache
-    let checkCache = DaemonConfig.createCacheComponents root cacheConfig
+
+    // `FSHW_CHECK_CACHE` in this process's environment overrides `cache.scope` for this
+    // daemon alone; `--no-cache` on the command line beats it. Read once, here: it is not
+    // a file, so it never triggers the config-changed restart. For a hosted session it is
+    // the host's environment, not the attaching client's.
+    let cacheOverride =
+        if opts.NoCache then
+            DaemonConfig.CheckCacheOverride.Unset
+        else
+            DaemonConfig.parseCheckCacheOverride (Environment.GetEnvironmentVariable DaemonConfig.CheckCacheEnvVar)
+
+    DaemonConfig.checkCacheOverrideWarning cacheOverride
+    |> Option.iter (FsHotWatch.Logging.warn "cache")
+
+    let checkCache =
+        DaemonConfig.createCacheComponentsWith cacheOverride root cacheConfig
 
     // Files the built-in filters ignore but a plugin or preprocessor is triggered by:
     // `fileCommands[].pattern`, and every `preprocessors[].triggers` pattern, so an
