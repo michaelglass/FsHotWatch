@@ -2495,6 +2495,17 @@ let ``waitForPluginTerminalIfRunning times out when plugin never leaves Running`
 
     host.EmitFileChanged(SourceChanged [ "/tmp/Lib.fs" ])
 
+    // The plugin must be Running before the wait starts. Its handler reaches Running
+    // asynchronously; on a loaded box that took longer than the wait's 200 ms settle
+    // window, so the wait saw a plugin that never ran, returned at once (226 ms), and the
+    // lower bound below failed on load rather than on the timeout under test.
+    waitUntil
+        (fun () ->
+            match host.GetStatus("build") with
+            | Some(Running _) -> true
+            | _ -> false)
+        10000
+
     let sw = System.Diagnostics.Stopwatch.StartNew()
 
     waitForPluginTerminalIfRunning host "build" (TimeSpan.FromMilliseconds(500.0))
