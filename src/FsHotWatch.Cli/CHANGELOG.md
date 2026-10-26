@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.125 - 2026-10-25
+
 - feat: `fshw status --repository` reports on the host itself: when it started, its
   footprint (working set, managed heap, GC-committed bytes), its lifecycle counts
   (attached, rejoined, reloaded, refused by kind, ended and faulted, undelivered), when

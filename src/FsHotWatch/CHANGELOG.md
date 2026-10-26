@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.92 - 2026-10-25
+
 - **fix!: the heap valve backs off after a firing that reclaimed little.**
   `OperationWatchdog.HeapValveState` has a new `Floor: int64 option` (set it to `None`
   in a literal). New `OperationWatchdog.afterHeapValveFiring state heapBefore heapAfter`
