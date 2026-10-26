@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.51 - 2026-10-25
+
 - **fix: FSharp.Compiler.Service is pinned exactly at `[43.12.402]`** (FSharp.Core at
   `[10.1.402]`) instead of floating within `43.*`, matching the FCS that
   FSharp.Analyzers.SDK-built analyzers are compiled against.

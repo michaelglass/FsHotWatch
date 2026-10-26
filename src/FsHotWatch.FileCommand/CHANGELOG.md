@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.26 - 2026-10-25
+
 - chore: FSharp.Core is pinned exactly at `[10.1.402]` instead of floating within `10.1.*`.
 
 ## 0.7.0-alpha.25 - 2026-09-29
