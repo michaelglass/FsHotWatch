@@ -3649,15 +3649,25 @@ let private executeCommandRendered
                     stopDaemonWith ipc defaultFileOps defaultStopOps repoRoot pipeName
                     |> reportStopOutcome))
         | Scan ->
-            // A scan runs REAL WORK on the daemon — never on a stale-binary
-            // one (its results would come from the wrong binary). Same decision as
-            // ensureDaemon, which also announces why it restarts.
-            link.RestartIfStale()
+            let scan () =
+                withIpc (fun () ->
+                    let result = ipc.Scan pipeName None |> Async.RunSynchronously
+                    UI.success $"Scan: %s{result}"
+                    0)
 
-            withIpc (fun () ->
-                let result = ipc.Scan pipeName None |> Async.RunSynchronously
-                UI.success $"Scan: %s{result}"
-                0)
+            if ipc.IsRunning pipeName then
+                // A scan runs REAL WORK on the daemon — never on a stale-binary
+                // one (its results would come from the wrong binary). Same decision as
+                // ensureDaemon, which also announces why it restarts.
+                link.RestartIfStale()
+                scan ()
+            else
+                // Nothing is up to scan: bring the daemon up first, as every other
+                // command that needs one does. Without this, a worktree left to its own
+                // daemon by a repository host that stopped answering was told so, and
+                // the scan then timed out connecting to a daemon nobody started
+                // (AUTOMATION-1333).
+                withDaemon scan
         | Invalidate ->
             if not (ipc.IsRunning pipeName) && tryInvalidateWithoutDaemon repoRoot then
                 UI.success "Cache invalidated; no daemon was running, none started"
