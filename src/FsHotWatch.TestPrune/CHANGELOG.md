@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **fix!: a full suite widened for unknown verification debt says why.** Every cause of
+  unknown debt (an unreadable pending-verification or outstanding-failures ledger, an
+  unfinished runtime-obligation write, an unfinished debt publication, runtime coverage
+  that did not ingest) was logged as "Scope: FULL SUITE (unreadable pending-verification
+  ledger)". On one land daemon that line ran for six hours, across a restart, while the
+  pending-verification ledger read fine: a project's runtime coverage had failed to ingest
+  (`SQLite Error 5: 'database is locked'`). The Scope line, the drain line, the
+  zero-affected widening and the recovery line now name each cause with its record's path
+  and reason. **Breaking (API):** `VerificationDebt.RecoveryOutstanding: bool` is replaced
+  by `UnknownDebt: string list` (a `RecoveryOutstanding` member remains, read-only);
+  `RuntimeCoverageFailed` carries the failure's reason; `ZeroAffectedWidening.UnreadableLedger`
+  is `UnknownDebt of causes`.
+
 - **fix!: one project's launch stall costs only that project's evidence.** A project whose
   test host showed no sign of life within the launch deadline ("launch produced no live
   process within 300s — box overloaded") raised out of the whole run, which completed

@@ -545,3 +545,65 @@ let ``one project's launch stall costs only that project's evidence`` () =
 
     test
         <@ next.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests"); "ProjB", ProjectInFull ] @>
+
+// ---------------------------------------------------------------------------
+// Unknown verification debt, said for what it is (AUTOMATION-1320). On 10-25 the land
+// daemon logged "Scope: FULL SUITE (unreadable pending-verification ledger)" for six hours,
+// across a restart, while the pending-verification ledger read fine: the debt was unknown
+// because `Intelligence.Build.Tests`'s runtime coverage did not ingest ("SqliteException:
+// SQLite Error 5: 'database is locked'"), and after the restart because that failure's
+// marker was still on disk. Every cause of unknown debt was printed as the ledger's.
+// ---------------------------------------------------------------------------
+
+/// Run `body` with this context's log lines collected.
+let private withLogLines (body: unit -> 'T) : 'T * string list =
+    let lines = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    let result =
+        using
+            (FsHotWatch.Logging.installSink
+                { Write = lines.Enqueue
+                  Level = FsHotWatch.Logging.LogLevel.Debug
+                  File = None })
+            (fun _ -> body ())
+
+    result, List.ofSeq lines
+
+[<Fact(Timeout = 30000)>]
+let ``a full suite widened for unknown debt names the cause, not the pending-verification ledger`` () =
+    let f = fixture ()
+    let verified = verifiedUnderModelOne f
+
+    let unknown =
+        update
+            f
+            verified
+            (Custom(RuntimeCoverageFailed("ProjB", "SqliteException: SQLite Error 5: 'database is locked'")))
+
+    let _, lines = withLogLines (fun () -> buildAndLaunch f (withChangeToLibF unknown))
+
+    let scope = lines |> List.filter (fun line -> line.Contains "Scope: FULL SUITE")
+    test <@ not scope.IsEmpty @>
+
+    test
+        <@
+            scope
+            |> List.forall (fun line -> not (line.Contains "pending-verification ledger"))
+        @>
+
+    test <@ scope |> List.exists (fun line -> line.Contains "runtime coverage for ProjB") @>
+
+[<Fact(Timeout = 30000)>]
+let ``a daemon that starts over an unfinished debt record names that record as the cause`` () =
+    let f = fixture ()
+    let marker = runtimeCoverageRecoveryPath f.Ctx.RepoRoot
+    Directory.CreateDirectory(Path.GetDirectoryName marker) |> ignore
+    File.WriteAllText(marker, "runtime obligation write in progress")
+
+    let next = restarted f
+    let causes = next.Handler.Init.Debt.UnknownDebt
+
+    test <@ causes.Length = 1 @>
+    test <@ causes.Head.Contains "runtime coverage obligation ledger" @>
+    test <@ causes.Head.Contains(runtimeCoverageObligationsPath f.Ctx.RepoRoot) @>
+    test <@ not (causes.Head.Contains "pending-verification") @>

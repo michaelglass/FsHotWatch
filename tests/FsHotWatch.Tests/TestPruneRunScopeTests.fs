@@ -3551,7 +3551,7 @@ let ``full-suite recovery preserves newer runtime obligations and rejects stale 
         { handler.Init with
             Debt =
                 { handler.Init.Debt with
-                    RecoveryOutstanding = true
+                    UnknownDebt = [ "a ledger could not be read (fixture)" ]
                     RuntimeObligations = obligations } }
 
     let launch =
@@ -5079,7 +5079,7 @@ let ``a quiet completion that folds while an obligation is owed keeps the receip
             { afterFull with
                 Debt =
                     { afterFull.Debt with
-                        RecoveryOutstanding = true } }
+                        UnknownDebt = [ "a ledger could not be read (fixture)" ] } }
 
         let afterQuiet = handler.Update ctx owing quietRun |> Async.RunSynchronously
 
@@ -5091,7 +5091,7 @@ let ``a quiet completion that folds while an obligation is owed keeps the receip
             { afterQuiet with
                 Debt =
                     { afterQuiet.Debt with
-                        RecoveryOutstanding = false } }
+                        UnknownDebt = [] } }
 
         let final = handler.Update ctx discharged narrowRun |> Async.RunSynchronously
         let report = receiptScopeUnder repoRoot handler final 7L
@@ -5137,7 +5137,7 @@ let ``a quiet completion that keeps a narrower receipt while an obligation is ow
             { afterNarrow with
                 Debt =
                     { afterNarrow.Debt with
-                        RecoveryOutstanding = true } }
+                        UnknownDebt = [ "a ledger could not be read (fixture)" ] } }
 
         let afterQuiet = handler.Update ctx owing quietRun |> Async.RunSynchronously
         let evidence = (afterQuiet :> IEarnedEvidenceState).EarnedEvidence

@@ -4425,7 +4425,7 @@ let ``a zero-affected widening names every outstanding debt`` () =
     let causes =
         zeroAffectedWidening
             false
-            true
+            [ "the pending-verification ledger could not be read" ]
             3
             (Map.ofList [ "src/Traced.fs", Map.ofList [ "IntegrationTests", 1L ] ])
             2
@@ -4437,7 +4437,7 @@ let ``a zero-affected widening names every outstanding debt`` () =
     test
         <@
             causes = [ ZeroAffectedWidening.NoSessionBaseline
-                       ZeroAffectedWidening.UnreadableLedger
+                       ZeroAffectedWidening.UnknownDebt [ "the pending-verification ledger could not be read" ]
                        ZeroAffectedWidening.QueuedSymbols 3
                        ZeroAffectedWidening.RuntimeCoverageDebt(1, 1)
                        ZeroAffectedWidening.OutstandingFailures 2
@@ -4458,7 +4458,7 @@ let ``an obligation naming no project is not counted as a reason to widen`` () =
     // suite. Reporting it as a cause would restore exactly the silence this guard closes.
     let phantom = Map.ofList [ "src/Untraced.fs", Map.empty<string, int64> ]
 
-    test <@ List.isEmpty (zeroAffectedWidening true false 0 phantom 0 None Set.empty false) @>
+    test <@ List.isEmpty (zeroAffectedWidening true [] 0 phantom 0 None Set.empty false) @>
 
     // And a real obligation beside the phantom is still counted — once, for the file
     // that actually owes something.
@@ -4466,19 +4466,19 @@ let ``an obligation naming no project is not counted as a reason to widen`` () =
 
     test
         <@
-            zeroAffectedWidening true false 0 mixed 0 None Set.empty false = [ ZeroAffectedWidening.RuntimeCoverageDebt(
-                                                                                   1,
-                                                                                   1
-                                                                               ) ]
+            zeroAffectedWidening true [] 0 mixed 0 None Set.empty false = [ ZeroAffectedWidening.RuntimeCoverageDebt(
+                                                                                1,
+                                                                                1
+                                                                            ) ]
         @>
 
 [<Fact>]
 let ``nothing owed and a baseline in hand is no reason to widen at all`` () =
-    test <@ List.isEmpty (zeroAffectedWidening true false 0 Map.empty 0 None Set.empty false) @>
+    test <@ List.isEmpty (zeroAffectedWidening true [] 0 Map.empty 0 None Set.empty false) @>
 
 [<Fact>]
 let ``nothing owed over a tree no evidence is bound to is a named reason to widen`` () =
-    let causes = zeroAffectedWidening true false 0 Map.empty 0 None Set.empty true
+    let causes = zeroAffectedWidening true [] 0 Map.empty 0 None Set.empty true
     test <@ causes = [ ZeroAffectedWidening.UnverifiedTree ] @>
     test <@ (ZeroAffectedWidening.describeMany causes).Contains "a comment" @>
 

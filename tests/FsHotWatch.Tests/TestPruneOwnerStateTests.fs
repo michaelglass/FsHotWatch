@@ -496,7 +496,11 @@ let ``a failed coverage ingest makes the owner's debt unknown`` () =
     Assert.False(handler.Init.Debt.RecoveryOutstanding)
 
     let failed =
-        update (recordingCtx ()) handler handler.Init (Custom(RuntimeCoverageFailed "ProjA"))
+        update
+            (recordingCtx ())
+            handler
+            handler.Init
+            (Custom(RuntimeCoverageFailed("ProjA", "SqliteException: database is locked")))
 
     Assert.True(failed.Debt.RecoveryOutstanding)
     Assert.True((buildKey handler failed).IsNone)
