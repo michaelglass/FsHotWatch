@@ -920,6 +920,8 @@ let ``real git: a main checkout and a git worktree share a repository`` () =
               "user.email=t@example.com"
               "-c"
               "user.name=t"
+              "-c"
+              "commit.gpgsign=false"
               "commit"
               "-q"
               "--allow-empty"
