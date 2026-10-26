@@ -370,6 +370,8 @@ let ``SIGTERM to a repository host reaps every session's test host and logs the 
               "user.email=t@example.com"
               "-c"
               "user.name=t"
+              "-c"
+              "commit.gpgsign=false"
               "commit"
               "--quiet"
               "-m"
