@@ -135,7 +135,14 @@ let ``an overrunning build names its command, budget, tree and what the kill lef
 [<Fact(Timeout = 60000)>]
 let ``a descendant that outlives the killed shell is named as a survivor`` () =
     let psi =
-        System.Diagnostics.ProcessStartInfo("sh", "-c \"sleep 63 & wait\"", UseShellExecute = false)
+        // The test assembly's directory, never the inherited one, which a parallel daemon
+        // test can stand in a scratch project it then deletes (AUTOMATION-1343).
+        System.Diagnostics.ProcessStartInfo(
+            "sh",
+            "-c \"sleep 63 & wait\"",
+            UseShellExecute = false,
+            WorkingDirectory = System.AppContext.BaseDirectory
+        )
 
     use shell = System.Diagnostics.Process.Start psi
     let root = shell.Id

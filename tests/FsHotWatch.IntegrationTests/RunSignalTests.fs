@@ -5,6 +5,7 @@ open System.Diagnostics
 open System.IO
 open System.Runtime.InteropServices
 open Xunit
+open Swensen.Unquote
 open FsHotWatch.Tests.TestHelpers
 
 [<DllImport("libc", EntryPoint = "kill", SetLastError = true)>]
@@ -32,6 +33,9 @@ let private processState (pid: int) : (string * int * string) option =
             None
     else
         let info = ProcessStartInfo("ps", [ "-o"; "stat=,ppid=,comm="; "-p"; string pid ])
+        // The test assembly's directory outlives every test; the inherited one may not
+        // (AUTOMATION-1343).
+        info.WorkingDirectory <- AppContext.BaseDirectory
         info.RedirectStandardOutput <- true
         use ps = Process.Start info
         let line = ps.StandardOutput.ReadToEnd().Trim()
@@ -77,13 +81,27 @@ let private readPid (path: string) =
     | true, pid when pid > 0 -> Some pid
     | _ -> None
 
+/// `git init` of a fixture checkout, standing in the fixture: a child given no working
+/// directory inherits the test host's, which a parallel daemon test can stand in a scratch
+/// project it then deletes (AUTOMATION-1343).
+let private gitInitStartInfo (root: string) : ProcessStartInfo =
+    ProcessStartInfo("git", [ "init"; "--quiet"; root ], WorkingDirectory = root)
+
+[<Fact>]
+let ``a fixture's git init runs in the fixture's own directory`` () =
+    // AUTOMATION-1343: a child given no working directory inherits the test host's, which
+    // is process-wide and which a parallel daemon test can stand in a scratch project it
+    // then deletes.
+    let root = Path.Combine(Path.GetTempPath(), "fshw-git-init-fixture")
+    test <@ (gitInitStartInfo root).WorkingDirectory = root @>
+
 /// A terminal that closes sends SIGHUP. The run must end the way SIGINT and SIGTERM end
 /// it: the hook it was interrupted in is reaped, a verdict says the run was signalled,
 /// and the exit code is 128 + SIGHUP(1).
 [<Fact(Timeout = 120000)>]
 let ``SIGHUP during a beforeRun hook reaps the hook and exits 129`` () =
     withTempDir "run-sighup" (fun root ->
-        use init = Process.Start(ProcessStartInfo("git", [ "init"; "--quiet"; root ]))
+        use init = Process.Start(gitInitStartInfo root)
         Assert.True(init.WaitForExit 30000 && init.ExitCode = 0, "git init must make the fixture a checkout")
 
         let shellPid = Path.Combine(root, "shell.pid")
@@ -165,7 +183,7 @@ let private SIGTERM = 15
 [<Fact(Timeout = 180000)>]
 let ``SIGTERM to a daemon reaps its spawned test host and logs the shutdown`` () =
     withTempDir "daemon-sigterm" (fun root ->
-        use init = Process.Start(ProcessStartInfo("git", [ "init"; "--quiet"; root ]))
+        use init = Process.Start(gitInitStartInfo root)
         Assert.True(init.WaitForExit 30000 && init.ExitCode = 0, "git init must make the fixture a checkout")
 
         let hostPid = Path.Combine(root, "host.pid")
