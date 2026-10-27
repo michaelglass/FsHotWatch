@@ -53,33 +53,73 @@ let ``integration harness resolves checkout root`` () =
 let private waitForStatusSettled (host: PluginHost) (pluginName: string) (timeoutMs: int) =
     waitForSettled host pluginName timeoutMs
 
+/// The in-test build of an analyzer project. It runs in the checkout root, never in the
+/// directory it would inherit: that is the test host's, which is process-wide, and a
+/// daemon test's in-process MSBuild evaluation stands the whole process in a scratch
+/// project that the test then deletes. A `dotnet` started in that window dies in its
+/// CLI's `GetCwd` before MSBuild starts (AUTOMATION-1343). The checkout root also carries
+/// the `global.json` that picks the SDK.
+let private analyzerBuildStartInfo (dir: string) : ProcessStartInfo =
+    let psi = ProcessStartInfo("dotnet", $"""build "{dir}" -v quiet""")
+    psi.WorkingDirectory <- findRepoRoot ()
+    psi.UseShellExecute <- false
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardError <- true
+    psi
+
+/// Build an analyzer project from inside the test host and return its output directory.
+///
+/// The build's stdout and stderr are captured and a failure carries them, with the exit
+/// code. Inherited instead, they went to the test host's own streams, which the runner
+/// shows only interleaved with every other test's output: the 17 convention tests failed
+/// with nothing but "build failed" while the cause sat in that dump (AUTOMATION-1343).
+let private buildAnalyzerProject (label: string) (dir: string) : string =
+    let psi = analyzerBuildStartInfo dir
+    use proc = Process.Start(psi)
+    // Both streams drain concurrently: reading one to its end while the child blocks
+    // writing a full pipe on the other would deadlock.
+    let stdout = proc.StandardOutput.ReadToEndAsync()
+    let stderr = proc.StandardError.ReadToEndAsync()
+    proc.WaitForExit()
+
+    if proc.ExitCode <> 0 then
+        failwith
+            $"%s{label} build failed (exit %d{proc.ExitCode}): dotnet %s{psi.Arguments} in %s{psi.WorkingDirectory}\n\
+              --- stdout ---\n%s{stdout.Result}\n--- stderr ---\n%s{stderr.Result}"
+
+    Path.Combine(dir, "bin/Debug/net10.0")
+
+[<Fact(Timeout = 120000)>]
+let ``an in-test analyzer build that fails carries MSBuild's own error`` () =
+    // AUTOMATION-1343: a failure that said only "build failed" hid its cause for days.
+    let missing =
+        Path.Combine(Path.GetTempPath(), "fshw-no-such-project-" + Guid.NewGuid().ToString("N"))
+
+    let ex =
+        Assert.Throws<Exception>(fun () -> buildAnalyzerProject "Missing" missing |> ignore)
+
+    test <@ ex.Message.Contains "Missing build failed" @>
+    test <@ ex.Message.Contains "MSB1009" @>
+
+[<Fact>]
+let ``an in-test analyzer build names its own working directory`` () =
+    // AUTOMATION-1343: with none named, the build inherited the test host's, which is
+    // process-wide. A daemon test's in-process MSBuild evaluation stands the whole process
+    // in its scratch project, and that test then deletes it; a build spawned in that window
+    // died in the dotnet CLI's `GetCwd` before MSBuild started, failing every convention
+    // test at once through the shared lazy.
+    let repoRoot = findRepoRoot ()
+
+    let psi =
+        analyzerBuildStartInfo (Path.Combine(repoRoot, "analyzers/FsHotWatch.Rules"))
+
+    test <@ psi.WorkingDirectory = repoRoot @>
+
 let private exampleAnalyzerPath =
-    lazy
-        let repoRoot = findRepoRoot ()
-        let dir = Path.Combine(repoRoot, "examples/ExampleAnalyzer")
-        let psi = ProcessStartInfo("dotnet", $"""build "{dir}" -v quiet""")
-        psi.UseShellExecute <- false
-        let proc = Process.Start(psi)
-        proc.WaitForExit()
-
-        if proc.ExitCode <> 0 then
-            failwith "ExampleAnalyzer build failed"
-
-        Path.Combine(dir, "bin/Debug/net10.0")
+    lazy (buildAnalyzerProject "ExampleAnalyzer" (Path.Combine(findRepoRoot (), "examples/ExampleAnalyzer")))
 
 let private conventionRulesPath =
-    lazy
-        let repoRoot = findRepoRoot ()
-        let dir = Path.Combine(repoRoot, "analyzers/FsHotWatch.Rules")
-        let psi = ProcessStartInfo("dotnet", $"""build "{dir}" -v quiet""")
-        psi.UseShellExecute <- false
-        let proc = Process.Start(psi)
-        proc.WaitForExit()
-
-        if proc.ExitCode <> 0 then
-            failwith "FsHotWatch.Rules build failed"
-
-        Path.Combine(dir, "bin/Debug/net10.0")
+    lazy (buildAnalyzerProject "FsHotWatch.Rules" (Path.Combine(findRepoRoot (), "analyzers/FsHotWatch.Rules")))
 
 [<Fact(Timeout = 30000)>]
 let ``analyzers plugin loads real analyzers and runs without crashing`` () =
