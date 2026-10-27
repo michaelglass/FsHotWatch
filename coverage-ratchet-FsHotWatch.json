@@ -28,6 +28,13 @@
         "reason": "new file (AUTOMATION-1331 checkSkipClasses: the declaration, its parse and the per-project skip decision). Explicit so that a report which drops this file fails coverage-check instead of passing. Measured 2026-10-26 on macOS by TestPruneCheckSkipClassesTests with coverage: line 100% (77/77), branch 100% (44/44). Platform-neutral, so no platform tag."
       }
     ],
+    "Profile.fs": [
+      {
+        "line": 96,
+        "branch": 83,
+        "reason": "new file (AUTOMATION-1300: the streamed per-project run profile, its CTRF class rollup, line render/parse and the process-tree CPU reader). Floor = the measured value rounded down. Measured 2026-10-27 on macOS by `mise run test-direct` (ProfileTests, TestPruneProfileTests, TestPruneStarvationRerunTests): line 96.8% (307/317), branch 83.7% (169/202). Uncovered: the non-string/non-number arms of the JSON field readers, a `JsonNode.Parse` that returns null, the IOException/UnauthorizedAccessException arms of `read` beyond the directory case, the empty-tree arm of `treeCpuWith` before any reading, and the `isExpectedFileFailure` arms of `emit` and the writer's dispose (a write to an already-open AutoFlush stream failing). The branch remainder is compiler-generated edges of the multi-field tuple matches in `tryParse`. Platform-neutral, so no platform tag."
+      }
+    ],
     "Starvation.fs": [
       {
         "line": 95,

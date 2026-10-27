@@ -181,7 +181,9 @@ let private ctrfReport =
 let private cobertura (root: string) =
     $"""<?xml version="1.0"?><coverage line-rate="1" branch-rate="1" version="1" timestamp="0"><sources><source>%s{root}</source></sources><packages><package name="Lib" line-rate="1" branch-rate="1"><classes><class name="Lib" filename="src/Lib.fsx" line-rate="1" branch-rate="1"><methods/><lines><line number="2" hits="1"/></lines></class></classes></package></packages></coverage>"""
 
-/// Run ids, times and durations differ between any two runs; nothing else may.
+/// Run ids, times and durations differ between any two runs; nothing else may. A profile
+/// (`Profile`, `<Project>.profile.jsonl`) is a measurement of the run: its pid, load, CPU
+/// and wall figures, and how many 5 s samples a run lasted long enough to take, are too.
 let private normalize (root: string) (text: string) =
     let replace (pattern: string) (by: string) (input: string) = Regex.Replace(input, pattern, by)
 
@@ -190,7 +192,11 @@ let private normalize (root: string) (text: string) =
     |> replace @"\d{4}-\d\d-\d\d[T ][\d:.]+(Z|[+-]\d\d:?\d\d)?" "<time>"
     |> replace @"-?\d+[:.]\d\d:\d\d(\.\d+)?" "<span>"
     |> replace @"\d+(\.\d+)?\s?(ms|s)\b" "<duration>"
+    |> replace @"(?m)^\{""event"":""sample"".*\r?\n" ""
     |> replace @"(?i)(""?\w*(elapsed|duration|ticks)\w*""?\s*[:=]\s*)-?[\d.]+" "$1<n>"
+    |> replace
+        @"(""(pid|wallMs|cpuMs|load1|spanMs|samples|loadPerCoreMean|loadPerCoreMax|contended)""\s*:\s*)(-?[\d.]+(E[+-]?\d+)?|null|true|false)"
+        "$1<n>"
 
 /// Every file the plugin writes: `.fshw` (sidecars, run artifacts, flakiness history) and
 /// the coverage directory (ratchet input), by repo-relative path, normalized.
