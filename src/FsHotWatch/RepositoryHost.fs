@@ -378,6 +378,7 @@ type RepositoryHost
             entry["serving"] <- JsonValue.Create s.Serving.IsCompletedSuccessfully
             entry["scanGeneration"] <- JsonValue.Create(s.Daemon.GetScanGeneration())
             entry["attachedAt"] <- JsonValue.Create(s.AttachedAt.ToString "o")
+            entry["publications"] <- ProjectModelWire.publicationsPayload (s.Daemon.Publications())
             sessions.Add entry
 
         node["sessions"] <- sessions

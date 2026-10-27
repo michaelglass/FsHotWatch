@@ -2882,7 +2882,17 @@ let internal renderRepositoryStatus (json: string) : string list =
           let generation = s["scanGeneration"].GetValue<int64>()
           let root = text s "root"
           let attached = since s "attachedAt" "attached"
-          yield $"  %s{root}  %s{state}, scan generation %d{generation}%s{attached}"
+
+          // A host older than its publication counter (ADR-044) sends none.
+          let publications =
+              match s["publications"] with
+              | null -> ""
+              | p ->
+                  let accepted = p["accepted"].GetValue<int64>()
+                  let refused = p["refused"].GetValue<int64>()
+                  $", publications %d{accepted} accepted / %d{refused} refused as stale"
+
+          yield $"  %s{root}  %s{state}, scan generation %d{generation}%s{attached}%s{publications}"
       match node["watch"] with
       | null -> ()
       | watch ->
@@ -3773,6 +3783,9 @@ let private executeCommandRendered
                     eprintfn "%s" output
 
                     IpcParsing.heapValveOf json |> Option.iter (eprintfn "⚠ %s")
+
+                    IpcParsing.publicationsOf json
+                    |> Option.iter (IpcOutput.publicationsLine >> eprintfn "%s")
 
                     // Same nudge as `check`/`confirm`: when a machine is reading, name the
                     // files rather than leaving it to scrape a display built for a human.

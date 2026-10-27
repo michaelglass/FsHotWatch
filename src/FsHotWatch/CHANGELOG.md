@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: a daemon counts its stale publications (ADR-044). New
+  `ProjectModel.Publications` (`Accepted`, `Refused`): `DiscoveryCoordinator.WithCurrent`
+  counts each publication it writes against the captured model, and each it refuses
+  because a newer model had begun or settled. `Daemon.Publications()` reads them,
+  `DaemonRpcConfig` gains `GetPublications`, the `GetDiagnostics` reply gains a
+  `publications` object, and `status --repository` gains one per session. New
+  `ProjectModelWire.publicationsPayload` and `tryReadPublications`. Code that constructs a
+  `DaemonRpcConfig` must set the new field.
+
 - fix: the operation watchdog no longer logs one host suspension twice. Its timer
   started a tick while the previous one was still running. A tick that read the clocks
   before the suspension, but recorded them after a later tick had logged it, rewound

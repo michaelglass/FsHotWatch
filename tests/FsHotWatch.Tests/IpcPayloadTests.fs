@@ -31,6 +31,7 @@ let private rpcConfigWithUnchecked (unchecked: int) (host: PluginHost) : DaemonR
       InvalidateCache = fun () -> Task.FromResult(())
       GetUncheckedCount = fun () -> unchecked
       GetProjectModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved
+      GetPublications = fun () -> FsHotWatch.ProjectModel.Publications.none
       Context = None }
 
 let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig = rpcConfigWithUnchecked 0 host

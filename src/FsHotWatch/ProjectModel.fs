@@ -28,6 +28,16 @@ type Observation =
     | Available of Snapshot
     | Unavailable of Snapshot * UnavailableReason
 
+/// How a daemon's model-guarded publications ended (ADR-044). `Accepted`: written while
+/// the model the work captured was still the current one. `Refused`: withheld because a
+/// newer model had begun or settled first, so old work finishing after new work published
+/// nothing. Counted from the daemon's start; a session's daemon counts its own.
+type Publications = { Accepted: int64; Refused: int64 }
+
+[<RequireQualifiedAccess>]
+module Publications =
+    let none = { Accepted = 0L; Refused = 0L }
+
 /// Classify one completed epoch. Availability requires evidence from every stage;
 /// it never depends on an empty impact set or a plugin's idle status.
 let ofCompleted (generation: int64) (counts: Counts) : Observation =

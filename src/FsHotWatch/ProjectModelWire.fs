@@ -71,3 +71,24 @@ let tryRead (root: JsonElement) : Observation option =
                 | _ -> None
             | _ -> None
         | _ -> None
+
+/// The `publications` object `status` and `status --repository` carry
+/// (`{"accepted": n, "refused": m}`).
+let publicationsPayload (publications: Publications) : Nodes.JsonObject =
+    let node = Nodes.JsonObject()
+    node["accepted"] <- Nodes.JsonValue.Create publications.Accepted
+    node["refused"] <- Nodes.JsonValue.Create publications.Refused
+    node
+
+/// Read a `publications` object. `None` when it is absent or malformed: an older daemon
+/// sends none, and a count that cannot be read is not a zero.
+let tryReadPublications (el: JsonElement) : Publications option =
+    if el.ValueKind <> JsonValueKind.Object then
+        None
+    else
+        match Json.tryInt64 el "accepted", Json.tryInt64 el "refused" with
+        | Some accepted, Some refused when accepted >= 0L && refused >= 0L ->
+            Some
+                { Accepted = accepted
+                  Refused = refused }
+        | _ -> None

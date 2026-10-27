@@ -766,6 +766,12 @@ lifecycle counts: sessions attached, rejoined and reloaded, refusals by kind, se
 ended (and how many by a fault), and attaches whose answer was lost. `-a` prints the
 host's JSON (`startedAt`, `footprint`, `lifecycle`, and each session's `attachedAt`).
 
+Each session line also counts its daemon's guarded publications (`publications` in `-a`):
+how many results it published against the project model its work captured, and how many
+it refused because a newer model had begun or settled first. A refusal is old work that
+finished after new work and was kept out; the work is retried or refused by name
+(ADR-032). `fshw status` prints the same counts for a per-worktree daemon. See ADR-044.
+
 Every lifecycle event is also appended to `host-events.jsonl` beside `host.log`: one JSON
 line each, naming the time, the host's pid, the event (`hostStarted`, `attached`,
 `refused`, `sessionEnded`, `undelivered`, `hostStopped` with `idle` or `requested`) and

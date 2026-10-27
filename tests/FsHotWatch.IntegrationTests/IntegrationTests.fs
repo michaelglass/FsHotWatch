@@ -2346,6 +2346,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
           InvalidateCache = fun () -> System.Threading.Tasks.Task.FromResult(())
           GetUncheckedCount = fun () -> 0
           GetProjectModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved
+          GetPublications = fun () -> FsHotWatch.ProjectModel.Publications.none
           Context = None }
 
     let makeStatusHandler name (reportFn: PluginCtx<unit> -> unit) =
