@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.50 - 2026-10-28
+
 - feat: in a repository host, a build holds one of the host's process slots while it
   runs (ADR-052, AUTOMATION-682). Builds and test hosts now take turns at the same
   bound, so two sessions' builds no longer run on top of the test hosts the bound has

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.96 - 2026-10-28
+
 - build: TestPrune.Core 13.5.1 and TestPrune.Trace 0.7.6 (was 13.5.0 and 0.7.4). Both declare
   FSharp.Core >= 10.1.402, matching this repository's exact pin (AUTOMATION-1358); Trace 0.7.5
   declared >= 10.1.403 and was skipped. FsHotWatch.TestPrune and FsHotWatch.Cli pin Core together.

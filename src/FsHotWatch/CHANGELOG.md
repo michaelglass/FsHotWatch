@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.96 - 2026-10-28
+
 - fix: a cancelled scan or change batch can no longer crash the daemon (ADR-056). In
   `runDependentChecks`, a check still in flight after the run returned cancelled the
   run's token source from its own continuation, after the run had disposed it. The

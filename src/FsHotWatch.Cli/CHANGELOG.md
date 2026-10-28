@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.129 - 2026-10-28
+
 - build: TestPrune.Core 13.5.1 (was 13.5.0), in lockstep with FsHotWatch.TestPrune, which also
   moves to TestPrune.Trace 0.7.6. Both declare FSharp.Core >= 10.1.402 (AUTOMATION-1358).
 - feat: `FSHW_LIVE_RESULTS` in a daemon's environment bounds how many check results its
