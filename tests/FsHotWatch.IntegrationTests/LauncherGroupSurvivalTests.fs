@@ -74,6 +74,9 @@ let ``daemon child survives termination of its isolated caller process group`` (
         for arg in [ fixture; root; script; Path.Combine(root, "child.log"); outerReceipt ] do
             info.ArgumentList.Add arg
 
+        // The fixture's own directory, never the inherited one, which a parallel daemon
+        // test can stand in a scratch project it then deletes (AUTOMATION-1343).
+        info.WorkingDirectory <- root
         info.UseShellExecute <- false
         use outer = Process.Start info
         let mutable detached: Process option = None
