@@ -7,11 +7,17 @@
 
     <ItemGroup>
         <PackageVersion Include="FSharp.Analyzers.SDK" Version="0.39.2" />
-        <!-- FCS declares an EXACT FSharp.Core dependency (e.g. 43.12.204 requires = 10.1.204),
-             so floating FSharp.Core above it trips NU1608. A higher patch within the same
-             minor is binary-compatible, so projects suppress NU1608 (same arrangement as
-             FsHotWatch) and FSharp.Core floats. -->
-        <PackageVersion Include="FSharp.Core" Version="10.1.*" />
+        <!-- FSharp.Core is EXACT, never floated, and equal to the FSharp.Core the pinned FCS
+             below requires (43.12.402 declares FSharp.Core [10.1.402]). A packed nuspec's
+             floor is the version restore RESOLVED at pack time, so a float makes the floor
+             whatever nuget.org had newest that day: TestPrune.Trace 0.7.5 was packed the day
+             10.1.403 shipped, declared FSharp.Core >= 10.1.403, and every consumer pinned at
+             [10.1.402] (FsHotWatch, and everything on it) failed restore with NU1605
+             (AUTOMATION-1358). Raise it only together with FCS. Every packable project that
+             compiles against FSharp.Core references it explicitly, so the floor is declared
+             rather than inherited. scripts/check-package-floors.fsx (`mise run
+             package-floors`, also in CI) fails when this floats or a packed floor exceeds it. -->
+        <PackageVersion Include="FSharp.Core" Version="10.1.402" />
         <!-- FCS is EXACT, never floated: the fshw host supplies FCS to
              TestPrune.Analyzers at load time, and FCS's assembly version carries the patch
              (43.12.402.0), so an analyzer built against any other patch fails to load in the

@@ -55,7 +55,9 @@ mise run release-alpha  # Tag an alpha pre-release
 - VCS: jj (Jujutsu), not git
 - Tests use xUnit v3 with Microsoft Testing Platform v2
 - Package versions managed centrally in `Directory.Packages.props` (CPM) with
-  floats enabled and transitive pinning on
+  floats enabled and transitive pinning on. FSharp.Core and FCS are EXACT pins, never floats:
+  a packed nuspec floor is what restore resolved, so a float leaks the newest release into
+  consumers' floors (AUTOMATION-1358). `mise run package-floors` checks real pack output.
 - NU1605 suppressed across projects (FSharp.Core version mismatch with SDK)
 
 ## Shared Tooling

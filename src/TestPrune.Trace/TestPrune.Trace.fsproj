@@ -65,6 +65,8 @@
     <ItemGroup>
         <PackageReference Include="Mono.Cecil" />
         <PackageReference Include="Microsoft.Data.Sqlite" />
+        <!-- Explicit, so the packed FSharp.Core floor is the central pin (see Directory.Packages.props). -->
+        <PackageReference Include="FSharp.Core" />
         <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
     </ItemGroup>
 

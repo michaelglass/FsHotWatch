@@ -163,7 +163,15 @@ description = "Run all CI checks (no auto-fix)"
 # `build` is load-bearing in the deps for the same reason it is on `gate`: fshw loads
 # TestPrune.Analyzers from its BUILD OUTPUT (.fshw.json analyzers.paths).
 run = "dotnet fshw confirm --run-once"
-depends = ["build", "tool-restore", "lint", "lint-project", "coverage-check", "sync-docs-check", "docs", "example-build"]
+depends = ["build", "tool-restore", "lint", "lint-project", "coverage-check", "sync-docs-check", "docs", "example-build", "package-floors"]
+
+[tasks.package-floors]
+description = "Pack every released project and fail if a packed FSharp.Core / FCS floor floats or exceeds its pin"
+# A nuspec floor is what restore resolved at pack time; a floated FSharp.Core shipped
+# TestPrune.Trace 0.7.5 with FSharp.Core >= 10.1.403 and broke consumers pinned at 10.1.402
+# (AUTOMATION-1358). Packs --no-build, so `build` must run first. Also in ci.yml lint-cmd.
+run = "dotnet fsi scripts/check-package-floors.fsx -- pack"
+depends = ["build"]
 
 [tasks.pack]
 description = "Create NuGet packages"

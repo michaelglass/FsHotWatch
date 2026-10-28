@@ -41,6 +41,8 @@
          untyped syntax tree to derive case→URL links. Core already depends on FCS; this is
          an explicit direct reference for the types UnionRouteLinks names. -->
     <PackageReference Include="FSharp.Compiler.Service" />
+    <!-- Explicit, so the packed FSharp.Core floor is the central pin (see Directory.Packages.props). -->
+    <PackageReference Include="FSharp.Core" />
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
   </ItemGroup>
 </Project>
