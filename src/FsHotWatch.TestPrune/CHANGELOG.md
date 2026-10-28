@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: a test project declares a weight (ADR-053, AUTOMATION-1299). New
+  `TestConfig.Weight`. Each group holds its process slot charged at the largest weight
+  among its projects. New `GroupSchedule.runAdmittedAs`, which admits each job under its
+  own `JobSpec`. A weight is no part of the test-evidence key.
+
 ## 0.13.0-alpha.95 - 2026-10-28
 
 - **fix: asking xUnit for long-running reports is a project's choice, off by default.**

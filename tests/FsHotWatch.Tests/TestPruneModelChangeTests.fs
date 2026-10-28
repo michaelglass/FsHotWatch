@@ -40,6 +40,7 @@ let private config (project: string) : TestConfig =
       Starvation = None
       CheckSkip = None
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = [] }
 
 let private configs = [ config "ProjA"; config "ProjB" ]

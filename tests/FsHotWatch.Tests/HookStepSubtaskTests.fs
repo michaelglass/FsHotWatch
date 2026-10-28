@@ -83,6 +83,7 @@ let ``a held-open tests.beforeRun step is named by index, command and pid in the
                 Starvation = None
                 CheckSkip = None
                 NameHungTests = false
+                Weight = 1.0
                 AlwaysClasses = [] } ]
 
         let beforeRun =

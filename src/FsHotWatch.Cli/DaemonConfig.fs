@@ -370,6 +370,9 @@ type TestProjectConfig =
         /// `nameHungTests`: ask xUnit for long-running reports so a killed host names the
         /// test it was running. `false` when absent (AUTOMATION-1353).
         NameHungTests: bool
+        /// `weight`: how heavily this project's test host is charged for its process slot. A
+        /// positive number, 1 when absent (AUTOMATION-1299, ADR-053).
+        Weight: float
     }
 
 /// Configuration for Falco route attribution.
@@ -805,6 +808,24 @@ let private parseTestProject (p: JsonElement) : TestProjectConfig =
         | true, v -> refuseUnknown $"tests.projects[%s{project}].nameHungTests" (describeValue v) [ "true"; "false" ]
         | false, _ -> false
 
+    // `weight`: how heavily this project's test host is charged for its process slot
+    // (AUTOMATION-1299, ADR-053). Refused unless a positive finite number: read as 1, a typo
+    // would silently drop the declaration the key exists to make.
+    let weight =
+        match p.TryGetProperty("weight") with
+        | false, _ -> 1.0
+        | true, v when
+            v.ValueKind = JsonValueKind.Number
+            && v.GetDouble() > 0.0
+            && Double.IsFinite(v.GetDouble())
+            ->
+            v.GetDouble()
+        | true, v ->
+            raise (
+                ConfigErrorException
+                    $"tests.projects[%s{project}].weight: '%s{describeValue v}' is not a weight; expected a number greater than 0"
+            )
+
     // `reportVerificationFormat`: how fshw obtains the structured
     // test report the verdict is derived from. Absent → AutoDetect.
     let reportVerificationFormat =
@@ -902,7 +923,8 @@ let private parseTestProject (p: JsonElement) : TestProjectConfig =
       TraceWeave = traceWeave
       Starvation = starvation
       CheckSkip = checkSkip
-      NameHungTests = nameHungTests }
+      NameHungTests = nameHungTests
+      Weight = weight }
 
 /// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
 let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
@@ -2607,7 +2629,8 @@ let registerPluginsIn
                   AlwaysClasses = p.AlwaysClasses
                   Starvation = p.Starvation
                   CheckSkip = p.CheckSkip
-                  NameHungTests = p.NameHungTests })
+                  NameHungTests = p.NameHungTests
+                  Weight = p.Weight })
 
         // fail LOUD and SPECIFIC. `runShellSteps` names the step,
         // its exit code and its output; raising `describe` means the plugin's

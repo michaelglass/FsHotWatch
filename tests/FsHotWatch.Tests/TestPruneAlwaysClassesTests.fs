@@ -33,6 +33,7 @@ let private config (project: string) (always: string list) : TestConfig =
       Starvation = None
       CheckSkip = None
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = always }
 
 let private configs =

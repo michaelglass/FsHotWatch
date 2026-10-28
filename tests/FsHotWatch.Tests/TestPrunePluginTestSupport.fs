@@ -185,6 +185,7 @@ let withSingleProjectHarness (tmpDir: string) (projectName: string) =
             Starvation = None
             CheckSkip = None
             NameHungTests = false
+            Weight = 1.0
             AlwaysClasses = [] } ]
 
     let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -342,6 +343,7 @@ module PendingQueueHelpers =
           Starvation = None
           CheckSkip = None
           NameHungTests = false
+          Weight = 1.0
           AlwaysClasses = [] }
 
     /// The durable pending-verification queue for a repo root. An UNREADABLE ledger is a
@@ -367,6 +369,7 @@ let testConfigNamed (project: string) : TestConfig =
       Starvation = None
       CheckSkip = None
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = [] }
 
 /// Recording ctx over the plugin: captures terminal statuses and models the shared error

@@ -82,6 +82,7 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
                       Starvation = None
                       CheckSkip = None
                       NameHungTests = false
+                      Weight = 1.0
                       AlwaysClasses = []
                       Traces = true
                       TraceWeave = None }

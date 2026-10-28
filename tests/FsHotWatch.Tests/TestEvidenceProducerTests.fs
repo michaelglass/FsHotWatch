@@ -406,6 +406,7 @@ let ``the canonical config writes every field in full, however long`` () =
           Starvation = None
           CheckSkip = None
           NameHungTests = false
+          Weight = 1.0
           AlwaysClasses = [] }
 
     let a = FsHotWatch.TestPrune.TestPrunePlugin.canonicalTestConfig (config "a")
@@ -425,7 +426,14 @@ let ``the canonical config writes every field in full, however long`` () =
     // so a green earned under it is a different claim (AUTOMATION-1353). Off, it is not
     // written, so every key earned before the option existed is unchanged.
     let named =
-        FsHotWatch.TestPrune.TestPrunePlugin.canonicalTestConfig { config "a" with NameHungTests = true }
+        FsHotWatch.TestPrune.TestPrunePlugin.canonicalTestConfig
+            { config "a" with
+                NameHungTests = true
+                Weight = 1.0 }
 
     test <@ named <> a && named.Contains "\"nameHungTests\":true" @>
     test <@ not (a.Contains "nameHungTests") @>
+
+    // `weight` decides when a host is admitted, never what it runs: it is no part of the key
+    // (AUTOMATION-1299, ADR-053).
+    test <@ FsHotWatch.TestPrune.TestPrunePlugin.canonicalTestConfig { config "a" with Weight = 3.0 } = a @>

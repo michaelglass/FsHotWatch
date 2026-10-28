@@ -89,6 +89,7 @@ let private projConfig: TestConfig =
       Starvation = None
       CheckSkip = None
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = [] }
 
 /// A completed run whose CTRF report sits where the runner writes it.

@@ -35,6 +35,7 @@ let ``rerun storm: plugin reaches terminal state after BuildCompleted hammering 
                 Starvation = None
                 CheckSkip = None
                 NameHungTests = false
+                Weight = 1.0
                 AlwaysClasses = [] } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir

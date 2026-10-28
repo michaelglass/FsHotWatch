@@ -392,6 +392,7 @@ let private runnerConfig (script: string) (project: string) : TestPrunePlugin.Te
       Starvation = None
       CheckSkip = None
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = [] }
 
 let private runAll (tmpDir: string) (cap: int option) (configs: TestPrunePlugin.TestConfig list) =
@@ -489,3 +490,50 @@ let ``a plugin given the host's process lane launches one test host per slot`` (
             @>
 
         test <@ (lane.Status()).Granted = 3L && processes.Running = 0 @>)
+
+// --- declared weights (AUTOMATION-1299, ADR-053) ---
+
+[<Fact(Timeout = 60000)>]
+let ``a group is charged the largest weight declared among its projects`` () =
+    withTempDir "group-schedule-plugin-weights" (fun tmpDir ->
+        let script, _ = loggingScript tmpDir
+        let processes = FsHotWatch.WorkScheduler.Scheduler 1
+        let lane = processes.Lane "session"
+
+        let host =
+            FsHotWatch.PluginHost.PluginHost(Unchecked.defaultof<_>, tmpDir, processes = lane)
+
+        // One group of two projects, one of them declared weight 3.
+        let heavy =
+            { runnerConfig script "A" with
+                Group = "both"
+                Weight = 3.0 }
+
+        let light =
+            { runnerConfig script "B" with
+                Group = "both" }
+
+        host.RegisterHandler(
+            TestPrunePlugin.createWithLaunchDeadline
+                (TimeSpan.FromMinutes 2.0)
+                None
+                (fun () -> Map.empty)
+                ":memory:"
+                TestPrune.Domain.WalkPolicy.FollowAll
+                tmpDir
+                (Some [ heavy; light ])
+                None
+                None
+                None
+                None
+                []
+                None
+                TestMode.initial
+        )
+
+        host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
+
+        let status = lane.Status()
+        test <@ status.Granted = 1L && processes.Running = 0 @>
+        test <@ status.Held > TimeSpan.Zero @>
+        test <@ status.Charged = TimeSpan.FromTicks(3L * status.Held.Ticks) @>)

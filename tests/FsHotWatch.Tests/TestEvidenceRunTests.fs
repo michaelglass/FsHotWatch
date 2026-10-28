@@ -94,6 +94,7 @@ let private configs =
           Starvation = None
           CheckSkip = None
           NameHungTests = false
+          Weight = 1.0
           AlwaysClasses = [] })
 
 /// The model the host publishes: every project, its references, and an identity per

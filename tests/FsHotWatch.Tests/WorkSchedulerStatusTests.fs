@@ -154,6 +154,7 @@ let ``a lane's status is a JSON object with its counts and times in milliseconds
           Waited = TimeSpan.FromMilliseconds 1500.0
           LongestWait = TimeSpan.FromMilliseconds 900.0
           Held = TimeSpan.FromMilliseconds 4200.0
+          Charged = TimeSpan.FromMilliseconds 8400.0
           Interactive =
             { Granted = 4L
               Abandoned = 0L
@@ -169,7 +170,7 @@ let ``a lane's status is a JSON object with its counts and times in milliseconds
 
     test
         <@
-            json = """{"queued":2,"running":1,"granted":5,"abandoned":1,"waitedMs":1500,"longestWaitMs":900,"heldMs":4200,"interactive":{"granted":4,"abandoned":0,"waitedMs":500,"longestWaitMs":300},"bulk":{"granted":1,"abandoned":1,"waitedMs":1000,"longestWaitMs":900}}"""
+            json = """{"queued":2,"running":1,"granted":5,"abandoned":1,"waitedMs":1500,"longestWaitMs":900,"heldMs":4200,"chargedMs":8400,"interactive":{"granted":4,"abandoned":0,"waitedMs":500,"longestWaitMs":300},"bulk":{"granted":1,"abandoned":1,"waitedMs":1000,"longestWaitMs":900}}"""
         @>
 
 [<Fact(Timeout = 5000)>]

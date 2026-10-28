@@ -90,6 +90,7 @@ let private config root : TestPrunePlugin.TestConfig =
       Starvation = None
       CheckSkip = None
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = [] }
 
 [<Fact(Timeout = 120000)>]

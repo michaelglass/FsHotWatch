@@ -3205,3 +3205,21 @@ let ``an unknown FSHW_TESTS_RUN_ON is refused rather than read as the default`` 
 [<Fact(Timeout = 15000)>]
 let ``the override is read from FSHW_TESTS_RUN_ON`` () =
     test <@ TestsRunOnEnvVar = "FSHW_TESTS_RUN_ON" @>
+
+// AUTOMATION-1299, ADR-053: a project declares how heavily its test host is charged.
+[<Fact(Timeout = 15000)>]
+let ``parseConfig tests weight is 1 when absent, read when a positive number, and refuses anything else`` () =
+    let parse json =
+        (parseConfig json defaults).Tests.Value.Projects.[0].Weight
+
+    test <@ parse """{"tests": {"projects": [{"project": "T"}]}}""" = 1.0 @>
+    test <@ parse """{"tests": {"projects": [{"project": "T", "weight": 3}]}}""" = 3.0 @>
+    test <@ parse """{"tests": {"projects": [{"project": "T", "weight": 0.5}]}}""" = 0.5 @>
+
+    for bad in [ "0"; "-2"; "\"heavy\""; "true"; "null" ] do
+        let ex =
+            Assert.Throws<ConfigErrorException>(fun () ->
+                parseConfig ("""{"tests": {"projects": [{"project": "T", "weight": """ + bad + """}]}}""") defaults
+                |> ignore)
+
+        test <@ ex.message.Contains "tests.projects[T].weight" @>

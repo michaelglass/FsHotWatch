@@ -394,6 +394,7 @@ let ``a daemon that runs tests seals every checkable file without publishing an 
               Starvation = None
               CheckSkip = None
               NameHungTests = false
+              Weight = 1.0
               AlwaysClasses = [] }
 
         let handler =

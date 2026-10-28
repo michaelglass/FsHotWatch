@@ -51,6 +51,7 @@ let private config (root: string) (project: string) (checkSkip: CheckSkip option
       Starvation = None
       CheckSkip = checkSkip
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = [] }
 
 // --- the declaration -------------------------------------------------------------

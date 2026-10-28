@@ -88,6 +88,7 @@ let runFullPipeline (repoRoot: string) =
                     Starvation = None
                     CheckSkip = None
                     NameHungTests = false
+                    Weight = 1.0
                     AlwaysClasses = [] } ]) // testConfigs
             None // buildExtensions
             None // beforeRun

@@ -126,6 +126,7 @@ let private config project command args : TestConfig =
       Starvation = None
       CheckSkip = None
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = [] }
 
 /// Run `run-tests` once over `configs` with `traces`, returning the command's JSON and

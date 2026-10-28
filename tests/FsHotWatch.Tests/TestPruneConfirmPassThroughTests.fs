@@ -348,6 +348,7 @@ let private runScenario (root: string) (setup: Setup) =
                 Starvation = None
                 CheckSkip = None
                 NameHungTests = false
+                Weight = 1.0
                 AlwaysClasses = [] } ]
 
         let coveragePaths _ =
@@ -590,6 +591,7 @@ let private scopeSequence name (steps: string option list) =
               Starvation = None
               CheckSkip = None
               NameHungTests = false
+              Weight = 1.0
               AlwaysClasses = [] }
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir

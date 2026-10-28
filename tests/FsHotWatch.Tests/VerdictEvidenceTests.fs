@@ -669,6 +669,7 @@ let private gatedTestHost (repoRoot: string) (release: string) =
                     Starvation = None
                     CheckSkip = None
                     NameHungTests = false
+                    Weight = 1.0
                     AlwaysClasses = [] } ])
             None
             None

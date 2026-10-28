@@ -78,6 +78,7 @@ let private hostWithHangingFirstRun (root: string) =
             Starvation = None
             CheckSkip = None
             NameHungTests = false
+            Weight = 1.0
             AlwaysClasses = [] } ]
 
     let recorder, startedCount, unclosed = lifecycleRecorder ()

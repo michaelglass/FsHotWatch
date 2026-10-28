@@ -26,6 +26,7 @@ let private projectOf (command: string) (args: string) (timeoutSec: int option) 
       Starvation = None
       CheckSkip = None
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = [] }
 
 let private project (args: string) (timeoutSec: int option) : TestConfig = projectOf "sh" args timeoutSec
@@ -156,7 +157,8 @@ let ``a real xUnit host killed at its timeout still gets per-class lines`` (name
             // the parser tests.
             Environment = [ "FSHW_FIXTURE_HANG", "1"; "CI", "true" ]
             ReportVerificationFormat = AutoDetect
-            NameHungTests = nameHungTests }
+            NameHungTests = nameHungTests
+            Weight = 1.0 }
 
     let status, lines = runOnce config
 

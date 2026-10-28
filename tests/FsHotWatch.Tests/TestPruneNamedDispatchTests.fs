@@ -57,6 +57,7 @@ let private echoConfig: TestConfig =
       Starvation = None
       CheckSkip = None
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = [] }
 
 /// Index Lib + Tests with `extensions`, edit the handler's body, and return the

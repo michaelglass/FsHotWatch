@@ -1523,6 +1523,7 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
                 Starvation = None
                 CheckSkip = None
                 NameHungTests = false
+                Weight = 1.0
                 AlwaysClasses = [] } ]
 
         let handler =
@@ -1570,6 +1571,7 @@ let ``TestPrunePlugin with failing test reports failure`` () =
                 Starvation = None
                 CheckSkip = None
                 NameHungTests = false
+                Weight = 1.0
                 AlwaysClasses = [] } ]
 
         let handler =
@@ -1812,6 +1814,7 @@ let ``Full pipeline: format → build → test`` () =
                 Starvation = None
                 CheckSkip = None
                 NameHungTests = false
+                Weight = 1.0
                 AlwaysClasses = [] } ]
 
         let testPruneHandler =
@@ -1959,6 +1962,7 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
                 Starvation = None
                 CheckSkip = None
                 NameHungTests = false
+                Weight = 1.0
                 AlwaysClasses = [] } ]
 
         let handler =
@@ -2149,6 +2153,7 @@ let ``TestPrune honors per-project TimeoutSec and records TimedOut`` () =
                 Starvation = None
                 CheckSkip = None
                 NameHungTests = false
+                Weight = 1.0
                 AlwaysClasses = [] } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
@@ -2336,6 +2341,7 @@ let ``run summary names the slowest project when 2+ projects ran`` () =
                 Starvation = None
                 CheckSkip = None
                 NameHungTests = false
+                Weight = 1.0
                 AlwaysClasses = [] }
               { TestPrunePlugin.TestConfig.Project = "SlowProj"
                 Command = "sh"
@@ -2349,6 +2355,7 @@ let ``run summary names the slowest project when 2+ projects ran`` () =
                 Starvation = None
                 CheckSkip = None
                 NameHungTests = false
+                Weight = 1.0
                 AlwaysClasses = [] } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir

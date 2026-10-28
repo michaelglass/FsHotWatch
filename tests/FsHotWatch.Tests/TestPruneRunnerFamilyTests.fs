@@ -302,6 +302,7 @@ let ``run-tests gives an xUnit 4 runner its v4 flags and reads the report from t
                 Starvation = None
                 CheckSkip = None
                 NameHungTests = nameHungTests
+                Weight = 1.0
                 AlwaysClasses = [] } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmp
@@ -363,6 +364,7 @@ let ``run-tests invokes the real xUnit 4 runner and verifies its CTRF report`` (
             Starvation = None
             CheckSkip = None
             NameHungTests = false
+            Weight = 1.0
             AlwaysClasses = [] } ]
 
     // The plugin's OWN root is isolated: over `repoRoot` it would write this repository's

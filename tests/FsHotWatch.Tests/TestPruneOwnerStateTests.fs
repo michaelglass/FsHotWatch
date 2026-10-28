@@ -66,6 +66,7 @@ let private config (project: string) : TestConfig =
       Starvation = None
       CheckSkip = None
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = [] }
 
 let private finished (results: (string * TestResult) list) (launch: TestRunLaunch) =

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: a job can declare a weight (ADR-053, AUTOMATION-1299, AUTOMATION-682). New
+  `JobSpec.Weight` (1 for `JobSpec.interactive` and `JobSpec.bulk`) and
+  `JobSpec.weighted`, which refuses a weight that is not a positive finite number. A slot
+  held for a job of weight `w` charges its lane `w` times its slot-time, and sessions are
+  served by that charge, so a declared heavy job is admitted proportionally less under
+  contention. New `Lane.Release(job)` gives back a slot at its job's weight; `Lane.Run`
+  uses it. `LaneStatus.Charged` (`chargedMs` in `status --repository -a`) reports the
+  weighted charge beside the raw `Held`. With every weight 1, admission is unchanged.
+
 ## 0.10.0-alpha.95 - 2026-10-28
 
 - feat: sessions are served by measured slot-time (ADR-051, AUTOMATION-682). A freed slot

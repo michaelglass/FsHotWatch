@@ -346,6 +346,7 @@ let ``serializeConfig test project without filterTemplate omits it`` () =
                             Starvation = None
                             CheckSkip = None
                             NameHungTests = false
+                            Weight = 1.0
                             AlwaysClasses = []
                             Traces = true
                             TraceWeave = None } ]

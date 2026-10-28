@@ -227,6 +227,7 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
               Starvation = None
               CheckSkip = None
               NameHungTests = false
+              Weight = 1.0
               AlwaysClasses = []
               Traces = true
               TraceWeave = None }
@@ -1830,6 +1831,7 @@ let ``RerunFilter.render and buildFilterArgs emit the same token for a spaced cl
           Starvation = None
           CheckSkip = None
           NameHungTests = false
+          Weight = 1.0
           AlwaysClasses = [] }
 
     let check =

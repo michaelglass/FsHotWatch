@@ -32,6 +32,7 @@ let private gatedProject (project: string) (started: string) (release: string) :
       Starvation = None
       CheckSkip = None
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = [] }
 
 /// A repo root with one source file, so the run binds a readable input tree.
@@ -185,6 +186,7 @@ let private numberedCoverageProject (project: string) (counter: string) : TestCo
       Starvation = None
       CheckSkip = None
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = [] }
 
 [<Fact(Timeout = 40000)>]

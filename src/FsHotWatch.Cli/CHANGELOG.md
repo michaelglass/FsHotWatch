@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `tests.projects[].weight` declares how heavily a project's test host is charged
+  for its process slot in a repository host (ADR-053, AUTOMATION-1299). A number greater
+  than 0, and 1 when absent; anything else is a config error. Under contention, a project
+  declared `3` is admitted about a third as often as one of weight `1`.
+
 - feat: the repository host's process slots are held by builds as well as test hosts
   (ADR-052, AUTOMATION-682). `fshw status --repository` now prints them as "processes
   (test hosts, builds): R of N slot(s) held, Q queued".

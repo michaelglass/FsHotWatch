@@ -65,6 +65,7 @@ let private projConfig (project: string) : TestConfig =
       Starvation = None
       CheckSkip = None
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = [] }
 
 /// A `TestsFinished` for a completed run: per-project results plus the SCOPE it was
@@ -2433,6 +2434,7 @@ let private markerRunner (project: string) (marker: string) (projFile: string) :
       Starvation = None
       CheckSkip = None
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = [] }
 
 /// Drive one real run of both projects and return the repo root's marker facts.
@@ -2681,6 +2683,7 @@ let ``a cached test-prune replay clears the whole ledger, exactly as its real ru
                 Starvation = None
                 CheckSkip = None
                 NameHungTests = false
+                Weight = 1.0
                 AlwaysClasses = [] } ]
 
         let handler =

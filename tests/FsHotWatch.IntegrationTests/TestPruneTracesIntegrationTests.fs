@@ -104,6 +104,7 @@ let private config: TestConfig =
       Starvation = None
       CheckSkip = None
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = [] }
 
 let private runTests (root: string) (traces: TraceSettings option) =

@@ -34,16 +34,25 @@ type JobClass =
     /// waited the aging bound.
     | Bulk
 
-/// What a job asks of the scheduler. The class is all it carries so far; weights,
-/// exclusivity and dependencies are later fields (AUTOMATION-682).
-type JobSpec = { Class: JobClass }
+/// What a job asks of the scheduler: its class, and its weight. A slot held for a job of
+/// weight `w` charges its lane `w` times its slot-time (ADR-053), so a declared heavy job
+/// is admitted proportionally less under contention. Exclusivity and dependencies are later
+/// fields (AUTOMATION-682).
+type JobSpec = { Class: JobClass; Weight: float }
 
 module JobSpec =
     /// A job someone is waiting on now.
-    let interactive: JobSpec = { Class = Interactive }
+    let interactive: JobSpec = { Class = Interactive; Weight = 1.0 }
 
     /// Bulk work, urgent only once aged.
-    let bulk: JobSpec = { Class = Bulk }
+    let bulk: JobSpec = { Class = Bulk; Weight = 1.0 }
+
+    /// `job`, weighing `weight`: a positive, finite number (AUTOMATION-1299, ADR-053).
+    let weighted (weight: float) (job: JobSpec) : JobSpec =
+        if not (weight > 0.0 && Double.IsFinite weight) then
+            raise (ArgumentOutOfRangeException(nameof weight, weight, "a weight must be a positive finite number"))
+
+        { job with Weight = weight }
 
 /// How long a bulk job waits before it ranks as interactive.
 let DefaultAgingBound = TimeSpan.FromSeconds 5.0
@@ -70,8 +79,9 @@ type ClassStatus =
 /// What one lane was admitted. `Granted` and `Abandoned` count acquisitions since the
 /// lane was made: granted a slot, or given up while waiting for one. `Waited` sums,
 /// and `LongestWait` is the most of, the time a granted acquisition spent queued. `Held`
-/// is slot-time: the time each of the lane's slots was held, summed. `Interactive` and
-/// `Bulk` split the counts by class.
+/// is slot-time: the time each of the lane's slots was held, summed. `Charged` weighs
+/// it: each slot's time times its job's weight, the service fairness is decided by
+/// (ADR-051, ADR-053). `Interactive` and `Bulk` split the counts by class.
 type LaneStatus =
     { Lane: string
       Queued: int
@@ -81,6 +91,7 @@ type LaneStatus =
       Waited: TimeSpan
       LongestWait: TimeSpan
       Held: TimeSpan
+      Charged: TimeSpan
       Interactive: ClassStatus
       Bulk: ClassStatus }
 
@@ -122,6 +133,7 @@ module LaneStatus =
         node["waitedMs"] <- JsonValue.Create(wholeMs status.Waited)
         node["longestWaitMs"] <- JsonValue.Create(wholeMs status.LongestWait)
         node["heldMs"] <- JsonValue.Create(wholeMs status.Held)
+        node["chargedMs"] <- JsonValue.Create(wholeMs status.Charged)
         node["interactive"] <- ClassStatus.payload status.Interactive
         node["bulk"] <- ClassStatus.payload status.Bulk
         node
@@ -132,6 +144,7 @@ type internal Waiter =
     {
         Grant: TaskCompletionSource<bool>
         Class: JobClass
+        Weight: float
         Since: TimeSpan
         /// Runs under the lock when a slot becomes this waiter's.
         OnGrant: unit -> unit
@@ -252,13 +265,14 @@ type Scheduler internal (capacity: int, handingOver: unit -> unit, clock: unit -
 
                     if running < capacity then
                         running <- running + 1
-                        lane.Take(now, job.Class, TimeSpan.Zero)
+                        lane.Take(now, job.Class, job.Weight, TimeSpan.Zero)
                         onGrant ()
                         None
                     else
                         let waiter =
                             { Grant = TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
                               Class = job.Class
+                              Weight = job.Weight
                               Since = now
                               OnGrant = onGrant }
 
@@ -296,7 +310,7 @@ type Scheduler internal (capacity: int, handingOver: unit -> unit, clock: unit -
                     granted answer.Result)
                 |> ignore
 
-    member internal _.Release(releasing: Lane) : unit =
+    member internal _.Release(releasing: Lane, weight: float option) : unit =
         let next =
             Locking.locked gate (fun () ->
                 if running = 0 then
@@ -304,7 +318,7 @@ type Scheduler internal (capacity: int, handingOver: unit -> unit, clock: unit -
 
                 let now = clock ()
 
-                if not (releasing.Give now) then
+                if not (releasing.Give(now, weight)) then
                     invalidOp $"lane %s{releasing.Name} released a slot it does not hold"
 
                 settle releasing
@@ -319,7 +333,7 @@ type Scheduler internal (capacity: int, handingOver: unit -> unit, clock: unit -
                     let next = lane.Next(now, agingBound)
                     next.List.Remove next
                     queued <- queued - 1
-                    lane.Take(now, next.Value.Class, now - next.Value.Since)
+                    lane.Take(now, next.Value.Class, next.Value.Weight, now - next.Value.Since)
                     next.Value.OnGrant()
 
                     // A lane with more waiting goes to the back of the turns.
@@ -340,19 +354,28 @@ and [<Sealed>] Lane internal (scheduler: Scheduler, name: string) =
     let interactiveWaiters = LinkedList<Waiter>()
     let bulkWaiters = LinkedList<Waiter>()
     let mutable held = 0
+    /// The weight of each slot held now, in the order they were granted.
+    let heldWeights = ResizeArray<float>()
     let mutable interactive = ClassStatus.zero
     let mutable bulk = ClassStatus.zero
     /// Slot-time up to `heldSince`; the slots held now add `held × (now - heldSince)`.
     let mutable heldTime = TimeSpan.Zero
     let mutable heldSince = TimeSpan.Zero
+    /// Weighted slot-time up to `heldSince`: each slot's time times its job's weight.
+    let mutable chargedTime = TimeSpan.Zero
     /// Added to the slot-time held to give this lane's service; raised by `CatchUp`.
     let mutable serviceOffset = TimeSpan.Zero
 
     let heldUpTo (now: TimeSpan) =
         heldTime + TimeSpan.FromTicks(int64 held * (now - heldSince).Ticks)
 
+    let chargedUpTo (now: TimeSpan) =
+        chargedTime
+        + TimeSpan.FromTicks(int64 (Seq.sum heldWeights * float (now - heldSince).Ticks))
+
     let accrue (now: TimeSpan) =
         heldTime <- heldUpTo now
+        chargedTime <- chargedUpTo now
         heldSince <- now
 
     let update (cls: JobClass) (change: ClassStatus -> ClassStatus) =
@@ -383,10 +406,10 @@ and [<Sealed>] Lane internal (scheduler: Scheduler, name: string) =
         elif interactiveWaiters.Count > 0 then 1
         else 2
 
-    /// The slot-time this lane has been charged: what it has held, plus any catch-up it
-    /// was given on waking. This is the one place a slot is charged; a declared cost per
-    /// job (AUTOMATION-1299) would scale the charge here.
-    member internal _.Service(now: TimeSpan) : TimeSpan = heldUpTo now + serviceOffset
+    /// The slot-time this lane has been charged: what it has held, each slot weighed by its
+    /// job's declared weight (AUTOMATION-1299, ADR-053), plus any catch-up it was given on
+    /// waking. This is the one place a slot is charged.
+    member internal _.Service(now: TimeSpan) : TimeSpan = chargedUpTo now + serviceOffset
 
     /// Raise this lane's service to at least `floor`, as it wakes.
     member internal this.CatchUp(now: TimeSpan, floor: TimeSpan) =
@@ -407,10 +430,12 @@ and [<Sealed>] Lane internal (scheduler: Scheduler, name: string) =
         | first, Some aged when aged.Value.Since < first.Value.Since -> aged
         | first, _ -> first
 
-    /// A slot granted to this lane at `now` for a job of `cls`, after waiting `wait`.
-    member internal _.Take(now: TimeSpan, cls: JobClass, wait: TimeSpan) =
+    /// A slot granted to this lane at `now` for a job of `cls` weighing `weight`, after
+    /// waiting `wait`.
+    member internal _.Take(now: TimeSpan, cls: JobClass, weight: float, wait: TimeSpan) =
         accrue now
         held <- held + 1
+        heldWeights.Add weight
 
         update cls (fun c ->
             { c with
@@ -418,14 +443,23 @@ and [<Sealed>] Lane internal (scheduler: Scheduler, name: string) =
                 Waited = c.Waited + wait
                 LongestWait = max c.LongestWait wait })
 
-    /// One of this lane's slots given back at `now`: false, and nothing changes, when
-    /// the lane holds none.
-    member internal _.Give(now: TimeSpan) : bool =
-        if held = 0 then
+    /// One of this lane's slots given back at `now`, held for a job of `weight`: false, and
+    /// nothing changes, when the lane holds no such slot. With no weight named (an
+    /// unweighted `Release`), a weight-1 slot is given back if the lane holds one, else the
+    /// oldest it holds.
+    member internal _.Give(now: TimeSpan, weight: float option) : bool =
+        let index =
+            match weight with
+            | Some w -> heldWeights.IndexOf w
+            | None when heldWeights.Count = 0 -> -1
+            | None -> max 0 (heldWeights.IndexOf 1.0)
+
+        if index < 0 then
             false
         else
             accrue now
             held <- held - 1
+            heldWeights.RemoveAt index
             true
 
     /// One of this lane's waiters of `cls` gave up.
@@ -456,7 +490,12 @@ and [<Sealed>] Lane internal (scheduler: Scheduler, name: string) =
 
     /// Give back a slot this lane holds. It goes to the next lane in turn. A lane that
     /// holds none is refused: its caller released a slot another lane holds.
-    member this.Release() : unit = scheduler.Release this
+    member this.Release() : unit = scheduler.Release(this, None)
+
+    /// Give back a slot this lane holds for `job`, charged at its weight until now. A lane
+    /// that holds no slot of that weight is refused.
+    member this.Release(job: JobSpec) : unit =
+        scheduler.Release(this, Some job.Weight)
 
     /// Run `work` holding one slot for `job`, and give the slot back however `work` ends:
     /// it returns, it throws, or the caller is cancelled, including in the moment between
@@ -488,7 +527,7 @@ and [<Sealed>] Lane internal (scheduler: Scheduler, name: string) =
                 return! work
             finally
                 if Interlocked.Exchange(&held.contents, 0) = 1 then
-                    this.Release()
+                    this.Release job
         }
 
     /// What this lane was admitted, read now.
@@ -502,6 +541,7 @@ and [<Sealed>] Lane internal (scheduler: Scheduler, name: string) =
               Waited = interactive.Waited + bulk.Waited
               LongestWait = max interactive.LongestWait bulk.LongestWait
               Held = heldUpTo now
+              Charged = chargedUpTo now
               Interactive = interactive
               Bulk = bulk })
 

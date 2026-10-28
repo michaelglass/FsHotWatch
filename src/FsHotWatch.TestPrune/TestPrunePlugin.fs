@@ -1115,6 +1115,10 @@ type TestConfig =
         /// for the whole run, and a diagnostic must not change what a host runs with
         /// (AUTOMATION-1353). A project whose `args` set either switch keeps its own.
         NameHungTests: bool
+        /// `weight`: how heavily this project's test host is charged for its process slot,
+        /// relative to an undeclared project's 1 (AUTOMATION-1299, ADR-053). A group is
+        /// charged the largest weight among its projects.
+        Weight: float
     }
 
 /// A test project's configuration as one canonical JSON document: every field, in a fixed
@@ -1154,6 +1158,7 @@ let internal canonicalTestConfig (c: TestConfig) : string =
     // `AlwaysClasses` is deliberately absent: it changes which classes a FILTERED run
     // selects, never what a project's full green means, and only full greens are reused.
     // So is `CheckSkip`: a run that skipped classes is filtered, and is never published.
+    // `Weight` is absent too: it decides when a host is admitted, never what it runs or reports.
     // `NameHungTests` changes the host's thread pool, so a green earned under it is a different
     // claim; written only when on, so every key earned without it is unchanged.
     if c.NameHungTests then
@@ -7137,6 +7142,10 @@ let private executeTests
         let runAllGroups () =
             scheduledGroups
             |> List.map (fun (_, groupConfigs) ->
+                // A group is charged the largest weight among its projects (ADR-053).
+                FsHotWatch.WorkScheduler.JobSpec.weighted
+                    (groupConfigs |> List.map _.Weight |> List.fold max 1.0)
+                    FsHotWatch.WorkScheduler.JobSpec.interactive,
                 async {
                     // The run's token: trace preparation (weave + JIT verification) stops
                     // when the run is cancelled.
@@ -7175,7 +7184,7 @@ let private executeTests
                     foldAndEmit results
                     return results
                 })
-            |> GroupSchedule.runAdmitted processes maxParallelProjects
+            |> GroupSchedule.runAdmittedAs processes maxParallelProjects
 
         let! groupResults =
             if List.isEmpty preflight.Refusals then

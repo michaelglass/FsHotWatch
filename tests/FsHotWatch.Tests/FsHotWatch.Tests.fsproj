@@ -219,6 +219,7 @@
     <Compile Include="WorkSchedulerStatusTests.fs" />
     <Compile Include="WorkSchedulerPriorityTests.fs" />
     <Compile Include="WorkSchedulerFairnessTests.fs" />
+    <Compile Include="WorkSchedulerWeightTests.fs" />
     <Compile Include="CheckPipelineConcurrencyTests.fs" />
     <Compile Include="FcsCacheProbe.fs" />
     <Compile Include="SnapshotVersionTests.fs" />

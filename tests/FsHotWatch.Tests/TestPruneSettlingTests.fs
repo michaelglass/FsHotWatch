@@ -57,6 +57,7 @@ let private config: TestConfig =
       Starvation = None
       CheckSkip = None
       NameHungTests = false
+      Weight = 1.0
       AlwaysClasses = [] }
 
 let private read (host: FsHotWatch.PluginHost.PluginHost) name =
