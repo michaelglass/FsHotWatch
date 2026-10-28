@@ -2,10 +2,16 @@
 
 ## Unreleased
 
+- build: TestPrune.Core 13.5.0 (was 13.4.1). Its connections now carry an explicit, named
+  SQLite busy timeout (30 s), and a write that waits it out raises `DatabaseBusyException`
+  naming the database and the bound. FsHotWatch.TestPrune and FsHotWatch.Cli pin it together.
 - feat: a test project declares a weight (ADR-053, AUTOMATION-1299). New
   `TestConfig.Weight`. Each group holds its process slot charged at the largest weight
   among its projects. New `GroupSchedule.runAdmittedAs`, which admits each job under its
   own `JobSpec`. A weight is no part of the test-evidence key.
+- fix: a test-impact DB write refused for a lock names the SQLite busy timeout that expired:
+  "test-impact DB write blocked for 31s: SQLite busy timeout (30s) expired — <db> is locked by
+  another connection". The bound is read from a connection the database opened, not restated.
 
 ## 0.13.0-alpha.95 - 2026-10-28
 
