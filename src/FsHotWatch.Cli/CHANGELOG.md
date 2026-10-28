@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **feat: `fshw insights` names each project's child processes by command**, with how many
+  were seen and their CPU time (a lower bound: the process table is read every 30 s), and
+  each verdict `timedOut` entry carries them as `children`. (AUTOMATION-1300, slice 5.)
+
 - **feat: a timeout red names the test it was running.** Each verdict `timedOut` entry
   carries `runningAtKill` (`{class, test, runningMs}`), from xUnit's long-running reports,
   and `fshw verdict` and `fshw insights` say "running at the kill: <class> (<test>, <s>)".

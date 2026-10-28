@@ -53,6 +53,8 @@ type ProjectRun =
         LoadPerCoreMean: float option
         /// The tests still running when the host ended (a killed host's hung test).
         RunningAtEnd: RunningTest list
+        /// The child processes seen in the host's tree, by command, most CPU first.
+        Children: Profile.ChildCommand list
         /// Slowest span first.
         Classes: ClassRow list
     }
@@ -146,6 +148,12 @@ let private ofProfile (runId: string) (project: string) (lines: Profile.Line lis
                         |> Option.map (fun e -> (e - since).TotalMilliseconds)
                         |> Option.defaultValue 0.0 }
             | _ -> None)
+      Children =
+        lines
+        |> List.choose (function
+            | Profile.Children c -> Some c
+            | _ -> None)
+        |> List.sortBy (fun c -> -c.CpuMs, c.Command)
       Classes =
         lines
         |> List.choose (function
@@ -225,6 +233,7 @@ let private ofReports (runId: string) (dir: string) (project: string) : ProjectR
       TimeoutSec = timeout
       LoadPerCoreMean = None
       RunningAtEnd = []
+      Children = []
       Classes =
         timings
         |> List.map (fun t ->
@@ -444,6 +453,10 @@ type Options =
 [<Literal>]
 let LongPoleShare = 0.5
 
+/// Child commands the text report names.
+[<Literal>]
+let ChildCommandsNamed = 5
+
 /// Tail classes named before "and N more".
 [<Literal>]
 let TailClassesNamed = 3
@@ -549,7 +562,19 @@ let private projectLines (options: Options) (history: ProjectRun list) (p: Proje
     let running =
         runningAtKill p.RunningAtEnd |> List.map (fun phrase -> $"  %s{phrase}")
 
-    headline :: runLoad @ classes @ running @ longPole @ tail @ regressed
+    let children =
+        match p.Children with
+        | [] -> []
+        | cs ->
+            let named =
+                cs
+                |> List.truncate ChildCommandsNamed
+                |> List.map (fun c -> $"%s{c.Command} x%d{c.Processes} %s{seconds c.CpuMs} CPU")
+                |> String.concat ", "
+
+            [ $"  child processes (seen at the 30 s table reads, so at least): %s{named}" ]
+
+    headline :: runLoad @ classes @ running @ longPole @ tail @ children @ regressed
 
 // ---------------------------------------------------------------------------------------
 // One project's insight, as a record: what `--json` prints and a verdict carries
@@ -581,6 +606,8 @@ type ProjectInsight =
         Contended: bool option
         /// The tests still running at the kill, with their classes.
         RunningAtKill: RunningTest list
+        /// The child processes seen in the host's tree, by command, most CPU first.
+        Children: Profile.ChildCommand list
     }
 
 /// Classes an insight lists.
@@ -617,7 +644,8 @@ let summarize (budgets: Map<string, int>) (p: ProjectRun) : ProjectInsight =
       Slowest = slowest
       LoadPerCoreMean = p.LoadPerCoreMean
       Contended = p.LoadPerCoreMean |> Option.map (fun l -> l >= Profile.ContendedLoadPerCore)
-      RunningAtKill = p.RunningAtEnd }
+      RunningAtKill = p.RunningAtEnd
+      Children = p.Children }
 
 /// A value, or JSON null for `None`.
 let private optional (value: 'T option) : JsonNode =
@@ -645,6 +673,18 @@ let insightJson (i: ProjectInsight) : JsonObject =
     o["slowest"] <- JsonArray(i.Slowest |> List.map shareJson |> List.toArray)
     o["loadPerCoreMean"] <- optional i.LoadPerCoreMean
     o["contended"] <- optional i.Contended
+
+    o["children"] <-
+        JsonArray(
+            i.Children
+            |> List.map (fun c ->
+                let e = JsonObject()
+                e["command"] <- JsonValue.Create c.Command
+                e["processes"] <- JsonValue.Create c.Processes
+                e["cpuMs"] <- JsonValue.Create c.CpuMs
+                e :> JsonNode)
+            |> List.toArray
+        )
 
     o["runningAtKill"] <-
         JsonArray(
@@ -715,6 +755,27 @@ let tryReadInsight (node: JsonNode) : ProjectInsight option =
                                         { Class = cls
                                           Test = test
                                           RunningMs = ms }
+                                | _ -> None
+                            | _ -> None)
+                        |> Seq.toList
+                    | _ -> []
+                  Children =
+                    match o["children"] with
+                    | :? JsonArray as arr ->
+                        arr
+                        |> Seq.choose (fun e ->
+                            match e with
+                            | :? JsonObject as c ->
+                                match
+                                    value<string> c["command"], value<int> c["processes"], value<float> c["cpuMs"]
+                                with
+                                | Some command, Some processes, Some cpu ->
+                                    Some(
+                                        { Command = command
+                                          Processes = processes
+                                          CpuMs = cpu }
+                                        : Profile.ChildCommand
+                                    )
                                 | _ -> None
                             | _ -> None)
                         |> Seq.toList

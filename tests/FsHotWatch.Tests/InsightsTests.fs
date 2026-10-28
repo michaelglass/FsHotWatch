@@ -161,6 +161,7 @@ let private projectRun (runId: string) (outcome: string) (spans: (string * float
       TimeoutSec = None
       LoadPerCoreMean = None
       RunningAtEnd = []
+      Children = []
       Classes =
         spans
         |> List.map (fun (cls, sec) ->
@@ -613,3 +614,39 @@ let ``a running-at-kill entry that is not whole is dropped when an insight is re
         System.Text.Json.Nodes.JsonNode.Parse """{"runId":"r","project":"P","runningAtKill":3}"""
 
     test <@ (Insights.tryReadInsight noArray |> Option.map (fun i -> i.RunningAtKill)) = Some [] @>
+
+// --- slice 5: child processes ---
+
+[<Fact>]
+let ``an insight lists the child processes by command, most CPU first, and the report says they are a lower bound`` () =
+    let root = runsRoot ()
+
+    let lines =
+        [ Profile.Start("P", at 0.0, 4, Some 100, None)
+          Profile.End(at 10.0, 10_000L, None, None, "passed")
+          Profile.Children
+              { Command = "git"
+                Processes = 40
+                CpuMs = 9_000.0 }
+          Profile.Children
+              { Command = "testhost"
+                Processes = 1
+                CpuMs = 60_000.0 } ]
+        |> List.map Profile.render
+        |> String.concat "\n"
+
+    let dir = runDir root "r1" 0.0 [ "P.profile.jsonl", lines ]
+    let i = Insights.loadRun dir |> List.exactlyOne |> Insights.summarize Map.empty
+
+    test <@ i.Children |> List.map (fun c -> c.Command) = [ "testhost"; "git" ] @>
+    test <@ Insights.tryReadInsight (Insights.insightJson i) = Some i @>
+
+    let text =
+        Insights.report Insights.Options.defaults (Insights.loadRuns root)
+        |> String.concat "\n"
+
+    test
+        <@
+            text.Contains
+                "child processes (seen at the 30 s table reads, so at least): testhost x1 60.0s CPU, git x40 9.0s CPU"
+        @>

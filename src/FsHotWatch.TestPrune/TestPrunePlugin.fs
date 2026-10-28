@@ -6480,6 +6480,10 @@ let private executeTests
                 // time, and each class's span and the load over it — from the report, or, for a host
                 // killed at its timeout (which writes none), from the result lines it printed.
                 // This record is fshw's, so it survives the kill. See `Profile`.
+                // The host's tree, read at each sample: its CPU time, and at the end its child
+                // processes by command.
+                let processTree = Profile.processTree ()
+
                 let profile =
                     Profile.start
                         runDir
@@ -6487,8 +6491,10 @@ let private executeTests
                         config.TimeoutSec
                         Environment.ProcessorCount
                         OperationWatchdog.loadAverage
-                        (Profile.treeCpu ())
+                        processTree.Cpu
                         Profile.DefaultInterval
+
+                Profile.trackChildren profile processTree.Children
 
                 // Every path out of this launch closes the profile and stops its sampler:
                 // the classified outcome below finishes it first (`finish` writes once), so

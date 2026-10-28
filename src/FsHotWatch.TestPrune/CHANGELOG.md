@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **feat: a profile lists the host's child processes by command.** The tree-CPU reader
+  (`Profile.processTree`, `ProcessTree`) also records each member's command as the process
+  table names it (`commandName`: the program, or the assembly of `dotnet <x>.dll`), and
+  `finish` writes one `children` line per command: processes seen and their CPU time.
+  It reads the table it already reads (every 30 s), so a child that lived and died
+  between two reads is not seen and the counts are a lower bound; attributing children
+  to individual tests would need the host's own help and is not attempted.
+  `Insights.ProjectInsight.Children` (`children` in `--json` and the verdict's
+  `timedOut`), and the text report names the top five. New: `Profile.ChildCommand`,
+  `Profile.Line.Children`, `Profile.trackChildren`. (AUTOMATION-1300, slice 5.)
+
 - **feat: a killed host's profile names the test it was running.** fshw now also asks
   the xUnit hosts it asks for CTRF for `--long-running <s>` (a third of `timeoutSec`, at
   most 10 s) and a `--config-file` that is the project's own `testconfig.json` from its

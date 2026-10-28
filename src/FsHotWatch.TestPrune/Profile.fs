@@ -109,6 +109,12 @@ type ClassSource =
     /// The per-test result lines the host printed (a host killed before it wrote a report).
     | Console
 
+/// The processes of one command seen in a host's tree.
+type ChildCommand =
+    { Command: string
+      Processes: int
+      CpuMs: float }
+
 /// One line of a profile.
 type Line =
     | Start of project: string * at: DateTime * cores: int * timeoutSec: int option * load1: float option
@@ -120,6 +126,8 @@ type Line =
     /// A test still running when the host ended: reported long-running by xUnit, never
     /// finished. `since` is when it started.
     | Running of test: string * since: DateTime
+    /// The processes of one command seen in the host's tree, and the CPU time they used.
+    | Children of ChildCommand
 
 // ---------------------------------------------------------------------------------------
 // The report's classes
@@ -407,6 +415,11 @@ let render (line: Line) : string =
               "contended", optBool c.Contended ]
         | ClassesUnavailable reason -> [ "event", str "classes-unavailable"; "reason", str reason ]
         | Running(test, since) -> [ "event", str "running"; "test", str test; "since", str (iso since) ]
+        | Children c ->
+            [ "event", str "children"
+              "command", str c.Command
+              "processes", i32 c.Processes
+              "cpuMs", num c.CpuMs ]
 
     (objectOf fields).ToJsonString()
 
@@ -523,6 +536,16 @@ let tryParse (text: string) : Line option =
                 | Some t, Some c, Some s -> Some(Class(t, c, s))
                 | _ -> None
             | Some "classes-unavailable" -> typed<string> o "reason" |> Option.map ClassesUnavailable
+            | Some "children" ->
+                match typed<string> o "command", typed<int> o "processes", typed<float> o "cpuMs" with
+                | Some command, Some processes, Some cpu ->
+                    Some(
+                        Children
+                            { Command = command
+                              Processes = processes
+                              CpuMs = cpu }
+                    )
+                | _ -> None
             | Some "running" ->
                 match typed<string> o "test", date o "since" with
                 | Some test, Some since -> Some(Running(test, since))
@@ -568,6 +591,38 @@ let processCpuMs (pid: int) : float option =
     | :? ComponentModel.Win32Exception
     | :? NotSupportedException -> None
 
+/// The program a process-table command line runs: its first word's file name, or for
+/// `dotnet <x>.dll` the assembly's name (`testhost`), so the host is told apart from the
+/// `dotnet` CLI that launched it. `?` for an empty line.
+let commandName (commandLine: string) : string =
+    let words =
+        commandLine.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries)
+
+    let fileName (path: string) =
+        match path.LastIndexOfAny [| '/'; '\\' |] with
+        | -1 -> path
+        | i -> path.Substring(i + 1)
+
+    match words |> Array.toList with
+    | [] -> "?"
+    | first :: second :: _ when
+        fileName first = "dotnet"
+        && second.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+        ->
+        Path.GetFileNameWithoutExtension(fileName second)
+    | first :: _ -> fileName first
+
+/// A host's process tree, as one launch reads it: its CPU time, and its members by command.
+[<NoComparison; NoEquality>]
+type ProcessTree =
+    {
+        /// The CPU time of the tree rooted at the pid, for `Recorder`'s `readCpu`.
+        Cpu: int -> float option
+        /// Every member seen so far, by command, most CPU first. A process that lived and
+        /// died between two table reads is never seen, so the counts are a lower bound.
+        Children: unit -> ChildCommand list
+    }
+
 /// The CPU time of the host's whole process tree, for `Recorder`'s `readCpu`.
 ///
 /// The pid fshw spawns is rarely the test host: under `dotnet run` it is the CLI, which
@@ -581,39 +636,74 @@ let processCpuMs (pid: int) : float option =
 /// keeps the members already known.
 ///
 /// Stateful (the readings so far): one per project launch.
+let internal processTreeWith
+    (refreshEvery: int)
+    (readTable: unit -> Result<ProcessHelper.ProcessRow list, string>)
+    (readPid: int -> float option)
+    : ProcessTree =
+    let lastSeen = Collections.Generic.Dictionary<int, float>()
+    let members = Collections.Generic.HashSet<int>()
+    // Each member's command, as the table named it when it was first seen.
+    let commands = Collections.Generic.Dictionary<int, string>()
+    let calls = ref 0
+    let gate = obj ()
+
+    { Cpu =
+        fun root ->
+            lock gate (fun () ->
+                if calls.Value % max 1 refreshEvery = 0 then
+                    match readTable () with
+                    | Ok rows ->
+                        ProcessHelper.treeOf root rows
+                        |> List.iter (fun r ->
+                            if members.Add r.Pid then
+                                commands[r.Pid] <- commandName r.Command)
+                    | Error _ -> ()
+
+                calls.Value <- calls.Value + 1
+                members.Add root |> ignore
+
+                for pid in members do
+                    readPid pid |> Option.iter (fun cpu -> lastSeen[pid] <- cpu)
+
+                if lastSeen.Count = 0 then
+                    None
+                else
+                    Some(Seq.sum lastSeen.Values))
+      Children =
+        fun () ->
+            lock gate (fun () ->
+                members
+                |> Seq.toList
+                |> List.groupBy (fun pid ->
+                    match commands.TryGetValue pid with
+                    | true, c -> c
+                    | _ -> "?")
+                |> List.map (fun (command, pids) ->
+                    { Command = command
+                      Processes = pids.Length
+                      CpuMs =
+                        pids
+                        |> List.sumBy (fun pid ->
+                            match lastSeen.TryGetValue pid with
+                            | true, cpu -> cpu
+                            | _ -> 0.0) })
+                |> List.sortBy (fun c -> -c.CpuMs, c.Command)) }
+
+/// The tree's CPU time alone — `processTreeWith`'s `Cpu`.
 let internal treeCpuWith
     (refreshEvery: int)
     (readTable: unit -> Result<ProcessHelper.ProcessRow list, string>)
     (readPid: int -> float option)
     : int -> float option =
-    let lastSeen = Collections.Generic.Dictionary<int, float>()
-    let members = Collections.Generic.HashSet<int>()
-    let calls = ref 0
-    let gate = obj ()
+    (processTreeWith refreshEvery readTable readPid).Cpu
 
-    fun root ->
-        lock gate (fun () ->
-            if calls.Value % max 1 refreshEvery = 0 then
-                match readTable () with
-                | Ok rows ->
-                    ProcessHelper.treeOf root rows
-                    |> List.iter (fun r -> members.Add r.Pid |> ignore)
-                | Error _ -> ()
+/// `processTreeWith` over the live process table, read every 6th sample.
+let processTree () : ProcessTree =
+    processTreeWith 6 (fun () -> ProcessHelper.readProcessTableWithin (TimeSpan.FromSeconds 2.0)) processCpuMs
 
-            calls.Value <- calls.Value + 1
-            members.Add root |> ignore
-
-            for pid in members do
-                readPid pid |> Option.iter (fun cpu -> lastSeen[pid] <- cpu)
-
-            if lastSeen.Count = 0 then
-                None
-            else
-                Some(Seq.sum lastSeen.Values))
-
-/// `treeCpuWith` over the live process table.
-let treeCpu () : int -> float option =
-    treeCpuWith 6 (fun () -> ProcessHelper.readProcessTableWithin (TimeSpan.FromSeconds 2.0)) processCpuMs
+/// `processTree`'s CPU reading alone.
+let treeCpu () : int -> float option = (processTree ()).Cpu
 
 /// A profile being written. Opaque: `start` opens it, `finish` closes it.
 [<NoComparison; NoEquality>]
@@ -642,6 +732,8 @@ type Recorder =
             mutable Completions: (DateTime * string * int64) list
             /// The tests reported long-running, by name: when each started, by its newest report.
             mutable LongRunning: Map<string, DateTime>
+            /// The host tree's children by command, read at `finish` (`trackChildren`).
+            mutable ReadChildren: (unit -> ChildCommand list) option
             mutable ConsoleClosed: bool
         }
 
@@ -717,6 +809,7 @@ let start
           Discarding = false
           Completions = []
           LongRunning = Map.empty
+          ReadChildren = None
           ConsoleClosed = false }
 
     emit recorder (Start(project, DateTime.UtcNow, cores, timeoutSec, readLoad ()))
@@ -798,6 +891,11 @@ let private consoleState (r: Recorder) : ClassTiming list * (string * DateTime) 
         |> List.filter (fun (name, _) -> not (finished.Contains name))
         |> List.sortBy (fun (name, since) -> since, name))
 
+/// At `finish`, also write the host tree's children by command, as `read` returns them
+/// (`ProcessTree.Children`).
+let trackChildren (r: Recorder) (read: unit -> ChildCommand list) : unit =
+    lock r.Gate (fun () -> r.ReadChildren <- Some read)
+
 /// Write the `end` line and the class lines (or why there are none), and close. Only the
 /// first call writes.
 let finish (r: Recorder) (outcome: string) (classes: Result<ClassTiming list, string>) : unit =
@@ -837,5 +935,15 @@ let finish (r: Recorder) (outcome: string) (classes: Result<ClassTiming list, st
 
                 for name, since in running do
                     emit r (Running(name, since))
+
+            // The host tree's children, by command. A reader that fails loses them, never the run.
+            match r.ReadChildren with
+            | Some read ->
+                try
+                    for c in read () do
+                        emit r (Children c)
+                with ex ->
+                    Logging.warn "test-prune" $"could not read the host's child processes: %s{ex.Message}"
+            | None -> ()
 
             r.Close())

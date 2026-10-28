@@ -185,3 +185,20 @@ let ``a real xUnit host killed at its timeout still gets per-class lines`` () =
             | _ -> None)
 
     test <@ running = [ "Xunit4RunnerFixture.Tests+Hanging.hangs when asked" ] @>
+
+// Slice 5: the host's child processes, by command. The first sample (at 5 s) reads the
+// process table, so a host that runs past it has its children seen.
+[<Fact(Timeout = 120_000)>]
+let ``a project's profile lists the child processes its host ran`` () =
+    let status, lines = runOnce (project "-c \"sleep 7; exit 0\"" None)
+
+    test <@ status = "passed" @>
+
+    let commands =
+        lines
+        |> List.choose (function
+            | Profile.Children c -> Some c.Command
+            | _ -> None)
+
+    test <@ commands |> List.contains "sleep" @>
+    test <@ commands |> List.contains "sh" @>

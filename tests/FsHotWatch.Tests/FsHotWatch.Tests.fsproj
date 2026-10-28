@@ -261,6 +261,7 @@
     <Compile Include="TestPruneStarvationRerunTests.fs" />
     <Compile Include="ProfileTests.fs" />
     <Compile Include="ProfileConsoleTests.fs" />
+    <Compile Include="ProfileChildrenTests.fs" />
     <Compile Include="TestPruneProfileTests.fs" />
     <Compile Include="InsightsTests.fs" />
     <Compile Include="VerdictTimeoutInsightsTests.fs" />
