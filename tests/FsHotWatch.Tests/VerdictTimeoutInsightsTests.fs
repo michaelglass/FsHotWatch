@@ -12,46 +12,83 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch
 open FsHotWatch.Cli
-open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune
-open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.Tests.TestPrunePluginTestSupport
 
-/// A real run of one `sh` host that prints a long class's results, then hangs and is
-/// killed at its 2 s timeout, beside a project that passes. Returns the root and the run id.
+/// The run directory a test run leaves when one host prints a long class's results, hangs,
+/// and is killed at its 2 s timeout, beside a project that passes: each project's profile,
+/// in the lines the runner writes (`Profile.render`). Returns the root and the run id.
+///
+/// Written, not produced by a real run (AUTOMATION-1349). A long pole is a class that
+/// spans at least `Insights.LongPoleShare` of the wall, and a killed run's wall is its
+/// timeout plus a teardown that load stretches: in a real 2 s run the 1.9 s class stopped
+/// being the long pole once the wall passed 3.8 s, which a loaded CI runner reached. Here
+/// the wall is a fact of the fixture, so the claim below no longer depends on how fast the
+/// box tore a host down. That a killed host's printed results become these class and
+/// running lines is `TestPruneProfileTests`' claim, made over real hosts.
 let private timeoutRun () : string * Guid =
     let root = isolatedRoot ()
+    let runId = Guid.NewGuid()
+    let runDir = Ctrf.runDir root runId
+    Directory.CreateDirectory runDir |> ignore
 
-    let project name args timeout : TestConfig =
-        { Project = name
-          Command = "sh"
-          Args = args
-          Group = name
-          Environment = []
-          FilterTemplate = None
-          ClassJoin = " "
-          TimeoutSec = timeout
-          ReportVerificationFormat = Disabled
-          Starvation = None
-          CheckSkip = None
-          AlwaysClasses = [] }
+    let t0 = DateTime(2026, 10, 28, 6, 0, 0, DateTimeKind.Utc)
+    let at (ms: int) = t0.AddMilliseconds(float ms)
 
-    let configs =
-        [ project
-              "Hung.Tests"
-              "-c \"echo 'passed Hung.Pole.a (1900ms)'; echo 'passed Hung.Quick.b (5ms)'; echo \\\"[Long Running Test] 'Hung.stuck forever', Elapsed: 00:00:01\\\"; exec sleep 60\""
-              (Some 2)
-          project "Fine.Tests" "-c \"exit 0\"" None ]
+    let quiet: Profile.Contention =
+        { Samples = 1
+          LoadPerCoreMean = Some 0.25
+          LoadPerCoreMax = Some 0.25
+          Contended = Some false }
 
-    let host = PluginHost.create (Unchecked.defaultof<_>) root
-    let handler = create ":memory:" root (Some configs) None None None None []
-    host.RegisterHandler(handler)
-    let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
-    test <@ result.IsSome @>
+    let consoleClass cls startMs stopMs : Profile.Line =
+        Profile.Class(
+            { Class = cls
+              Tests = 1
+              DurationMs = int64 (stopMs - startMs)
+              Start = at startMs
+              Stop = at stopMs },
+            quiet,
+            Profile.ClassSource.Console
+        )
 
-    let runDir = Directory.GetDirectories(Ctrf.reportsDir root) |> Array.exactlyOne
-    root, Guid.ParseExact(Path.GetFileName runDir, "N")
+    let write project (lines: Profile.Line list) =
+        File.WriteAllLines(Profile.pathIn runDir project, lines |> List.map Profile.render)
+
+    let killedAfter = TimeSpan.FromSeconds 2.0
+
+    // The host printed `passed Hung.Pole.a (1900ms)`, `passed Hung.Quick.b (5ms)` and xUnit's
+    // long-running report for `Hung.stuck forever`, then hung until the 2 s timeout killed it.
+    write
+        "Hung.Tests"
+        [ Profile.Start("Hung.Tests", at 0, 4, Some 2, Some 1.0)
+          Profile.Spawn(at 50, 4242)
+          Profile.End(
+              at 2_400,
+              2_400L,
+              Some 12.0,
+              Some 1.0,
+              Profile.outcomeOf (Events.TestsTimedOut("", killedAfter, false, killedAfter))
+          )
+          consoleClass "Hung.Pole" 100 2_000
+          consoleClass "Hung.Quick" 1_995 2_000
+          Profile.Running("Hung.stuck forever", at 1_000) ]
+
+    write
+        "Fine.Tests"
+        [ Profile.Start("Fine.Tests", at 0, 4, None, Some 1.0)
+          Profile.Spawn(at 50, 4243)
+          Profile.End(
+              at 100,
+              100L,
+              Some 3.0,
+              Some 1.0,
+              Profile.outcomeOf (Events.TestsPassed("", false, TimeSpan.FromMilliseconds 100.0))
+          )
+          Profile.ClassesUnavailable "no report: this runner was not asked for CTRF" ]
+
+    root, runId
 
 let private redVerdict (root: string) (runId: Guid) : Verdict.Verdict =
     let runs: Verdict.RunSuites list =
@@ -89,7 +126,7 @@ let private redVerdict (root: string) (runId: Guid) : Verdict.Verdict =
         ProjectModelFixtures.available
     |> Verdict.withTimedOut (Verdict.timedOutInsights root runs)
 
-[<Fact(Timeout = 120_000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a timeout red's verdict carries the long pole and its share of the wall, as insights reports them`` () =
     let root, runId = timeoutRun ()
     let v = redVerdict root runId
