@@ -5191,31 +5191,88 @@ let internal detectCtrfRunnerFamily (args: string) (repoRoot: string) : CtrfRunn
         with _ ->
             None)
 
-/// The project's own `<Assembly>.testconfig.json`, newest under its `bin/` (`Some None` when
-/// it has none); `None` when the runner's project cannot be located or its config cannot
-/// be read, so whether injecting one would replace it is unknown.
-let internal projectTestConfigFor (configArgs: string) (repoRoot: string) : string option option =
-    runnerProjectFile configArgs repoRoot
-    |> Option.bind (fun projectFile ->
+let private assemblyNameElement =
+    Text.RegularExpressions.Regex(@"<AssemblyName\b[^>]*>\s*([^<]*?)\s*</AssemblyName>")
+
+/// The assembly a project builds, when its text makes that certain: the one literal
+/// `<AssemblyName>` it declares, or, when neither it nor any `Directory.Build.props` /
+/// `Directory.Build.targets` between it and `repoRoot` sets one, its file name (MSBuild's
+/// default). `None` when the name is computed (`$(...)`), declared more than once, set in
+/// a shared props file, or unreadable — fshw cannot tell which assembly is the project's.
+let internal declaredAssemblyName (projectFile: string) (repoRoot: string) : string option =
+    try
+        let declared =
+            assemblyNameElement.Matches(File.ReadAllText projectFile)
+            |> Seq.map (fun m -> m.Groups[1].Value)
+            |> Seq.toList
+
+        let root = Path.GetFullPath repoRoot
+
+        let rec setAbove (dir: string) =
+            if isNull dir || not (Path.GetFullPath(dir).StartsWith root) then
+                false
+            else
+                [ "Directory.Build.props"; "Directory.Build.targets" ]
+                |> List.exists (fun name ->
+                    let path = Path.Combine(dir, name)
+                    File.Exists path && (File.ReadAllText path).Contains "<AssemblyName")
+                || setAbove (Path.GetDirectoryName dir)
+
+        match declared with
+        | [ name ] when name <> "" && not (name.Contains '$') -> Some name
+        | [] when not (setAbove (Path.GetDirectoryName projectFile)) ->
+            Some(Path.GetFileNameWithoutExtension projectFile)
+        | _ -> None
+    with
+    | :? IOException
+    | :? UnauthorizedAccessException -> None
+
+/// The project's own testconfig: `<Assembly>.testconfig.json` beside `<Assembly>.dll` in its
+/// `bin/`, newest first, for the assembly it builds (`declaredAssemblyName`). `Some None`
+/// when the output holds none. `None` — inject nothing — when the assembly name is not
+/// certain, when the output holds a config (beside its assembly) of ANOTHER name, or when
+/// it cannot be read: `--config-file` replaces a config, so a config that may be the
+/// project's must never be guessed past.
+let internal projectTestConfigOf (projectFile: string) (repoRoot: string) : string option option =
+    declaredAssemblyName projectFile repoRoot
+    |> Option.bind (fun assembly ->
         let bin = Path.Combine(Path.GetDirectoryName projectFile, "bin")
-        let name = Path.GetFileNameWithoutExtension projectFile + ".testconfig.json"
+        let suffix = ".testconfig.json"
 
         try
             if Directory.Exists bin then
                 // A directory the walk could not read might hold the config: unknown, not absent.
-                match SafeWalk.walk Set.empty name bin with
+                match SafeWalk.walk Set.empty ("*" + suffix) bin with
                 | { Skipped = [] } as found ->
-                    found.Files
-                    |> List.sortByDescending _.LastWriteTimeUtc
-                    |> List.tryHead
-                    |> Option.map (fun f -> File.ReadAllText f.FullName)
-                    |> Some
+                    let configs =
+                        found.Files
+                        |> List.choose (fun f ->
+                            let name = f.Name.Substring(0, f.Name.Length - suffix.Length)
+
+                            if File.Exists(Path.Combine(f.DirectoryName, name + ".dll")) then
+                                Some(name, f)
+                            else
+                                None)
+
+                    if configs |> List.exists (fun (name, _) -> name <> assembly) then
+                        None
+                    else
+                        configs
+                        |> List.map snd
+                        |> List.sortByDescending _.LastWriteTimeUtc
+                        |> List.tryHead
+                        |> Option.map (fun f -> File.ReadAllText f.FullName)
+                        |> Some
                 | _ -> None
             else
                 Some None
         with
         | :? IOException
         | :? UnauthorizedAccessException -> None)
+
+let internal projectTestConfigFor (configArgs: string) (repoRoot: string) : string option option =
+    runnerProjectFile configArgs repoRoot
+    |> Option.bind (fun projectFile -> projectTestConfigOf projectFile repoRoot)
 
 /// Fallback apphost-missing classifier, used ONLY when `tryApphostPresent` cannot derive
 /// a project from the runner args (custom, non-`dotnet run` commands).

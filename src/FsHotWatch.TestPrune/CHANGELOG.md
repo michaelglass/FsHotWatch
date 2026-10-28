@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **fix: a project's own testconfig.json is found by the assembly it builds, not its file
+  name.** The long-running config replaces a project's `testconfig.json` (`--config-file`
+  does not merge), so it must merge the right one. It is now `<Assembly>.testconfig.json`
+  beside `<Assembly>.dll` in the output, for the assembly the project declares
+  (`declaredAssemblyName`: its one literal `<AssemblyName>`, else its file name). Nothing
+  is injected when that name is computed, set by a `Directory.Build.props`/`.targets`, or
+  declared twice, or when the output holds a config of another assembly. Before, a project
+  whose AssemblyName differs from its file name had its config silently replaced. New:
+  `projectTestConfigOf`. (AUTOMATION-1300.)
+
 - **feat: a profile lists the host's child processes by command.** The tree-CPU reader
   (`Profile.processTree`, `ProcessTree`) also records each member's command as the process
   table names it (`commandName`: the program, or the assembly of `dotnet <x>.dll`), and

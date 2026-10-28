@@ -421,3 +421,90 @@ let ``long-running reporting is not injected over a project's own choice`` () =
             longRunningArguments "run --project T --" "/r d/P.testconfig.json" 4 = Some
                 "--long-running 4 --config-file \"/r d/P.testconfig.json\""
         @>
+
+// --- which testconfig.json is the project's own: by its built assembly's name ---
+
+/// A project `Proj.Tests.fsproj` under `root/proj` holding `projectXml`, and built files
+/// (path relative to its `bin/Debug/net10.0`, content).
+let private builtProject (root: string) (projectXml: string) (built: (string * string) list) =
+    let dir = Path.Combine(root, "proj")
+    let output = Path.Combine(dir, "bin", "Debug", "net10.0")
+    Directory.CreateDirectory output |> ignore
+    let project = Path.Combine(dir, "Proj.Tests.fsproj")
+    File.WriteAllText(project, projectXml)
+
+    for name, content in built do
+        File.WriteAllText(Path.Combine(output, name), content)
+
+    project
+
+let private plainProject = "<Project><PropertyGroup></PropertyGroup></Project>"
+
+let private renamedProject =
+    "<Project><PropertyGroup><AssemblyName>Renamed.Tests</AssemblyName></PropertyGroup></Project>"
+
+[<Fact(Timeout = 5000)>]
+let ``a project whose AssemblyName differs from its file name has its own testconfig found by that name`` () =
+    withTempDir "fshw-testconfig-renamed" (fun root ->
+        let project =
+            builtProject
+                root
+                renamedProject
+                [ "Renamed.Tests.dll", ""
+                  "Renamed.Tests.testconfig.json", """{"own": true}""" ]
+
+        test <@ projectTestConfigOf project root = Some(Some """{"own": true}""") @>)
+
+[<Fact(Timeout = 5000)>]
+let ``a project without an AssemblyName is read by its file name, and one with no config has none`` () =
+    withTempDir "fshw-testconfig-default" (fun root ->
+        let project =
+            builtProject root plainProject [ "Proj.Tests.dll", ""; "Proj.Tests.testconfig.json", "{}" ]
+
+        test <@ projectTestConfigOf project root = Some(Some "{}") @>)
+
+    withTempDir "fshw-testconfig-none" (fun root ->
+        let project = builtProject root plainProject [ "Proj.Tests.dll", "" ]
+        test <@ projectTestConfigOf project root = Some None @>)
+
+[<Fact(Timeout = 5000)>]
+let ``an assembly name fshw cannot be sure of, or a config of another name, injects nothing`` () =
+    // Computed by MSBuild: not knowable from the text.
+    withTempDir "fshw-testconfig-computed" (fun root ->
+        let project =
+            builtProject
+                root
+                "<Project><PropertyGroup><AssemblyName>$(MSBuildProjectName).Suite</AssemblyName></PropertyGroup></Project>"
+                [ "Proj.Tests.Suite.dll", ""; "Proj.Tests.Suite.testconfig.json", "{}" ]
+
+        test <@ projectTestConfigOf project root = None @>)
+
+    // Set by a Directory.Build.props above the project.
+    withTempDir "fshw-testconfig-props" (fun root ->
+        File.WriteAllText(
+            Path.Combine(root, "Directory.Build.props"),
+            "<Project><PropertyGroup><AssemblyName>Other</AssemblyName></PropertyGroup></Project>"
+        )
+
+        let project =
+            builtProject root plainProject [ "Other.dll", ""; "Other.testconfig.json", "{}" ]
+
+        test <@ projectTestConfigOf project root = None @>)
+
+    // The output holds a config, beside its assembly, that is not the expected name's.
+    withTempDir "fshw-testconfig-other" (fun root ->
+        let project =
+            builtProject
+                root
+                plainProject
+                [ "Proj.Tests.dll", ""; "Elsewhere.dll", ""; "Elsewhere.testconfig.json", "{}" ]
+
+        test <@ projectTestConfigOf project root = None @>)
+
+[<Fact(Timeout = 5000)>]
+let ``a testconfig with no assembly beside it is not a config of anything`` () =
+    withTempDir "fshw-testconfig-orphan" (fun root ->
+        let project =
+            builtProject root plainProject [ "Proj.Tests.dll", ""; "Stray.testconfig.json", "{}" ]
+
+        test <@ projectTestConfigOf project root = Some None @>)
