@@ -2410,16 +2410,20 @@ let internal runProcessAccounted
 ///
 /// For a child whose shutdown does work a SIGKILL would lose: a test host collecting
 /// coverage restores the assemblies it instrumented only when it is allowed to stop.
+///
+/// `onStarted` receives the child's pid, as in `runProcessCore` (a test run's profile
+/// samples the host's CPU time by it).
 let internal runProcessToStopping
     (stop: TreeStop)
     (sink: (string -> unit) option)
+    (onStarted: int -> unit)
     (command: string)
     (args: string)
     (workDir: string)
     (env: (string * string) list)
     (bounds: ProcessBounds)
     : ProcessOutcome * TreeTeardown option =
-    runProcessCore false true (Some stop) sink ignore command args workDir env bounds
+    runProcessCore false true (Some stop) sink onStarted command args workDir env bounds
 
 
 /// THE spawn, with no output sink — `runProcessTo None`. This is the shape every

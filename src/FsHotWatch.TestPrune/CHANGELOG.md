@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **feat: every test project leaves a profile of its run, even when it is killed.**
+  `.fshw/test-runs/<runId>/<Project>.profile.jsonl`, streamed by fshw beside the run log:
+  the cores, `timeoutSec` and load at launch; the host's pid; every 5 s the 1-minute load
+  and the CPU time of the host's process tree (`dotnet run` → controller → host, exited
+  members keeping their last reading); the wall time, CPU time and outcome at the end; and
+  one line per class of the CTRF report — tests, summed duration, span, and the load per
+  core over that class's own window with a `contended` flag (mean ≥ 1 runnable thread per
+  core; unknown, never quiet, without samples). A host killed at its timeout writes no
+  report, so its profile says why there are no class lines instead; a daemon that dies
+  mid-run leaves every line up to its last sample. Measured cost: 12 ms per sample
+  averaged (the process table is read every 6th sample, 67 ms each), 0.24% of a 5 s
+  interval, in the daemon rather than the host. A starved project's first-attempt profile
+  is set aside with its report and log. Read with `Profile.read`; not a verdict input.
+  (AUTOMATION-1300, slice 1 of: per-class timings for killed hosts, an `insights`
+  report, verdict links for timeout reds, child processes per test.)
+
 - **fix!: runtime coverage that did not ingest is that project's debt, not the suite's.**
   One project's ingest failure (`SQLite Error 5: 'database is locked'`) made what is owed
   unknown for the whole suite: every run was FULL SUITE until one passed every project,

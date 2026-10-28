@@ -6294,6 +6294,33 @@ let private executeTests
                     | RunLog.Ref.Written _ -> Some runLog.Write
                     | RunLog.Ref.Unavailable _ -> None
 
+                // THE PROFILE (AUTOMATION-1300). Every project, every run, streamed beside
+                // the run log: the load and the CPU time of the host's tree while it runs, its wall
+                // time, and — from the report — each class's span and the load over it. A
+                // host killed at its timeout writes no report; this record is fshw's, so
+                // it survives the kill. See `Profile`.
+                let profile =
+                    Profile.start
+                        runDir
+                        config.Project
+                        config.TimeoutSec
+                        Environment.ProcessorCount
+                        OperationWatchdog.loadAverage
+                        (Profile.treeCpu ())
+                        Profile.DefaultInterval
+
+                // Every path out of this launch closes the profile and stops its sampler:
+                // the classified outcome below finishes it first (`finish` writes once), so
+                // this lands only on a path that never classified one — a cancelled run, or
+                // an exception between the spawn and the verdict.
+                use _profileClosed =
+                    { new IDisposable with
+                        member _.Dispose() =
+                            Profile.finish
+                                profile
+                                "abandoned"
+                                (Error "no report: the run ended before this project's outcome was classified") }
+
                 // A test runner STREAMS (discovery banner, progress, per-test
                 // lines), so its first byte is a sound liveness proof and the
                 // launch deadline can bound the spawn even when the config sets
@@ -6315,6 +6342,7 @@ let private executeTests
                             runProcessToStopping
                                 TestHostStop
                                 outputSink
+                                (Profile.spawned profile)
                                 command
                                 args
                                 repoRoot
@@ -6449,6 +6477,8 @@ let private executeTests
                                 // what it verified. A child
                                 // that EXITS is not a stall — the poll observes the
                                 // exit and classifies it normally.
+                                Profile.finish profile "launch-stalled" (Error $"no report: %s{reason}")
+
                                 return
                                     raise (
                                         LaunchStalledException
@@ -6514,6 +6544,18 @@ let private executeTests
                         TestsNoMatch(output, projectElapsed)
                     else
                         classifyTestOutcome reportEvidence wasFiltered projectElapsed processResult
+
+                Profile.finish
+                    profile
+                    (Profile.outcomeOf result)
+                    (match ctrfPath, reportJson with
+                     | Some _, Some json -> Ok(Profile.classTimings json)
+                     | None, _ -> Error "no report: this runner was not asked for CTRF"
+                     | Some _, None ->
+                         match result with
+                         | TestsTimedOut(_, after, _, _) ->
+                             Error $"no report: the host was killed at its %d{int after.TotalSeconds}s timeout"
+                         | _ -> Error "no report: the host wrote none")
 
                 // Log driven off the AUTHORITATIVE verdict (not the raw
                 // exit code) so the console line can never disagree with
@@ -6758,6 +6800,7 @@ let private executeTests
                         [ Ctrf.ReportSuffix
                           RunLog.Suffix
                           TimeoutMarker.Suffix
+                          Profile.Suffix
                           ".coverage.cobertura.xml" ]
                     |> ignore
 

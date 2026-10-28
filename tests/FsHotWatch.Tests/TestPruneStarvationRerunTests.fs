@@ -86,6 +86,7 @@ let ``a declared project that timed out on a starved box is re-run alone, and it
         // the re-run's.
         let attempt = Path.Combine(runDir, Starvation.AttemptDirName)
         test <@ File.Exists(Path.Combine(attempt, "Slow.Tests" + TimeoutMarker.Suffix)) @>
+        test <@ File.Exists(Path.Combine(attempt, "Slow.Tests" + Profile.Suffix)) @>
         test <@ File.ReadAllText(Path.Combine(attempt, "Slow.Tests.output.log")).Contains "first" @>
         test <@ File.ReadAllText(Path.Combine(runDir, "Slow.Tests.output.log")).Contains "second" @>
         test <@ not (File.Exists(Path.Combine(runDir, "Slow.Tests" + TimeoutMarker.Suffix))) @>

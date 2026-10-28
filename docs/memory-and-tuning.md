@@ -246,6 +246,9 @@ the whole tree, would leave them instrumented for the next run. The project's ru
 output log. A timed-out host writes no CTRF report, so the marker says why there
 is none: the budget, when the host was spawned, whether it stopped on the signal,
 and what the kill did. The output log ends with the same sentence.
+Its `<Project>.profile.jsonl` survives the kill too: fshw writes it, not the host, so
+it holds the load and the host tree's CPU time sampled every 5 s up to the kill, the
+wall time, and why there are no per-class lines.
 
 ```jsonc
 {
