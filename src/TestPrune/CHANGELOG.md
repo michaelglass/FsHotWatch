@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 13.5.1 - 2026-10-28
+
+- Finish: AUTOMATION-1358 pin FSharp.Core exactly so packed floors stop floating
+
+
 ## 13.5.0 - 2026-10-28
 
 - Finish: AUTOMATION-867 set the SQLite busy timeout explicitly and name it when a write runs out of it

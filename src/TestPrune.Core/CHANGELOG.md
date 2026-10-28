@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 13.5.1 - 2026-10-28
+
+- Finish: AUTOMATION-1358 pin FSharp.Core exactly so packed floors stop floating
+
+
 ## 13.5.0 - 2026-10-28
 
 - fix: the SQLite busy timeout is explicit and named. `Database.BusyTimeout` (30 s, the
