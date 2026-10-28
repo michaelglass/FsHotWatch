@@ -48,6 +48,17 @@
   verdict's `timedOut`) names it, its class and how long it had run. New:
   `Profile.parseLongRunning`, `Profile.Line.Running`. (AUTOMATION-1300.)
 
+- **feat: a selection is priced before it runs.** `SelectionPrice` prices each class at
+  the median of its summed test durations over its project's newest recorded runs (the
+  class rows `Insights.loadRun` reads from each run directory's profile or report, which
+  carry project and class; the per-test history keys by name alone), and a selection at
+  the sum of its classes, naming every class or project no run recorded. The daemon logs
+  `Priced: ~Ns of test time over K recorded class(es)` beside `Selected by:` for every
+  executing run. Backtested on this repository's own runs, each priced from the runs
+  before it: 17 of 19 within 25% of what the run spent; the two misses were a run on a
+  contended box (-28.7%) and one whose 104 classes no earlier run had recorded (-60.9%,
+  and said so). New: `SelectionPrice` (`Book`, `price`, `describe`, `backtest`).
+
 - **feat: `Insights.ProjectInsight`, one project of one run summarized** (`summarize`,
   `insightJson`, `tryReadInsight`, `reportJson`, `timeoutLine`): the long pole and its share
   of the wall, the slowest classes, the headroom, and the run's mean load per core with a

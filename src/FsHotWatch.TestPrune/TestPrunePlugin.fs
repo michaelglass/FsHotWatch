@@ -886,6 +886,17 @@ type ProjectSelection =
     /// asked to run. A filtered launch: it covers only the classes its report shows ran.
     | ProjectExcept of Set<string>
 
+/// A launched selection as `SelectionPrice` prices it.
+let internal askedOf (selection: Map<string, ProjectSelection>) : (string * SelectionPrice.Asked) list =
+    selection
+    |> Map.toList
+    |> List.map (fun (project, s) ->
+        project,
+        match s with
+        | ProjectInFull -> SelectionPrice.Asked.Whole
+        | ProjectClasses classes -> SelectionPrice.Asked.Classes classes
+        | ProjectExcept classes -> SelectionPrice.Asked.AllBut classes)
+
 /// Changed symbols that DO have covering tests — in a test project
 /// `tests.projects` does not list, so this daemon can never run them. Keyed by symbol,
 /// valued by the unlisted projects holding its only covering tests.
@@ -9085,6 +9096,18 @@ let internal createWithEvidenceAndQueries
     /// the run is past the zero-affected skip, which executes nothing and selects nothing.
     let logSelectedBy (launch: TestRunLaunch) =
         Logging.info "test-prune" $"Selected by: %s{ProjectAttribution.describe launch.SelectedBy}"
+
+        // Priced before it runs, from the class durations the newest runs recorded
+        // (`SelectionPrice`). A diagnostic: a price that cannot be read never stops a run.
+        try
+            let book =
+                SelectionPrice.Book.ofRunsDir SelectionPrice.DefaultWindow (FsHotWatch.Ctrf.reportsDir repoRoot)
+
+            Logging.info
+                "test-prune"
+                $"Priced: %s{SelectionPrice.describe (SelectionPrice.price book (askedOf launch.Selection))}"
+        with ex ->
+            Logging.warn "test-prune" $"Priced: not priced — %s{ex.Message}"
 
     /// Returns the `TestsFinished` message the framework's RunExclusive posts back to the
     /// agent; the synchronous `Custom(TestsFinished)` handler emits `TestRunCompleted`
