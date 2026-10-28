@@ -810,6 +810,12 @@ daemon launches and builds as before. See ADR-050 and ADR-052. A test project ca
 `weight` (below): its groups are charged that many times their slot-time, so under
 contention it is admitted proportionally less (`chargedMs` in `-a`; ADR-053).
 
+Each session's plugins hold at most twice the processor count of check results at once
+(`FSHW_LIVE_RESULTS` overrides it). A check whose result would go past that waits for the
+plugins to catch up, so a scan goes at their pace instead of queueing a result per file.
+`-a` reports each session's `liveResults`: the bound, the results held now and at most,
+and the waits. See ADR-054 and [Memory & tuning](docs/memory-and-tuning.md).
+
 Every lifecycle event is also appended to `host-events.jsonl` beside `host.log`: one JSON
 line each, naming the time, the host's pid, the event (`hostStarted`, `attached`,
 `refused`, `sessionEnded`, `undelivered`, `hostStopped` with `idle` or `requested`) and
