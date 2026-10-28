@@ -23,8 +23,15 @@ open FsHotWatch.SessionRegistry
 open FsHotWatch.SessionScope
 open FsHotWatch.Tests.TestHelpers
 
+/// Each session's watcher callback, by its root: a test delivers a change to one session
+/// as its watcher would (T6). Roots are per test, so concurrent tests never share one.
+let private deliverTo =
+    System.Collections.Concurrent.ConcurrentDictionary<string, Events.FileChangeKind -> unit>()
+
 let private inertWatcher: Daemon.Daemon.WatcherFactory =
-    fun _ _ _ _ _ ->
+    fun root onChange _ _ _ ->
+        deliverTo[root] <- onChange
+
         { Mode = Watcher.WatcherMode.NativeEvents
           Disposables = [] }
 
@@ -366,4 +373,64 @@ let ``T4: A crashing ends A alone; B is untouched and A can attach afresh`` () =
         let again = attachWith world world.A "a"
         test <@ again <> world.SessionA @>
         call world.Endpoint again "WaitForScan" [| box 0L |] |> ignore
+        assertBUntouched world before)
+
+/// What `session`'s diagnostics say, as JSON text.
+let private diagnosticsOf (world: World) (session: SessionId) =
+    call world.Endpoint session "GetDiagnostics" [| box "" |]
+
+[<Fact(Timeout = 300000)>]
+let ``T5: one relative file, two contents, checked at once through one checker, each session its own answer`` () =
+    // ADR-057 (a): 683's "two divergent worktrees check the same relative file concurrently".
+    withWorld defaultRun (fun world ->
+        let libOf (worktree: ResolvedWorktree) =
+            Path.Combine(worktree.Root.Value, "src", "Lib", "Lib.fs")
+
+        File.WriteAllText(libOf world.A, "module Lib\nlet answer: int = \"no\"\n")
+        File.WriteAllText(libOf world.B, "module Lib\nlet answer = notDefinedAnywhere + 1\n")
+
+        let scanA = Task.Run(fun () -> scanAndWait world world.SessionA)
+        let scanB = Task.Run(fun () -> scanAndWait world world.SessionB)
+        test <@ Task.WaitAll([| scanA; scanB |], TimeSpan.FromMinutes 4.0) @>
+
+        let a = diagnosticsOf world world.SessionA
+        let b = diagnosticsOf world world.SessionB
+
+        let countOf (json: string) =
+            let node = JsonNode.Parse json
+            node["count"].GetValue<int>()
+
+        let countA = countOf a
+        let countB = countOf b
+        test <@ countA > 0 && countB > 0 @>
+        test <@ a.Contains "string" && not (a.Contains "notDefinedAnywhere") @>
+        test <@ b.Contains "notDefinedAnywhere" && not (b.Contains "string") @>)
+
+[<Fact(Timeout = 300000)>]
+let ``T6: a rediscovery in A moves A's project to a new generation and leaves B's where it was`` () =
+    // ADR-057 (b): 683's "a change in A invalidates only A's project configurations; B
+    // retains a demonstrable warm state".
+    withWorld defaultRun (fun world ->
+        let daemonA = (world.Host.Registry.TryGet world.SessionA).Value.Daemon
+
+        let projectOf (worktree: ResolvedWorktree) =
+            Path.Combine(worktree.Root.Value, "src", "Lib", "Lib.fsproj")
+
+        let generation (worktree: ResolvedWorktree) =
+            ProjectSnapshots.generationOf daemonA.Checker (projectOf worktree)
+
+        let aBefore = generation world.A
+        let bBefore = generation world.B
+        let before = observeB world
+
+        File.WriteAllText(
+            projectOf world.A,
+            project.Replace("<TargetFramework>", "<NoWarn>FS0025</NoWarn><TargetFramework>")
+        )
+
+        // As A's watcher would. The positive control: A's rediscovery reaches the checker.
+        deliverTo[world.A.Root.Value](Events.ProjectChanged [ projectOf world.A ])
+        waitUntil (fun () -> generation world.A <> aBefore) 120000
+        scanAndWait world world.SessionA
+        test <@ generation world.B = bBefore @>
         assertBUntouched world before)
