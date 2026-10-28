@@ -1115,3 +1115,23 @@ let ``a delivered intent holds its key without owing a run verdict`` () =
     Assert.False(owner.Snapshot.OwesRunVerdict None)
     Assert.False(owner.Snapshot.IsSettling "tests", "an intent's fold carries no run result")
     owner.CommitEvent(intent, 1)
+
+[<Fact(Timeout = 60000)>]
+let ``async changes posted back to back publish in posting order through the one posted writer`` () =
+    let store = Store()
+    let row = store.Register("back-to-back", ([]: int list), fun _ -> idle ())
+
+    // Each round posts two changes with nothing between them, so the second arrives while
+    // the writer the first posted to the pool has not started: it joins that writer's
+    // queue instead of posting another (the `writerPosted` arm of `post`, otherwise reached
+    // only by chance). Each round waits for both, so rounds rarely find a writer running.
+    for round in 0..199 do
+        let first = store.ChangeAsync(row, fun _ seen -> (2 * round) :: seen, ())
+        let second = store.ChangeAsync(row, fun _ seen -> (2 * round + 1) :: seen, ())
+
+        Assert.True(
+            Task.WaitAll([| first :> Task; second :> Task |], TimeSpan.FromSeconds 10.0),
+            $"round %d{round}: both changes must publish"
+        )
+
+    Assert.Equal<int list>(List.init 400 id, List.rev (store.Read row))
