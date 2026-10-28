@@ -423,7 +423,8 @@ let ``a check's text names a placed reference by the worktree path it was given 
     let result =
         { fakeFileCheckResult "/wt/b/P.fs" with
             Frame = Some(FsHotWatch.PathFrame.create "/wt/b" "/state/virtual")
-            Placed = Map.ofList [ stored, "/wt/b/lib/Vendored.dll" ] }
+            Placed = Map.ofList [ stored, "/wt/b/lib/Vendored.dll" ]
+            Upstream = None }
 
     test
         <@

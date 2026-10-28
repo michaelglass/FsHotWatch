@@ -194,6 +194,10 @@ type Ledger(roots: string list, read: string -> ContentRead) =
     // ADR-046: the latest epoch whose cohort carried each path, by its manifest name.
     let mutable changedAt: Map<string, SnapshotEpoch> = Map.empty
     let mutable refused = 0L
+    // ADR-047: the latest answer this session's cohorts published about each path: the
+    // epoch, and the bytes and upstream it answered for.
+    let mutable published: Map<string, SnapshotEpoch * (string * Events.CheckedAgainst option)> =
+        Map.empty
 
     let mark (paths: string list) (epoch: SnapshotEpoch) =
         for path in paths do
@@ -228,21 +232,50 @@ type Ledger(roots: string list, read: string -> ContentRead) =
                     Some { Manifest = next; Hashed = cohort })
 
     /// Whether work captured at `captured`, which read `path` as `checkedContent` (a content
-    /// id), may still publish about it. Refused, and counted, when a later epoch changed
-    /// `path` and the manifest now holds other content: old bytes finishing after new.
-    /// A result that read the current bytes is accepted whenever it lands.
-    member _.Accepts(captured: SnapshotEpoch, path: string, checkedContent: string) : bool =
+    /// id) at `checkedAgainst`, may still publish about it. Refused, and counted, when it is
+    /// old work finishing after new (ADR-046, ADR-047).
+    member _.Accepts
+        (captured: SnapshotEpoch, path: string, checkedContent: string, checkedAgainst: Events.CheckedAgainst option)
+        : bool =
         Locking.locked gate (fun () ->
             let name = Manifest.relativePath roots path
 
-            match Map.tryFind name changedAt with
-            | Some(SnapshotEpoch at) when
-                at > captured.Value
-                && Map.tryFind name current.Entries <> Some(ManifestEntry.Content checkedContent)
-                ->
+            // ADR-046: a later epoch changed the file, and the snapshot holds other bytes.
+            let replacedBytes () =
+                match Map.tryFind name changedAt with
+                | Some(SnapshotEpoch at) when at > captured.Value ->
+                    Map.tryFind name current.Entries <> Some(ManifestEntry.Content checkedContent)
+                | _ -> false
+
+            // ADR-047: a cohort at a later epoch published an answer about the file that it
+            // read AFTER this one read, and this one answers another question: other bytes,
+            // or (both known) another upstream. Without both reads' order, nothing is said.
+            let readBeforeNewerAnswer () =
+                match Map.tryFind name published, checkedAgainst with
+                | Some(SnapshotEpoch at, (content, Some cohort)), Some mine when
+                    at > captured.Value && mine.ReadAt < cohort.ReadAt
+                    ->
+                    content <> checkedContent
+                    || (match cohort.Fingerprint, mine.Fingerprint with
+                        | Some theirs, Some ours -> theirs <> ours
+                        | _ -> false)
+                | _ -> false
+
+            let stale = readBeforeNewerAnswer () || replacedBytes ()
+
+            if stale then
                 refused <- refused + 1L
-                false
-            | _ -> true)
+
+            not stale)
+
+    /// Record that this session's cohort published its answer about `path` at the current
+    /// epoch: for the bytes `checkedContent` names, read at `checkedAgainst` (ADR-047).
+    member _.RecordPublished
+        (path: string, checkedContent: string, checkedAgainst: Events.CheckedAgainst option)
+        : unit =
+        Locking.locked gate (fun () ->
+            published <-
+                Map.add (Manifest.relativePath roots path) (current.Epoch, (checkedContent, checkedAgainst)) published)
 
     /// The current epoch, manifest id and refusals.
     member _.Status: SnapshotStatus =

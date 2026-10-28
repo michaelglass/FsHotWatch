@@ -309,7 +309,9 @@ let private addAssemblyParts
 let private otherReferencePart (repoRoot: string option) (output: string) (stamp: DateTime) =
     $"other-ref:%s{relativizeOption repoRoot output}@%d{stamp.Ticks}"
 
-let upstreamFingerprintsWith
+/// The fingerprint tables, with or without the assembly and non-F# project references.
+let private fingerprintTables
+    (assemblies: bool)
     (hashFile: string -> string)
     (stampFile: string -> string)
     (repoRoot: string option)
@@ -320,7 +322,8 @@ let upstreamFingerprintsWith
     let visited = System.Collections.Generic.HashSet<string>()
 
     let hashAssemblyRefs (opts: FSharpProjectOptions) =
-        addAssemblyParts parts hashFile stampFile repoRoot opts
+        if assemblies then
+            addAssemblyParts parts hashFile stampFile repoRoot opts
 
     let rec addProject (opts: FSharpProjectOptions) =
         if visited.Add opts.ProjectFileName then
@@ -337,9 +340,11 @@ let upstreamFingerprintsWith
             match reference with
             | FSharpReferencedProject.FSharpReference(_, referenced) -> addProject referenced
             | FSharpReferencedProject.PEReference(getStamp, _) ->
-                parts.Add(otherReferencePart repoRoot reference.OutputFile (getStamp ()))
+                if assemblies then
+                    parts.Add(otherReferencePart repoRoot reference.OutputFile (getStamp ()))
             | FSharpReferencedProject.ILModuleReference(output, getStamp, _) ->
-                parts.Add(otherReferencePart repoRoot output (getStamp ()))
+                if assemblies then
+                    parts.Add(otherReferencePart repoRoot output (getStamp ()))
 
     visited.Add options.ProjectFileName |> ignore
     hashAssemblyRefs options
@@ -356,6 +361,28 @@ let upstreamFingerprintsWith
         running <- sha256Hex $"%s{running}\n%s{relativize source}=%s{hashFile source}"
 
     table :> System.Collections.Generic.IReadOnlyDictionary<string, string>, running
+
+/// Each file's upstream: every assembly its project references (by content or
+/// stamp), the sources of every F# project it references, and
+/// the files before it in compile order.
+let upstreamFingerprintsWith
+    (hashFile: string -> string)
+    (stampFile: string -> string)
+    (repoRoot: string option)
+    (options: FSharpProjectOptions)
+    : System.Collections.Generic.IReadOnlyDictionary<string, string> * string =
+    fingerprintTables true hashFile stampFile repoRoot options
+
+/// `upstreamFingerprintsWith` over the repository's SOURCES alone: the files before each
+/// file and the sources of the F# projects it references, without any assembly or non-F#
+/// project reference. It names what a session's snapshot holds (ADR-047), so a build that
+/// rewrites an output does not move it.
+let sourceUpstreamFingerprints
+    (hashFile: string -> string)
+    (repoRoot: string option)
+    (options: FSharpProjectOptions)
+    : System.Collections.Generic.IReadOnlyDictionary<string, string> * string =
+    fingerprintTables false hashFile fileStampText repoRoot options
 
 /// `upstreamFingerprintsWith`, stamping outside assemblies with `fileStampText`.
 let upstreamFingerprints
@@ -507,6 +534,12 @@ type UpstreamFingerprints(repoRoot: string option) =
             Lazy<System.Collections.Generic.IReadOnlyDictionary<string, string> * string>
          >()
 
+    let sourceMemo =
+        System.Collections.Concurrent.ConcurrentDictionary<
+            string,
+            Lazy<System.Collections.Generic.IReadOnlyDictionary<string, string> * string>
+         >()
+
     /// The last API signature recorded for each (project, file), with the inputs it was
     /// declared under: (content hash, `apiUpstreamFingerprintsWith` entry,
     /// `upstreamFingerprintsWith` entry, signature).
@@ -549,6 +582,7 @@ type UpstreamFingerprints(repoRoot: string option) =
     member _.BeginGeneration() =
         memo.Clear()
         apiMemo.Clear()
+        sourceMemo.Clear()
         System.Threading.Volatile.Write(&generationsDeclared, true)
 
     /// Record what a check of `filePath` declared: `signature` (`ApiSignature.ofCheck`)
@@ -617,6 +651,20 @@ type UpstreamFingerprints(repoRoot: string option) =
             fingerprintIn table.Value filePath
         else
             this.Fresh(filePath, options)
+
+    /// `filePath`'s entry in `sourceUpstreamFingerprints`, from this generation's table for
+    /// its project: what it was checked against, in the terms of a session's snapshot.
+    member _.ForSnapshot(filePath: string, options: FSharpProjectOptions, optionsHash: string) : string =
+        let build () =
+            sourceUpstreamFingerprints hasher.Hash repoRoot options
+
+        let table =
+            if System.Threading.Volatile.Read(&generationsDeclared) then
+                sourceMemo.GetOrAdd($"%s{options.ProjectFileName}|%s{optionsHash}", fun _ -> lazy (build ())).Value
+            else
+                build ()
+
+        fingerprintIn table filePath
 
     /// Fingerprint for `filePath` from disk now, bypassing the generation memo.
     member _.Fresh(filePath: string, options: FSharpProjectOptions) : string =

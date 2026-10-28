@@ -355,6 +355,8 @@ type CheckPipeline
     /// built once per distinct inputs, not once per file checked.
     let snapshots = ProjectSnapshots.SnapshotMemo()
     let mutable nextVersion = 0L
+    // ADR-047: the read sequence `CheckedAgainst.ReadAt` is drawn from.
+    let mutable nextRead = 0L
 
     /// A check canceled outside CheckFileCore's guarded body: logged at debug level,
     /// and the check returns no result. Cancellation is observed through
@@ -888,7 +890,8 @@ type CheckPipeline
                               Version = version
                               ModelGeneration = None
                               Frame = framed.Frame
-                              Placed = Map.ofSeq (placedBack |> Seq.map (fun kv -> kv.Key, kv.Value)) },
+                              Placed = Map.ofSeq (placedBack |> Seq.map (fun kv -> kv.Key, kv.Value))
+                              Upstream = None },
                             outputs
                         )
             with ex ->
@@ -1138,10 +1141,17 @@ type CheckPipeline
                 let cacheBackend = backendFor options
                 // What the signature record and the stored entry are taken against: read
                 // before the check, and held only if the disk still reads the same after it.
+                // ADR-047: taken before this lookup reads the file or its upstream, so of two
+                // answers about one file the later read has the higher number.
+                let readAt = Interlocked.Increment(&nextRead)
                 let contentHash = hashFile absPath
 
                 let contentUpstream =
                     upstreamFingerprints.For(absPath, options, optionsHashOf options)
+
+                // The same, in the terms of the session's snapshot: sources only (ADR-047).
+                let snapshotUpstream =
+                    upstreamFingerprints.ForSnapshot(absPath, options, optionsHashOf options)
 
                 let slot = struct (absPath, options.ProjectFileName)
 
@@ -1191,7 +1201,14 @@ type CheckPipeline
                 | Some cached ->
                     Logging.debug "check" $"Cache hit: %s{Path.GetFileName(absPath)}"
                     recordSignature absPath options contentHash cached
-                    return Some cached
+                    // Served for this lookup's upstream: the answer it keys (ADR-047).
+                    return
+                        Some
+                            { cached with
+                                Upstream =
+                                    Some
+                                        { ReadAt = readAt
+                                          Fingerprint = Some snapshotUpstream } }
                 | None ->
                     let openFile = ProjectSnapshots.readOpenFile hashFile absPath
                     let! result = this.CheckFileCore(openFile, options, ct, ticket)
@@ -1204,9 +1221,12 @@ type CheckPipeline
                         && upstreamFingerprints.Fresh(absPath, options) = contentUpstream
                         && outputs |> List.forall (fun (output, hash) -> hashFile output = hash)
 
+                    let heldInputs = ref false
+
                     match result with
                     | Some(r, outputs) ->
                         let held = inputsHeld outputs
+                        heldInputs.Value <- held
 
                         match r.CheckResults with
                         | FullCheck results when
@@ -1241,7 +1261,16 @@ type CheckPipeline
                         | ParseOnly -> ()
                     | None -> ()
 
-                    return result |> Option.map fst
+                    // The upstream the check was keyed by, when nothing it depends on moved
+                    // while it ran; otherwise which upstream it read is unknown (ADR-047).
+                    return
+                        result
+                        |> Option.map (fun (r, _) ->
+                            { r with
+                                Upstream =
+                                    Some
+                                        { ReadAt = readAt
+                                          Fingerprint = if heldInputs.Value then Some snapshotUpstream else None } })
         }
 
     /// Check a single file using the warm checker. Returns FileCheckResult if successful.
