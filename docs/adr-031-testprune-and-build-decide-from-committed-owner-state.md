@@ -60,8 +60,12 @@ pins is removed.
     candidate owes.
   - A restart that finds the marker loads the debt as unknown, which widens every run to
     the full suite.
-  - While debt is unknown nothing is written, so the unreadable record stays the honest
-    one.
+  - While debt is unknown nothing is written, the marker included, so the unreadable
+    record stays the honest one. A marker an earlier publication left stays until a full
+    suite passes every project, because the sidecars are still that publication's. Writing
+    the marker during an unknown-debt session left it behind on exit, and every later
+    daemon widened to the full suite for an interruption that never happened
+    (AUTOMATION-1347).
   - One write still happens before publication: the flush writes the queue before the
     analysis snapshot advances. It only adds to what is on disk.
 - **A launch captures revisions.** `TestRunLaunch.SymbolRevisions` records the revision of

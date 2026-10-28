@@ -8006,7 +8006,9 @@ let internal createWithEvidenceAndQueries
 
     /// Present while a durable debt publication is between its first write and its
     /// publication. A restart that finds it cannot tell which sidecars describe the
-    /// published state, so what is owed is unknown. Only `Finalize` removes it.
+    /// published state, so what is owed is unknown. Only `Finalize` removes it, and only
+    /// for a state that is no longer unknown: a session that ends with the debt still
+    /// unknown has written nothing, so the marker it found still describes the sidecars.
     let debtPublicationPath =
         Path.Combine(FsHwPaths.root repoRoot, "test-prune", "owner-publication-pending")
 
@@ -8015,7 +8017,7 @@ let internal createWithEvidenceAndQueries
     if interruptedPublication then
         Logging.warn
             "test-prune"
-            $"a verification-debt publication did not finish before the previous daemon stopped (%s{debtPublicationPath}). The sidecars may describe a state that was never published, so what is owed is UNKNOWN. Every test run is widened to every configured project in full until a full suite passes."
+            $"a verification-debt publication did not finish (%s{debtPublicationPath}), and no full suite has passed every configured project since. The sidecars may describe a state that was never published, so what is owed is UNKNOWN. The marker stays, and every test run, in this daemon and the next, is widened to every configured project in full until a full suite passes every configured project."
 
     /// The reds carried in from the previous session — quarantined into
     /// the first run exactly as in-session reds are. An UNREADABLE file is debt of unknown
@@ -8289,7 +8291,7 @@ let internal createWithEvidenceAndQueries
                   $"the record of runtime coverage that did not ingest (%s{CoverageNotIngested.sidecarPath repoRoot}) could not be read: %s{reason}"
               | None -> ()
               if interruptedPublication then
-                  $"a verification-debt publication did not finish before the previous daemon stopped (%s{debtPublicationPath})" ]
+                  $"a verification-debt publication did not finish (%s{debtPublicationPath}), and no full suite has passed since to recover it" ]
           Baseline = loadedBaseline
           RuntimeObligations = pruneRuntimeCoverageObligations allowedRuntimeProjects loadedRuntimeObligations
           CoverageNotIngested = loadedNotIngested }
@@ -11097,7 +11099,7 @@ let internal createWithEvidenceAndQueries
     /// published: a restart that finds it cannot know which sidecars describe a published
     /// state, and treats what is owed as unknown. Only what changed is written, unless an
     /// earlier publication left the marker, in which case every sidecar is rewritten from
-    /// this candidate. While the debt is unknown nothing is written: the unreadable
+    /// this candidate. While the debt is unknown nothing is written, the marker included: the unreadable
     /// record is the honest one until a full suite recovers it.
     ///
     /// Replies owed by the candidate are resolved last, so a command never acknowledges an
@@ -11116,7 +11118,7 @@ let internal createWithEvidenceAndQueries
             let notIngestedChanged = changed (fun state -> state.Debt.CoverageNotIngested)
             let interrupted = File.Exists debtPublicationPath
 
-            if
+            let publishes =
                 interrupted
                 || queueChanged
                 || failuresChanged
@@ -11124,27 +11126,32 @@ let internal createWithEvidenceAndQueries
                 || baselineChanged
                 || recoveryChanged
                 || notIngestedChanged
-            then
+
+            // While the debt is unknown nothing is written: the unreadable record is the
+            // honest one until a full suite recovers it. No publication begins then, so
+            // no marker is written either. One written then outlived the session, since
+            // only a recovered state removes it, and the next daemon read an unfinished
+            // publication that never happened. A marker an earlier publication left
+            // stays, because the sidecars on disk are still that publication's.
+            if publishes && not candidate.Debt.RecoveryOutstanding then
                 FsHwPaths.atomicWriteAllText debtPublicationPath "verification debt publication in progress"
+                let rewrite = interrupted || recoveryChanged
 
-                if not candidate.Debt.RecoveryOutstanding then
-                    let rewrite = interrupted || recoveryChanged
+                if rewrite || queueChanged then
+                    PendingVerification.save repoRoot candidate.Debt.PendingQueue
 
-                    if rewrite || queueChanged then
-                        PendingVerification.save repoRoot candidate.Debt.PendingQueue
+                if rewrite || failuresChanged then
+                    OutstandingFailure.save repoRoot candidate.OutstandingFailures
 
-                    if rewrite || failuresChanged then
-                        OutstandingFailure.save repoRoot candidate.OutstandingFailures
+                if rewrite || obligationsChanged then
+                    saveRuntimeCoverageObligations repoRoot candidate.Debt.RuntimeObligations
 
-                    if rewrite || obligationsChanged then
-                        saveRuntimeCoverageObligations repoRoot candidate.Debt.RuntimeObligations
+                if rewrite || notIngestedChanged then
+                    CoverageNotIngested.save repoRoot candidate.Debt.CoverageNotIngested
 
-                    if rewrite || notIngestedChanged then
-                        CoverageNotIngested.save repoRoot candidate.Debt.CoverageNotIngested
-
-                    match candidate.Debt.Baseline with
-                    | Some baseline when rewrite || baselineChanged -> FullSuiteBaseline.save repoRoot baseline
-                    | _ -> ()
+                match candidate.Debt.Baseline with
+                | Some baseline when rewrite || baselineChanged -> FullSuiteBaseline.save repoRoot baseline
+                | _ -> ()
 
             // Evidence, not debt: it records which projects ran whole over which compile
             // inputs, which stays true whatever is owed. A state that earned none leaves
@@ -12720,12 +12727,20 @@ let internal createWithEvidenceAndQueries
                                 | Some tree when coveredByConstruction -> Some(tree, currentModelGeneration)
                                 | _ -> None }
 
+                    // `PrepareCommit` writes no sidecar while what is owed is unknown, so a
+                    // baseline earned then lives only in this daemon's memory. Saying it was
+                    // recorded would claim a write that never happens.
                     if earnsBaseline then
                         let runId = completed.RunId.ToString("N")
 
-                        Logging.info
-                            "test-prune"
-                            $"Full-suite baseline recorded: run %s{runId} accounted for every configured project (%d{Set.count runnableProjects}); impact-filtered greens are now relative to it"
+                        if debt.RecoveryOutstanding then
+                            Logging.info
+                                "test-prune"
+                                $"Full-suite baseline earned by run %s{runId} but not written: what is owed is still UNKNOWN (%s{describeUnknownDebt debt.UnknownDebt}), and nothing is written until a full suite passes every configured project. Until then every run, in this daemon and the next, is the full suite."
+                        else
+                            Logging.info
+                                "test-prune"
+                                $"Full-suite baseline recorded: run %s{runId} accounted for every configured project (%d{Set.count runnableProjects}); impact-filtered greens are now relative to it"
 
                     // The in-memory hot view must shed ONLY the committed symbols,
                     // never the whole list — symbols left in the queue (mid-run

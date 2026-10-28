@@ -618,6 +618,108 @@ let ``a daemon that starts over an unfinished debt record names that record as t
     test <@ not (causes.Head.Contains "pending-verification") @>
 
 // ---------------------------------------------------------------------------
+// A session that runs while what is owed is UNKNOWN publishes nothing (AUTOMATION-1347).
+// It still wrote `owner-publication-pending` before every commit that changed the debt,
+// and only a state that recovered removed it, so a daemon-only session over a red suite
+// left the marker behind: the next daemon read "a publication did not finish" and widened
+// every run to the full suite, whatever the original cause was. It also logged "Full-suite
+// baseline recorded" for a baseline it never wrote.
+// ---------------------------------------------------------------------------
+
+let private publicationMarker (root: string) =
+    Path.Combine(FsHotWatch.FsHwPaths.root root, "test-prune", "owner-publication-pending")
+
+/// A full suite of both projects in which ProjA failed: accountable, so it earns a baseline,
+/// and red, so it discharges no unknown debt.
+let private finishedRedFullSuite () =
+    let launch =
+        { fullSuiteLaunch [ "ProjA"; "ProjB" ] with
+            ModelGeneration = Some 1L }
+
+    let results =
+        Map.ofList
+            [ "ProjA", TestsFailed("failed FsHotWatch.Tests.ProjATests.boom (12ms)", false, TimeSpan.FromSeconds 1.0)
+              "ProjB", TestsPassed("ok", false, TimeSpan.FromSeconds 1.0) ]
+
+    let started: TestRunStarted =
+        { RunId = Guid.NewGuid()
+          StartedAt = DateTime.UtcNow }
+
+    let completed: TestRunCompleted =
+        { RunId = started.RunId
+          TotalElapsed = TimeSpan.FromSeconds 1.0
+          Outcome = Normal
+          Results = results
+          Verification = RunVerification.ofResults results }
+
+    Custom(TestsFinished(started, completed, launch))
+
+/// A daemon session with nothing attached: one red full suite, published as the owner
+/// publishes it, then the daemon exits. Returns the session's log lines.
+let private redSessionOver (f: Fixture) =
+    let session = restarted f
+    test <@ session.Handler.Init.Debt.RecoveryOutstanding @>
+
+    let red, lines =
+        withLogLines (fun () -> update session session.Handler.Init (finishedRedFullSuite ()))
+
+    test <@ red.Debt.RecoveryOutstanding @>
+    test <@ red.Debt.Baseline.IsSome @>
+    publish session session.Handler.Init red
+    lines
+
+[<Fact(Timeout = 30000)>]
+let ``a red session over an unreadable ledger leaves no unfinished publication behind`` () =
+    let f = fixture ()
+    let ledger = PendingVerification.sidecarPath f.Ctx.RepoRoot
+    Directory.CreateDirectory(Path.GetDirectoryName ledger) |> ignore
+    File.WriteAllText(ledger, "[ torn")
+
+    redSessionOver f |> ignore
+
+    test <@ not (File.Exists(publicationMarker f.Ctx.RepoRoot)) @>
+
+    let causes = (restarted f).Handler.Init.Debt.UnknownDebt
+    test <@ causes.Length = 1 @>
+    test <@ causes.Head.Contains ledger @>
+
+[<Fact(Timeout = 30000)>]
+let ``a red session over an unfinished publication says the debt is still unrecovered, not newly interrupted`` () =
+    let f = fixture ()
+    let marker = publicationMarker f.Ctx.RepoRoot
+    Directory.CreateDirectory(Path.GetDirectoryName marker) |> ignore
+    File.WriteAllText(marker, "verification debt publication in progress")
+
+    redSessionOver f |> ignore
+
+    // The sidecars on disk are still the unfinished publication's, so the debt stays
+    // unknown; the restart must read it as that, not as a session that died mid-write.
+    let causes = (restarted f).Handler.Init.Debt.UnknownDebt
+    test <@ causes.Length = 1 @>
+    test <@ causes.Head.Contains marker @>
+    test <@ not (causes.Head.Contains "before the previous daemon stopped") @>
+    test <@ causes.Head.Contains "no full suite has passed" @>
+
+[<Fact(Timeout = 30000)>]
+let ``a baseline that is not written while debt is unknown is not logged as recorded`` () =
+    let f = fixture ()
+    let marker = publicationMarker f.Ctx.RepoRoot
+    Directory.CreateDirectory(Path.GetDirectoryName marker) |> ignore
+    File.WriteAllText(marker, "verification debt publication in progress")
+
+    let lines = redSessionOver f
+
+    test <@ not (File.Exists(FullSuiteBaseline.sidecarPath f.Ctx.RepoRoot)) @>
+
+    test
+        <@
+            lines
+            |> List.forall (fun line -> not (line.Contains "Full-suite baseline recorded"))
+        @>
+
+    test <@ lines |> List.exists (fun line -> line.Contains "not written") @>
+
+// ---------------------------------------------------------------------------
 // Runtime coverage that did not ingest is ITS project's debt (AUTOMATION-1320). One
 // project's ingest failure ("database is locked") made what is owed unknown for the whole
 // suite: every run was FULL SUITE until one passed every project, and the marker it left

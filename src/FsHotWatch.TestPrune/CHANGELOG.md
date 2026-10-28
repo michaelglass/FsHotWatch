@@ -12,6 +12,19 @@
   whose AssemblyName differs from its file name had its config silently replaced. New:
   `projectTestConfigOf`. (AUTOMATION-1300.)
 
+- **fix: a session that runs while what is owed is unknown leaves no unfinished-publication
+  marker behind.** `PrepareCommit` writes no sidecar while the debt is unknown, but it still
+  wrote `.fshw/test-prune/owner-publication-pending`, and only a recovered state removed it.
+  A daemon-only session over a red full suite therefore left the marker on exit, and every
+  later daemon read "a publication did not finish" and widened to the full suite, whatever
+  the original cause (an unreadable ledger, for instance). No marker is written now while
+  the debt is unknown. A marker an earlier, genuinely unfinished publication left still
+  stays until a full suite passes every project, and the startup warning and the unknown-debt
+  cause now say so ("…did not finish, and no full suite has passed since") instead of
+  blaming the previous daemon. "Full-suite baseline recorded" is logged only when the
+  baseline is written; a baseline earned under unknown debt logs "…earned by run … but not
+  written" with the causes. (AUTOMATION-1347.)
+
 - **feat: a profile lists the host's child processes by command.** The tree-CPU reader
   (`Profile.processTree`, `ProcessTree`) also records each member's command as the process
   table names it (`commandName`: the program, or the assembly of `dotnet <x>.dll`), and
