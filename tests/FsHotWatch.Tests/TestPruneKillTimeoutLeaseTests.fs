@@ -59,6 +59,7 @@ let ``a test run whose child kill times out does not wedge the next run on the s
             ReportVerificationFormat = AutoDetect
             Starvation = None
             CheckSkip = None
+            NameHungTests = false
             AlwaysClasses = [] } ]
 
     // The first run's process scope records what a kill that never returned records:

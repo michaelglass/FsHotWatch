@@ -25,6 +25,7 @@ let private projectOf (command: string) (args: string) (timeoutSec: int option) 
       ReportVerificationFormat = Disabled
       Starvation = None
       CheckSkip = None
+      NameHungTests = false
       AlwaysClasses = [] }
 
 let private project (args: string) (timeoutSec: int option) : TestConfig = projectOf "sh" args timeoutSec
@@ -132,9 +133,12 @@ let ``a host killed at its timeout still gets class lines from the results it pr
 // switches; everything fshw appends reaches the host. The quick tests finish milliseconds
 // after the start, which is the one child this timeout must outlast: `HangWaitMs`, the
 // bound for one trivial child on a loaded box (docs/wall-clock-bounds.md, rule 2). It is
-// also this test's whole cost.
-[<Fact(Timeout = 300_000)>]
-let ``a real xUnit host killed at its timeout still gets per-class lines`` () =
+// also this test's whole cost, once per case: the per-class lines need no opt-in, and the
+// name of the hung test comes only with `nameHungTests` (AUTOMATION-1353).
+[<Theory(Timeout = 300_000)>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``a real xUnit host killed at its timeout still gets per-class lines`` (nameHungTests: bool) =
     let repoRoot = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../.."))
     let fixtureDir = Path.Combine(repoRoot, "tests", "Fixtures", "Xunit4RunnerFixture")
     let fixtureProject = Path.Combine(fixtureDir, "Xunit4RunnerFixture.fsproj")
@@ -151,7 +155,8 @@ let ``a real xUnit host killed at its timeout still gets per-class lines`` () =
             // this test reads what CI reads on every platform. Uncoloured output is pinned by
             // the parser tests.
             Environment = [ "FSHW_FIXTURE_HANG", "1"; "CI", "true" ]
-            ReportVerificationFormat = AutoDetect }
+            ReportVerificationFormat = AutoDetect
+            NameHungTests = nameHungTests }
 
     let status, lines = runOnce config
 
@@ -179,15 +184,46 @@ let ``a real xUnit host killed at its timeout still gets per-class lines`` () =
             |> List.forall (fun (c, _, _) -> c <> "Xunit4RunnerFixture.Tests+Hanging" && c <> "Not.A")
         @>
 
-    // And the test that was running when the host was killed, from xUnit's long-running
-    // report (fshw asks for it with `--long-running` and diagnostic messages on).
+    // And, for a project that asks, the test that was running when the host was killed, from
+    // xUnit's long-running report (`--long-running` and diagnostic messages on). A project
+    // that does not ask gets no monitor, so nothing is named.
     let running =
         lines
         |> List.choose (function
             | Profile.Running(name, _) -> Some name
             | _ -> None)
 
-    test <@ running = [ "Xunit4RunnerFixture.Tests+Hanging.hangs when asked" ] @>
+    let expected =
+        if nameHungTests then
+            [ "Xunit4RunnerFixture.Tests+Hanging.hangs when asked" ]
+        else
+            []
+
+    test <@ running = expected @>
+
+// AUTOMATION-1353: a diagnostic must not change what the host runs with. xUnit's
+// `--long-running` monitor holds one thread-pool thread for the whole run, which failed every
+// test that caps the pool (intelligence's starvation tests, 3/3 on an idle box). The fixture's
+// `PoolProbe` fails while any pool thread is held by other work; fshw's default launch of a
+// project that declares a timeout (as every intelligence project does) must leave it green.
+// The host passes in well under a second; the timeout only ends a hang.
+[<Fact(Timeout = 300_000)>]
+let ``fshw's default launch of a real xUnit host holds none of its thread-pool threads`` () =
+    let repoRoot = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../.."))
+    let fixtureDir = Path.Combine(repoRoot, "tests", "Fixtures", "Xunit4RunnerFixture")
+    let fixtureProject = Path.Combine(fixtureDir, "Xunit4RunnerFixture.fsproj")
+
+    let apphost =
+        Path.Combine(fixtureDir, "bin", "Debug", "net10.0", "Xunit4RunnerFixture")
+
+    let config =
+        { projectOf "sh" $"-c \"shift; exec '%s{apphost}' \\\"$@\\\"\" sh \"%s{fixtureProject}\"" (Some 240) with
+            Environment = [ "FSHW_FIXTURE_POOL_PROBE", "1" ]
+            ReportVerificationFormat = AutoDetect }
+
+    let status, _ = runOnce config
+
+    test <@ status = "passed" @>
 
 // Slice 5: the host's child processes, by command. The first sample (at 5 s) reads the
 // process table, so a host that runs past it has its children seen.

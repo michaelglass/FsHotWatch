@@ -54,6 +54,7 @@ let private runner (tmpDir: string) (project: string) (failedTest: string) : Tes
       ReportVerificationFormat = AutoDetect
       Starvation = None
       CheckSkip = None
+      NameHungTests = false
       AlwaysClasses = [] }
 
 let private runsOf (tmpDir: string) (project: string) : int =

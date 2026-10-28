@@ -405,6 +405,7 @@ let ``the canonical config writes every field in full, however long`` () =
           ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.Ctrf
           Starvation = None
           CheckSkip = None
+          NameHungTests = false
           AlwaysClasses = [] }
 
     let a = FsHotWatch.TestPrune.TestPrunePlugin.canonicalTestConfig (config "a")
@@ -419,3 +420,12 @@ let ``the canonical config writes every field in full, however long`` () =
                 TimeoutSec = None }
 
     test <@ bare.Contains "\"filterTemplate\":null" && bare.Contains "\"timeoutSec\":null" @>
+
+    // `nameHungTests` gives the host xUnit's long-running monitor, which holds a pool thread,
+    // so a green earned under it is a different claim (AUTOMATION-1353). Off, it is not
+    // written, so every key earned before the option existed is unchanged.
+    let named =
+        FsHotWatch.TestPrune.TestPrunePlugin.canonicalTestConfig { config "a" with NameHungTests = true }
+
+    test <@ named <> a && named.Contains "\"nameHungTests\":true" @>
+    test <@ not (a.Contains "nameHungTests") @>

@@ -93,6 +93,7 @@ let private configs =
           ReportVerificationFormat = Ctrf
           Starvation = None
           CheckSkip = None
+          NameHungTests = false
           AlwaysClasses = [] })
 
 /// The model the host publishes: every project, its references, and an identity per

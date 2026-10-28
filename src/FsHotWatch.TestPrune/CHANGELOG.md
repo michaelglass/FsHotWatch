@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **fix: asking xUnit for long-running reports is a project's choice, off by default.**
+  0.13.0-alpha.94 added `--long-running` and a diagnostics `--config-file` to every xUnit
+  host it asked for CTRF. xUnit's long-running monitor holds one thread-pool thread for
+  the whole run, so a diagnostic changed what the host ran with, and every test that caps
+  the pool failed. They are now injected only for a project whose config sets
+  `NameHungTests`. A killed host still gets per-class lines from `--output Detailed`
+  without it; only the name of the test running at the kill needs it. A project whose
+  `args` set `--long-running` or `--config-file` still keeps its own. `canonicalTestConfig`
+  writes `nameHungTests` only when it is on, so existing evidence keys are unchanged.
+  **Breaking (API):** `TestConfig` gains `NameHungTests: bool`. (AUTOMATION-1353.)
+
 - feat: test groups launch through the session's process lane when it has one (ADR-050,
   AUTOMATION-682). New `GroupSchedule.runAdmitted`: each group holds one slot of the
   host's process scheduler while it runs, and gives it back on success, failure and

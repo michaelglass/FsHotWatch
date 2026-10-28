@@ -608,6 +608,7 @@ let ``file changes observed during a test host defer the build until that run co
                             ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
                             Starvation = None
                             CheckSkip = None
+                            NameHungTests = false
                             AlwaysClasses = [] } ])
                     None
                     None
@@ -754,6 +755,7 @@ let ``a force-run cancelled after it started still releases the build deferral``
                             ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
                             Starvation = None
                             CheckSkip = None
+                            NameHungTests = false
                             AlwaysClasses = [] } ])
                     None
                     None
@@ -894,6 +896,7 @@ let private manualTestWaitsForBuild () =
                             ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
                             Starvation = None
                             CheckSkip = None
+                            NameHungTests = false
                             AlwaysClasses = [] } ])
                     None
                     None
@@ -1023,6 +1026,7 @@ let ``failed build rejects queued and later manual hosts until a success drains 
                         ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
                         Starvation = None
                         CheckSkip = None
+                        NameHungTests = false
                         AlwaysClasses = [] } ])
                 None
                 None
@@ -1129,6 +1133,7 @@ let ``queued template build preserves changes for a second project root`` () =
                         ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
                         Starvation = None
                         CheckSkip = None
+                        NameHungTests = false
                         AlwaysClasses = [] } ])
                 None
                 None

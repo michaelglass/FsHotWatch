@@ -103,6 +103,7 @@ let private config: TestConfig =
       ReportVerificationFormat = AutoDetect
       Starvation = None
       CheckSkip = None
+      NameHungTests = false
       AlwaysClasses = [] }
 
 let private runTests (root: string) (traces: TraceSettings option) =

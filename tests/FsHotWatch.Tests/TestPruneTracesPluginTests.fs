@@ -125,6 +125,7 @@ let private config project command args : TestConfig =
       ReportVerificationFormat = Ctrf
       Starvation = None
       CheckSkip = None
+      NameHungTests = false
       AlwaysClasses = [] }
 
 /// Run `run-tests` once over `configs` with `traces`, returning the command's JSON and

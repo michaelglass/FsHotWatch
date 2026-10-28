@@ -65,6 +65,7 @@ let private config (project: string) : TestConfig =
       ReportVerificationFormat = AutoDetect
       Starvation = None
       CheckSkip = None
+      NameHungTests = false
       AlwaysClasses = [] }
 
 let private finished (results: (string * TestResult) list) (launch: TestRunLaunch) =

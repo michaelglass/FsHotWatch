@@ -1227,6 +1227,25 @@ let ``parseConfig tests alwaysClasses reads the class names, and none when absen
 
     test <@ declared = [ "A.Scan"; "A.Census+Nested group" ] @>
 
+// AUTOMATION-1353: xUnit's long-running monitor holds a pool thread for the whole run, so
+// asking for it is the project's choice, and off unless it says so.
+[<Fact(Timeout = 15000)>]
+let ``parseConfig tests nameHungTests is off when absent, read when a boolean, and refuses anything else`` () =
+    let parse json =
+        (parseConfig json defaults).Tests.Value.Projects.[0].NameHungTests
+
+    test <@ not (parse """{"tests": {"projects": [{"project": "T"}]}}""") @>
+    test <@ parse """{"tests": {"projects": [{"project": "T", "nameHungTests": true}]}}""" @>
+    test <@ not (parse """{"tests": {"projects": [{"project": "T", "nameHungTests": false}]}}""") @>
+
+    // Read as "off", a typo would silently drop the name the key exists to get.
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () ->
+            parseConfig """{"tests": {"projects": [{"project": "T", "nameHungTests": "yes"}]}}""" defaults
+            |> ignore)
+
+    test <@ ex.message.Contains "tests.projects[T].nameHungTests" @>
+
 [<Fact(Timeout = 15000)>]
 let ``parseConfig tests starvation reads the declaration, none when absent, and refuses a typo`` () =
     let parse json =

@@ -94,6 +94,7 @@ let runFullPipeline (repoRoot: string) =
                     ReportVerificationFormat = AutoDetect
                     Starvation = None
                     CheckSkip = None
+                    NameHungTests = false
                     AlwaysClasses = [] } ]) // testConfigs
             None // buildExtensions
             None // beforeRun

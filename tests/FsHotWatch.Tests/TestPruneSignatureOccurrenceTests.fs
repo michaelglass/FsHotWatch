@@ -97,6 +97,7 @@ let private indexFixture (tmpDir: string) =
             ReportVerificationFormat = AutoDetect
             Starvation = None
             CheckSkip = None
+            NameHungTests = false
             AlwaysClasses = [] } ]
 
     host.RegisterHandler(create dbPath tmpDir (Some testConfigs) None None None None [])
@@ -254,6 +255,7 @@ let ``a signature-node name queued by TestPrune.Core 9 is verified by a real run
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
                 CheckSkip = None
+                NameHungTests = false
                 AlwaysClasses = [] } ]
 
         // What 9.0.0 left behind: a v13 index holding the signature node, a queue that still

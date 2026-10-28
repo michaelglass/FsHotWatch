@@ -367,6 +367,9 @@ type TestProjectConfig =
         /// `checkSkipClasses` (+ `checkSkipOn`, `excludeFilterTemplate`): the classes a
         /// widened `check` leaves out. `None` when absent.
         CheckSkip: FsHotWatch.TestPrune.CheckSkip option
+        /// `nameHungTests`: ask xUnit for long-running reports so a killed host names the
+        /// test it was running. `false` when absent (AUTOMATION-1353).
+        NameHungTests: bool
     }
 
 /// Configuration for Falco route attribution.
@@ -792,6 +795,16 @@ let private parseTestProject (p: JsonElement) : TestProjectConfig =
         | true, t when t.ValueKind = JsonValueKind.Number -> Some(t.GetInt32())
         | _ -> None
 
+    // `nameHungTests`: ask xUnit for long-running reports so a killed host names its hung
+    // test. Refused unless a boolean: read as "off", a typo would silently drop the very
+    // name the key exists to get.
+    let nameHungTests =
+        match p.TryGetProperty("nameHungTests") with
+        | true, v when v.ValueKind = JsonValueKind.True -> true
+        | true, v when v.ValueKind = JsonValueKind.False -> false
+        | true, v -> refuseUnknown $"tests.projects[%s{project}].nameHungTests" (describeValue v) [ "true"; "false" ]
+        | false, _ -> false
+
     // `reportVerificationFormat`: how fshw obtains the structured
     // test report the verdict is derived from. Absent → AutoDetect.
     let reportVerificationFormat =
@@ -888,7 +901,8 @@ let private parseTestProject (p: JsonElement) : TestProjectConfig =
       Traces = traces
       TraceWeave = traceWeave
       Starvation = starvation
-      CheckSkip = checkSkip }
+      CheckSkip = checkSkip
+      NameHungTests = nameHungTests }
 
 /// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
 let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
@@ -2592,7 +2606,8 @@ let registerPluginsIn
                   ReportVerificationFormat = p.ReportVerificationFormat
                   AlwaysClasses = p.AlwaysClasses
                   Starvation = p.Starvation
-                  CheckSkip = p.CheckSkip })
+                  CheckSkip = p.CheckSkip
+                  NameHungTests = p.NameHungTests })
 
         // fail LOUD and SPECIFIC. `runShellSteps` names the step,
         // its exit code and its output; raising `describe` means the plugin's

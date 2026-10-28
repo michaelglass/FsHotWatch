@@ -50,6 +50,7 @@ let private config (root: string) (project: string) (checkSkip: CheckSkip option
       ReportVerificationFormat = AutoDetect
       Starvation = None
       CheckSkip = checkSkip
+      NameHungTests = false
       AlwaysClasses = [] }
 
 // --- the declaration -------------------------------------------------------------

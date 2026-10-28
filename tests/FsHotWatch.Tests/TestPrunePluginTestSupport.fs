@@ -184,6 +184,7 @@ let withSingleProjectHarness (tmpDir: string) (projectName: string) =
             ReportVerificationFormat = AutoDetect
             Starvation = None
             CheckSkip = None
+            NameHungTests = false
             AlwaysClasses = [] } ]
 
     let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -340,6 +341,7 @@ module PendingQueueHelpers =
           ReportVerificationFormat = AutoDetect
           Starvation = None
           CheckSkip = None
+          NameHungTests = false
           AlwaysClasses = [] }
 
     /// The durable pending-verification queue for a repo root. An UNREADABLE ledger is a
@@ -364,6 +366,7 @@ let testConfigNamed (project: string) : TestConfig =
       ReportVerificationFormat = AutoDetect
       Starvation = None
       CheckSkip = None
+      NameHungTests = false
       AlwaysClasses = [] }
 
 /// Recording ctx over the plugin: captures terminal statuses and models the shared error

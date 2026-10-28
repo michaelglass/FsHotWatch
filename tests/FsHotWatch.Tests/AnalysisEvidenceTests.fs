@@ -393,6 +393,7 @@ let ``a daemon that runs tests seals every checkable file without publishing an 
               ReportVerificationFormat = AutoDetect
               Starvation = None
               CheckSkip = None
+              NameHungTests = false
               AlwaysClasses = [] }
 
         let handler =

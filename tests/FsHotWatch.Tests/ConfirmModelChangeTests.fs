@@ -60,6 +60,7 @@ let private gatedDaemon (root: string) =
                     ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
                     Starvation = None
                     CheckSkip = None
+                    NameHungTests = false
                     AlwaysClasses = [] } ])
             None
             None

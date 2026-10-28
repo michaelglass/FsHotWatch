@@ -56,6 +56,7 @@ let private echoConfig: TestConfig =
       ReportVerificationFormat = AutoDetect
       Starvation = None
       CheckSkip = None
+      NameHungTests = false
       AlwaysClasses = [] }
 
 /// Index Lib + Tests with `extensions`, edit the handler's body, and return the

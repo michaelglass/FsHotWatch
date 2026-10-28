@@ -31,6 +31,7 @@ let private gatedProject (project: string) (started: string) (release: string) :
       ReportVerificationFormat = Disabled
       Starvation = None
       CheckSkip = None
+      NameHungTests = false
       AlwaysClasses = [] }
 
 /// A repo root with one source file, so the run binds a readable input tree.
@@ -183,6 +184,7 @@ let private numberedCoverageProject (project: string) (counter: string) : TestCo
       ReportVerificationFormat = Disabled
       Starvation = None
       CheckSkip = None
+      NameHungTests = false
       AlwaysClasses = [] }
 
 [<Fact(Timeout = 40000)>]

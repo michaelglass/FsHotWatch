@@ -39,6 +39,7 @@ let private config (project: string) : TestConfig =
       ReportVerificationFormat = AutoDetect
       Starvation = None
       CheckSkip = None
+      NameHungTests = false
       AlwaysClasses = [] }
 
 let private configs = [ config "ProjA"; config "ProjB" ]

@@ -391,6 +391,7 @@ let private runnerConfig (script: string) (project: string) : TestPrunePlugin.Te
       ReportVerificationFormat = TestPrunePlugin.AutoDetect
       Starvation = None
       CheckSkip = None
+      NameHungTests = false
       AlwaysClasses = [] }
 
 let private runAll (tmpDir: string) (cap: int option) (configs: TestPrunePlugin.TestConfig list) =

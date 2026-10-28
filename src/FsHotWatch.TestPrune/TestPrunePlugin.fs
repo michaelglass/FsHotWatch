@@ -1109,6 +1109,12 @@ type TestConfig =
         /// to whole-project for a reason the change did not cause (`CheckSkip`). `None`,
         /// the default, runs every class on every widening.
         CheckSkip: CheckSkip option
+        /// `nameHungTests`: ask xUnit for long-running reports (`--long-running` and a
+        /// diagnostics `--config-file`), so a host killed at its timeout names the test it was
+        /// running. Off by default: xUnit's long-running monitor holds one thread-pool thread
+        /// for the whole run, and a diagnostic must not change what a host runs with
+        /// (AUTOMATION-1353). A project whose `args` set either switch keeps its own.
+        NameHungTests: bool
     }
 
 /// A test project's configuration as one canonical JSON document: every field, in a fixed
@@ -1148,6 +1154,11 @@ let internal canonicalTestConfig (c: TestConfig) : string =
     // `AlwaysClasses` is deliberately absent: it changes which classes a FILTERED run
     // selects, never what a project's full green means, and only full greens are reused.
     // So is `CheckSkip`: a run that skipped classes is filtered, and is never published.
+    // `NameHungTests` changes the host's thread pool, so a green earned under it is a different
+    // claim; written only when on, so every key earned without it is unchanged.
+    if c.NameHungTests then
+        o["nameHungTests"] <- System.Text.Json.Nodes.JsonValue.Create true
+
     o.ToJsonString()
 
 /// Why runtime evidence could not safely exclude a configured project.
@@ -6451,8 +6462,16 @@ let private executeTests
                         // xUnit's report of a test still running past a threshold, so a host
                         // killed at its timeout still names the test it was running. Its config
                         // is the project's own with diagnostic messages on; a project whose
-                        // config cannot be found or read gets nothing injected.
-                        match projectTestConfigFor config.Args repoRoot with
+                        // config cannot be found or read gets nothing injected. Only for a project
+                        // that asks (`nameHungTests`): xUnit's monitor holds a pool thread for the
+                        // whole run, which a diagnostic must not impose (AUTOMATION-1353).
+                        let ownConfig =
+                            if config.NameHungTests then
+                                projectTestConfigFor config.Args repoRoot
+                            else
+                                None
+
+                        match ownConfig with
                         | Some own ->
                             match diagnosticsTestConfig own with
                             | Ok text ->

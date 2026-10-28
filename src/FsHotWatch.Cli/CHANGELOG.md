@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **fix: a test host gets xUnit's long-running monitor only when its project asks.**
+  0.14.0-alpha.127 gave every xUnit host it asked for CTRF `--long-running` and a
+  diagnostics `--config-file`. xUnit's monitor holds one thread-pool thread for the whole
+  run, which failed tests that cap the pool. New per-project key
+  `tests.projects[].nameHungTests` (default `false`) turns them back on, so a host killed
+  at its timeout names the test it was running. Anything but a boolean is a config error.
+  Per-class lines for a killed host need no opt-in. (AUTOMATION-1353.)
+
 - feat: a repository host admits its sessions' test hosts through one process scheduler,
   with the processor count as its bound (ADR-050, AUTOMATION-682). `fshw status
   --repository` prints "test hosts: R of N slot(s) held, Q queued" (`processes` in `-a`,

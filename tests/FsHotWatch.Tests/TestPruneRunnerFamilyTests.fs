@@ -250,8 +250,10 @@ let ``detailedOutputArgument asks an MTP host for per-test result lines unless t
     =
     test <@ detailedOutputArgument configArgs = (if injected then Some "--output Detailed" else None) @>
 
-[<Fact(Timeout = 15000)>]
-let ``run-tests gives an xUnit 4 runner its v4 flags and reads the report from that path`` () =
+[<Theory(Timeout = 15000)>]
+[<InlineData(false)>]
+[<InlineData(true)>]
+let ``run-tests gives an xUnit 4 runner its v4 flags and reads the report from that path`` (nameHungTests: bool) =
     withTempDir "fshw-xunit4-functional" (fun tmp ->
         let projectPath = Path.Combine(tmp, "MyTests.fsproj")
         File.WriteAllText(projectPath, "<Project />")
@@ -299,6 +301,7 @@ let ``run-tests gives an xUnit 4 runner its v4 flags and reads the report from t
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
                 CheckSkip = None
+                NameHungTests = nameHungTests
                 AlwaysClasses = [] } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmp
@@ -315,15 +318,21 @@ let ``run-tests gives an xUnit 4 runner its v4 flags and reads the report from t
         // Per-test result lines on the console, which a killed host's profile reads its
         // classes from (AUTOMATION-1300).
         test <@ args |> Array.pairwise |> Array.contains ("--output", "Detailed") @>
-        // xUnit reports a test still running after the long-running threshold, so a killed
-        // host's profile can name it; its reports need diagnostic messages on.
-        test <@ args |> Array.pairwise |> Array.contains ("--long-running", "10") @>
+        // For a project that asks (`nameHungTests`), xUnit reports a test still running after
+        // the long-running threshold, so a killed host's profile can name it; its reports need
+        // diagnostic messages on. Otherwise neither switch: the monitor holds a pool thread for
+        // the whole run (AUTOMATION-1353).
+        if nameHungTests then
+            test <@ args |> Array.pairwise |> Array.contains ("--long-running", "10") @>
 
-        let configFile =
-            args |> Array.pairwise |> Array.find (fun (a, _) -> a = "--config-file") |> snd
+            let configFile =
+                args |> Array.pairwise |> Array.find (fun (a, _) -> a = "--config-file") |> snd
 
-        let config = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText configFile)
-        test <@ (config.Item("xUnit").Item("diagnosticMessages").GetValue<bool>()) @>
+            let config = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText configFile)
+            test <@ (config.Item("xUnit").Item("diagnosticMessages").GetValue<bool>()) @>
+        else
+            test <@ not (args |> Array.contains "--long-running") @>
+            test <@ not (args |> Array.contains "--config-file") @>
 
         use doc = JsonDocument.Parse(result.Value)
         let project = doc.RootElement.GetProperty("projects").[0]
@@ -353,6 +362,7 @@ let ``run-tests invokes the real xUnit 4 runner and verifies its CTRF report`` (
             ReportVerificationFormat = AutoDetect
             Starvation = None
             CheckSkip = None
+            NameHungTests = false
             AlwaysClasses = [] } ]
 
     // The plugin's OWN root is isolated: over `repoRoot` it would write this repository's
@@ -371,8 +381,8 @@ let ``run-tests invokes the real xUnit 4 runner and verifies its CTRF report`` (
     use doc = JsonDocument.Parse(result.Value)
     let project = doc.RootElement.GetProperty("projects").[0]
     Assert.Equal("passed", project.GetProperty("status").GetString())
-    Assert.Equal(4, project.GetProperty("counts").GetProperty("total").GetInt32())
-    Assert.Equal(4, project.GetProperty("counts").GetProperty("succeeded").GetInt32())
+    Assert.Equal(5, project.GetProperty("counts").GetProperty("total").GetInt32())
+    Assert.Equal(5, project.GetProperty("counts").GetProperty("succeeded").GetInt32())
 
 // --- naming the test running at a kill: xUnit long-running reports (AUTOMATION-1300) ---
 

@@ -159,6 +159,7 @@ let private config (project: string) (always: string list) : TestConfig =
       ReportVerificationFormat = AutoDetect
       Starvation = None
       CheckSkip = None
+      NameHungTests = false
       AlwaysClasses = always }
 
 let private configs =

@@ -226,6 +226,7 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
               ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
               Starvation = None
               CheckSkip = None
+              NameHungTests = false
               AlwaysClasses = []
               Traces = true
               TraceWeave = None }
@@ -1828,6 +1829,7 @@ let ``RerunFilter.render and buildFilterArgs emit the same token for a spaced cl
           ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
           Starvation = None
           CheckSkip = None
+          NameHungTests = false
           AlwaysClasses = [] }
 
     let check =

@@ -255,6 +255,7 @@ let ``incident: a beforeRun throw in the run-tests command surfaces as Failed, n
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
                 CheckSkip = None
+                NameHungTests = false
                 AlwaysClasses = [] } ]
 
         // A preflight failure, modelling a real csrf-gate step.
@@ -312,6 +313,7 @@ let ``incident: a test child that never becomes a live process ends the run as v
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
                 CheckSkip = None
+                NameHungTests = false
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -374,6 +376,7 @@ let ``run-tests command with a passing beforeRun runs normally and reports Compl
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
                 CheckSkip = None
+                NameHungTests = false
                 AlwaysClasses = [] } ]
 
         let beforeRun = Some(fun _ _ -> ran.Value <- true)
@@ -491,6 +494,7 @@ let barTest () = assert (bar 1 = 2)
                     ReportVerificationFormat = AutoDetect
                     Starvation = None
                     CheckSkip = None
+                    NameHungTests = false
                     AlwaysClasses = [] } ]
 
             let handler = create dbPath tmpDir (Some configs) None None None None []
@@ -602,6 +606,7 @@ let ``a rerun queued for debt the active run clears preserves that run's evidenc
                     ReportVerificationFormat = AutoDetect
                     Starvation = None
                     CheckSkip = None
+                    NameHungTests = false
                     AlwaysClasses = [] } ]
 
             let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -718,6 +723,7 @@ let fooTest () = assert (foo 1 = 2)
                     ReportVerificationFormat = AutoDetect
                     Starvation = None
                     CheckSkip = None
+                    NameHungTests = false
                     AlwaysClasses = [] } ]
 
             let host = createModelHost checker tmpDir
@@ -891,6 +897,7 @@ let ``restart persistence: a non-empty queue survives a daemon restart and is re
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
                 CheckSkip = None
+                NameHungTests = false
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -937,6 +944,7 @@ let ``no-covering-test symbol drops from the queue at flush without wedging it``
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
                 CheckSkip = None
+                NameHungTests = false
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -1003,6 +1011,7 @@ let ``a covering project that matched ZERO tests does not discharge a pending sy
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
                 CheckSkip = None
+                NameHungTests = false
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -1476,6 +1485,7 @@ let ``BatchChecked drains a pending queue instead of resting on a stale verdict`
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
                 CheckSkip = None
+                NameHungTests = false
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -1532,6 +1542,7 @@ let private ledgerRunner (project: string) (marker: string) : TestConfig =
       ReportVerificationFormat = AutoDetect
       Starvation = None
       CheckSkip = None
+      NameHungTests = false
       AlwaysClasses = [] }
 
 [<Fact(Timeout = 20000)>]
@@ -1681,6 +1692,7 @@ let ``a symbol covered only by an unconfigured project stays owed`` () =
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
                 CheckSkip = None
+                NameHungTests = false
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -1722,6 +1734,7 @@ let ``a plugin with a test run in flight reports BUSY, so no verdict can resolve
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
                 CheckSkip = None
+                NameHungTests = false
                 AlwaysClasses = [] } ]
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -2043,6 +2056,7 @@ let private gatedRunConfig (tmpDir: string) (release: string) (polls: int) =
           ReportVerificationFormat = AutoDetect
           Starvation = None
           CheckSkip = None
+          NameHungTests = false
           AlwaysClasses = [] }
 
     config, started, doneFile
@@ -2175,6 +2189,7 @@ let private countingGatedRunConfig (tmpDir: string) (release: string) (polls: in
           ReportVerificationFormat = AutoDetect
           Starvation = None
           CheckSkip = None
+          NameHungTests = false
           AlwaysClasses = [] }
 
     config, started, runs

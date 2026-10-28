@@ -347,6 +347,7 @@ let private runScenario (root: string) (setup: Setup) =
                 ReportVerificationFormat = Ctrf
                 Starvation = None
                 CheckSkip = None
+                NameHungTests = false
                 AlwaysClasses = [] } ]
 
         let coveragePaths _ =
@@ -588,6 +589,7 @@ let private scopeSequence name (steps: string option list) =
               ReportVerificationFormat = AutoDetect
               Starvation = None
               CheckSkip = None
+              NameHungTests = false
               AlwaysClasses = [] }
 
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir

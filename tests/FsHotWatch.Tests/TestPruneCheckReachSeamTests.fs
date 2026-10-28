@@ -24,6 +24,7 @@ let private markerRunner (project: string) (marker: string) : TestConfig =
       ReportVerificationFormat = AutoDetect
       Starvation = None
       CheckSkip = None
+      NameHungTests = false
       AlwaysClasses = [] }
 
 let private seamTree (tmpDir: string) =
