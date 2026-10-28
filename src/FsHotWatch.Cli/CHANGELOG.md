@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- build: TestPrune.Core 13.5.0 (was 13.4.1). Its connections now carry an explicit, named
+  SQLite busy timeout (30 s), and a write that waits it out raises `DatabaseBusyException`
+  naming the database and the bound. FsHotWatch.TestPrune and FsHotWatch.Cli pin it together.
 - feat: `tests.projects[].weight` declares how heavily a project's test host is charged
   for its process slot in a repository host (ADR-053, AUTOMATION-1299). A number greater
   than 0, and 1 when absent; anything else is a config error. Under contention, a project
