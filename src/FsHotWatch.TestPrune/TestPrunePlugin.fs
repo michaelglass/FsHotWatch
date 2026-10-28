@@ -4894,6 +4894,22 @@ let internal tryApphostPresent (args: string) (repoRoot: string) : bool option =
             |> Some)
 
 
+/// The switch that makes a Microsoft.Testing.Platform host print a result line as each test
+/// finishes (`passed <name> (4ms)`), which a profile reads a killed host's classes from
+/// (`Profile.observe`, AUTOMATION-1300). Asked of the hosts fshw already asks for CTRF —
+/// xUnit v3/v4 on MTP, whose every supported platform version accepts it — and never
+/// when the project chose its own `--output`, which MTP refuses to take twice.
+///
+/// One line per test, written by the host's own console reporter: no host-side code, and
+/// fshw already streams that output into the run log.
+let internal detailedOutputArgument (configArgs: string) : string option =
+    let chose =
+        ProcessHelper.splitArgs configArgs
+        |> Option.defaultValue [||]
+        |> Array.exists (fun t -> t = "--output" || t.StartsWith "--output=")
+
+    if chose then None else Some "--output Detailed"
+
 /// The xUnit runner major determines the names of its CTRF report switches.
 /// xUnit 4 names them `--report-xunit-ctrf*`; xUnit 3 used
 /// `--report-ctrf*`. Passing the other family's switches is fatal and runs zero
@@ -6214,6 +6230,10 @@ let private executeTests
 
                         extraArgs.Add(ctrfArguments family ctrfName runDir)
 
+                        // A result line per test on the console, so a host killed before it
+                        // writes this report still leaves its classes in the profile.
+                        detailedOutputArgument config.Args |> Option.iter extraArgs.Add
+
                         Some(Path.Combine(runDir, ctrfName))
                     | None -> None
 
@@ -6289,16 +6309,11 @@ let private executeTests
                         $"%s{config.Project}: NOT saving a run log — %s{reason}. The run proceeds; only \
                       the console tail will be available if it fails."
 
-                let outputSink =
-                    match runLog.Ref with
-                    | RunLog.Ref.Written _ -> Some runLog.Write
-                    | RunLog.Ref.Unavailable _ -> None
-
                 // THE PROFILE (AUTOMATION-1300). Every project, every run, streamed beside
                 // the run log: the load and the CPU time of the host's tree while it runs, its wall
-                // time, and — from the report — each class's span and the load over it. A
-                // host killed at its timeout writes no report; this record is fshw's, so
-                // it survives the kill. See `Profile`.
+                // time, and each class's span and the load over it — from the report, or, for a host
+                // killed at its timeout (which writes none), from the result lines it printed.
+                // This record is fshw's, so it survives the kill. See `Profile`.
                 let profile =
                     Profile.start
                         runDir
@@ -6320,6 +6335,17 @@ let private executeTests
                                 profile
                                 "abandoned"
                                 (Error "no report: the run ended before this project's outcome was classified") }
+
+                // The output goes to the run log and, chunk by chunk, to the profile, which
+                // keeps the per-test result lines a killed host's classes are read from. The
+                // profile first: it never throws, and a throwing sink is disabled whole.
+                let outputSink =
+                    match runLog.Ref with
+                    | RunLog.Ref.Written _ ->
+                        Some(fun chunk ->
+                            Profile.observe profile chunk
+                            runLog.Write chunk)
+                    | RunLog.Ref.Unavailable _ -> Some(Profile.observe profile)
 
                 // A test runner STREAMS (discovery banner, progress, per-test
                 // lines), so its first byte is a sound liveness proof and the

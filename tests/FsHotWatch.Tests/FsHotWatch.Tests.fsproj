@@ -258,6 +258,7 @@
     <Compile Include="StarvationTests.fs" />
     <Compile Include="TestPruneStarvationRerunTests.fs" />
     <Compile Include="ProfileTests.fs" />
+    <Compile Include="ProfileConsoleTests.fs" />
     <Compile Include="TestPruneProfileTests.fs" />
     <Compile Include="FileCommandPluginTests.fs" />
     <Compile Include="RunLevelHookGapTests.fs" />

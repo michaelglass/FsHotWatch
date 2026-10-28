@@ -248,7 +248,9 @@ is none: the budget, when the host was spawned, whether it stopped on the signal
 and what the kill did. The output log ends with the same sentence.
 Its `<Project>.profile.jsonl` survives the kill too: fshw writes it, not the host, so
 it holds the load and the host tree's CPU time sampled every 5 s up to the kill, the
-wall time, and why there are no per-class lines.
+wall time, and per-class lines read from the result line the host printed as each test
+finished (fshw asks xUnit hosts on Microsoft.Testing.Platform for `--output Detailed`),
+or why there are none.
 
 ```jsonc
 {

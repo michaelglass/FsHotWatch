@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **feat: a host killed at its timeout still gets per-class lines in its profile.**
+  fshw now asks the xUnit hosts it already asks for CTRF for `--output Detailed` too
+  (unless the project's `args` choose an `--output`), so the host prints `passed <name>
+  (4ms)` as each test finishes. The output stream fshw already tees into the run log is
+  also fed to the profile, which keeps every column-0 result line (indented test output
+  is not one) as a test that ended when its line arrived. With no report, `finish` writes
+  class lines from those results, each tagged `"source": "console"`; report-derived lines
+  say `"source": "report"`, and the report still wins when there is one. A class is
+  the longest dotted prefix of the name with no space or `(`, since a killed host never
+  wrote `extra.type`. **Breaking (API):** `Profile.Line.Class` carries a `ClassSource`. A class line written
+  by 0.13.0-alpha.93, which has no `source`, still reads, as a report's.
+  Measured cost: host side, 12 interleaved pairs over 903 fast tests showed a median
+  paired difference of +60 ms on ~7.6 s (0.8%), inside run-to-run noise of ±10%; ~120 B
+  of console per test. fshw side, 0.59 µs per output line, 1.1 ms for a 903-test log.
+  (AUTOMATION-1300, slice 2.)
+
 ## 0.13.0-alpha.93 - 2026-10-27
 
 - **feat: every test project leaves a profile of its run, even when it is killed.**

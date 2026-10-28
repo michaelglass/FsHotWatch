@@ -17,7 +17,10 @@
 ///   * `end`    — wall time, the tree's last-seen CPU time, the load, the outcome;
 ///   * `class`  — per class of the CTRF report: tests, summed duration, the span from its
 ///                first start to its last stop, and the load per core over THAT window,
-///                so a slow class says on its own line whether the box was contended;
+///                so a slow class says on its own line whether the box was contended.
+///                A host killed before it wrote a report still gets them, from the
+///                per-test result lines it printed as each test finished (`observe`, fed
+///                the output stream the run log already tees); `source` says which;
 ///   * `classes-unavailable` — instead of class lines, why there are none.
 ///
 /// Not a verdict input: a profile describes how a run went, never whether it passed.
@@ -95,13 +98,21 @@ let outcomeOf (result: FsHotWatch.Events.TestResult) : string =
     | FsHotWatch.Events.TestsDeferred _ -> "deferred"
     | FsHotWatch.Events.TestsErrored _ -> "errored"
 
+/// Where a class line's timings came from.
+[<RequireQualifiedAccess>]
+type ClassSource =
+    /// The CTRF report's rows.
+    | Report
+    /// The per-test result lines the host printed (a host killed before it wrote a report).
+    | Console
+
 /// One line of a profile.
 type Line =
     | Start of project: string * at: DateTime * cores: int * timeoutSec: int option * load1: float option
     | Spawn of at: DateTime * pid: int
     | Sampled of Sample
     | End of at: DateTime * wallMs: int64 * cpuMs: float option * load1: float option * outcome: string
-    | Class of ClassTiming * Contention
+    | Class of ClassTiming * Contention * ClassSource
     | ClassesUnavailable of reason: string
 
 // ---------------------------------------------------------------------------------------
@@ -144,6 +155,18 @@ let private classOf (row: JsonNode) : string option =
             let dot = name.LastIndexOf '.'
             if dot > 0 then name.Substring(0, dot) else name)
 
+/// Rows of (class, start, stop, duration ms) as one timing per class, slowest span first.
+let private timingsOf (rows: (string * DateTime * DateTime * int64) list) : ClassTiming list =
+    rows
+    |> List.groupBy (fun (cls, _, _, _) -> cls)
+    |> List.map (fun (cls, rows) ->
+        { Class = cls
+          Tests = rows.Length
+          DurationMs = rows |> List.sumBy (fun (_, _, _, d) -> d)
+          Start = rows |> List.map (fun (_, s, _, _) -> s) |> List.min
+          Stop = rows |> List.map (fun (_, _, s, _) -> s) |> List.max })
+    |> List.sortByDescending (fun t -> t.Stop - t.Start, t.Class)
+
 /// The classes of a CTRF report, slowest span first. Rows without a class, a start or a
 /// stop are skipped; an unreadable report has no classes.
 let classTimings (ctrfJson: string) : ClassTiming list =
@@ -168,16 +191,86 @@ let classTimings (ctrfJson: string) : ClassTiming list =
         match classOf row, int64Of row "start", int64Of row "stop" with
         | Some cls, Some start, Some stop ->
             let duration = int64Of row "duration" |> Option.defaultValue (stop - start)
-            Some(cls, start, stop, duration)
+            Some(cls, ofEpochMs start, ofEpochMs stop, duration)
         | _ -> None)
-    |> List.groupBy (fun (cls, _, _, _) -> cls)
-    |> List.map (fun (cls, rows) ->
-        { Class = cls
-          Tests = rows.Length
-          DurationMs = rows |> List.sumBy (fun (_, _, _, d) -> d)
-          Start = rows |> List.map (fun (_, s, _, _) -> s) |> List.min |> ofEpochMs
-          Stop = rows |> List.map (fun (_, _, s, _) -> s) |> List.max |> ofEpochMs })
-    |> List.sortByDescending (fun t -> t.Stop - t.Start, t.Class)
+    |> timingsOf
+
+// ---------------------------------------------------------------------------------------
+// The console's per-test results
+// ---------------------------------------------------------------------------------------
+
+/// A Microsoft.Testing.Platform host asked for `--output Detailed` prints one line as each
+/// test finishes: `passed <name> (4ms)`, `failed (canceled) <name> (2m 3s 4ms)`,
+/// `skipped <name> (0ms)`. At column 0: the test output it prints under a result is
+/// indented, so an indented line is never a result, whatever it says.
+let private completionShape =
+    Text.RegularExpressions.Regex(
+        @"^(passed|failed|skipped) (?:\([^)]*\) )?(\S.*) \(((?:\d+(?:\.\d+)? ?(?:ms|s|m|h|d) ?)+)\)$",
+        Text.RegularExpressions.RegexOptions.Compiled
+    )
+
+let private durationPart =
+    Text.RegularExpressions.Regex(@"(\d+(?:\.\d+)?) ?(ms|s|m|h|d)", Text.RegularExpressions.RegexOptions.Compiled)
+
+/// The same CSI sequences `TestPrunePlugin.ConsoleText` removes: MTP colours the verb.
+let private ansiSequence =
+    Text.RegularExpressions.Regex(@"\u001b\[[0-9;?]*[ -/]*[@-~]", Text.RegularExpressions.RegexOptions.Compiled)
+
+/// A runner's per-test result line as (outcome, test name, duration ms); `None` for any
+/// other line.
+let parseCompletion (line: string) : (string * string * int64) option =
+    let plain =
+        (if line.Contains '\u001b' then
+             ansiSequence.Replace(line, "")
+         else
+             line)
+            .TrimEnd()
+
+    let m = completionShape.Match plain
+
+    if m.Success then
+        let ms =
+            durationPart.Matches m.Groups[3].Value
+            |> Seq.sumBy (fun part ->
+                let value =
+                    Double.Parse(part.Groups[1].Value, Globalization.CultureInfo.InvariantCulture)
+
+                let unit =
+                    match part.Groups[2].Value with
+                    | "ms" -> 1.0
+                    | "s" -> 1_000.0
+                    | "m" -> 60_000.0
+                    | "h" -> 3_600_000.0
+                    | _ -> 86_400_000.0
+
+                value * unit)
+
+        Some(m.Groups[1].Value, m.Groups[2].Value, int64 (Math.Round ms))
+    else
+        None
+
+/// The class of a console test name: the longest prefix ending before a `.` that holds no
+/// space and no `(`. A class name has neither, while a backticked method (`reads
+/// .fshw.json`) or a theory's arguments (`m(x: 1.5)`) may hold dots after one; the report's
+/// `extra.type`, which a killed host never wrote, is not there to say. A name with no
+/// such prefix is its own class.
+let classOfTestName (name: string) : string =
+    let stop = name.IndexOfAny [| ' '; '(' |]
+    let searchable = if stop < 0 then name.Length - 1 else stop
+
+    match
+        if searchable > 0 then
+            name.LastIndexOf('.', searchable - 1)
+        else
+            -1
+    with
+    | dot when dot > 0 -> name.Substring(0, dot)
+    | _ -> name
+
+/// A partial line longer than this is not a result line (a name is never this long); it
+/// is dropped up to its newline rather than held.
+[<Literal>]
+let MaxPartialLine = 64 * 1024
 
 /// The load a window ran under: every sample inside it, plus the nearest sample on each
 /// side — a class shorter than the sampling interval still has the two readings that
@@ -269,8 +362,14 @@ let render (line: Line) : string =
               "cpuMs", optNumber cpuMs
               "load1", optNumber load1
               "outcome", str outcome ]
-        | Class(t, c) ->
+        | Class(t, c, source) ->
             [ "event", str "class"
+              "source",
+              str (
+                  match source with
+                  | ClassSource.Report -> "report"
+                  | ClassSource.Console -> "console"
+              )
               "class", str t.Class
               "tests", i32 t.Tests
               "durationMs", i64 t.DurationMs
@@ -386,8 +485,16 @@ let tryParse (text: string) : Line option =
                               Contended = c }
                     | _ -> None
 
-                match timing, contention with
-                | Some t, Some c -> Some(Class(t, c))
+                let source =
+                    match o.ContainsKey "source", typed<string> o "source" with
+                    // Written before class lines had a source (0.13.0-alpha.93): from a report.
+                    | false, _ -> Some ClassSource.Report
+                    | true, Some "report" -> Some ClassSource.Report
+                    | true, Some "console" -> Some ClassSource.Console
+                    | true, _ -> None
+
+                match timing, contention, source with
+                | Some t, Some c, Some s -> Some(Class(t, c, s))
                 | _ -> None
             | Some "classes-unavailable" -> typed<string> o "reason" |> Option.map ClassesUnavailable
             | _ -> None
@@ -482,17 +589,29 @@ let treeCpu () : int -> float option =
 [<NoComparison; NoEquality>]
 type Recorder =
     private
-        { Write: (string -> unit) option
-          Close: unit -> unit
-          Gate: obj
-          Clock: Stopwatch
-          Cores: int
-          ReadLoad: unit -> float option
-          ReadCpu: int -> float option
-          mutable Pid: int option
-          mutable Samples: Sample list
-          mutable Finished: bool
-          mutable Timer: Threading.Timer option }
+        {
+            Write: (string -> unit) option
+            Close: unit -> unit
+            Gate: obj
+            Clock: Stopwatch
+            Cores: int
+            ReadLoad: unit -> float option
+            ReadCpu: int -> float option
+            mutable Pid: int option
+            mutable Samples: Sample list
+            mutable Finished: bool
+            mutable Timer: Threading.Timer option
+            /// Guards the console state below, apart from `Gate`: a sample holds `Gate` through a
+            /// process-table read, and the output pump must never wait on one.
+            ConsoleGate: obj
+            /// The output since the last newline.
+            Partial: Text.StringBuilder
+            /// Inside a line past `MaxPartialLine`: dropped up to its newline.
+            mutable Discarding: bool
+            /// The results the host printed, newest first: (arrived, name, duration ms).
+            mutable Completions: (DateTime * string * int64) list
+            mutable ConsoleClosed: bool
+        }
 
 let private emit (r: Recorder) (line: Line) =
     match r.Write with
@@ -560,7 +679,12 @@ let start
           Pid = None
           Samples = []
           Finished = false
-          Timer = None }
+          Timer = None
+          ConsoleGate = obj ()
+          Partial = Text.StringBuilder()
+          Discarding = false
+          Completions = []
+          ConsoleClosed = false }
 
     emit recorder (Start(project, DateTime.UtcNow, cores, timeoutSec, readLoad ()))
 
@@ -575,6 +699,61 @@ let spawned (r: Recorder) (pid: int) : unit =
         if not r.Finished then
             r.Pid <- Some pid
             emit r (Spawn(DateTime.UtcNow, pid)))
+
+let private takeLine (r: Recorder) (at: DateTime) (line: string) =
+    match parseCompletion line with
+    | Some(_, name, ms) -> r.Completions <- (at, name, ms) :: r.Completions
+    | None -> ()
+
+/// A chunk of the host's output, as it arrived at `at`: every whole line in it that is a
+/// per-test result (`parseCompletion`) is kept as a test that finished at `at`, and the
+/// rest of a line waits for its newline. Feed it every chunk, in order (the run log's sink
+/// does). A no-op after `finish`; never throws.
+///
+/// Held in memory, not written per test: the class lines are written by `finish`, which
+/// every path out of a launch reaches, a killed host's included. A daemon that dies first
+/// loses them; the run log still holds the lines.
+let observeAt (r: Recorder) (at: DateTime) (chunk: string) : unit =
+    if not (isNull chunk) then
+        lock r.ConsoleGate (fun () ->
+            if not r.ConsoleClosed then
+                let mutable from = 0
+
+                while from < chunk.Length do
+                    match chunk.IndexOf('\n', from) with
+                    | -1 ->
+                        if not r.Discarding then
+                            r.Partial.Append(chunk, from, chunk.Length - from) |> ignore
+
+                            if r.Partial.Length > MaxPartialLine then
+                                r.Partial.Clear() |> ignore
+                                r.Discarding <- true
+
+                        from <- chunk.Length
+                    | newline ->
+                        if r.Discarding then
+                            r.Discarding <- false
+                        else
+                            r.Partial.Append(chunk, from, newline - from) |> ignore
+                            takeLine r at (r.Partial.ToString())
+
+                        r.Partial.Clear() |> ignore
+                        from <- newline + 1)
+
+/// `observeAt` now.
+let observe (r: Recorder) (chunk: string) : unit = observeAt r DateTime.UtcNow chunk
+
+/// The classes of the results the host printed, slowest span first; each test ran for its
+/// printed duration up to the moment its line arrived. Closes the console: nothing is
+/// observed after.
+let private consoleTimings (r: Recorder) : ClassTiming list =
+    lock r.ConsoleGate (fun () ->
+        r.ConsoleClosed <- true
+        r.Partial.Clear() |> ignore
+
+        r.Completions
+        |> List.map (fun (at, name, ms) -> classOfTestName name, at.AddMilliseconds(float -ms), at, ms)
+        |> timingsOf)
 
 /// Write the `end` line and the class lines (or why there are none), and close. Only the
 /// first call writes.
@@ -597,10 +776,15 @@ let finish (r: Recorder) (outcome: string) (classes: Result<ClassTiming list, st
 
             emit r (End(DateTime.UtcNow, int64 r.Clock.Elapsed.TotalMilliseconds, lastCpu, r.ReadLoad(), outcome))
 
-            match classes with
-            | Ok timings ->
+            let classLines source timings =
                 for t in timings do
-                    emit r (Class(t, contentionOver r.Cores samples (t.Start, t.Stop)))
-            | Error reason -> emit r (ClassesUnavailable reason)
+                    emit r (Class(t, contentionOver r.Cores samples (t.Start, t.Stop), source))
+
+            // The report, when there is one; else what the host printed before it ended.
+            match classes, consoleTimings r with
+            | Ok timings, _ -> classLines ClassSource.Report timings
+            | Error reason, [] ->
+                emit r (ClassesUnavailable $"%s{reason}; and the host printed no per-test result line before it ended")
+            | Error _, printed -> classLines ClassSource.Console printed
 
             r.Close())

@@ -239,6 +239,17 @@ let ``ctrfArguments uses the report switches supported by the resolved xUnit maj
     let family = if major = 3 then Xunit3 else Xunit4
     test <@ ctrfArguments family "MyTests.ctrf.json" "/tmp/results" = expected @>
 
+[<Theory(Timeout = 5000)>]
+[<InlineData("run --project T --no-build --", true)>]
+[<InlineData("run --project T --no-build -- --hangdump", true)>]
+[<InlineData("run --project T --no-build -- --output Normal", false)>]
+[<InlineData("run --project T -- --output=Detailed", false)>]
+let ``detailedOutputArgument asks an MTP host for per-test result lines unless the project already chose``
+    (configArgs: string)
+    (injected: bool)
+    =
+    test <@ detailedOutputArgument configArgs = (if injected then Some "--output Detailed" else None) @>
+
 [<Fact(Timeout = 15000)>]
 let ``run-tests gives an xUnit 4 runner its v4 flags and reads the report from that path`` () =
     withTempDir "fshw-xunit4-functional" (fun tmp ->
@@ -301,6 +312,9 @@ let ``run-tests gives an xUnit 4 runner its v4 flags and reads the report from t
         test <@ args |> Array.contains "--report-xunit-ctrf" @>
         test <@ args |> Array.contains "--report-xunit-ctrf-filename" @>
         test <@ not (args |> Array.contains "--report-ctrf") @>
+        // Per-test result lines on the console, which a killed host's profile reads its
+        // classes from (AUTOMATION-1300).
+        test <@ args |> Array.pairwise |> Array.contains ("--output", "Detailed") @>
 
         use doc = JsonDocument.Parse(result.Value)
         let project = doc.RootElement.GetProperty("projects").[0]
@@ -348,5 +362,5 @@ let ``run-tests invokes the real xUnit 4 runner and verifies its CTRF report`` (
     use doc = JsonDocument.Parse(result.Value)
     let project = doc.RootElement.GetProperty("projects").[0]
     Assert.Equal("passed", project.GetProperty("status").GetString())
-    Assert.Equal(1, project.GetProperty("counts").GetProperty("total").GetInt32())
-    Assert.Equal(1, project.GetProperty("counts").GetProperty("succeeded").GetInt32())
+    Assert.Equal(4, project.GetProperty("counts").GetProperty("total").GetInt32())
+    Assert.Equal(4, project.GetProperty("counts").GetProperty("succeeded").GetInt32())

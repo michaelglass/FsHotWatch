@@ -153,7 +153,7 @@ let ``every line round-trips through render and tryParse`` () =
                 Load1 = None
                 CpuMs = None }
           Profile.End(at 10.0, 10_000L, Some 9000.0, Some 2.0, "timed-out")
-          Profile.Class(timing, Profile.contentionOver 12 [] (timing.Start, timing.Stop))
+          Profile.Class(timing, Profile.contentionOver 12 [] (timing.Start, timing.Stop), Profile.ClassSource.Report)
           Profile.ClassesUnavailable "no report: the host was killed at its timeout" ]
 
     for line in lines do
@@ -237,7 +237,9 @@ let ``finish without a report records the end and why there are no class lines``
     | [ (wall, Some 80.0, "timed-out") ] -> test <@ wall >= 0L @>
     | other -> failwith $"unexpected end lines: %A{other}"
 
-    test <@ List.last lines = Profile.ClassesUnavailable "no report: the host was killed at its timeout" @>
+    match List.last lines with
+    | Profile.ClassesUnavailable reason -> test <@ reason.StartsWith "no report: the host was killed at its timeout" @>
+    | other -> failwith $"unexpected last line: %A{other}"
 
 [<Fact>]
 let ``finish with class timings writes one class line each, judged against the run's own samples`` () =
@@ -260,7 +262,7 @@ let ``finish with class timings writes one class line each, judged against the r
     let classes =
         Profile.read (Profile.pathIn dir "P.Tests")
         |> List.choose (function
-            | Profile.Class(t, c) -> Some(t.Class, c.Contended)
+            | Profile.Class(t, c, _) -> Some(t.Class, c.Contended)
             | _ -> None)
 
     // Load 8 on one core: contended, from the class's own line.
@@ -456,7 +458,8 @@ let ``a class line missing any field of its timing is refused`` () =
           "samples", "0"
           "loadPerCoreMean", "null"
           "loadPerCoreMax", "null"
-          "contended", "null" ]
+          "contended", "null"
+          "source", "\"console\"" ]
 
     let lineWithout (dropped: string) =
         let fields =
@@ -469,8 +472,16 @@ let ``a class line missing any field of its timing is refused`` () =
 
     test <@ (Profile.tryParse (lineWithout "none")).IsSome @>
 
-    for name, _ in whole do
+    for name, _ in whole |> List.filter (fun (n, _) -> n <> "source") do
         test <@ Profile.tryParse (lineWithout name) = None @>
+
+    // A line written before class lines had a source (0.13.0-alpha.93) is a report's.
+    match Profile.tryParse (lineWithout "source") with
+    | Some(Profile.Class(_, _, source)) -> test <@ source = Profile.ClassSource.Report @>
+    | other -> failwith $"a sourceless class line did not parse: %A{other}"
+
+    // A source that is neither of the two is no line either.
+    test <@ Profile.tryParse ((lineWithout "source").Replace("}", ",\"source\":\"tea leaves\"}")) = None @>
 
 [<Fact>]
 let ``classTimings reads a blank extra.type as absent, and takes the class from the name`` () =
