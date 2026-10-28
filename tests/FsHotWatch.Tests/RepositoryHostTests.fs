@@ -85,8 +85,6 @@ let private settingsFor (fx: Fixture) : HostSettings =
       SessionResources = fun _ -> []
       Describe = fun () -> JsonObject() }
 
-let private hostProcesses = WorkScheduler.Scheduler 2
-
 let private daemonFactory: SessionFactory =
     fun spec ->
         Daemon.createWithWatcherFactory
@@ -94,8 +92,7 @@ let private daemonFactory: SessionFactory =
             spec.Worktree.Root.Value
             { watchingDaemonOptions with
                 Hosting =
-                    FsHotWatch.DaemonHosting.hostedBy inertWatcher (fun _ -> nullChecker) (WorkScheduler.Scheduler 1)
-                    |> FsHotWatch.DaemonHosting.withProcesses hostProcesses }
+                    FsHotWatch.DaemonHosting.hostedBy inertWatcher (fun _ -> nullChecker) (WorkScheduler.Scheduler 1) }
             inertWatcher
 
 let private requestFrom (worktree: ResolvedWorktree) (config: string) =
@@ -192,11 +189,6 @@ let ``status --repository carries each session's own admission counts`` () =
                         admission["queued"].GetValue<int>() >= 0
                         && admission["heldMs"].GetValue<int64>() >= 0L
                     @>
-
-                // Each hosted session launches test hosts through its own lane of the host's
-                // one process scheduler (AUTOMATION-682).
-                let processAdmission = s["processAdmission"]
-                test <@ processAdmission["running"].GetValue<int>() = 0 @>
 
                 s["root"].GetValue<string>(), admission["granted"].GetValue<int64>())
             |> Map.ofSeq

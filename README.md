@@ -795,13 +795,6 @@ scan cannot keep another session's save waiting, and a run of saves delays a sca
 five seconds at most. `-a` splits each session's `admission` into `interactive` and `bulk`.
 See ADR-049.
 
-The host also bounds its sessions' test hosts: one process scheduler, with the processor
-count as its bound, shared by every session. Each test group holds one slot while it runs,
-so two worktrees' gates cannot each launch a full set of hosts at once.
-`tests.maxParallelProjects` still caps a session's own groups. `status --repository`
-prints `test hosts: R of N slot(s) held, Q queued` (`processes` in `-a`, and each
-session's `processAdmission`). A per-worktree daemon launches as before. See ADR-050.
-
 Every lifecycle event is also appended to `host-events.jsonl` beside `host.log`: one JSON
 line each, naming the time, the host's pid, the event (`hostStarted`, `attached`,
 `refused`, `sessionEnded`, `undelivered`, `hostStopped` with `idle` or `requested`) and

@@ -37,7 +37,6 @@ let private makeRecordingCtx () =
           Log = fun _ -> ()
           CompleteWithTimeout = fun r -> calls.Add(sprintf "Timeout %s" r)
           RunExclusive = fun _ _ -> FsHotWatch.PluginFramework.Claimed
-          Processes = None
           RunExclusiveShared = fun _ _ _ _ _ -> FsHotWatch.PluginFramework.SharedClaimed
           SlotHolder = fun _ -> SlotHolder.Free
           DeclareBoundedWork = FsHotWatch.PluginFramework.BoundedWork.undeclared

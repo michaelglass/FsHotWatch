@@ -2770,7 +2770,6 @@ let private stubBuildCtx (claim: string * string -> SharedRunClaim) (isRunning: 
       Log = ignore
       CompleteWithTimeout = ignore
       RunExclusive = fun _ _ -> failwith "build must use the shared artifact lease"
-      Processes = None
       RunExclusiveShared = fun key resource _ _ _ -> claim (key, resource)
       SlotHolder =
         fun key ->
@@ -3068,7 +3067,6 @@ let ``input retained behind a finished build is built by that build's result fol
 
         let holderFold =
             { stubBuildCtx (fun _ -> SharedClaimed) (fun _ -> false) with
-                Processes = None
                 RunExclusiveShared =
                     fun key _ work _ _ ->
                         Assert.Equal("build", key)

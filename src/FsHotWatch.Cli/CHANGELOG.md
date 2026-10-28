@@ -2,11 +2,6 @@
 
 ## Unreleased
 
-- feat: a repository host admits its sessions' test hosts through one process scheduler,
-  with the processor count as its bound (ADR-050, AUTOMATION-682). `fshw status
-  --repository` prints "test hosts: R of N slot(s) held, Q queued" (`processes` in `-a`,
-  plus each session's `processAdmission`).
-
 ## 0.14.0-alpha.127 - 2026-10-28
 
 - feat: `fshw status --repository` prints the host's check slots ("checks: R of N

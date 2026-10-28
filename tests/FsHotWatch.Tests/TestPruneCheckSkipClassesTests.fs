@@ -221,7 +221,6 @@ let private fixture (checkSkip: CheckSkip option) =
           Log = ignore
           CompleteWithTimeout = ignore
           RunExclusive = fun _ _ -> Claimed
-          Processes = None
           RunExclusiveShared =
             fun _ _ work _ _ ->
                 scheduled.Value <- Some work

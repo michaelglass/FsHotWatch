@@ -166,46 +166,6 @@ let ``a host's sessions check through its one scheduler, a standalone daemon thr
         test <@ not (obj.ReferenceEquals(own.Pipeline.Admission.Scheduler, checks)) @>
         test <@ own.Pipeline.Admission.Scheduler.Capacity = Environment.ProcessorCount @>)
 
-[<Fact(Timeout = 30000)>]
-let ``a host's sessions launch test hosts through its one process scheduler, a standalone daemon through none`` () =
-    withTempDir "hosted-processes" (fun tmpDir ->
-        let rootOf name =
-            let root = Path.Combine(tmpDir, name)
-            Directory.CreateDirectory(Path.Combine(root, "src")) |> ignore
-            root
-
-        let shared, _ = countingCheckers ()
-        let processes = WorkScheduler.Scheduler 2
-
-        let hosted name =
-            Daemon.createUsing
-                (fun _ -> nullChecker)
-                (rootOf name)
-                { oneShotDaemonOptions with
-                    Hosting =
-                        DaemonHosting.hostedBy hostWatcher shared (WorkScheduler.Scheduler 1)
-                        |> DaemonHosting.withProcesses processes }
-
-        use a = hosted "a"
-        use b = hosted "b"
-
-        use own =
-            Daemon.createUsing (fun _ -> nullChecker) (rootOf "own") oneShotDaemonOptions
-
-        let schedulerOf (d: Daemon) =
-            d.Processes |> Option.map (fun lane -> lane.Scheduler)
-
-        test <@ schedulerOf a |> Option.exists (fun s -> obj.ReferenceEquals(s, processes)) @>
-        test <@ schedulerOf b |> Option.exists (fun s -> obj.ReferenceEquals(s, processes)) @>
-        test <@ not (obj.ReferenceEquals(a.Processes.Value, b.Processes.Value)) @>
-        test <@ own.Processes.IsNone @>
-        // A standalone hosting ignores a process scheduler: one bound per HOST.
-        test
-            <@
-                (DaemonHosting.seams (DaemonHosting.standalone () |> DaemonHosting.withProcesses processes))
-                    .Processes.IsNone
-            @>)
-
 [<Fact(Timeout = 5000)>]
 let ``a hosted session's seam hands out the host's scheduler, a standalone one keeps its own`` () =
     let own = WorkScheduler.Scheduler 2

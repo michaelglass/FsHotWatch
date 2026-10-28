@@ -381,10 +381,6 @@ type RepositoryHost
             entry["publications"] <- ProjectModelWire.publicationsPayload (s.Daemon.Publications())
             entry["snapshot"] <- SnapshotEpoch.SnapshotStatus.payload (s.Daemon.SnapshotStatus())
             entry["admission"] <- WorkScheduler.LaneStatus.payload (s.Daemon.Pipeline.Admission.Status())
-
-            s.Daemon.Processes
-            |> Option.iter (fun lane -> entry["processAdmission"] <- WorkScheduler.LaneStatus.payload (lane.Status()))
-
             sessions.Add entry
 
         node["sessions"] <- sessions

@@ -61,8 +61,7 @@ type Hosting =
         checkers: CheckerFactory *
         frames: PathFrame.FrameChoice *
         imports: (string -> string option) *
-        checks: WorkScheduler.Scheduler *
-        processes: WorkScheduler.Scheduler option
+        checks: WorkScheduler.Scheduler
 
 /// A per-worktree daemon.
 let standalone () : Hosting = Hosting.Standalone
@@ -71,7 +70,7 @@ let standalone () : Hosting = Hosting.Standalone
 /// through the checker `checkers` hands out for its configuration, and admitted to
 /// check by `checks`, the scheduler every session of the host shares.
 let hostedBy (sharedWatcher: WatcherFactory) (checkers: CheckerFactory) (checks: WorkScheduler.Scheduler) : Hosting =
-    Hosting.Hosted(sharedWatcher, checkers, PathFrame.realPaths, (fun _ -> None), checks, None)
+    Hosting.Hosted(sharedWatcher, checkers, PathFrame.realPaths, (fun _ -> None), checks)
 
 /// `hostedBy`, with each project checked under the frame `frames` gives it.
 let hostedUnderFrames
@@ -80,7 +79,7 @@ let hostedUnderFrames
     (frames: PathFrame.FrameChoice)
     (checks: WorkScheduler.Scheduler)
     : Hosting =
-    Hosting.Hosted(sharedWatcher, checkers, frames, (fun _ -> None), checks, None)
+    Hosting.Hosted(sharedWatcher, checkers, frames, (fun _ -> None), checks)
 
 /// `hostedUnderFrames`, with each in-repository reference read where `imports` places
 /// it (`ImportStore.Store.PlaceReference`), or where it is when that gives `None`.
@@ -91,16 +90,7 @@ let hostedWithImports
     (imports: string -> string option)
     (checks: WorkScheduler.Scheduler)
     : Hosting =
-    Hosting.Hosted(sharedWatcher, checkers, frames, imports, checks, None)
-
-/// `hosting`, with each session's test hosts and other heavy child processes admitted by
-/// `processes`, the one process scheduler every session of the host shares (AUTOMATION-682).
-/// A per-worktree daemon has no host to share a bound with, so it is left as it is.
-let withProcesses (processes: WorkScheduler.Scheduler) (hosting: Hosting) : Hosting =
-    match hosting with
-    | Hosting.Standalone -> Hosting.Standalone
-    | Hosting.Hosted(sharedWatcher, checkers, frames, imports, checks, _) ->
-        Hosting.Hosted(sharedWatcher, checkers, frames, imports, checks, Some processes)
+    Hosting.Hosted(sharedWatcher, checkers, frames, imports, checks)
 
 /// Everything a hosted session does differently from a per-worktree daemon.
 [<NoComparison; NoEquality>]
@@ -123,9 +113,6 @@ type HostingSeams =
         /// for itself. A host's sessions share one, so the host's bound holds across
         /// them and a session with a long queue takes turns with the others.
         Checks: WorkScheduler.Scheduler -> WorkScheduler.Scheduler
-        /// The scheduler that admits the daemon's heavy child processes, when a host
-        /// shares one across its sessions; `None` for a per-worktree daemon.
-        Processes: WorkScheduler.Scheduler option
     }
 
 /// The seams of a hosting mode.
@@ -138,14 +125,12 @@ let seams (hosting: Hosting) : HostingSeams =
           Checker = id
           Frames = PathFrame.realPaths
           Imports = fun _ -> None
-          Checks = id
-          Processes = None }
-    | Hosting.Hosted(sharedWatcher, checkers, frames, imports, checks, processes) ->
+          Checks = id }
+    | Hosting.Hosted(sharedWatcher, checkers, frames, imports, checks) ->
         { ResourceScope = ResourceScope.Host
           MayForceGc = false
           Watcher = fun _ -> sharedWatcher
           Checker = fun _ -> checkers
           Frames = frames
           Imports = imports
-          Checks = fun _ -> checks
-          Processes = processes }
+          Checks = fun _ -> checks }

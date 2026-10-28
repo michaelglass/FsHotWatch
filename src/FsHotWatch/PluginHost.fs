@@ -40,10 +40,7 @@ type PluginHost
         repoRoot: string,
         ?reporters: IErrorReporter list,
         ?taskCache: TaskCache.ITaskCache,
-        ?fcsSuppressedCodes: Set<int>,
-        // This session's lane of its repository host's process scheduler, handed to every
-        // plugin as `PluginCtx.Processes` (AUTOMATION-682). `None` for a per-worktree daemon.
-        ?processes: WorkScheduler.Lane
+        ?fcsSuppressedCodes: Set<int>
     ) =
     let fcsSuppressedCodes = defaultArg fcsSuppressedCodes Set.empty
     let statusChanged = Event<string * PluginStatus>()
@@ -229,9 +226,6 @@ type PluginHost
     /// live `ProjectGraph`, before registering plugins.
     member _.SetProjectGraph(accessor: PluginFramework.ProjectGraphAccessor) = projectGraphAccessor <- accessor
 
-    /// This session's lane of its host's process scheduler; `None` for a per-worktree daemon.
-    member _.Processes: WorkScheduler.Lane option = processes
-
     /// Register a declarative framework-managed plugin handler.
     member this.RegisterHandler<'State, 'Msg>(handler: PluginFramework.PluginHandler<'State, 'Msg>) =
         let services: PluginFramework.PluginHostServices =
@@ -274,7 +268,6 @@ type PluginHost
               SetNextTerminalOutcome =
                 fun name outcome -> activity.SetNextTerminalOutcome(PluginFramework.PluginName.value name, outcome)
               FcsSuppressedCodes = fcsSuppressedCodes
-              Processes = processes
               // Each closure re-reads the mutable holder per call, so a plugin
               // registered before the daemon installed the live graph still sees it.
               ProjectGraph =

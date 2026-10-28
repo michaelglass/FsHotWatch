@@ -29,7 +29,6 @@ let defaultServices: PluginHostServices =
       FcsSuppressedCodes = Set.empty
       ProjectGraph = ProjectGraphAccessor.none
       StartAsync = Async.Start
-      Processes = None
       ClaimOrQueueSharedRun = fun _ _ -> Some Ready
       ReleaseSharedRun = fun _ _ -> () }
 
