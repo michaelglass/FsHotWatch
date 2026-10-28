@@ -73,6 +73,7 @@ let ``exclusive ownership survives shared completion processing`` (blockedStage:
 
     let services =
         { defaultServices with
+            Processes = None
             ClaimOrQueueSharedRun = fun key start -> scheduler.ClaimOrQueue(key, start)
             ReleaseSharedRun =
                 fun key state ->
@@ -402,6 +403,7 @@ let ``shared classification or release failure retires work without folding a su
     let registration =
         registerHandler
             { defaultServices with
+                Processes = None
                 ClaimOrQueueSharedRun = fun key start -> scheduler.ClaimOrQueue(key, start)
                 ReleaseSharedRun =
                     fun key state ->
@@ -561,6 +563,7 @@ let ``a terminal before shared admission cannot cache work that is claimed or qu
         registerHandler
             { defaultServices with
                 TaskCache = Some cache
+                Processes = None
                 ClaimOrQueueSharedRun = fun resource start -> scheduler.ClaimOrQueue(resource, start)
                 ReleaseSharedRun = fun resource state -> scheduler.Release(resource, state) }
             handler

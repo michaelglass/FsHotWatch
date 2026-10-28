@@ -209,6 +209,7 @@ let ``format-check folds an event other than FileChanged to the same state, sile
           Log = fun line -> told.Add $"log %s{line}"
           CompleteWithTimeout = fun _ -> told.Add "timeout"
           RunExclusive = fun _ _ -> FsHotWatch.PluginFramework.Claimed
+          Processes = None
           RunExclusiveShared = fun _ _ _ _ _ -> FsHotWatch.PluginFramework.SharedClaimed
           SlotHolder = fun _ -> FsHotWatch.PluginFramework.SlotHolder.Free
           DeclareBoundedWork = FsHotWatch.PluginFramework.BoundedWork.undeclared

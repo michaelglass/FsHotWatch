@@ -1343,6 +1343,7 @@ let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
           Log = fun _ -> ()
           CompleteWithTimeout = fun _ -> ()
           RunExclusive = fun _ _ -> FsHotWatch.PluginFramework.Claimed
+          Processes = None
           RunExclusiveShared = fun _ _ _ _ _ -> FsHotWatch.PluginFramework.SharedClaimed
           SlotHolder = fun _ -> FsHotWatch.PluginFramework.SlotHolder.Free
           DeclareBoundedWork = FsHotWatch.PluginFramework.BoundedWork.undeclared

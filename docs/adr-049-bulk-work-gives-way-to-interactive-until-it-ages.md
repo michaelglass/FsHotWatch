@@ -40,3 +40,34 @@ still make progress under a save storm.
 - **Measuring the bound before choosing it.** No consumer measurement exists yet. The
   value is a constant with one definition, and `status` now shows the bulk waits it
   produces, so changing it later is a one-line change backed by data.
+
+## Observed (2026-10-28, AUTOMATION-682 slice 3): no bulk wait reached the bound
+
+This is one run on a real two-session repository host, built from the slice 3 tree. The
+host had 12 check slots and the check cache was off (`FSHW_CHECK_CACHE=off`), so every
+check took a slot. The repository was synthetic: one project of 240 chained files, and
+worktree `b` was a jj workspace of `r`.
+
+The run:
+
+- Both sessions cold-scanned.
+- For 30 s, `b` saved one file every 0.5 s. Those were interactive change batches.
+- Every 5 s, `r` changed the file at the root of the chain and forced a rescan. Those
+  were bulk.
+
+`status --repository -a` was read at the end, with 12 slots held and 12 waiting:
+
+| session | class | granted | total wait | mean wait | longest wait |
+|---|---|---|---|---|---|
+| r | bulk | 1303 | 97.2 s | 75 ms | 1.17 s |
+| r | interactive | 6 | 0.02 s | 3 ms | 16 ms |
+| b | bulk | 264 | 79.5 s | 301 ms | 1.81 s |
+| b | interactive | 425 | 16.2 s | 38 ms | 659 ms |
+
+No bulk wait came near the 5 s bound, so aging never decided a hand-over in this run.
+The bound is a backstop against starvation here, not a regular cost. Interactive waits
+stayed under 0.7 s, while bulk waits on the same slots ran up to 1.8 s. That gap is the
+priority at work.
+
+This is one synthetic run and is not grounds for tuning. A measurement on a real
+downstream tree under a real save storm is the input for changing the bound.

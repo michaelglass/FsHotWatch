@@ -36,6 +36,7 @@ let private defaultServices: PluginHostServices =
       FcsSuppressedCodes = Set.empty
       ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none
       StartAsync = Async.Start
+      Processes = None
       ClaimOrQueueSharedRun = fun _ _ -> Some Ready
       ReleaseSharedRun = fun _ _ -> () }
 
@@ -248,6 +249,7 @@ let ``shared executor start failure leaves the lease as it was handed`` (handedR
         { defaultServices with
             StartAsync = fun _ -> raise (System.InvalidOperationException("start fault"))
             ReportStatus = fun _ status -> statuses.Add(status)
+            Processes = None
             ClaimOrQueueSharedRun = fun key start -> scheduler.ClaimOrQueue(key, start)
             ReleaseSharedRun = fun key resourceState -> scheduler.Release(key, resourceState) }
 
@@ -276,6 +278,7 @@ let ``shared run that finds the resource unusable still invalidates the lease`` 
 
     let services =
         { defaultServices with
+            Processes = None
             ClaimOrQueueSharedRun = fun key start -> scheduler.ClaimOrQueue(key, start)
             ReleaseSharedRun = fun key resourceState -> scheduler.Release(key, resourceState) }
 
@@ -298,6 +301,7 @@ let ``faulted shared owner releases its lease and wakes an accounted waiter`` ()
 
     let services =
         { defaultServices with
+            Processes = None
             ClaimOrQueueSharedRun = fun key start -> scheduler.ClaimOrQueue(key, start)
             ReleaseSharedRun = fun key resourceState -> scheduler.Release(key, resourceState) }
 
@@ -346,6 +350,7 @@ let ``shared work factory exception releases local and shared ownership`` () =
 
     let services =
         { defaultServices with
+            Processes = None
             ClaimOrQueueSharedRun = fun key start -> scheduler.ClaimOrQueue(key, start)
             ReleaseSharedRun = fun key resourceState -> scheduler.Release(key, resourceState) }
 
@@ -389,6 +394,7 @@ let ``shared result classifier exception invalidates resource and wakes waiter``
 
     let services =
         { defaultServices with
+            Processes = None
             ClaimOrQueueSharedRun = fun key start -> scheduler.ClaimOrQueue(key, start)
             ReleaseSharedRun = fun key resourceState -> scheduler.Release(key, resourceState) }
 

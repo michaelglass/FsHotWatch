@@ -979,6 +979,7 @@ let private stubCoverageCtx
       Log = ignore
       CompleteWithTimeout = ignore
       RunExclusive = claim
+      Processes = None
       RunExclusiveShared = fun _ _ _ _ _ -> failwith "coverage takes no shared lease"
       SlotHolder = fun _ -> PF.SlotHolder.Free
       DeclareBoundedWork = PF.BoundedWork.undeclared

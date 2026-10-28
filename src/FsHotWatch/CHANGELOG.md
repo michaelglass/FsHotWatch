@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: a repository host bounds its sessions' heavy child processes with one process
+  scheduler (ADR-050, AUTOMATION-682). New `DaemonHosting.withProcesses`,
+  `HostingSeams.Processes`, `PluginHost ?processes` and `PluginHost.Processes`,
+  `Daemon.Processes`, `PluginHostServices.Processes` and `PluginCtx.Processes` (this
+  session's lane; `None` for a per-worktree daemon). `status --repository` gains each
+  session's `processAdmission`. `WorkScheduler.fs` now compiles before
+  `PluginFramework.fs`. Code that constructs a `PluginCtx` or `PluginHostServices` must
+  set `Processes`.
+
 - feat: every scheduler acquisition carries a `JobSpec` (ADR-049, AUTOMATION-682 /
   AUTOMATION-681 slice 7). New `JobClass` (`Interactive`, `Bulk`), `JobSpec` with
   `JobSpec.interactive` / `JobSpec.bulk`, `Lane.Acquire(job, ct)`, `DefaultAgingBound`

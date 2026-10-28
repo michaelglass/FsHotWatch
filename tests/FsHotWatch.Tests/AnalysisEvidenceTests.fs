@@ -90,6 +90,7 @@ let private analysisContext root generation : PluginCtx<TestPruneMsg> =
       Log = ignore
       CompleteWithTimeout = ignore
       RunExclusive = fun _ _ -> Claimed
+      Processes = None
       RunExclusiveShared = fun _ _ _ _ _ -> SharedClaimed
       SlotHolder = fun _ -> SlotHolder.Free
       DeclareBoundedWork = FsHotWatch.PluginFramework.BoundedWork.undeclared
