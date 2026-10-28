@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: a change batch publishes its cascade as each check returns (ADR-055,
+  AUTOMATION-683). It used to keep every cascade result until the last tier had
+  finished, so a signature change near the root held one FCS result per re-checked
+  file, outside the live-result bound. A cascade result now takes its place among the
+  live results as soon as its check returns, and a result waiting for one holds back the
+  rest of the cascade. The changed files themselves are still held until the cascade is
+  decided.
+
 - feat: the check results a daemon's plugins hold at once are bounded (ADR-054,
   AUTOMATION-683). A scan or change batch used to dispatch each `FileChecked` result as
   its check returned, so plugins slower than the checks held up to one result per file.

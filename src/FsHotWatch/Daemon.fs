@@ -2073,8 +2073,11 @@ let private processBatchAttempt
                     gated[projPath] <- allowed
                     allowed
 
-            // Check `cohort` tier by tier, returning the results unpublished.
-            let checkCohort (cohort: Set<AbsFilePath>) =
+            // Check `cohort` tier by tier. With no `publish`, return the results unpublished.
+            // With one, publish each result as its own check returns and return none (ADR-055):
+            // a result waiting for a place among the live results holds back the rest of its
+            // tier and every later tier, and nothing is kept until the cohort ends.
+            let checkCohort (cohort: Set<AbsFilePath>) (publish: (FileCheckResult -> Async<unit>) option) =
                 async {
                     let results = ResizeArray<FileCheckResult option array>()
 
@@ -2101,8 +2104,21 @@ let private processBatchAttempt
                                         tierChecks.Add(ctx.Pipeline.CheckFile(file, ctx.DaemonCt.Value))
 
                         if tierChecks.Count > 0 then
+                            let jobs =
+                                match publish with
+                                | None -> List.ofSeq tierChecks
+                                | Some publish ->
+                                    [ for check in tierChecks ->
+                                          async {
+                                              match! check with
+                                              | Some result -> do! publish result
+                                              | None -> ()
+
+                                              return None
+                                          } ]
+
                             let! tierResults =
-                                tierChecks
+                                jobs
                                 |> WorkScheduler.parallelWithin ctx.Pipeline.CheckConcurrencyBound
                                 |> CheckCaller.within "change batch"
 
@@ -2113,7 +2129,7 @@ let private processBatchAttempt
 
             // The changed files first: their checks record what each now declares.
             let changedSet = Set.ofList absSourceFiles
-            let! changedResults = checkCohort changedSet
+            let! changedResults = checkCohort changedSet None
 
             // A changed file whose declarations moved — or whose check did not finish, or
             // that declares no signature of its own — reaches every later file of its
@@ -2215,10 +2231,11 @@ let private processBatchAttempt
             if not cascade.IsEmpty then
                 // A new generation, so the cascade is keyed by the signatures just recorded.
                 ctx.Pipeline.BeginGeneration()
-                let! cascadeResults = checkCohort (Set.ofList cascade)
-
-                for results in cascadeResults do
-                    do! emitResults results
+                // Published as each check returns (ADR-055), so concurrently: every write in
+                // `emitResults` is inside `publishCurrent`.
+                do!
+                    checkCohort (Set.ofList cascade) (Some(fun result -> emitResults [| Some result |]))
+                    |> Async.Ignore
 
             // Check files not belonging to any project (e.g. standalone .fsx files)
             let uncovered = Set.difference filesToCheckSet checkedFiles |> Set.toList

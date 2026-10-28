@@ -97,8 +97,10 @@ type private Fixture =
         Seals: unit -> BatchChecked list
     }
 
-/// `appFlags` are compiler flags App is checked with beyond the framework's.
-let private withFixtureOf
+/// `appFlags` are compiler flags App is checked with beyond the framework's; the daemon's
+/// plugins hold at most `liveResultBound` check results at once (ADR-054).
+let private withFixtureBoundedOf
+    (liveResultBound: int)
     (checkCache: FsHotWatch.InMemoryCheckCache.CheckCacheSetup)
     (appFlags: string list)
     (name: string)
@@ -195,7 +197,8 @@ let private withFixtureOf
                 checker
                 root
                 { watchingDaemonOptions with
-                    CheckCache = checkCache }
+                    CheckCache = checkCache
+                    LiveResultBound = liveResultBound }
                 loader
                 (fun _ -> [ libOptions; appOptions ])
                 watcher
@@ -246,6 +249,9 @@ let private withFixtureOf
               Deliveries = fun () -> deliveries.ToArray() |> List.ofArray
               SetPhase = fun name -> Volatile.Write(&phase.contents, name)
               Seals = fun () -> seals.ToArray() |> List.ofArray })
+
+let private withFixtureOf checkCache appFlags name body =
+    withFixtureBoundedOf FsHotWatch.LiveResults.DefaultBound checkCache appFlags name body
 
 let private withFixtureCaching checkCache = withFixtureOf checkCache []
 
@@ -309,6 +315,74 @@ let ``a change batch re-checks the later files of the edited file's own project`
         Assert.True(retyped["Middle.fs"] > 0, $"Middle must be red after the batch: %A{retyped}")
         Assert.True(retyped["Late.fs"] > 0, $"Late must be red after the batch: %A{retyped}")
         Assert.True(retyped["Use.fs"] > 0, $"Use must be red after the batch: %A{retyped}"))
+
+[<Fact(Timeout = 300000)>]
+let ``a change batch publishes its cascade as each check returns, so a held result stops the next tier`` () =
+    // ADR-055. A bound of one and a plugin that holds every result until released. A
+    // signature edit to Early cascades to Middle and Late (Lib's tier) and Use (App's,
+    // the next tier). Each cascade result is published as its check returns, so the batch
+    // waits for its place after Lib's tier and never starts Use: a batch that kept the
+    // whole cascade's results to publish at the end would have checked all of it first.
+    withFixtureBoundedOf 1 FsHotWatch.InMemoryCheckCache.CheckCacheSetup.Off [] "batch-cascade-streams" (fun fixture ->
+        fixture.Daemon.ScanAll() |> Async.RunSynchronously
+        settle fixture
+
+        let gate =
+            System.Threading.Tasks.TaskCompletionSource<unit>(
+                System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+            )
+
+        fixture.Daemon.RegisterHandler
+            { Name = PluginName.create "holder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | FileChecked _ -> do! Async.AwaitTask gate.Task
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChecked ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        let live () =
+            fixture.Daemon.Host.LiveResults.Status()
+
+        let before = fixture.Daemon.Pipeline.CheckStarts
+        let sealsBefore = fixture.Seals().Length
+        fixture.SetPhase "held cascade"
+        File.WriteAllText(fixture.Early, "module Early\nlet value = 2L\n")
+        fixture.Deliver(SourceChanged [ fixture.Early ])
+
+        try
+            waitUntil (fun () -> live().Queued >= 1) 60000
+            waitUntil (fun () -> fixture.Daemon.Pipeline.Admission.Status().Running = 0) 60000
+            // Early, then Lib's tier of its cascade, and no more.
+            Assert.Equal(3L, fixture.Daemon.Pipeline.CheckStarts - before)
+        finally
+            gate.TrySetResult() |> ignore
+
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> fixture.Seals().Length > sealsBefore), TimeSpan.FromSeconds 60.0),
+            "the change batch must seal once the plugin lets its results go"
+        )
+
+        settle fixture
+
+        let delivered =
+            fixture.Deliveries()
+            |> List.filter (fun d -> d.Phase = "held cascade")
+            |> List.map (fun d -> d.File)
+            |> Set.ofList
+
+        Assert.Equal<Set<string>>(set [ "Early.fs"; "Middle.fs"; "Late.fs"; "Use.fs" ], delivered)
+        Assert.Equal(4L, fixture.Daemon.Pipeline.CheckStarts - before)
+        Assert.Equal(1, live().Peak))
 
 [<Fact(Timeout = 300000)>]
 let ``a change batch re-checks only what follows the edited file`` () =
