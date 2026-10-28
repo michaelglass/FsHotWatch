@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.94 - 2026-10-28
+
 - **fix: a long-running report printed in colour is read.** In CI (`CI`, `GITHUB_ACTIONS`,
   `TF_BUILD` set) a host colours its output even when redirected, and
   `Profile.parseLongRunning`, unlike `parseCompletion`, read the raw line, so on CI no

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.94 - 2026-10-28
+
 - feat: each lane of a `WorkScheduler` counts its admission (AUTOMATION-682). New
   `Lane.Status()` (`LaneStatus`: `Queued`, `Running`, `Granted`, `Abandoned`, `Waited`,
   `LongestWait`, `Held`), `Scheduler.Status()` (`SchedulerStatus`: `Capacity`, `Running`,

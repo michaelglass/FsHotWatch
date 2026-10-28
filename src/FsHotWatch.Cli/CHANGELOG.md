@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.127 - 2026-10-28
+
 - feat: `fshw status --repository` prints the host's check slots ("checks: R of N
   slot(s) held, Q queued") and each session's admission ("admission G granted / A
   abandoned, R running, Q queued, waited W ms (longest L ms), held H ms"); `-a` carries
