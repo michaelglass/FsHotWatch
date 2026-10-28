@@ -1149,6 +1149,7 @@ let private scanStatusAnswered (state: ScanState) : string * string list =
                   GetUncheckedCount = fun () -> 0
                   GetProjectModel = fun () -> Observation.Unobserved
                   GetPublications = fun () -> FsHotWatch.ProjectModel.Publications.none
+                  GetSnapshot = fun () -> FsHotWatch.SnapshotEpoch.Ledger([ "/" ]).Status
                   Context = None }
             )
 
@@ -3459,6 +3460,179 @@ let ``an accepted change cohort advances the snapshot epoch, hashing only the co
 
         test <@ daemon.Snapshot().Epoch = SnapshotEpoch.SnapshotEpoch 2L @>
         test <@ daemon.SnapshotHashed() = afterSecond @>)
+
+// AUTOMATION-681 slice 4 (ADR-046): a scan captures the session's epoch with its model. A
+// save that lands while the scan is held is the next epoch, and the scan's check of the
+// file's OLD bytes — old work finishing after new work — is refused and counted. Its
+// result about a file no later epoch changed is still published.
+[<Fact(Timeout = 60000)>]
+let ``a scan's result about a file a later save re-checked is refused, and no stale result is accepted`` () =
+    withTempDir "daemon-epoch-cas" (fun root ->
+        let directory = Path.Combine(root, "src")
+        Directory.CreateDirectory directory |> ignore
+        let project = Path.Combine(directory, "Probe.fsproj")
+        let early = Path.Combine(directory, "Early.fs")
+        let late = Path.Combine(directory, "Late.fs")
+        File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        File.WriteAllText(early, "module Early\nlet value = 1\n")
+        File.WriteAllText(late, "module Late\nlet other = 1\n")
+        let assets = FsHotWatch.DepsFreshness.assetsPath project
+        Directory.CreateDirectory(Path.GetDirectoryName assets) |> ignore
+        File.WriteAllText(assets, "{}")
+
+        let checker =
+            FSharp.Compiler.CodeAnalysis.FSharpChecker.Create(
+                projectCacheSize = 200,
+                keepAssemblyContents = true,
+                keepAllBackgroundResolutions = true
+            )
+
+        let options, _ =
+            checker.GetProjectOptionsFromScript(
+                late,
+                FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText late),
+                assumeDotNetFramework = false
+            )
+            |> Async.RunSynchronously
+
+        let options =
+            { options with
+                ProjectFileName = project
+                SourceFiles = [| early; late |] }
+
+        let loaded =
+            { minimalLoadedProject project with
+                SourceFiles = [ early; late ] }
+
+        let loader = SequencedWorkspaceLoader([ [ loaded ]; [ loaded ]; [ loaded ] ])
+        loader.Resume(0)
+        loader.Resume(1)
+        loader.Resume(2)
+        let callback = ref None
+
+        let watcher: Daemon.WatcherFactory =
+            fun _ onChange _ _ _ ->
+                callback.Value <- Some onChange
+
+                { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+                  Disposables = [] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                root
+                watchingDaemonOptions
+                loader
+                (fun _ -> [ options ])
+                watcher
+
+        daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+        use scanHeld = new Threading.ManualResetEventSlim(false)
+        use release = new Threading.ManualResetEventSlim(false)
+        let mutable holdNext = 0
+
+        // The scan runs its preprocessors after it captured its model and epoch, so holding
+        // the first pass holds the scan there. The change batch's pass is not held.
+        daemon.RegisterPreprocessor(
+            { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
+                member _.Name = "scan-barrier"
+
+                member _.Process files _ =
+                    if Threading.Interlocked.Exchange(&holdNext, 0) = 1 then
+                        scanHeld.Set()
+                        Assert.True(release.Wait(TimeSpan.FromSeconds 30.0), "the save must release the scan")
+
+                    Ok
+                        { Modified = []
+                          Considered = files.Length
+                          Failures = []
+                          Evidence = "scan barrier" }
+
+                member _.Dispose() = () }
+        )
+
+        let checkedFiles = System.Collections.Concurrent.ConcurrentQueue<string * string>()
+        let seals = System.Collections.Concurrent.ConcurrentQueue<BatchChecked>()
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "epoch-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | FileChecked result -> checkedFiles.Enqueue(AbsFilePath.value result.File, result.Source)
+                        | BatchChecked batch -> seals.Enqueue batch
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChecked; SubscribeBatchChecked ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        let resultsFor (file: string) =
+            checkedFiles.ToArray()
+            |> Array.filter (fun (path, _) ->
+                CommandPreprocessor.realPathOf path = CommandPreprocessor.realPathOf file)
+
+        try
+            holdNext <- 1
+            let scan = Async.StartAsTask(daemon.ScanAll())
+            Assert.True(scanHeld.Wait(TimeSpan.FromSeconds 20.0), "the scan must reach its preprocessors")
+            let capturedEpoch = daemon.Snapshot().Epoch
+
+            let saved = "module Late\nlet other = 2\n"
+            File.WriteAllText(late, saved)
+            (callback.Value |> Option.get) (SourceChanged [ late ])
+
+            Assert.True(
+                SpinWait.SpinUntil((fun () -> (resultsFor late).Length >= 1), TimeSpan.FromSeconds 30.0),
+                "the save's batch must publish its check of the saved file"
+            )
+
+            test <@ daemon.Snapshot().Epoch <> capturedEpoch @>
+            // The scan is old work: it reads the bytes the tree held before the save. They are
+            // put back on disk without a watcher event, so the session's snapshot still says
+            // the save's bytes, and the held scan checks the old ones.
+            File.WriteAllText(late, "module Late\nlet other = 1\n")
+            release.Set()
+            Assert.True(scan.Wait(TimeSpan.FromSeconds 30.0), "the released scan must complete")
+
+            Assert.True(
+                SpinWait.SpinUntil(
+                    (fun () ->
+                        not daemon.Host.WorkSnapshot.IsBusy
+                        && seals.ToArray() |> Array.exists (fun s -> s.Trigger.IsBootScan)),
+                    TimeSpan.FromSeconds 30.0
+                ),
+                "the scan's seal must reach the consumer"
+            )
+
+            // The save's check is the only one of Late.fs a consumer saw: the scan's check of
+            // the old bytes was refused. Early.fs, which no epoch changed, was published.
+            let lateResults = resultsFor late
+            test <@ lateResults.Length = 1 @>
+            test <@ snd lateResults[0] = saved @>
+            test <@ (resultsFor early).Length = 1 @>
+            test <@ daemon.SnapshotStatus().Refused >= 1L @>
+
+            let scanSeal = seals.ToArray() |> Array.find (fun s -> s.Trigger.IsBootScan)
+
+            test
+                <@
+                    scanSeal.Files
+                    |> List.forall (fun f ->
+                        CommandPreprocessor.realPathOf (AbsFilePath.value f)
+                        <> CommandPreprocessor.realPathOf late)
+                @>
+        finally
+            release.Set()
+
+            SpinWait.SpinUntil((fun () -> not daemon.Host.WorkSnapshot.IsBusy), TimeSpan.FromSeconds 15.0)
+            |> ignore)
 
 // Pins the invariant the scan supervisor must preserve: once ScanAll's receipt
 // settles, the scan state is observable as ScanComplete (not stale ScanIdle) and the

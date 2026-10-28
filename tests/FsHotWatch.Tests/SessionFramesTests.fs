@@ -193,3 +193,21 @@ let ``a host's reports are one per worktree, in JSON, and an ended session's goe
         reports.End(a, second)
         test <@ not (reports.ToJson().ContainsKey a) @>
         test <@ reports.ToJson().ContainsKey b @>)
+
+// AUTOMATION-681 slice 4 (ADR-046): a frame choice made through an ended incarnation's
+// lease checks at its own paths and leaves no holder behind.
+[<Fact>]
+let ``a choice made after its session's lease was released claims nothing`` () =
+    withTempDir "session-frames-retired" (fun dir ->
+        let registry = CanonicalProjects.Registry()
+        let root = Path.Combine(dir, "a")
+        let lease = registry.Open root
+
+        let choose =
+            SessionFrames.choiceFor registry lease (SessionFrames.Report()) root (Path.Combine(dir, "virtual")) ignore
+
+        let options = optionsAt root "module Lib"
+        test <@ (choose options "h1" []).IsSome @>
+        registry.Release lease
+        test <@ (choose options "h2" []).IsNone @>
+        test <@ List.isEmpty (registry.HoldersOf "src/Lib/Lib.fsproj") @>)

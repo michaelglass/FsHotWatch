@@ -44,6 +44,7 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       GetUncheckedCount = fun () -> 0
       GetProjectModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved
       GetPublications = fun () -> FsHotWatch.ProjectModel.Publications.none
+      GetSnapshot = fun () -> FsHotWatch.SnapshotEpoch.Ledger([ "/" ]).Status
       Context = None }
 
 /// A CLI that sees the pipe listening decides a daemon is there. So once the server's
@@ -2344,4 +2345,30 @@ let ``status carries the daemon's publication counts, and a reply without them r
     test
         <@
             FsHotWatch.Cli.IpcOutput.publicationsLine counts = "publications: 7 accepted, 2 refused as stale (a newer project model superseded the work)"
+        @>
+
+// AUTOMATION-681 slice 4 (ADR-046): `status` names the session's epoch and manifest.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``status carries the daemon's snapshot epoch, and a reply without one reads as none`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let snapshot: FsHotWatch.SnapshotEpoch.SnapshotStatus =
+        { Epoch = FsHotWatch.SnapshotEpoch.SnapshotEpoch 4L
+          Manifest = "0123456789abcdef"
+          Refused = 3L }
+
+    let target =
+        DaemonRpcTarget(
+            { defaultRpcConfig host with
+                GetSnapshot = fun () -> snapshot }
+        )
+
+    test <@ FsHotWatch.Cli.IpcParsing.snapshotOf (target.GetDiagnostics "") = Some snapshot @>
+    test <@ FsHotWatch.Cli.IpcParsing.snapshotOf """{"count":0}""" = None @>
+    test <@ FsHotWatch.Cli.IpcParsing.snapshotOf """{"snapshot":{"epoch":1}}""" = None @>
+    test <@ FsHotWatch.Cli.IpcParsing.snapshotOf "not json" = None @>
+
+    test
+        <@
+            FsHotWatch.Cli.IpcOutput.snapshotLine snapshot = "snapshot: epoch 4 (manifest 0123456789ab), 3 stale publication(s) refused (they checked bytes a later save replaced)"
         @>

@@ -2946,7 +2946,18 @@ let internal renderRepositoryStatus (json: string) : string list =
                   let refused = p["refused"].GetValue<int64>()
                   $", publications %d{accepted} accepted / %d{refused} refused as stale"
 
-          yield $"  %s{root}  %s{state}, scan generation %d{generation}%s{attached}%s{publications}"
+          // A host older than its snapshot epoch (ADR-046) sends none.
+          let snapshot =
+              match s["snapshot"] with
+              | null -> ""
+              | p ->
+                  let manifest = p["manifest"].GetValue<string>()
+                  let manifest = manifest.Substring(0, min 12 manifest.Length)
+                  let epoch = p["epoch"].GetValue<int64>()
+                  let refused = p["refused"].GetValue<int64>()
+                  $", snapshot epoch %d{epoch} (manifest %s{manifest}, %d{refused} stale refused)"
+
+          yield $"  %s{root}  %s{state}, scan generation %d{generation}%s{attached}%s{publications}%s{snapshot}"
       match node["watch"] with
       | null -> ()
       | watch ->
@@ -3103,6 +3114,13 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
         // FCS's work. Which content of each project is shared, and by which sessions.
         let canonical = FsHotWatch.CanonicalProjects.Registry()
 
+        // Each session claims through its own incarnation's lease (ADR-046), opened with
+        // the session's resources and released when it ends, so a check its predecessor
+        // finishes late claims nothing. Attaches are serialized, and a session's resources
+        // are made just before its daemon, so the factory reads the lease made for it.
+        let leases =
+            System.Collections.Concurrent.ConcurrentDictionary<string, FsHotWatch.CanonicalProjects.Lease>()
+
         // Which projects each session checks at its own paths, and why: the log says so
         // once, `status --repository` says so while the session lasts.
         let ownPaths = FsHotWatch.SessionFrames.Reports()
@@ -3179,8 +3197,14 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
 
             let frames =
                 if virtualRootOn then
-                    FsHotWatch.SessionFrames.choice
+                    let lease =
+                        match leases.TryGetValue worktreeRoot with
+                        | true, lease -> lease
+                        | false, _ -> canonical.Open worktreeRoot
+
+                    FsHotWatch.SessionFrames.choiceFor
                         canonical
+                        lease
                         (ownPaths.For worktreeRoot)
                         worktreeRoot
                         control.VirtualRoot
@@ -3210,8 +3234,11 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
                   member _.Dispose() =
                       FsHotWatch.TestPrune.ImpactDbPool.clear (DaemonConfig.testImpactDbPath worktree.Root.Value) }
               // An ended session checks nothing: another may take its projects' content over.
+              let lease = canonical.Open worktree.Root.Value
+              leases[worktree.Root.Value] <- lease
+
               { new IDisposable with
-                  member _.Dispose() = canonical.Release worktree.Root.Value }
+                  member _.Dispose() = canonical.Release lease }
               // Started here, before the session's daemon is made, and ended with it.
               let report = ownPaths.Start worktree.Root.Value
 
@@ -3841,6 +3868,9 @@ let private executeCommandRendered
 
                     IpcParsing.publicationsOf json
                     |> Option.iter (IpcOutput.publicationsLine >> eprintfn "%s")
+
+                    IpcParsing.snapshotOf json
+                    |> Option.iter (IpcOutput.snapshotLine >> eprintfn "%s")
 
                     // Same nudge as `check`/`confirm`: when a machine is reading, name the
                     // files rather than leaving it to scrape a display built for a human.

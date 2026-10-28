@@ -773,6 +773,13 @@ it refused because a newer model had begun or settled first. A refusal is old wo
 finished after new work and was kept out; the work is retried or refused by name
 (ADR-032). `fshw status` prints the same counts for a per-worktree daemon. See ADR-044.
 
+Each session line also names its snapshot (`snapshot` in `-a`): the epoch its own saves
+have advanced it to, the id of that epoch's manifest (repository-relative path to
+content id), and how many results were refused because they checked bytes a later save
+replaced. A scan that read a file before a save changed it publishes nothing about that
+file; the save's check stands. `fshw status` prints the same for a per-worktree daemon.
+See ADR-045 and ADR-046.
+
 Every lifecycle event is also appended to `host-events.jsonl` beside `host.log`: one JSON
 line each, naming the time, the host's pid, the event (`hostStarted`, `attached`,
 `refused`, `sessionEnded`, `undelivered`, `hostStopped` with `idle` or `requested`) and

@@ -173,3 +173,92 @@ let ``a ledger advances its own manifest and sums what it hashed`` () =
     test <@ second |> Option.map (fun a -> a.Manifest.Epoch) = Some(SnapshotEpoch 2L) @>
     test <@ ledger.Current.Epoch = SnapshotEpoch 2L @>
     test <@ ledger.Hashed = { Files = 3; Bytes = 11L } @>
+
+// ---------------------------------------------------------------------------
+// Slice 4 (ADR-046): publication CAS on the epoch
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``a publication of old bytes after a later epoch changed the file is refused, and counted`` () =
+    let a = ref (ContentRead.Read("a1", 1L))
+
+    let read (path: string) =
+        if path = at "A.fs" then
+            a.Value
+        else
+            ContentRead.Read("b1", 1L)
+
+    let ledger = Ledger([ root ], read)
+    // A scan captures epoch 0, and reads A.fs as a1.
+    let captured = ledger.Current.Epoch
+    test <@ ledger.Accepts(captured, at "A.fs", "a1") @>
+
+    // A save of A.fs is the next epoch.
+    a.Value <- ContentRead.Read("a2", 1L)
+    ledger.Advance [ at "A.fs" ] |> ignore
+
+    // The scan's check of a1 lands after: refused. One that read a2 is current.
+    test <@ not (ledger.Accepts(captured, at "A.fs", "a1")) @>
+    test <@ ledger.Accepts(captured, at "A.fs", "a2") @>
+    // A path no later epoch changed is accepted whatever was read.
+    test <@ ledger.Accepts(captured, at "B.fs", "anything") @>
+    // Work captured at the new epoch is current about every path.
+    test <@ ledger.Accepts(ledger.Current.Epoch, at "A.fs", "a1") @>
+    test <@ ledger.Status.Refused = 1L @>
+
+[<Fact>]
+let ``a file removed at a later epoch refuses any earlier read of it`` () =
+    let present = ref true
+
+    let ledger =
+        Ledger(
+            [ root ],
+            fun _ ->
+                if present.Value then
+                    ContentRead.Read("x", 1L)
+                else
+                    ContentRead.Absent
+        )
+
+    let captured = ledger.Current.Epoch
+    ledger.Advance [ at "A.fs" ] |> ignore
+    present.Value <- false
+    ledger.Advance [ at "A.fs" ] |> ignore
+    test <@ not (ledger.Accepts(captured, at "A.fs", "x")) @>
+
+[<Fact>]
+let ``a later change is matched under either spelling of the root`` () =
+    let real = Path.Combine(Path.GetTempPath(), "real-root")
+    let ledger = Ledger([ root; real ], fun _ -> ContentRead.Read("x", 1L))
+    let captured = ledger.Current.Epoch
+    ledger.Advance [ at "A.fs" ] |> ignore
+    test <@ not (ledger.Accepts(captured, Path.Combine(real, "A.fs"), "old")) @>
+
+[<Fact>]
+let ``the status names the epoch, the manifest and the stale refusals`` () =
+    let ledger = Ledger([ root ], fun _ -> ContentRead.Read("x", 1L))
+    let captured = ledger.Current.Epoch
+    ledger.Advance [ at "A.fs" ] |> ignore
+    ledger.Accepts(captured, at "A.fs", "old") |> ignore
+    let status = ledger.Status
+    test <@ status.Epoch = SnapshotEpoch 1L @>
+    test <@ status.Manifest = ledger.Current.Id @>
+    test <@ status.Refused = 1L @>
+
+[<Fact>]
+let ``the status round-trips its wire form, and a malformed one reads as none`` () =
+    let status =
+        { Epoch = SnapshotEpoch 3L
+          Manifest = "abc"
+          Refused = 2L }
+
+    let parse (json: string) =
+        use doc = System.Text.Json.JsonDocument.Parse json
+        SnapshotStatus.tryRead (doc.RootElement.Clone())
+
+    test <@ parse ((SnapshotStatus.payload status).ToJsonString()) = Some status @>
+    test <@ parse """{"epoch":"3","manifest":"abc","refused":2}""" = None @>
+    test <@ parse """{"epoch":-1,"manifest":"abc","refused":2}""" = None @>
+    test <@ parse """{"epoch":3,"manifest":"abc","refused":-2}""" = None @>
+    test <@ parse """{"epoch":3,"refused":2}""" = None @>
+    test <@ parse "null" = None @>

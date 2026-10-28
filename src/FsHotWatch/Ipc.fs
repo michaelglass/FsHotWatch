@@ -200,6 +200,8 @@ type DaemonRpcConfig =
         GetProjectModel: unit -> ProjectModel.Observation
         /// How the daemon's model-guarded publications ended so far (ADR-044), for `status`.
         GetPublications: unit -> ProjectModel.Publications
+        /// This session's snapshot epoch, manifest id and stale refusals (ADR-046), for `status`.
+        GetSnapshot: unit -> SnapshotEpoch.SnapshotStatus
         /// The context the daemon's RPCs run in: its process scope, and in a repository
         /// host its session's log sink and client environment. `None`: the context of
         /// whatever serves them.
@@ -551,6 +553,8 @@ type DaemonRpcTarget
                projectModel = ProjectModelWire.payload (config.GetProjectModel())
                // ADR-044: how this daemon's model-guarded publications ended, for `status`.
                publications = ProjectModelWire.publicationsPayload (config.GetPublications())
+               // ADR-046: this session's snapshot epoch, manifest id and stale refusals.
+               snapshot = SnapshotEpoch.SnapshotStatus.payload (config.GetSnapshot())
                // null until the heap valve fires; then its report, for `status`.
                heapValve =
                 (match heapValveReport () with

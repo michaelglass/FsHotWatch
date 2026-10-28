@@ -751,6 +751,17 @@ let heapValveOf (json: string) : string option =
     with :? JsonException ->
         None
 
+/// The session's snapshot in a GetDiagnostics reply (ADR-046): `None` from a daemon that
+/// sends none, or when it cannot be read.
+let snapshotOf (json: string) : FsHotWatch.SnapshotEpoch.SnapshotStatus option =
+    try
+        use doc = JsonDocument.Parse(json)
+
+        Json.tryProp doc.RootElement "snapshot"
+        |> Option.bind FsHotWatch.SnapshotEpoch.SnapshotStatus.tryRead
+    with :? JsonException ->
+        None
+
 /// The daemon's publication counts in a GetDiagnostics reply (ADR-044): `None` from a
 /// daemon that sends none, or when they cannot be read.
 let publicationsOf (json: string) : FsHotWatch.ProjectModel.Publications option =

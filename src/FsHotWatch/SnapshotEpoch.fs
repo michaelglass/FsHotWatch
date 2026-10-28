@@ -156,11 +156,48 @@ module Manifest =
               Id = idOf entries },
             hashed
 
+/// What `status` says about a session's snapshot (ADR-046): its epoch, its manifest's id, and
+/// how many publications were refused because a later epoch invalidated what they were about.
+type SnapshotStatus =
+    { Epoch: SnapshotEpoch
+      Manifest: string
+      Refused: int64 }
+
+[<RequireQualifiedAccess>]
+module SnapshotStatus =
+    /// The `snapshot` object `status` and `status --repository` carry.
+    let payload (status: SnapshotStatus) : Text.Json.Nodes.JsonObject =
+        let node = Text.Json.Nodes.JsonObject()
+        node["epoch"] <- Text.Json.Nodes.JsonValue.Create status.Epoch.Value
+        node["manifest"] <- Text.Json.Nodes.JsonValue.Create status.Manifest
+        node["refused"] <- Text.Json.Nodes.JsonValue.Create status.Refused
+        node
+
+    /// Read a `snapshot` object. `None` when it is absent or malformed.
+    let tryRead (el: Text.Json.JsonElement) : SnapshotStatus option =
+        if el.ValueKind <> Text.Json.JsonValueKind.Object then
+            None
+        else
+            match Json.tryInt64 el "epoch", Json.tryString el "manifest", Json.tryInt64 el "refused" with
+            | Some epoch, Some manifest, Some refused when epoch >= 0L && refused >= 0L ->
+                Some
+                    { Epoch = SnapshotEpoch epoch
+                      Manifest = manifest
+                      Refused = refused }
+            | _ -> None
+
 /// A session's current snapshot. Thread-safe; the change worker is its only writer.
 type Ledger(roots: string list, read: string -> ContentRead) =
     let gate = Lock()
     let mutable current = Manifest.empty
     let mutable hashed = Hashed.none
+    // ADR-046: the latest epoch whose cohort carried each path, by its manifest name.
+    let mutable changedAt: Map<string, SnapshotEpoch> = Map.empty
+    let mutable refused = 0L
+
+    let mark (paths: string list) (epoch: SnapshotEpoch) =
+        for path in paths do
+            changedAt <- Map.add (Manifest.relativePath roots path) epoch changedAt
 
     new(roots: string list) = Ledger(roots, Manifest.readFile)
 
@@ -187,4 +224,29 @@ type Ledger(roots: string list, read: string -> ContentRead) =
                     None
                 else
                     current <- next
+                    mark paths next.Epoch
                     Some { Manifest = next; Hashed = cohort })
+
+    /// Whether work captured at `captured`, which read `path` as `checkedContent` (a content
+    /// id), may still publish about it. Refused, and counted, when a later epoch changed
+    /// `path` and the manifest now holds other content: old bytes finishing after new.
+    /// A result that read the current bytes is accepted whenever it lands.
+    member _.Accepts(captured: SnapshotEpoch, path: string, checkedContent: string) : bool =
+        Locking.locked gate (fun () ->
+            let name = Manifest.relativePath roots path
+
+            match Map.tryFind name changedAt with
+            | Some(SnapshotEpoch at) when
+                at > captured.Value
+                && Map.tryFind name current.Entries <> Some(ManifestEntry.Content checkedContent)
+                ->
+                refused <- refused + 1L
+                false
+            | _ -> true)
+
+    /// The current epoch, manifest id and refusals.
+    member _.Status: SnapshotStatus =
+        Locking.locked gate (fun () ->
+            { Epoch = current.Epoch
+              Manifest = current.Id
+              Refused = refused })
