@@ -3359,6 +3359,107 @@ let ``old work finishing after new work is counted as refused, and no stale publ
         test <@ acceptedStale = 0 @>
         test <@ not (Array.isEmpty results) @>)
 
+// AUTOMATION-681 slice 3 (ADR-045): an accepted change cohort advances the session's
+// snapshot epoch, and the manifest hashes exactly the cohort's files plus what the cohort
+// itself wrote (a preprocessor's rewrite) — never the rest of the tree.
+[<Fact(Timeout = 45000)>]
+let ``an accepted change cohort advances the snapshot epoch, hashing only the cohort and its rewrites`` () =
+    withTempDir "daemon-snapshot-epoch" (fun root ->
+        let src = Path.Combine(root, "src")
+        Directory.CreateDirectory src |> ignore
+        let edited = Path.Combine(src, "Edited.fs")
+        let generated = Path.Combine(src, "Gen.fs")
+        // Present in the tree, never in a cohort: hashing it would show in the byte count.
+        File.WriteAllText(Path.Combine(src, "Untouched.fs"), String('x', 4096))
+        let callback = ref None
+
+        let watcher: Daemon.WatcherFactory =
+            fun _ onChange _ _ _ ->
+                callback.Value <- Some onChange
+
+                { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+                  Disposables = [] }
+
+        use daemon =
+            Daemon.createWithWatcherFactory nullChecker root watchingDaemonOptions watcher
+
+        daemon.RegisterPreprocessor(
+            { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
+                member _.Name = "generator"
+
+                member _.Process files _ =
+                    File.WriteAllText(generated, $"module Gen // {Guid.NewGuid():N}")
+
+                    Ok
+                        { Modified = [ FsHotWatch.CommandPreprocessor.realPathOf generated ]
+                          Considered = files.Length
+                          Failures = []
+                          Evidence = "generator" }
+
+                member _.Dispose() = () }
+        )
+
+        test <@ daemon.Snapshot() = SnapshotEpoch.Manifest.empty @>
+
+        let deliver () =
+            (callback.Value |> Option.get) (SourceChanged [ edited ])
+
+        let settledAt (epoch: int64) =
+            SpinWait.SpinUntil(
+                (fun () ->
+                    daemon.Snapshot().Epoch = SnapshotEpoch.SnapshotEpoch epoch
+                    && not daemon.Host.WorkSnapshot.IsBusy),
+                TimeSpan.FromSeconds 15.0
+            )
+
+        let cohortBytes () =
+            FileInfo(edited).Length + FileInfo(generated).Length
+
+        File.WriteAllText(edited, "module Edited\nlet v = 1\n")
+        deliver ()
+        Assert.True(settledAt 1L, $"the first save must reach epoch 1; at %A{daemon.Snapshot().Epoch}")
+        let first = daemon.Snapshot()
+        let afterFirst = daemon.SnapshotHashed()
+
+        test
+            <@
+                afterFirst = { SnapshotEpoch.Files = 2
+                               SnapshotEpoch.Bytes = cohortBytes () }
+            @>
+
+        test
+            <@
+                first.Entries = Map.ofList
+                    [ "src/Edited.fs", SnapshotEpoch.ManifestEntry.Content(ContentHash.ofFile edited)
+                      "src/Gen.fs", SnapshotEpoch.ManifestEntry.Content(ContentHash.ofFile generated) ]
+            @>
+
+        File.WriteAllText(edited, "module Edited\nlet v = 22\n")
+        deliver ()
+        Assert.True(settledAt 2L, $"the second save must reach epoch 2; at %A{daemon.Snapshot().Epoch}")
+        let afterSecond = daemon.SnapshotHashed()
+
+        test
+            <@
+                afterSecond = { SnapshotEpoch.Files = afterFirst.Files + 2
+                                SnapshotEpoch.Bytes = afterFirst.Bytes + cohortBytes () }
+            @>
+
+        test <@ daemon.Snapshot().Id <> first.Id @>
+        // The epoch-1 manifest is a value: the second cohort replaced it, never mutated it.
+        test <@ first.Entries["src/Edited.fs"] <> daemon.Snapshot().Entries["src/Edited.fs"] @>
+
+        // The same bytes again admit nothing, so no cohort is accepted and nothing moves.
+        deliver ()
+
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> not daemon.Host.WorkSnapshot.IsBusy), TimeSpan.FromSeconds 15.0),
+            "the unchanged save must settle"
+        )
+
+        test <@ daemon.Snapshot().Epoch = SnapshotEpoch.SnapshotEpoch 2L @>
+        test <@ daemon.SnapshotHashed() = afterSecond @>)
+
 // Pins the invariant the scan supervisor must preserve: once ScanAll's receipt
 // settles, the scan state is observable as ScanComplete (not stale ScanIdle) and the
 // generation has advanced. The supervisor publishes the completed state before the

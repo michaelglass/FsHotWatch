@@ -202,6 +202,110 @@ let ``status --repository carries each session's own publication counts`` () =
         test <@ Set.ofSeq reported.Keys = Set.ofSeq after.Keys @>
         test <@ reported |> Map.forall between @>)
 
+// AUTOMATION-681 slice 3 (ADR-045): each session owns its snapshot epoch. A's saves advance
+// A's epoch and manifest only, B's stay where they were, and each save hashes exactly the
+// files its cohort carried.
+[<Fact(Timeout = 60000)>]
+let ``a session's saves advance only its own snapshot epoch`` () =
+    let callbacks =
+        System.Collections.Concurrent.ConcurrentDictionary<string, Events.FileChangeKind -> unit>()
+
+    let recording: Daemon.WatcherFactory =
+        fun root onChange _ _ _ ->
+            callbacks[root] <- onChange
+
+            { Mode = Watcher.WatcherMode.NativeEvents
+              Disposables = [] }
+
+    let factory: SessionFactory =
+        fun spec ->
+            Daemon.createWithWatcherFactory
+                nullChecker
+                spec.Worktree.Root.Value
+                { watchingDaemonOptions with
+                    Hosting =
+                        FsHotWatch.DaemonHosting.hostedBy recording (fun _ -> nullChecker) (WorkScheduler.Scheduler 1) }
+                recording
+
+    withHost settingsFor factory (fun fx host ->
+        let a = attachedId (attachVia host (requestFrom fx.Primary "a"))
+        let b = attachedId (attachVia host (requestFrom fx.Secondary "b"))
+        let sa = (host.Registry.TryGet a).Value
+        let sb = (host.Registry.TryGet b).Value
+        let rootA = fx.Primary.Root.Value
+        let rootB = fx.Secondary.Root.Value
+
+        Assert.True(
+            SpinWait.SpinUntil(
+                (fun () -> callbacks.ContainsKey rootA && callbacks.ContainsKey rootB),
+                TimeSpan.FromSeconds 10.0
+            ),
+            "each session must build its watcher"
+        )
+
+        // One save: write the files, then deliver them as one watcher cohort.
+        let save (root: string) (contents: (string * string) list) =
+            let files =
+                [ for name, text in contents do
+                      let file = Path.Combine(root, "src", name)
+                      File.WriteAllText(file, text)
+                      file ]
+
+            callbacks[root](Events.SourceChanged files)
+            files |> List.sumBy (fun f -> FileInfo(f).Length)
+
+        let settledAt (session: WorktreeSession) (epoch: int64) =
+            SpinWait.SpinUntil(
+                (fun () ->
+                    session.Daemon.Snapshot().Epoch = SnapshotEpoch.SnapshotEpoch epoch
+                    && not session.Daemon.Host.WorkSnapshot.IsBusy),
+                TimeSpan.FromSeconds 15.0
+            )
+
+        let epochOf (session: WorktreeSession) =
+            let (SnapshotEpoch.SnapshotEpoch epoch) = session.Daemon.Snapshot().Epoch
+            epoch
+
+        let firstBytes = save rootA [ "One.fs", "module One\n" ]
+        Assert.True(settledAt sa 1L, $"A's first save must reach epoch 1; at %d{epochOf sa}")
+
+        test
+            <@
+                sa.Daemon.SnapshotHashed() = { SnapshotEpoch.Files = 1
+                                               SnapshotEpoch.Bytes = firstBytes }
+            @>
+
+        test <@ sb.Daemon.Snapshot() = SnapshotEpoch.Manifest.empty @>
+        test <@ sb.Daemon.SnapshotHashed() = SnapshotEpoch.Hashed.none @>
+
+        let secondBytes =
+            save rootA [ "One.fs", "module One\nlet x = 1\n"; "Two.fs", "module Two\n" ]
+
+        Assert.True(settledAt sa 2L, $"A's second save must reach epoch 2; at %d{epochOf sa}")
+
+        test
+            <@
+                sa.Daemon.SnapshotHashed() = { SnapshotEpoch.Files = 3
+                                               SnapshotEpoch.Bytes = firstBytes + secondBytes }
+            @>
+
+        test <@ Set.ofSeq (sa.Daemon.Snapshot().Entries.Keys) = set [ "src/One.fs"; "src/Two.fs" ] @>
+        test <@ epochOf sb = 0L @>
+        test <@ sb.Daemon.Snapshot().Entries.IsEmpty @>
+
+        let bBytes = save rootB [ "Other.fs", "module Other\n" ]
+        Assert.True(settledAt sb 1L, $"B's save must reach B's epoch 1; at %d{epochOf sb}")
+
+        test
+            <@
+                sb.Daemon.SnapshotHashed() = { SnapshotEpoch.Files = 1
+                                               SnapshotEpoch.Bytes = bBytes }
+            @>
+
+        test <@ Set.ofSeq (sb.Daemon.Snapshot().Entries.Keys) = set [ "src/Other.fs" ] @>
+        test <@ epochOf sa = 2L @>
+        test <@ sa.Daemon.SnapshotHashed().Files = 3 @>)
+
 [<Fact(Timeout = 60000)>]
 let ``a claimed root that does not resolve is refused, and starts nothing`` () =
     withHost settingsFor daemonFactory (fun fx host ->

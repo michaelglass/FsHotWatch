@@ -1618,6 +1618,9 @@ type internal BatchContext =
         /// analysis. `None` disables the gate (test daemons with a null
         /// checker). See `DepsFreshness.evaluateProject`.
         DepsGate: (string -> DepsFreshness.GateResult) option
+        /// This session's snapshot epoch and manifest, advanced only by its own accepted
+        /// change cohorts (ADR-045).
+        Snapshots: SnapshotEpoch.Ledger
         /// What this daemon does differently as a session of a repository host.
         Seams: DaemonHosting.HostingSeams
     }
@@ -1737,7 +1740,8 @@ let internal laterFilesInOwnProjects
 
 /// Process a batch of debounced file changes: filter, re-discover projects if needed,
 /// run preprocessors, emit events, and check files. Raises `ModelSupersededException`
-/// when a publication meets a model newer than the one the attempt captured.
+/// when a publication meets a model newer than the one the attempt captured. Returns the
+/// suppressed paths, and the files the preprocessors rewrote for this cohort.
 let private processBatchAttempt
     (ctx: BatchContext)
     (seenAt: DateTime)
@@ -2213,7 +2217,7 @@ let private processBatchAttempt
                 seal ()
 
             batchPhase.Complete(Some $"change batch: %d{dispatchedFiles.Count} file(s) checked")
-            return newSuppressed
+            return newSuppressed, modifiedByPreprocessors
         else
             // A batch that REPLACED the model with one that has no checkable files still
             // owes the new model its seal, exactly as the cold scan seals an empty cohort:
@@ -2224,7 +2228,7 @@ let private processBatchAttempt
             if modelGenerationOf batchModel <> modelGenerationOf initialModel then
                 seal ()
 
-            return remainingSuppressed
+            return remainingSuppressed, []
     }
 
 /// How many attempts a change cohort makes before a model that keeps changing fails it.
@@ -2311,7 +2315,25 @@ let internal processBatch
 
     async {
         try
-            return! completeCurrent 1
+            let! suppressedAfter, rewritten = completeCurrent 1
+
+            // The cohort is accepted: it is this session's next snapshot (ADR-045). Its
+            // paths are the ones whose content it admitted, owed ones included, and the
+            // files its preprocessors wrote, whose watcher echoes are suppressed and so
+            // would otherwise never reach the manifest. Nothing else is read.
+            let cohort =
+                [ for entry in admitted do
+                      if entry.Value then
+                          yield entry.Key
+                  yield! rewritten ]
+
+            ctx.Snapshots.Advance cohort
+            |> Option.iter (fun advance ->
+                Logging.debug
+                    "snapshot"
+                    $"epoch=%d{advance.Manifest.Epoch.Value} manifest=%s{advance.Manifest.Id} hashed=%d{advance.Hashed.Files} file(s), %d{advance.Hashed.Bytes} bytes")
+
+            return suppressedAfter
         with :? ModelSupersededException ->
             let owed =
                 { Changes = changes
@@ -3041,7 +3063,9 @@ type Daemon
         // Closes watcher input and the change-batch worker.
         closeChanges: unit -> unit,
         // The checker this daemon checks through: its own, or its partition's in a host.
-        checker: FSharpChecker
+        checker: FSharpChecker,
+        // This session's snapshot epoch and manifest (ADR-045), shared with its change batches.
+        snapshots: SnapshotEpoch.Ledger
     ) =
 
     let mutable disposed = false
@@ -3107,6 +3131,13 @@ type Daemon
     /// How this daemon's model-guarded publications ended (ADR-044): each `FileChanged`,
     /// `FileChecked` and `BatchChecked` a scan or change batch emits through `WithCurrent`.
     member _.Publications() : ProjectModel.Publications = discovery.Publications
+
+    /// This session's current snapshot (ADR-045): its epoch, advanced only by its own
+    /// accepted change cohorts, and the manifest of every path they changed.
+    member _.Snapshot() : SnapshotEpoch.Manifest = snapshots.Current
+
+    /// How much content this session's snapshots hashed, summed over its cohorts.
+    member _.SnapshotHashed() : SnapshotEpoch.Hashed = snapshots.Hashed
 
     /// Only TOTAL loader failure is terminal here. A project that loaded but did
     /// not register is a distinct later-stage defect and must not be called an
@@ -4829,6 +4860,9 @@ module Daemon =
                 | SolutionChanged -> projectDebounceMs
                 | SourceChanged _ -> sourceDebounceMs
 
+            let snapshots =
+                SnapshotEpoch.Ledger(List.distinct [ repoRoot; CommandPreprocessor.realPathOf repoRoot ])
+
             let batchCtx: BatchContext =
                 { Host = host
                   InvalidateFcs =
@@ -4861,6 +4895,7 @@ module Daemon =
                   DiscoveredFingerprint = ref None
                   InSessionBatchGen = ref 0L
                   Seams = seams
+                  Snapshots = snapshots
                   DepsGate =
                     if isNull (box checker) then
                         // No FCS analysis happens with a null checker (test
@@ -5094,7 +5129,8 @@ module Daemon =
                 scanLeases,
                 processRegistry,
                 changeInput.Close,
-                checker
+                checker,
+                snapshots
             )
         with _ ->
             lifetime.Dispose()

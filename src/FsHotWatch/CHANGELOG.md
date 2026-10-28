@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: a session has a snapshot epoch and an immutable manifest (ADR-045). New module
+  `SnapshotEpoch`: `SnapshotEpoch`, `Manifest` (repository-relative path to content id,
+  with tombstones, and an `Id` over its entries), `Hashed`, and `Ledger`. Each daemon owns
+  one ledger, which only its own accepted change cohorts advance: a cohort hashes exactly
+  the paths whose content it admitted plus the files its preprocessors rewrote, and the
+  epoch moves only when an entry changes. In a repository host each session has its own,
+  so a save in one worktree never moves a sibling's epoch. `Daemon.Snapshot()` and
+  `Daemon.SnapshotHashed()` read them.
+
 ## 0.10.0-alpha.93 - 2026-10-27
 
 - feat: a daemon counts its stale publications (ADR-044). New
