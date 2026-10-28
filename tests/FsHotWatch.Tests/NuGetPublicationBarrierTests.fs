@@ -153,7 +153,10 @@ let private barrierStart root fakeDotnet probeParent project packageId settings 
     start.Environment["FSHW_NUGET_PROBE_PARENT"] <- probeParent
     start.Environment["FSHW_NUGET_PROBE_ATTEMPTS"] <- "1"
     start.Environment["FSHW_NUGET_PROBE_DELAY_MS"] <- "1"
-    start.Environment["FSHW_NUGET_PROBE_PROCESS_TIMEOUT_MS"] <- "1000"
+    // A bound on each fake child (a shell script), not a speed setting: 1 s was reached by
+    // a loaded full run, which turned a successful restore into "restore timed out"
+    // (docs/wall-clock-bounds.md, rule 2). A test about the timeout sets its own.
+    start.Environment["FSHW_NUGET_PROBE_PROCESS_TIMEOUT_MS"] <- string HangWaitMs
 
     // An EMPTY value means "remove the harness's override and let the script's own
     // default answer". Every default above is set here for speed, which also makes the
