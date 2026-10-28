@@ -253,3 +253,47 @@ let ``a result is emitted as its own check returns, not when its project's round
 
     test <@ outcome = ScanCheckOutcome.AllChecked 0 @>
     test <@ emitted |> Seq.forall id @>
+
+[<Fact(Timeout = 20000)>]
+let ``a check that finishes after its run was cancelled and has returned is harmless`` () =
+    // GitHub CI run 40782595728: the run returned on its caller's cancellation, and a
+    // check still in flight then finished. Its cancellation continuation cancelled the
+    // run's token source, which the returned run had already disposed, and the
+    // ObjectDisposedException on a pool thread took the whole process down.
+    let holdA = pending ()
+    let aStarted = new ManualResetEventSlim(false)
+    let aFinished = new ManualResetEventSlim(false)
+
+    let check (key: string) (_: AbsFilePath) =
+        async {
+            aStarted.Set()
+            // Blocks without observing the token, so the run returns first; the `do!` after
+            // it is where the job then sees the cancellation.
+            holdA.Task.Wait()
+            aFinished.Set()
+            do! async.Zero()
+            return Some key
+        }
+
+    use cancel = new CancellationTokenSource()
+    let running = run 0 1 check [ node "A" [] [ "a" ] ] cancel.Token
+    test <@ aStarted.Wait within @>
+    cancel.Cancel()
+    Assert.ThrowsAny<Exception>(fun () -> running.Wait within |> ignore) |> ignore
+
+    let unobserved = ConcurrentQueue<exn>()
+
+    let onUnhandled =
+        UnhandledExceptionEventHandler(fun _ e -> unobserved.Enqueue(e.ExceptionObject :?> exn))
+
+    AppDomain.CurrentDomain.UnhandledException.AddHandler onUnhandled
+
+    try
+        // Only now, with the run returned, does the held check finish.
+        holdA.SetResult()
+        test <@ aFinished.Wait within @>
+        // Its continuations run after the `finally`; give them a turn on the pool.
+        Task.Run(fun () -> ()).Wait()
+        test <@ unobserved.IsEmpty @>
+    finally
+        AppDomain.CurrentDomain.UnhandledException.RemoveHandler onUnhandled

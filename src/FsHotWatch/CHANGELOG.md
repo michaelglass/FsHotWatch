@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a cancelled scan or change batch can no longer crash the daemon (ADR-056). In
+  `runDependentChecks`, a check still in flight after the run returned cancelled the
+  run's token source from its own continuation, after the run had disposed it. The
+  resulting `ObjectDisposedException` on a pool thread ended the process: the test host,
+  in GitHub CI run 40782595728. The source is no longer linked or disposed; the
+  caller's cancellation reaches it through a registration that is disposed instead.
+
 - feat: a project's checks wait for the projects it references, not for its whole
   dependency tier (ADR-056, AUTOMATION-683). The scan and the change batch used to check
   tier by tier, so one slow project held back every project in the next tier, whether or

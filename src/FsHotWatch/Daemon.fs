@@ -1849,7 +1849,12 @@ let internal runDependentChecks
             return ScanCheckOutcome.AllChecked 0
         else
             let! callerCt = Async.CancellationToken
-            use stop = CancellationTokenSource.CreateLinkedTokenSource callerCt
+            // Stops the checks this run started. Never disposed: a check still in flight when
+            // the run returns (its caller cancelled, or a sibling failed) cancels it from its own
+            // continuation later, and a disposed source would throw there, on a pool thread,
+            // ending the process (GitHub CI run 40782595728). It is linked to nothing, so it holds
+            // no registration that disposal would release.
+            let stop = new CancellationTokenSource()
             let maxInFlight = max 1 maxInFlight
             let gate = obj ()
 
@@ -1974,8 +1979,12 @@ let internal runDependentChecks
                         stop.Token
                     )
 
+            // The caller's cancellation stops the run. Disposed when the run returns, which
+            // waits for a callback already running.
             use _ =
-                callerCt.Register(fun () -> lock gate (fun () -> fail (OperationCanceledException callerCt)))
+                callerCt.Register(fun () ->
+                    lock gate (fun () -> fail (OperationCanceledException callerCt))
+                    stop.Cancel())
 
             launch (
                 lock gate (fun () ->
