@@ -44,6 +44,10 @@ let private agentDiagnosticLine (file: string) (d: DiagnosticEntry) : string =
     let msg = d.Message.Replace('\r', ' ').Replace('\n', ' ').Trim()
     $"%s{d.Plugin}:%s{file}:%d{d.Line}:%d{d.Column}: %s{DiagnosticSeverity.toString d.Severity} %s{msg}"
 
+/// The `status` line for the daemon's publication counts (ADR-044).
+let publicationsLine (publications: FsHotWatch.ProjectModel.Publications) : string =
+    $"publications: %d{publications.Accepted} accepted, %d{publications.Refused} refused as stale (a newer project model superseded the work)"
+
 /// The line `status` adds while the daemon is scanning: the `scanning: N/M files (P%)`
 /// line of a `ScanStatus` answer, or `None` when no scan is running (idle, complete).
 /// Only that line is taken, so a wedge report the answer may lead with is never

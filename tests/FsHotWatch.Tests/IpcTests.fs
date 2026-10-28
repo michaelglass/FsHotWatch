@@ -43,6 +43,7 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       InvalidateCache = fun () -> Task.FromResult(())
       GetUncheckedCount = fun () -> 0
       GetProjectModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved
+      GetPublications = fun () -> FsHotWatch.ProjectModel.Publications.none
       Context = None }
 
 /// A CLI that sees the pipe listening decides a daemon is there. So once the server's
@@ -2318,3 +2319,29 @@ let ``WaitForRest never waits on the check's verdict wait`` () =
         )
 
     test <@ target.WaitForRest(1000).Result = "rest" @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``status carries the daemon's publication counts, and a reply without them reads as none`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let counts: FsHotWatch.ProjectModel.Publications = { Accepted = 7L; Refused = 2L }
+
+    let target =
+        DaemonRpcTarget(
+            { defaultRpcConfig host with
+                GetPublications = fun () -> counts }
+        )
+
+    test <@ FsHotWatch.Cli.IpcParsing.publicationsOf (target.GetDiagnostics "") = Some counts @>
+    // An older daemon sends none; a count that cannot be read is not a zero.
+    test <@ FsHotWatch.Cli.IpcParsing.publicationsOf """{"count":0}""" = None @>
+    test <@ FsHotWatch.Cli.IpcParsing.publicationsOf """{"publications":{"accepted":"7","refused":2}}""" = None @>
+    test <@ FsHotWatch.Cli.IpcParsing.publicationsOf """{"publications":null}""" = None @>
+    test <@ FsHotWatch.Cli.IpcParsing.publicationsOf """{"publications":{"accepted":-1,"refused":2}}""" = None @>
+    test <@ FsHotWatch.Cli.IpcParsing.publicationsOf """{"publications":{"accepted":1,"refused":-1}}""" = None @>
+    test <@ FsHotWatch.Cli.IpcParsing.publicationsOf "not json" = None @>
+
+    test
+        <@
+            FsHotWatch.Cli.IpcOutput.publicationsLine counts = "publications: 7 accepted, 2 refused as stale (a newer project model superseded the work)"
+        @>

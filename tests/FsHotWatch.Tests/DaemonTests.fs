@@ -1148,6 +1148,7 @@ let private scanStatusAnswered (state: ScanState) : string * string list =
                   InvalidateCache = fun () -> Task.FromResult(())
                   GetUncheckedCount = fun () -> 0
                   GetProjectModel = fun () -> Observation.Unobserved
+                  GetPublications = fun () -> FsHotWatch.ProjectModel.Publications.none
                   Context = None }
             )
 
@@ -3183,8 +3184,14 @@ let ``a scan whose model changes on every attempt fails by name instead of loopi
                     && FsHotWatch.Daemon.isModelKeptChangingDuringScanMessage fault.Message)
             @>)
 
-[<Fact(Timeout = 45000)>]
-let ``superseded owned change retries its admitted source against the current model`` () =
+/// Old work finishes after new work: a change batch is admitted and captures model 1,
+/// held inside preprocessing while a rediscovery settles model 2, then released. The
+/// held attempt's publications are refused and its admitted source is retried against
+/// model 2. `verify` reads the daemon, every recorded result and seal, and the number of
+/// preprocessing attempts once the daemon has settled.
+let private withSupersededChange
+    (verify: Daemon -> string -> FileCheckResult array -> BatchChecked array -> int -> unit)
+    =
     withTempDir "daemon-change-model-successor" (fun root ->
         let directory = Path.Combine(root, "src")
         Directory.CreateDirectory directory |> ignore
@@ -3310,19 +3317,7 @@ let ``superseded owned change retries its admitted source against the current mo
                 "the original owned change and its current-model successor must settle"
             )
 
-            Assert.True(daemon.Host.WorkSnapshot.Faults.IsEmpty, "model supersession must not leave an owned failure")
-            let completed = Assert.Single(seals.ToArray())
-            Assert.Equal(Some 2L, completed.ModelGeneration)
-            Assert.Contains(AbsFilePath.create source, completed.Files)
-            let checkedSource = Assert.Single(results.ToArray())
-            Assert.Equal(AbsFilePath.create source, checkedSource.File)
-            Assert.Equal(Some 2L, checkedSource.ModelGeneration)
-
-            match checkedSource.CheckResults with
-            | FullCheck _ -> ()
-            | ParseOnly -> failwith "the successor must publish actual completed FCS analysis"
-
-            Assert.True(preprocessingAttempts >= 2, "the admitted source must reach the successor attempt")
+            verify daemon source (results.ToArray()) (seals.ToArray()) preprocessingAttempts
         finally
             release.Set()
 
@@ -3330,6 +3325,39 @@ let ``superseded owned change retries its admitted source against the current mo
                 SpinWait.SpinUntil((fun () -> not daemon.Host.WorkSnapshot.IsBusy), TimeSpan.FromSeconds 15.0),
                 "all change ownership must retire before fixture disposal"
             ))
+
+[<Fact(Timeout = 45000)>]
+let ``superseded owned change retries its admitted source against the current model`` () =
+    withSupersededChange (fun daemon source results seals preprocessingAttempts ->
+        Assert.True(daemon.Host.WorkSnapshot.Faults.IsEmpty, "model supersession must not leave an owned failure")
+        let completed = Assert.Single(seals)
+        Assert.Equal(Some 2L, completed.ModelGeneration)
+        Assert.Contains(AbsFilePath.create source, completed.Files)
+        let checkedSource = Assert.Single(results)
+        Assert.Equal(AbsFilePath.create source, checkedSource.File)
+        Assert.Equal(Some 2L, checkedSource.ModelGeneration)
+
+        match checkedSource.CheckResults with
+        | FullCheck _ -> ()
+        | ParseOnly -> failwith "the successor must publish actual completed FCS analysis"
+
+        Assert.True(preprocessingAttempts >= 2, "the admitted source must reach the successor attempt"))
+
+// The stale-publication oracle (AUTOMATION-681, ADR-044): the old attempt is refused at
+// least once and counted, and nothing it captured under model 1 reaches a consumer.
+[<Fact(Timeout = 45000)>]
+let ``old work finishing after new work is counted as refused, and no stale publication is accepted`` () =
+    withSupersededChange (fun daemon _ results seals _ ->
+        let publications = daemon.Publications()
+        test <@ publications.Refused >= 1L @>
+        test <@ publications.Accepted >= 1L @>
+
+        let acceptedStale =
+            (results |> Array.filter (fun r -> r.ModelGeneration <> Some 2L)).Length
+            + (seals |> Array.filter (fun s -> s.ModelGeneration <> Some 2L)).Length
+
+        test <@ acceptedStale = 0 @>
+        test <@ not (Array.isEmpty results) @>)
 
 // Pins the invariant the scan supervisor must preserve: once ScanAll's receipt
 // settles, the scan state is observable as ScanComplete (not stale ScanIdle) and the
@@ -4656,6 +4684,28 @@ let ``a captured model refuses publication once any later attempt begins or sett
     let unobserved = coordinator.Capture id |> Async.RunSynchronously
     test <@ modelGenerationOf unobserved = None @>
     test <@ coordinator.WithCurrent(unobserved, fun () -> true) @>
+
+[<Fact(Timeout = 15000)>]
+let ``the coordinator counts each publication it accepts and each stale one it refuses`` () =
+    let coordinator = DiscoveryCoordinator()
+    let succeed () = async { return discoveredOne, () }
+    coordinator.Run succeed |> Async.RunSynchronously
+    let old = coordinator.Capture id |> Async.RunSynchronously
+    test <@ coordinator.Publications = ProjectModel.Publications.none @>
+    let written = ResizeArray<int64>()
+    coordinator.WithCurrent(old, fun () -> written.Add(fst old))
+    // New work settles model 2; the old cohort then tries to publish twice.
+    coordinator.Run succeed |> Async.RunSynchronously
+    let current = coordinator.Capture id |> Async.RunSynchronously
+
+    for _ in 1..2 do
+        Assert.Throws<ModelSupersededException>(fun () -> coordinator.WithCurrent(old, fun () -> written.Add(fst old)))
+        |> ignore
+
+    coordinator.WithCurrent(current, fun () -> written.Add(fst current))
+    test <@ coordinator.Publications = { Accepted = 2L; Refused = 2L } @>
+    // Nothing the old cohort tried after model 2 settled was written.
+    test <@ List.ofSeq written = [ fst old; fst current ] @>
 
 [<Fact(Timeout = 90000)>]
 let ``a change batch whose model changes on every attempt fails by name and keeps its source owed`` () =

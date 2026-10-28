@@ -164,6 +164,45 @@ let ``two worktrees attach as two sessions, each routed to its own daemon`` () =
         test <@ listed["hostPid"].GetValue<int>() = Environment.ProcessId @>)
 
 [<Fact(Timeout = 60000)>]
+let ``status --repository carries each session's own publication counts`` () =
+    withHost settingsFor daemonFactory (fun fx host ->
+        attachVia host (requestFrom fx.Primary "a") |> attachedId |> ignore
+        attachVia host (requestFrom fx.Secondary "b") |> attachedId |> ignore
+
+        // The sessions' daemons keep publishing while this reads, and counts only grow:
+        // what the host reports for a session lies between that session's own counts
+        // read just before and just after.
+        let own () =
+            host.Registry.Sessions
+            |> List.map (fun s ->
+                let p = s.Daemon.Publications()
+                s.Worktree.Root.Value, (p.Accepted, p.Refused))
+            |> Map.ofList
+
+        let before = own ()
+        let listed = JsonNode.Parse(host.ListSessions())
+
+        let reported =
+            listed["sessions"].AsArray()
+            |> Seq.map (fun s ->
+                let publications = s["publications"]
+
+                s["root"].GetValue<string>(),
+                (publications["accepted"].GetValue<int64>(), publications["refused"].GetValue<int64>()))
+            |> Map.ofSeq
+
+        let after = own ()
+
+        let between (root: string) ((accepted, refused): int64 * int64) =
+            let a0, r0 = before[root]
+            let a1, r1 = after[root]
+            a0 <= accepted && accepted <= a1 && r0 <= refused && refused <= r1
+
+        test <@ reported.Count = 2 @>
+        test <@ Set.ofSeq reported.Keys = Set.ofSeq after.Keys @>
+        test <@ reported |> Map.forall between @>)
+
+[<Fact(Timeout = 60000)>]
 let ``a claimed root that does not resolve is refused, and starts nothing`` () =
     withHost settingsFor daemonFactory (fun fx host ->
         let request =

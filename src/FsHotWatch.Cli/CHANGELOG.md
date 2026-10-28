@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `fshw status` prints the daemon's publication counts ("publications: N accepted,
+  M refused as stale"), and `fshw status --repository` adds them to each session's line
+  (ADR-044). A daemon or host that sends none prints as before. New
+  `IpcParsing.publicationsOf`, `IpcOutput.publicationsLine`.
+
 - **fix: `fshw test-rerun` no longer exits 0 when no test-prune plugin is registered.**
   With no `tests` in `.fshw.json` the daemon answers `run-tests` with the
   unknown-command sentinel; `renderIpcResult` took it for plain-text output, printed

@@ -140,6 +140,18 @@ let ``the repository status names the host's footprint and lifecycle, and when e
                 "  lifecycle: 3 attached, 2 rejoined, 1 reloaded, 0 refused, 2 ended (1 faulted), 0 undelivered"
         @>
 
+[<Fact(Timeout = 5000)>]
+let ``the repository status counts each session's accepted and stale-refused publications`` () =
+    let json =
+        """{"hostPid":7,"endpoint":"e","sessions":[{"root":"/r","serving":true,"scanGeneration":3,"publications":{"accepted":12,"refused":1}},{"root":"/s","serving":true,"scanGeneration":1}]}"""
+
+    test
+        <@
+            renderRepositoryStatus json = [ "Repository host pid 7 on e: 2 session(s)"
+                                            "  /r  serving, scan generation 3, publications 12 accepted / 1 refused as stale"
+                                            "  /s  serving, scan generation 1" ]
+        @>
+
 // ---------------------------------------------------------------------------
 // Attaching
 // ---------------------------------------------------------------------------

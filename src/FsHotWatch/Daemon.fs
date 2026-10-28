@@ -586,6 +586,8 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
     let mutable completed: (int64 * DiscoverySnapshot) option = None
     let mutable pendingAttempts = 0
     let mutable quiescence: TaskCompletionSource<unit> option = None
+    // ADR-044: how `WithCurrent` publications ended. Written and read under `stateGate`.
+    let mutable publications = ProjectModel.Publications.none
 
     // Announcements are published outside `stateGate`, so two of them can race. Each
     // takes its place in line under `stateGate`; one that arrives after a later
@@ -645,6 +647,10 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
 
     member _.RequestedGeneration = Locking.locked stateGate (fun () -> generation)
 
+    /// How this coordinator's `WithCurrent` publications ended: accepted, or refused as stale.
+    member _.Publications: ProjectModel.Publications =
+        Locking.locked stateGate (fun () -> publications)
+
     /// What a reader should believe about the project model right
     /// now, as a value rather than an absence. `Completed` returns `None` both
     /// when an attempt is in flight and when nothing was ever observed; this
@@ -700,9 +706,19 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
     member _.WithCurrent<'T>(captured: int64 * DiscoverySnapshot option, write: unit -> 'T) : 'T =
         Locking.locked stateGate (fun () ->
             if pendingAttempts <> 0 || currentEpoch () <> captured then
+                publications <-
+                    { publications with
+                        Refused = publications.Refused + 1L }
+
                 raise (ModelSupersededException(fst captured))
 
-            write ())
+            let written = write ()
+
+            publications <-
+                { publications with
+                    Accepted = publications.Accepted + 1L }
+
+            written)
 
     member _.Run<'T>(work: unit -> Async<DiscoverySnapshot * 'T>) : Async<'T> =
         async {
@@ -3088,6 +3104,10 @@ type Daemon
     /// completed outcome. The one reading a verdict may be green on is `Available`.
     member _.ProjectModel() : ProjectModel.Observation = discovery.Observation
 
+    /// How this daemon's model-guarded publications ended (ADR-044): each `FileChanged`,
+    /// `FileChecked` and `BatchChecked` a scan or change batch emits through `WithCurrent`.
+    member _.Publications() : ProjectModel.Publications = discovery.Publications
+
     /// Only TOTAL loader failure is terminal here. A project that loaded but did
     /// not register is a distinct later-stage defect and must not be called an
     /// MSBuild evaluation failure.
@@ -3446,6 +3466,7 @@ type Daemon
                             task { do! System.Threading.Tasks.Task.Run(System.Action(fun () -> host.ClearTaskCache())) }
                       GetUncheckedCount = getUncheckedCount
                       GetProjectModel = this.ProjectModel
+                      GetPublications = this.Publications
                       // Captured here, with this daemon's process scope installed: in a
                       // repository host the session's endpoint is served from the host's
                       // context, and the session's RPCs still run in the session's.

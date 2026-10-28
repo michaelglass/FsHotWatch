@@ -198,6 +198,8 @@ type DaemonRpcConfig =
         /// as `unchecked` and the statuses, so a verdict is graded against the model
         /// that was current when its other inputs were read, never a later one.
         GetProjectModel: unit -> ProjectModel.Observation
+        /// How the daemon's model-guarded publications ended so far (ADR-044), for `status`.
+        GetPublications: unit -> ProjectModel.Publications
         /// The context the daemon's RPCs run in: its process scope, and in a repository
         /// host its session's log sink and client environment. `None`: the context of
         /// whatever serves them.
@@ -547,6 +549,8 @@ type DaemonRpcTarget
                // it an empty model mid-rediscovery and a healthy model that selected
                // nothing reach the CLI as the same reply, and the second is a green.
                projectModel = ProjectModelWire.payload (config.GetProjectModel())
+               // ADR-044: how this daemon's model-guarded publications ended, for `status`.
+               publications = ProjectModelWire.publicationsPayload (config.GetPublications())
                // null until the heap valve fires; then its report, for `status`.
                heapValve =
                 (match heapValveReport () with

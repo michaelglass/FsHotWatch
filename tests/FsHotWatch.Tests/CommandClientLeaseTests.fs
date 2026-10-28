@@ -98,6 +98,7 @@ let private config (host: PluginHost) (invocationReleased: string -> Cancellatio
       InvalidateCache = fun () -> Task.FromResult(())
       GetUncheckedCount = fun () -> 0
       GetProjectModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved
+      GetPublications = fun () -> FsHotWatch.ProjectModel.Publications.none
       Context = None }
 
 let private hostWith (probe: Probe) =
