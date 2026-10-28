@@ -112,6 +112,8 @@ type private Spec =
         Excluded: SolutionScope.Exclusion list option
         /// The changed files that selected no tests. `Some []` by default.
         NotSelected: FsHotWatch.TestPrune.NotSelectedFile list option
+        /// Which cause selected each project. `None` (the verdict does not say) by default.
+        SelectedBy: FsHotWatch.TestPrune.ProjectAttribution list option
         Tree: TreeHash.Tree
         /// What the daemon said its greens are relative to. Defaults to
         /// the shared fixture, which is the baseline `greenVerdict`'s outcome names.
@@ -132,7 +134,7 @@ let private build (s: Spec) : Verdict.Verdict =
           SeedCount = max s.SeedTotal (List.length s.Seeds)
           Baseline = s.Baseline
           NotSelected = s.NotSelected
-          SelectedBy = None
+          SelectedBy = s.SelectedBy
           GradedEvidence = GradedEvidenceReading.NotReported }
         s.Tree
         s.Excluded
@@ -168,6 +170,7 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
       SeedTotal = 0
       Excluded = Some []
       NotSelected = Some []
+      SelectedBy = None
       Tree =
         { Hash = treeHash
           FileCount = fileCount
@@ -6917,6 +6920,126 @@ let ``a verdict file whose selection attribution names a cause this build does n
                 """{"kind":"full","ranProjects":6,"totalProjects":6,"selectedBy":[{"project":"ProjA","causes":["a-cause-from-another-version"]}]}"""
 
         test <@ TestScope.isUnreadable v.Scope @>)
+
+// ---------------------------------------------------------------------------
+// Per-cause test counts: how many of the run's tests each widest cause selected.
+// ---------------------------------------------------------------------------
+
+let private executedSuite (project: string) (total: int) : Verdict.SuiteVerdict =
+    { Project = project
+      Ctrf = $".fshw/test-runs/x/%s{project}.ctrf.json"
+      Total = total
+      Passed = total
+      Failed = 0
+      Skipped = 0
+      ReusedFrom = None
+      StarvedRerun = None }
+
+let private attributed (project: string) (causes: FsHotWatch.TestPrune.SelectionCause list) =
+    FsHotWatch.TestPrune.ProjectAttribution.ofCauses project causes
+
+let private testsByCauseOf (v: Verdict.Verdict) =
+    let scope = (Nodes.JsonNode.Parse(Verdict.serialize v)).["scope"]
+
+    match scope.["testsByCause"] with
+    | null -> None
+    | entries ->
+        entries.AsArray()
+        |> Seq.map (fun e ->
+            e.["cause"].GetValue<string>(),
+            e.["tests"].GetValue<int>(),
+            e.["projects"].AsArray()
+            |> Seq.map (fun p -> p.GetValue<string>())
+            |> List.ofSeq)
+        |> List.ofSeq
+        |> Some
+
+[<Fact>]
+let ``the verdict counts the tests each project's widest cause selected, and the counts sum to the tests the run executed``
+    ()
+    =
+    let runId = Guid.NewGuid()
+
+    let v =
+        build
+            { greenVerdict "abc" 1 with
+                Command = Verdict.Check
+                RunId = Some runId
+                Scope = ImpactFiltered(3, 4)
+                SelectedBy =
+                    Some
+                        [ attributed
+                              "ProjA"
+                              [ FsHotWatch.TestPrune.SelectionCause.DependencyFanout
+                                FsHotWatch.TestPrune.SelectionCause.ChangedSymbols ]
+                          attributed
+                              "ProjB"
+                              [ FsHotWatch.TestPrune.SelectionCause.ChangedSymbols
+                                FsHotWatch.TestPrune.SelectionCause.AlwaysClasses ]
+                          attributed "ProjC" [ FsHotWatch.TestPrune.SelectionCause.ChangedSymbols ] ]
+                Suites = [ executedSuite "ProjA" 40; executedSuite "ProjB" 3; executedSuite "ProjC" 2 ] }
+
+    let counts = testsByCauseOf v
+
+    // Widest cause first, the order `selectedBy` names causes in; each project counted
+    // once, under the cause that decided how much of it ran.
+    test
+        <@
+            counts = Some
+                [ "dependency-fanout", 40, [ "ProjA" ]
+                  "changed-symbols", 5, [ "ProjB"; "ProjC" ] ]
+        @>
+
+    let executed = v.Suites |> List.sumBy _.Total
+    test <@ counts |> Option.map (List.sumBy (fun (_, tests, _) -> tests)) = Some executed @>
+
+[<Fact>]
+let ``a suite reused from another run's evidence costs this run no tests, so its cause counts none of them`` () =
+    let runId = Guid.NewGuid()
+
+    let reused =
+        { executedSuite "ProjR" 900 with
+            ReusedFrom =
+                Some
+                    { Worktree = "/elsewhere"
+                      RunId = "r"
+                      EarnedAt = "t"
+                      Key = "k" } }
+
+    let v =
+        build
+            { greenVerdict "abc" 1 with
+                Command = Verdict.Check
+                RunId = Some runId
+                Scope = ImpactFiltered(2, 2)
+                SelectedBy =
+                    Some
+                        [ attributed "ProjA" [ FsHotWatch.TestPrune.SelectionCause.ChangedSymbols ]
+                          attributed "ProjR" [ FsHotWatch.TestPrune.SelectionCause.EvidenceGap ] ]
+                Suites = [ executedSuite "ProjA" 4; reused ] }
+
+    test <@ testsByCauseOf v = Some [ "evidence-gap", 0, [ "ProjR" ]; "changed-symbols", 4, [ "ProjA" ] ] @>
+
+[<Fact>]
+let ``a verdict that does not say why projects ran, or names no graded run, counts no tests by cause`` () =
+    let runId = Guid.NewGuid()
+
+    let silent =
+        build
+            { greenVerdict "abc" 1 with
+                RunId = Some runId
+                Suites = [ executedSuite "ProjA" 4 ] }
+
+    let ungraded =
+        build
+            { greenVerdict "abc" 1 with
+                SelectedBy = Some [ attributed "ProjA" [ FsHotWatch.TestPrune.SelectionCause.FullSuite ] ]
+                Runs =
+                    [ { RunId = Some(Guid.NewGuid())
+                        Suites = [ executedSuite "ProjA" 4 ] } ] }
+
+    test <@ testsByCauseOf silent = None @>
+    test <@ testsByCauseOf ungraded = None @>
 
 // ---------------------------------------------------------------------------
 // Starvation: a suite re-run alone is recorded apart from a clean pass

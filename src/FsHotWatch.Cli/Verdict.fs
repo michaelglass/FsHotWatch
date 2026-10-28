@@ -1878,6 +1878,53 @@ let private excludedJson (excluded: SolutionScope.Exclusion list option) : obj =
         |> Array.ofList
         :> obj
 
+/// How many of a run's tests each cause selected.
+///
+/// `selectedBy` attributes PROJECTS; this counts their tests. Each project is counted
+/// once, under its WIDEST cause — the first it names, the one that decided how much of
+/// it ran — so the counts partition the run: they sum to the tests it executed in every
+/// attributed project. A suite filed from another run's evidence (`ReusedFrom`) cost
+/// this run nothing and counts 0; its project is still named, so the cause that
+/// selected it is not lost.
+module SelectionTests =
+    /// One cause, the tests it selected, and the projects it selected them in.
+    type CauseTests =
+        { Cause: SelectionCause
+          Tests: int
+          Projects: string list }
+
+    /// The counts, widest cause first, over the graded run's own reports.
+    let byCause (attribution: ProjectAttribution list) (graded: SuiteVerdict list) : CauseTests list =
+        let executed =
+            graded
+            |> List.filter (fun s -> Option.isNone s.ReusedFrom)
+            |> List.groupBy _.Project
+            |> List.map (fun (project, suites) -> project, suites |> List.sumBy _.Total)
+            |> Map.ofList
+
+        let widest =
+            attribution
+            |> List.choose (fun entry -> entry.Causes |> List.tryHead |> Option.map (fun c -> c, entry.Project))
+
+        SelectionCause.all
+        |> List.choose (fun cause ->
+            match widest |> List.filter (fun (c, _) -> c = cause) |> List.map snd with
+            | [] -> None
+            | projects ->
+                Some
+                    { Cause = cause
+                      Tests =
+                        projects
+                        |> List.sumBy (fun p -> Map.tryFind p executed |> Option.defaultValue 0)
+                      Projects = projects })
+
+    /// The entry on the wire.
+    let wire (entry: CauseTests) : obj =
+        {| cause = SelectionCause.token entry.Cause
+           tests = entry.Tests
+           projects = Array.ofList entry.Projects |}
+        :> obj
+
 /// Scope on the wire. UNIFORMLY TAGGED (`kind` always present) rather than
 /// "sometimes a string, sometimes an object", so a consumer never has to
 /// discriminate a JSON string from a JSON object before it can read a field.
@@ -1885,6 +1932,7 @@ let private scopeJson
     (excluded: SolutionScope.Exclusion list option)
     (notSelected: NotSelectedFile list option)
     (selectedBy: ProjectAttribution list option)
+    (graded: SuiteVerdict list option)
     (scope: TestScope)
     : obj =
     let gaps = excludedJson excluded
@@ -1895,6 +1943,17 @@ let private scopeJson
         selectedBy
         |> Option.map (List.map ProjectAttribution.wire >> Array.ofList)
         |> Option.toObj
+
+    // How many tests each cause selected, beside `selectedBy`. `null` where the reading
+    // did not say why projects ran, or the verdict names no graded run to count.
+    let testsByCause =
+        match selectedBy, graded with
+        | Some attribution, Some suites ->
+            SelectionTests.byCause attribution suites
+            |> List.map SelectionTests.wire
+            |> Array.ofList
+            |> box
+        | _ -> null
 
     // On every kind, beside `excluded`: which changed files selected no tests is a fact
     // about the selection whatever ran. `null` where the reading did not say.
@@ -1912,6 +1971,7 @@ let private scopeJson
            cause = cause |> Option.map FullSuiteCause.token |> Option.toObj
            notSelected = withheld
            selectedBy = attributed
+           testsByCause = testsByCause
            excluded = gaps |}
         :> obj
     | ImpactFiltered(ran, total) ->
@@ -1920,6 +1980,7 @@ let private scopeJson
            totalProjects = total
            notSelected = withheld
            selectedBy = attributed
+           testsByCause = testsByCause
            excluded = gaps |}
         :> obj
     | NoTestsRun reason ->
@@ -1963,12 +2024,14 @@ let private scopeJson
              | _ -> null)
            notSelected = withheld
            selectedBy = attributed
+           testsByCause = testsByCause
            excluded = gaps |}
         :> obj
     | ScopeUnknown ->
         {| kind = "unknown"
            notSelected = withheld
            selectedBy = attributed
+           testsByCause = testsByCause
            excluded = gaps |}
         :> obj
     // A DISTINCT kind, not folded into "unknown": "the daemon reported no scope" is an
@@ -1979,6 +2042,7 @@ let private scopeJson
            reason = reason
            notSelected = withheld
            selectedBy = attributed
+           testsByCause = testsByCause
            excluded = gaps |}
         :> obj
 
@@ -2082,7 +2146,7 @@ let private checkComparisonJson (excluded: SolutionScope.Exclusion list option) 
              box
                  // The pre-escalation reading's scope. It records no not-selected files:
                  // those are on the verdict's own scope, from the reading it was graded on.
-                 {| scope = scopeJson excluded None None r.Scope
+                 {| scope = scopeJson excluded None None None r.Scope
                     outcome = outcomeJson r.Outcome
                     failingSuites = r.FailingSuites
                     basis = SampleBasis.token r.Basis
@@ -2147,7 +2211,15 @@ let serialize (v: Verdict) : string =
            treeFileCount = v.TreeFileCount
            treeDeclaredCount = v.TreeDeclaredCount
            treeAbsentDeclarationCount = v.TreeAbsentDeclarationCount
-           scope = scopeJson v.Excluded v.NotSelected v.SelectedBy v.Scope
+           scope =
+            scopeJson
+                v.Excluded
+                v.NotSelected
+                v.SelectedBy
+                (v.RunId
+                 |> Option.bind (fun id -> v.Runs |> List.tryFind (fun r -> r.RunId = Some id))
+                 |> Option.map _.Suites)
+                v.Scope
            outcome = outcomeJson v.Outcome
            projectModel = projectModelJson v.ProjectModel
            checkComparison = checkComparisonJson v.Excluded v.Comparison

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **feat: the verdict file's `scope` records `testsByCause`**, how many of the graded
+  run's tests each selection cause selected. `selectedBy` attributed
+  projects; this counts their tests, each project once under its widest cause, so the
+  counts sum to the tests the run executed. A suite reused from another run's evidence
+  counts 0. Derived on write from `selectedBy` and the graded run's reports, so it is
+  `null` wherever either is missing. New: `Verdict.SelectionTests.byCause`.
+
 ## 0.14.0-alpha.126 - 2026-10-27
 
 - feat: `fshw status` prints the daemon's publication counts ("publications: N accepted,
