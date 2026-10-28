@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **feat: `test-scope` sends `seedFanout`**, the seeds of a wide selection that each
+  alone select the most tests, beside `selectedBy`. It reuses the per-seed walks the
+  wide-selection breakdown already pays for (more than `WideSelectionTests` selected,
+  at most `MaxSeedsToAttribute` seeds), so it adds no graph walk; a reading that did not
+  rank says why (`Narrow`, `OverBudget`, `NoSelection`). New: `SeedFanout`,
+  `SeedFanoutReading` (`ofSelection`, `wire`), `TestRunLaunch.SeedFanout`,
+  `TestEvidenceReceipt.SeedFanout`, `TestPruneState.LastSeedFanout`.
+
 - **feat: a host killed at its timeout still gets per-class lines in its profile.**
   fshw now asks the xUnit hosts it already asks for CTRF for `--output Detailed` too
   (unless the project's `args` choose an `--output`), so the host prints `passed <name>

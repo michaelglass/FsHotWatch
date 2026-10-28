@@ -1780,6 +1780,9 @@ type TestEvidenceReceipt =
         /// Which cause selected each project — the launch's `TestRunLaunch.SelectedBy`.
         /// `test-scope` sends it beside a `full` or `filtered` scope.
         SelectedBy: ProjectAttribution list
+        /// The seeds that alone selected the most tests, or why they were not ranked —
+        /// the launch's `TestRunLaunch.SeedFanout`.
+        SeedFanout: SeedFanoutReading
     }
 
 /// Why `test-scope` holds no evidence for the tree it is asked about, when the completion
@@ -2119,6 +2122,9 @@ type TestPruneState =
         /// tell "nothing needed running" from "nothing ran" goes looking for a bug
         /// in the selector.
         LastSeeds: string list
+        /// The fanout reading of `LastSeeds`: which of them alone selected the most tests,
+        /// or why that was not measured. Moves with `LastSeeds`.
+        LastSeedFanout: SeedFanoutReading
         /// Symbols that became owed while a full-suite run was already in flight and were
         /// attached to it rather than queueing another run, each with the debt revision
         /// captured when it attached. Under `ImpactSelection` only a BootScan cohort
@@ -2319,6 +2325,8 @@ type TestRunInputs =
         /// Seed receipt captured at dispatch. A later BatchChecked may replace the
         /// live state's LastSeeds while this run is still executing.
         Seeds: string list
+        /// The seeds' fanout reading, captured with `Seeds`.
+        SeedFanout: SeedFanoutReading
         /// The evidence earned so far, or — before this daemon has earned any — what an
         /// earlier one recorded (`TestPruneState.RestoredEvidence`). Projects it does not
         /// cover whole under the current model run in full, so this run's own evidence can
@@ -2348,6 +2356,7 @@ module TestRunInputs =
           Mode = state.Mode
           ChangedFiles = state.ChangedFiles
           Seeds = state.LastSeeds
+          SeedFanout = state.LastSeedFanout
           Earned = TestPruneState.coverageEvidence state
           EvidenceTree = state.EvidenceReceipt |> Option.bind (fun receipt -> receipt.InputTreeHash)
           EvidenceManifest =
@@ -2427,6 +2436,9 @@ type TestRunLaunch =
         /// Every selected project and each cause that put it in the run, widest first
         /// (`SelectionAttribution.attribute`). Empty for a launch that selected nothing.
         SelectedBy: ProjectAttribution list
+        /// The seeds that alone selected the most tests (`SeedFanoutReading.ofSelection`),
+        /// captured with `Seeds`; `NoSelection` for a launch no impact selection made.
+        SeedFanout: SeedFanoutReading
         /// The changed files this run launched against. Its completion clears only
         /// these; a file that changed during the run still selects the next one.
         ChangedFiles: string list
@@ -3604,7 +3616,8 @@ module ReceiptTransition =
                       Seeds = launch.Seeds
                       ZeroSelection = launch.ZeroSelection
                       FullSuiteCause = launch.FullSuiteCause
-                      SelectedBy = launch.SelectedBy }
+                      SelectedBy = launch.SelectedBy
+                      SeedFanout = launch.SeedFanout }
 
     /// Fold one transition into the store. Total, and the only place the store changes
     /// on a completion.
@@ -8301,9 +8314,9 @@ let internal createWithEvidenceAndQueries
             Set.union flushedState.Debt.PendingQueue (Set.ofList flushedState.ChangedSymbols)
             |> Set.toList
 
-        let affectedTests =
+        let affectedTests, seedFanout =
             if symbols.IsEmpty then
-                []
+                [], SeedFanoutReading.NoSelection
             else
                 // Scoped to projects this daemon actually runs. Selecting tests in an
                 // unconfigured project would put classes in the run map that never
@@ -8465,7 +8478,17 @@ let internal createWithEvidenceAndQueries
                                     $"seed '%s{seed}' alone selects %d{alone} of %d{affected.Length} tests \
                                       (%d{pct}%%) — a dependency-graph hub, or a mis-qualified symbol"
 
-                affected
+                // The top seeds by fanout, for the verdict: the same memoised walks the
+                // breakdown above paid for, under the same width and seed budget.
+                let fanout =
+                    SeedFanoutReading.ofSelection
+                        WideSelectionTests
+                        MaxSeedsToAttribute
+                        affected.Length
+                        sortedSeeds
+                        aloneCount
+
+                affected, fanout
 
         // Classify every considered symbol ONCE, under one resolution of the declared
         // exclusions (see `debtScope`):
@@ -8621,11 +8644,11 @@ let internal createWithEvidenceAndQueries
         // recording it would answer that question with the one change guaranteed
         // to be irrelevant. Carrying the previous value forward is the point: it
         // is what survives to be reported by a later check that selects nothing.
-        let seedsThatSelectedTests =
+        let seedsThatSelectedTests, fanoutOfThoseSeeds =
             if List.isEmpty affectedTests then
-                flushedState.LastSeeds
+                flushedState.LastSeeds, flushedState.LastSeedFanout
             else
-                List.sort symbols
+                List.sort symbols, seedFanout
 
         { flushedState with
             Debt =
@@ -8634,7 +8657,8 @@ let internal createWithEvidenceAndQueries
             ChangedSymbols = remainingSymbols
             AffectedTests = Analyzed affectedTests
             ChangedSymbolsAllUncovered = allChangesUncovered
-            LastSeeds = seedsThatSelectedTests }
+            LastSeeds = seedsThatSelectedTests
+            LastSeedFanout = fanoutOfThoseSeeds }
 
     /// Flush, then select, unless the mode skips `FlushSelection`: pass-through records
     /// the debt without selecting or classifying it, and only a full run's green
@@ -8735,6 +8759,7 @@ let internal createWithEvidenceAndQueries
           LastResults = None
           LastRunId = None
           LastSeeds = []
+          LastSeedFanout = SeedFanoutReading.NoSelection
           DebtDuringFullRun = Map.empty
           CoveredFullSuite = None
           TestClassFiles = Map.empty
@@ -9397,7 +9422,8 @@ let internal createWithEvidenceAndQueries
                       Seeds = narrowedSeeds |> Option.defaultValue inputs.Seeds
                       ZeroSelection = ZeroSelection.NotAZero
                       FullSuiteCause = fullSuiteCause
-                      SelectedBy = selectedBy }
+                      SelectedBy = selectedBy
+                      SeedFanout = inputs.SeedFanout }
 
                 logLaunch "impact" inputs.Mode launch
 
@@ -9486,6 +9512,7 @@ let internal createWithEvidenceAndQueries
                             { launch with
                                 Selection = Map.empty
                                 SelectedBy = []
+                                SeedFanout = SeedFanoutReading.NoSelection
                                 // Executed nothing, so it neither covers nor projects
                                 // anything.
                                 WouldHaveRun = None
@@ -9652,7 +9679,8 @@ let internal createWithEvidenceAndQueries
                       Seeds = inputs.Seeds
                       ZeroSelection = ZeroSelection.NotAZero
                       FullSuiteCause = fullSuiteCause
-                      SelectedBy = [] }
+                      SelectedBy = []
+                      SeedFanout = SeedFanoutReading.NoSelection }
 
                 return TestsFinished(started, completed, launch)
         }
@@ -9709,6 +9737,7 @@ let internal createWithEvidenceAndQueries
               Seeds = []
               ZeroSelection = ZeroSelection.NotAZero
               FullSuiteCause = FullSuiteCause.ForceRun
+              SeedFanout = SeedFanoutReading.NoSelection
               SelectedBy =
                 configs
                 |> List.map (fun c ->
@@ -10122,6 +10151,12 @@ let internal createWithEvidenceAndQueries
                                     receipt.SelectedBy |> List.map ProjectAttribution.wire |> Array.ofList)
                                 |> Option.toObj
 
+                            // The seeds that alone selected the most tests, beside `selectedBy`.
+                            let seedFanout =
+                                receipt
+                                |> Option.map (fun receipt -> SeedFanoutReading.wire receipt.SeedFanout)
+                                |> Option.toObj
+
                             match scopeOf projects evidenceCoverage with
                             | ScopeFull n ->
                                 // Why this run took every project. Always present here: a
@@ -10137,6 +10172,7 @@ let internal createWithEvidenceAndQueries
                                         {| kind = "full"
                                            cause = cause
                                            selectedBy = selectedBy
+                                           seedFanout = seedFanout
                                            notSelected = notSelected
                                            runIds = runIds
                                            baseline = baseline
@@ -10153,6 +10189,7 @@ let internal createWithEvidenceAndQueries
                                     JsonSerializer.Serialize(
                                         {| kind = "filtered"
                                            selectedBy = selectedBy
+                                           seedFanout = seedFanout
                                            notSelected = notSelected
                                            runIds = runIds
                                            baseline = baseline

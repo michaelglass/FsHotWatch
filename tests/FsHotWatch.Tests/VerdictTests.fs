@@ -135,6 +135,7 @@ let private build (s: Spec) : Verdict.Verdict =
           Baseline = s.Baseline
           NotSelected = s.NotSelected
           SelectedBy = s.SelectedBy
+          SeedFanout = None
           GradedEvidence = GradedEvidenceReading.NotReported }
         s.Tree
         s.Excluded
@@ -1292,6 +1293,7 @@ let ``the verdict accounts for EVERY run the check produced, not just the graded
                   Baseline = BaselineFixtures.reading
                   NotSelected = None
                   SelectedBy = None
+                  SeedFanout = None
                   GradedEvidence = GradedEvidenceReading.NotReported }
 
         // The graded run leads — it is what the outcome was computed from — and every
@@ -1343,6 +1345,7 @@ let ``a report that ran ONLY in an early batch is reported as having run — and
                                   Baseline = BaselineFixtures.reading
                                   NotSelected = None
                                   SelectedBy = None
+                                  SeedFanout = None
                                   GradedEvidence = GradedEvidenceReading.NotReported } }
 
             v.Suites |> List.exists (fun s -> s.Project = "Acceptance.Tests"))
@@ -1377,6 +1380,7 @@ let ``the verdict names every CTRF report on disk for the check — the omission
                               Baseline = BaselineFixtures.reading
                               NotSelected = None
                               SelectedBy = None
+                              SeedFanout = None
                               GradedEvidence = GradedEvidenceReading.NotReported } }
 
         let onDisk =
@@ -6921,6 +6925,32 @@ let ``a verdict file whose selection attribution names a cause this build does n
 
         test <@ TestScope.isUnreadable v.Scope @>)
 
+
+[<Fact>]
+let ``the top seeds by fanout survive a round trip through the verdict file`` () =
+    withTempDir "verdict-seed-fanout-roundtrip" (fun root ->
+        let v =
+            readScopeOf
+                root
+                """{"kind":"filtered","ranProjects":1,"totalProjects":6,"seedFanout":{"kind":"top","seeds":[{"seed":"Lib.hub","tests":1344}]}}"""
+
+        test <@ v.Scope = ImpactFiltered(1, 6) @>
+
+        test
+            <@ v.SeedFanout = Some(FsHotWatch.TestPrune.SeedFanoutReading.Top [ { Seed = "Lib.hub"; Tests = 1344 } ]) @>
+
+        let scope = (Nodes.JsonNode.Parse(Verdict.serialize v)).["scope"]
+        test <@ scope.["seedFanout"].["seeds"].[0].["tests"].GetValue<int>() = 1344 @>)
+
+[<Fact>]
+let ``a verdict file whose fanout reading has a kind this build does not know reads as an unreadable scope`` () =
+    withTempDir "verdict-seed-fanout-unknown" (fun root ->
+        let v =
+            readScopeOf
+                root
+                """{"kind":"full","ranProjects":6,"totalProjects":6,"seedFanout":{"kind":"a-kind-from-another-version"}}"""
+
+        test <@ TestScope.isUnreadable v.Scope @>)
 // ---------------------------------------------------------------------------
 // Per-cause test counts: how many of the run's tests each widest cause selected.
 // ---------------------------------------------------------------------------

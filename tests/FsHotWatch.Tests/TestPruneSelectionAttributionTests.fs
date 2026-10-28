@@ -177,12 +177,33 @@ type private Fixture =
 
 /// A plugin over an index in which `Lib.f` is covered by `ProjA.FreshTests` only, with
 /// launches captured rather than started.
-let private fixture () =
+let private fixtureWith (queriesOf: (Database -> ImpactQueries) option) =
     let root = isolatedRoot ()
     let dbPath = Path.Combine(root, "tp.db")
     let db = Database.create dbPath
     PendingQueueHelpers.seedCoveredSymbol db "Lib.f" "src/Lib.fs" "ProjA" "ProjA.FreshTests" "covers f"
-    let handler = create dbPath root (Some configs) None None None None []
+
+    let handler =
+        match queriesOf with
+        | None -> create dbPath root (Some configs) None None None None []
+        | Some queriesOf ->
+            createWithQueries
+                queriesOf
+                (TimeSpan.FromMinutes 5.0)
+                None
+                (fun () -> Map.empty)
+                dbPath
+                TestPrune.Domain.WalkPolicy.FollowAll
+                root
+                (Some configs)
+                None
+                None
+                None
+                None
+                []
+                None
+                TestMode.initial
+
     let scheduled = ref None
 
     let ctx: PluginCtx<TestPruneMsg> =
@@ -219,6 +240,8 @@ let private fixture () =
     { Handler = handler
       Ctx = ctx
       Scheduled = scheduled }
+
+let private fixture () = fixtureWith None
 
 let private update (f: Fixture) state event =
     f.Handler.Update f.Ctx state event |> Async.RunSynchronously
@@ -349,3 +372,107 @@ let ``test-scope carries the attribution of a full run too`` () =
     let attributed = root.GetProperty("selectedBy").GetArrayLength()
     test <@ kind = "full" @>
     test <@ attributed = 3 @>
+
+// --- the top seeds by fanout -----------------------------------------------------
+
+[<Fact(Timeout = 10000)>]
+let ``a wide selection names its seeds by the tests each alone selects, widest first, at most five`` () =
+    let alone =
+        Map.ofList [ "a", 10; "b", 700; "c", 700; "d", 1; "e", 40; "f", 90; "g", 5 ]
+
+    let reading =
+        SeedFanoutReading.ofSelection
+            WideSelectionTests
+            MaxSeedsToAttribute
+            800
+            (Map.keys alone |> List.ofSeq)
+            (fun s -> alone.[s])
+
+    test
+        <@
+            reading = SeedFanoutReading.Top
+                [ { Seed = "b"; Tests = 700 }
+                  { Seed = "c"; Tests = 700 }
+                  { Seed = "f"; Tests = 90 }
+                  { Seed = "e"; Tests = 40 }
+                  { Seed = "a"; Tests = 10 } ]
+        @>
+
+[<Fact(Timeout = 10000)>]
+let ``a selection too narrow to attribute, or with too many seeds, says so and walks no seed`` () =
+    let walked = ref 0
+
+    let count (_: string) : int =
+        walked.Value <- walked.Value + 1
+        1
+
+    test
+        <@
+            SeedFanoutReading.ofSelection WideSelectionTests MaxSeedsToAttribute WideSelectionTests [ "a" ] count = SeedFanoutReading.Narrow
+        @>
+
+    let many = [ for i in 0..MaxSeedsToAttribute -> $"s%d{i}" ]
+
+    test
+        <@
+            SeedFanoutReading.ofSelection WideSelectionTests MaxSeedsToAttribute (WideSelectionTests + 1) many count = SeedFanoutReading
+                .OverBudget(MaxSeedsToAttribute + 1)
+        @>
+
+    test <@ walked.Value = 0 @>
+
+[<Fact(Timeout = 10000)>]
+let ``every fanout reading has a wire kind`` () =
+    let kinds =
+        [ SeedFanoutReading.NoSelection
+          SeedFanoutReading.Narrow
+          SeedFanoutReading.OverBudget 3
+          SeedFanoutReading.Top [ { Seed = "Lib.hub"; Tests = 9 } ] ]
+        |> List.map (fun r -> JsonSerializer.Serialize(SeedFanoutReading.wire r))
+
+    test
+        <@
+            kinds = [ """{"kind":"no-selection"}"""
+                      """{"kind":"narrow"}"""
+                      """{"kind":"over-budget","seeds":3}"""
+                      """{"kind":"top","seeds":[{"seed":"Lib.hub","tests":9}]}""" ]
+        @>
+
+/// The index's `Lib.f` selects `count` tests in `ProjA`, one class each.
+let private selecting (count: int) (db: Database) : ImpactQueries =
+    { ImpactQueries.ofDatabase db with
+        AffectedTests =
+            fun _ ->
+                [ for i in 1..count ->
+                      { SymbolFullName = $"ProjA.T%d{i}.t"
+                        TestProject = "ProjA"
+                        TestClass = $"ProjA.T%d{i}"
+                        TestMethod = "t" } ] }
+
+[<Fact(Timeout = 30000)>]
+let ``a wide launch carries its top seeds by fanout, and test-scope sends them`` () =
+    let f = fixtureWith (Some(selecting (WideSelectionTests + 100)))
+    let state = verified f
+    let launched, launch = buildAndLaunch f (owing "Lib.f" state)
+
+    test
+        <@
+            launch.SeedFanout = SeedFanoutReading.Top
+                [ { Seed = "Lib.f"
+                    Tests = WideSelectionTests + 100 } ]
+        @>
+
+    let completed = update f launched (finishedGreen launch)
+    use reply = JsonDocument.Parse(testScope f completed)
+    let fanout = reply.RootElement.GetProperty("seedFanout")
+    let kind = fanout.GetProperty("kind").GetString()
+    let topSeed = fanout.GetProperty("seeds").[0].GetProperty("seed").GetString()
+    test <@ kind = "top" @>
+    test <@ topSeed = "Lib.f" @>
+
+[<Fact(Timeout = 30000)>]
+let ``a narrow launch says its fanout was not measured`` () =
+    let f = fixture ()
+    let state = verified f
+    let _, launch = buildAndLaunch f (owing "Lib.f" state)
+    test <@ launch.SeedFanout = SeedFanoutReading.Narrow @>

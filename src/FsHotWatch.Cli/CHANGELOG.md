@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **feat: the verdict file's `scope` records `seedFanout`**, the seeds of a wide
+  selection that each alone select the most tests (at most five, widest first), or why
+  they were not ranked: `narrow`, `over-budget` (with the seed count) or `no-selection`.
+  Read from the `test-scope` reply's new `seedFanout`; a kind this build does not know
+  makes the scope unreadable. New: `IpcParsing.tryReadSeedFanout`.
+
 - **feat: the verdict file's `scope` records `testsByCause`**, how many of the graded
   run's tests each selection cause selected. `selectedBy` attributed
   projects; this counts their tests, each project once under its widest cause, so the

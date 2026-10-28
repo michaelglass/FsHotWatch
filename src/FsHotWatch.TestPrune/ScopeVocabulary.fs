@@ -223,3 +223,65 @@ module ProjectAttribution =
 
             $"%s{entry.Project} <- %s{causes}%s{skipped}")
         |> String.concat "; "
+
+/// How many tests one seed symbol selects on its own.
+type SeedFanout = { Seed: string; Tests: int }
+
+/// The seeds of a run's selection that each alone select the most tests, or why they were
+/// not measured.
+///
+/// A handful of junk seeds can drag thousands of tests into a run, and the seed that does
+/// is the whole diagnosis. Measuring it re-walks the graph once per seed, so it is done
+/// only for a wide selection within the seed budget, and each reading that did not
+/// measure says why: an absent ranking is never "no seed dominated".
+[<RequireQualifiedAccess>]
+type SeedFanoutReading =
+    /// No seeds selected the launch: a force run, a pass-through `confirm`, an aborted
+    /// lifecycle, a zero-test skip, or a flush with no changed or owed symbol.
+    | NoSelection
+    /// The selection was not wide, so no seed was walked alone.
+    | Narrow
+    /// The selection was wide, but it had this many seeds, more than the walk budget.
+    | OverBudget of seeds: int
+    /// The seeds that alone select the most tests, widest first.
+    | Top of SeedFanout list
+
+module SeedFanoutReading =
+    /// How many seeds a `Top` reading names.
+    [<Literal>]
+    let MaxNamed = 5
+
+    /// The reading for a selection of `selected` tests from `seeds`: ranked when it is
+    /// wider than `wideAbove` tests and has at most `budget` seeds, `aloneCount` giving
+    /// each seed's tests on its own (and called for no seed otherwise).
+    let ofSelection
+        (wideAbove: int)
+        (budget: int)
+        (selected: int)
+        (seeds: string list)
+        (aloneCount: string -> int)
+        : SeedFanoutReading =
+        if selected <= wideAbove then
+            SeedFanoutReading.Narrow
+        elif List.length seeds > budget then
+            SeedFanoutReading.OverBudget(List.length seeds)
+        else
+            seeds
+            |> List.map (fun seed -> { Seed = seed; Tests = aloneCount seed })
+            |> List.sortBy (fun fanout -> -fanout.Tests, fanout.Seed)
+            |> List.truncate MaxNamed
+            |> SeedFanoutReading.Top
+
+    /// The reading on the wire, as both the `test-scope` reply and the verdict file write it.
+    let wire (reading: SeedFanoutReading) : obj =
+        match reading with
+        | SeedFanoutReading.NoSelection -> {| kind = "no-selection" |} :> obj
+        | SeedFanoutReading.Narrow -> {| kind = "narrow" |} :> obj
+        | SeedFanoutReading.OverBudget seeds ->
+            {| kind = "over-budget"
+               seeds = seeds |}
+            :> obj
+        | SeedFanoutReading.Top top ->
+            {| kind = "top"
+               seeds = top |> List.map (fun f -> {| seed = f.Seed; tests = f.Tests |}) |> Array.ofList |}
+            :> obj

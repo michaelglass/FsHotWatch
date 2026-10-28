@@ -925,6 +925,64 @@ let ``a selection attribution this build cannot read fails closed to an unreadab
     let report = parseTestRunReport (fullReply extra)
     test <@ TestScope.isUnreadable report.Scope @>
 
+// --- test-scope: the seeds that each alone select the most tests ---------------
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the top seeds by fanout reach the verdict scope from the test-scope reply`` () =
+    let report =
+        parseTestRunReport (
+            fullReply
+                ""","seedFanout":{"kind":"top","seeds":[{"seed":"Lib.hub","tests":900},{"seed":"Lib.leaf","tests":3}]}"""
+        )
+
+    test <@ TestScope.isFullSuite report.Scope @>
+
+    test
+        <@
+            report.SeedFanout = Some(
+                FsHotWatch.TestPrune.SeedFanoutReading.Top
+                    [ { Seed = "Lib.hub"; Tests = 900 }; { Seed = "Lib.leaf"; Tests = 3 } ]
+            )
+        @>
+
+    let scope = VerdictFixtures.scopeOnTheWire report
+    test <@ scope.["seedFanout"].["kind"].GetValue<string>() = "top" @>
+    test <@ scope.["seedFanout"].["seeds"].[0].["seed"].GetValue<string>() = "Lib.hub" @>
+    test <@ scope.["seedFanout"].["seeds"].[0].["tests"].GetValue<int>() = 900 @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a fanout reading that was not measured says why, and an absent one says nothing`` () =
+    let read extra =
+        (parseTestRunReport (fullReply extra)).SeedFanout
+
+    test <@ read ""","seedFanout":{"kind":"narrow"}""" = Some FsHotWatch.TestPrune.SeedFanoutReading.Narrow @>
+
+    test
+        <@
+            read ""","seedFanout":{"kind":"over-budget","seeds":250}""" = Some(
+                FsHotWatch.TestPrune.SeedFanoutReading.OverBudget 250
+            )
+        @>
+
+    test
+        <@ read ""","seedFanout":{"kind":"no-selection"}""" = Some FsHotWatch.TestPrune.SeedFanoutReading.NoSelection @>
+
+    test <@ read "" = None @>
+    test <@ read ""","seedFanout":null""" = None @>
+    test <@ isNull (VerdictFixtures.scopeOnTheWire (parseTestRunReport (fullReply ""))).["seedFanout"] @>
+
+[<Theory(Timeout = SyncHangBackstopMs)>]
+[<InlineData(""","seedFanout":{"kind":"a-kind-from-another-version"}""")>]
+[<InlineData(""","seedFanout":{"kind":"top","seeds":[{"seed":"Lib.hub"}]}""")>]
+[<InlineData(""","seedFanout":{"kind":"over-budget"}""")>]
+[<InlineData(""","seedFanout":{"kind":"over-budget","seeds":1.5}""")>]
+[<InlineData(""","seedFanout":{"kind":"top","seeds":[3]}""")>]
+[<InlineData(""","seedFanout":{"kind":"top","seeds":"Lib.hub"}""")>]
+[<InlineData(""","seedFanout":"top" """)>]
+let ``a fanout reading this build cannot read fails closed to an unreadable scope`` (extra: string) =
+    let report = parseTestRunReport (fullReply extra)
+    test <@ TestScope.isUnreadable report.Scope @>
+
 // --- test-scope: the evidence for the graded run, from the same reply ----------
 
 [<Fact(Timeout = SyncHangBackstopMs)>]

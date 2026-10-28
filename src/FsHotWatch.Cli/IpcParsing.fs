@@ -461,6 +461,56 @@ let tryReadSelectedBy (field: JsonElement option) : Result<ProjectAttribution li
         | None -> Result.Ok(Some(List.choose read entries))
     | Some value -> Result.Error $"a `selectedBy` field that is not an array (%s{value.GetRawText()})"
 
+/// Read a scope object's `seedFanout` field: the seeds that alone selected the most tests,
+/// or why they were not ranked. ONE reader for the `test-scope` reply and the verdict file.
+///
+/// `Ok None` where the field is absent or `null`. `Error` for a kind this build does not
+/// know or a kind missing its payload, which each caller turns into an unreadable scope.
+let tryReadSeedFanout (field: JsonElement option) : Result<SeedFanoutReading option, string> =
+    let unreadable (value: JsonElement) =
+        Result.Error $"a `seedFanout` this build cannot read (%s{value.GetRawText()})"
+
+    let intOf (el: JsonElement) (name: string) =
+        match el.TryGetProperty name with
+        | true, n when n.ValueKind = JsonValueKind.Number ->
+            match n.TryGetInt32() with
+            | true, i -> Some i
+            | _ -> None
+        | _ -> None
+
+    match field with
+    | None -> Result.Ok None
+    | Some value when value.ValueKind = JsonValueKind.Null -> Result.Ok None
+    | Some value when value.ValueKind = JsonValueKind.Object ->
+        match Json.tryString value "kind" with
+        | Some "no-selection" -> Result.Ok(Some SeedFanoutReading.NoSelection)
+        | Some "narrow" -> Result.Ok(Some SeedFanoutReading.Narrow)
+        | Some "over-budget" ->
+            match intOf value "seeds" with
+            | Some seeds -> Result.Ok(Some(SeedFanoutReading.OverBudget seeds))
+            | None -> unreadable value
+        | Some "top" ->
+            match value.TryGetProperty "seeds" with
+            | true, seeds when seeds.ValueKind = JsonValueKind.Array ->
+                let read =
+                    seeds.EnumerateArray()
+                    |> Seq.map (fun entry ->
+                        if entry.ValueKind <> JsonValueKind.Object then
+                            None
+                        else
+                            match Json.tryString entry "seed", intOf entry "tests" with
+                            | Some seed, Some tests -> Some { Seed = seed; Tests = tests }
+                            | _ -> None)
+                    |> List.ofSeq
+
+                if List.forall Option.isSome read then
+                    Result.Ok(Some(SeedFanoutReading.Top(List.choose id read)))
+                else
+                    unreadable value
+            | _ -> unreadable value
+        | _ -> unreadable value
+    | Some value -> unreadable value
+
 /// The test-prune plugin commands `confirm` speaks.
 ///
 /// `RunCommand` dispatches on the COMMAND name — a plugin's own name is not a command
@@ -889,6 +939,9 @@ type TestRunReport =
         /// Which cause selected each project of the run. `None` where the daemon did not
         /// say (one older than the field, no reply, or a run that selected nothing).
         SelectedBy: ProjectAttribution list option
+        /// The seeds that alone selected the most tests, or why they were not ranked.
+        /// `None` where the daemon did not say.
+        SeedFanout: SeedFanoutReading option
         /// The evidence the daemon holds for `RunId`, from the same reply.
         GradedEvidence: GradedEvidenceReading
     }
@@ -912,6 +965,7 @@ module TestRunReport =
           Baseline = BaselineReading.NotReported
           NotSelected = None
           SelectedBy = None
+          SeedFanout = None
           GradedEvidence = GradedEvidenceReading.NotReported }
 
     /// The report for a daemon/host with NO `test-scope` command: no
@@ -1091,6 +1145,12 @@ let parseTestRunReport (json: string) : TestRunReport =
             | Result.Ok selectedBy -> scope, selectedBy
             | Result.Error reason -> ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply has %s{reason}", None
 
+        // And for a `seedFanout`.
+        let scope, seedFanout =
+            match tryReadSeedFanout (Json.tryProp root "seedFanout") with
+            | Result.Ok seedFanout -> scope, seedFanout
+            | Result.Error reason -> ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply has %s{reason}", None
+
         { Scope = scope
           RunId = runId
           SessionRuns = sessionRuns
@@ -1103,6 +1163,7 @@ let parseTestRunReport (json: string) : TestRunReport =
           Baseline = baseline
           NotSelected = notSelected
           SelectedBy = selectedBy
+          SeedFanout = seedFanout
           GradedEvidence = tryReadGradedEvidence (Json.tryProp root "evidence") }
     with ex ->
         TestRunReport.ofScopeOnly (
