@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: a project's checks wait for the projects it references, not for its whole
+  dependency tier (ADR-056, AUTOMATION-683). The scan and the change batch used to check
+  tier by tier, so one slow project held back every project in the next tier, whether or
+  not they referenced it. Both now run through `Daemon.runDependentChecks`: one queue of
+  runnable checks, bounded by the check concurrency bound across every project, with each
+  project's retry rounds kept per project. A scan decides the deps gate and its file
+  claims for every project before it starts. `ScanMetrics` `RetryRounds` now sums extra
+  rounds over projects rather than tiers. `Daemon.runChecksWithRetry` is removed.
+
 - feat: a change batch publishes its cascade as each check returns (ADR-055,
   AUTOMATION-683). It used to keep every cascade result until the last tier had
   finished, so a signature change near the root held one FCS result per re-checked

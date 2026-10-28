@@ -1741,6 +1741,263 @@ let internal laterFilesInOwnProjects
               | [] -> () ]
     |> List.distinct
 
+/// What one tier's bounded check/retry loop settled on (`runDependentChecks`).
+///
+/// The bound existed; the OUTCOME of reaching it did not. A
+/// scan that gave up is a different event from a scan that converged, and the
+/// difference belongs in the type so the log line and the scan-completeness
+/// count cannot disagree about which happened.
+[<RequireQualifiedAccess>]
+type ScanCheckOutcome =
+    /// Every file produced a result. Carries how many EXTRA rounds beyond the
+    /// first pass were needed — 0 on a clean scan, and the direct measure of
+    /// the cancellation amplification this retry loop bounds.
+    | AllChecked of extraRounds: int
+    /// The retry budget ran out with files still unchecked. Carries the files,
+    /// the extra rounds spent, and the budget that was exhausted.
+    | BudgetExhausted of unchecked: AbsFilePath list * extraRounds: int * budget: int
+
+/// Accessors over `ScanCheckOutcome`, so callers read the two numbers a scan
+/// summary needs without re-matching the union at each site.
+module ScanCheckOutcome =
+    /// Files left unchecked (0 for `AllChecked`).
+    let uncheckedCount (outcome: ScanCheckOutcome) : int =
+        match outcome with
+        | ScanCheckOutcome.AllChecked _ -> 0
+        | ScanCheckOutcome.BudgetExhausted(unchecked, _, _) -> List.length unchecked
+
+    /// Extra retry rounds beyond the first pass.
+    let extraRounds (outcome: ScanCheckOutcome) : int =
+        match outcome with
+        | ScanCheckOutcome.AllChecked rounds -> rounds
+        | ScanCheckOutcome.BudgetExhausted(_, rounds, _) -> rounds
+
+/// The files of a tier that no earlier tier has already claimed, paired with the
+/// extended claim set for the next tier.
+///
+/// The scan walks dependency-ordered tiers and resolves each tier's files to check
+/// thunks in a PER-TIER dictionary. A file compiled into two projects in the SAME
+/// tier collapses in that dictionary. One reached through projects in DIFFERENT
+/// tiers does not: it gets a thunk in each, and is checked and emitted twice. That
+/// is how a scan comes to report checking more files than it registered, while
+/// missing none.
+///
+/// The FIRST tier to reach a file wins it. Tiers are dependency-ordered, so that is
+/// the more upstream project — a helper linked from its owning project into a
+/// downstream one is checked in the project that owns it. Either project's options
+/// would type-check the file; ordering makes WHICH of them deterministic rather than
+/// "whichever tier happened to run last".
+///
+/// Pure, and threaded by the caller, so the cross-tier invariant is testable without
+/// a daemon, a checker or a project graph.
+let internal freshForTier
+    (claimed: Set<AbsFilePath>)
+    (candidates: AbsFilePath list)
+    : AbsFilePath list * Set<AbsFilePath> =
+    let fresh, seen =
+        (([], claimed), candidates)
+        ||> List.fold (fun (fresh, seen) file ->
+            if Set.contains file seen then
+                (fresh, seen)
+            else
+                (file :: fresh, Set.add file seen))
+
+    (List.rev fresh, seen)
+
+/// One project's share of a scan or change batch (ADR-056): its key, the projects whose
+/// checks must all finish before any of its own start, and its files.
+type internal DependentWork<'k> =
+    { Key: 'k
+      After: 'k list
+      Files: AbsFilePath list }
+
+/// Check each project's files once the projects it waits for have finished (ADR-056).
+///
+/// The tiers used to be barriers: no file of a tier started until every file of the
+/// tier before had finished, so one slow project held back every project after it,
+/// whether or not they referenced it. Here a project waits only for the projects in
+/// its `After` that are part of `work`.
+///
+/// One queue of runnable checks, in the order of `work` (tier order), with at most
+/// `maxInFlight` started and unfinished at once across every project. A project's
+/// round ends when its last check returns. Its files whose `check` returned `None` are
+/// then retried in a new round, up to `maxRetries` extra rounds. After its last round,
+/// the project is done: its unchecked files are reported, and each dependent whose last
+/// reference it was is released. `emit` runs as each result arrives, and a check whose
+/// `emit` is waiting still counts against `maxInFlight`.
+///
+/// The first check that throws, or a cancellation of the caller, cancels the checks
+/// still running, starts nothing more, and is raised.
+///
+/// Why retry at all: while the cold scan runs, BuildPlugin's `dotnet build` touches
+/// `obj/**/ref/*.dll`, the watcher fires, `processBatch` re-checks the affected files, and
+/// `CancelPreviousCheck` cancels the scan's in-flight check of the same file. That check
+/// returns `None`. Dropped, the file would be neither reported nor cleared while the scan
+/// read as complete. A retry calls the SAME thunk, which re-reads the file, so a newer
+/// edit is observed rather than duplicated, and it waits for the round so the batch's
+/// check of the file has finished. Each file is emitted at most once, and an exhausted
+/// budget is reported, never folded into a count.
+let internal runDependentChecks
+    (maxRetries: int)
+    (maxInFlight: int)
+    (check: 'k -> AbsFilePath -> Async<'r option>)
+    (emit: 'r -> Async<unit>)
+    (work: DependentWork<'k> list)
+    : Async<ScanCheckOutcome> =
+    async {
+        if work.IsEmpty then
+            return ScanCheckOutcome.AllChecked 0
+        else
+            let! callerCt = Async.CancellationToken
+            use stop = CancellationTokenSource.CreateLinkedTokenSource callerCt
+            let maxInFlight = max 1 maxInFlight
+            let gate = obj ()
+
+            let keys =
+                work |> List.map (fun node -> node.Key) |> System.Collections.Generic.HashSet
+
+            let byKey = System.Collections.Generic.Dictionary<'k, DependentWork<'k>>()
+            let waitingOn = System.Collections.Generic.Dictionary<'k, int>()
+            let dependents = System.Collections.Generic.Dictionary<'k, ResizeArray<'k>>()
+            let roundLeft = System.Collections.Generic.Dictionary<'k, int>()
+
+            let roundMissed =
+                System.Collections.Generic.Dictionary<'k, ResizeArray<AbsFilePath>>()
+
+            let roundsRun = System.Collections.Generic.Dictionary<'k, int>()
+            let runnable = System.Collections.Generic.Queue<'k * AbsFilePath>()
+            let unchecked = ResizeArray<AbsFilePath>()
+            let mutable extraRounds = 0
+            let mutable inFlight = 0
+            let mutable unfinished = work.Length
+            let mutable stopped = false
+
+            let finished =
+                TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+            for node in work do
+                byKey[node.Key] <- node
+                dependents[node.Key] <- ResizeArray()
+
+            for node in work do
+                let after = node.After |> List.distinct |> List.filter keys.Contains
+                waitingOn[node.Key] <- after.Length
+
+                for reference in after do
+                    dependents[reference].Add node.Key
+
+            // Under `gate`, as is everything that follows up to `launch`.
+            let rec startRound (key: 'k) (files: AbsFilePath list) =
+                roundLeft[key] <- files.Length
+                roundMissed[key] <- ResizeArray()
+
+                if files.IsEmpty then
+                    complete key
+                else
+                    for f in files do
+                        runnable.Enqueue((key, f))
+
+            and complete (key: 'k) =
+                unfinished <- unfinished - 1
+
+                for dependent in dependents[key] do
+                    waitingOn[dependent] <- waitingOn[dependent] - 1
+
+                    if waitingOn[dependent] = 0 then
+                        roundsRun[dependent] <- 0
+                        startRound dependent byKey[dependent].Files
+
+                if unfinished = 0 then
+                    finished.TrySetResult() |> ignore
+
+            let returned (key: 'k) (f: AbsFilePath) (gotResult: bool) =
+                inFlight <- inFlight - 1
+
+                if not gotResult then
+                    roundMissed[key].Add f
+
+                roundLeft[key] <- roundLeft[key] - 1
+
+                if roundLeft[key] = 0 then
+                    let missed = List.ofSeq roundMissed[key]
+
+                    if missed.IsEmpty then
+                        complete key
+                    elif roundsRun[key] < maxRetries then
+                        roundsRun[key] <- roundsRun[key] + 1
+                        extraRounds <- extraRounds + 1
+                        startRound key missed
+                    else
+                        unchecked.AddRange missed
+                        complete key
+
+            let fail (failure: exn) =
+                stopped <- true
+                runnable.Clear()
+                finished.TrySetException failure |> ignore
+
+            // The checks to start now, taken under `gate`.
+            let takeRunnable () =
+                [ while not stopped && inFlight < maxInFlight && runnable.Count > 0 do
+                      inFlight <- inFlight + 1
+                      runnable.Dequeue() ]
+
+            let rec launch (starts: ('k * AbsFilePath) list) =
+                for key, f in starts do
+                    let job =
+                        async {
+                            // Off the caller's thread: a check that returns at once would
+                            // otherwise start the next from inside this one, ever deeper.
+                            do! Async.SwitchToThreadPool()
+
+                            match! check key f with
+                            | Some result ->
+                                do! emit result
+                                return true
+                            | None -> return false
+                        }
+
+                    Async.StartWithContinuations(
+                        job,
+                        (fun gotResult ->
+                            launch (
+                                lock gate (fun () ->
+                                    returned key f gotResult
+                                    takeRunnable ())
+                            )),
+                        (fun failure ->
+                            lock gate (fun () -> fail failure)
+                            stop.Cancel()),
+                        (fun cancelled ->
+                            lock gate (fun () -> fail cancelled)
+                            stop.Cancel()),
+                        stop.Token
+                    )
+
+            use _ =
+                callerCt.Register(fun () -> lock gate (fun () -> fail (OperationCanceledException callerCt)))
+
+            launch (
+                lock gate (fun () ->
+                    // The roots are chosen before any starts: an empty root completes at once
+                    // and releases its dependents, which must not then start a second time.
+                    let roots = work |> List.filter (fun node -> waitingOn[node.Key] = 0)
+
+                    for node in roots do
+                        roundsRun[node.Key] <- 0
+                        startRound node.Key node.Files
+
+                    takeRunnable ())
+            )
+
+            do! Async.AwaitTask finished.Task
+
+            if unchecked.Count = 0 then
+                return ScanCheckOutcome.AllChecked extraRounds
+            else
+                return ScanCheckOutcome.BudgetExhausted(List.ofSeq unchecked, extraRounds, maxRetries)
+    }
+
 /// Process a batch of debounced file changes: filter, re-discover projects if needed,
 /// run preprocessors, emit events, and check files. Raises `ModelSupersededException`
 /// when a publication meets a model newer than the one the attempt captured. Returns the
@@ -2073,58 +2330,71 @@ let private processBatchAttempt
                     gated[projPath] <- allowed
                     allowed
 
-            // Check `cohort` tier by tier. With no `publish`, return the results unpublished.
-            // With one, publish each result as its own check returns and return none (ADR-055):
-            // a result waiting for a place among the live results holds back the rest of its
-            // tier and every later tier, and nothing is kept until the cohort ends.
+            // Each project's tier, so a project waits only for references in an earlier
+            // tier (ADR-056). A reference cycle shares one final tier, so no edge runs inside it.
+            let tierOf =
+                tiers
+                |> List.mapi (fun index tier -> tier |> List.map (fun proj -> proj, index))
+                |> List.concat
+                |> Map.ofList
+
+            // Check `cohort`, each project once the projects it references have been checked
+            // (ADR-056). With no `publish`, return the results unpublished. With one, publish
+            // each result as its own check returns and return none (ADR-055): a result waiting
+            // for a place among the live results holds back the projects still to start, and
+            // nothing is kept until the cohort ends.
             let checkCohort (cohort: Set<AbsFilePath>) (publish: (FileCheckResult -> Async<unit>) option) =
                 async {
-                    let results = ResizeArray<FileCheckResult option array>()
+                    let kept = System.Collections.Concurrent.ConcurrentQueue<FileCheckResult>()
 
-                    for tier in tiers do
-                        let tierChecks = ResizeArray<Async<FileCheckResult option>>()
+                    let options =
+                        System.Collections.Generic.Dictionary<AbsProjectPath, FSharpProjectOptions option>()
 
-                        for proj in tier do
-                            let projPath = AbsProjectPath.value proj
+                    let work =
+                        [ for tier in tiers do
+                              for proj in tier do
+                                  let projPath = AbsProjectPath.value proj
 
-                            let projFiles = ctx.Graph.GetSourceFiles(proj) |> List.filter cohort.Contains
+                                  let projFiles = ctx.Graph.GetSourceFiles(proj) |> List.filter cohort.Contains
 
-                            checkedFiles <- Set.union checkedFiles (Set.ofList projFiles)
+                                  checkedFiles <- Set.union checkedFiles (Set.ofList projFiles)
 
-                            // Deps-freshness gate — see `applyDepsGate`.
-                            if not projFiles.IsEmpty && depsAllow projPath then
-                                match ctx.Pipeline.GetProjectOptions(projPath) with
-                                | Some options ->
-                                    for file in projFiles do
-                                        tierChecks.Add(
-                                            ctx.Pipeline.CheckFileWithOptions(file, options, ctx.DaemonCt.Value)
-                                        )
-                                | None ->
-                                    for file in projFiles do
-                                        tierChecks.Add(ctx.Pipeline.CheckFile(file, ctx.DaemonCt.Value))
+                                  let after =
+                                      ctx.Graph.GetReferences proj
+                                      |> List.filter (fun reference ->
+                                          match Map.tryFind reference tierOf with
+                                          | Some tier -> tier < tierOf[proj]
+                                          | None -> false)
 
-                        if tierChecks.Count > 0 then
-                            let jobs =
-                                match publish with
-                                | None -> List.ofSeq tierChecks
-                                | Some publish ->
-                                    [ for check in tierChecks ->
-                                          async {
-                                              match! check with
-                                              | Some result -> do! publish result
-                                              | None -> ()
+                                  // Deps-freshness gate — see `applyDepsGate`.
+                                  let files =
+                                      if not projFiles.IsEmpty && depsAllow projPath then
+                                          options[proj] <- ctx.Pipeline.GetProjectOptions(projPath)
+                                          projFiles
+                                      else
+                                          []
 
-                                              return None
-                                          } ]
+                                  { Key = proj
+                                    After = after
+                                    Files = files } ]
 
-                            let! tierResults =
-                                jobs
-                                |> WorkScheduler.parallelWithin ctx.Pipeline.CheckConcurrencyBound
-                                |> CheckCaller.within "change batch"
+                    let check (proj: AbsProjectPath) (file: AbsFilePath) =
+                        match options[proj] with
+                        | Some projectOptions ->
+                            ctx.Pipeline.CheckFileWithOptions(file, projectOptions, ctx.DaemonCt.Value)
+                        | None -> ctx.Pipeline.CheckFile(file, ctx.DaemonCt.Value)
 
-                            results.Add tierResults
+                    let emit =
+                        match publish with
+                        | Some publish -> publish
+                        | None -> fun result -> async { kept.Enqueue result }
 
-                    return List.ofSeq results
+                    // A batch never retries a check that returned nothing (see `emitResults`).
+                    let! _ =
+                        runDependentChecks 0 ctx.Pipeline.CheckConcurrencyBound check emit work
+                        |> CheckCaller.within "change batch"
+
+                    return List.ofSeq kept
                 }
 
             // The changed files first: their checks record what each now declares.
@@ -2215,7 +2485,7 @@ let private processBatchAttempt
 
                                         ctx.Host.EmitFileChecked(checkResult, place)
                                         reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult))
-                        // Unlike the cold scan (see `runChecksWithRetry`), the batch
+                        // Unlike the cold scan (see `runDependentChecks`), the batch
                         // path does NOT retry a cancelled (`None`) check. Batch
                         // cancellations are self-healing: `CancelPreviousCheck` only
                         // cancels an in-flight check when a NEWER event's check of the
@@ -2225,8 +2495,7 @@ let private processBatchAttempt
                         | None -> ()
                 }
 
-            for results in changedResults do
-                do! emitResults results
+            do! emitResults [| for result in changedResults -> Some result |]
 
             if not cascade.IsEmpty then
                 // A new generation, so the cascade is keyed by the signatures just recorded.
@@ -3784,143 +4053,6 @@ type Daemon
 
         this.RunWith(IpcServer.start pipeName, serverBound, processStartedAt, cts)
 
-/// What one tier's bounded check/retry loop settled on (`runChecksWithRetry`).
-///
-/// The bound existed; the OUTCOME of reaching it did not. A
-/// scan that gave up is a different event from a scan that converged, and the
-/// difference belongs in the type so the log line and the scan-completeness
-/// count cannot disagree about which happened.
-[<RequireQualifiedAccess>]
-type ScanCheckOutcome =
-    /// Every file produced a result. Carries how many EXTRA rounds beyond the
-    /// first pass were needed — 0 on a clean scan, and the direct measure of
-    /// the cancellation amplification this retry loop bounds.
-    | AllChecked of extraRounds: int
-    /// The retry budget ran out with files still unchecked. Carries the files,
-    /// the extra rounds spent, and the budget that was exhausted.
-    | BudgetExhausted of unchecked: AbsFilePath list * extraRounds: int * budget: int
-
-/// Accessors over `ScanCheckOutcome`, so callers read the two numbers a scan
-/// summary needs without re-matching the union at each site.
-module ScanCheckOutcome =
-    /// Files left unchecked (0 for `AllChecked`).
-    let uncheckedCount (outcome: ScanCheckOutcome) : int =
-        match outcome with
-        | ScanCheckOutcome.AllChecked _ -> 0
-        | ScanCheckOutcome.BudgetExhausted(unchecked, _, _) -> List.length unchecked
-
-    /// Extra retry rounds beyond the first pass.
-    let extraRounds (outcome: ScanCheckOutcome) : int =
-        match outcome with
-        | ScanCheckOutcome.AllChecked rounds -> rounds
-        | ScanCheckOutcome.BudgetExhausted(_, rounds, _) -> rounds
-
-/// The files of a tier that no earlier tier has already claimed, paired with the
-/// extended claim set for the next tier.
-///
-/// The scan walks dependency-ordered tiers and resolves each tier's files to check
-/// thunks in a PER-TIER dictionary. A file compiled into two projects in the SAME
-/// tier collapses in that dictionary. One reached through projects in DIFFERENT
-/// tiers does not: it gets a thunk in each, and is checked and emitted twice. That
-/// is how a scan comes to report checking more files than it registered, while
-/// missing none.
-///
-/// The FIRST tier to reach a file wins it. Tiers are dependency-ordered, so that is
-/// the more upstream project — a helper linked from its owning project into a
-/// downstream one is checked in the project that owns it. Either project's options
-/// would type-check the file; ordering makes WHICH of them deterministic rather than
-/// "whichever tier happened to run last".
-///
-/// Pure, and threaded by the caller, so the cross-tier invariant is testable without
-/// a daemon, a checker or a project graph.
-let internal freshForTier
-    (claimed: Set<AbsFilePath>)
-    (candidates: AbsFilePath list)
-    : AbsFilePath list * Set<AbsFilePath> =
-    let fresh, seen =
-        (([], claimed), candidates)
-        ||> List.fold (fun (fresh, seen) file ->
-            if Set.contains file seen then
-                (fresh, seen)
-            else
-                (file :: fresh, Set.add file seen))
-
-    (List.rev fresh, seen)
-
-/// Drive per-file checks with a bounded retry on `None` results.
-///
-/// Guards the cold-scan silent-truncation race: while the initial scan runs its FCS
-/// tiers, BuildPlugin's `dotnet build` touches `obj/**/ref/*.dll`, the watcher
-/// fires, `processBatch` re-checks the affected files, and `CancelPreviousCheck`
-/// cancels the scan-side in-flight check of the same file. A cancelled check
-/// surfaces as `None`, and a scan emit loop that drops `None` reports green while
-/// the ErrorLedger never saw diagnostics for the dropped files (neither reported NOR
-/// cleared).
-///
-/// Files whose `check` returned `None` are re-enqueued for up to `maxRetries`
-/// additional rounds. The retry calls the SAME `check` thunk, which (via
-/// `CheckFile`/`CheckFileWithOptions` → `CancelPreviousCheck`) re-reads current disk
-/// content, so a NEWER user edit that legitimately superseded the in-flight check is
-/// observed on retry rather than duplicated. Each file is emitted at most once.
-///
-/// A result is emitted as soon as its own check returns, not when the round does, so
-/// the scan's progress counter (advanced in `emit`) moves per file. `emit` is
-/// therefore called concurrently from the round's checks and must serialise itself.
-/// It is asynchronous because it may wait for a place among the live results (ADR-054);
-/// a check whose `emit` is waiting still counts against `maxInFlight`, so a scan whose
-/// consumers have fallen behind starts no further checks until they catch up.
-///
-/// The outcome is TYPED. The budget was always bounded, but
-/// exhausting it produced a bare `int` that the caller folded into a running
-/// total, so "this tier gave up on 4 files after 3 extra rounds" was
-/// indistinguishable in the code from "4 files happened to be unchecked". A
-/// `BudgetExhausted` case carries the files and the rounds spent, and the caller
-/// says so in the log instead of looping on in silence.
-///
-/// At most `maxInFlight` checks of a round are started and unfinished at once (the
-/// pipeline's admission bound), so a tier's live work does not grow with its files.
-///
-/// Pure of FCS and disk: `check` is injected, making the retry/convergence and
-/// honest-completion invariants unit-testable at the narrowest seam.
-let internal runChecksWithRetry
-    (maxRetries: int)
-    (maxInFlight: int)
-    (check: AbsFilePath -> Async<'r option>)
-    (emit: 'r -> Async<unit>)
-    (files: AbsFilePath list)
-    : Async<ScanCheckOutcome> =
-    async {
-        let mutable pending = files
-        let mutable round = 0
-
-        // Initial pass plus up to `maxRetries` retry rounds over the residual
-        // `None` set. Converges (pending shrinks or we hit the budget).
-        while not pending.IsEmpty && round <= maxRetries do
-            let! stillPending =
-                pending
-                |> List.map (fun file ->
-                    async {
-                        match! check file with
-                        | Some r ->
-                            do! emit r
-                            return None
-                        | None -> return Some file
-                    })
-                |> WorkScheduler.parallelWithin maxInFlight
-
-            pending <- stillPending |> Array.choose id |> Array.toList
-            round <- round + 1
-
-        // `round` counts the initial pass too, so extra rounds is `round - 1`
-        // (0 for an empty file list, which never enters the loop).
-        let extraRounds = max 0 (round - 1)
-
-        if List.isEmpty pending then
-            return ScanCheckOutcome.AllChecked extraRounds
-        else
-            return ScanCheckOutcome.BudgetExhausted(pending, extraRounds, maxRetries)
-    }
-
 /// Execute the full scan logic, returning the updated agent state.
 /// split the registered set into what can still be scanned and
 /// what has vanished, with existence injected so the decision is testable
@@ -4197,7 +4329,8 @@ let private performScan
                             List.map (fun project ->
                                 project,
                                 graph.GetSourceFiles(project) |> List.map AbsFilePath.value,
-                                pipeline.GetProjectOptions(AbsProjectPath.value project))
+                                pipeline.GetProjectOptions(AbsProjectPath.value project),
+                                graph.GetReferences project)
                         )
 
                     epoch,
@@ -4272,7 +4405,7 @@ let private performScan
             // scan-retry budget (the silent-truncation race: a scan-side check
             // cancelled by processBatch's same-file re-check, or a hard failure).
             // Surfaced in the scan-complete state and log so a truncated scan can
-            // never read as clean. See `runChecksWithRetry`.
+            // never read as clean. See `runDependentChecks`.
             let mutable uncheckedCount = 0
             // Extra retry rounds beyond each tier's first pass, summed. The direct
             // measure of the cold-scan cancellation amplification the retry budget
@@ -4314,7 +4447,7 @@ let private performScan
                 // checks below type against.
                 referenceHashes <-
                     scanTiers
-                    |> List.collect (List.choose (fun (_, _, options) -> options))
+                    |> List.collect (List.choose (fun (_, _, options, _) -> options))
                     |> TreeStamp.inRepoReferences ctx.RepoRoot
                     |> List.toArray
                     |> Array.Parallel.map (fun path -> path, TreeStamp.readBytesHash path)
@@ -4333,7 +4466,9 @@ let private performScan
                 // Scan-scoped, where `tierThunks` below is per-tier. See `freshForTier`.
                 let mutable claimedInScan: Set<AbsFilePath> = Set.empty
 
-                // Check files in parallel tiers based on project dependency graph
+                // Check each project once the projects it references have been checked
+                // (ADR-056). Tiers no longer bar the way: a project waits for its own
+                // references, never for an unrelated project of the tier before it.
                 let tiers = scanTiers
 
                 // Bounded retry budget for cancelled/aborted/failed scan checks.
@@ -4342,120 +4477,144 @@ let private performScan
                 // concurrent edit, which are then honestly reported as unchecked.
                 let scanRetryBudget = 3
 
-                for tier in tiers do
-                    // Resolve each checkable file in the tier to its check thunk,
-                    // honouring the deps-freshness gate and per-project options. The
-                    // thunk is re-runnable (an Async description), so
-                    // `runChecksWithRetry` can re-invoke it on a cancelled result.
-                    let tierThunks =
-                        System.Collections.Generic.Dictionary<AbsFilePath, Async<FileCheckResult option>>()
+                // Each project's tier, so a project waits only for references in an
+                // earlier tier. A reference cycle shares one final tier, so no edge runs
+                // inside it.
+                let tierOf =
+                    tiers
+                    |> List.mapi (fun index tier -> tier |> List.map (fun (proj, _, _, _) -> proj, index))
+                    |> List.concat
+                    |> Map.ofList
 
-                    for proj, projectFiles, projectOptions in tier do
-                        let projPath = AbsProjectPath.value proj
-                        let projFiles = projectFiles |> List.filter filesToCheckSet.Contains
-                        skippedCount <- skippedCount + (projectFiles.Length - projFiles.Length)
+                // Each checkable file's check thunk, honouring the deps-freshness gate and
+                // per-project options. A thunk is re-runnable (an Async description), so a
+                // retry round can re-invoke it on a cancelled result. Every file is claimed
+                // by one project at most (`freshForTier`), so the keys are unique.
+                let thunks =
+                    System.Collections.Generic.Dictionary<AbsFilePath, Async<FileCheckResult option>>()
 
-                        for claimed in projFiles do
-                            tierCovered.Add claimed |> ignore
+                // Decided for every project before any check starts, in tier order, so the
+                // first project to claim a file is still the most upstream one.
+                let work =
+                    [ for tier in tiers do
+                          for proj, projectFiles, projectOptions, references in tier do
+                              let projPath = AbsProjectPath.value proj
+                              let projFiles = projectFiles |> List.filter filesToCheckSet.Contains
+                              skippedCount <- skippedCount + (projectFiles.Length - projFiles.Length)
 
-                        // Deps-freshness gate — see `applyDepsGate`.
-                        if applyDepsGate depsGate host projPath then
-                            // The build this scan waited on, or the deps gate just now,
-                            // may have restored the project after its options were
-                            // captured. Re-capturing re-discovers it first.
-                            if not (restoredSinceDiscovery ctx.ContentTracker [ projPath ]).IsEmpty then
-                                Logging.info
-                                    "scan"
-                                    $"A restore changed the package graph after the model was loaded%s{describeChangedProjects ctx.RepoRoot [ projPath ]}; its options are stale"
+                              for claimed in projFiles do
+                                  tierCovered.Add claimed |> ignore
 
-                                raise (ModelSupersededException(fst capturedModel))
+                              let after =
+                                  references
+                                  |> List.filter (fun reference ->
+                                      match Map.tryFind reference tierOf with
+                                      | Some tier -> tier < tierOf[proj]
+                                      | None -> false)
 
-                            // Claimed only where the file is actually dispatched, so a
-                            // file whose project the deps gate refuses stays available
-                            // to a later tier whose project passes it.
-                            let fresh, extended =
-                                projFiles |> List.map AbsFilePath.create |> freshForTier claimedInScan
+                              // Deps-freshness gate — see `applyDepsGate`.
+                              if applyDepsGate depsGate host projPath then
+                                  // The build this scan waited on, or the deps gate just now,
+                                  // may have restored the project after its options were
+                                  // captured. Re-capturing re-discovers it first.
+                                  if not (restoredSinceDiscovery ctx.ContentTracker [ projPath ]).IsEmpty then
+                                      Logging.info
+                                          "scan"
+                                          $"A restore changed the package graph after the model was loaded%s{describeChangedProjects ctx.RepoRoot [ projPath ]}; its options are stale"
 
-                            claimedInScan <- extended
+                                      raise (ModelSupersededException(fst capturedModel))
 
-                            match projectOptions with
-                            | Some options ->
-                                for absFile in fresh do
-                                    tierThunks[absFile] <- pipeline.CheckFileWithOptions(absFile, options, ct)
-                            | None ->
-                                for absFile in fresh do
-                                    tierThunks[absFile] <- pipeline.CheckFile(absFile, ct)
-                        else
-                            skippedCount <- skippedCount + projFiles.Length
-                            depsGatedCount <- depsGatedCount + projFiles.Length
+                                  // Claimed only where the file is actually dispatched, so a
+                                  // file whose project the deps gate refuses stays available
+                                  // to a later project that passes it.
+                                  let fresh, extended =
+                                      projFiles |> List.map AbsFilePath.create |> freshForTier claimedInScan
 
-                    let tierFiles = tierThunks.Keys |> Seq.toList
+                                  claimedInScan <- extended
 
-                    // Called concurrently by the tier's checks: every write below is
-                    // inside `publishCurrent`, which holds the discovery state lock. It
-                    // first waits for a place among the live results (ADR-054), outside
-                    // that lock, so a scan whose plugins have fallen behind waits for them
-                    // instead of piling its results into their mailboxes.
-                    let emitChecked (checkResult: FileCheckResult) =
-                        let sourceHash = ContentHash.ofText checkResult.Source
-                        ctx.BeforeScanPublication.Value checkResult
+                                  for absFile in fresh do
+                                      thunks[absFile] <-
+                                          match projectOptions with
+                                          | Some options -> pipeline.CheckFileWithOptions(absFile, options, ct)
+                                          | None -> pipeline.CheckFile(absFile, ct)
 
-                        host.LiveResults.Hold(fun place ->
-                            publishCurrent (fun () ->
-                                let checkResult =
-                                    { checkResult with
-                                        ModelGeneration = modelGeneration }
+                                  { Key = proj
+                                    After = after
+                                    Files = fresh }
+                              else
+                                  skippedCount <- skippedCount + projFiles.Length
+                                  depsGatedCount <- depsGatedCount + projFiles.Length
 
-                                // ADR-046: a cohort at a later epoch changed this file, and this
-                                // check read bytes the snapshot no longer holds. The cohort
-                                // publishes the current answer; this one is old work finishing
-                                // after new work: counted, not published.
-                                if
-                                    ctx.Snapshots.Accepts(
-                                        capturedSnapshot,
-                                        AbsFilePath.value checkResult.File,
-                                        sourceHash,
-                                        checkResult.Upstream
-                                    )
-                                then
-                                    checkedCount <- checkedCount + 1
-                                    dispatchedFiles.Add(checkResult.File)
-                                    checkedSources[AbsFilePath.value checkResult.File] <- sourceHash
-                                    host.EmitFileCheckedFor(consumers, checkResult, place)
-                                    reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
+                                  // Nothing to check, but its dependents still wait for it
+                                  // to be decided, as they waited for its tier.
+                                  { Key = proj
+                                    After = after
+                                    Files = [] } ]
 
-                                completed <- completed + 1
+                // Called concurrently by the tier's checks: every write below is
+                // inside `publishCurrent`, which holds the discovery state lock. It
+                // first waits for a place among the live results (ADR-054), outside
+                // that lock, so a scan whose plugins have fallen behind waits for them
+                // instead of piling its results into their mailboxes.
+                let emitChecked (checkResult: FileCheckResult) =
+                    let sourceHash = ContentHash.ofText checkResult.Source
+                    ctx.BeforeScanPublication.Value checkResult
 
-                                publish
-                                    { scanning with
-                                        ScanState =
-                                            scanProgress scanning.ScanState total completed System.DateTime.UtcNow }))
+                    host.LiveResults.Hold(fun place ->
+                        publishCurrent (fun () ->
+                            let checkResult =
+                                { checkResult with
+                                    ModelGeneration = modelGeneration }
 
-                    let! tierOutcome =
-                        runChecksWithRetry
-                            scanRetryBudget
-                            ctx.Pipeline.CheckConcurrencyBound
-                            (fun f -> tierThunks[f])
-                            emitChecked
-                            tierFiles
-                        |> CheckCaller.withinBulk "scan"
+                            // ADR-046: a cohort at a later epoch changed this file, and this
+                            // check read bytes the snapshot no longer holds. The cohort
+                            // publishes the current answer; this one is old work finishing
+                            // after new work: counted, not published.
+                            if
+                                ctx.Snapshots.Accepts(
+                                    capturedSnapshot,
+                                    AbsFilePath.value checkResult.File,
+                                    sourceHash,
+                                    checkResult.Upstream
+                                )
+                            then
+                                checkedCount <- checkedCount + 1
+                                dispatchedFiles.Add(checkResult.File)
+                                checkedSources[AbsFilePath.value checkResult.File] <- sourceHash
+                                host.EmitFileCheckedFor(consumers, checkResult, place)
+                                reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
 
-                    match tierOutcome with
-                    | ScanCheckOutcome.AllChecked _ -> ()
-                    | ScanCheckOutcome.BudgetExhausted(unchecked, rounds, budget) ->
-                        // Say it once, explicitly, naming the bound
-                        // that was reached. The alternative this replaces was adding
-                        // a number to a total and moving on, which is how repeated
-                        // self-cancellation stayed invisible for a whole gate run.
-                        let named =
-                            unchecked |> List.truncate 5 |> List.map AbsFilePath.value |> String.concat ", "
+                            completed <- completed + 1
 
-                        Logging.warn
-                            "scan"
-                            $"Retry budget exhausted after %d{rounds} extra round(s) of %d{budget}: %d{unchecked.Length} file(s) still unchecked (%s{named})"
+                            publish
+                                { scanning with
+                                    ScanState = scanProgress scanning.ScanState total completed System.DateTime.UtcNow }))
 
-                    uncheckedCount <- uncheckedCount + ScanCheckOutcome.uncheckedCount tierOutcome
-                    retryRounds <- retryRounds + ScanCheckOutcome.extraRounds tierOutcome
+                let! outcome =
+                    runDependentChecks
+                        scanRetryBudget
+                        ctx.Pipeline.CheckConcurrencyBound
+                        (fun _ f -> thunks[f])
+                        emitChecked
+                        work
+                    |> CheckCaller.withinBulk "scan"
+
+                match outcome with
+                | ScanCheckOutcome.AllChecked _ -> ()
+                | ScanCheckOutcome.BudgetExhausted(unchecked, rounds, budget) ->
+                    // Say it once, explicitly, naming the bound
+                    // that was reached. The alternative this replaces was adding
+                    // a number to a total and moving on, which is how repeated
+                    // self-cancellation stayed invisible for a whole gate run.
+                    let named =
+                        unchecked |> List.truncate 5 |> List.map AbsFilePath.value |> String.concat ", "
+
+                    Logging.warn
+                        "scan"
+                        $"Retry budget exhausted after %d{rounds} extra round(s) of %d{budget}: %d{unchecked.Length} file(s) still unchecked (%s{named})"
+
+                uncheckedCount <- uncheckedCount + ScanCheckOutcome.uncheckedCount outcome
+                retryRounds <- retryRounds + ScanCheckOutcome.extraRounds outcome
 
                 // Keep the existing "Checked N files (T tiers), skipped M" prefix
                 // intact (external tooling greps it); append the unchecked count so

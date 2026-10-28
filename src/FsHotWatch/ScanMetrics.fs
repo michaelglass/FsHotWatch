@@ -31,7 +31,7 @@ type ScanSample =
         /// Files that produced a check result and were emitted.
         FilesChecked: int
         /// Files still unchecked after the retry budget (see
-        /// `Daemon.runChecksWithRetry`): the honest truncation count.
+        /// `Daemon.runDependentChecks`): the honest truncation count.
         FilesUnchecked: int
         /// Files of this scan's cohort that were never attempted — the sum of the
         /// two reasons below. `FilesChecked + FilesUnchecked + FilesSkipped` against
@@ -63,8 +63,8 @@ type ScanSample =
         /// `CacheMisses` 0 because there was no cache, not because nothing was looked up
         /// (`"checkCache": "off"`). `None` for a record written before the field existed.
         CheckCache: bool option
-        /// Extra rounds `runChecksWithRetry` needed beyond the first pass,
-        /// summed over tiers. 0 on a clean scan; the retry amplification
+        /// Extra rounds `runDependentChecks` needed beyond the first pass,
+        /// summed over projects (ADR-056). 0 on a clean scan; the retry amplification
         /// bounds shows up here.
         RetryRounds: int
         /// Process working set at the end of the scan, bytes.
