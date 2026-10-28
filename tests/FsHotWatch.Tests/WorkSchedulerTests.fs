@@ -107,7 +107,10 @@ let ``a session with fifty queued jobs cannot keep another session's one job beh
 
 [<Fact(Timeout = 20000)>]
 let ``waiting sessions are served in turn`` () =
-    let scheduler = Scheduler 1
+    // A frozen clock: every lane's slot-time stays equal, so turn order alone decides
+    // (ADR-051). On the real clock a hand-over slower than `FairnessQuantum` under a loaded
+    // suite gave the lane that held longest a legitimate later turn, and this test flaked.
+    let scheduler = Scheduler(1, ignore, (fun () -> TimeSpan.Zero))
     let lanes = [ "A"; "B"; "C" ] |> List.map scheduler.Lane
     let holder = scheduler.Lane "holder"
     let order = ConcurrentQueue<string>()
