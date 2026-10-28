@@ -175,3 +175,13 @@ let ``a real xUnit host killed at its timeout still gets per-class lines`` () =
             classes
             |> List.forall (fun (c, _, _) -> c <> "Xunit4RunnerFixture.Tests+Hanging" && c <> "Not.A")
         @>
+
+    // And the test that was running when the host was killed, from xUnit's long-running
+    // report (fshw asks for it with `--long-running` and diagnostic messages on).
+    let running =
+        lines
+        |> List.choose (function
+            | Profile.Running(name, _) -> Some name
+            | _ -> None)
+
+    test <@ running = [ "Xunit4RunnerFixture.Tests+Hanging.hangs when asked" ] @>

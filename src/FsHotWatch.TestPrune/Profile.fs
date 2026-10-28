@@ -21,7 +21,10 @@
 ///                A host killed before it wrote a report still gets them, from the
 ///                per-test result lines it printed as each test finished (`observe`, fed
 ///                the output stream the run log already tees); `source` says which;
-///   * `classes-unavailable` — instead of class lines, why there are none.
+///   * `classes-unavailable` — instead of class lines, why there are none;
+///   * `running` — with no report, each test xUnit reported long-running (`--long-running`)
+///                that never finished: the test the host was running when it ended, and
+///                when it started.
 ///
 /// Not a verdict input: a profile describes how a run went, never whether it passed.
 module FsHotWatch.TestPrune.Profile
@@ -114,6 +117,9 @@ type Line =
     | End of at: DateTime * wallMs: int64 * cpuMs: float option * load1: float option * outcome: string
     | Class of ClassTiming * Contention * ClassSource
     | ClassesUnavailable of reason: string
+    /// A test still running when the host ended: reported long-running by xUnit, never
+    /// finished. `since` is when it started.
+    | Running of test: string * since: DateTime
 
 // ---------------------------------------------------------------------------------------
 // The report's classes
@@ -267,6 +273,25 @@ let classOfTestName (name: string) : string =
     | dot when dot > 0 -> name.Substring(0, dot)
     | _ -> name
 
+/// xUnit's report of a test still running past its long-running threshold (`--long-running`,
+/// printed when diagnostic messages are on): `[Long Running Test] '<name>', Elapsed: hh:mm:ss`,
+/// at column 0 like a result line.
+let private longRunningShape =
+    Text.RegularExpressions.Regex(
+        @"^\[Long Running Test\] '(.+)', Elapsed: (\d+):(\d\d):(\d\d)$",
+        Text.RegularExpressions.RegexOptions.Compiled
+    )
+
+/// A long-running report as (test name, elapsed ms); `None` for any other line.
+let parseLongRunning (line: string) : (string * int64) option =
+    let m = longRunningShape.Match(line.TrimEnd())
+
+    if m.Success then
+        let part (i: int) = int64 m.Groups[i].Value
+        Some(m.Groups[1].Value, ((part 2 * 60L + part 3) * 60L + part 4) * 1000L)
+    else
+        None
+
 /// A partial line longer than this is not a result line (a name is never this long); it
 /// is dropped up to its newline rather than held.
 [<Literal>]
@@ -381,6 +406,7 @@ let render (line: Line) : string =
               "loadPerCoreMax", optNumber c.LoadPerCoreMax
               "contended", optBool c.Contended ]
         | ClassesUnavailable reason -> [ "event", str "classes-unavailable"; "reason", str reason ]
+        | Running(test, since) -> [ "event", str "running"; "test", str test; "since", str (iso since) ]
 
     (objectOf fields).ToJsonString()
 
@@ -497,6 +523,10 @@ let tryParse (text: string) : Line option =
                 | Some t, Some c, Some s -> Some(Class(t, c, s))
                 | _ -> None
             | Some "classes-unavailable" -> typed<string> o "reason" |> Option.map ClassesUnavailable
+            | Some "running" ->
+                match typed<string> o "test", date o "since" with
+                | Some test, Some since -> Some(Running(test, since))
+                | _ -> None
             | _ -> None
         | _ -> None
     with :? JsonException ->
@@ -610,6 +640,8 @@ type Recorder =
             mutable Discarding: bool
             /// The results the host printed, newest first: (arrived, name, duration ms).
             mutable Completions: (DateTime * string * int64) list
+            /// The tests reported long-running, by name: when each started, by its newest report.
+            mutable LongRunning: Map<string, DateTime>
             mutable ConsoleClosed: bool
         }
 
@@ -684,6 +716,7 @@ let start
           Partial = Text.StringBuilder()
           Discarding = false
           Completions = []
+          LongRunning = Map.empty
           ConsoleClosed = false }
 
     emit recorder (Start(project, DateTime.UtcNow, cores, timeoutSec, readLoad ()))
@@ -703,7 +736,10 @@ let spawned (r: Recorder) (pid: int) : unit =
 let private takeLine (r: Recorder) (at: DateTime) (line: string) =
     match parseCompletion line with
     | Some(_, name, ms) -> r.Completions <- (at, name, ms) :: r.Completions
-    | None -> ()
+    | None ->
+        match parseLongRunning line with
+        | Some(name, elapsed) -> r.LongRunning <- Map.add name (at.AddMilliseconds(float -elapsed)) r.LongRunning
+        | None -> ()
 
 /// A chunk of the host's output, as it arrived at `at`: every whole line in it that is a
 /// per-test result (`parseCompletion`) is kept as a test that finished at `at`, and the
@@ -743,17 +779,24 @@ let observeAt (r: Recorder) (at: DateTime) (chunk: string) : unit =
 /// `observeAt` now.
 let observe (r: Recorder) (chunk: string) : unit = observeAt r DateTime.UtcNow chunk
 
-/// The classes of the results the host printed, slowest span first; each test ran for its
-/// printed duration up to the moment its line arrived. Closes the console: nothing is
-/// observed after.
-let private consoleTimings (r: Recorder) : ClassTiming list =
+/// The classes of the results the host printed, slowest span first (each test ran for its
+/// printed duration up to the moment its line arrived), and the tests reported long-running
+/// that never finished, with when each started, earliest first. Closes the console: nothing
+/// is observed after.
+let private consoleState (r: Recorder) : ClassTiming list * (string * DateTime) list =
     lock r.ConsoleGate (fun () ->
         r.ConsoleClosed <- true
         r.Partial.Clear() |> ignore
 
+        let finished = r.Completions |> List.map (fun (_, name, _) -> name) |> Set.ofList
+
         r.Completions
         |> List.map (fun (at, name, ms) -> classOfTestName name, at.AddMilliseconds(float -ms), at, ms)
-        |> timingsOf)
+        |> timingsOf,
+        r.LongRunning
+        |> Map.toList
+        |> List.filter (fun (name, _) -> not (finished.Contains name))
+        |> List.sortBy (fun (name, since) -> since, name))
 
 /// Write the `end` line and the class lines (or why there are none), and close. Only the
 /// first call writes.
@@ -781,10 +824,18 @@ let finish (r: Recorder) (outcome: string) (classes: Result<ClassTiming list, st
                     emit r (Class(t, contentionOver r.Cores samples (t.Start, t.Stop), source))
 
             // The report, when there is one; else what the host printed before it ended.
-            match classes, consoleTimings r with
+            // With no report, also the tests the host was still running when it ended.
+            match classes, consoleState r with
             | Ok timings, _ -> classLines ClassSource.Report timings
-            | Error reason, [] ->
-                emit r (ClassesUnavailable $"%s{reason}; and the host printed no per-test result line before it ended")
-            | Error _, printed -> classLines ClassSource.Console printed
+            | Error reason, (printed, running) ->
+                match printed with
+                | [] ->
+                    emit
+                        r
+                        (ClassesUnavailable $"%s{reason}; and the host printed no per-test result line before it ended")
+                | _ -> classLines ClassSource.Console printed
+
+                for name, since in running do
+                    emit r (Running(name, since))
 
             r.Close())

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **feat: a killed host's profile names the test it was running.** fshw now also asks
+  the xUnit hosts it asks for CTRF for `--long-running <s>` (a third of `timeoutSec`, at
+  most 10 s) and a `--config-file` that is the project's own `testconfig.json` from its
+  build output with `xUnit.diagnosticMessages` on, so xUnit prints
+  `[Long Running Test] '<name>', Elapsed: …` for a test still running past it. Nothing is
+  injected when the project sets either switch, or its config cannot be located or
+  read (`--config-file` replaces a config, never adds to it). With no report, the profile
+  gains a `running` line for each test reported long-running that never finished, and
+  `Insights.ProjectInsight.RunningAtKill` (`runningAtKill` in `--json` and in the
+  verdict's `timedOut`) names it, its class and how long it had run. New:
+  `Profile.parseLongRunning`, `Profile.Line.Running`. (AUTOMATION-1300.)
+
 - **feat: `Insights.ProjectInsight`, one project of one run summarized** (`summarize`,
   `insightJson`, `tryReadInsight`, `reportJson`, `timeoutLine`): the long pole and its share
   of the wall, the slowest classes, the headroom, and the run's mean load per core with a

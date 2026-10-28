@@ -30,6 +30,15 @@ type ClassRow =
         LoadPerCoreMean: float option
     }
 
+/// A test still running when its host ended.
+type RunningTest =
+    {
+        Class: string
+        Test: string
+        /// From its start to the end of the run.
+        RunningMs: float
+    }
+
 /// One project's part of one run.
 type ProjectRun =
     {
@@ -42,6 +51,8 @@ type ProjectRun =
         /// The mean 1-minute load per core over the run, from its profile's samples; `None`
         /// without a profile or a sample.
         LoadPerCoreMean: float option
+        /// The tests still running when the host ended (a killed host's hung test).
+        RunningAtEnd: RunningTest list
         /// Slowest span first.
         Classes: ClassRow list
     }
@@ -117,6 +128,24 @@ let private ofProfile (runId: string) (project: string) (lines: Profile.Line lis
             None
         else
             Some(List.average loads / float cores)
+      RunningAtEnd =
+        let ended =
+            lines
+            |> List.tryPick (function
+                | Profile.End(at, _, _, _, _) -> Some at
+                | _ -> None)
+
+        lines
+        |> List.choose (function
+            | Profile.Running(test, since) ->
+                Some
+                    { Class = Profile.classOfTestName test
+                      Test = test
+                      RunningMs =
+                        ended
+                        |> Option.map (fun e -> (e - since).TotalMilliseconds)
+                        |> Option.defaultValue 0.0 }
+            | _ -> None)
       Classes =
         lines
         |> List.choose (function
@@ -195,6 +224,7 @@ let private ofReports (runId: string) (dir: string) (project: string) : ProjectR
       WallMs = killedWall |> Option.orElse reportWall
       TimeoutSec = timeout
       LoadPerCoreMean = None
+      RunningAtEnd = []
       Classes =
         timings
         |> List.map (fun t ->
@@ -420,6 +450,18 @@ let TailClassesNamed = 3
 
 let private seconds (ms: float) = $"%.1f{ms / 1000.0}s"
 
+/// The tests still running when the host ended, as one phrase (none: empty).
+let private runningAtKill (running: RunningTest list) : string list =
+    match running with
+    | [] -> []
+    | rs ->
+        let named =
+            rs
+            |> List.map (fun r -> $"%s{r.Class} (%s{r.Test}, %s{seconds r.RunningMs})")
+            |> String.concat "; "
+
+        [ $"running at the kill: %s{named}" ]
+
 let private projectLines (options: Options) (history: ProjectRun list) (p: ProjectRun) : string list =
     let budget = p.TimeoutSec |> Option.orElse (Map.tryFind p.Project options.Budgets)
 
@@ -504,7 +546,10 @@ let private projectLines (options: Options) (history: ProjectRun list) (p: Proje
             [ $"  load over the run: %.2f{l} per core, %s{verdict}" ]
         | None -> []
 
-    headline :: runLoad @ classes @ longPole @ tail @ regressed
+    let running =
+        runningAtKill p.RunningAtEnd |> List.map (fun phrase -> $"  %s{phrase}")
+
+    headline :: runLoad @ classes @ running @ longPole @ tail @ regressed
 
 // ---------------------------------------------------------------------------------------
 // One project's insight, as a record: what `--json` prints and a verdict carries
@@ -534,6 +579,8 @@ type ProjectInsight =
         LoadPerCoreMean: float option
         /// Mean load per core ≥ `Profile.ContendedLoadPerCore`; `None` when no sample read one.
         Contended: bool option
+        /// The tests still running at the kill, with their classes.
+        RunningAtKill: RunningTest list
     }
 
 /// Classes an insight lists.
@@ -569,7 +616,8 @@ let summarize (budgets: Map<string, int>) (p: ProjectRun) : ProjectInsight =
         |> Option.filter (fun s -> s.Share |> Option.exists (fun x -> x >= LongPoleShare))
       Slowest = slowest
       LoadPerCoreMean = p.LoadPerCoreMean
-      Contended = p.LoadPerCoreMean |> Option.map (fun l -> l >= Profile.ContendedLoadPerCore) }
+      Contended = p.LoadPerCoreMean |> Option.map (fun l -> l >= Profile.ContendedLoadPerCore)
+      RunningAtKill = p.RunningAtEnd }
 
 /// A value, or JSON null for `None`.
 let private optional (value: 'T option) : JsonNode =
@@ -597,6 +645,19 @@ let insightJson (i: ProjectInsight) : JsonObject =
     o["slowest"] <- JsonArray(i.Slowest |> List.map shareJson |> List.toArray)
     o["loadPerCoreMean"] <- optional i.LoadPerCoreMean
     o["contended"] <- optional i.Contended
+
+    o["runningAtKill"] <-
+        JsonArray(
+            i.RunningAtKill
+            |> List.map (fun r ->
+                let e = JsonObject()
+                e["class"] <- JsonValue.Create r.Class
+                e["test"] <- JsonValue.Create r.Test
+                e["runningMs"] <- JsonValue.Create r.RunningMs
+                e :> JsonNode)
+            |> List.toArray
+        )
+
     o
 
 let private value<'T> (node: JsonNode) : 'T option =
@@ -638,7 +699,26 @@ let tryReadInsight (node: JsonNode) : ProjectInsight option =
                     | :? JsonArray as arr -> arr |> Seq.choose tryShare |> Seq.toList
                     | _ -> []
                   LoadPerCoreMean = value<float> o["loadPerCoreMean"]
-                  Contended = value<bool> o["contended"] }
+                  Contended = value<bool> o["contended"]
+                  RunningAtKill =
+                    match o["runningAtKill"] with
+                    | :? JsonArray as arr ->
+                        arr
+                        |> Seq.choose (fun e ->
+                            match e with
+                            | :? JsonObject as r ->
+                                match
+                                    value<string> r["class"], value<string> r["test"], value<float> r["runningMs"]
+                                with
+                                | Some cls, Some test, Some ms ->
+                                    Some
+                                        { Class = cls
+                                          Test = test
+                                          RunningMs = ms }
+                                | _ -> None
+                            | _ -> None)
+                        |> Seq.toList
+                    | _ -> [] }
         | _ -> None
     | _ -> None
 
@@ -735,5 +815,7 @@ let timeoutLine (i: ProjectInsight) : string =
         | Some false, Some l -> $"quiet (%.2f{l} load/core)"
         | _ -> "load unknown"
 
-    let facts = pole :: budget @ [ load ] |> String.concat ", "
+    let facts =
+        pole :: runningAtKill i.RunningAtKill @ budget @ [ load ] |> String.concat ", "
+
     $"%s{i.Project} timed out: %s{facts} — fshw insights --run %s{i.RunId}"

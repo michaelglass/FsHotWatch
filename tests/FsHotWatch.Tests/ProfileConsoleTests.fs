@@ -167,3 +167,55 @@ let ``a console class line round-trips with its source`` () =
 
     test <@ Profile.tryParse (Profile.render line) = Some line @>
     test <@ (Profile.render line).Contains "\"source\":\"console\"" @>
+
+// --- the test running at the kill: xUnit's long-running test reports ---
+
+[<Theory>]
+[<InlineData("[Long Running Test] 'Ns.Hung.stuck', Elapsed: 00:00:03", "Ns.Hung.stuck", 3000L)>]
+[<InlineData("[Long Running Test] 'Ns.C.it''s quoted', Elapsed: 01:02:05\r", "Ns.C.it''s quoted", 3725000L)>]
+let ``parseLongRunning reads xUnit's long-running test report`` (line: string, name: string, ms: int64) =
+    test <@ Profile.parseLongRunning line = Some(name, ms) @>
+
+[<Theory>]
+[<InlineData("")>]
+[<InlineData("  [Long Running Test] 'Ns.C.m', Elapsed: 00:00:03")>]
+[<InlineData("[Long Running Test] 'Ns.C.m', Elapsed: soon")>]
+[<InlineData("passed Ns.C.m (3ms)")>]
+let ``parseLongRunning ignores every other line`` (line: string) =
+    test <@ Profile.parseLongRunning line = None @>
+
+let private runningLines (dir: string) =
+    Profile.read (Profile.pathIn dir "Killed.Tests")
+    |> List.choose (function
+        | Profile.Running(name, since) -> Some(name, since)
+        | _ -> None)
+
+[<Fact>]
+let ``a killed host's test that was reported long-running and never finished was running at the kill`` () =
+    let dir = tempRunDir ()
+    let r = recorder dir
+
+    Profile.observeAt r (at 10.0) "[Long Running Test] 'Ns.Hung.stuck', Elapsed: 00:00:04\n"
+    Profile.observeAt r (at 10.0) "[Long Running Test] 'Ns.Slow.done', Elapsed: 00:00:04\n"
+    // The newest report of a test decides when it started.
+    Profile.observeAt r (at 20.0) "[Long Running Test] 'Ns.Hung.stuck', Elapsed: 00:00:15\n"
+    // Reported long-running, then finished: not running at the kill.
+    Profile.observeAt r (at 21.0) "passed Ns.Slow.done (16s)\n"
+
+    Profile.finish r "timed-out" (Error "no report: the host was killed at its 2s timeout")
+
+    test <@ runningLines dir = [ "Ns.Hung.stuck", at 5.0 ] @>
+
+[<Fact>]
+let ``a run with a report has nothing running at its end`` () =
+    let dir = tempRunDir ()
+    let r = recorder dir
+    Profile.observeAt r (at 10.0) "[Long Running Test] 'Ns.Slow.t', Elapsed: 00:00:04\n"
+    Profile.finish r "passed" (Ok [])
+    test <@ List.isEmpty (runningLines dir) @>
+
+[<Fact>]
+let ``a running line round-trips`` () =
+    let line = Profile.Running("Ns.Hung.stuck", at 5.0)
+    test <@ Profile.tryParse (Profile.render line) = Some line @>
+    test <@ Profile.tryParse """{"event":"running","test":"x"}""" = None @>

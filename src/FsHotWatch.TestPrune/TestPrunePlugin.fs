@@ -4964,6 +4964,64 @@ let internal detailedOutputArgument (configArgs: string) : string option =
 
     if chose then None else Some "--output Detailed"
 
+/// The threshold, in seconds, after which xUnit reports a test as long-running: a third of
+/// the project's timeout, so a test hung until the kill is reported at least twice before
+/// it, and at most 10 s. A report names the test and how long it has run, which is how a
+/// killed host's profile names the test it was running (`Profile.observe`).
+let internal longRunningSeconds (timeoutSec: int option) : int =
+    match timeoutSec with
+    | Some t -> max 1 (min 10 (t / 3))
+    | None -> 10
+
+/// The `testconfig.json` a host is given so xUnit prints its long-running reports, which
+/// are diagnostic messages: the project's own config (`own`, from its build output) with
+/// `xUnit.diagnosticMessages` on. `--config-file` REPLACES a project's config rather than
+/// adding to it, so a config fshw cannot read and merge is an `Error`, and nothing is
+/// injected over it.
+let internal diagnosticsTestConfig (own: string option) : Result<string, string> =
+    try
+        let root =
+            match own with
+            | Some text -> Nodes.JsonNode.Parse text
+            | None -> Nodes.JsonObject() :> Nodes.JsonNode
+
+        match root with
+        | :? Nodes.JsonObject as o ->
+            let xunit =
+                match o["xUnit"] with
+                | null ->
+                    let section = Nodes.JsonObject()
+                    o["xUnit"] <- section
+                    Ok section
+                | :? Nodes.JsonObject as section -> Ok section
+                | _ -> Error "its `xUnit` section is not an object"
+
+            xunit
+            |> Result.map (fun section ->
+                section["diagnosticMessages"] <- Nodes.JsonValue.Create true
+                o.ToJsonString())
+        | _ -> Error "it is not a JSON object"
+    with :? JsonException as ex ->
+        Error $"it is not JSON: %s{ex.Message}"
+
+/// The switches that make xUnit report a test running past `seconds` (`--long-running`) and
+/// print the report (`--config-file`, the diagnostics config at `configPath`); `None` when
+/// the project chose either itself.
+let internal longRunningArguments (configArgs: string) (configPath: string) (seconds: int) : string option =
+    let chose =
+        ProcessHelper.splitArgs configArgs
+        |> Option.defaultValue [||]
+        |> Array.exists (fun t ->
+            t = "--long-running"
+            || t.StartsWith "--long-running="
+            || t = "--config-file"
+            || t.StartsWith "--config-file=")
+
+    if chose then
+        None
+    else
+        Some $"--long-running %d{seconds} --config-file \"%s{configPath}\""
+
 /// The xUnit runner major determines the names of its CTRF report switches.
 /// xUnit 4 names them `--report-xunit-ctrf*`; xUnit 3 used
 /// `--report-ctrf*`. Passing the other family's switches is fatal and runs zero
@@ -5005,12 +5063,10 @@ let internal ctrfReporterPackageId = packageIdRegex xunitMtpBridgeIdPattern
 let internal xunitMtpRunnerPackageId =
     packageIdRegex $"xunit\\.v3|xunit\\.v3\\.mtp-v[0-9]+|%s{xunitMtpBridgeIdPattern}"
 
-/// Resolve the actual xUnit runner family from NuGet's restored graph. The
-/// project file can contain central versions, properties, ranges, or stale
-/// text, while `obj/project.assets.json` records the exact package version that
-/// will run. Missing/malformed assets and unsupported majors return `None` so
-/// auto-detection fails closed rather than giving a runner fatal arguments.
-let internal detectCtrfRunnerFamily (args: string) (repoRoot: string) : CtrfRunnerFamily option =
+/// The project file a runner's arguments name: the value after `--project`/`-p`, else any
+/// token that is itself a project file (`dotnet test path/to/Proj.fsproj`), resolved against
+/// `repoRoot`; a directory resolves to the project file in it.
+let internal runnerProjectFile (args: string) (repoRoot: string) : string option =
     let tokens = argTokens args
 
     let looksLikeProjectFile (t: string) =
@@ -5041,8 +5097,15 @@ let internal detectCtrfRunnerFamily (args: string) (repoRoot: string) : CtrfRunn
         else
             None
 
-    projArg
-    |> Option.bind resolveProjectFile
+    projArg |> Option.bind resolveProjectFile
+
+/// Resolve the actual xUnit runner family from NuGet's restored graph. The
+/// project file can contain central versions, properties, ranges, or stale
+/// text, while `obj/project.assets.json` records the exact package version that
+/// will run. Missing/malformed assets and unsupported majors return `None` so
+/// auto-detection fails closed rather than giving a runner fatal arguments.
+let internal detectCtrfRunnerFamily (args: string) (repoRoot: string) : CtrfRunnerFamily option =
+    runnerProjectFile args repoRoot
     |> Option.bind (fun projFile ->
         try
             let assetsPath =
@@ -5127,6 +5190,32 @@ let internal detectCtrfRunnerFamily (args: string) (repoRoot: string) : CtrfRunn
                 None
         with _ ->
             None)
+
+/// The project's own `<Assembly>.testconfig.json`, newest under its `bin/` (`Some None` when
+/// it has none); `None` when the runner's project cannot be located or its config cannot
+/// be read, so whether injecting one would replace it is unknown.
+let internal projectTestConfigFor (configArgs: string) (repoRoot: string) : string option option =
+    runnerProjectFile configArgs repoRoot
+    |> Option.bind (fun projectFile ->
+        let bin = Path.Combine(Path.GetDirectoryName projectFile, "bin")
+        let name = Path.GetFileNameWithoutExtension projectFile + ".testconfig.json"
+
+        try
+            if Directory.Exists bin then
+                // A directory the walk could not read might hold the config: unknown, not absent.
+                match SafeWalk.walk Set.empty name bin with
+                | { Skipped = [] } as found ->
+                    found.Files
+                    |> List.sortByDescending _.LastWriteTimeUtc
+                    |> List.tryHead
+                    |> Option.map (fun f -> File.ReadAllText f.FullName)
+                    |> Some
+                | _ -> None
+            else
+                Some None
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException -> None)
 
 /// Fallback apphost-missing classifier, used ONLY when `tryApphostPresent` cannot derive
 /// a project from the runner args (custom, non-`dotnet run` commands).
@@ -6287,6 +6376,29 @@ let private executeTests
                         // A result line per test on the console, so a host killed before it
                         // writes this report still leaves its classes in the profile.
                         detailedOutputArgument config.Args |> Option.iter extraArgs.Add
+
+                        // xUnit's report of a test still running past a threshold, so a host
+                        // killed at its timeout still names the test it was running. Its config
+                        // is the project's own with diagnostic messages on; a project whose
+                        // config cannot be found or read gets nothing injected.
+                        match projectTestConfigFor config.Args repoRoot with
+                        | Some own ->
+                            match diagnosticsTestConfig own with
+                            | Ok text ->
+                                let configPath = Path.Combine(runDir, $"{config.Project}.testconfig.json")
+
+                                match
+                                    longRunningArguments config.Args configPath (longRunningSeconds config.TimeoutSec)
+                                with
+                                | Some args ->
+                                    File.WriteAllText(configPath, text)
+                                    extraArgs.Add args
+                                | None -> ()
+                            | Error why ->
+                                Logging.info
+                                    "test-prune"
+                                    $"%s{config.Project}: not asking xUnit for long-running reports — its testconfig.json %s{why}"
+                        | None -> ()
 
                         Some(Path.Combine(runDir, ctrfName))
                     | None -> None

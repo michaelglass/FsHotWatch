@@ -315,6 +315,15 @@ let ``run-tests gives an xUnit 4 runner its v4 flags and reads the report from t
         // Per-test result lines on the console, which a killed host's profile reads its
         // classes from (AUTOMATION-1300).
         test <@ args |> Array.pairwise |> Array.contains ("--output", "Detailed") @>
+        // xUnit reports a test still running after the long-running threshold, so a killed
+        // host's profile can name it; its reports need diagnostic messages on.
+        test <@ args |> Array.pairwise |> Array.contains ("--long-running", "10") @>
+
+        let configFile =
+            args |> Array.pairwise |> Array.find (fun (a, _) -> a = "--config-file") |> snd
+
+        let config = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText configFile)
+        test <@ (config.Item("xUnit").Item("diagnosticMessages").GetValue<bool>()) @>
 
         use doc = JsonDocument.Parse(result.Value)
         let project = doc.RootElement.GetProperty("projects").[0]
@@ -364,3 +373,51 @@ let ``run-tests invokes the real xUnit 4 runner and verifies its CTRF report`` (
     Assert.Equal("passed", project.GetProperty("status").GetString())
     Assert.Equal(4, project.GetProperty("counts").GetProperty("total").GetInt32())
     Assert.Equal(4, project.GetProperty("counts").GetProperty("succeeded").GetInt32())
+
+// --- naming the test running at a kill: xUnit long-running reports (AUTOMATION-1300) ---
+
+[<Theory(Timeout = 5000)>]
+[<InlineData(null, 10)>]
+[<InlineData(600, 10)>]
+[<InlineData(30, 10)>]
+[<InlineData(12, 4)>]
+[<InlineData(2, 1)>]
+let ``the long-running threshold reports a hung test at least twice before the kill``
+    (timeoutSec: System.Nullable<int>)
+    (expected: int)
+    =
+    test <@ longRunningSeconds (Option.ofNullable timeoutSec) = expected @>
+
+[<Fact(Timeout = 5000)>]
+let ``the diagnostics config keeps the project's own testconfig and turns diagnostic messages on`` () =
+    let own =
+        """{"platformOptions": {"exitProcessOnUnhandledException": true}, "xUnit": {"maxParallelThreads": 2}}"""
+
+    match diagnosticsTestConfig (Some own) with
+    | Ok text ->
+        let o = System.Text.Json.Nodes.JsonNode.Parse text
+        test <@ (o.Item("platformOptions").Item("exitProcessOnUnhandledException").GetValue<bool>()) @>
+        test <@ (o.Item("xUnit").Item("maxParallelThreads").GetValue<int>()) = 2 @>
+        test <@ (o.Item("xUnit").Item("diagnosticMessages").GetValue<bool>()) @>
+    | Error e -> failwith e
+
+    match diagnosticsTestConfig None with
+    | Ok text ->
+        test
+            <@ (System.Text.Json.Nodes.JsonNode.Parse(text).Item("xUnit").Item("diagnosticMessages").GetValue<bool>()) @>
+    | Error e -> failwith e
+
+    // A project config fshw cannot read is left alone: no config is injected over it.
+    test <@ Result.isError (diagnosticsTestConfig (Some "{ not json")) @>
+    test <@ Result.isError (diagnosticsTestConfig (Some """{"xUnit": 3}""")) @>
+
+[<Fact(Timeout = 5000)>]
+let ``long-running reporting is not injected over a project's own choice`` () =
+    test <@ longRunningArguments "run --project T -- --long-running 5" "/r/P.testconfig.json" 10 = None @>
+    test <@ longRunningArguments "run --project T -- --config-file my.json" "/r/P.testconfig.json" 10 = None @>
+
+    test
+        <@
+            longRunningArguments "run --project T --" "/r d/P.testconfig.json" 4 = Some
+                "--long-running 4 --config-file \"/r d/P.testconfig.json\""
+        @>

@@ -160,6 +160,7 @@ let private projectRun (runId: string) (outcome: string) (spans: (string * float
       WallMs = None
       TimeoutSec = None
       LoadPerCoreMean = None
+      RunningAtEnd = []
       Classes =
         spans
         |> List.map (fun (cls, sec) ->
@@ -542,3 +543,73 @@ let ``a timeout line says the long pole, the overrun, the load and where to look
         <@
             Insights.timeoutLine bare = "Killed timed out: no class finished before the kill, load unknown — fshw insights --run r1"
         @>
+
+// --- the class running at the kill ---
+
+let private hungProfile =
+    [ Profile.Start("Killed", at 0.0, 4, Some 10, Some 1.0)
+      Profile.End(at 12.0, 12_000L, None, None, "timed-out")
+      Profile.Running("K.Hung.stuck", at 4.0) ]
+    |> List.map Profile.render
+    |> String.concat "\n"
+
+[<Fact>]
+let ``an insight names the test running at the kill, its class and how long it had run`` () =
+    let root = runsRoot ()
+    let dir = runDir root "r1" 0.0 [ "Killed.profile.jsonl", hungProfile ]
+    let i = Insights.loadRun dir |> List.exactlyOne |> Insights.summarize Map.empty
+
+    test
+        <@
+            i.RunningAtKill = [ { Class = "K.Hung"
+                                  Test = "K.Hung.stuck"
+                                  RunningMs = 8_000.0 } ]
+        @>
+
+    test <@ Insights.tryReadInsight (Insights.insightJson i) = Some i @>
+    test <@ (Insights.timeoutLine i).Contains "running at the kill: K.Hung (K.Hung.stuck, 8.0s)" @>
+
+[<Fact>]
+let ``two tests running at the kill are both named, and a run with no end has run for an unknown 0 s`` () =
+    let root = runsRoot ()
+
+    let noEnd =
+        [ Profile.Start("Killed", at 0.0, 4, Some 10, None)
+          Profile.Running("K.A.one", at 1.0)
+          Profile.Running("K.B.two", at 2.0) ]
+        |> List.map Profile.render
+        |> String.concat "\n"
+
+    let dir = runDir root "r1" 0.0 [ "Killed.profile.jsonl", noEnd ]
+    let i = Insights.loadRun dir |> List.exactlyOne |> Insights.summarize Map.empty
+
+    test <@ i.RunningAtKill |> List.map (fun r -> r.Class, r.RunningMs) = [ "K.A", 0.0; "K.B", 0.0 ] @>
+    test <@ (Insights.timeoutLine i).Contains "running at the kill: K.A (K.A.one, 0.0s); K.B (K.B.two, 0.0s)" @>
+
+    let text =
+        Insights.report Insights.Options.defaults (Insights.loadRuns root)
+        |> String.concat "\n"
+
+    test <@ text.Contains "  running at the kill: K.A (K.A.one, 0.0s); K.B (K.B.two, 0.0s)" @>
+
+[<Fact>]
+let ``a running-at-kill entry that is not whole is dropped when an insight is read`` () =
+    let node =
+        System.Text.Json.Nodes.JsonNode.Parse
+            """{"runId":"r","project":"P","slowest":[],
+                "runningAtKill":[1, {"class":"C"}, {"class":"C","test":"C.t","runningMs":5.0}]}"""
+
+    match Insights.tryReadInsight node with
+    | Some i ->
+        test
+            <@
+                i.RunningAtKill = [ { Class = "C"
+                                      Test = "C.t"
+                                      RunningMs = 5.0 } ]
+            @>
+    | None -> failwith "did not read"
+
+    let noArray =
+        System.Text.Json.Nodes.JsonNode.Parse """{"runId":"r","project":"P","runningAtKill":3}"""
+
+    test <@ (Insights.tryReadInsight noArray |> Option.map (fun i -> i.RunningAtKill)) = Some [] @>

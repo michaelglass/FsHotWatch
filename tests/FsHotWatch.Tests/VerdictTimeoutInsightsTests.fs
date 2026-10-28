@@ -40,7 +40,7 @@ let private timeoutRun () : string * Guid =
     let configs =
         [ project
               "Hung.Tests"
-              "-c \"echo 'passed Hung.Pole.a (1900ms)'; echo 'passed Hung.Quick.b (5ms)'; exec sleep 60\""
+              "-c \"echo 'passed Hung.Pole.a (1900ms)'; echo 'passed Hung.Quick.b (5ms)'; echo \\\"[Long Running Test] 'Hung.stuck forever', Elapsed: 00:00:01\\\"; exec sleep 60\""
               (Some 2)
           project "Fine.Tests" "-c \"exit 0\"" None ]
 
@@ -101,6 +101,9 @@ let ``a timeout red's verdict carries the long pole and its share of the wall, a
     test <@ entry.RunId = id @>
     let pole = entry.LongPole |> Option.map (fun p -> p.Class)
     test <@ pole = Some "Hung.Pole" @>
+    // The class running at the kill, from xUnit's long-running report the host printed.
+    let running = entry.RunningAtKill |> List.map (fun r -> r.Class, r.Test)
+    test <@ running = [ "Hung", "Hung.stuck forever" ] @>
     let over = entry.HeadroomMs |> Option.exists (fun h -> h <= 0.0)
     test <@ entry.TimeoutSec = Some 2 && over @>
 

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **feat: a timeout red names the test it was running.** Each verdict `timedOut` entry
+  carries `runningAtKill` (`{class, test, runningMs}`), from xUnit's long-running reports,
+  and `fshw verdict` and `fshw insights` say "running at the kill: <class> (<test>, <s>)".
+  (AUTOMATION-1300.)
+
 - feat: `fshw status` prints the session's snapshot ("snapshot: epoch N (manifest …), M
   stale publication(s) refused"), and `fshw status --repository` adds it to each session's
   line (ADR-046). A repository host gives each session incarnation its own
