@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.93 - 2026-10-27
+
 - feat: a daemon counts its stale publications (ADR-044). New
   `ProjectModel.Publications` (`Accepted`, `Refused`): `DiscoveryCoordinator.WithCurrent`
   counts each publication it writes against the captured model, and each it refuses

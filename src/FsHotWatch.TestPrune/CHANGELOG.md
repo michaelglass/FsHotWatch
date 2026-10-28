@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.93 - 2026-10-27
+
 - **feat: every test project leaves a profile of its run, even when it is killed.**
   `.fshw/test-runs/<runId>/<Project>.profile.jsonl`, streamed by fshw beside the run log:
   the cores, `timeoutSec` and load at launch; the host's pid; every 5 s the 1-minute load

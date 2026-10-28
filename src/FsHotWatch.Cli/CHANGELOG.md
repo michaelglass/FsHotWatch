@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.126 - 2026-10-27
+
 - feat: `fshw status` prints the daemon's publication counts ("publications: N accepted,
   M refused as stale"), and `fshw status --repository` adds them to each session's line
   (ADR-044). A daemon or host that sends none prints as before. New
