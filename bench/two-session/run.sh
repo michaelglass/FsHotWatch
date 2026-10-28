@@ -16,7 +16,9 @@
 #   [out-dir]       where runs are kept (default ~/.local/state/fshw-two-session). Not
 #                   /tmp, which a restart empties, and not inside the FsHotWatch tree,
 #                   whose discovery would find the synthetic project.
-# env: DURATION (default 30), FILES (default 240). `dotnet` must be on PATH.
+# env: DURATION (default 30), FILES (default 240), LINT (default 0; 1 turns the lint plugin
+# on, a `FileChecked` consumer, so the live-result bound of ADR-054 has something to bound).
+# `dotnet` must be on PATH.
 #
 # Writes <out>/<label>/{status.json,summary.tsv,driver.log} and prints the summary.
 set -euo pipefail
@@ -26,6 +28,7 @@ label=${2:?label}
 out=${3:-$HOME/.local/state/fshw-two-session}
 duration=${DURATION:-30}
 files=${FILES:-240}
+lint=$( [ "${LINT:-0}" = 1 ] && echo true || echo false )
 
 run_dir="$out/$label"
 rm -rf "$run_dir"
@@ -65,9 +68,10 @@ cat > "$r/.fshw.json" <<'JSON'
   "repositoryHost": true,
   "build": { "command": "dotnet", "args": "build src/Synth/Synth.fsproj -nologo -v q" },
   "format": false,
-  "lint": false
+  "lint": LINT_ON
 }
 JSON
+sed -i.bak "s/LINT_ON/$lint/" "$r/.fshw.json" && rm "$r/.fshw.json.bak"
 printf 'bin/\nobj/\n.fshw/\n' > "$r/.gitignore"
 
 (cd "$r" && jj git init --quiet . && jj commit -m "synthetic" --quiet && jj workspace add --quiet -r @- "$b")
@@ -133,3 +137,12 @@ jq -r --arg label "$label" '
          ($a[$class].granted // 0), ($a[$class].longestWaitMs // 0),
          ($a[$class].waitedMs // 0), ($a.heldMs // 0)] )
   | @tsv' "$run_dir/status.json" | tee "$run_dir/summary.tsv"
+
+# Each session's live check results (ADR-054): the bound, the most held at once, and how
+# long a producer waited for a place. Absent on a build before ADR-054.
+jq -r --arg label "$label" '
+  ["label","session","liveBound","livePeak","liveAdmitted","liveLongestWaitMs","liveWaitedMs"],
+  ( .sessions[] | (.root | split("/") | last) as $who | (.liveResults // {}) as $l
+    | [$label, $who, ($l.bound // "-"), ($l.peak // "-"), ($l.admitted // "-"),
+       ($l.longestWaitMs // "-"), ($l.waitedMs // "-")] )
+  | @tsv' "$run_dir/status.json" | tee "$run_dir/live-results.tsv"

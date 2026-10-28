@@ -3123,6 +3123,14 @@ let internal daemonWith
     let pressureIdleFloorMin =
         FsHotWatch.IdleExit.resolvePressureFloor config.PressureIdleFloorMin
 
+    // `FSHW_LIVE_RESULTS` in this process's environment bounds how many check results
+    // this daemon's plugins hold at once (ADR-054). For a hosted session it is the host's
+    // environment.
+    let liveResultBound, liveResultWarning =
+        FsHotWatch.LiveResults.resolveBound Environment.GetEnvironmentVariable
+
+    liveResultWarning |> Option.iter (FsHotWatch.Logging.warn "live-results")
+
     Daemon.create
         root
         { Daemon.DaemonOptions.defaults with
@@ -3135,7 +3143,8 @@ let internal daemonWith
             IdleExitSource = idleExit.Source
             PressureIdleFloorMin = pressureIdleFloorMin
             CheckerCacheSizeFactor = config.CheckerCacheSizeFactor
-            Hosting = hosting }
+            Hosting = hosting
+            LiveResultBound = liveResultBound }
 
 /// `fshw host <root>`: serve the repository `root` belongs to until stopped or idle.
 /// Launched on demand by an opted-in CLI, from the host's control directory, with the

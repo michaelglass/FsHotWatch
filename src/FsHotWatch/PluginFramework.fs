@@ -620,6 +620,11 @@ type DispatchReceipt =
     private
     | DispatchReceipt of System.Threading.Tasks.Task<unit>
 
+    /// Completes when the event's state is committed, or fails with its failure.
+    member internal this.Completion: System.Threading.Tasks.Task =
+        let (DispatchReceipt completion) = this
+        completion :> System.Threading.Tasks.Task
+
     /// Wait at most `timeout` for the event's commit.
     member this.Wait(timeout: TimeSpan) =
         let (DispatchReceipt completion) = this
