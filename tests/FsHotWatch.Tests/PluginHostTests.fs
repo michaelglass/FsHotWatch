@@ -590,7 +590,8 @@ let ``EmitFileChecked dispatches to framework plugin handlers`` () =
           Version = 0L
           ModelGeneration = None
           Frame = None
-          Placed = Map.empty }
+          Placed = Map.empty
+          Upstream = None }
 
     host.EmitFileChecked(dummyResult)
 
@@ -614,7 +615,8 @@ let private fullCheckResult (file: string) : FileCheckResult =
       Version = 0L
       ModelGeneration = None
       Frame = None
-      Placed = Map.empty }
+      Placed = Map.empty
+      Upstream = None }
 
 let private parseOnlyResult (file: string) : FileCheckResult =
     { File = AbsFilePath.create file
@@ -625,7 +627,8 @@ let private parseOnlyResult (file: string) : FileCheckResult =
       Version = 0L
       ModelGeneration = None
       Frame = None
-      Placed = Map.empty }
+      Placed = Map.empty
+      Upstream = None }
 
 [<Fact(Timeout = 15000)>]
 let ``EmitFileChecked with FullCheck marks the file checked`` () =

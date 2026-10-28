@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **feat!: an old read that lands after a newer answer is refused, dependents included
+  (ADR-047).** `FileCheckResult` gains `Upstream: CheckedAgainst option`. `ReadAt` is the
+  check pipeline's read sequence, taken before a lookup reads its inputs. `Fingerprint` is
+  the source-only upstream (`CheckCache.sourceUpstreamFingerprints`,
+  `UpstreamFingerprints.ForSnapshot`). A change batch records each answer it publishes
+  (`SnapshotEpoch.Ledger.RecordPublished`). A scan answer that read before such an answer
+  and answers another question (other bytes or upstream) is not published, only counted.
+  `Ledger.Accepts` takes the `CheckedAgainst`. Code that constructs a `FileCheckResult` must
+  set the new field.
+
 - **feat!: a publication is guarded by incarnation, epoch and generation (ADR-046).** A
   scan captures the session's snapshot epoch with its model, and a `FileChecked` that read
   bytes a later change cohort replaced is not published, only counted. A change batch now

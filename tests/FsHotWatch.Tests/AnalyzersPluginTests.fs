@@ -189,7 +189,8 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
           Version = 0L
           ModelGeneration = Some fixtureModelGeneration
           Frame = None
-          Placed = Map.empty }
+          Placed = Map.empty
+          Upstream = None }
 
     host.EmitFileChecked(fakeResult)
 

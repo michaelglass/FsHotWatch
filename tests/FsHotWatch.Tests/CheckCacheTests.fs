@@ -296,7 +296,8 @@ let private makeTestResult (file: string) (version: int64) : CachedCheck =
           Version = version
           ModelGeneration = None
           Frame = None
-          Placed = Map.empty }
+          Placed = Map.empty
+          Upstream = None }
       ProjectOutputs = [] }
 
 let private makeKey (fileHash: string) : CacheKey =
@@ -580,6 +581,40 @@ let ``upstreamFingerprint changes when a referenced assembly's content changes``
             opts
 
     Assert.NotEqual<string>(fp "v1", fp "v2")
+
+// ADR-047: the snapshot upstream names sources only. A rebuilt assembly does not move it,
+// and an earlier file or a referenced project's source still does.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the snapshot upstream ignores assemblies and follows sources`` () =
+    let lib = makeProjectOptions "/repo/Lib.fsproj" [ "/repo/Lib.fs" ] []
+
+    let app =
+        { makeProjectOptions
+              "/repo/App.fsproj"
+              [ "/repo/A.fs"; "/repo/App.fs" ]
+              [ "-r:/repo/lib/Vendored.dll"; "-r:/repo/obj/Lib.dll" ] with
+            ReferencedProjects =
+                [| FSharp.Compiler.CodeAnalysis.FSharpReferencedProject.FSharpReference("/repo/obj/Lib.dll", lib) |] }
+
+    let fp dll a libSource =
+        let table =
+            sourceUpstreamFingerprints
+                (fakeHasher (
+                    Map
+                        [ "/repo/lib/Vendored.dll", dll
+                          "/repo/A.fs", a
+                          "/repo/Lib.fs", libSource
+                          "/repo/App.fs", "app" ]
+                ))
+                (Some "/repo")
+                app
+            |> fst
+
+        table["/repo/App.fs"]
+
+    test <@ fp "v1" "a" "lib" = fp "v2" "a" "lib" @>
+    test <@ fp "v1" "a" "lib" <> fp "v1" "a2" "lib" @>
+    test <@ fp "v1" "a" "lib" <> fp "v1" "a" "lib2" @>
 
 [<Fact(Timeout = 15000)>]
 let ``upstreamFingerprint does not hash assemblies outside the repository`` () =

@@ -1621,6 +1621,9 @@ type internal BatchContext =
         /// This session's snapshot epoch and manifest, advanced only by its own accepted
         /// change cohorts (ADR-045).
         Snapshots: SnapshotEpoch.Ledger
+        /// Test seam (ADR-047): called with each answer a scan is about to publish, after the
+        /// pipeline read its inputs and before its publication. `ignore` outside tests.
+        BeforeScanPublication: (FileCheckResult -> unit) ref
         /// What this daemon does differently as a session of a repository host.
         Seams: DaemonHosting.HostingSeams
     }
@@ -2182,6 +2185,13 @@ let private processBatchAttempt
                                     ModelGeneration = modelGenerationOf batchModel }
 
                             dispatchedFiles.Add(checkResult.File)
+                            // ADR-047: what a scan that captured an earlier epoch is judged against.
+                            ctx.Snapshots.RecordPublished(
+                                AbsFilePath.value checkResult.File,
+                                ContentHash.ofText checkResult.Source,
+                                checkResult.Upstream
+                            )
+
                             ctx.Host.EmitFileChecked(checkResult)
                             reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult)
                     // Unlike the cold scan (see `runChecksWithRetry`), the batch
@@ -3071,7 +3081,9 @@ type Daemon
         // The checker this daemon checks through: its own, or its partition's in a host.
         checker: FSharpChecker,
         // This session's snapshot epoch and manifest (ADR-045), shared with its change batches.
-        snapshots: SnapshotEpoch.Ledger
+        snapshots: SnapshotEpoch.Ledger,
+        // The test seam scans call before each publication (ADR-047).
+        beforeScanPublication: (FileCheckResult -> unit) ref
     ) =
 
     let mutable disposed = false
@@ -3147,6 +3159,10 @@ type Daemon
 
     /// This session's epoch, manifest id and stale-refusal count (ADR-046).
     member _.SnapshotStatus() : SnapshotEpoch.SnapshotStatus = snapshots.Status
+
+    /// Test seam (ADR-047): call `hold` with each answer a scan is about to publish, after
+    /// the pipeline read its inputs and before its publication.
+    member internal _.HoldScanPublications(hold: FileCheckResult -> unit) = beforeScanPublication.Value <- hold
 
     /// Only TOTAL loader failure is terminal here. A project that loaded but did
     /// not register is a distinct later-stage defect and must not be called an
@@ -4346,6 +4362,7 @@ let private performScan
                     // inside `publishCurrent`, which holds the discovery state lock.
                     let emitChecked (checkResult: FileCheckResult) =
                         let sourceHash = ContentHash.ofText checkResult.Source
+                        ctx.BeforeScanPublication.Value checkResult
 
                         publishCurrent (fun () ->
                             let checkResult =
@@ -4357,7 +4374,12 @@ let private performScan
                             // publishes the current answer; this one is old work finishing
                             // after new work: counted, not published.
                             if
-                                ctx.Snapshots.Accepts(capturedSnapshot, AbsFilePath.value checkResult.File, sourceHash)
+                                ctx.Snapshots.Accepts(
+                                    capturedSnapshot,
+                                    AbsFilePath.value checkResult.File,
+                                    sourceHash,
+                                    checkResult.Upstream
+                                )
                             then
                                 checkedCount <- checkedCount + 1
                                 dispatchedFiles.Add(checkResult.File)
@@ -4884,6 +4906,8 @@ module Daemon =
             let snapshots =
                 SnapshotEpoch.Ledger(List.distinct [ repoRoot; CommandPreprocessor.realPathOf repoRoot ])
 
+            let beforeScanPublication = ref ignore
+
             let batchCtx: BatchContext =
                 { Host = host
                   InvalidateFcs =
@@ -4917,6 +4941,7 @@ module Daemon =
                   InSessionBatchGen = ref 0L
                   Seams = seams
                   Snapshots = snapshots
+                  BeforeScanPublication = beforeScanPublication
                   DepsGate =
                     if isNull (box checker) then
                         // No FCS analysis happens with a null checker (test
@@ -5151,7 +5176,8 @@ module Daemon =
                 processRegistry,
                 changeInput.Close,
                 checker,
-                snapshots
+                snapshots,
+                beforeScanPublication
             )
         with _ ->
             lifetime.Dispose()

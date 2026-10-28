@@ -99,7 +99,8 @@ let fakeFileCheckResult (file: string) : FileCheckResult =
       Version = 0L
       ModelGeneration = Some fixtureModelGeneration
       Frame = None
-      Placed = Map.empty }
+      Placed = Map.empty
+      Upstream = None }
 
 /// Build a `BatchChecked` payload covering `files`, with deterministic timestamps and
 /// Generation = 1.
@@ -854,7 +855,8 @@ let checkDownstream (root: string) (layout: UpstreamLayout) (upSource: string) (
       Version = 0L
       ModelGeneration = None
       Frame = None
-      Placed = Map.empty },
+      Placed = Map.empty
+      Upstream = None },
     check
 
 /// Check `root/<name>` (`source`) as the only file of a project, through the daemon's

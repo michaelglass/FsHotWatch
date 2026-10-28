@@ -31,7 +31,8 @@ let private checkedFile =
       Version = 0L
       ModelGeneration = None
       Frame = None
-      Placed = Map.empty }
+      Placed = Map.empty
+      Upstream = None }
 
 [<Fact(Timeout = 120000)>]
 let ``an emit under the discovery lock finishes while the scan's other callbacks wait for that lock`` () =
