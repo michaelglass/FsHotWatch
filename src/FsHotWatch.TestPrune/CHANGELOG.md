@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **fix: a long-running report printed in colour is read.** In CI (`CI`, `GITHUB_ACTIONS`,
+  `TF_BUILD` set) a host colours its output even when redirected, and
+  `Profile.parseLongRunning`, unlike `parseCompletion`, read the raw line, so on CI no
+  test was named as running at the kill. Both now read the line with colour removed.
+  (AUTOMATION-1300.)
+
 - **fix: a project's own testconfig.json is found by the assembly it builds, not its file
   name.** The long-running config replaces a project's `testconfig.json` (`--config-file`
   does not merge), so it must merge the right one. It is now `<Assembly>.testconfig.json`

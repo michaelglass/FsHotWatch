@@ -173,6 +173,9 @@ let ``a console class line round-trips with its source`` () =
 [<Theory>]
 [<InlineData("[Long Running Test] 'Ns.Hung.stuck', Elapsed: 00:00:03", "Ns.Hung.stuck", 3000L)>]
 [<InlineData("[Long Running Test] 'Ns.C.it''s quoted', Elapsed: 01:02:05\r", "Ns.C.it''s quoted", 3725000L)>]
+// Coloured, as a host prints it in CI (`CI`/`GITHUB_ACTIONS` set), where MTP colours redirected output.
+[<InlineData("\u001b[93m[Long Running Test] 'Ns.Hung.stuck', Elapsed: 00:00:19", "Ns.Hung.stuck", 19000L)>]
+[<InlineData("\u001b[93m[Long Running Test] 'Ns.Hung.stuck', Elapsed: 00:00:19\u001b[m", "Ns.Hung.stuck", 19000L)>]
 let ``parseLongRunning reads xUnit's long-running test report`` (line: string, name: string, ms: int64) =
     test <@ Profile.parseLongRunning line = Some(name, ms) @>
 

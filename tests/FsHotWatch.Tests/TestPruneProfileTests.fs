@@ -147,7 +147,10 @@ let ``a real xUnit host killed at its timeout still gets per-class lines`` () =
               "sh"
               $"-c \"shift; exec '%s{apphost}' \\\"$@\\\"\" sh \"%s{fixtureProject}\""
               (Some(HangWaitMs / 1000)) with
-            Environment = [ "FSHW_FIXTURE_HANG", "1" ]
+            // `CI`: the host colours its output, as it does on every CI runner (GitHub sets it), so
+            // this test reads what CI reads on every platform. Uncoloured output is pinned by
+            // the parser tests.
+            Environment = [ "FSHW_FIXTURE_HANG", "1"; "CI", "true" ]
             ReportVerificationFormat = AutoDetect }
 
     let status, lines = runOnce config
