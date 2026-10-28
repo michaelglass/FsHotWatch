@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Two-session repository-host admission harness (ADR-049, ADR-051, ADR-052).
+# Two-session repository-host admission harness (ADR-049, ADR-051, ADR-052, ADR-058).
 #
 # One repository host serves two worktrees of a synthetic repository: one project of
 # 240 chained files, `r` and its jj workspace `b`. Both cold-scan. Then, for DURATION
@@ -18,6 +18,10 @@
 #                   whose discovery would find the synthetic project.
 # env: DURATION (default 30), FILES (default 240), LINT (default 0; 1 turns the lint plugin
 # on, a `FileChecked` consumer, so the live-result bound of ADR-054 has something to bound).
+# CHAINS (default 0): also a chain of CHAINS small projects of SMALL_FILES (default 5)
+# files each, S1 <- S2 <- ... , beside the big one, and an `All` project referencing the big
+# one and the last of the chain. The big project shares the first tier with S1, so under a
+# tier barrier the chain waits for it, and under ADR-056 it does not.
 # `dotnet` must be on PATH.
 #
 # Writes <out>/<label>/{status.json,summary.tsv,driver.log} and prints the summary.
@@ -29,6 +33,8 @@ out=${3:-$HOME/.local/state/fshw-two-session}
 duration=${DURATION:-30}
 files=${FILES:-240}
 lint=$( [ "${LINT:-0}" = 1 ] && echo true || echo false )
+chains=${CHAINS:-0}
+small_files=${SMALL_FILES:-5}
 
 run_dir="$out/$label"
 rm -rf "$run_dir"
@@ -63,15 +69,55 @@ for n in $(seq 1 "$files"); do
   fi
 done
 
+# --- optional: a chain of small projects, and a project over both (ADR-056) ---
+build_project=src/Synth/Synth.fsproj
+if [ "$chains" -gt 0 ]; then
+  for k in $(seq 1 "$chains"); do
+    dir="$r/src/S$k"
+    mkdir -p "$dir"
+    {
+      echo '<Project Sdk="Microsoft.NET.Sdk">'
+      echo '  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>'
+      echo '  <ItemGroup>'
+      for j in $(seq 1 "$small_files"); do echo "    <Compile Include=\"S${k}F${j}.fs\" />"; done
+      echo '  </ItemGroup>'
+      [ "$k" -gt 1 ] && echo "  <ItemGroup><ProjectReference Include=\"../S$((k - 1))/S$((k - 1)).fsproj\" /></ItemGroup>"
+      echo '</Project>'
+    } > "$dir/S$k.fsproj"
+    for j in $(seq 1 "$small_files"); do
+      if [ "$j" -eq 1 ]; then
+        if [ "$k" -eq 1 ]; then prev=1; else prev="S$((k - 1))F${small_files}.value"; fi
+      else
+        prev="S${k}F$((j - 1)).value"
+      fi
+      printf 'module S%sF%s\n\nlet value = %s + 1\n' "$k" "$j" "$prev" > "$dir/S${k}F${j}.fs"
+    done
+  done
+  mkdir -p "$r/src/All"
+  cat > "$r/src/All/All.fsproj" <<EOF
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+  <ItemGroup><Compile Include="All.fs" /></ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Synth/Synth.fsproj" />
+    <ProjectReference Include="../S$chains/S$chains.fsproj" />
+  </ItemGroup>
+</Project>
+EOF
+  last=$(printf '%03d' "$files")
+  printf 'module All\n\nlet value = File%s.value + S%sF%s.value\n' "$last" "$chains" "$small_files" > "$r/src/All/All.fs"
+  build_project=src/All/All.fsproj
+fi
+
 cat > "$r/.fshw.json" <<'JSON'
 {
   "repositoryHost": true,
-  "build": { "command": "dotnet", "args": "build src/Synth/Synth.fsproj -nologo -v q" },
+  "build": { "command": "dotnet", "args": "build BUILD_PROJECT -nologo -v q" },
   "format": false,
   "lint": LINT_ON
 }
 JSON
-sed -i.bak "s/LINT_ON/$lint/" "$r/.fshw.json" && rm "$r/.fshw.json.bak"
+sed -i.bak -e "s/LINT_ON/$lint/" -e "s#BUILD_PROJECT#$build_project#" "$r/.fshw.json" && rm "$r/.fshw.json.bak"
 printf 'bin/\nobj/\n.fshw/\n' > "$r/.gitignore"
 
 (cd "$r" && jj git init --quiet . && jj commit -m "synthetic" --quiet && jj workspace add --quiet -r @- "$b")
@@ -146,3 +192,17 @@ jq -r --arg label "$label" '
     | [$label, $who, ($l.bound // "-"), ($l.peak // "-"), ($l.admitted // "-"),
        ($l.longestWaitMs // "-"), ($l.waitedMs // "-")] )
   | @tsv' "$run_dir/status.json" | tee "$run_dir/live-results.tsv"
+
+# Each session's cold scan, from its own scan record (`.fshw/scan-metrics.jsonl`): how
+# long it took, what it checked, and the process's working set at its end. For a hosted
+# session that process is the host, so the figure covers both sessions.
+{
+  printf 'label\tsession\tcoldScanMs\tfilesChecked\tcheckStarts\tretryRounds\trssMB\n'
+  for who in r b; do
+    jq -r --arg label "$label" --arg who "$who" '
+      select(.kind == "cold")
+      | [$label, $who, (.durationMs | floor), .filesChecked, .checkStarts, .retryRounds,
+         ((.rssBytes / 1048576) | floor)]
+      | @tsv' "$run_dir/$who/.fshw/scan-metrics.jsonl" 2>/dev/null | head -1
+  done
+} | tee "$run_dir/scan.tsv"
