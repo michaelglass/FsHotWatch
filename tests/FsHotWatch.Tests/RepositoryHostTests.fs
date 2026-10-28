@@ -304,7 +304,22 @@ let ``a session's saves advance only its own snapshot epoch`` () =
 
         test <@ Set.ofSeq (sb.Daemon.Snapshot().Entries.Keys) = set [ "src/Other.fs" ] @>
         test <@ epochOf sa = 2L @>
-        test <@ sa.Daemon.SnapshotHashed().Files = 3 @>)
+        test <@ sa.Daemon.SnapshotHashed().Files = 3 @>
+
+        // ADR-046: `status --repository` names each session's own epoch and manifest.
+        let listed = JsonNode.Parse(host.ListSessions())
+
+        let reported =
+            listed["sessions"].AsArray()
+            |> Seq.map (fun s ->
+                let snapshot = s["snapshot"]
+
+                s["root"].GetValue<string>(),
+                (snapshot["epoch"].GetValue<int64>(), snapshot["manifest"].GetValue<string>()))
+            |> Map.ofSeq
+
+        test <@ reported[rootA] = (2L, sa.Daemon.Snapshot().Id) @>
+        test <@ reported[rootB] = (1L, sb.Daemon.Snapshot().Id) @>)
 
 [<Fact(Timeout = 60000)>]
 let ``a claimed root that does not resolve is refused, and starts nothing`` () =

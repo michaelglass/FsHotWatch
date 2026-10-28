@@ -133,8 +133,9 @@ type Reports() =
 /// the repository's canonical content for it (`CanonicalProjects`). Otherwise it is
 /// checked where it is: `report` holds why, and the log says so once per project and
 /// reason.
-let choice
+let choiceFor
     (registry: CanonicalProjects.Registry)
+    (lease: CanonicalProjects.Lease)
     (report: Report)
     (realRoot: string)
     (virtualRoot: string)
@@ -166,7 +167,7 @@ let choice
                     )
                 with
                 | Some excluded -> Some(ReadsItsLocation(excluded.Construct, relative excluded.Where))
-                | None when registry.Claim(project, closure, realRoot) -> None
+                | None when registry.Claim(project, closure, lease) -> None
                 | None -> Some(NotCanonical(registry.HoldersOf project))
 
         let decision = atOwnPaths ()
@@ -181,3 +182,13 @@ let choice
 
             None
         | None -> Some frame
+
+/// `choiceFor`, claiming through a lease of `realRoot`'s own that is never released.
+let choice
+    (registry: CanonicalProjects.Registry)
+    (report: Report)
+    (realRoot: string)
+    (virtualRoot: string)
+    (log: string -> unit)
+    : PathFrame.FrameChoice =
+    choiceFor registry (registry.Open realRoot) report realRoot virtualRoot log

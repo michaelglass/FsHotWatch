@@ -1748,6 +1748,7 @@ let private processBatchAttempt
     (changes: FileChangeKind list)
     (suppressed: Set<string>)
     (hasContentChanged: string -> bool)
+    (advanceSnapshot: string list -> unit)
     =
     async {
         // An incremental batch — the FCS re-check a file
@@ -2034,6 +2035,9 @@ let private processBatchAttempt
 
         if not allSourceFiles.IsEmpty then
             let modifiedByPreprocessors = ctx.Host.RunPreprocessors(allSourceFiles).Modified
+            // The cohort's content is the next snapshot (ADR-045), taken before any of its
+            // results is published (ADR-046).
+            advanceSnapshot modifiedByPreprocessors
             // A file a preprocessor rewrote is what the build must now see, whether or not
             // the batch held it: a generated source joins the batch it was produced for.
             allSourceFiles <- (allSourceFiles @ modifiedByPreprocessors) |> List.distinct
@@ -2217,7 +2221,7 @@ let private processBatchAttempt
                 seal ()
 
             batchPhase.Complete(Some $"change batch: %d{dispatchedFiles.Count} file(s) checked")
-            return newSuppressed, modifiedByPreprocessors
+            return newSuppressed
         else
             // A batch that REPLACED the model with one that has no checkable files still
             // owes the new model its seal, exactly as the cold scan seals an empty cohort:
@@ -2228,7 +2232,9 @@ let private processBatchAttempt
             if modelGenerationOf batchModel <> modelGenerationOf initialModel then
                 seal ()
 
-            return remainingSuppressed, []
+            // No source to check: the cohort's content (project inputs) is the next snapshot.
+            advanceSnapshot []
+            return remainingSuppressed
     }
 
 /// How many attempts a change cohort makes before a model that keeps changing fails it.
@@ -2302,12 +2308,30 @@ let internal processBatch
         else
             true
 
+    // The cohort is this session's next snapshot (ADR-045). Its paths are the ones whose
+    // content it admitted, owed ones included, and the files its preprocessors wrote, whose
+    // watcher echoes are suppressed and so would otherwise never reach the manifest.
+    // Nothing else is read. Taken before the attempt publishes any result (ADR-046); a
+    // retried attempt takes it again, and an unchanged manifest keeps its epoch.
+    let advanceSnapshot (rewritten: string list) =
+        let cohort =
+            [ for entry in admitted do
+                  if entry.Value then
+                      yield entry.Key
+              yield! rewritten ]
+
+        ctx.Snapshots.Advance cohort
+        |> Option.iter (fun advance ->
+            Logging.debug
+                "snapshot"
+                $"epoch=%d{advance.Manifest.Epoch.Value} manifest=%s{advance.Manifest.Id} hashed=%d{advance.Hashed.Files} file(s), %d{advance.Hashed.Bytes} bytes")
+
     let rec completeCurrent attempt =
         async {
             ctx.DaemonCt.Value.ThrowIfCancellationRequested()
 
             try
-                return! processBatchAttempt ctx seenAt changes suppressed hasContentChanged
+                return! processBatchAttempt ctx seenAt changes suppressed hasContentChanged advanceSnapshot
             with :? ModelSupersededException when attempt < changeBatchAttemptLimit ->
                 Logging.debug "changes" "model superseded; running the cohort against the current model"
                 return! completeCurrent (attempt + 1)
@@ -2315,25 +2339,7 @@ let internal processBatch
 
     async {
         try
-            let! suppressedAfter, rewritten = completeCurrent 1
-
-            // The cohort is accepted: it is this session's next snapshot (ADR-045). Its
-            // paths are the ones whose content it admitted, owed ones included, and the
-            // files its preprocessors wrote, whose watcher echoes are suppressed and so
-            // would otherwise never reach the manifest. Nothing else is read.
-            let cohort =
-                [ for entry in admitted do
-                      if entry.Value then
-                          yield entry.Key
-                  yield! rewritten ]
-
-            ctx.Snapshots.Advance cohort
-            |> Option.iter (fun advance ->
-                Logging.debug
-                    "snapshot"
-                    $"epoch=%d{advance.Manifest.Epoch.Value} manifest=%s{advance.Manifest.Id} hashed=%d{advance.Hashed.Files} file(s), %d{advance.Hashed.Bytes} bytes")
-
-            return suppressedAfter
+            return! completeCurrent 1
         with :? ModelSupersededException ->
             let owed =
                 { Changes = changes
@@ -3139,6 +3145,9 @@ type Daemon
     /// How much content this session's snapshots hashed, summed over its cohorts.
     member _.SnapshotHashed() : SnapshotEpoch.Hashed = snapshots.Hashed
 
+    /// This session's epoch, manifest id and stale-refusal count (ADR-046).
+    member _.SnapshotStatus() : SnapshotEpoch.SnapshotStatus = snapshots.Status
+
     /// Only TOTAL loader failure is terminal here. A project that loaded but did
     /// not register is a distinct later-stage defect and must not be called an
     /// MSBuild evaluation failure.
@@ -3498,6 +3507,7 @@ type Daemon
                       GetUncheckedCount = getUncheckedCount
                       GetProjectModel = this.ProjectModel
                       GetPublications = this.Publications
+                      GetSnapshot = fun () -> snapshots.Status
                       // Captured here, with this daemon's process scope installed: in a
                       // repository host the session's endpoint is served from the host's
                       // context, and the session's RPCs still run in the session's.
@@ -4130,7 +4140,7 @@ let private performScan
             // membership, dependency tiers and options together once no writer is
             // between clear and completion; every publication below is refused if a
             // later attempt replaced this model.
-            let! capturedModel, registeredProjects, registeredFiles, scanTiers =
+            let! capturedModel, registeredProjects, registeredFiles, scanTiers, capturedSnapshot =
                 ctx.Discovery.Capture(fun epoch ->
                     let tiers =
                         graph.GetParallelTiers()
@@ -4144,7 +4154,10 @@ let private performScan
                     epoch,
                     pipeline.GetRegisteredProjects(),
                     pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value,
-                    tiers)
+                    tiers,
+                    // ADR-046: the session's snapshot this scan checks against. A result
+                    // that read bytes a later cohort replaced is refused at publication.
+                    ctx.Snapshots.Current.Epoch)
 
             let modelGeneration = modelGenerationOf capturedModel
 
@@ -4339,11 +4352,19 @@ let private performScan
                                 { checkResult with
                                     ModelGeneration = modelGeneration }
 
-                            checkedCount <- checkedCount + 1
-                            dispatchedFiles.Add(checkResult.File)
-                            checkedSources[AbsFilePath.value checkResult.File] <- sourceHash
-                            host.EmitFileCheckedFor(consumers, checkResult)
-                            reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
+                            // ADR-046: a cohort at a later epoch changed this file, and this
+                            // check read bytes the snapshot no longer holds. The cohort
+                            // publishes the current answer; this one is old work finishing
+                            // after new work: counted, not published.
+                            if
+                                ctx.Snapshots.Accepts(capturedSnapshot, AbsFilePath.value checkResult.File, sourceHash)
+                            then
+                                checkedCount <- checkedCount + 1
+                                dispatchedFiles.Add(checkResult.File)
+                                checkedSources[AbsFilePath.value checkResult.File] <- sourceHash
+                                host.EmitFileCheckedFor(consumers, checkResult)
+                                reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
+
                             completed <- completed + 1
 
                             publish

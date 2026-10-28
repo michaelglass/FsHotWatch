@@ -44,6 +44,12 @@ let private agentDiagnosticLine (file: string) (d: DiagnosticEntry) : string =
     let msg = d.Message.Replace('\r', ' ').Replace('\n', ' ').Trim()
     $"%s{d.Plugin}:%s{file}:%d{d.Line}:%d{d.Column}: %s{DiagnosticSeverity.toString d.Severity} %s{msg}"
 
+/// The `status` line for the session's snapshot (ADR-046).
+let snapshotLine (snapshot: FsHotWatch.SnapshotEpoch.SnapshotStatus) : string =
+    let manifest = snapshot.Manifest.Substring(0, min 12 snapshot.Manifest.Length)
+
+    $"snapshot: epoch %d{snapshot.Epoch.Value} (manifest %s{manifest}), %d{snapshot.Refused} stale publication(s) refused (they checked bytes a later save replaced)"
+
 /// The `status` line for the daemon's publication counts (ADR-044).
 let publicationsLine (publications: FsHotWatch.ProjectModel.Publications) : string =
     $"publications: %d{publications.Accepted} accepted, %d{publications.Refused} refused as stale (a newer project model superseded the work)"

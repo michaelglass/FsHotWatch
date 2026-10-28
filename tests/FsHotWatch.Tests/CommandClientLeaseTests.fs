@@ -99,6 +99,7 @@ let private config (host: PluginHost) (invocationReleased: string -> Cancellatio
       GetUncheckedCount = fun () -> 0
       GetProjectModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved
       GetPublications = fun () -> FsHotWatch.ProjectModel.Publications.none
+      GetSnapshot = fun () -> FsHotWatch.SnapshotEpoch.Ledger([ "/" ]).Status
       Context = None }
 
 let private hostWith (probe: Probe) =

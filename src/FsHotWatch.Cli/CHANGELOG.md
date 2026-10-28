@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `fshw status` prints the session's snapshot ("snapshot: epoch N (manifest …), M
+  stale publication(s) refused"), and `fshw status --repository` adds it to each session's
+  line (ADR-046). A repository host gives each session incarnation its own
+  `CanonicalProjects` lease, released when it ends. New `IpcParsing.snapshotOf`,
+  `IpcOutput.snapshotLine`.
+
 - **feat: a timeout red's verdict points at its insights.** The verdict file's new
   `timedOut` lists every project its runs record as timed out, with the long pole and its
   share of the wall, the headroom (negative when over), whether the run was contended,

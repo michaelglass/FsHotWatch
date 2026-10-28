@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **feat!: a publication is guarded by incarnation, epoch and generation (ADR-046).** A
+  scan captures the session's snapshot epoch with its model, and a `FileChecked` that read
+  bytes a later change cohort replaced is not published, only counted. A change batch now
+  takes its snapshot before it publishes (`SnapshotEpoch.Ledger.Accepts`, `Status`; new
+  `SnapshotStatus` with its wire form). `CanonicalProjects` gains incarnation leases (`Lease`, `Registry.Open`,
+  `Claim`/`Release` through a lease, `RefusedRetired`): an ended incarnation's late claim
+  is refused and holds nothing. `SessionFrames.choiceFor` claims through a lease.
+  `DaemonRpcConfig` gains `GetSnapshot`, the `GetDiagnostics` reply a `snapshot` object,
+  `status --repository` a `snapshot` per session, and `Daemon.SnapshotStatus()`. Code
+  that constructs a `DaemonRpcConfig` must set the new field.
+
 - feat: a session has a snapshot epoch and an immutable manifest (ADR-045). New module
   `SnapshotEpoch`: `SnapshotEpoch`, `Manifest` (repository-relative path to content id,
   with tombstones, and an `Id` over its entries), `Hashed`, and `Ledger`. Each daemon owns
