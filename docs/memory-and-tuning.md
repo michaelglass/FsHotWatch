@@ -45,21 +45,6 @@ check of it. A scan logs both, e.g.
 `Check concurrency peak 12 of 12; project snapshots built so far: 24`. A snapshot count
 near the number of files, rather than the number of projects, means sharing broke.
 
-## Bounded live results: `FSHW_LIVE_RESULTS`
-
-A check's result (its parse and check results) stays in memory until every plugin that
-reads checked files (lint, analyzers, test-prune) has processed it. The daemon lets its
-plugins hold at most twice as many results as the machine has processors (ADR-054). A
-check whose result would go past that waits for the plugins to catch up before it
-publishes, and the scan starts no further check meanwhile. So when the plugins are
-slower than the checks, a scan goes at their pace instead of queueing a result per file.
-
-`FSHW_LIVE_RESULTS` in a daemon's environment sets the bound for that daemon: a positive
-integer. Anything else is ignored with a `[live-results]` warning. For a repository host's
-sessions it is the host's environment. `fshw status --repository -a` reports each
-session's `liveResults`: the bound, the results held now and at most, and how long a
-check waited for a place.
-
 ## Heap valve
 
 The watchdog heartbeat in `logs/daemon.log` reports the GC pause, heap, collections and

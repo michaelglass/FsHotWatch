@@ -2,17 +2,6 @@
 
 ## Unreleased
 
-- feat: the check results a daemon's plugins hold at once are bounded (ADR-054,
-  AUTOMATION-683). A scan or change batch used to dispatch each `FileChecked` result as
-  its check returned, so plugins slower than the checks held up to one result per file.
-  A producer now takes a place first (`LiveResults.Bound.Hold`), and the new
-  `PluginHost.EmitFileChecked(result, place)` gives it back once every subscriber has
-  committed the result or failed it. Past the bound, the producer waits, and the scan
-  starts no further check meanwhile. New `DaemonOptions.LiveResultBound` (default
-  `LiveResults.DefaultBound`, twice the processor count), the `PluginHost` argument
-  `liveResultBound`, `PluginHost.LiveResults`, and a per-session `liveResults` object in
-  `status --repository`. `Daemon.runChecksWithRetry`'s `emit` is now asynchronous.
-
 - feat: a job can declare a weight (ADR-053, AUTOMATION-1299, AUTOMATION-682). New
   `JobSpec.Weight` (1 for `JobSpec.interactive` and `JobSpec.bulk`) and
   `JobSpec.weighted`, which refuses a weight that is not a positive finite number. A slot

@@ -43,16 +43,9 @@ type PluginHost
         ?fcsSuppressedCodes: Set<int>,
         // This session's lane of its repository host's process scheduler, handed to every
         // plugin as `PluginCtx.Processes` (AUTOMATION-682). `None` for a per-worktree daemon.
-        ?processes: WorkScheduler.Lane,
-        // How many `FileChecked` results the plugins may hold at once (AUTOMATION-683,
-        // ADR-054). `LiveResults.DefaultBound` when absent.
-        ?liveResultBound: int
+        ?processes: WorkScheduler.Lane
     ) =
     let fcsSuppressedCodes = defaultArg fcsSuppressedCodes Set.empty
-
-    let liveResults =
-        LiveResults.Bound(defaultArg liveResultBound LiveResults.DefaultBound)
-
     let statusChanged = Event<string * PluginStatus>()
 
     let ledger = ErrorLedger(?reporters = reporters)
@@ -238,10 +231,6 @@ type PluginHost
 
     /// This session's lane of its host's process scheduler; `None` for a per-worktree daemon.
     member _.Processes: WorkScheduler.Lane option = processes
-
-    /// The bound on the `FileChecked` results this host's plugins hold at once (ADR-054).
-    /// A producer takes a place with `Hold` and publishes with `EmitFileChecked(result, place)`.
-    member _.LiveResults: LiveResults.Bound = liveResults
 
     /// Register a declarative framework-managed plugin handler.
     member this.RegisterHandler<'State, 'Msg>(handler: PluginFramework.PluginHandler<'State, 'Msg>) =
@@ -548,32 +537,6 @@ type PluginHost
 
         dispatchToAll (PluginFramework.DispatchFileChecked result)
 
-    /// `EmitFileChecked`, holding `place` (from `LiveResults.Hold`) until every plugin that
-    /// subscribes has committed the result or failed it (ADR-054). With no subscriber the
-    /// place is given back at once. A plugin that refuses the event, because its executor
-    /// has stopped, holds nothing, and the remaining plugins still receive it.
-    member _.EmitFileChecked(result: FileCheckResult, place: LiveResults.Place) =
-        match result.CheckResults with
-        | FullCheck _ -> checkedFiles[result.File] <- ()
-        | ParseOnly -> ()
-
-        touchActivity ()
-        let fanOut = workStore.BeginOperation "dispatch"
-        let completions = ResizeArray<System.Threading.Tasks.Task>()
-
-        try
-            for p in registeredPlugins do
-                try
-                    p.DispatchTracked(PluginFramework.DispatchFileChecked result)
-                    |> Option.iter (fun receipt -> completions.Add receipt.Completion)
-                with failure ->
-                    Logging.error
-                        (PluginFramework.PluginName.value p.Name)
-                        $"refused a dispatched event: %s{failure.Message}"
-        finally
-            place.ReleaseWhen(List.ofSeq completions)
-            workStore.EndOperation fanOut
-
     /// True if `file` currently holds a valid FULL type-check result (i.e. a
     /// `FullCheck` was emitted for it via `EmitFileChecked` and it hasn't been
     /// invalidated by a subsequent `EmitFileChanged`). The daemon's
@@ -599,12 +562,6 @@ type PluginHost
     /// `EmitFileChecked` on behalf of `consumers` (see `EmitFileChangedFor`).
     member internal this.EmitFileCheckedFor(consumers: PluginWorkOwner.ConsumerLeases, result: FileCheckResult) =
         PluginWorkOwner.ConsumerLeases.onBehalfOf consumers (fun () -> this.EmitFileChecked result)
-
-    /// `EmitFileChecked(result, place)` on behalf of `consumers` (see `EmitFileChangedFor`).
-    member internal this.EmitFileCheckedFor
-        (consumers: PluginWorkOwner.ConsumerLeases, result: FileCheckResult, place: LiveResults.Place)
-        =
-        PluginWorkOwner.ConsumerLeases.onBehalfOf consumers (fun () -> this.EmitFileChecked(result, place))
 
     /// `EmitBatchChecked` on behalf of `consumers` (see `EmitFileChangedFor`).
     member internal this.EmitBatchCheckedFor(consumers: PluginWorkOwner.ConsumerLeases, batch: BatchChecked) =

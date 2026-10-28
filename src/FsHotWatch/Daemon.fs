@@ -2171,54 +2171,45 @@ let private processBatchAttempt
                     { carried with
                         Files = Set.difference carried.Files filesToCheckSet })
 
-            // Each result waits for a place among the live results (ADR-054) outside the
-            // publication lock, so a batch whose plugins have fallen behind waits for them.
             let emitResults (results: FileCheckResult option array) =
-                async {
-                    for result in results do
-                        match result with
-                        | Some checkResult ->
-                            Logging.debug
-                                "daemon"
-                                $"EmitFileChecked: %s{Path.GetFileName(AbsFilePath.value checkResult.File)}"
+                for result in results do
+                    match result with
+                    | Some checkResult ->
+                        Logging.debug
+                            "daemon"
+                            $"EmitFileChecked: %s{Path.GetFileName(AbsFilePath.value checkResult.File)}"
 
-                            do!
-                                ctx.Host.LiveResults.Hold(fun place ->
-                                    publishCurrent (fun () ->
-                                        let checkResult =
-                                            { checkResult with
-                                                ModelGeneration = modelGenerationOf batchModel }
+                        publishCurrent (fun () ->
+                            let checkResult =
+                                { checkResult with
+                                    ModelGeneration = modelGenerationOf batchModel }
 
-                                        dispatchedFiles.Add(checkResult.File)
-                                        // ADR-047: what a scan that captured an earlier epoch is judged against.
-                                        ctx.Snapshots.RecordPublished(
-                                            AbsFilePath.value checkResult.File,
-                                            ContentHash.ofText checkResult.Source,
-                                            checkResult.Upstream
-                                        )
+                            dispatchedFiles.Add(checkResult.File)
+                            // ADR-047: what a scan that captured an earlier epoch is judged against.
+                            ctx.Snapshots.RecordPublished(
+                                AbsFilePath.value checkResult.File,
+                                ContentHash.ofText checkResult.Source,
+                                checkResult.Upstream
+                            )
 
-                                        ctx.Host.EmitFileChecked(checkResult, place)
-                                        reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult))
-                        // Unlike the cold scan (see `runChecksWithRetry`), the batch
-                        // path does NOT retry a cancelled (`None`) check. Batch
-                        // cancellations are self-healing: `CancelPreviousCheck` only
-                        // cancels an in-flight check when a NEWER event's check of the
-                        // same file supersedes it, so that newer check (or the next
-                        // debounced batch) covers the file. The cold scan has no such
-                        // later event, which is why the retry lives there, not here.
-                        | None -> ()
-                }
+                            ctx.Host.EmitFileChecked(checkResult)
+                            reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult)
+                    // Unlike the cold scan (see `runChecksWithRetry`), the batch
+                    // path does NOT retry a cancelled (`None`) check. Batch
+                    // cancellations are self-healing: `CancelPreviousCheck` only
+                    // cancels an in-flight check when a NEWER event's check of the
+                    // same file supersedes it, so that newer check (or the next
+                    // debounced batch) covers the file. The cold scan has no such
+                    // later event, which is why the retry lives there, not here.
+                    | None -> ()
 
-            for results in changedResults do
-                do! emitResults results
+            changedResults |> List.iter emitResults
 
             if not cascade.IsEmpty then
                 // A new generation, so the cascade is keyed by the signatures just recorded.
                 ctx.Pipeline.BeginGeneration()
                 let! cascadeResults = checkCohort (Set.ofList cascade)
-
-                for results in cascadeResults do
-                    do! emitResults results
+                cascadeResults |> List.iter emitResults
 
             // Check files not belonging to any project (e.g. standalone .fsx files)
             let uncovered = Set.difference filesToCheckSet checkedFiles |> Set.toList
@@ -2230,7 +2221,7 @@ let private processBatchAttempt
                     |> WorkScheduler.parallelWithin ctx.Pipeline.CheckConcurrencyBound
                     |> CheckCaller.within "change batch"
 
-                do! emitResults results
+                emitResults results
 
             // Empty cohorts (every file filtered as content-unchanged or no
             // results from the pipeline) skip the emit — there's nothing to
@@ -3849,9 +3840,6 @@ let internal freshForTier
 /// A result is emitted as soon as its own check returns, not when the round does, so
 /// the scan's progress counter (advanced in `emit`) moves per file. `emit` is
 /// therefore called concurrently from the round's checks and must serialise itself.
-/// It is asynchronous because it may wait for a place among the live results (ADR-054);
-/// a check whose `emit` is waiting still counts against `maxInFlight`, so a scan whose
-/// consumers have fallen behind starts no further checks until they catch up.
 ///
 /// The outcome is TYPED. The budget was always bounded, but
 /// exhausting it produced a bare `int` that the caller folded into a running
@@ -3869,7 +3857,7 @@ let internal runChecksWithRetry
     (maxRetries: int)
     (maxInFlight: int)
     (check: AbsFilePath -> Async<'r option>)
-    (emit: 'r -> Async<unit>)
+    (emit: 'r -> unit)
     (files: AbsFilePath list)
     : Async<ScanCheckOutcome> =
     async {
@@ -3885,7 +3873,7 @@ let internal runChecksWithRetry
                     async {
                         match! check file with
                         | Some r ->
-                            do! emit r
+                            emit r
                             return None
                         | None -> return Some file
                     })
@@ -4375,44 +4363,39 @@ let private performScan
                     let tierFiles = tierThunks.Keys |> Seq.toList
 
                     // Called concurrently by the tier's checks: every write below is
-                    // inside `publishCurrent`, which holds the discovery state lock. It
-                    // first waits for a place among the live results (ADR-054), outside
-                    // that lock, so a scan whose plugins have fallen behind waits for them
-                    // instead of piling its results into their mailboxes.
+                    // inside `publishCurrent`, which holds the discovery state lock.
                     let emitChecked (checkResult: FileCheckResult) =
                         let sourceHash = ContentHash.ofText checkResult.Source
                         ctx.BeforeScanPublication.Value checkResult
 
-                        host.LiveResults.Hold(fun place ->
-                            publishCurrent (fun () ->
-                                let checkResult =
-                                    { checkResult with
-                                        ModelGeneration = modelGeneration }
+                        publishCurrent (fun () ->
+                            let checkResult =
+                                { checkResult with
+                                    ModelGeneration = modelGeneration }
 
-                                // ADR-046: a cohort at a later epoch changed this file, and this
-                                // check read bytes the snapshot no longer holds. The cohort
-                                // publishes the current answer; this one is old work finishing
-                                // after new work: counted, not published.
-                                if
-                                    ctx.Snapshots.Accepts(
-                                        capturedSnapshot,
-                                        AbsFilePath.value checkResult.File,
-                                        sourceHash,
-                                        checkResult.Upstream
-                                    )
-                                then
-                                    checkedCount <- checkedCount + 1
-                                    dispatchedFiles.Add(checkResult.File)
-                                    checkedSources[AbsFilePath.value checkResult.File] <- sourceHash
-                                    host.EmitFileCheckedFor(consumers, checkResult, place)
-                                    reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
+                            // ADR-046: a cohort at a later epoch changed this file, and this
+                            // check read bytes the snapshot no longer holds. The cohort
+                            // publishes the current answer; this one is old work finishing
+                            // after new work: counted, not published.
+                            if
+                                ctx.Snapshots.Accepts(
+                                    capturedSnapshot,
+                                    AbsFilePath.value checkResult.File,
+                                    sourceHash,
+                                    checkResult.Upstream
+                                )
+                            then
+                                checkedCount <- checkedCount + 1
+                                dispatchedFiles.Add(checkResult.File)
+                                checkedSources[AbsFilePath.value checkResult.File] <- sourceHash
+                                host.EmitFileCheckedFor(consumers, checkResult)
+                                reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
 
-                                completed <- completed + 1
+                            completed <- completed + 1
 
-                                publish
-                                    { scanning with
-                                        ScanState =
-                                            scanProgress scanning.ScanState total completed System.DateTime.UtcNow }))
+                            publish
+                                { scanning with
+                                    ScanState = scanProgress scanning.ScanState total completed System.DateTime.UtcNow })
 
                     let! tierOutcome =
                         runChecksWithRetry
@@ -4718,10 +4701,6 @@ module Daemon =
             /// `obj/project.assets.json` is missing or stale before it is checked.
             /// `DepsFreshness.productionRestoreRunner` (the default) runs `dotnet restore`.
             Restore: string -> DepsFreshness.RestoreRunner
-            /// How many `FileChecked` results this daemon's plugins may hold at once
-            /// (ADR-054). A check whose result would exceed it waits to publish.
-            /// `LiveResults.DefaultBound` by default; `FSHW_LIVE_RESULTS` overrides it.
-            LiveResultBound: int
         }
 
     module DaemonOptions =
@@ -4738,8 +4717,7 @@ module Daemon =
               VanishedRootCheckEvery = VanishedRoot.DefaultCheckEvery
               CheckerCacheSizeFactor = DefaultCheckerCacheSizeFactor
               Hosting = DaemonHosting.standalone ()
-              Restore = DepsFreshness.productionRestoreRunner
-              LiveResultBound = LiveResults.DefaultBound }
+              Restore = DepsFreshness.productionRestoreRunner }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
     /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
@@ -4837,8 +4815,7 @@ module Daemon =
                     taskCache = taskCache,
                     fcsSuppressedCodes = fcsSuppressedCodes,
                     // This session's turn at the test hosts and builds its host admits (AUTOMATION-682).
-                    ?processes = (seams.Processes |> Option.map (fun processes -> processes.Lane repoRoot)),
-                    liveResultBound = opts.LiveResultBound
+                    ?processes = (seams.Processes |> Option.map (fun processes -> processes.Lane repoRoot))
                 )
 
             let fcsSink = host.ActivitySinkFor(PluginActivity.FcsPluginName)

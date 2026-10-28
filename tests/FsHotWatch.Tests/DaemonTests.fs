@@ -1275,8 +1275,7 @@ let ``runChecksWithRetry returns zero unchecked when all files check first pass`
     let check (_: AbsFilePath) = async { return Some 1 }
 
     let outcome =
-        runChecksWithRetry 3 8 check (fun r -> async { emitted.Add r }) files
-        |> Async.RunSynchronously
+        runChecksWithRetry 3 8 check emitted.Add files |> Async.RunSynchronously
 
     // A converged scan says so in the type, and reports ZERO
     // extra rounds — the amplification measure the retry budget exists to bound.
@@ -1304,8 +1303,7 @@ let ``runChecksWithRetry retries a transiently-cancelled file until it converges
     let files = [ "/a.fs"; "/b.fs"; "/c.fs" ] |> List.map AbsFilePath.create
 
     let outcome =
-        runChecksWithRetry 3 8 check (fun r -> async { emitted.Add r }) files
-        |> Async.RunSynchronously
+        runChecksWithRetry 3 8 check emitted.Add files |> Async.RunSynchronously
 
     // Converged, but it cost exactly ONE extra round — the number that
     // distinguishes a single self-cancellation from runaway amplification.
@@ -1333,8 +1331,7 @@ let ``runChecksWithRetry reports persistently-cancelled files as unchecked`` () 
     let files = [ "/a.fs"; "/b.fs"; "/c.fs" ] |> List.map AbsFilePath.create
 
     let outcome =
-        runChecksWithRetry 2 8 check (fun _ -> async.Zero()) files
-        |> Async.RunSynchronously
+        runChecksWithRetry 2 8 check (fun _ -> ()) files |> Async.RunSynchronously
 
     // Reaching the bound is a NAMED outcome carrying the files,
     // the rounds spent, and the budget that was exhausted — not an integer
@@ -1364,7 +1361,7 @@ let ``runChecksWithRetry stops at the bound and never exceeds it`` () =
         let files = [ AbsFilePath.create "/never.fs" ]
 
         let outcome =
-            runChecksWithRetry budget 8 check (fun (_: int) -> async.Zero()) files
+            runChecksWithRetry budget 8 check (fun (_: int) -> ()) files
             |> Async.RunSynchronously
 
         test <@ attempts["/never.fs"] = budget + 1 @>
@@ -1392,7 +1389,7 @@ let ``runChecksWithRetry emits each result as its check finishes, not when the r
             fastEmitted.Set()
 
     let outcome =
-        runChecksWithRetry 3 8 check (emit >> async.Return) ([ "/fast.fs"; "/slow.fs" ] |> List.map AbsFilePath.create)
+        runChecksWithRetry 3 8 check emit ([ "/fast.fs"; "/slow.fs" ] |> List.map AbsFilePath.create)
         |> Async.RunSynchronously
 
     test <@ outcome = ScanCheckOutcome.AllChecked 0 @>
@@ -1421,7 +1418,7 @@ let ``runChecksWithRetry never has more checks in flight than its bound`` () =
     let files = [ for i in 1..20 -> AbsFilePath.create $"/f%d{i}.fs" ]
 
     let outcome =
-        runChecksWithRetry 3 2 check (fun (_: int) -> async.Zero()) files
+        runChecksWithRetry 3 2 check (fun (_: int) -> ()) files
         |> Async.RunSynchronously
 
     test <@ outcome = ScanCheckOutcome.AllChecked 0 @>
@@ -1430,7 +1427,7 @@ let ``runChecksWithRetry never has more checks in flight than its bound`` () =
 [<Fact(Timeout = 15000)>]
 let ``runChecksWithRetry on an empty cohort converges with no rounds`` () =
     let outcome =
-        runChecksWithRetry 3 8 (fun _ -> async { return Some 1 }) (fun (_: int) -> async.Zero()) []
+        runChecksWithRetry 3 8 (fun _ -> async { return Some 1 }) (fun (_: int) -> ()) []
         |> Async.RunSynchronously
 
     test <@ outcome = ScanCheckOutcome.AllChecked 0 @>
@@ -1710,100 +1707,6 @@ let ``a scan's checks take their slots as bulk work`` () =
         let status = daemon.Pipeline.Admission.Status()
         test <@ status.Bulk.Granted >= 1L @>
         test <@ status.Interactive.Granted = 0L @>)
-
-[<Fact(Timeout = 90000)>]
-let ``a scan publishes no more results than its bound while a plugin has not committed them`` () =
-    // ADR-054 (c): three files, a bound of one, and a subscriber that holds the first
-    // result it receives. The scan publishes that one, and waits for its place.
-    withTempDir "daemon-scan-live-results" (fun tmpDir ->
-        let srcDir = Path.Combine(tmpDir, "src")
-        Directory.CreateDirectory(srcDir) |> ignore
-        let projectPath = Path.Combine(srcDir, "Live.fsproj")
-        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
-
-        let sources =
-            [ for i in 1..3 ->
-                  let path = Path.Combine(srcDir, $"Live%d{i}.fs")
-                  File.WriteAllText(path, $"module Live%d{i}\nlet value = \"%O{Guid.NewGuid()}\"\n")
-                  path ]
-
-        let loaded =
-            { minimalLoadedProject projectPath with
-                SourceFiles = sources }
-
-        let loader = SequencedWorkspaceLoader([ [ loaded ] ])
-        loader.Resume(0)
-        let objDir = Path.Combine(srcDir, "obj")
-        Directory.CreateDirectory(objDir) |> ignore
-        File.WriteAllText(Path.Combine(objDir, "project.assets.json"), "{}")
-        let checker = sharedChecker.Value
-
-        let fcsOptions =
-            let options, _ =
-                checker.GetProjectOptionsFromScript(
-                    sources.Head,
-                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sources.Head))
-                )
-                |> Async.RunSynchronously
-
-            { options with
-                ProjectFileName = projectPath
-                SourceFiles = Array.ofList sources }
-
-        use daemon =
-            Daemon.createWithWorkspaceLoaderAndWatcher
-                checker
-                tmpDir
-                { oneShotDaemonOptions with
-                    RunMode = Daemon.RunMode.OneShot
-                    LiveResultBound = 1 }
-                loader
-                (fun projects -> projects |> List.map (fun _ -> fcsOptions))
-                (fun _ _ _ _ _ -> failwith "this scan must not construct an ambient watcher")
-
-        let gate =
-            TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
-
-        let received = ref 0
-
-        daemon.RegisterHandler
-            { Name = PluginName.create "slow-consumer"
-              Init = ()
-              Update =
-                fun _ state event ->
-                    async {
-                        match event with
-                        | FileChecked _ ->
-                            Interlocked.Increment(&received.contents) |> ignore
-                            do! Async.AwaitTask gate.Task
-                        | _ -> ()
-
-                        return state
-                    }
-              Commands = []
-              Subscriptions = Set.ofList [ SubscribeFileChecked ]
-              CacheKey = None
-              PrepareCommit = None
-              Teardown = None }
-
-        let scan = Async.StartAsTask(daemon.ScanAll())
-
-        try
-            waitUntil (fun () -> daemon.Host.LiveResults.Status().Queued >= 1) 60000
-            waitUntil (fun () -> received.Value = 1) 10000
-
-            let held = daemon.Host.LiveResults.Status()
-            test <@ held.Bound = 1 && held.Live = 1 && held.Admitted = 1L @>
-            test <@ not scan.IsCompleted @>
-        finally
-            gate.TrySetResult() |> ignore
-
-        test <@ scan.Wait(TimeSpan.FromSeconds 60.0) @>
-        waitUntil (fun () -> received.Value = 3) 10000
-        waitUntil (fun () -> daemon.Host.LiveResults.Status().Live = 0) 10000
-
-        let final = daemon.Host.LiveResults.Status()
-        test <@ final.Peak = 1 && final.Admitted = 3L @>)
 
 [<Theory(Timeout = 30000)>]
 [<InlineData(false, false)>]

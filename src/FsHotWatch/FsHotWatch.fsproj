@@ -113,7 +113,6 @@
     <Compile Include="SupervisedWork.fs" />
     <Compile Include="DebouncedWork.fs" />
     <Compile Include="WorkScheduler.fs" />
-    <Compile Include="LiveResults.fs" />
     <Compile Include="PluginFramework.fs" />
     <Compile Include="DaemonPhases.fs" />
     <Compile Include="PluginActivity.fs" />

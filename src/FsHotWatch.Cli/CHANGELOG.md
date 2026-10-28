@@ -2,11 +2,6 @@
 
 ## Unreleased
 
-- feat: `FSHW_LIVE_RESULTS` in a daemon's environment bounds how many check results its
-  plugins hold at once (ADR-054, AUTOMATION-683). The default is twice the processor
-  count; a value that is not a positive integer is ignored with a warning. `fshw status
-  --repository -a` reports each session's `liveResults`.
-
 - feat: `tests.projects[].weight` declares how heavily a project's test host is charged
   for its process slot in a repository host (ADR-053, AUTOMATION-1299). A number greater
   than 0, and 1 when absent; anything else is a config error. Under contention, a project

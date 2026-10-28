@@ -198,10 +198,6 @@ let ``status --repository carries each session's own admission counts`` () =
                 let processAdmission = s["processAdmission"]
                 test <@ processAdmission["running"].GetValue<int>() = 0 @>
 
-                // And each says how many check results its plugins hold (ADR-054).
-                let liveResults = s["liveResults"]
-                test <@ liveResults["bound"].GetValue<int>() = LiveResults.DefaultBound @>
-
                 s["root"].GetValue<string>(), admission["granted"].GetValue<int64>())
             |> Map.ofSeq
 
