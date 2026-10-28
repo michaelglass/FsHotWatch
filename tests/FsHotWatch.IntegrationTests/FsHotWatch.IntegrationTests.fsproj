@@ -35,6 +35,7 @@
     <Compile Include="WorkingDirectoryDeletionTests.fs" />
     <Compile Include="ColdCheckFixture.fs" />
     <Compile Include="ColdCheckCommandTests.fs" />
+    <Compile Include="HostedCheckSemanticsTests.fs" />
     <Compile Include="ConfirmFreshCommandTests.fs" />
     <Compile Include="LauncherGroupSurvivalTests.fs" />
     <Compile Include="RunSignalTests.fs" />
