@@ -152,13 +152,23 @@ let ``a lane's status is a JSON object with its counts and times in milliseconds
           Abandoned = 1L
           Waited = TimeSpan.FromMilliseconds 1500.0
           LongestWait = TimeSpan.FromMilliseconds 900.0
-          Held = TimeSpan.FromMilliseconds 4200.0 }
+          Held = TimeSpan.FromMilliseconds 4200.0
+          Interactive =
+            { Granted = 4L
+              Abandoned = 0L
+              Waited = TimeSpan.FromMilliseconds 500.0
+              LongestWait = TimeSpan.FromMilliseconds 300.0 }
+          Bulk =
+            { Granted = 1L
+              Abandoned = 1L
+              Waited = TimeSpan.FromMilliseconds 1000.0
+              LongestWait = TimeSpan.FromMilliseconds 900.0 } }
 
     let json = (LaneStatus.payload status).ToJsonString()
 
     test
         <@
-            json = """{"queued":2,"running":1,"granted":5,"abandoned":1,"waitedMs":1500,"longestWaitMs":900,"heldMs":4200}"""
+            json = """{"queued":2,"running":1,"granted":5,"abandoned":1,"waitedMs":1500,"longestWaitMs":900,"heldMs":4200,"interactive":{"granted":4,"abandoned":0,"waitedMs":500,"longestWaitMs":300},"bulk":{"granted":1,"abandoned":1,"waitedMs":1000,"longestWaitMs":900}}"""
         @>
 
 [<Fact(Timeout = 5000)>]
@@ -179,13 +189,20 @@ let ``a scheduler's status is a JSON object with its capacity and what is held a
 /// One step a test applies to a scheduler: acquire on a lane, release one of a lane's
 /// held slots, or give up one of a lane's waiters.
 type private Step =
-    | Acquire of lane: int
+    | Acquire of lane: int * bulk: bool
+    | Advance of seconds: int
     | Release of lane: int
     | GiveUp of lane: int
 
 let private stepGen (lanes: int) =
     Gen.choose (0, lanes - 1)
-    |> Gen.bind (fun lane -> Gen.elements [ Acquire lane; Release lane; GiveUp lane ])
+    |> Gen.bind (fun lane ->
+        Gen.elements
+            [ Acquire(lane, false)
+              Acquire(lane, true)
+              Release lane
+              GiveUp lane
+              Advance 3 ])
 
 [<Fact(Timeout = PropertyTestCapMs)>]
 let ``under any sequence, the bound holds and every lane's counts add up to the scheduler's`` () =
@@ -199,7 +216,7 @@ let ``under any sequence, the bound holds and every lane's counts add up to the 
         }
 
     let holds (capacity: int, steps: Step list) =
-        let scheduler, _ = withClock capacity
+        let scheduler, clock = withClock capacity
         let lanes = Array.init laneCount (fun i -> scheduler.Lane $"L%d{i}")
         // Per lane, the acquisitions not yet resolved, and the slots held.
         let pending =
@@ -211,9 +228,14 @@ let ``under any sequence, the bound holds and every lane's counts add up to the 
 
         for step in steps do
             match step with
-            | Acquire i ->
+            | Advance s -> clock.Advance(float s)
+            | Acquire(i, bulk) ->
                 let cts = new CancellationTokenSource()
-                let task = acquire lanes[i] cts.Token
+
+                let task =
+                    lanes[i].Acquire((if bulk then JobSpec.bulk else JobSpec.interactive), cts.Token)
+                    |> Async.StartAsTask
+
                 pending[i].Add((cts, task))
             | Release i ->
                 if held[i] > 0 then
@@ -232,10 +254,19 @@ let ``under any sequence, the bound holds and every lane's counts add up to the 
             // before release returns, so every grant is already decided here.
             for i in 0 .. laneCount - 1 do
                 let queued = (lanes[i].Status()).Queued
-                // The oldest `pending - queued` acquisitions are decided.
+                // `pending - queued` acquisitions are decided, not necessarily the oldest: a
+                // class can overtake another. A decided one's task completes off this thread.
                 let decided = pending[i].Count - queued
 
-                for (cts, t) in pending[i] |> Seq.take decided |> List.ofSeq do
+                let completed () =
+                    pending[i] |> Seq.filter (fun (_, t) -> t.IsCompleted) |> List.ofSeq
+
+                while (completed ()).Length < decided do
+                    Thread.Yield() |> ignore
+
+                let resolved = completed ()
+
+                for (cts, t) in resolved do
                     if t.Result then
                         held[i] <- held[i] + 1
                         acquired[i] <- acquired[i] + 1L
@@ -244,7 +275,8 @@ let ``under any sequence, the bound holds and every lane's counts add up to the 
 
                     cts.Dispose()
 
-                pending[i].RemoveRange(0, decided)
+                pending[i].RemoveAll(fun (_, t) -> resolved |> List.exists (fun (_, r) -> obj.ReferenceEquals(r, t)))
+                |> ignore
 
             let statuses = lanes |> Array.map _.Status()
             let total = scheduler.Status()
@@ -264,6 +296,14 @@ let ``under any sequence, the bound holds and every lane's counts add up to the 
 
                 if statuses[i].Granted <> acquired[i] || statuses[i].Abandoned <> gaveUp[i] then
                     failwith $"lane %d{i} reports granted/abandoned %A{statuses[i]}"
+
+                if
+                    statuses[i].Interactive.Granted + statuses[i].Bulk.Granted
+                    <> statuses[i].Granted
+                    || statuses[i].Interactive.Abandoned + statuses[i].Bulk.Abandoned
+                       <> statuses[i].Abandoned
+                then
+                    failwith $"lane %d{i}'s class counts do not add up to its totals"
 
         // Waiters left queued at the end give up, so no case leaves a task behind.
         for lane in pending do

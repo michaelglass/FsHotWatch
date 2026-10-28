@@ -320,3 +320,33 @@ let ``work two sessions share survives one of them cancelling`` () =
         test <@ obj.ReferenceEquals(aAgain, bResults) @>
 
         test <@ scheduler.Running = 0 && scheduler.Queued = 0 @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a scan's checks are admitted as bulk work and a change batch's as interactive`` () =
+    withTempDir "check-job-class" (fun dir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let scheduler = WorkScheduler.Scheduler 2
+        let lane = scheduler.Lane "session"
+        let pipeline = CheckPipeline(checker, repoRoot = dir, admission = lane)
+
+        match manyFiles checker pipeline dir 2 with
+        | [ scanned; saved ] ->
+            test
+                <@
+                    (pipeline.CheckFile scanned
+                     |> CheckCaller.withinBulk "scan"
+                     |> Async.RunSynchronously)
+                        .IsSome
+                @>
+
+            test
+                <@
+                    (pipeline.CheckFile saved
+                     |> CheckCaller.within "change batch"
+                     |> Async.RunSynchronously)
+                        .IsSome
+                @>
+
+            let status = lane.Status()
+            test <@ status.Bulk.Granted = 1L && status.Interactive.Granted = 1L @>
+        | files -> failwith $"expected two files, got %d{files.Length}")

@@ -1658,6 +1658,56 @@ let ``failed scan receipt reaches IPC and a later scan recovers`` () =
             with _ ->
                 ())
 
+[<Fact(Timeout = 60000)>]
+let ``a scan's checks take their slots as bulk work`` () =
+    withTempDir "daemon-scan-bulk" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Admitted.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let sourcePath = Path.Combine(srcDir, "Admitted.fs")
+        File.WriteAllText(sourcePath, $"module Admitted\nlet scanAdmission = \"%O{Guid.NewGuid()}\"\n")
+
+        let loaded =
+            { minimalLoadedProject projectPath with
+                SourceFiles = [ sourcePath ] }
+
+        let loader = SequencedWorkspaceLoader([ [ loaded ] ])
+        loader.Resume(0)
+        // A fresh assets marker, so the deps guard does not restore the minimal project.
+        let objDir = Path.Combine(srcDir, "obj")
+        Directory.CreateDirectory(objDir) |> ignore
+        File.WriteAllText(Path.Combine(objDir, "project.assets.json"), "{}")
+        let checker = sharedChecker.Value
+
+        let fcsOptions =
+            let options, _ =
+                checker.GetProjectOptionsFromScript(
+                    sourcePath,
+                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
+                )
+                |> Async.RunSynchronously
+
+            { options with
+                ProjectFileName = projectPath
+                SourceFiles = [| sourcePath |] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                tmpDir
+                { oneShotDaemonOptions with
+                    RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun projects -> projects |> List.map (fun _ -> fcsOptions))
+                (fun _ _ _ _ _ -> failwith "this scan must not construct an ambient watcher")
+
+        daemon.ScanAll() |> Async.RunSynchronously
+
+        let status = daemon.Pipeline.Admission.Status()
+        test <@ status.Bulk.Granted >= 1L @>
+        test <@ status.Interactive.Granted = 0L @>)
+
 [<Theory(Timeout = 30000)>]
 [<InlineData(false, false)>]
 [<InlineData(true, false)>]

@@ -130,16 +130,21 @@ let internal sharedInFlight
         | sharers -> Some(project, origin, sharers))
 
 /// Who asked for a check — `scan`, `change batch` — so the log can say which caller
-/// joined or superseded which. Ambient, because the check API is shared by callers that
-/// never pass it; unset reads as `unnamed caller`.
+/// joined or superseded which, and what kind of job its checks are, so the scheduler can
+/// rank them (AUTOMATION-682). Ambient, because the check API is shared by callers that
+/// never pass it; unset reads as `unnamed caller`, an interactive job.
 module CheckCaller =
-    let private ambient = AsyncLocal<string>()
+    [<NoComparison>]
+    type private Caller =
+        { Name: string
+          Job: WorkScheduler.JobSpec }
 
-    /// Run `work` with checks it starts attributed to `caller`.
-    let within (caller: string) (work: Async<'a>) : Async<'a> =
+    let private ambient = AsyncLocal<Caller option>()
+
+    let private runAs (caller: Caller) (work: Async<'a>) : Async<'a> =
         async {
             let previous = ambient.Value
-            ambient.Value <- caller
+            ambient.Value <- Some caller
 
             try
                 return! work
@@ -147,11 +152,32 @@ module CheckCaller =
                 ambient.Value <- previous
         }
 
+    /// Run `work` with checks it starts attributed to `caller`, as interactive jobs.
+    let within (caller: string) (work: Async<'a>) : Async<'a> =
+        runAs
+            { Name = caller
+              Job = WorkScheduler.JobSpec.interactive }
+            work
+
+    /// Run `work` with checks it starts attributed to `caller`, as bulk jobs: a scan's
+    /// tiers, which give way to interactive checks until they have waited the aging bound.
+    let withinBulk (caller: string) (work: Async<'a>) : Async<'a> =
+        runAs
+            { Name = caller
+              Job = WorkScheduler.JobSpec.bulk }
+            work
+
     /// The caller checks started here are attributed to.
     let current () : string =
         match ambient.Value with
-        | null -> "unnamed caller"
-        | caller -> caller
+        | Some caller -> caller.Name
+        | None -> "unnamed caller"
+
+    /// The kind of job checks started here are.
+    let job () : WorkScheduler.JobSpec =
+        match ambient.Value with
+        | Some caller -> caller.Job
+        | None -> WorkScheduler.JobSpec.interactive
 
 /// A check that is running: what it asked FCS, who started it and its answer.
 ///
@@ -287,7 +313,8 @@ type CheckPipeline
 
     /// Wait for a check slot without holding a thread: true once one is held, false
     /// when `ct` gave up first.
-    let waitForSlot (ct: CancellationToken) : Async<bool> = admission.Acquire ct
+    let waitForSlot (ct: CancellationToken) : Async<bool> =
+        admission.Acquire(CheckCaller.job (), ct)
 
     // Which frame each project is checked under: its own paths unless a repository host
     // checks its worktrees under one virtual root.

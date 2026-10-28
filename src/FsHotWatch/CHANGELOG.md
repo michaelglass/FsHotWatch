@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: every scheduler acquisition carries a `JobSpec` (ADR-049, AUTOMATION-682 /
+  AUTOMATION-681 slice 7). New `JobClass` (`Interactive`, `Bulk`), `JobSpec` with
+  `JobSpec.interactive` / `JobSpec.bulk`, `Lane.Acquire(job, ct)`, `DefaultAgingBound`
+  (5 s), `ClassStatus` with `ClassStatus.payload`, and `LaneStatus.Interactive` / `Bulk`
+  (the `admission` object gains `interactive` and `bulk`). A freed slot goes to the first
+  lane in turn whose next waiter is interactive or bulk aged past the bound, else to the
+  first lane in turn. `CheckCaller.withinBulk` marks a scan's checks bulk; `CheckCaller.job`
+  reads the ambient job. `Lane.Acquire(ct)` is unchanged (interactive). Code that
+  constructs a `LaneStatus` must set the new fields.
+
 ## 0.10.0-alpha.94 - 2026-10-28
 
 - feat: each lane of a `WorkScheduler` counts its admission (AUTOMATION-682). New

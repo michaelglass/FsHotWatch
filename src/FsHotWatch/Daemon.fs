@@ -4400,7 +4400,7 @@ let private performScan
                             (fun f -> tierThunks[f])
                             emitChecked
                             tierFiles
-                        |> CheckCaller.within "scan"
+                        |> CheckCaller.withinBulk "scan"
 
                     match tierOutcome with
                     | ScanCheckOutcome.AllChecked _ -> ()

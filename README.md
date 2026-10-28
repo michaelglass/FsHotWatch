@@ -788,6 +788,13 @@ it was granted a slot for, how many gave up waiting, how many hold or wait for o
 how long the granted ones waited in total and at most, and the slot-time they held. A
 session whose waits grow while another holds the slots is the one being kept waiting.
 
+Each check is admitted as a job of a class: a scan's checks are bulk, a save's are
+interactive. A freed slot goes to the next session in turn that has interactive work
+waiting, or bulk work that has waited 5 s, and otherwise to the next session in turn. A
+scan cannot keep another session's save waiting, and a run of saves delays a scan by about
+five seconds at most. `-a` splits each session's `admission` into `interactive` and `bulk`.
+See ADR-049.
+
 Every lifecycle event is also appended to `host-events.jsonl` beside `host.log`: one JSON
 line each, naming the time, the host's pid, the event (`hostStarted`, `attached`,
 `refused`, `sessionEnded`, `undelivered`, `hostStopped` with `idle` or `requested`) and
