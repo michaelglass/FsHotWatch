@@ -244,6 +244,7 @@
     <Compile Include="CliGrammarRootTests.fs" />
     <Compile Include="HookStepSubtaskTests.fs" />
     <Compile Include="DeadCodeTests.fs" />
+    <Compile Include="ExplainFileTests.fs" />
     <Compile Include="ProgramTests.fs" />
     <Compile Include="DetachedLaunchTests.fs" />
     <Compile Include="LogDestinationTests.fs" />

@@ -1862,6 +1862,61 @@ module internal SymbolFreeEdit =
     let private isFSharpSource (rel: string) =
         String.Equals(Path.GetExtension rel, ".fs", StringComparison.OrdinalIgnoreCase)
 
+    /// The symbols the index holds for a repo-relative file, and the runnable tests a
+    /// symbol-free edit to it runs: those covering its symbols and those declared in it.
+    /// ONE derivation for the narrowing (`select`) and its explanation (`explainFile`).
+    let private covering (runnable: string -> bool) (index: Index) (rel: string) =
+        let seeds = index.SymbolsIn rel
+
+        let tests =
+            if List.isEmpty seeds then
+                []
+            else
+                index.Affected seeds @ index.TestsIn rel
+                |> List.filter (fun t -> runnable t.TestProject)
+
+        seeds, tests
+
+    /// Classes by project, each project's sorted and distinct.
+    let private classesOf (tests: TestMethodInfo list) : Map<string, string list> =
+        tests
+        |> List.groupBy _.TestProject
+        |> List.map (fun (project, tests) -> project, tests |> List.map _.TestClass |> List.distinct |> List.sort)
+        |> Map.ofList
+
+    /// Why editing one file selects what it selects (`fshw explain`).
+    type FileSelection =
+        {
+            /// The symbols the index holds for the file, sorted: the seeds of the edit.
+            Seeds: string list
+            /// The classes a symbol-free edit to it runs, by project.
+            Classes: Map<string, string list>
+            /// How many indexed test methods cover the file. The class filter runs EVERY
+            /// test in those classes, so a run executes at least this many, usually more.
+            CoveringTests: int
+            /// Its symbols ranked by the tests each alone selects.
+            Fanout: SeedFanoutReading
+        }
+
+    /// The selection a symbol-free edit to `rel` makes, explained; `None` when the index
+    /// holds no symbol for it, which `select` refuses to narrow.
+    let explainFile (runnable: string -> bool) (index: Index) (rel: string) : FileSelection option =
+        match covering runnable index rel with
+        | [], _ -> None
+        | seeds, tests ->
+            let aloneCount seed =
+                index.Affected [ seed ]
+                |> List.filter (fun t -> runnable t.TestProject)
+                |> List.length
+
+            Some
+                { Seeds = seeds |> List.distinct |> List.sort
+                  Classes = classesOf tests
+                  CoveringTests = tests |> List.distinct |> List.length
+                  // Ranked whenever anything is selected: one file's symbols are few, and
+                  // the walk runs only when someone asks.
+                  Fanout = SeedFanoutReading.ofSelection 0 MaxSeedsToAttribute tests.Length seeds aloneCount }
+
     /// Decide the narrowing for a launch whose evidence is bound to `evidence` and whose
     /// tree is now `current`. `sealedTree` is the tree the last `BatchChecked` folded
     /// its check results over; `compiled` says whether the current model compiles a
@@ -1900,15 +1955,7 @@ module internal SymbolFreeEdit =
                 let perFile =
                     delta.Changed
                     |> List.map (fun rel ->
-                        let seeds = index.SymbolsIn rel
-
-                        let tests =
-                            if List.isEmpty seeds then
-                                []
-                            else
-                                index.Affected seeds @ index.TestsIn rel
-                                |> List.filter (fun t -> runnable t.TestProject)
-
+                        let seeds, tests = covering runnable index rel
                         rel, seeds, tests)
 
                 // A file the index holds no symbol for is one it cannot answer for. A
@@ -1917,13 +1964,7 @@ module internal SymbolFreeEdit =
                 match perFile |> List.tryFind (fun (_, seeds, _) -> List.isEmpty seeds) with
                 | Some(rel, _, _) -> SymbolFreeEdit.Refused $"the impact index holds no symbol for %s{rel}"
                 | None ->
-                    let classes =
-                        perFile
-                        |> List.collect (fun (_, _, tests) -> tests)
-                        |> List.groupBy _.TestProject
-                        |> List.map (fun (project, tests) ->
-                            project, tests |> List.map _.TestClass |> List.distinct |> List.sort)
-                        |> Map.ofList
+                    let classes = perFile |> List.collect (fun (_, _, tests) -> tests) |> classesOf
 
                     SymbolFreeEdit.Covering(
                         delta.Changed,

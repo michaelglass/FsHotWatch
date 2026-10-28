@@ -406,6 +406,20 @@
         "platform": "linux"
       }
     ],
+    "Explain.fs": [
+      {
+        "line": 82,
+        "branch": 70,
+        "reason": "new file (2026-10-28). First macOS measurement, mise run ci: line 83.7%, branch 72.4% (21/29), before three more format/path tests were added. Floored a little under it. What stays uncovered is the default wiring: runDefault (real stdout, real schema probe) and TestsScope.load (reads .fshw.json through DaemonConfig.loadConfig); the decisions they wire are tested through run with injected seams.",
+        "platform": "macos"
+      },
+      {
+        "line": 80,
+        "branch": 65,
+        "reason": "provisional Linux floor (2026-10-28): new file, not yet measured on Linux. macOS measures line 83.7%, branch 72.4%; Linux instruments more compiler-generated branches for the same source, so set a few points below, to be settled from CI.",
+        "platform": "linux"
+      }
+    ],
     "DeadCode.fs": [
       {
         "line": 86,

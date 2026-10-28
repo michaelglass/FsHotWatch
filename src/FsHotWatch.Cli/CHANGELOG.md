@@ -27,6 +27,14 @@
   names the long pole, one class spanning 113 s of a 115 s wall, with no hand analysis.
   (AUTOMATION-1300, slice 3.)
 
+- **feat: `fshw explain <file> [--json]`** answers why editing a file selects the tests
+  it selects: the classes a symbol-free edit to it runs, by project, the declared
+  `alwaysClasses`, and the file's symbols ranked by the tests each alone selects. It reads
+  the impact index directly, like `dead-code`, and computes with the same
+  `SymbolFreeEdit` derivation `check` narrows with. Measured on this repository: explaining
+  `src/FsHotWatch.TestPrune/CheckSkip.fs` named 62 classes, the same 62 a `check` after a
+  comment edit to that file ran. New: `Explain`.
+
 - **feat: the verdict file's `scope` records `seedFanout`**, the seeds of a wide
   selection that each alone select the most tests (at most five, widest first), or why
   they were not ranked: `narrow`, `over-budget` (with the seed count) or `no-selection`.

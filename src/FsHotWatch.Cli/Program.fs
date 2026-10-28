@@ -239,6 +239,11 @@ type FindingsFlag =
     | [<CmdFlag(Description = "Seconds --wait may take before refusing (default 300)", Name = "timeout-sec")>] TimeoutSec of
         int
 
+/// Flags for `fshw explain`. See `Explain`.
+[<RequireQualifiedAccess>]
+type ExplainFlag =
+    | [<CmdFlag(Description = "Print the selection as a JSON document instead of the human answer")>] Json
+
 /// `findings --wait`'s default bound.
 [<Literal>]
 let DefaultFindingsTimeoutSec = 300
@@ -325,6 +330,11 @@ type Command =
     | [<CmdExample("", "--include-tests", "--entry *.Cli.* --entry *.Worker.*");
         Cmd("Report unreachable symbols from entry points (TestPrune dead-code analysis over the daemon DB)",
             Name = "dead-code")>] DeadCode of DeadCodeFlag list
+    | [<CmdArg("changed file (repo-relative or absolute)", FieldIndex = 0);
+        CmdExample("src/Lib/Thing.fs", "src/Lib/Thing.fs --json");
+        Cmd("Explain why editing a file selects the tests it selects: the classes a symbol-free edit to it runs, by project, its symbols that pull in the most tests, and the alwaysClasses every filtered run carries (reads the impact index; never contacts the daemon)")>] Explain of
+        file: string *
+        flags: ExplainFlag list
     | [<CmdExample("", "--runs-dir ../other/.fshw/test-runs", "--top 5");
         Cmd("Where the newest test run spent its wall clock: slowest classes, serial tail, budget headroom, regressions vs recent greens, load sensitivity (reads .fshw/test-runs; never contacts the daemon)")>] Insights of
         InsightsFlag list
@@ -386,6 +396,7 @@ let internal agentGateFor (command: Command) : AgentGate =
     // `findings` prints the answer a caller asked for, JSON with `--json`.
     | Command.Findings _
     | Command.DeadCode _
+    | Command.Explain _
     | Command.Completions
     | Command.Host _ -> AgentGate.Ungated
 
@@ -409,6 +420,7 @@ let internal commandToken (command: Command) : string =
     | Command.Coverage _ -> "coverage"
     | Command.DeadCode _ -> "dead-code"
     | Command.Insights _ -> "insights"
+    | Command.Explain _ -> "explain"
     | Command.Completions -> "completions"
     | Command.Host _ -> "host"
 
@@ -3484,6 +3496,7 @@ let private executeCommandRendered
         | Coverage _
         | DeadCode _
         | Insights _
+        | Explain _
         | Completions
         | Host _ -> false
 
@@ -4273,6 +4286,12 @@ let private executeCommandRendered
                   Verbose = opts.Verbose }
 
             FsHotWatch.Cli.DeadCode.runDefault repoRoot opts
+        | Explain(file, flags) ->
+            // Reads the impact index directly, like `dead-code`.
+            FsHotWatch.Cli.Explain.runDefault
+                repoRoot
+                { File = file
+                  Json = flags |> List.contains ExplainFlag.Json }
         | Completions ->
             match writeFishCompletions commandTree cliName with
             | Ok path ->
@@ -4618,6 +4637,7 @@ let internal needsDaemon (command: Command) : bool =
     | Config _
     | Coverage _
     | DeadCode _
+    | Explain _
     | Completions
     | Host _ -> false
     | _ -> true

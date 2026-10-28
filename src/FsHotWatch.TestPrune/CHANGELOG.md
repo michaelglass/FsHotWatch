@@ -13,6 +13,10 @@
   `regressions`, `growth`, `report`): a project's `.profile.jsonl` when it has one, else
   its CTRF report and `.timed-out.json`. Behind `fshw insights`. (AUTOMATION-1300, slice 3.)
 
+- feat: `SymbolFreeEdit.explainFile` explains the selection a symbol-free edit to one
+  file makes (`FileSelection`: seeds, classes by project, covering test methods, seed
+  fanout), sharing its derivation with `SymbolFreeEdit.select` so the two cannot drift.
+
 - **feat: `test-scope` sends `seedFanout`**, the seeds of a wide selection that each
   alone select the most tests, beside `selectedBy`. It reuses the per-seed walks the
   wide-selection breakdown already pays for (more than `WideSelectionTests` selected,

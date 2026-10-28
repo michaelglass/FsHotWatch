@@ -116,6 +116,7 @@ This matters more than the feature list, so it is stated up front:
 | `fshw confirm` | **The unfiltered verb.** Same checks, but the tests run unfiltered — and a green is refused unless they did. Exits 0/1/2 as `check`, plus **3** (unearned scope). `--run-once` for CI. On an unchanged tree it answers from the full-suite evidence already earned; `--fresh` launches a new full-suite run instead. A daemon `confirm` had to start is stopped before it returns (`--keep-daemon` keeps it); one that was already running is left alone. |
 | `fshw verdict` | Read `.fshw/verdict.json` and report whether it still applies to the tree on disk. Contacts no daemon, triggers no run. |
 | `fshw insights` | Where the newest test run spent its wall clock: slowest classes, long pole, serial tail, budget headroom, regressions vs recent greens, load sensitivity. Reads `.fshw/test-runs/` only (`--runs-dir` for another checkout's). |
+| `fshw explain <file>` | Why editing `<file>` selects the tests it selects: the classes a symbol-free edit to it runs, by project, the declared `alwaysClasses`, and its symbols that pull in the most tests (`--json` for a document). Reads the impact index only. |
 | `fshw status [plugin]` | Show the daemon's current status (optionally for one plugin). Triggers nothing. |
 | `fshw findings` | The warm daemon's analyzer findings, each with its code, as a versioned JSON answer (`--json`) about the tree on disk, or a refusal: stale (4), incomplete (2), no daemon (5). Starts nothing; `--wait` waits for the daemon to catch up. See the [CLI README](src/FsHotWatch.Cli/README.md#fshw-findings--the-warm-daemons-analyzer-findings-tied-to-the-tree). |
 | `fshw findings` | The warm daemon's analyzer findings, each with its code, as a versioned JSON answer (`--json`) about the tree on disk — or a refusal: stale (4), incomplete (2), no daemon (5). Starts nothing; `--wait` waits for the daemon to catch up. See the [CLI README](src/FsHotWatch.Cli/README.md#fshw-findings--the-warm-daemons-analyzer-findings-tied-to-the-tree). |
@@ -179,7 +180,7 @@ With `--agent`, `FS_HOT_WATCH_AGENT=1` or `"agent": true` in `.fshw.json`, `chec
 `confirm`, `verdict`, `status`, `scan`, `format`, `rerun`, `test-rerun`, `stop`,
 `invalidate`, `config` and `coverage` print **one compact JSON line** on stdout and
 **nothing on stderr**. What they would have shown a person is written to
-`.fshw/agent-output.log`, and the line names that file. `start`, `init`, `dead-code`
+`.fshw/agent-output.log`, and the line names that file. `start`, `init`, `dead-code`, `explain`
 and `completions` are not affected.
 
 ```json

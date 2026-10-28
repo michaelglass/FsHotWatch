@@ -65,7 +65,7 @@ let incompatibleSchemaMessage (found: int) =
 
 /// Read `PRAGMA user_version` from the SQLite file at `dbPath` without going
 /// through TestPrune's `Database.create` (which would recreate on mismatch).
-let private readSchemaVersion (dbPath: string) : int =
+let internal readSchemaVersion (dbPath: string) : int =
     use conn =
         new Microsoft.Data.Sqlite.SqliteConnection($"Data Source=%s{dbPath};Mode=ReadOnly")
 
