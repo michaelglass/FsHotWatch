@@ -1504,6 +1504,13 @@
         "branch": 95,
         "reason": "new file (AUTOMATION-1320 record of runtime coverage that did not ingest: load/save/arm of .fshw/test-prune/runtime-coverage-not-ingested.json). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-26 on macOS by TestPruneModelChangeTests + TestPrunePluginTests with coverage (coverageratchet check): line 100%, branch 95% (19/20). Uncovered: one compiler-generated edge of the JSON node type tests. Platform-neutral: no platform-specific path."
       }
+    ],
+    "SnapshotEpoch.fs": [
+      {
+        "line": 100,
+        "branch": 91,
+        "reason": "new file (AUTOMATION-681 slice 3, ADR-045: the session snapshot epoch, its manifest, and the ledger a daemon advances from accepted change cohorts). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-27 on macOS by SnapshotEpochTests with coverage: line 69/70 (the 70th, the Ledger constructor the daemon uses, is covered by the DaemonTests/RepositoryHostTests snapshot tests in the full suite), branch 22/24 (~91.7%). Uncovered: the compiler-generated null check of `use stream`, and the plain-IOException arm of readFile (a sharing violation, which a POSIX file system does not raise). Platform-neutral: no platform-specific path."
+      }
     ]
   },
   "countFloors": {
