@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **feat: `fshw insights` — where the newest test run spent its wall clock.** Read from
+  `.fshw/test-runs/` alone (no daemon, no run): per project its outcome and wall against
+  its `timeoutSec`, the slowest classes, the long pole (a class spanning half the wall or
+  more), the serial tail (the end where one class runs at a time), the classes that
+  regressed (1.5x and a second over the median of the last `--last-greens` greens), and
+  the classes whose span grows most when the box is contended. `--runs-dir` reads another
+  checkout's runs; `--top` bounds each list. Over ten retained runs of a real suite it
+  names the long pole, one class spanning 113 s of a 115 s wall, with no hand analysis.
+  (AUTOMATION-1300, slice 3.)
+
 - **feat: the verdict file's `scope` records `seedFanout`**, the seeds of a wide
   selection that each alone select the most tests (at most five, widest first), or why
   they were not ranked: `narrow`, `over-budget` (with the seed count) or `no-selection`.

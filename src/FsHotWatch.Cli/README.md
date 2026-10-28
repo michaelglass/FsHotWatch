@@ -97,6 +97,7 @@ names are `sql` and `sql-hydra`; any other name or shape fails configuration.
 | `config check` | Validate `.fshw.json` without starting the daemon. Exits `0` on valid config, `2` on parse/validation error. |
 | `coverage refresh-baseline` | Delete the coverage baseline + partial JSON so the next full run rebuilds it from scratch. |
 | `dead-code [opts]` | Report unreachable symbols from entry points (TestPrune dead-code analysis). Options: `--entry <pattern>` (repeatable; replaces the defaults), `--include-tests`. |
+| `insights [opts]` | Where the newest test run spent its wall clock, read from `.fshw/test-runs/` (no daemon, no run): per project the outcome and wall against its `timeoutSec` budget, the slowest classes by span (with the load each ran under, when a profile recorded it), the long pole, the serial tail, the classes that regressed against recent greens, and — across retained profiles — the classes that grow most under load. Reads each project's `.profile.jsonl`, else its CTRF report and timeout marker, so older runs answer too. Options: `--runs-dir <dir>` (another checkout's runs), `--top <n>` (default 10), `--last-greens <n>` (default 5). |
 | `completions` | Install fish shell completions. |
 | `<command> [args]` | Run any plugin-registered command (e.g. `diagnostics`). |
 

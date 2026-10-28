@@ -3804,3 +3804,60 @@ module ``beforeRun failure reporting`` =
                 test <@ contents.Contains "three" @>
         finally
             cleanup repo
+
+// --- insights (AUTOMATION-1300 slice 3) ---
+
+[<Fact(Timeout = 15000)>]
+let ``parse insights accepts its runs-dir, top and last-greens flags`` () =
+    test
+        <@
+            CommandTree.parse
+                tree
+                [| "insights"
+                   "--runs-dir"
+                   "/x/.fshw/test-runs"
+                   "--top"
+                   "3"
+                   "--last-greens"
+                   "2" |] = Ok(
+                Insights
+                    [ InsightsFlag.RunsDir "/x/.fshw/test-runs"
+                      InsightsFlag.Top 3
+                      InsightsFlag.LastGreens 2 ]
+            )
+        @>
+
+    test <@ CommandTree.parse tree [| "insights" |] = Ok(Insights []) @>
+
+[<Fact(Timeout = 15000)>]
+let ``insights reads this checkout's runs by default, with every configured project budget`` () =
+    let config =
+        { fakeConfig with
+            Tests =
+                (parseConfig
+                    """{"tests": {"projects": [{"project": "A.Tests", "command": "sh", "args": "x", "timeoutSec": 600},
+                                                {"project": "B.Tests", "command": "sh", "args": "y"}]}}"""
+                    fakeConfig)
+                    .Tests }
+
+    let runsDir, options = insightsSetup "/repo" config []
+
+    test <@ runsDir = FsHotWatch.Ctrf.reportsDir "/repo" @>
+    test <@ options.Budgets = Map.ofList [ "A.Tests", 600 ] @>
+    test <@ options.Top = 10 && options.LastGreens = 5 @>
+
+    let other, chosen =
+        insightsSetup
+            "/repo"
+            fakeConfig
+            [ InsightsFlag.RunsDir "elsewhere/runs"
+              InsightsFlag.Top 3
+              InsightsFlag.LastGreens 2 ]
+
+    test <@ other = Path.GetFullPath "elsewhere/runs" @>
+    test <@ chosen.Top = 3 && chosen.LastGreens = 2 && chosen.Budgets = Map.empty @>
+
+[<Fact(Timeout = 15000)>]
+let ``insights is the verb's own output, spelled insights`` () =
+    test <@ agentGateFor (Insights []) = AgentGate.OwnOutput @>
+    test <@ commandToken (Insights []) = "insights" @>

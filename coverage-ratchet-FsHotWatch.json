@@ -28,6 +28,13 @@
         "reason": "new file (AUTOMATION-1331 checkSkipClasses: the declaration, its parse and the per-project skip decision). Explicit so that a report which drops this file fails coverage-check instead of passing. Measured 2026-10-26 on macOS by TestPruneCheckSkipClassesTests with coverage: line 100% (77/77), branch 100% (44/44). Platform-neutral, so no platform tag."
       }
     ],
+    "Insights.fs": [
+      {
+        "line": 95,
+        "branch": 78,
+        "reason": "new file (AUTOMATION-1300 slice 3 `fshw insights`: reading run directories back from profiles, CTRF reports and timeout markers, the serial tail, regressions vs recent greens, growth under load, and the text report). Floor = the measured value rounded down. Measured 2026-10-28 on macOS with coverage over InsightsTests, ProfileTests and ProfileConsoleTests: line 95.4%, branch 78.0% (78/100). Uncovered: the IOException/UnauthorizedAccessException arms of the directory and file reads, and compiler-generated edges of the tuple and Option matches in the readers. Pure file reads, so platform-neutral."
+      }
+    ],
     "Profile.fs": [
       {
         "line": 96,

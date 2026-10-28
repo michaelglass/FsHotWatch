@@ -53,6 +53,7 @@
     <Compile Include="TimeoutMarker.fs" />
     <Compile Include="Starvation.fs" />
     <Compile Include="Profile.fs" />
+    <Compile Include="Insights.fs" />
     <Compile Include="CheckSkip.fs" />
     <Compile Include="TestEvidenceRun.fs" />
     <Compile Include="GroupSchedule.fs" />

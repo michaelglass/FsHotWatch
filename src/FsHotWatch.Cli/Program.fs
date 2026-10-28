@@ -243,6 +243,17 @@ type FindingsFlag =
 [<Literal>]
 let DefaultFindingsTimeoutSec = 300
 
+/// Flags for `fshw insights`. See `Insights`.
+[<RequireQualifiedAccess>]
+type InsightsFlag =
+    | [<CmdFlag(Description =
+                    "Read run directories from here instead of this checkout's .fshw/test-runs (another checkout's, say)",
+                Name = "runs-dir")>] RunsDir of string
+    | [<CmdFlag(Description = "Slowest classes listed per project (default 10)")>] Top of int
+    | [<CmdFlag(Description = "Recent greens a regression is judged against (default 5)",
+                Name = "last-greens",
+                Short = "g")>] LastGreens of int
+
 /// `--repository`: act on the repository host and every worktree it serves.
 type RepositoryFlag =
     | [<CmdFlag(Description = "Act on the repository host and every worktree it serves, not only this worktree")>] Repository
@@ -311,6 +322,9 @@ type Command =
     | [<CmdExample("", "--include-tests", "--entry *.Cli.* --entry *.Worker.*");
         Cmd("Report unreachable symbols from entry points (TestPrune dead-code analysis over the daemon DB)",
             Name = "dead-code")>] DeadCode of DeadCodeFlag list
+    | [<CmdExample("", "--runs-dir ../other/.fshw/test-runs", "--top 5");
+        Cmd("Where the newest test run spent its wall clock: slowest classes, serial tail, budget headroom, regressions vs recent greens, load sensitivity (reads .fshw/test-runs; never contacts the daemon)")>] Insights of
+        InsightsFlag list
     | [<Cmd("Install fish completions")>] Completions
     | [<CmdArg("worktree root");
         Cmd("Run the repository host for the repository containing <root> (launched on demand when `repositoryHost` is enabled)")>] Host of
@@ -362,7 +376,8 @@ let internal agentGateFor (command: Command) : AgentGate =
     | Command.Invalidate
     | Command.Rerun _
     | Command.Config _
-    | Command.Coverage _ -> AgentGate.OwnOutput
+    | Command.Coverage _
+    | Command.Insights _ -> AgentGate.OwnOutput
     | Command.Start
     | Command.Init
     // `findings` prints the answer a caller asked for, JSON with `--json`.
@@ -390,8 +405,47 @@ let internal commandToken (command: Command) : string =
     | Command.Config _ -> "config"
     | Command.Coverage _ -> "coverage"
     | Command.DeadCode _ -> "dead-code"
+    | Command.Insights _ -> "insights"
     | Command.Completions -> "completions"
     | Command.Host _ -> "host"
+
+/// Where `fshw insights` reads runs from, and how it reports: `--runs-dir` (default this
+/// checkout's `.fshw/test-runs`), `--top`, `--last-greens`, and each configured project's
+/// `timeoutSec` as its budget.
+let internal insightsSetup
+    (repoRoot: string)
+    (config: DaemonConfiguration)
+    (flags: InsightsFlag list)
+    : string * FsHotWatch.TestPrune.Insights.Options =
+    let runsDir =
+        flags
+        |> List.tryPick (function
+            | InsightsFlag.RunsDir d -> Some(Path.GetFullPath d)
+            | _ -> None)
+        |> Option.defaultWith (fun () -> FsHotWatch.Ctrf.reportsDir repoRoot)
+
+    let defaults = FsHotWatch.TestPrune.Insights.Options.defaults
+
+    runsDir,
+    { Top =
+        flags
+        |> List.tryPick (function
+            | InsightsFlag.Top n -> Some n
+            | _ -> None)
+        |> Option.defaultValue defaults.Top
+      LastGreens =
+        flags
+        |> List.tryPick (function
+            | InsightsFlag.LastGreens n -> Some n
+            | _ -> None)
+        |> Option.defaultValue defaults.LastGreens
+      Budgets =
+        config.Tests
+        |> Option.map (fun t ->
+            t.Projects
+            |> List.choose (fun p -> p.TimeoutSec |> Option.map (fun s -> p.Project, s))
+            |> Map.ofList)
+        |> Option.defaultValue Map.empty }
 
 let private isRunOnce = List.contains RunOnce
 
@@ -3394,6 +3448,7 @@ let private executeCommandRendered
         | Config _
         | Coverage _
         | DeadCode _
+        | Insights _
         | Completions
         | Host _ -> false
 
@@ -4141,6 +4196,14 @@ let private executeCommandRendered
 
                 for p in deleted do
                     printfn "  %s" p
+
+            0
+        | Insights flags ->
+            // A pure read of the run directories: no daemon, no IPC, no run.
+            let runsDir, options = insightsSetup repoRoot config flags
+
+            for line in FsHotWatch.TestPrune.Insights.report options (FsHotWatch.TestPrune.Insights.loadRuns runsDir) do
+                printfn "%s" line
 
             0
         | DeadCode flags ->
