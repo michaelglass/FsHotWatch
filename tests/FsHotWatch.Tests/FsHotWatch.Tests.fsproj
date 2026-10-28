@@ -262,6 +262,7 @@
     <Compile Include="ProfileConsoleTests.fs" />
     <Compile Include="TestPruneProfileTests.fs" />
     <Compile Include="InsightsTests.fs" />
+    <Compile Include="VerdictTimeoutInsightsTests.fs" />
     <Compile Include="FileCommandPluginTests.fs" />
     <Compile Include="RunLevelHookGapTests.fs" />
     <Compile Include="ReleaseOrchestrationTests.fs" />

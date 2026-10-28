@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **feat: a timeout red's verdict points at its insights.** The verdict file's new
+  `timedOut` lists every project its runs record as timed out, with the long pole and its
+  share of the wall, the headroom (negative when over), whether the run was contended,
+  and `see`: the `fshw insights --run <id>` command for the whole run. `fshw verdict`
+  prints one line for each. The entry is the record `fshw insights --json` prints for the
+  same run directory. `fshw insights` gains `--json` and `--run <id>`. New:
+  `Verdict.TimedOut`, `Verdict.withTimedOut`, `Verdict.timedOutInsights`.
+  (AUTOMATION-1300, slice 4.)
+
 - **feat: `fshw insights` — where the newest test run spent its wall clock.** Read from
   `.fshw/test-runs/` alone (no daemon, no run): per project its outcome and wall against
   its `timeoutSec`, the slowest classes, the long pole (a class spanning half the wall or

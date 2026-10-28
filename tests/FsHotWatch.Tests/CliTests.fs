@@ -3861,3 +3861,20 @@ let ``insights reads this checkout's runs by default, with every configured proj
 let ``insights is the verb's own output, spelled insights`` () =
     test <@ agentGateFor (Insights []) = AgentGate.OwnOutput @>
     test <@ commandToken (Insights []) = "insights" @>
+
+[<Fact(Timeout = 15000)>]
+let ``insights takes --json and --run, and aims the report at that run`` () =
+    test
+        <@
+            CommandTree.parse tree [| "insights"; "--json"; "--run"; "abc" |] = Ok(
+                Insights [ InsightsFlag.Json; InsightsFlag.Run "abc" ]
+            )
+        @>
+
+    let _, options =
+        insightsSetup "/repo" fakeConfig [ InsightsFlag.Json; InsightsFlag.Run "abc" ]
+
+    test <@ options.Run = Some "abc" @>
+
+    let _, unaimed = insightsSetup "/repo" fakeConfig []
+    test <@ unaimed.Run = None @>

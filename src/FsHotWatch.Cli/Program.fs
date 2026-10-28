@@ -253,6 +253,9 @@ type InsightsFlag =
     | [<CmdFlag(Description = "Recent greens a regression is judged against (default 5)",
                 Name = "last-greens",
                 Short = "g")>] LastGreens of int
+    | [<CmdFlag(Description = "Print the report as one JSON object: the run, its projects' insights, the load-sensitive classes")>] Json
+    | [<CmdFlag(Description = "Report on this run (its id under .fshw/test-runs) instead of the newest", Short = "i")>] Run of
+        string
 
 /// `--repository`: act on the repository host and every worktree it serves.
 type RepositoryFlag =
@@ -445,7 +448,12 @@ let internal insightsSetup
             t.Projects
             |> List.choose (fun p -> p.TimeoutSec |> Option.map (fun s -> p.Project, s))
             |> Map.ofList)
-        |> Option.defaultValue Map.empty }
+        |> Option.defaultValue Map.empty
+      Run =
+        flags
+        |> List.tryPick (function
+            | InsightsFlag.Run id -> Some id
+            | _ -> None) }
 
 let private isRunOnce = List.contains RunOnce
 
@@ -4156,7 +4164,12 @@ let private executeCommandRendered
 
                     for line in covered |> Option.map TreeHash.describeCoverage |> Option.defaultValue [] do
                         say $"  %s{line}"
-                | Verdict.Red -> say $"%s{Color.red}✗%s{Color.reset} %s{verb}: RED — for this tree"
+                | Verdict.Red ->
+                    say $"%s{Color.red}✗%s{Color.reset} %s{verb}: RED — for this tree"
+
+                    // Each timeout red, with its long pole, overrun and load (AUTOMATION-1300).
+                    for i in v.TimedOut do
+                        say $"  %s{FsHotWatch.TestPrune.Insights.timeoutLine i}"
                 | Verdict.Incomplete reason -> say $"%s{Color.red}✗%s{Color.reset} %s{verb}: NO VERDICT — %s{reason}"
                 // The reason already opens with "NO VERDICT — PROJECT MODEL …".
                 | Verdict.ModelUnavailable reason -> say $"%s{Color.red}✗%s{Color.reset} %s{verb}: %s{reason}"
@@ -4202,8 +4215,13 @@ let private executeCommandRendered
             // A pure read of the run directories: no daemon, no IPC, no run.
             let runsDir, options = insightsSetup repoRoot config flags
 
-            for line in FsHotWatch.TestPrune.Insights.report options (FsHotWatch.TestPrune.Insights.loadRuns runsDir) do
-                printfn "%s" line
+            let runs = FsHotWatch.TestPrune.Insights.loadRuns runsDir
+
+            if List.contains InsightsFlag.Json flags then
+                printfn "%s" (FsHotWatch.TestPrune.Insights.reportJson options runs)
+            else
+                for line in FsHotWatch.TestPrune.Insights.report options runs do
+                    printfn "%s" line
 
             0
         | DeadCode flags ->

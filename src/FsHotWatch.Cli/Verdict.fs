@@ -1501,6 +1501,12 @@ type Verdict =
             /// `validate` ties it to `outcome` in both directions: a `Green` requires an
             /// available model, and a `ModelUnavailable` may not name one.
             projectModel: IpcParsing.ProjectModelReading
+            /// The insights of every project the verdict's runs record as timed out: its long
+            /// pole and share of the wall, its headroom, and whether the run was contended
+            /// (AUTOMATION-1300). Evidence about the run, like `attribution`: it can neither
+            /// redden nor green a verdict. Empty when nothing timed out, and when read from
+            /// a verdict written before the field existed.
+            timedOut: FsHotWatch.TestPrune.Insights.ProjectInsight list
         }
 
     member this.ProducedAt = this.producedAt
@@ -1589,6 +1595,9 @@ type Verdict =
 
     /// How many failing diagnostics there were before `RedCauses` was truncated.
     member this.RedCauseCount = this.redCauseCount
+
+    /// The insights of every project that timed out — see `timedOut`.
+    member this.TimedOut = this.timedOut
 
     /// The change that selected this run's tests (truncated; see `TriggerCount`).
     member this.Trigger = this.trigger
@@ -1835,7 +1844,8 @@ let create
           trigger = runReport.Seeds
           triggerCount = runReport.SeedCount
           attribution = Attribution.none
-          projectModel = projectModel }
+          projectModel = projectModel
+          timedOut = [] }
 
     match validate candidate with
     | Ok v -> v
@@ -1845,6 +1855,24 @@ let create
 /// because attribution is EVIDENCE ABOUT THE RUN, not an input to the outcome: it can
 /// neither redden nor green a verdict, and `validate` has nothing to say about it.
 let withAttribution (attribution: Attribution) (v: Verdict) : Verdict = { v with attribution = attribution }
+
+/// The same verdict, carrying the insights of its timed-out projects. Separate from
+/// `create` for the reason `withAttribution` is: evidence about the run, not an input
+/// to the outcome.
+let withTimedOut (insights: FsHotWatch.TestPrune.Insights.ProjectInsight list) (v: Verdict) : Verdict =
+    { v with timedOut = insights }
+
+/// The insights of every project that timed out in any of `runs` (`Insights.summarize`
+/// of the run directory, the same record `fshw insights --json --run <id>` prints).
+/// A project timed out when its profile ended `timed-out`, or it left a timeout marker.
+let timedOutInsights (repoRoot: string) (runs: RunSuites list) : FsHotWatch.TestPrune.Insights.ProjectInsight list =
+    runs
+    |> List.choose _.RunId
+    |> List.distinct
+    |> List.collect (fun id ->
+        FsHotWatch.TestPrune.Insights.loadRun (Ctrf.runDir repoRoot id)
+        |> List.filter (fun p -> p.Outcome = Some "timed-out")
+        |> List.map (FsHotWatch.TestPrune.Insights.summarize Map.empty))
 
 /// Absolute path to the verdict file.
 let path (repoRoot: string) : string = FsHwPaths.verdictFile repoRoot
@@ -2210,6 +2238,13 @@ let private suiteJson (s: SuiteVerdict) : obj =
 
     entry :> obj
 
+/// One `timedOut` entry: `Insights.insightJson`, plus `see`, the command that reports the
+/// whole run.
+let private timedOutJson (i: FsHotWatch.TestPrune.Insights.ProjectInsight) : System.Text.Json.Nodes.JsonObject =
+    let o = FsHotWatch.TestPrune.Insights.insightJson i
+    o["see"] <- System.Text.Json.Nodes.JsonValue.Create $"fshw insights --run %s{i.RunId}"
+    o
+
 /// Render the verdict as JSON. Pure, so the contract is testable without a disk.
 let serialize (v: Verdict) : string =
     let payload =
@@ -2269,6 +2304,10 @@ let serialize (v: Verdict) : string =
            // reads and because "which reports does this check point at" is a question in
            // its own right. Derived, never assembled separately: the two cannot drift.
            suites = [ for s in v.Suites -> suiteJson s ]
+           // Every timeout red's insight: its long pole and share of the wall, its headroom,
+           // whether the run was contended, and the command that says more. Always present:
+           // an empty array says nothing timed out.
+           timedOut = [ for i in v.TimedOut -> timedOutJson i ]
            // What reddened this verdict, when the answer is not in
            // `plugins[]`. Always present — an empty array on a green is a statement, and
            // a reader that has to distinguish "no causes" from "this build did not
@@ -3347,7 +3386,18 @@ let read (repoRoot: string) : Reading =
                              | _ -> [])
                           triggerCount = tryInt root "triggerCount" |> Option.defaultValue 0
                           attribution = parseAttribution root
-                          projectModel = projectModel }
+                          projectModel = projectModel
+                          // Evidence, like `attribution`: absent (a verdict written before
+                          // the field) or unreadable entries read as none.
+                          timedOut =
+                            match tryProp root "timedOut" with
+                            | Some el when el.ValueKind = JsonValueKind.Array ->
+                                el.EnumerateArray()
+                                |> Seq.choose (fun e ->
+                                    System.Text.Json.Nodes.JsonNode.Parse(e.GetRawText())
+                                    |> FsHotWatch.TestPrune.Insights.tryReadInsight)
+                                |> Seq.toList
+                            | _ -> [] }
 
                     // Old and malformed files can carry a bare red with
                     // no structural evidence. It is still a usable, fail-closed reading,

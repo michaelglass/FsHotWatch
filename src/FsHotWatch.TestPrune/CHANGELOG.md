@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **feat: `Insights.ProjectInsight`, one project of one run summarized** (`summarize`,
+  `insightJson`, `tryReadInsight`, `reportJson`, `timeoutLine`): the long pole and its share
+  of the wall, the slowest classes, the headroom, and the run's mean load per core with a
+  `contended` flag (`ProjectRun.LoadPerCoreMean`, from the profile's samples).
+  `Options.Run` aims a report at one run, judged against it and older runs only. The text
+  report states the run's load. (AUTOMATION-1300, slice 4.)
+
 - **feat: `Insights` reads the retained runs back** (`loadRun`, `loadRuns`, `serialTail`,
   `regressions`, `growth`, `report`): a project's `.profile.jsonl` when it has one, else
   its CTRF report and `.timed-out.json`. Behind `fshw insights`. (AUTOMATION-1300, slice 3.)

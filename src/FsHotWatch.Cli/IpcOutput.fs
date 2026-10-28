@@ -1371,6 +1371,8 @@ let private publishVerdictWithReason
                 (redCauses @ downgradeCauses)
                 projectModel
             |> Verdict.withAttribution attribution
+            // Each timeout red points at its project's insights (AUTOMATION-1300).
+            |> Verdict.withTimedOut (Verdict.timedOutInsights repoRoot runs)
 
         // Capture what is on disk BEFORE overwriting it. When this run executed no
         // tests, the prior verdict is the only thing that can answer the reader's

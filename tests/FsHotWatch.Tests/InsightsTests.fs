@@ -159,6 +159,7 @@ let private projectRun (runId: string) (outcome: string) (spans: (string * float
       Outcome = Some outcome
       WallMs = None
       TimeoutSec = None
+      LoadPerCoreMean = None
       Classes =
         spans
         |> List.map (fun (cls, sec) ->
@@ -355,3 +356,189 @@ let ``unreadable or partial records leave a project's facts unknown, never a thr
 
     test <@ text.Contains "NoEnd: outcome unknown, wall unknown" @>
     test <@ text.Contains "no class timings" @>
+
+// --- slice 4: one project's insight as a record, its JSON, and the run's load ---
+
+/// A killed host's profile: 4 cores, a 10 s budget, two load samples, and the classes it
+/// printed before the kill.
+let private killedProfile (load1: float) =
+    [ Profile.Start("Killed", at 0.0, 4, Some 10, Some 1.0)
+      Profile.Sampled
+          { At = at 2.0
+            Load1 = Some load1
+            CpuMs = None }
+      Profile.Sampled
+          { At = at 7.0
+            Load1 = Some load1
+            CpuMs = None }
+      Profile.End(at 12.0, 12_000L, None, Some load1, "timed-out")
+      Profile.Class(
+          timing "K.Pole" 0.0 9.0,
+          { Samples = 2
+            LoadPerCoreMean = Some(load1 / 4.0)
+            LoadPerCoreMax = Some(load1 / 4.0)
+            Contended = Some(load1 / 4.0 >= 1.0) },
+          Profile.ClassSource.Console
+      )
+      Profile.Class(
+          timing "K.Quick" 0.0 1.0,
+          { Samples = 1
+            LoadPerCoreMean = None
+            LoadPerCoreMax = None
+            Contended = None },
+          Profile.ClassSource.Console
+      ) ]
+    |> List.map Profile.render
+    |> String.concat "\n"
+
+[<Fact>]
+let ``summarize names a killed project's long pole, its share of the wall, the headroom and the run's load`` () =
+    let root = runsRoot ()
+    let dir = runDir root "r" 0.0 [ "Killed.profile.jsonl", killedProfile 8.0 ]
+
+    let p = Insights.loadRun dir |> List.exactlyOne
+    test <@ p.LoadPerCoreMean = Some 2.0 @>
+
+    let i = Insights.summarize Map.empty p
+    test <@ i.RunId = "r" && i.Project = "Killed" && i.Outcome = Some "timed-out" @>
+    test <@ i.WallMs = Some 12_000.0 && i.TimeoutSec = Some 10 @>
+    test <@ i.HeadroomMs = Some -2_000.0 @>
+
+    test
+        <@
+            i.LongPole = Some
+                { Class = "K.Pole"
+                  SpanMs = 9_000.0
+                  Share = Some 0.75 }
+        @>
+
+    test <@ i.Slowest |> List.map _.Class = [ "K.Pole"; "K.Quick" ] @>
+    test <@ i.LoadPerCoreMean = Some 2.0 && i.Contended = Some true @>
+
+[<Fact>]
+let ``summarize has no long pole below half the wall, and no load without a profile`` () =
+    let quiet =
+        Insights.summarize
+            (Map.ofList [ "P", 100 ])
+            { projectRun "r" "passed" [ "A", 4.0; "B", 3.0 ] with
+                WallMs = Some 10_000.0 }
+
+    test <@ quiet.LongPole = None @>
+    test <@ quiet.TimeoutSec = Some 100 && quiet.HeadroomMs = Some 90_000.0 @>
+
+    test
+        <@
+            quiet.Slowest.Head = { Class = "A"
+                                   SpanMs = 4_000.0
+                                   Share = Some 0.4 }
+        @>
+
+    test <@ quiet.Contended = None && quiet.LoadPerCoreMean = None @>
+
+    let unknownWall =
+        Insights.summarize Map.empty (projectRun "r" "passed" [ "A", 4.0 ])
+
+    test <@ unknownWall.HeadroomMs = None && unknownWall.LongPole = None @>
+    test <@ unknownWall.Slowest.Head.Share = None @>
+
+[<Fact>]
+let ``an insight round-trips through its JSON, and a malformed one does not read`` () =
+    let root = runsRoot ()
+    let dir = runDir root "r" 0.0 [ "Killed.profile.jsonl", killedProfile 2.0 ]
+    let i = Insights.loadRun dir |> List.exactlyOne |> Insights.summarize Map.empty
+
+    let node = Insights.insightJson i
+    test <@ Insights.tryReadInsight node = Some i @>
+    test <@ (node["longPole"].Item("class").GetValue<string>()) = "K.Pole" @>
+    test <@ (node["longPole"].Item("share").GetValue<float>()) = 0.75 @>
+    test <@ (node["contended"].GetValue<bool>()) = false @>
+
+    test <@ Insights.tryReadInsight (System.Text.Json.Nodes.JsonNode.Parse "[1]") = None @>
+    test <@ Insights.tryReadInsight (System.Text.Json.Nodes.JsonNode.Parse """{"project":"P"}""") = None @>
+
+[<Fact>]
+let ``reportJson is the newest run's insights, or the run asked for, with its load-sensitive classes`` () =
+    let root = runsRoot ()
+    runDir root "old" 10.0 [ "Killed.profile.jsonl", killedProfile 1.0 ] |> ignore
+    runDir root "new" 1.0 [ "Killed.profile.jsonl", killedProfile 8.0 ] |> ignore
+    let runs = Insights.loadRuns root
+
+    let parsed (options: Insights.Options) =
+        System.Text.Json.Nodes.JsonNode.Parse(Insights.reportJson options runs)
+
+    let newest = parsed Insights.Options.defaults
+    test <@ (newest["runId"].GetValue<string>()) = "new" @>
+    test <@ (newest["retained"].GetValue<int>()) = 2 @>
+
+    let project = newest["projects"].AsArray()[0]
+    test <@ Insights.tryReadInsight project = Some(Insights.summarize Map.empty (snd runs.Head).Head) @>
+
+    // K.Pole: 9 s quiet (load 1 on 4 cores) and 9 s contended — a ratio of 1.
+    test <@ newest["loadSensitive"].AsArray().Count = 1 @>
+    test <@ (newest["loadSensitive"].Item(0).Item("class").GetValue<string>()) = "K.Pole" @>
+
+    let old =
+        parsed
+            { Insights.Options.defaults with
+                Run = Some "old" }
+
+    test <@ (old["runId"].GetValue<string>()) = "old" @>
+
+    let missing =
+        parsed
+            { Insights.Options.defaults with
+                Run = Some "nope" }
+
+    test <@ missing["runId"] = null && missing["projects"].AsArray().Count = 0 @>
+
+[<Fact>]
+let ``the text report can be aimed at one run, and says the run's load`` () =
+    let root = runsRoot ()
+    runDir root "old" 10.0 [ "Killed.profile.jsonl", killedProfile 8.0 ] |> ignore
+
+    runDir root "new" 1.0 [ "Other.ctrf.json", ctrfOf 0 [ "O.A", 0.0, 1.0 ] ]
+    |> ignore
+
+    let text =
+        Insights.report
+            { Insights.Options.defaults with
+                Run = Some "old" }
+            (Insights.loadRuns root)
+        |> String.concat "\n"
+
+    test <@ text.StartsWith "run old" @>
+    test <@ text.Contains "load over the run: 2.00 per core, contended" @>
+    test <@ not (text.Contains "Other") @>
+
+    test
+        <@
+            Insights.report
+                { Insights.Options.defaults with
+                    Run = Some "nope" }
+                (Insights.loadRuns root) = [ "no retained run nope" ]
+        @>
+
+[<Fact>]
+let ``a timeout line says the long pole, the overrun, the load and where to look`` () =
+    let root = runsRoot ()
+    let dir = runDir root "r1" 0.0 [ "Killed.profile.jsonl", killedProfile 8.0 ]
+    let i = Insights.loadRun dir |> List.exactlyOne |> Insights.summarize Map.empty
+
+    test
+        <@
+            Insights.timeoutLine i = "Killed timed out: long pole K.Pole (75% of the 12.0s wall), 2.0s over its 10s budget, contended (2.00 load/core) — fshw insights --run r1"
+        @>
+
+    let bare =
+        { i with
+            LongPole = None
+            Slowest = []
+            HeadroomMs = None
+            TimeoutSec = None
+            Contended = None
+            LoadPerCoreMean = None }
+
+    test
+        <@
+            Insights.timeoutLine bare = "Killed timed out: no class finished before the kill, load unknown — fshw insights --run r1"
+        @>

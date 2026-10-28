@@ -39,6 +39,9 @@ type ProjectRun =
         Outcome: string option
         WallMs: float option
         TimeoutSec: int option
+        /// The mean 1-minute load per core over the run, from its profile's samples; `None`
+        /// without a profile or a sample.
+        LoadPerCoreMean: float option
         /// Slowest span first.
         Classes: ClassRow list
     }
@@ -91,11 +94,29 @@ let private ofProfile (runId: string) (project: string) (lines: Profile.Line lis
             | _ -> None)
         |> Option.defaultValue (None, None)
 
+    let cores =
+        lines
+        |> List.tryPick (function
+            | Profile.Start(_, _, cores, _, _) -> Some(max 1 cores)
+            | _ -> None)
+        |> Option.defaultValue 1
+
+    let loads =
+        lines
+        |> List.choose (function
+            | Profile.Sampled s -> s.Load1
+            | _ -> None)
+
     { RunId = runId
       Project = project
       Outcome = outcome
       WallMs = wall
       TimeoutSec = timeout
+      LoadPerCoreMean =
+        if List.isEmpty loads then
+            None
+        else
+            Some(List.average loads / float cores)
       Classes =
         lines
         |> List.choose (function
@@ -173,6 +194,7 @@ let private ofReports (runId: string) (dir: string) (project: string) : ProjectR
       Outcome = outcome
       WallMs = killedWall |> Option.orElse reportWall
       TimeoutSec = timeout
+      LoadPerCoreMean = None
       Classes =
         timings
         |> List.map (fun t ->
@@ -377,12 +399,15 @@ type Options =
         /// Each project's `timeoutSec` from the configuration, for a run whose own record
         /// does not carry it (a report-only run).
         Budgets: Map<string, int>
+        /// The run to report on, by id; `None` is the newest.
+        Run: string option
     }
 
     static member defaults =
         { Top = 10
           LastGreens = 5
-          Budgets = Map.empty }
+          Budgets = Map.empty
+          Run = None }
 
 /// A class spanning at least this share of its project's wall is named its long pole: the
 /// budget is spent waiting on it whatever else runs beside it.
@@ -467,15 +492,172 @@ let private projectLines (options: Options) (history: ProjectRun list) (p: Proje
                 |> List.map (fun r ->
                     $"    %s{r.Class} %s{seconds r.SpanMs}, median %s{seconds r.BaselineMedianMs} (%.1f{r.SpanMs / r.BaselineMedianMs}x)"))
 
-    headline :: classes @ longPole @ tail @ regressed
+    let runLoad =
+        match p.LoadPerCoreMean with
+        | Some l ->
+            let verdict =
+                if l >= Profile.ContendedLoadPerCore then
+                    "contended"
+                else
+                    "quiet"
 
-/// The report on the newest of `runs` (newest first, as `loadRuns` returns them), against
-/// all of them as history.
+            [ $"  load over the run: %.2f{l} per core, %s{verdict}" ]
+        | None -> []
+
+    headline :: runLoad @ classes @ longPole @ tail @ regressed
+
+// ---------------------------------------------------------------------------------------
+// One project's insight, as a record: what `--json` prints and a verdict carries
+// ---------------------------------------------------------------------------------------
+
+/// A class and its span, with its share of the project's wall when the wall is known.
+type ClassShare =
+    { Class: string
+      SpanMs: float
+      Share: float option }
+
+/// One project of one run, summarized: the answer to "why did this run take so long?"
+/// that `fshw insights --json` prints and a verdict carries for each timeout red.
+type ProjectInsight =
+    {
+        RunId: string
+        Project: string
+        Outcome: string option
+        WallMs: float option
+        TimeoutSec: int option
+        /// The budget less the wall; negative when the run went over.
+        HeadroomMs: float option
+        /// The slowest class, when it spans at least `LongPoleShare` of the wall.
+        LongPole: ClassShare option
+        /// The `SlowestInInsight` slowest classes, slowest first.
+        Slowest: ClassShare list
+        LoadPerCoreMean: float option
+        /// Mean load per core ≥ `Profile.ContendedLoadPerCore`; `None` when no sample read one.
+        Contended: bool option
+    }
+
+/// Classes an insight lists.
+[<Literal>]
+let SlowestInInsight = 3
+
+/// `p` as an insight. `budgets` supplies a `timeoutSec` the run's own record lacks.
+let summarize (budgets: Map<string, int>) (p: ProjectRun) : ProjectInsight =
+    let budget = p.TimeoutSec |> Option.orElse (Map.tryFind p.Project budgets)
+
+    let share (c: ClassRow) : ClassShare =
+        { Class = c.Timing.Class
+          SpanMs = spanMs c.Timing
+          Share =
+            p.WallMs
+            |> Option.filter (fun w -> w > 0.0)
+            |> Option.map (fun w -> spanMs c.Timing / w) }
+
+    let slowest = p.Classes |> List.truncate SlowestInInsight |> List.map share
+
+    { RunId = p.RunId
+      Project = p.Project
+      Outcome = p.Outcome
+      WallMs = p.WallMs
+      TimeoutSec = budget
+      HeadroomMs =
+        match budget, p.WallMs with
+        | Some b, Some w -> Some(float b * 1000.0 - w)
+        | _ -> None
+      LongPole =
+        slowest
+        |> List.tryHead
+        |> Option.filter (fun s -> s.Share |> Option.exists (fun x -> x >= LongPoleShare))
+      Slowest = slowest
+      LoadPerCoreMean = p.LoadPerCoreMean
+      Contended = p.LoadPerCoreMean |> Option.map (fun l -> l >= Profile.ContendedLoadPerCore) }
+
+/// A value, or JSON null for `None`.
+let private optional (value: 'T option) : JsonNode =
+    match value with
+    | Some v -> JsonValue.Create<'T>(v)
+    | None -> null
+
+let private shareJson (s: ClassShare) : JsonNode =
+    let o = JsonObject()
+    o["class"] <- JsonValue.Create s.Class
+    o["spanMs"] <- JsonValue.Create s.SpanMs
+    o["share"] <- optional s.Share
+    o
+
+/// An insight as JSON — one object of `fshw insights --json`'s `projects`.
+let insightJson (i: ProjectInsight) : JsonObject =
+    let o = JsonObject()
+    o["runId"] <- JsonValue.Create i.RunId
+    o["project"] <- JsonValue.Create i.Project
+    o["outcome"] <- optional i.Outcome
+    o["wallMs"] <- optional i.WallMs
+    o["timeoutSec"] <- optional i.TimeoutSec
+    o["headroomMs"] <- optional i.HeadroomMs
+    o["longPole"] <- i.LongPole |> Option.map shareJson |> Option.toObj
+    o["slowest"] <- JsonArray(i.Slowest |> List.map shareJson |> List.toArray)
+    o["loadPerCoreMean"] <- optional i.LoadPerCoreMean
+    o["contended"] <- optional i.Contended
+    o
+
+let private value<'T> (node: JsonNode) : 'T option =
+    match node with
+    | :? JsonValue as v ->
+        match v.TryGetValue<'T>() with
+        | true, x -> Some x
+        | _ -> None
+    | _ -> None
+
+let private tryShare (node: JsonNode) : ClassShare option =
+    match node with
+    | :? JsonObject as o ->
+        match value<string> o["class"], value<float> o["spanMs"] with
+        | Some cls, Some span ->
+            Some
+                { Class = cls
+                  SpanMs = span
+                  Share = value<float> o["share"] }
+        | _ -> None
+    | _ -> None
+
+/// An insight from its JSON; `None` unless it names a run and a project.
+let tryReadInsight (node: JsonNode) : ProjectInsight option =
+    match node with
+    | :? JsonObject as o ->
+        match value<string> o["runId"], value<string> o["project"] with
+        | Some runId, Some project ->
+            Some
+                { RunId = runId
+                  Project = project
+                  Outcome = value<string> o["outcome"]
+                  WallMs = value<float> o["wallMs"]
+                  TimeoutSec = value<int> o["timeoutSec"]
+                  HeadroomMs = value<float> o["headroomMs"]
+                  LongPole = tryShare o["longPole"]
+                  Slowest =
+                    match o["slowest"] with
+                    | :? JsonArray as arr -> arr |> Seq.choose tryShare |> Seq.toList
+                    | _ -> []
+                  LoadPerCoreMean = value<float> o["loadPerCoreMean"]
+                  Contended = value<bool> o["contended"] }
+        | _ -> None
+    | _ -> None
+
+/// The run `options` asks for (the newest when it names none), and the history it is
+/// judged against: that run and every older one.
+let private target (options: Options) (runs: (string * ProjectRun list) list) =
+    match options.Run with
+    | None -> runs
+    | Some id -> runs |> List.skipWhile (fun (runId, _) -> runId <> id)
+
+/// The report on the newest of `runs` (newest first, as `loadRuns` returns them), or on
+/// the run `options.Run` names, judged against it and every older run.
 let report (options: Options) (runs: (string * ProjectRun list) list) : string list =
-    match runs with
-    | [] -> [ "no test runs found" ]
-    | (runId, projects) :: _ ->
-        let history = runs |> List.collect snd
+    match runs, target options runs, options.Run with
+    | [], _, _ -> [ "no test runs found" ]
+    | _, [], Some id -> [ $"no retained run %s{id}" ]
+    | _, [], None -> [ "no test runs found" ]
+    | _, ((runId, projects) :: _ as fromTarget), _ ->
+        let history = fromTarget |> List.collect snd
 
         let grown =
             match growth history with
@@ -490,3 +672,68 @@ let report (options: Options) (runs: (string * ProjectRun list) list) : string l
         $"run %s{runId} (%d{runs.Length} retained)"
         :: (projects |> List.collect (projectLines options history))
         @ grown
+
+/// `report` as one JSON object: `runId` (null when there is no such run), `retained`,
+/// `projects` (each an `insightJson`), and `loadSensitive`.
+let reportJson (options: Options) (runs: (string * ProjectRun list) list) : string =
+    let o = JsonObject()
+    o["retained"] <- JsonValue.Create runs.Length
+
+    let fromTarget = target options runs
+
+    match fromTarget with
+    | (runId, projects) :: _ ->
+        o["runId"] <- JsonValue.Create runId
+
+        o["projects"] <-
+            JsonArray(
+                projects
+                |> List.map (fun p -> summarize options.Budgets p |> insightJson :> JsonNode)
+                |> List.toArray
+            )
+    | [] ->
+        o["runId"] <- null
+        o["projects"] <- JsonArray()
+
+    o["loadSensitive"] <-
+        JsonArray(
+            growth (fromTarget |> List.collect snd)
+            |> List.truncate options.Top
+            |> List.map (fun g ->
+                let e = JsonObject()
+                e["class"] <- JsonValue.Create g.Class
+                e["quietMedianMs"] <- JsonValue.Create g.QuietMedianMs
+                e["loadedMedianMs"] <- JsonValue.Create g.LoadedMedianMs
+                e["ratio"] <- JsonValue.Create g.Ratio
+                e :> JsonNode)
+            |> List.toArray
+        )
+
+    o.ToJsonString(Text.Json.JsonSerializerOptions(WriteIndented = true))
+
+/// One line naming a timed-out project's long pole, overrun and load, and the command
+/// that says more — what a verdict prints for each timeout red.
+let timeoutLine (i: ProjectInsight) : string =
+    let percent (s: ClassShare) =
+        s.Share |> Option.map (fun x -> $"%.0f{x * 100.0}%%") |> Option.defaultValue "?"
+
+    let pole =
+        match i.LongPole, i.Slowest, i.WallMs with
+        | Some lp, _, Some wall -> $"long pole %s{lp.Class} (%s{percent lp} of the %s{seconds wall} wall)"
+        | _, s :: _, _ -> $"slowest finished class %s{s.Class} (%s{seconds s.SpanMs}, %s{percent s} of the wall)"
+        | _ -> "no class finished before the kill"
+
+    let budget =
+        match i.HeadroomMs, i.TimeoutSec with
+        | Some h, Some b when h < 0.0 -> [ $"%s{seconds -h} over its %d{b}s budget" ]
+        | Some h, Some b -> [ $"%s{seconds h} left of its %d{b}s budget" ]
+        | _ -> []
+
+    let load =
+        match i.Contended, i.LoadPerCoreMean with
+        | Some true, Some l -> $"contended (%.2f{l} load/core)"
+        | Some false, Some l -> $"quiet (%.2f{l} load/core)"
+        | _ -> "load unknown"
+
+    let facts = pole :: budget @ [ load ] |> String.concat ", "
+    $"%s{i.Project} timed out: %s{facts} — fshw insights --run %s{i.RunId}"
