@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 13.5.0 - 2026-10-28
+
 - fix: the SQLite busy timeout is explicit and named. `Database.BusyTimeout` (30 s, the
   value Microsoft.Data.Sqlite applied implicitly before) is set on every connection
   `Database` and `openPluginConnection` open, and a write that waits it out on a lock another

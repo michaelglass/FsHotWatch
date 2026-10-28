@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 13.5.0 - 2026-10-28
+
+- Finish: AUTOMATION-867 set the SQLite busy timeout explicitly and name it when a write runs out of it
+
+
 ## 13.4.1 - 2026-10-25
 
 - fix(core): hash accessor and auto-properties over their whole text
