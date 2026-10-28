@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 4.0.3 - 2026-10-28
+
+- Finish: AUTOMATION-1358 pin FSharp.Core exactly so packed floors stop floating
+
+
 ## 4.0.2 - 2026-10-13
 
 - fix: a route edge starts at the symbol whose definition names the route, not at

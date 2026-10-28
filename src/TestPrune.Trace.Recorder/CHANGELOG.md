@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.6 - 2026-10-28
+
+- Finish: AUTOMATION-1358 pin FSharp.Core exactly so packed floors stop floating
+
+
 ## 0.7.5 - 2026-10-28
 
 - chore: rebuild to bundle updated dependencies

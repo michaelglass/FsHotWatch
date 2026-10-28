@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.3.2 - 2026-10-28
+
+- Finish: AUTOMATION-1358 pin FSharp.Core exactly so packed floors stop floating
+
+
 ## 0.3.1 - 2026-10-13
 
 - feat: `SqlCoupling.reachabilityGated`, a walk policy for suites whose tests each run
