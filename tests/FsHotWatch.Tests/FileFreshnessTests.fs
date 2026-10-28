@@ -20,13 +20,13 @@ let private writeSource (repoRoot: string) (relPath: string) : unit =
     Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
     File.WriteAllText(path, "module M\n")
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``empty store created when sidecar file does not exist`` () =
     withTempDir "ff-empty-load" (fun tmpDir ->
         let store = load tmpDir
         test <@ Map.isEmpty store @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``save then load round-trips a known dict`` () =
     withTempDir "ff-roundtrip" (fun tmpDir ->
         let now = DateTime(2026, 5, 3, 12, 0, 0, DateTimeKind.Utc)
@@ -49,7 +49,7 @@ let ``save then load round-trips a known dict`` () =
         let loaded = load tmpDir
         test <@ loaded = store @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``markClean sets fcsClean=true and stamps timestamp`` () =
     let store = Map.empty
     let now = DateTime(2026, 5, 3, 12, 0, 0, DateTimeKind.Utc)
@@ -62,7 +62,7 @@ let ``markClean sets fcsClean=true and stamps timestamp`` () =
                   LastCleanCheckAt = Some now }
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``markDirty sets fcsClean=false but preserves prior LastCleanCheckAt`` () =
     let earlier = DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc)
 
@@ -82,7 +82,7 @@ let ``markDirty sets fcsClean=false but preserves prior LastCleanCheckAt`` () =
                   LastCleanCheckAt = Some earlier }
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``markDirty on absent file inserts entry with no LastCleanCheckAt`` () =
     let store = Map.empty
     let updated = markDirty "src/Foo.fs" store
@@ -102,7 +102,7 @@ let ``markDirty on absent file inserts entry with no LastCleanCheckAt`` () =
 // refreshes it; until then the prior clean record holds.
 // =============================================================================
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``markUnverified on absent file inserts fcsClean=false`` () =
     let store = Map.empty
     let updated = markUnverified "src/Foo.fs" store
@@ -114,7 +114,7 @@ let ``markUnverified on absent file inserts fcsClean=false`` () =
                   LastCleanCheckAt = None }
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``markUnverified preserves prior clean state — does NOT downgrade clean to dirty`` () =
     // The deliberate trade: cold-start reliability over correctness on the
     // user-broke-their-code edge case.
@@ -136,7 +136,7 @@ let ``markUnverified preserves prior clean state — does NOT downgrade clean to
                   LastCleanCheckAt = Some earlier }
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``markUnverified on prior-dirty file leaves dirty — preserves LastCleanCheckAt if any`` () =
     let earlier = DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc)
 
@@ -156,7 +156,7 @@ let ``markUnverified on prior-dirty file leaves dirty — preserves LastCleanChe
                   LastCleanCheckAt = Some earlier }
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isClean returns true only when entry is present and fcsClean = true`` () =
     let now = DateTime(2026, 5, 3, 12, 0, 0, DateTimeKind.Utc)
 
@@ -181,7 +181,7 @@ let ``isClean returns true only when entry is present and fcsClean = true`` () =
 // didn't travel still be diffed, while explicitly-poisoned rows stay bypassed.
 // =============================================================================
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classify: explicit clean entry -> Clean`` () =
     let now = DateTime(2026, 5, 3, 12, 0, 0, DateTimeKind.Utc)
 
@@ -194,7 +194,7 @@ let ``classify: explicit clean entry -> Clean`` () =
 
     test <@ classify "clean.fs" store = Clean @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classify: explicit dirty entry -> Dirty (poisoned rows, stays bypassed)`` () =
     let store =
         Map.empty
@@ -205,14 +205,14 @@ let ``classify: explicit dirty entry -> Dirty (poisoned rows, stays bypassed)`` 
 
     test <@ classify "dirty.fs" store = Dirty @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classify: absent entry -> Unknown (seeded-DB case, diffable when rows exist)`` () =
     // The seeded-workspace under-selection root cause: a copied test-impact.db has
     // rows but no sidecar record, so every seeded file classifies Unknown, and the
     // call site diffs Unknown-over-nonempty rows.
     test <@ classify "never-seen.fs" Map.empty = Unknown @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classify: Unknown is distinct from Dirty — the load-bearing polarity split`` () =
     // Regression guard: if this collapses (e.g. classify maps None->Dirty), the
     // seeded-DB fix silently reverts to under-selection.
@@ -349,19 +349,19 @@ let ``PositiveControl: a Clean stamp over an index that still HAS the rows stays
 // `trustStoredRows` — the decision table, without a database.
 // -----------------------------------------------------------------------------
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``trustStoredRows: Clean over PRIOR rows diffs; Clean over nothing widens`` () =
     test <@ trustStoredRows Clean RowsFromPriorRun = DiffAgainstStored @>
     test <@ trustStoredRows Clean NoRows = EverySymbolIsNew @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``trustStoredRows: Unknown diffs only against PRIOR rows (ADR-010 seeded DB); over nothing it widens`` () =
     test <@ trustStoredRows Unknown RowsFromPriorRun = DiffAgainstStored @>
     // Not `NoDiff` any more: a file created in a warm daemon reaches this pair with no
     // cold-scan full suite to cover it. `NewFileSelectionTests` drives that end to end.
     test <@ trustStoredRows Unknown NoRows = EverySymbolIsNew @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``trustStoredRows: Dirty never diffs, whatever the index holds — it WIDENS instead`` () =
     // "Never diffs" was always right; "contributes nothing" was the
     // mistake. The `Dirty` stamp is a statement about the stored ROWS — written while
@@ -384,7 +384,7 @@ let ``trustStoredRows: Dirty never diffs, whatever the index holds — it WIDENS
 // opposite things.
 // -----------------------------------------------------------------------------
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``rows THIS RUN wrote are not a baseline — every symbol reads as new`` () =
     // The arm the bug needed and did not have. It resolves exactly as `NoRows` does,
     // because it IS the same fact: the index knew nothing about this file before this
@@ -392,14 +392,14 @@ let ``rows THIS RUN wrote are not a baseline — every symbol reads as new`` () 
     test <@ trustStoredRows Clean RowsFromThisRun = EverySymbolIsNew @>
     test <@ trustStoredRows Clean NoRows = EverySymbolIsNew @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``no sidecar and no baseline still widens rather than diffing against itself`` () =
     // The fresh-workspace shape: `.fshw/` did not travel, so there is no sidecar
     // record, and the only rows in the index are the ones this scan wrote. Diffing
     // against them is a diff against itself. Widen, never wipe.
     test <@ trustStoredRows Unknown RowsFromThisRun = EverySymbolIsNew @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``PositiveControl: PRIOR rows still buy the cheap diff — the fix is not "widen everything"`` () =
     // Without this the fix would be indistinguishable from deleting impact filtering.
     // A warm daemon, or any index that held rows for the file BEFORE this session
@@ -407,7 +407,7 @@ let ``PositiveControl: PRIOR rows still buy the cheap diff — the fix is not "w
     test <@ trustStoredRows Clean RowsFromPriorRun = DiffAgainstStored @>
     test <@ trustStoredRows Unknown RowsFromPriorRun = DiffAgainstStored @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a dirty extraction is still never diffed against, whoever wrote the rows`` () =
     // The clock does not outrank the sidecar's explicit "these rows may be PARTIAL" —
     // the answer is never `DiffAgainstStored`. The transient-FCS-recovery fix changed WHICH
@@ -445,7 +445,7 @@ let private guardTest (name: string) (hash: string) : SymbolInfo =
       ContentHash = hash
       IsExtern = false }
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the pass that RECOVERS from a transient FCS error selects the file's tests`` () =
     // The reproduction, as the plugin runs it: sidecar → classify → trustStoredRows →
     // planLook → detectChanges. Every step is the real function.
@@ -492,7 +492,7 @@ let ``the pass that RECOVERS from a transient FCS error selects the file's tests
                                    "Heartbeat.alarmWiringD" ]
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the recovery pass selected NOTHING when the partial rows were this run's own`` () =
     // The silent-zero shape, shown rather than described. The pre-fix answer was
     // `NoDiff` for every `Dirty` pair; and even routed to `EverySymbolIsNew`, a call
@@ -521,7 +521,7 @@ let ``the recovery pass selected NOTHING when the partial rows were this run's o
     let (widened, _) = detectChanges identicalRows priorSymbols
     test <@ (widened |> List.map changedName |> List.sort) = [ "Heartbeat.alarmWiringA"; "Heartbeat.alarmWiringB" ] @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``baselineRows is what makes AgainstNothing mean nothing`` () =
     // The seam on its own. `AgainstNothing` is a widening only if the rows are actually
     // withheld; a consumer that names it and hands over the stored rows regardless gets
@@ -535,7 +535,7 @@ let ``baselineRows is what makes AgainstNothing mean nothing`` () =
     // baseline over, or impact filtering is deleted rather than corrected.
     test <@ baselineRows AgainstStoredRows rows = rows @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``every pair is diffable once the extraction is clean — the detector-went-blind guard`` () =
     // THE test for the failure mode itself rather than for one instance of it.
     //
@@ -568,7 +568,7 @@ let ``every pair is diffable once the extraction is clean — the detector-went-
 
     test <@ narrow = [ (Clean, RowsFromPriorRun); (Unknown, RowsFromPriorRun) ] @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``PositiveControl: an ordinary run still PRUNES — the fix is not "select everything"`` () =
     // The other half of the requirement, and the reason the guard above is not satisfied by
     // deleting impact filtering. A warm daemon with a clean sidecar and real prior
@@ -588,7 +588,7 @@ let ``PositiveControl: an ordinary run still PRUNES — the fix is not "select e
     let (afterEdit, _) = detectChanges edited unchanged
     test <@ (afterEdit |> List.map changedName) = [ "Heartbeat.alarmWiringA" ] @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``planLook: a dirty current extraction is the only way to contribute nothing`` () =
     // The call site used to compute a `suppressedDiff: bool` and then `ignore` it, so
     // "this file's changes were DROPPED" logged at info like routine progress. It is now
@@ -604,7 +604,7 @@ let ``planLook: a dirty current extraction is the only way to contribute nothing
 // `PriorRowLedger` — the clock itself.
 // -----------------------------------------------------------------------------
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ledger: an index that was EMPTY at the first look never calls its own rows a baseline`` () =
     // The fresh-workspace shape, step by step. The scan indexes the already-edited
     // tree (look 1: no rows), flushes, and something re-checks the file (look 2: rows
@@ -615,7 +615,7 @@ let ``ledger: an index that was EMPTY at the first look never calls its own rows
     test <@ ledger.Classify("src/Lib.fs", false) = NoRows @>
     test <@ ledger.Classify("src/Lib.fs", true) = RowsFromThisRun @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ledger: an index that ALREADY held rows keeps the cheap narrow answer`` () =
     // The warm case, and the reason the ledger is not just "always widen".
     let ledger = PriorRowLedger()
@@ -623,7 +623,7 @@ let ``ledger: an index that ALREADY held rows keeps the cheap narrow answer`` ()
     test <@ ledger.Classify("src/Lib.fs", true) = RowsFromPriorRun @>
     test <@ ledger.Classify("src/Lib.fs", true) = RowsFromPriorRun @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ledger: a CONSUMED extraction establishes the baseline — the widening costs one look, not every look`` () =
     // Without this the fix would widen on every save for the whole session in a fresh
     // workspace, which is a real cost: an interactive loop would re-select every test
@@ -637,7 +637,7 @@ let ``ledger: a CONSUMED extraction establishes the baseline — the widening co
 
     test <@ ledger.Classify("src/Lib.fs", true) = RowsFromPriorRun @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ledger: an UNCONSUMED extraction establishes nothing — the next look still widens`` () =
     // The positive control for the mark. An FCS-dirty extraction is discarded; a baseline it never established must not be claimed
     // on its behalf, or the widening is skipped and the change is lost for good.
@@ -647,7 +647,7 @@ let ``ledger: an UNCONSUMED extraction establishes nothing — the next look sti
     test <@ ledger.Classify("src/Lib.fs", true) = RowsFromThisRun @>
     test <@ ledger.Classify("src/Lib.fs", true) = RowsFromThisRun @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ledger: files are independent — one file's baseline is not another's`` () =
     let ledger = PriorRowLedger()
 
@@ -656,7 +656,7 @@ let ``ledger: files are independent — one file's baseline is not another's`` (
     test <@ ledger.Classify("src/Cold.fs", true) = RowsFromThisRun @>
     test <@ ledger.Classify("src/Warm.fs", true) = RowsFromPriorRun @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``end to end: the fresh-workspace second look SELECTS, where a self-diff selected nothing`` () =
     // The whole chain, without a database: ledger → trustStoredRows → detectChanges.
     // The rows and the current extraction are IDENTICAL, which is exactly the state a
@@ -692,7 +692,7 @@ let ``end to end: the fresh-workspace second look SELECTS, where a self-diff sel
     let (widened, _) = detectChanges current []
     test <@ not (List.isEmpty widened) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``save uses atomic write — partial state never visible at sidecar path`` () =
     // Indirect: a leftover .tmp alongside the sidecar means the rename never
     // happened, so partial state was writable at the real path.
@@ -709,7 +709,7 @@ let ``save uses atomic write — partial state never visible at sidecar path`` (
         test <@ File.Exists p @>
         test <@ not (File.Exists(p + ".tmp")) @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``corrupt sidecar JSON falls back to empty store rather than throwing`` () =
     // The sidecar is derivative: losing it over-marks files dirty for one cycle,
     // which is a better trade than crashing the plugin.

@@ -61,7 +61,7 @@ let private root = { Pid = 100; StartedAt = t0 }
 // escalateWith — the policy, against a fake OS
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a tree that ignores SIGTERM is SIGKILLed and ends reaped`` () =
     let os =
         FakeOs([ row 100 1 false; row 101 100 false ], Map [ 100, t0; 101, t0.AddSeconds 1.0 ], ignoresTerm)
@@ -73,7 +73,7 @@ let ``a tree that ignores SIGTERM is SIGKILLed and ends reaped`` () =
     // Both members got SIGTERM first, and SIGKILL only after it was ignored.
     Assert.Equal<(int * int) list>([ 100, 15; 101, 15; 100, 9; 101, 9 ], os.Sent)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a tree that leaves on SIGTERM is never SIGKILLed`` () =
     let os = FakeOs([ row 100 1 false ], Map [ 100, t0 ], (fun _ _ -> None))
 
@@ -82,7 +82,7 @@ let ``a tree that leaves on SIGTERM is never SIGKILLed`` () =
     Assert.Empty(e.Survivors)
     Assert.Equal<(int * int) list>([ 100, 15 ], os.Sent)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a member left a zombie by SIGKILL counts as exited — it holds nothing`` () =
     let os =
         FakeOs([ row 100 1 false ], Map [ 100, t0 ], (fun _ signum -> Some(signum = 9)))
@@ -92,7 +92,7 @@ let ``a member left a zombie by SIGKILL counts as exited — it holds nothing`` 
     Assert.Empty(e.Survivors)
     Assert.Equal<int list>([ 100 ], e.Exited)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a recycled root pid is never signalled and is not booked as ours`` () =
     // Same pid, different process: it started a minute after the one we recorded.
     let os = FakeOs([ row 100 1 false ], Map [ 100, t0.AddMinutes 1.0 ], ignoresTerm)
@@ -103,7 +103,7 @@ let ``a recycled root pid is never signalled and is not booked as ours`` () =
     Assert.Equal<int list>([ 100 ], e.Recycled)
     Assert.Empty(e.Survivors)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a root already gone is reported exited without a signal`` () =
     let os = FakeOs([ row 7 1 false ], Map [ 7, t0 ], ignoresTerm)
 
@@ -113,7 +113,7 @@ let ``a root already gone is reported exited without a signal`` () =
     Assert.Equal<int list>([ 100 ], e.Exited)
     Assert.Empty(e.Survivors)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a tree that survives SIGKILL stays a NAMED survivor`` () =
     let os = FakeOs([ row 100 1 false ], Map [ 100, t0 ], (fun _ _ -> Some false))
 
@@ -127,7 +127,7 @@ let ``a tree that survives SIGKILL stays a NAMED survivor`` () =
         Assert.Contains("SIGKILL", reason)
     | other -> Assert.Fail $"expected pid 100 to survive, got %A{other}"
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a member whose ownership cannot be proven is never signalled, and stays a survivor`` () =
     // 101's start time cannot be read, so nothing proves it is still the child we found.
     let os =
@@ -143,7 +143,7 @@ let ``a member whose ownership cannot be proven is never signalled, and stays a 
         Assert.Contains("ownership", reason)
     | other -> Assert.Fail $"expected 101 as the only survivor, got %A{other}"
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a root whose ownership cannot be proven is never signalled`` () =
     let os = FakeOs([ row 100 1 false ], Map.empty, ignoresTerm)
 
@@ -152,7 +152,7 @@ let ``a root whose ownership cannot be proven is never signalled`` () =
     Assert.Empty(os.Sent)
     Assert.Equal(100, fst (Assert.Single e.Survivors))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``an unreadable process table signals nothing and leaves the root a survivor`` () =
     let ops =
         { ReadTable = fun () -> Error "ps did not answer"
@@ -169,7 +169,7 @@ let ``an unreadable process table signals nothing and leaves the root a survivor
         Assert.Contains("ps did not answer", reason)
     | other -> Assert.Fail $"expected the root as a survivor, got %A{other}"
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a table that becomes unreadable mid-escalation leaves the member a survivor`` () =
     let reads = ref 0
 
@@ -191,7 +191,7 @@ let ``a table that becomes unreadable mid-escalation leaves the member a survivo
 
     Assert.Contains("ps did not answer", snd (Assert.Single e.Survivors))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a refused SIGKILL is named in the survivor's reason`` () =
     let ops =
         { ReadTable = fun () -> Ok [ row 100 1 false ]
@@ -204,7 +204,7 @@ let ``a refused SIGKILL is named in the survivor's reason`` () =
 
     Assert.Contains("errno 1", snd (Assert.Single e.Survivors))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a descendant recycled mid-escalation is left alone`` () =
     // 101 is ours at the snapshot; after SIGTERM its pid belongs to a newer process.
     let starts = ref (Map [ 100, t0; 101, t0 ])
@@ -226,7 +226,7 @@ let ``a descendant recycled mid-escalation is left alone`` () =
     Assert.Contains(101, e.Recycled)
     Assert.DoesNotContain(e.Survivors, fun (pid, _) -> pid = 101)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a member whose start time becomes unreadable mid-escalation is not SIGKILLed`` () =
     // Ours at the snapshot and sent SIGTERM; then its start time can no longer be read,
     // so nothing proves the pid still names the same process.
@@ -251,7 +251,7 @@ let ``a member whose start time becomes unreadable mid-escalation is not SIGKILL
     Assert.Equal(100, pid)
     Assert.Contains("ownership", reason)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a member that exits between the table read and the start-time read is gone, not a survivor`` () =
     // The race a real `sh` loop hits: 101 is in the snapshot, but has exited by the time its
     // start time is read, and is absent from every later read.
@@ -294,7 +294,7 @@ let private settled =
       Recycled = []
       Survivors = [] }
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``POSITIVE CONTROL: a kill that returns takes the fast path, with no escalation`` () =
     let registry = FsHotWatch.ProcessRegistry.Registry()
     use _ = FsHotWatch.ProcessRegistry.install registry
@@ -314,7 +314,7 @@ let ``POSITIVE CONTROL: a kill that returns takes the fast path, with no escalat
     Assert.Equal(0, calls.Value)
     Assert.Empty(registry.Leaks)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a kill that does not return is escalated, and a reaped tree is not booked LEAKED`` () =
     let registry = FsHotWatch.ProcessRegistry.Registry()
     use _ = FsHotWatch.ProcessRegistry.install registry
@@ -334,7 +334,7 @@ let ``a kill that does not return is escalated, and a reaped tree is not booked 
     finally
         gate.Set()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a tree that survives escalation stays LEAKED, each survivor named`` () =
     let registry = FsHotWatch.ProcessRegistry.Registry()
     use _ = FsHotWatch.ProcessRegistry.install registry
@@ -369,7 +369,7 @@ let ``a tree that survives escalation stays LEAKED, each survivor named`` () =
     finally
         gate.Set()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a survivor of escalation is logged at ERROR, naming it`` () =
     let original = FsHotWatch.Logging.logLevel
     let sb = Text.StringBuilder()
@@ -520,13 +520,13 @@ let ``LIVE: a pid whose recorded start time does not match is left alone`` () =
     finally
         cleanUp p
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``an identity that cannot be recorded means no escalation`` () =
     Assert.True((escalationFor (Error "gone")).IsNone)
     Assert.True(Result.isError (processStartTime -1))
     Assert.True(Result.isError (recordOwnedPid -1))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``signalPid reports a pid it could not signal`` () =
     // Signal 0 delivers nothing, and no process holds the largest pid.
     match signalPid Int32.MaxValue 0 with

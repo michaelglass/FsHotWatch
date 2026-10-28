@@ -19,7 +19,7 @@ let private nullChecker =
 
 // ---- pure comparator ----
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``compareFreshness: assets newer than all dep files is Fresh`` () =
     let assets = DateTime(2026, 6, 2, 12, 0, 0, DateTimeKind.Utc)
 
@@ -29,7 +29,7 @@ let ``compareFreshness: assets newer than all dep files is Fresh`` () =
 
     test <@ compareFreshness (Some assets) deps = Fresh @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``compareFreshness: assets older than one dep file is Stale`` () =
     let assets = DateTime(2026, 6, 2, 12, 0, 0, DateTimeKind.Utc)
 
@@ -39,12 +39,12 @@ let ``compareFreshness: assets older than one dep file is Stale`` () =
 
     test <@ compareFreshness (Some assets) deps = Stale @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``compareFreshness: missing assets is Stale`` () =
     let deps = [ DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc) ]
     test <@ compareFreshness None deps = Stale @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``compareFreshness: no dep files is Fresh`` () =
     let assets = DateTime(2026, 6, 2, 12, 0, 0, DateTimeKind.Utc)
     test <@ compareFreshness (Some assets) [] = Fresh @>
@@ -55,7 +55,7 @@ let private touch (path: string) =
     Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
     File.WriteAllText(path, "x")
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependencyFiles: includes own fsproj and ancestor props`` () =
     withTempDir "deps-enum" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -68,7 +68,7 @@ let ``dependencyFiles: includes own fsproj and ancestor props`` () =
         test <@ found.Contains "Proj.fsproj" @>
         test <@ found.Contains "Directory.Packages.props" @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependencyFiles: excludes .config/dotnet-tools.json (not a package-graph input)`` () =
     withTempDir "deps-no-tools" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -83,7 +83,7 @@ let ``dependencyFiles: excludes .config/dotnet-tools.json (not a package-graph i
 /// Regression for a production false-stale: bumping `.config/dotnet-tools.json`
 /// (a tool version bump) must NOT make a project look stale — assets newer than
 /// every real dependency input but older than the tools manifest stay Fresh.
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectProjectFreshness: assets older than dotnet-tools.json but newer than real deps is Fresh`` () =
     withTempDir "deps-tools-bump" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -103,7 +103,7 @@ let ``detectProjectFreshness: assets older than dotnet-tools.json but newer than
 
         test <@ detectProjectFreshness root fsproj = Fresh @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependencyFiles: nearest Directory.Build.props wins, no double-count`` () =
     withTempDir "deps-nearest" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -127,7 +127,7 @@ let ``dependencyFiles: nearest Directory.Build.props wins, no double-count`` () 
 
 // ---- tools manifest (restore-runner probe, NOT a freshness dep) ----
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``toolsManifest: finds nearest .config/dotnet-tools.json in the ancestor chain`` () =
     withTempDir "deps-tools-find" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -140,7 +140,7 @@ let ``toolsManifest: finds nearest .config/dotnet-tools.json in the ancestor cha
         | Some found -> test <@ Path.GetFullPath found = Path.GetFullPath toolsJson @>
         | None -> failwith "expected the tools manifest to be found")
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``toolsManifest: nearest wins when present at multiple levels`` () =
     withTempDir "deps-tools-nearest" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -154,7 +154,7 @@ let ``toolsManifest: nearest wins when present at multiple levels`` () =
         | Some found -> test <@ Path.GetFullPath found = Path.GetFullPath nearest @>
         | None -> failwith "expected the tools manifest to be found")
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``toolsManifest: None when no manifest exists`` () =
     withTempDir "deps-tools-none" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -166,7 +166,7 @@ let ``toolsManifest: None when no manifest exists`` () =
 /// to the filesystem root instead of stopping at repoRoot. It must terminate (not
 /// loop) and still find a manifest — the IsNullOrEmpty/parent==dir sentinel the
 /// under-root happy path never reaches.
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``toolsManifest: project not under repoRoot still walks to filesystem root and terminates`` () =
     withTempDir "deps-tools-unrooted" (fun projParent ->
         let projDir = Path.Combine(projParent, "Proj")
@@ -186,7 +186,7 @@ let ``toolsManifest: project not under repoRoot still walks to filesystem root a
 
 // ---- disk-backed probe ----
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectProjectFreshness: missing assets is Stale`` () =
     withTempDir "deps-probe-missing" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -194,7 +194,7 @@ let ``detectProjectFreshness: missing assets is Stale`` () =
         touch fsproj
         test <@ detectProjectFreshness root fsproj = Stale @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectProjectFreshness: assets newer than fsproj is Fresh`` () =
     withTempDir "deps-probe-fresh" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -206,7 +206,7 @@ let ``detectProjectFreshness: assets newer than fsproj is Fresh`` () =
         File.SetLastWriteTimeUtc(assets, DateTime.UtcNow)
         test <@ detectProjectFreshness root fsproj = Fresh @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectProjectFreshness: assets older than fsproj is Stale`` () =
     withTempDir "deps-probe-stale" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -243,7 +243,7 @@ let private fsprojXml (pkgVersion: string) (compiles: string list) =
 /// A compile-item-only edit does not touch the package graph, so the dep-relevant
 /// signature must stay UNCHANGED. That invariance is what suppresses the phantom
 /// stale.
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``depRelevantSignature: compile-item-only change yields the SAME signature`` () =
     withTempDir "deps-sig-compile" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -260,7 +260,7 @@ let ``depRelevantSignature: compile-item-only change yields the SAME signature``
 
 /// An fsproj that cannot be read (here, gone) folds a sentinel rather than throwing,
 /// so the signature still answers and differs from any readable state.
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``depRelevantSignature: an unreadable fsproj is a stable signature of its own, never a throw`` () =
     withTempDir "deps-sig-unreadable" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -275,7 +275,7 @@ let ``depRelevantSignature: an unreadable fsproj is a stable signature of its ow
         test <@ depRelevantSignature root fsproj = unreadable @>)
 
 /// The inverse: a real package change moves the signature and re-arms recovery.
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``depRelevantSignature: PackageReference version change yields a DIFFERENT signature`` () =
     withTempDir "deps-sig-pkg" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -293,7 +293,7 @@ let ``depRelevantSignature: PackageReference version change yields a DIFFERENT s
 /// mtime is NOT a content oracle (rsync -a / cp -p / git checkout restore an OLD
 /// mtime while changing CONTENT): the signature reflects ancestor dep-file content,
 /// so a preserved-mtime rewrite of `paket.lock` still re-arms recovery.
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``depRelevantSignature: differs when a dep file's content changes but mtime is preserved (rsync -a)`` () =
     withTempDir "deps-sig-content" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -318,7 +318,7 @@ let ``depRelevantSignature: differs when a dep file's content changes but mtime 
         let after = depRelevantSignature root fsproj
         test <@ before <> after @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``depRelevantSignature: stable across repeated computes when nothing changes`` () =
     withTempDir "deps-sig-stable" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -335,7 +335,7 @@ let ``depRelevantSignature: stable across repeated computes when nothing changes
 /// namespace-agnostic (LocalName) AND descend into child elements, so a change to
 /// `<PrivateAssets>` still moves the signature. Exercises the no-Sdk-attr branch,
 /// the `<Import>` element, and the recursive child/text walk.
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``depRelevantSignature: old-style project captures Import + PackageReference child metadata`` () =
     withTempDir "deps-sig-oldstyle" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -383,7 +383,7 @@ let ``depRelevantSignature: old-style project captures Import + PackageReference
 
 /// A malformed fsproj must never throw — the digest folds a content-derived
 /// sentinel, and fixing the XML (a content change) still moves the signature.
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``depRelevantSignature: unparseable fsproj folds a sentinel and re-arms on fix`` () =
     withTempDir "deps-sig-bad" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -411,7 +411,7 @@ let private succeedingRunner: RestoreRunner =
 let private failingRunner: RestoreRunner =
     fun _ -> Failed(1, ProcessOutput.Drained "NU1101: package not found")
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``evaluateProject: fresh project proceeds without restore`` () =
     let mutable ran = false
 
@@ -428,7 +428,7 @@ let ``evaluateProject: fresh project proceeds without restore`` () =
     test <@ result = Proceed @>
     test <@ not ran @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``evaluateProject: stale then successful restore (assets present) -> RecoveredOk`` () =
     // A successful restore is trusted even when the mtime probe would still read
     // stale (a no-op restore doesn't bump the assets mtime): only presence matters.
@@ -439,7 +439,7 @@ let ``evaluateProject: stale then successful restore (assets present) -> Recover
 
     test <@ result = RecoveredOk @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``evaluateProject: stale and restore fails -> FailFast with one message`` () =
     let tracker = RecoveryTracker()
 
@@ -453,7 +453,7 @@ let ``evaluateProject: stale and restore fails -> FailFast with one message`` ()
         test <@ detail.Contains "NU1101" @>
     | other -> failwithf "expected FailFast, got %A" other
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``evaluateProject: restore succeeds but assets still missing -> FailFast`` () =
     let tracker = RecoveryTracker()
 
@@ -464,7 +464,7 @@ let ``evaluateProject: restore succeeds but assets still missing -> FailFast`` (
     | FailFast(msg, _) -> test <@ msg.Contains "still missing" @>
     | other -> failwithf "expected FailFast, got %A" other
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``evaluateProject: still-stale second cycle does not re-run restore (no loop)`` () =
     let mutable runs = 0
 
@@ -487,7 +487,7 @@ let ``evaluateProject: still-stale second cycle does not re-run restore (no loop
 
     test <@ second = SkipAlreadyAttempted @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``evaluateProject: a new dep bump re-arms recovery`` () =
     let mutable runs = 0
 
@@ -514,7 +514,7 @@ let ``evaluateProject: a new dep bump re-arms recovery`` () =
 /// Content-drift escape hatch: a preserved-mtime dep rewrite (rsync -a) fools the
 /// mtime probe into Fresh. When the dep-content signature has drifted from the one
 /// recovery last proceeded on, the project must be re-restored, not proceeded.
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``evaluateProject: mtime-Fresh but content signature drifted -> restores (not silently Proceed)`` () =
     let mutable runs = 0
 
@@ -540,7 +540,7 @@ let ``evaluateProject: mtime-Fresh but content signature drifted -> restores (no
     test <@ runs = 1 @>
     test <@ second = RecoveredOk @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``evaluateProject: mtime-Fresh with unchanged content signature stays Proceed (no restore loop)`` () =
     let mutable runs = 0
 
@@ -567,7 +567,7 @@ let ``evaluateProject: mtime-Fresh with unchanged content signature stays Procee
 /// fsproj edit bumps the mtime so the probe reads Stale — but the dep-relevant
 /// signature is UNCHANGED. evaluateProject must Proceed WITHOUT invoking the
 /// restore runner (no phantom stale→restore→timeout→pinned-red).
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``evaluateProject: mtime-Stale but dep signature matches baseline -> Proceed with NO restore`` () =
     let mutable ran = false
 
@@ -592,7 +592,7 @@ let ``evaluateProject: mtime-Stale but dep signature matches baseline -> Proceed
     test <@ not ran @>
 
 /// The inverse: a Stale probe whose dep signature really moved is not suppressed.
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``evaluateProject: mtime-Stale with CHANGED dep signature -> restores (not suppressed)`` () =
     let mutable runs = 0
 
@@ -630,7 +630,7 @@ let ``evaluateProject: mtime-Stale with CHANGED dep signature -> restores (not s
 /// answers it. `evaluateProject: mtime-Stale but dep signature matches baseline ->
 /// Proceed with NO restore` is the positive control — the suppression this guards must
 /// keep firing on a workspace whose assets are still there.
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a matching baseline never certifies a project whose assets are GONE`` () =
     let mutable runs = 0
 
@@ -660,7 +660,7 @@ let ``a matching baseline never certifies a project whose assets are GONE`` () =
     | other -> failwithf "expected the cleaned workspace to be restored, not certified; got %A" other
 
 /// Suppression only fires against a previously-recorded known-good baseline.
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``evaluateProject: Stale on first sighting (no baseline) still restores`` () =
     let mutable runs = 0
 
@@ -679,7 +679,7 @@ let ``evaluateProject: Stale on first sighting (no baseline) still restores`` ()
 
 // ---- preflight: restore before discovery ----
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``preflight asks the gate once per project and keeps every answer but Proceed`` () =
     let asked = Collections.Generic.List<string>()
 
@@ -698,7 +698,7 @@ let ``preflight asks the gate once per project and keeps every answer but Procee
 
     test <@ answers = Map.ofList [ "Stale.fsproj", RecoveredOk; "Broken.fsproj", FailFast("refused", "detail") ] @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``withPreflight answers a skip with the restore failure preflight saw`` () =
     let failed = FailFast("refused", "detail")
 
@@ -722,7 +722,7 @@ let ``withPreflight answers a skip with the restore failure preflight saw`` () =
 
     test <@ fixedSince "Fixed.fsproj" = Proceed @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a restore failure preflight saw is still reported when the scan's gate skips the project`` () =
     // The production composition: the real gate tries a restore once per stale state, so
     // the scan's own ask after a failed preflight restore is `SkipAlreadyAttempted`.
@@ -827,7 +827,7 @@ let ``applyDepsGate: RecoveredOk proceeds and clears prior diagnostic`` () =
 
 // ---- paketGroupsFromLock (drives the per-group, walk-free paket restore) ----
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``paketGroupsFromLock: lock with no GROUP headers yields just Main`` () =
     let dir =
         Path.Combine(Path.GetTempPath(), "fshw-groups-" + Guid.NewGuid().ToString("N"))
@@ -841,7 +841,7 @@ let ``paketGroupsFromLock: lock with no GROUP headers yields just Main`` () =
     finally
         Directory.Delete(dir, true)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``paketGroupsFromLock: explicit GROUP headers are returned after Main`` () =
     let dir =
         Path.Combine(Path.GetTempPath(), "fshw-groups-" + Guid.NewGuid().ToString("N"))
@@ -859,7 +859,7 @@ let ``paketGroupsFromLock: explicit GROUP headers are returned after Main`` () =
     finally
         Directory.Delete(dir, true)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``paketGroupsFromLock: missing lock falls back to Main`` () =
     test <@ paketGroupsFromLock "/no/such/dir/paket.lock" = [ "Main" ] @>
 
@@ -881,7 +881,7 @@ let private lockWithGroups (groups: string list) =
 
     mainBody + groupBodies
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``restoreSteps: no-paket project yields just the dotnet restore step`` () =
     withTempDir "deps-steps-nopaket" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -895,7 +895,7 @@ let ``restoreSteps: no-paket project yields just the dotnet restore step`` () =
         test <@ only.Args = $"restore \"%s{fsproj}\"" @>
         test <@ Path.GetFullPath only.WorkingDir = Path.GetFullPath projDir @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``restoreSteps: paket project with Main+Build groups yields per-group steps in order`` () =
     withTempDir "deps-steps-groups" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -915,7 +915,7 @@ let ``restoreSteps: paket project with Main+Build groups yields per-group steps 
 
         test <@ paketArgs = [ "paket restore --group Main"; "paket restore --group Build" ] @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``restoreSteps: paket.dependencies present but lock missing falls back to Main only`` () =
     withTempDir "deps-steps-nolock" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -932,7 +932,7 @@ let ``restoreSteps: paket.dependencies present but lock missing falls back to Ma
 
         test <@ paketArgs = [ "paket restore --group Main" ] @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``restoreSteps: tools manifest in scope appends a tool-restore step last`` () =
     withTempDir "deps-steps-tool" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
@@ -947,7 +947,7 @@ let ``restoreSteps: tools manifest in scope appends a tool-restore step last`` (
         test <@ last.Purpose = "tool-restore" @>
         test <@ last.Args = "tool restore" @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``restoreSteps: full stack (paket groups + tools) orders restore, per-group paket, then tool-restore`` () =
     withTempDir "deps-steps-full" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")

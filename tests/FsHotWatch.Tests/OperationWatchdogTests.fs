@@ -12,7 +12,7 @@ open FsHotWatch.Tests.TestHelpers
 let private t0 = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
 let private threshold = TimeSpan.FromSeconds(120.0)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isWedgedAt false before threshold`` () =
     let op =
         { Name = "WaitForComplete"
@@ -20,7 +20,7 @@ let ``isWedgedAt false before threshold`` () =
 
     test <@ not (isWedgedAt (t0.AddSeconds 119.0) threshold op) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isWedgedAt true at and past threshold`` () =
     let op =
         { Name = "WaitForComplete"
@@ -29,7 +29,7 @@ let ``isWedgedAt true at and past threshold`` () =
     test <@ isWedgedAt (t0.AddSeconds 120.0) threshold op @>
     test <@ isWedgedAt (t0.AddSeconds 300.0) threshold op @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``overrunLogRecord names op + threshold + elapsed in a stable shape`` () =
     let op =
         { Name = "RunCommand:run-tests"
@@ -39,13 +39,13 @@ let ``overrunLogRecord names op + threshold + elapsed in a stable shape`` () =
     // The shape is greppable; other tests below match on the "operation exceeded" prefix.
     test <@ record = "operation exceeded 120s: RunCommand:run-tests running 200s" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``wedgeReport None when nothing in flight`` () =
     let state = { InFlight = []; Threshold = threshold }
 
     test <@ wedgeReport (t0.AddSeconds 500.0) state = None @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``wedgeReport None when in flight but under threshold`` () =
     let state =
         { InFlight = [ { Name = "Scan"; StartedAt = t0 } ]
@@ -53,7 +53,7 @@ let ``wedgeReport None when in flight but under threshold`` () =
 
     test <@ wedgeReport (t0.AddSeconds 10.0) state = None @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``wedgeReport Some with WEDGED prefix, stuck op, elapsed, and inline recovery`` () =
     let state =
         { InFlight =
@@ -72,13 +72,13 @@ let ``wedgeReport Some with WEDGED prefix, stuck op, elapsed, and inline recover
         test <@ msg.Contains("fshw stop") @>
         test <@ msg.Contains(recoveryAction ()) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``heartbeatLine reports idle when nothing in flight`` () =
     let state = { InFlight = []; Threshold = threshold }
 
     test <@ heartbeatLine t0 state = "heartbeat: idle" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``heartbeatLine names the in-flight op and elapsed`` () =
     let state =
         { InFlight = [ { Name = "WaitForScan"; StartedAt = t0 } ]
@@ -86,7 +86,7 @@ let ``heartbeatLine names the in-flight op and elapsed`` () =
 
     test <@ heartbeatLine (t0.AddSeconds 7.0) state = "heartbeat: in-flight WaitForScan running 7s" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``heartbeatLine names the OLDEST op and the count when several are in flight`` () =
     // Three acceptors is the IPC server's design, so several in flight is normal.
     // The heartbeat must not pretend there is only one — nor pick an arbitrary one.
@@ -102,7 +102,7 @@ let ``heartbeatLine names the OLDEST op and the count when several are in flight
 
     test <@ heartbeatLine (t0.AddSeconds 9.0) state = "heartbeat: 3 in-flight, oldest WaitForComplete running 9s" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``gcPauseSuffix renders the pause share of the window, the pause and the window`` () =
     test
         <@
@@ -119,7 +119,7 @@ let ``gcPauseSuffix renders the pause share of the window, the pause and the win
             gcPauseSuffix (TimeSpan.FromSeconds 12.345) (TimeSpan.FromSeconds 30.0) = "; gc-pause 41.15% (12345ms of 30s)"
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``gcPauseSuffix is empty for a window with no length`` () =
     test <@ gcPauseSuffix (TimeSpan.FromMilliseconds 5.0) TimeSpan.Zero = "" @>
 
@@ -205,7 +205,7 @@ let ``Watchdog heartbeat carries load, heap and the collections since the previo
             line = "heartbeat: idle; gc-pause 0.00% (0ms of 30s); load 7.50; heap 8.00 GB; collections gen0 +12, gen1 +3, gen2 +2; threads 313"
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``resourceSuffix says when the platform has no load average`` () =
     test
         <@
@@ -215,7 +215,7 @@ let ``resourceSuffix says when the platform has no load average`` () =
                     LoadAverage = None } = "; load n/a; heap 1.00 GB; collections gen0 +0, gen1 +0, gen2 +0; threads 42"
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``readResources reads this process's heap and collection counts`` () =
     let reading = readResources ()
     test <@ reading.HeapBytes > 0L @>
@@ -225,7 +225,7 @@ let ``readResources reads this process's heap and collection counts`` () =
     if not (OperatingSystem.IsWindows()) then
         test <@ reading.LoadAverage |> Option.exists (fun load -> load >= 0.0) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``oldestOverrun picks the longest-running WEDGED op, ignoring young ones`` () =
     let ops =
         [ { Name = "young"
@@ -243,7 +243,7 @@ let ``oldestOverrun picks the longest-running WEDGED op, ignoring young ones`` (
 
 // --- Live Watchdog: Begin/End state tracking ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Watchdog tracks the in-flight op via Begin and clears via End`` () =
     let clock = ref t0
 
@@ -266,7 +266,7 @@ let ``Watchdog tracks the in-flight op via Begin and clears via End`` () =
     w.End token
     test <@ List.isEmpty w.State.InFlight @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Watchdog WedgeReport fires once the injected clock crosses threshold`` () =
     let clock = ref t0
 
@@ -387,7 +387,7 @@ let ``Watchdog does not emit overrun for an op that ends before threshold`` () =
 // heartbeat as `idle` and `WedgeReport()` returned `None` — the wedge diagnostic
 // went blind under exactly the concurrency it was built for.
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a wedged op stays visible when a concurrent op begins and ends over it`` () =
     let clock = ref t0
 
@@ -417,7 +417,7 @@ let ``a wedged op stays visible when a concurrent op begins and ends over it`` (
     test <@ w.State.InFlight |> List.map (fun o -> o.Name) = [ "WaitForComplete" ] @>
     test <@ heartbeatLine clock.Value w.State <> "heartbeat: idle" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``loadAverageOf reads one sample, and has none on Windows or when the read returned none`` () =
     test <@ loadAverageOf false (fun () -> 1, 3.25) = Some 3.25 @>
     test <@ loadAverageOf false (fun () -> -1, 0.0) = None @>
@@ -441,12 +441,12 @@ let private startState =
       LastFired = None
       Floor = None }
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the heap valve holds while the heap is under its threshold`` () =
     let small = { bloated with HeapBytes = gib 3.0 }
     test <@ not (heapValveFires valvePolicy startState (t0.AddMinutes 10.0) small) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the heap valve holds while gen2 collections are still running`` () =
     let now = t0.AddMinutes 10.0
     let moved = observeGen2 startState now { bloated with Gen2 = bloated.Gen2 + 1 }
@@ -456,14 +456,14 @@ let ``the heap valve holds while gen2 collections are still running`` () =
     test <@ moved.Gen2MovedAt = now @>
     test <@ not (heapValveFires valvePolicy moved justUnder bloated) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the heap valve fires on a heap over its threshold that no gen2 has touched for the quiet interval`` () =
     let state = observeGen2 startState (t0.AddSeconds 120.0) bloated
 
     test <@ state.Gen2MovedAt = t0 @>
     test <@ heapValveFires valvePolicy state (t0.AddSeconds 120.0) bloated @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the heap valve fires at most once per quiet interval`` () =
     let fired =
         { startState with
@@ -477,7 +477,7 @@ let ``the heap valve fires at most once per quiet interval`` () =
 // daemon: 842 firings in 44 h, 825 of them freeing under 0.5 GB, each a multi-second
 // blocking compaction of the whole heap (median pause 3.6 s).
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``after a firing that reclaimed little, the valve waits for the heap to grow past what it left`` () =
     let fired = { startState with LastFired = Some t0 }
 
@@ -492,7 +492,7 @@ let ``after a firing that reclaimed little, the valve waits for the heap to grow
     // Grown by more than a quarter over what the collection left: new garbage to take.
     test <@ heapValveFires valvePolicy unproductive (t0.AddMinutes 30.0) { bloated with HeapBytes = gib 14.5 } @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``after a firing that reclaimed real garbage, the valve keeps its plain threshold`` () =
     let fired =
         { startState with
@@ -504,7 +504,7 @@ let ``after a firing that reclaimed real garbage, the valve keeps its plain thre
     test <@ productive.Floor = None @>
     test <@ heapValveFires valvePolicy productive (t0.AddMinutes 30.0) bloated @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the valve log line says when a firing reclaimed little and what the next one waits for`` () =
     let firing =
         { At = t0

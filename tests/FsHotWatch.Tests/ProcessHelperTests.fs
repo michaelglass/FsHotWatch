@@ -55,17 +55,17 @@ let private expectStdout (expected: string) (outcome: ProcessOutcome) =
 // The live arms need a pipe torn down mid-read (exercised end-to-end in
 // FsHotWatch.IntegrationTests); these pin the pure decision deterministically.
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``pumpReachedEof: a read loop that ended with no failure reached EOF`` () = Assert.True(pumpReachedEof None)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``pumpReachedEof: an expected drain failure did NOT reach EOF`` () =
     // F18: the timeout-kill tears the pipe down under the pump. The read DIED, so
     // the capture is not provably complete — false, never "EOF with no more bytes".
     Assert.False(pumpReachedEof (Some(IO.IOException "pipe broken after kill")))
     Assert.False(pumpReachedEof (Some(ObjectDisposedException "stream")))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``pumpReachedEof: an UNEXPECTED failure is re-raised, never laundered into a verdict`` () =
     // A read that failed for a reason we do not understand must not be downgraded to "not
     // drained" — that hides a real bug inside an outcome the caller is trained to tolerate.
@@ -79,7 +79,7 @@ let ``pumpReachedEof: an UNEXPECTED failure is re-raised, never laundered into a
 let private mustNotBeForced () : bool =
     failwith "classifyDrain forced an EOF flag before the wait proved the pump had stopped — this would BLOCK"
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classifyDrain: a wait that did not return is a timed-out drain, and never touches Task.Result`` () =
     match classifyDrain false mustNotBeForced mustNotBeForced "partial" (TimeSpan.FromSeconds 2.0) with
     | ProcessOutput.DrainTimedOut(captured, window) ->
@@ -87,20 +87,20 @@ let ``classifyDrain: a wait that did not return is a timed-out drain, and never 
         Assert.Equal(TimeSpan.FromSeconds 2.0, window)
     | other -> Assert.Fail $"expected DrainTimedOut, got %A{other}"
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classifyDrain: a stdout pump that died short of EOF is a timed-out drain`` () =
     match classifyDrain true (fun () -> false) mustNotBeForced "partial" (TimeSpan.FromSeconds 2.0) with
     | ProcessOutput.DrainTimedOut(captured, _) -> Assert.Equal("partial", captured)
     | other -> Assert.Fail $"expected DrainTimedOut, got %A{other}"
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classifyDrain: a stderr pump that died short of EOF is a timed-out drain`` () =
     // stdout reached EOF but stderr did not — STILL not a complete measurement.
     match classifyDrain true (fun () -> true) (fun () -> false) "partial" (TimeSpan.FromSeconds 2.0) with
     | ProcessOutput.DrainTimedOut(captured, _) -> Assert.Equal("partial", captured)
     | other -> Assert.Fail $"expected DrainTimedOut, got %A{other}"
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classifyDrain: both pumps at EOF inside the window is the child's complete output`` () =
     match classifyDrain true (fun () -> true) (fun () -> true) "all of it" (TimeSpan.FromSeconds 2.0) with
     | ProcessOutput.Drained text -> Assert.Equal("all of it", text)
@@ -108,18 +108,18 @@ let ``classifyDrain: both pumps at EOF inside the window is the child's complete
 
 // --- ProcessOutput.text / renderOutput: the two ways to read a capture ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ProcessOutput.text hands back the captured bytes, untagged, either way`` () =
     // For text-SEARCHING (a marker either present or not), where a short capture can only
     // cost a hit, never invent one.
     Assert.Equal("hi", ProcessOutput.text (ProcessOutput.Drained "hi"))
     Assert.Equal("hi", ProcessOutput.text (ProcessOutput.DrainTimedOut("hi", TimeSpan.FromSeconds 2.0)))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``renderOutput leaves a fully-drained capture exactly as the child said it`` () =
     Assert.Equal("hello", renderOutput (ProcessOutput.Drained "hello"))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``renderOutput NAMES an incomplete drain so no human reads the silence as the child's`` () =
     let rendered =
         renderOutput (ProcessOutput.DrainTimedOut("half a line", TimeSpan.FromSeconds 2.0))
@@ -128,7 +128,7 @@ let ``renderOutput NAMES an incomplete drain so no human reads the silence as th
     Assert.Contains("OUTPUT INCOMPLETE", rendered)
     Assert.Contains("2s", rendered)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``outputOf renders each outcome's capture, tagging the ones we could not finish`` () =
     Assert.Equal("ok", outputOf (Succeeded(ProcessOutput.Drained "ok")))
     Assert.Equal("boom", outputOf (Failed(2, ProcessOutput.Drained "boom")))
@@ -464,7 +464,7 @@ let ``runProcess registers the child while running and unregisters on exit`` () 
     // Exited PIDs the OS could later recycle must not linger in the registry.
     Assert.Empty(FsHotWatch.ProcessRegistry.snapshot ())
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isTimedOut is true only for TimedOut`` () =
     // The live timeout-kill path that produces a real TimedOut lives in
     // FsHotWatch.IntegrationTests — its OS-scheduling-dependent kill/drain branches jitter
@@ -781,16 +781,16 @@ let ``runProcess overlays explicit env on top of inherited env`` () =
 
 // --- F17/F18: isExpectedKillException / isExpectedDrainException helpers ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isExpectedKillException accepts InvalidOperationException (F17)`` () =
     Assert.True(isExpectedKillException (System.InvalidOperationException()))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isExpectedKillException rejects Win32Exception (F17)`` () =
     // Win32Exception is a real permission/system failure that should propagate.
     Assert.False(isExpectedKillException (System.ComponentModel.Win32Exception()))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isExpectedKillException rejects NullReferenceException (F17)`` () =
     Assert.False(isExpectedKillException (System.NullReferenceException()))
 
@@ -809,17 +809,17 @@ let ``isExpectedKillException rejects NullReferenceException (F17)`` () =
 // `KillFailed` tests below fail.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classifyKill: a kill that returned killed the tree`` () =
     Assert.Equal(KillOutcome.Killed, classifyKill KillCall.Returned)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classifyKill: the already-exited race is benign, not a failure`` () =
     // The child exited between the timeout firing and the kill landing: the tree is dead
     // either way. The ONLY exception the old catch-all was entitled to swallow (F17).
     Assert.Equal(KillOutcome.AlreadyExited, classifyKill (KillCall.Threw(System.InvalidOperationException())))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classifyKill: a permission failure is a kill we did NOT perform`` () =
     // Win32Exception = we were refused. The tree is still running, and the old
     // `with _ -> ()` reported that as success.
@@ -827,7 +827,7 @@ let ``classifyKill: a permission failure is a kill we did NOT perform`` () =
     | KillOutcome.KillFailed reason -> Assert.IsType<System.ComponentModel.Win32Exception>(reason) |> ignore
     | other -> Assert.Fail $"a refused kill must not be spelled like a successful one, got %A{other}"
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classifyKill: an unexpected exception is a kill we did NOT perform`` () =
     // Anything outside the F17 benign class is a kill we cannot vouch for, and is never
     // rounded down to "killed".
@@ -835,7 +835,7 @@ let ``classifyKill: an unexpected exception is a kill we did NOT perform`` () =
     | KillOutcome.KillFailed reason -> Assert.IsType<System.NullReferenceException>(reason) |> ignore
     | other -> Assert.Fail $"an unexplained kill failure must not be spelled like a successful one, got %A{other}"
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a kill that failed is NAMED in the output a human reads`` () =
     let leaked =
         outputOf (
@@ -853,7 +853,7 @@ let ``a kill that failed is NAMED in the output a human reads`` () =
     Assert.Contains("KILL FAILED", leaked)
     Assert.Contains("STILL RUNNING", leaked)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``renderKillBrief marks a leaked tree on a one-line status, and is silent otherwise`` () =
     // A status line reading only "timed out after 30s" invites the wrong conclusion.
     Assert.Contains("KILL FAILED", renderKillBrief (KillOutcome.KillFailed(System.ComponentModel.Win32Exception())))
@@ -863,18 +863,18 @@ let ``renderKillBrief marks a leaked tree on a one-line status, and is silent ot
 // `killTreeWith` takes the kill as a parameter so these three arms — the failure arm
 // included — are reachable without an unkillable process.
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``killTreeWith: a kill that returns reports Killed`` () =
     Assert.Equal(KillOutcome.Killed, killTreeWith TeardownBudget 4242 (fun () -> "child") id)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``killTreeWith: a child that beat us to it reports AlreadyExited`` () =
     let kill () =
         raise (System.InvalidOperationException())
 
     Assert.Equal(KillOutcome.AlreadyExited, killTreeWith TeardownBudget 4242 (fun () -> "child") kill)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``killTreeWith: a refused kill reports KillFailed, never Killed`` () =
     let boom = System.ComponentModel.Win32Exception()
     let kill () = raise boom
@@ -904,7 +904,7 @@ let ``killTreeWith: a refused kill reports KillFailed, never Killed`` () =
 // analogue of the kill that THROWS, and equally unconjurable from a real process.
 //
 // RED-BEFORE-GREEN: give `callKillWithin` back its unbounded `kill ()` and the blocking
-// tests below hang until xUnit's 5s Timeout fires.
+// tests below hang until xUnit's cap fires.
 // ---------------------------------------------------------------------------
 
 /// A budget short enough to keep these tests fast, long enough that a machine hiccup
@@ -919,18 +919,18 @@ let private blockingKill () =
     let kill () = gate.Wait()
     kill, gate
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classifyKill: a kill that never answered is neither killed nor failed`` () =
     // Not `Killed` — we established nothing. Not `KillFailed` — nobody refused us, and a
     // `KillFailed` carrying a fabricated exception would put words in the OS's mouth.
     let budget = TimeSpan.FromSeconds 10.0
     Assert.Equal(KillOutcome.KillTimedOut budget, classifyKill (KillCall.DidNotReturn budget))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``callKillWithin: a kill that returns is Returned — the positive control`` () =
     Assert.Equal(KillCall.Returned, callKillWithin shortBudget id)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``callKillWithin: a kill that throws reports the throw, not a timeout`` () =
     // The budget must not swallow the exception: the classification still has to see it.
     let boom = System.ComponentModel.Win32Exception()
@@ -939,7 +939,7 @@ let ``callKillWithin: a kill that throws reports the throw, not a timeout`` () =
     | KillCall.Threw ex -> Assert.Same(boom, ex)
     | other -> Assert.Fail $"a throwing kill must be reported as a throw, got %A{other}"
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``callKillWithin: a BLOCKING kill is cut off at the budget`` () =
     let kill, gate = blockingKill ()
 
@@ -964,7 +964,7 @@ let ``callKillWithin: a BLOCKING kill is cut off at the budget`` () =
     finally
         gate.Set()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``callKillWithin: the budget is not spent on a kill that returns`` () =
     // The other direction: a healthy teardown is untouched by the bound. A tree really dies
     // in milliseconds, and a bound that made every kill wait out its budget would turn a
@@ -974,7 +974,7 @@ let ``callKillWithin: the budget is not spent on a kill that returns`` () =
     // as a hang instead of being timed: returning `Returned` at all is the claim.
     Assert.Equal(KillCall.Returned, callKillWithin (TimeSpan.FromMinutes 10.0) id)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``killTreeWith: a blocked teardown ends in KillTimedOut, not in a wedge`` () =
     let kill, gate = blockingKill ()
 
@@ -987,7 +987,7 @@ let ``killTreeWith: a blocked teardown ends in KillTimedOut, not in a wedge`` ()
     finally
         gate.Set()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``killTreeWith: a normal teardown still completes untouched`` () =
     // Both positive controls, against the same budget the blocked case fails: bounding the
     // teardown may not change what a teardown that WORKS reports.
@@ -998,7 +998,7 @@ let ``killTreeWith: a normal teardown still completes untouched`` () =
         killTreeWith shortBudget 4243 (fun () -> "child") (fun () -> raise (InvalidOperationException()))
     )
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a teardown that never answered is NAMED in the output a human reads`` () =
     let unaccounted =
         outputOf (
@@ -1019,7 +1019,7 @@ let ``a teardown that never answered is NAMED in the output a human reads`` () =
     // different things to go looking for.
     Assert.DoesNotContain("KILL FAILED", unaccounted)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``renderKillBrief marks an unaccounted-for tree on a one-line status`` () =
     let brief = renderKillBrief (KillOutcome.KillTimedOut(TimeSpan.FromSeconds 10.0))
     Assert.Contains("KILL TIMED OUT", brief)
@@ -1036,7 +1036,7 @@ let ``renderKillBrief marks an unaccounted-for tree on a one-line status`` () =
 // is disposed and the pid survives only if somebody wrote it down.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a teardown that never answered registers the leaked pid`` () =
     let registry = FsHotWatch.ProcessRegistry.Registry()
     use _ = FsHotWatch.ProcessRegistry.install registry
@@ -1055,7 +1055,7 @@ let ``a teardown that never answered registers the leaked pid`` () =
         Assert.Contains("did not return", leak.Reason)
     | other -> Assert.Fail $"expected exactly one leaked tree, got %A{other}"
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a refused teardown registers the leaked pid too`` () =
     let registry = FsHotWatch.ProcessRegistry.Registry()
     use _ = FsHotWatch.ProcessRegistry.install registry
@@ -1070,7 +1070,7 @@ let ``a refused teardown registers the leaked pid too`` () =
         Assert.Contains("refused", leak.Reason)
     | other -> Assert.Fail $"expected exactly one leaked tree, got %A{other}"
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a teardown that worked registers nothing — the ledger is not a spawn log`` () =
     let registry = FsHotWatch.ProcessRegistry.Registry()
     use _ = FsHotWatch.ProcessRegistry.install registry
@@ -1082,19 +1082,19 @@ let ``a teardown that worked registers nothing — the ledger is not a spawn log
 
     Assert.Empty(FsHotWatch.ProcessRegistry.leaked ())
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isExpectedDrainException accepts AggregateException (F18)`` () =
     Assert.True(isExpectedDrainException (System.AggregateException()))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isExpectedDrainException accepts IOException (F18)`` () =
     Assert.True(isExpectedDrainException (System.IO.IOException()))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isExpectedDrainException accepts ObjectDisposedException (F18)`` () =
     Assert.True(isExpectedDrainException (System.ObjectDisposedException("x")))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isExpectedDrainException rejects NullReferenceException (F18)`` () =
     Assert.False(isExpectedDrainException (System.NullReferenceException()))
 
@@ -1119,15 +1119,15 @@ let ``ProcessRegistry.Snapshot tolerates disposed processes (F19)`` () =
     let snap = registry.Snapshot()
     Assert.Empty(snap)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isExpectedProcessException accepts InvalidOperationException (F19/F20)`` () =
     Assert.True(FsHotWatch.ProcessRegistry.isExpectedProcessException (System.InvalidOperationException()))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isExpectedProcessException accepts Win32Exception (F19/F20)`` () =
     Assert.True(FsHotWatch.ProcessRegistry.isExpectedProcessException (System.ComponentModel.Win32Exception()))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isExpectedProcessException rejects NullReferenceException (F19/F20)`` () =
     Assert.False(FsHotWatch.ProcessRegistry.isExpectedProcessException (System.NullReferenceException()))
 
@@ -1154,7 +1154,7 @@ let ``ProcessRegistry.KillAll tolerates already-exited processes (F20)`` () =
 // the `Process` handle is long disposed — the pid survives only because it was written
 // down. `KillAll` is where the daemon stops looking, so it is where the ledger is read.
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ProcessRegistry: shutdown names a tree it could not account for`` () =
     let original = FsHotWatch.Logging.logLevel
     let sb = Text.StringBuilder()
@@ -1186,7 +1186,7 @@ let ``ProcessRegistry: shutdown names a tree it could not account for`` () =
     | [ _ ] -> ()
     | other -> Assert.Fail $"KillAll must not clear the leak ledger, got %A{other}"
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ProcessRegistry: the leak ledger is scoped, not a process-wide global`` () =
     // Same reason `Registry` itself is AsyncLocal-scoped: two daemons (or two parallel
     // test runs) must not read each other's unaccounted-for trees.
@@ -1210,44 +1210,44 @@ let ``ProcessRegistry: the leak ledger is scoped, not a process-wide global`` ()
 
 // decideLaunchStep: (launchDeadlineReached, overallTimeoutReached, exited, sawOutput)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``decideLaunchStep: exited wins over everything`` () =
     // Even racing the launch deadline with no output, a process that EXITED is a natural
     // completion to classify, never a stall.
     Assert.Equal(LaunchStep.Exited, decideLaunchStep true false true false)
     Assert.Equal(LaunchStep.Exited, decideLaunchStep false false true true)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``decideLaunchStep: no life within the launch deadline is a stall`` () =
     // never-appears: not exited, no output, past the launch deadline.
     Assert.Equal(LaunchStep.Stalled, decideLaunchStep true false false false)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``decideLaunchStep: a process that produced output is never launch-killed`` () =
     // Slow-but-alive: the launch deadline governs launch, not total duration.
     Assert.Equal(LaunchStep.KeepWaiting, decideLaunchStep true false false true)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``decideLaunchStep: overall timeout ends even a progressing run`` () =
     Assert.Equal(LaunchStep.TimedOut, decideLaunchStep false true false true)
     // ...but a natural exit still wins over the overall timeout.
     Assert.Equal(LaunchStep.Exited, decideLaunchStep false true true false)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``decideLaunchStep: still within the launch window keeps waiting`` () =
     Assert.Equal(LaunchStep.KeepWaiting, decideLaunchStep false false false false)
 
 // resolveLaunchDeadline: override precedence (pure — no process env touched)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``resolveLaunchDeadline: absent override falls back to the default`` () =
     Assert.Equal(DefaultLaunchDeadline, resolveLaunchDeadline None)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``resolveLaunchDeadline: a positive integer override wins`` () =
     Assert.Equal(TimeSpan.FromSeconds 42.0, resolveLaunchDeadline (Some "42"))
 
-[<Theory(Timeout = 5000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("0")>]
 [<InlineData("-5")>]
 [<InlineData("not-a-number")>]
@@ -1285,7 +1285,7 @@ let private sleepingHostClock (awakeMs: int) (sleptMs: int) : FsHotWatch.HostClo
       AwakeNow = (fun () -> awake.Value) },
     advance
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``launchWatchdogLoopWith: time the host spent suspended counts against neither deadline`` () =
     // b491: a 900 s test-host timeout fired after ~339 s awake, because ~561 s of
     // clamshell sleep counted against it. Here each 250 ms poll also sleeps 10 s: the
@@ -1304,7 +1304,7 @@ let ``launchWatchdogLoopWith: time the host spent suspended counts against neith
     Assert.Equal(LaunchOutcome.Exited, step)
     Assert.Equal(20, polls.Value)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``launchWatchdogLoopWith: the deadlines still fire on awake time`` () =
     let clock, advance = sleepingHostClock 250 10_000
 
@@ -1319,7 +1319,7 @@ let ``launchWatchdogLoopWith: the deadlines still fire on awake time`` () =
 
     Assert.Equal(LaunchOutcome.TimedOut, step)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``launchWatchdogLoopWith: a child that never appears stalls at the launch deadline`` () =
     // observe always reports "not exited, no output" — the overloaded-spawn case.
     let now, advance = fakeClock DateTime.UtcNow
@@ -1335,7 +1335,7 @@ let ``launchWatchdogLoopWith: a child that never appears stalls at the launch de
 
     Assert.Equal(LaunchOutcome.Stalled, step)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``launchWatchdogLoopWith: a child that dies silently settles as Exited`` () =
     // No output, then it's gone. The wrapper turns this into a launch-death (raise); the
     // loop's job is only to observe the exit promptly.
@@ -1357,7 +1357,7 @@ let ``launchWatchdogLoopWith: a child that dies silently settles as Exited`` () 
 
     Assert.Equal(LaunchOutcome.Exited, step)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``launchWatchdogLoopWith: a slow-but-progressing run is NOT launch-killed`` () =
     // Streams output for far longer than the launch deadline, then exits: the deadline must
     // NOT trip.
@@ -1381,7 +1381,7 @@ let ``launchWatchdogLoopWith: a slow-but-progressing run is NOT launch-killed`` 
 
     Assert.Equal(LaunchOutcome.Exited, step)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``launchWatchdogLoopWith: overall timeout ends a progressing run`` () =
     let now, advance = fakeClock DateTime.UtcNow
 
@@ -1396,7 +1396,7 @@ let ``launchWatchdogLoopWith: overall timeout ends a progressing run`` () =
 
     Assert.Equal(LaunchOutcome.TimedOut, step)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``armedWatchdogLoopWith: an unarmed timeout never fires, and an armed one counts from the arming poll`` () =
     // The child writes on poll 9 (2 s in at 250 ms a poll), long past a 1 s timeout that
     // counted from the spawn. Armed on the first write, the timeout counts from poll 9:
@@ -1421,7 +1421,7 @@ let ``armedWatchdogLoopWith: an unarmed timeout never fires, and an armed one co
     Assert.Equal(LaunchOutcome.TimedOut, step)
     Assert.Equal(13, polls.Value)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``armedWatchdogLoopWith: an armed infinite timeout still never fires`` () =
     // Arming an infinite timeout leaves it infinite: only the exit on poll 5 ends the wait.
     let now, advance = fakeClock DateTime.UtcNow
@@ -1587,7 +1587,7 @@ let ``a drain that could not finish FAILS an output assertion by its true name``
 [<Collection(LogGlobalCollectionName)>]
 type KillFailureIsLoudTests() =
 
-    [<Fact(Timeout = 5000)>]
+    [<Fact(Timeout = SyncHangBackstopMs)>]
     member _.``a kill we could not perform is logged at ERROR, naming what failed and why``() =
         let original = FsHotWatch.Logging.logLevel
         let sb = Text.StringBuilder()
@@ -1623,7 +1623,7 @@ type KillFailureIsLoudTests() =
             Console.SetError(prevErr)
             FsHotWatch.Logging.setLogLevel original
 
-    [<Fact(Timeout = 5000)>]
+    [<Fact(Timeout = SyncHangBackstopMs)>]
     member _.``a kill that worked says nothing — the loud path is reserved for real failure``() =
         let original = FsHotWatch.Logging.logLevel
         let sb = Text.StringBuilder()
@@ -1672,7 +1672,7 @@ type KillFailureIsLoudTests() =
             Console.SetError(prevErr)
             FsHotWatch.Logging.setLogLevel original
 
-    [<Fact(Timeout = 5000)>]
+    [<Fact(Timeout = SyncHangBackstopMs)>]
     member this.``a successful kill records begin, end, duration and outcome``() =
         let logged =
             this.CapturingStderr(
@@ -1691,7 +1691,7 @@ type KillFailureIsLoudTests() =
         Assert.Contains("killed the process tree", logged)
         Assert.Contains("ms", logged)
 
-    [<Fact(Timeout = 5000)>]
+    [<Fact(Timeout = SyncHangBackstopMs)>]
     member this.``an already-exited kill is recorded as such, not as a kill we performed``() =
         let logged =
             this.CapturingStderr(
@@ -1706,7 +1706,7 @@ type KillFailureIsLoudTests() =
         Assert.Contains("had already exited", logged)
         Assert.DoesNotContain("FAILED", logged)
 
-    [<Fact(Timeout = 5000)>]
+    [<Fact(Timeout = SyncHangBackstopMs)>]
     member this.``a teardown that never answered is logged at ERROR, naming the tree and the budget``() =
         let gate = new Threading.ManualResetEventSlim(false)
 
@@ -1932,7 +1932,7 @@ let ``runProcess is runProcessTo with no sink`` () =
 // lookup table matches itself.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``tryOfExitCode: the signal-death codes a killed test host actually produces`` () =
     let name code =
         TerminatingSignal.tryOfExitCode code |> Option.map (fun s -> s.Name)
@@ -1949,7 +1949,7 @@ let ``tryOfExitCode: the signal-death codes a killed test host actually produces
     // The number rides along, not just the name.
     Assert.Equal(Some 9, TerminatingSignal.tryOfExitCode 137 |> Option.map (fun s -> s.Number))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``tryOfExitCode: THE OTHER DIRECTION — no exit code a test runner chooses is a signal`` () =
     // This is the assertion that stops the fix from inverting into the OTHER lie. A real
     // mass failure must stay a mass failure, and it arrives with a code the RUNNER picked:
@@ -1967,7 +1967,7 @@ let ``tryOfExitCode: THE OTHER DIRECTION — no exit code a test runner chooses 
     Assert.True((TerminatingSignal.tryOfExitCode 200).IsNone)
     Assert.True((TerminatingSignal.tryOfExitCode 138).IsNone)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``terminatingSignalOf: a timeout keeps its OWN outcome and is never folded in`` () =
     // A timeout already carries who killed it and whether the kill landed. Answering
     // `Some` here would replace that specific fact with a vaguer one.
