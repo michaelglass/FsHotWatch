@@ -251,3 +251,37 @@ let ``a path is named as the index names it, relative to the repository`` () =
     test <@ Explain.relativeTo root "src/Lib.fs" = "src/Lib.fs" @>
     test <@ Explain.relativeTo root (Path.Combine(root, "src", "Lib.fs")) = "src/Lib.fs" @>
     test <@ Explain.relativeTo root "./src/../src/Lib.fs" = "src/Lib.fs" @>
+
+// --- the default wiring -----------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``the tests scope is read from .fshw.json, and is absent when no tests are configured`` () =
+    withTempDir "explain-scope" (fun repoRoot ->
+        File.WriteAllText(
+            Path.Combine(repoRoot, ".fshw.json"),
+            """{"tests": {"projects": [{"project": "ProjA"}, {"project": "ProjB", "alwaysClasses": ["ProjB.GuardTests"]}]}}"""
+        )
+
+        match Explain.TestsScope.load repoRoot with
+        | Some scope ->
+            test <@ scope.Runnable = Set.ofList [ "ProjA"; "ProjB" ] @>
+            test <@ scope.AlwaysClasses = Map.ofList [ "ProjB", [ "ProjB.GuardTests" ] ] @>
+        | None -> Assert.Fail "expected the configured tests")
+
+    withTempDir "explain-scope-none" (fun repoRoot ->
+        File.WriteAllText(Path.Combine(repoRoot, ".fshw.json"), "{}")
+        test <@ Explain.TestsScope.load repoRoot = None @>)
+
+[<Fact(Timeout = 30000)>]
+let ``with no projects named, every indexed project counts as runnable`` () =
+    withTempDir "explain-file-any" (fun repoRoot ->
+        let db = seeded repoRoot
+
+        let explained = Explain.explain db { tests with Runnable = Set.empty } "src/Lib.fs"
+
+        test <@ explained.Selection |> Option.map _.Classes = Some(Map.ofList [ "ProjA", [ "ProjA.FreshTests" ] ]) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``the default wiring refuses a repository with no index`` () =
+    withTempDir "explain-default" (fun repoRoot ->
+        test <@ Explain.runDefault repoRoot ({ File = "src/Lib.fs"; Json = false }: Explain.ExplainOptions) = 1 @>)

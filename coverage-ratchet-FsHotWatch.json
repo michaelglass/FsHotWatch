@@ -408,15 +408,15 @@
     ],
     "Explain.fs": [
       {
-        "line": 82,
-        "branch": 70,
-        "reason": "new file (2026-10-28). First macOS measurement, mise run ci: line 83.7%, branch 72.4% (21/29), before three more format/path tests were added. Floored a little under it. What stays uncovered is the default wiring: runDefault (real stdout, real schema probe) and TestsScope.load (reads .fshw.json through DaemonConfig.loadConfig); the decisions they wire are tested through run with injected seams.",
+        "line": 100,
+        "branch": 100,
+        "reason": "measured 2026-10-28 by mise run ci on macOS: line 100%, branch 100% (29/29), after tests for TestsScope.load, the empty-runnable branch and runDefault.",
         "platform": "macos"
       },
       {
-        "line": 80,
-        "branch": 65,
-        "reason": "provisional Linux floor (2026-10-28): new file, not yet measured on Linux. macOS measures line 83.7%, branch 72.4%; Linux instruments more compiler-generated branches for the same source, so set a few points below, to be settled from CI.",
+        "line": 100,
+        "branch": 96,
+        "reason": "inspected 2026-10-28 from GitHub CI run 40645381943 (Linux coverage-report for eadfd46d): its uncovered edges were TestsScope.load (lines 31-39), runDefault (191) and the empty-Runnable branch of runnable (70), each now reached by an ExplainFileTests test. Line is floored at 100. Branch holds one of 29 branches of headroom only until Linux measures those tests; raise it to 100 from the next CI coverage report.",
         "platform": "linux"
       }
     ],
