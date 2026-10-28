@@ -29,7 +29,7 @@ let private projectOf (command: string) (args: string) (timeoutSec: int option) 
 
 let private project (args: string) (timeoutSec: int option) : TestConfig = projectOf "sh" args timeoutSec
 
-let private runOnce (config: TestConfig) : string * Profile.Line list =
+let private runOnceIn (config: TestConfig) : string * Profile.Line list * string =
     let root = isolatedRoot ()
     let host = PluginHost.create (Unchecked.defaultof<_>) root
     let handler = create ":memory:" root (Some [ config ]) None None None None []
@@ -46,7 +46,11 @@ let private runOnce (config: TestConfig) : string * Profile.Line list =
     let runDir =
         Directory.GetDirectories(FsHotWatch.Ctrf.reportsDir root) |> Array.exactlyOne
 
-    status, Profile.read (Profile.pathIn runDir config.Project)
+    status, Profile.read (Profile.pathIn runDir config.Project), runDir
+
+let private runOnce (config: TestConfig) : string * Profile.Line list =
+    let status, lines, _ = runOnceIn config
+    status, lines
 
 [<Fact(Timeout = 120_000)>]
 let ``a project killed at its timeout still leaves a profile with its start, host pid, end and why no classes`` () =
@@ -150,7 +154,22 @@ let ``a real xUnit host killed at its timeout still gets per-class lines`` () =
             Environment = [ "FSHW_FIXTURE_HANG", "1" ]
             ReportVerificationFormat = AutoDetect }
 
-    let status, lines = runOnce config
+    let status, lines, runDir = runOnceIn config
+
+    // What the host was handed and what it printed, for a failure that only one platform
+    // shows: the assertions below say what is missing, this says why.
+    let evidence () =
+        let read (name: string) =
+            let path = Path.Combine(runDir, name)
+
+            if File.Exists path then
+                File.ReadAllText path
+            else
+                "(none: " + name + ")"
+
+        let testconfig = read (config.Project + ".testconfig.json")
+        let output = read (config.Project + ".output.log")
+        $"testconfig: %s{testconfig}\noutput:\n%s{output}\nprofile: %A{lines}"
 
     test <@ status = "timed-out" @>
 
@@ -184,7 +203,8 @@ let ``a real xUnit host killed at its timeout still gets per-class lines`` () =
             | Profile.Running(name, _) -> Some name
             | _ -> None)
 
-    test <@ running = [ "Xunit4RunnerFixture.Tests+Hanging.hangs when asked" ] @>
+    if running <> [ "Xunit4RunnerFixture.Tests+Hanging.hangs when asked" ] then
+        failwith $"expected the hung test named by a long-running report, got %A{running}\n%s{evidence ()}"
 
 // Slice 5: the host's child processes, by command. The first sample (at 5 s) reads the
 // process table, so a host that runs past it has its children seen.
