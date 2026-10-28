@@ -230,15 +230,20 @@ let private durationPart =
 let private ansiSequence =
     Text.RegularExpressions.Regex(@"\u001b\[[0-9;?]*[ -/]*[@-~]", Text.RegularExpressions.RegexOptions.Compiled)
 
+/// A console line as words: colour removed, trailing space and `\r` dropped. A host in CI
+/// (`CI`, `GITHUB_ACTIONS`, `TF_BUILD` set) colours its output even when it is redirected,
+/// so every line a parser reads goes through this first.
+let private plainLine (line: string) : string =
+    (if line.Contains '\u001b' then
+         ansiSequence.Replace(line, "")
+     else
+         line)
+        .TrimEnd()
+
 /// A runner's per-test result line as (outcome, test name, duration ms); `None` for any
 /// other line.
 let parseCompletion (line: string) : (string * string * int64) option =
-    let plain =
-        (if line.Contains '\u001b' then
-             ansiSequence.Replace(line, "")
-         else
-             line)
-            .TrimEnd()
+    let plain = plainLine line
 
     let m = completionShape.Match plain
 
@@ -292,7 +297,7 @@ let private longRunningShape =
 
 /// A long-running report as (test name, elapsed ms); `None` for any other line.
 let parseLongRunning (line: string) : (string * int64) option =
-    let m = longRunningShape.Match(line.TrimEnd())
+    let m = longRunningShape.Match(plainLine line)
 
     if m.Success then
         let part (i: int) = int64 m.Groups[i].Value

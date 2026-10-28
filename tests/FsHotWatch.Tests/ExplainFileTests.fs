@@ -230,7 +230,8 @@ let ``a file no configured test covers is said to select no class`` () =
         Explain.format
             { File = "src/Lib.fs"
               Selection = Some(selection Map.empty SeedFanoutReading.Narrow)
-              AlwaysClasses = Map.empty }
+              AlwaysClasses = Map.empty
+              Price = None }
 
     test <@ lines |> List.exists (fun l -> l.Contains "selects no class") @>
     test <@ not (lines |> List.exists (fun l -> l.Contains "alwaysClasses")) @>
@@ -241,7 +242,8 @@ let ``a file with too many symbols to rank says so`` () =
         Explain.format
             { File = "src/Lib.fs"
               Selection = Some(selection (Map.ofList [ "P", [ "P.T" ] ]) (SeedFanoutReading.OverBudget 300))
-              AlwaysClasses = Map.empty }
+              AlwaysClasses = Map.empty
+              Price = None }
 
     test <@ lines |> List.exists (fun l -> l.Contains "300 symbols exceed") @>
 
@@ -277,7 +279,12 @@ let ``with no projects named, every indexed project counts as runnable`` () =
     withTempDir "explain-file-any" (fun repoRoot ->
         let db = seeded repoRoot
 
-        let explained = Explain.explain db { tests with Runnable = Set.empty } "src/Lib.fs"
+        let explained =
+            Explain.explain
+                db
+                ({ Classes = Map.empty }: SelectionPrice.Book)
+                { tests with Runnable = Set.empty }
+                "src/Lib.fs"
 
         test <@ explained.Selection |> Option.map _.Classes = Some(Map.ofList [ "ProjA", [ "ProjA.FreshTests" ] ]) @>)
 
@@ -285,3 +292,38 @@ let ``with no projects named, every indexed project counts as runnable`` () =
 let ``the default wiring refuses a repository with no index`` () =
     withTempDir "explain-default" (fun repoRoot ->
         test <@ Explain.runDefault repoRoot ({ File = "src/Lib.fs"; Json = false }: Explain.ExplainOptions) = 1 @>)
+
+/// A recorded run in which `ProjA.FreshTests` cost `ms`.
+let private recordRun (repoRoot: string) (ms: int64) =
+    let dir = FsHotWatch.Ctrf.runDir repoRoot (System.Guid.NewGuid())
+    Directory.CreateDirectory dir |> ignore
+
+    let report =
+        $"""{{"results":{{"summary":{{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0}},"tests":[{{"name":"ProjA.FreshTests.covers f","status":"passed","duration":%d{ms},"start":1000,"stop":%d{1000L + ms},"extra":{{"type":"ProjA.FreshTests"}}}}]}}}}"""
+
+    File.WriteAllText(Path.Combine(dir, "ProjA" + FsHotWatch.Ctrf.ReportSuffix), report)
+
+[<Fact(Timeout = 30000)>]
+let ``fshw explain prices the selection from the newest recorded runs`` () =
+    withTempDir "explain-file-priced" (fun repoRoot ->
+        seeded repoRoot |> ignore
+        recordRun repoRoot 4000L
+
+        let code, out, _ =
+            runIn repoRoot ({ File = "src/Lib.fs"; Json = false }: Explain.ExplainOptions)
+
+        let text = String.concat "\n" out
+        test <@ code = 0 @>
+        // ProjA.FreshTests is recorded; ProjB's alwaysClass never ran, so it is named.
+        test <@ text.Contains "~4.0s of test time over 1 recorded class(es)" @>
+        test <@ text.Contains "no recorded run of ProjB" @>
+
+        let _, json, _ =
+            runIn repoRoot ({ File = "src/Lib.fs"; Json = true }: Explain.ExplainOptions)
+
+        use doc = JsonDocument.Parse(String.concat "\n" json)
+
+        let estimate =
+            doc.RootElement.GetProperty("price").GetProperty("estimateMs").GetDouble()
+
+        test <@ estimate = 4000.0 @>)

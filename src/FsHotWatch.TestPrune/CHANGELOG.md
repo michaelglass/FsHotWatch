@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **fix: a long-running report printed in colour is read.** In CI (`CI`, `GITHUB_ACTIONS`,
+  `TF_BUILD` set) a host colours its output even when redirected, and
+  `Profile.parseLongRunning`, unlike `parseCompletion`, read the raw line, so on CI no
+  test was named as running at the kill. Both now read the line with colour removed.
+  (AUTOMATION-1300.)
+
 - **fix: a project's own testconfig.json is found by the assembly it builds, not its file
   name.** The long-running config replaces a project's `testconfig.json` (`--config-file`
   does not merge), so it must merge the right one. It is now `<Assembly>.testconfig.json`
@@ -11,6 +17,19 @@
   declared twice, or when the output holds a config of another assembly. Before, a project
   whose AssemblyName differs from its file name had its config silently replaced. New:
   `projectTestConfigOf`. (AUTOMATION-1300.)
+
+- **fix: a session that runs while what is owed is unknown leaves no unfinished-publication
+  marker behind.** `PrepareCommit` writes no sidecar while the debt is unknown, but it still
+  wrote `.fshw/test-prune/owner-publication-pending`, and only a recovered state removed it.
+  A daemon-only session over a red full suite therefore left the marker on exit, and every
+  later daemon read "a publication did not finish" and widened to the full suite, whatever
+  the original cause (an unreadable ledger, for instance). No marker is written now while
+  the debt is unknown. A marker an earlier, genuinely unfinished publication left still
+  stays until a full suite passes every project, and the startup warning and the unknown-debt
+  cause now say so ("…did not finish, and no full suite has passed since") instead of
+  blaming the previous daemon. "Full-suite baseline recorded" is logged only when the
+  baseline is written; a baseline earned under unknown debt logs "…earned by run … but not
+  written" with the causes. (AUTOMATION-1347.)
 
 - **feat: a profile lists the host's child processes by command.** The tree-CPU reader
   (`Profile.processTree`, `ProcessTree`) also records each member's command as the process
@@ -34,6 +53,17 @@
   `Insights.ProjectInsight.RunningAtKill` (`runningAtKill` in `--json` and in the
   verdict's `timedOut`) names it, its class and how long it had run. New:
   `Profile.parseLongRunning`, `Profile.Line.Running`. (AUTOMATION-1300.)
+
+- **feat: a selection is priced before it runs.** `SelectionPrice` prices each class at
+  the median of its summed test durations over its project's newest recorded runs (the
+  class rows `Insights.loadRun` reads from each run directory's profile or report, which
+  carry project and class; the per-test history keys by name alone), and a selection at
+  the sum of its classes, naming every class or project no run recorded. The daemon logs
+  `Priced: ~Ns of test time over K recorded class(es)` beside `Selected by:` for every
+  executing run. Backtested on this repository's own runs, each priced from the runs
+  before it: 17 of 19 within 25% of what the run spent; the two misses were a run on a
+  contended box (-28.7%) and one whose 104 classes no earlier run had recorded (-60.9%,
+  and said so). New: `SelectionPrice` (`Book`, `price`, `describe`, `backtest`).
 
 - **feat: `Insights.ProjectInsight`, one project of one run summarized** (`summarize`,
   `insightJson`, `tryReadInsight`, `reportJson`, `timeoutLine`): the long pole and its share

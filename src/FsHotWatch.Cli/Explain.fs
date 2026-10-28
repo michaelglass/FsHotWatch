@@ -43,9 +43,14 @@ type ExplainOptions = { File: string; Json: bool }
 
 /// The answer for one file.
 type Explanation =
-    { File: string
-      Selection: SymbolFreeEdit.FileSelection option
-      AlwaysClasses: Map<string, string list> }
+    {
+        File: string
+        Selection: SymbolFreeEdit.FileSelection option
+        AlwaysClasses: Map<string, string list>
+        /// What those classes, with the alwaysClasses, cost in the newest recorded runs;
+        /// `None` for a file the index cannot answer for.
+        Price: SelectionPrice.Price option
+    }
 
 /// `file` as the index names it: repo-relative, `/`-separated.
 let relativeTo (repoRoot: string) (file: string) : string =
@@ -60,7 +65,7 @@ let relativeTo (repoRoot: string) (file: string) : string =
     Path.GetRelativePath(Path.GetFullPath repoRoot, full).Replace('\\', '/')
 
 /// Explain `rel` over an open index.
-let explain (db: Database) (scope: TestsScope) (rel: string) : Explanation =
+let explain (db: Database) (book: SelectionPrice.Book) (scope: TestsScope) (rel: string) : Explanation =
     let index: SymbolFreeEdit.Index =
         { SymbolsIn = fun rel -> db.GetSymbolsInFile rel |> List.map _.FullName |> List.distinct
           TestsIn = db.GetTestMethodsInFile
@@ -69,9 +74,27 @@ let explain (db: Database) (scope: TestsScope) (rel: string) : Explanation =
     let runnable project =
         Set.isEmpty scope.Runnable || Set.contains project scope.Runnable
 
+    let selection = SymbolFreeEdit.explainFile runnable index rel
+
+    // What a filtered run of that edit asks for: its classes, and every declared
+    // alwaysClass beside them.
+    let price (s: SymbolFreeEdit.FileSelection) =
+        Set.union (s.Classes |> Map.keys |> Set.ofSeq) (scope.AlwaysClasses |> Map.keys |> Set.ofSeq)
+        |> Set.toList
+        |> List.map (fun project ->
+            let named =
+                [ Map.tryFind project s.Classes; Map.tryFind project scope.AlwaysClasses ]
+                |> List.choose id
+                |> List.concat
+                |> Set.ofList
+
+            project, SelectionPrice.Asked.Classes named)
+        |> SelectionPrice.price book
+
     { File = rel
-      Selection = SymbolFreeEdit.explainFile runnable index rel
-      AlwaysClasses = scope.AlwaysClasses }
+      Selection = selection
+      AlwaysClasses = scope.AlwaysClasses
+      Price = selection |> Option.map price }
 
 let private byProject (classes: Map<string, string list>) =
     classes
@@ -97,7 +120,15 @@ let toJson (e: Explanation) : string =
                coveringTests = s.CoveringTests
                classes = byProject s.Classes
                alwaysClasses = byProject e.AlwaysClasses
-               seedFanout = SeedFanoutReading.wire s.Fanout |}
+               seedFanout = SeedFanoutReading.wire s.Fanout
+               price =
+                e.Price
+                |> Option.map (fun p ->
+                    {| estimateMs = p.EstimateMs
+                       pricedClasses = p.PricedClasses
+                       unpricedClasses = List.length p.Unpriced
+                       unpricedProjects = Array.ofList p.UnpricedProjects |})
+                |> Option.toObj |}
 
 /// The answer as the lines a person reads.
 let format (e: Explanation) : string list =
@@ -140,8 +171,14 @@ let format (e: Explanation) : string list =
                 [ $"Its %d{seeds} symbols exceed the per-symbol ranking budget; no symbol is ranked." ]
             | _ -> []
 
+        let priced =
+            match e.Price with
+            | Some p -> [ $"Priced from the newest recorded runs: %s{SelectionPrice.describe p}" ]
+            | None -> []
+
         selected
         @ always
+        @ priced
         @ fanout
         @ [ "Changing a symbol selects only the classes covering that symbol, a subset of these." ]
 
@@ -176,7 +213,11 @@ let run
             | Some scope ->
                 // Schema-compatible: `Database.create` opens it without recreating.
                 let db = Database.create (dbPath, scope.Selection)
-                let explained = explain db scope (relativeTo repoRoot opts.File)
+
+                let book =
+                    SelectionPrice.Book.ofRunsDir SelectionPrice.DefaultWindow (FsHotWatch.Ctrf.reportsDir repoRoot)
+
+                let explained = explain db book scope (relativeTo repoRoot opts.File)
 
                 if opts.Json then
                     print (toJson explained)

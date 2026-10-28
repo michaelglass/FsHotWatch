@@ -44,7 +44,7 @@ let private writeRunnerAssets (projectPath: string) (packageVersion: string) =
     writeRunnerAssetsJson projectPath (restoredClosure "xunit.v3" packageVersion)
 
 
-[<Theory(Timeout = 5000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("xunit.v3", "3.2.2", 3)>]
 [<InlineData("xunit.v3", "4.0.0", 4)>]
 [<InlineData("xunit.v3.mtp-v1", "3.2.2", 3)>]
@@ -65,7 +65,7 @@ let ``detectCtrfRunnerFamily detects every xUnit v3 package id that brings the M
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = Some expected @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectCtrfRunnerFamily does not detect a project whose xUnit v3 packages carry no MTP runner`` () =
     withTempDir "fshw-detect-xunit-no-runner" (fun tmp ->
         let proj = Path.Combine(tmp, "MyTests.fsproj")
@@ -76,7 +76,7 @@ let ``detectCtrfRunnerFamily does not detect a project whose xUnit v3 packages c
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectCtrfRunnerFamily resolves xUnit 3 from restored assets`` () =
     withTempDir "fshw-detect-xunit3" (fun tmp ->
         let proj = Path.Combine(tmp, "MyTests.fsproj")
@@ -85,7 +85,7 @@ let ``detectCtrfRunnerFamily resolves xUnit 3 from restored assets`` () =
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = Some Xunit3 @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectCtrfRunnerFamily resolves xUnit 4 from restored assets`` () =
     withTempDir "fshw-detect-xunit4" (fun tmp ->
         let proj = Path.Combine(tmp, "MyTests.fsproj")
@@ -94,7 +94,7 @@ let ``detectCtrfRunnerFamily resolves xUnit 4 from restored assets`` () =
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = Some Xunit4 @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectCtrfRunnerFamily resolves a prerelease xUnit 4 package`` () =
     withTempDir "fshw-detect-xunit4-prerelease" (fun tmp ->
         let proj = Path.Combine(tmp, "MyTests.fsproj")
@@ -103,7 +103,7 @@ let ``detectCtrfRunnerFamily resolves a prerelease xUnit 4 package`` () =
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = Some Xunit4 @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectCtrfRunnerFamily resolves a quoted project path containing spaces`` () =
     withTempDir "fshw-detect-xunit4-quoted" (fun tmp ->
         let projectDir = Path.Combine(tmp, "project with spaces")
@@ -114,7 +114,7 @@ let ``detectCtrfRunnerFamily resolves a quoted project path containing spaces`` 
 
         test <@ detectCtrfRunnerFamily $"--project \"%s{proj}\"" tmp = Some Xunit4 @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectCtrfRunnerFamily resolves an escaped quote inside a quoted project path`` () =
     withTempDir "fshw-detect-xunit4-escaped-quote" (fun tmp ->
         let projectDir = Path.Combine(tmp, "project \"quoted\" path")
@@ -126,7 +126,7 @@ let ``detectCtrfRunnerFamily resolves an escaped quote inside a quoted project p
 
         test <@ detectCtrfRunnerFamily $"--project \"%s{escaped}\"" tmp = Some Xunit4 @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectCtrfRunnerFamily fails closed on an unterminated project quote`` () =
     withTempDir "fshw-detect-xunit4-unterminated" (fun tmp ->
         let proj = Path.Combine(tmp, "MyTests.fsproj")
@@ -135,7 +135,7 @@ let ``detectCtrfRunnerFamily fails closed on an unterminated project quote`` () 
 
         test <@ detectCtrfRunnerFamily $"--project \"%s{proj}" tmp = None @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectCtrfRunnerFamily does not treat single quotes as argument grouping`` () =
     withTempDir "fshw-detect-xunit4-single-quote" (fun tmp ->
         let projectDir = Path.Combine(tmp, "project with spaces")
@@ -146,7 +146,7 @@ let ``detectCtrfRunnerFamily does not treat single quotes as argument grouping``
 
         test <@ detectCtrfRunnerFamily $"--project '%s{proj}'" tmp = None @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectCtrfRunnerFamily fails closed when restored assets contain conflicting runner majors`` () =
     withTempDir "fshw-detect-xunit-conflict" (fun tmp ->
         let proj = Path.Combine(tmp, "MyTests.fsproj")
@@ -158,7 +158,7 @@ let ``detectCtrfRunnerFamily fails closed when restored assets contain conflicti
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
 
-[<Theory(Timeout = 5000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("5.0.0")>]
 [<InlineData("not-a-version")>]
 [<InlineData("4.not-semver")>]
@@ -182,7 +182,7 @@ let ``detectCtrfRunnerFamily fails closed when a supported runner is mixed with 
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
 
-[<Theory(Timeout = 5000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("4.0.0-pre.12+sha.abcdef")>]
 [<InlineData("4.0.0+build.5")>]
 let ``detectCtrfRunnerFamily accepts complete xUnit 4 prerelease and build versions`` (version: string) =
@@ -193,7 +193,7 @@ let ``detectCtrfRunnerFamily accepts complete xUnit 4 prerelease and build versi
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = Some Xunit4 @>)
 
-[<Theory(Timeout = 5000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("{}")>]
 [<InlineData("{\"type\":\"project\"}")>]
 [<InlineData("{\"type\":\"Package\"}")>]
@@ -205,7 +205,7 @@ let ``detectCtrfRunnerFamily requires the xUnit asset to be exactly a package`` 
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectCtrfRunnerFamily fails closed when restored assets are missing`` () =
     withTempDir "fshw-detect-xunit-missing-assets" (fun tmp ->
         let proj = Path.Combine(tmp, "MyTests.fsproj")
@@ -213,7 +213,7 @@ let ``detectCtrfRunnerFamily fails closed when restored assets are missing`` () 
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectCtrfRunnerFamily fails closed when restored assets are malformed`` () =
     withTempDir "fshw-detect-xunit-malformed-assets" (fun tmp ->
         let proj = Path.Combine(tmp, "MyTests.fsproj")
@@ -222,7 +222,7 @@ let ``detectCtrfRunnerFamily fails closed when restored assets are malformed`` (
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectCtrfRunnerFamily rejects an unknown xUnit major`` () =
     withTempDir "fshw-detect-xunit5" (fun tmp ->
         let proj = Path.Combine(tmp, "MyTests.fsproj")
@@ -231,7 +231,7 @@ let ``detectCtrfRunnerFamily rejects an unknown xUnit major`` () =
 
         test <@ detectCtrfRunnerFamily $"--project {proj}" tmp = None @>)
 
-[<Theory(Timeout = 5000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(3, "--report-ctrf --report-ctrf-filename MyTests.ctrf.json --results-directory \"/tmp/results\"")>]
 [<InlineData(4,
              "--report-xunit-ctrf --report-xunit-ctrf-filename MyTests.ctrf.json --results-directory \"/tmp/results\"")>]
@@ -239,7 +239,7 @@ let ``ctrfArguments uses the report switches supported by the resolved xUnit maj
     let family = if major = 3 then Xunit3 else Xunit4
     test <@ ctrfArguments family "MyTests.ctrf.json" "/tmp/results" = expected @>
 
-[<Theory(Timeout = 5000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("run --project T --no-build --", true)>]
 [<InlineData("run --project T --no-build -- --hangdump", true)>]
 [<InlineData("run --project T --no-build -- --output Normal", false)>]
@@ -376,7 +376,7 @@ let ``run-tests invokes the real xUnit 4 runner and verifies its CTRF report`` (
 
 // --- naming the test running at a kill: xUnit long-running reports (AUTOMATION-1300) ---
 
-[<Theory(Timeout = 5000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(null, 10)>]
 [<InlineData(600, 10)>]
 [<InlineData(30, 10)>]
@@ -388,7 +388,7 @@ let ``the long-running threshold reports a hung test at least twice before the k
     =
     test <@ longRunningSeconds (Option.ofNullable timeoutSec) = expected @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the diagnostics config keeps the project's own testconfig and turns diagnostic messages on`` () =
     let own =
         """{"platformOptions": {"exitProcessOnUnhandledException": true}, "xUnit": {"maxParallelThreads": 2}}"""
@@ -411,7 +411,7 @@ let ``the diagnostics config keeps the project's own testconfig and turns diagno
     test <@ Result.isError (diagnosticsTestConfig (Some "{ not json")) @>
     test <@ Result.isError (diagnosticsTestConfig (Some """{"xUnit": 3}""")) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``long-running reporting is not injected over a project's own choice`` () =
     test <@ longRunningArguments "run --project T -- --long-running 5" "/r/P.testconfig.json" 10 = None @>
     test <@ longRunningArguments "run --project T -- --config-file my.json" "/r/P.testconfig.json" 10 = None @>
@@ -443,7 +443,7 @@ let private plainProject = "<Project><PropertyGroup></PropertyGroup></Project>"
 let private renamedProject =
     "<Project><PropertyGroup><AssemblyName>Renamed.Tests</AssemblyName></PropertyGroup></Project>"
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a project whose AssemblyName differs from its file name has its own testconfig found by that name`` () =
     withTempDir "fshw-testconfig-renamed" (fun root ->
         let project =
@@ -455,7 +455,7 @@ let ``a project whose AssemblyName differs from its file name has its own testco
 
         test <@ projectTestConfigOf project root = Some(Some """{"own": true}""") @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a project without an AssemblyName is read by its file name, and one with no config has none`` () =
     withTempDir "fshw-testconfig-default" (fun root ->
         let project =
@@ -467,7 +467,7 @@ let ``a project without an AssemblyName is read by its file name, and one with n
         let project = builtProject root plainProject [ "Proj.Tests.dll", "" ]
         test <@ projectTestConfigOf project root = Some None @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an assembly name fshw cannot be sure of, or a config of another name, injects nothing`` () =
     // Computed by MSBuild: not knowable from the text.
     withTempDir "fshw-testconfig-computed" (fun root ->
@@ -501,7 +501,7 @@ let ``an assembly name fshw cannot be sure of, or a config of another name, inje
 
         test <@ projectTestConfigOf project root = None @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a testconfig with no assembly beside it is not a config of anything`` () =
     withTempDir "fshw-testconfig-orphan" (fun root ->
         let project =

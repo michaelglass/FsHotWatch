@@ -1076,7 +1076,7 @@ let private isFailed result =
     | TestsFailed _ -> true
     | _ -> false
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classify: non-zero exit with a clean report is GREEN (the shutdown flake)`` () =
     // Exit 7 is MTP's dirty shutdown; the report shows zero failures and >= 1 test.
     let report = rep 12 12 0 0 0
@@ -1090,7 +1090,7 @@ let ``classify: non-zero exit with a clean report is GREEN (the shutdown flake)`
 
     test <@ TestResult.verifiedGreen result @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classify: report with a failed test is RED even on exit 0`` () =
     let report = rep 3 2 1 0 0
 
@@ -1103,7 +1103,7 @@ let ``classify: report with a failed test is RED even on exit 0`` () =
 
     test <@ isFailed result @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classify: report with an other (raw-throw) result is RED`` () =
     let report = rep 3 2 0 0 1
 
@@ -1116,7 +1116,7 @@ let ``classify: report with an other (raw-throw) result is RED`` () =
 
     test <@ isFailed result @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classify: non-zero exit with NO report from a capable runner is ERRORED, not failed`` () =
     let result =
         classifyTestOutcome
@@ -1129,7 +1129,7 @@ let ``classify: non-zero exit with NO report from a capable runner is ERRORED, n
     test <@ not (isFailed result) @>
     test <@ not (TestResult.verifiedGreen result) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classify: non-zero exit with no report from an UNKNOWN runner stays FAILED (no regression)`` () =
     // Under NoReportRequested the exit code is the only signal there is.
     let result =
@@ -1141,7 +1141,7 @@ let ``classify: non-zero exit with no report from an UNKNOWN runner stays FAILED
 
     test <@ isFailed result @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classify: clean exit with a missing requested report verifies nothing`` () =
     // The report was asked for and never arrived. A clean exit is not a substitute: the
     // process exit is only the tie-break for a runner nobody asked for a report.
@@ -1155,7 +1155,7 @@ let ``classify: clean exit with a missing requested report verifies nothing`` ()
     test <@ TestResult.isErrored result @>
     test <@ not (TestResult.verifiedGreen result) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classify: clean exit with no report from an UNKNOWN runner is PASSED`` () =
     // POSITIVE CONTROL: with no report requested, the exit code is all the evidence there is.
     let result =
@@ -1163,7 +1163,7 @@ let ``classify: clean exit with no report from an UNKNOWN runner is PASSED`` () 
 
     test <@ TestResult.verifiedGreen result @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classify: clean unfiltered zero-test report verifies nothing`` () =
     // A coherent report of zero tests proves the runner wrote a file, not that a test ran.
     let result =
@@ -1176,7 +1176,7 @@ let ``classify: clean unfiltered zero-test report verifies nothing`` () =
     test <@ TestResult.isErrored result @>
     test <@ not (TestResult.verifiedGreen result) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classify: unfiltered zero-test report with non-zero exit is RED (empty suite is a problem)`` () =
     let report = rep 0 0 0 0 0
 
@@ -1189,7 +1189,7 @@ let ``classify: unfiltered zero-test report with non-zero exit is RED (empty sui
 
     test <@ isFailed result @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classify: a timeout is TimedOut regardless of a flushed report`` () =
     let report = rep 5 5 0 0 0
 
@@ -1215,7 +1215,7 @@ let ``classify: a timeout is TimedOut regardless of a flushed report`` () =
 // genuine mass failure look like an abort would be the same lie with the sign flipped.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a SIGKILLed host is an ABORT even though it flushed a report full of failures`` () =
     // The exact shape recorded in the incident: the host dies mid-suite and MTP still leaves a
     // report behind whose rows for tests it never reached are marked failed at 0ms.
@@ -1244,7 +1244,7 @@ let ``a SIGKILLed host is an ABORT even though it flushed a report full of failu
     test <@ reason.Contains "PARTIAL" @>
     test <@ reason.Contains "139" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a killed host's partial report is described by its ROWS, not by a summary that never arrived`` () =
     // xUnit v3 writes a row as each test finishes but takes its summary counters only from
     // the assembly-finished message, which a crashed host never sends. Its report therefore
@@ -1278,7 +1278,7 @@ let ``a killed host's partial report is described by its ROWS, not by a summary 
     test <@ reason.Contains "3 row(s), 1 of them marked failed" @>
     test <@ not (reason.Contains "0 row(s)") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``THE OTHER DIRECTION — a real mass failure is still RED, not an abort`` () =
     // Same report, same counts, same 139 failures. The ONLY difference is that the runner
     // reached its own exit and chose the code (MTP's 2 = "at least one test failed")
@@ -1298,7 +1298,7 @@ let ``THE OTHER DIRECTION — a real mass failure is still RED, not an abort`` (
     test <@ not (TestResult.isErrored result) @>
     test <@ TestResult.verdict result = Refuted @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a SIGABRTed host is an abort even when it wrote a CLEAN report`` () =
     // The direction that must NOT go green. Exit 134 is what a real gate run produced
     // (an unhandled TimeoutException → the runtime aborts). A clean report from a process
@@ -1318,7 +1318,7 @@ let ``a SIGABRTed host is an abort even when it wrote a CLEAN report`` () =
     test <@ TestResult.isErrored result @>
     test <@ (TestResult.output result).Contains "SIGABRT" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the dirty-shutdown flake (exit 7) is STILL green — no regression`` () =
     // The guard against over-reach. Exit 7 is MTP's dirty shutdown, a code the runner
     // CHOSE; it is not a signal death, so the clean report still decides. If the new arm
@@ -1334,7 +1334,7 @@ let ``the dirty-shutdown flake (exit 7) is STILL green — no regression`` () =
 
     test <@ TestResult.verifiedGreen result @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an abort report never counts the killed run's transcript as failures`` () =
     // The CONSOLE half. A killed host's capture still holds per-test rows, and
     // `formatFailureReport` would head them "N test(s) failed" — which is the sentence
@@ -1363,7 +1363,7 @@ let ``an abort report never counts the killed run's transcript as failures`` () 
 
     test <@ failure.Contains "2 test(s) failed" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an aborted project is a HostAborted ledger entry, and a failed one still Error`` () =
     // The VERDICT half. At `Error` severity the abort was counted by `failingDiagnostics`,
     // so the exit code said 1 and `verdict.json` said `red` about a run in which nothing
@@ -1407,7 +1407,7 @@ let ``an aborted project is a HostAborted ledger entry, and a failed one still E
 // A per-project timeout whose TEARDOWN also failed still has to become a terminal project
 // result, and it has to stay distinguishable from the two things it is not: a suite whose
 // tests failed, and a run that reported nothing at all.
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classify: a timeout whose teardown never answered is still terminal, and says so`` () =
     let result =
         classifyTestOutcome

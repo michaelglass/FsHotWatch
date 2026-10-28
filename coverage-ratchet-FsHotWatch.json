@@ -406,6 +406,20 @@
         "platform": "linux"
       }
     ],
+    "SelectionPrice.fs": [
+      {
+        "line": 97,
+        "branch": 85,
+        "reason": "measured 2026-10-28 by mise run ci on macOS: line 97.9%, branch 85.7% (24/28). Uncovered: the IOException / UnauthorizedAccessException arms of Book.ofRunsDir (lines 92-94), which a test cannot provoke without a directory that fails mid-enumeration; a run directory that cannot be read prices as no runs.",
+        "platform": "macos"
+      },
+      {
+        "line": 95,
+        "branch": 80,
+        "reason": "provisional Linux floor (2026-10-28): new file, not yet measured on Linux. macOS measures line 97.9%, branch 85.7%; set a few points below, to be settled by inspecting the next GitHub CI coverage report.",
+        "platform": "linux"
+      }
+    ],
     "Explain.fs": [
       {
         "line": 100,

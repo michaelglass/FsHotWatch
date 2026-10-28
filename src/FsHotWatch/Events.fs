@@ -107,6 +107,20 @@ type FileCheckState =
     | FullCheck of FSharpCheckFileResults
     | ParseOnly
 
+/// When a check read its inputs, and what it typed against (ADR-047).
+type CheckedAgainst =
+    {
+        /// The check pipeline's read sequence, taken before the lookup read the file and
+        /// its upstream: of two answers about one file, the one with the higher `ReadAt`
+        /// read later. Monotonic per pipeline, so per session.
+        ReadAt: int64
+        /// The source fingerprint of everything before the file that the check typed
+        /// against: the files before it in its project and the projects it references
+        /// (`CheckCache.UpstreamFingerprints.ForSnapshot`: sources only, never a build
+        /// output). `None` when the inputs moved while the check ran.
+        Fingerprint: string option
+    }
+
 /// Result of type-checking a single file with the warm FSharpChecker.
 [<NoComparison>]
 type FileCheckResult =
@@ -134,6 +148,9 @@ type FileCheckResult =
         /// its store path, and the worktree path it stands for. Empty when the check read
         /// every reference where it is.
         Placed: Map<string, string>
+        /// When the answer read its inputs, and what it typed against (ADR-047). `None`
+        /// when the producer did not say.
+        Upstream: CheckedAgainst option
     }
 
 module FileCheckResult =

@@ -488,7 +488,8 @@ let ``registered plugin skips unsubscribed events`` () =
               Version = 0L
               ModelGeneration = None
               Frame = None
-              Placed = Map.empty }
+              Placed = Map.empty
+              Upstream = None }
     )
 
     reg.Dispatch(DispatchBuildCompleted BuildSucceeded)

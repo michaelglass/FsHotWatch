@@ -3634,6 +3634,154 @@ let ``a scan's result about a file a later save re-checked is refused, and no st
             SpinWait.SpinUntil((fun () -> not daemon.Host.WorkSnapshot.IsBusy), TimeSpan.FromSeconds 15.0)
             |> ignore)
 
+// AUTOMATION-681 slice 5 (ADR-047): a scan reads Early.fs and Late.fs, and its answers are
+// held before publication. A save then changes Early.fs's declarations; its cohort reads
+// and publishes both files. The scan's answers, read first and to other questions (old
+// bytes, and an unchanged dependent typed against them), land after, and are refused.
+[<Fact(Timeout = 60000)>]
+let ``a scan's answers read before a save's cohort, landing after it, are refused, dependents included`` () =
+    withTempDir "daemon-upstream-cas" (fun root ->
+        let directory = Path.Combine(root, "src")
+        Directory.CreateDirectory directory |> ignore
+        let project = Path.Combine(directory, "Probe.fsproj")
+        let early = Path.Combine(directory, "Early.fs")
+        let late = Path.Combine(directory, "Late.fs")
+        File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        File.WriteAllText(early, "module Early\nlet value = 1\n")
+        File.WriteAllText(late, "module Late\nlet other = Early.value + 1\n")
+        let assets = FsHotWatch.DepsFreshness.assetsPath project
+        Directory.CreateDirectory(Path.GetDirectoryName assets) |> ignore
+        File.WriteAllText(assets, "{}")
+
+        let checker =
+            FSharp.Compiler.CodeAnalysis.FSharpChecker.Create(
+                projectCacheSize = 200,
+                keepAssemblyContents = true,
+                keepAllBackgroundResolutions = true
+            )
+
+        let options, _ =
+            checker.GetProjectOptionsFromScript(
+                late,
+                FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText late),
+                assumeDotNetFramework = false
+            )
+            |> Async.RunSynchronously
+
+        let options =
+            { options with
+                ProjectFileName = project
+                SourceFiles = [| early; late |] }
+
+        let loaded =
+            { minimalLoadedProject project with
+                SourceFiles = [ early; late ] }
+
+        let loader = SequencedWorkspaceLoader([ [ loaded ]; [ loaded ]; [ loaded ] ])
+        loader.Resume(0)
+        loader.Resume(1)
+        loader.Resume(2)
+        let callback = ref None
+
+        let watcher: Daemon.WatcherFactory =
+            fun _ onChange _ _ _ ->
+                callback.Value <- Some onChange
+
+                { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+                  Disposables = [] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                root
+                watchingDaemonOptions
+                loader
+                (fun _ -> [ options ])
+                watcher
+
+        daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+        use scanHeld = new Threading.ManualResetEventSlim(false)
+        use release = new Threading.ManualResetEventSlim(false)
+        let heldReads = ref 0
+
+        // The scan's answers are held after the pipeline read their inputs and before they
+        // are published: old reads, kept back until a save's cohort has read and published.
+        daemon.HoldScanPublications(fun _ ->
+            if Threading.Interlocked.Increment(&heldReads.contents) = 2 then
+                scanHeld.Set()
+
+            Assert.True(release.Wait(TimeSpan.FromSeconds 30.0), "the save must release the scan"))
+
+        let checkedFiles = System.Collections.Concurrent.ConcurrentQueue<string * string>()
+        let seals = System.Collections.Concurrent.ConcurrentQueue<BatchChecked>()
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "epoch-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | FileChecked result -> checkedFiles.Enqueue(AbsFilePath.value result.File, result.Source)
+                        | BatchChecked batch -> seals.Enqueue batch
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChecked; SubscribeBatchChecked ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        let resultsFor (file: string) =
+            checkedFiles.ToArray()
+            |> Array.filter (fun (path, _) ->
+                CommandPreprocessor.realPathOf path = CommandPreprocessor.realPathOf file)
+
+        try
+            let scan = Async.StartAsTask(daemon.ScanAll())
+            Assert.True(scanHeld.Wait(TimeSpan.FromSeconds 20.0), "the scan must have read both files")
+            let capturedEpoch = daemon.Snapshot().Epoch
+
+            // A new declaration: Early.fs's signature moves, so the batch re-checks Late.fs.
+            File.WriteAllText(early, "module Early\nlet value = 1\nlet added = 2\n")
+            (callback.Value |> Option.get) (SourceChanged [ early ])
+
+            Assert.True(
+                SpinWait.SpinUntil(
+                    (fun () -> (resultsFor late).Length >= 1 && (resultsFor early).Length >= 1),
+                    TimeSpan.FromSeconds 30.0
+                ),
+                "the save's batch must publish its checks of the saved file and its dependent"
+            )
+
+            test <@ daemon.Snapshot().Epoch <> capturedEpoch @>
+            release.Set()
+            Assert.True(scan.Wait(TimeSpan.FromSeconds 30.0), "the released scan must complete")
+
+            Assert.True(
+                SpinWait.SpinUntil(
+                    (fun () ->
+                        not daemon.Host.WorkSnapshot.IsBusy
+                        && seals.ToArray() |> Array.exists (fun s -> s.Trigger.IsBootScan)),
+                    TimeSpan.FromSeconds 30.0
+                ),
+                "the scan's seal must reach the consumer"
+            )
+
+            // The save's checks are the only ones a consumer saw. The scan read Early.fs's old
+            // bytes, and Late.fs against them, before the cohort read; both were refused.
+            test <@ (resultsFor late).Length = 1 @>
+            test <@ (resultsFor early).Length = 1 @>
+            test <@ (resultsFor early |> Array.map snd) = [| "module Early\nlet value = 1\nlet added = 2\n" |] @>
+            test <@ daemon.SnapshotStatus().Refused >= 2L @>
+        finally
+            release.Set()
+
+            SpinWait.SpinUntil((fun () -> not daemon.Host.WorkSnapshot.IsBusy), TimeSpan.FromSeconds 15.0)
+            |> ignore)
+
 // Pins the invariant the scan supervisor must preserve: once ScanAll's receipt
 // settles, the scan state is observable as ScanComplete (not stale ScanIdle) and the
 // generation has advanced. The supervisor publishes the completed state before the

@@ -9,7 +9,7 @@ open FsHotWatch.Tests.TestHelpers
 
 // --- TestOutcome / parseCtrfTests ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseCtrfTests extracts name, status, and duration from CTRF JSON`` () =
     let json =
         """{"results":{"tool":{"name":"xUnit.net v3"}},"tests":[
@@ -25,22 +25,22 @@ let ``parseCtrfTests extracts name, status, and duration from CTRF JSON`` () =
     test <@ records.[1].Name = "Mod.Type.OtherMethod" @>
     test <@ records.[1].Outcome = TestOutcome.Failed @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseCtrfTests treats unknown statuses as Other`` () =
     let json = """{"tests":[{"name":"X","status":"weird","duration":0,"extra":{}}]}"""
 
     let records = parseCtrfTests json
     test <@ records.[0].Outcome = TestOutcome.Other @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseCtrfTests returns empty when no tests array present`` () =
     test <@ List.isEmpty (parseCtrfTests "{}") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseCtrfTests returns empty on unparseable JSON`` () =
     test <@ List.isEmpty (parseCtrfTests "not json") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseCtrfTests recognises skipped status`` () =
     let json = """{"tests":[{"name":"X","status":"skipped","duration":0,"extra":{}}]}"""
 
@@ -60,7 +60,7 @@ let private realCtrf =
             {"name":"Mod.passes","status":"passed","duration":5},
             {"name":"Mod.assertFails","status":"failed","duration":3}]}}"""
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseCtrfTests reads the real nested results.tests shape`` () =
     // Regression: the parser previously read top-level `tests` (absent in real
     // output) and silently returned [] on every real run — flakiness was dead.
@@ -81,36 +81,36 @@ let ``parseCtrfTests reads the real nested results.tests shape`` () =
 
 // --- computeFlakiness ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``computeFlakiness is 0 for all-passing history`` () =
     let outcomes = [ Passed; Passed; Passed; Passed ]
     test <@ computeFlakiness outcomes = 0.0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``computeFlakiness is 0 for all-failing history`` () =
     let outcomes = [ Failed; Failed; Failed ]
     test <@ computeFlakiness outcomes = 0.0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``computeFlakiness is 1 for alternating pass-fail`` () =
     let outcomes = [ Passed; Failed; Passed; Failed; Passed ]
     test <@ computeFlakiness outcomes = 1.0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``computeFlakiness counts only outcome transitions`` () =
     // P P F P → 2 transitions over 3 gaps → 2/3
     let outcomes = [ Passed; Passed; Failed; Passed ]
     let score = computeFlakiness outcomes
     test <@ abs (score - (2.0 / 3.0)) < 0.0001 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``computeFlakiness ignores Skipped outcomes`` () =
     // Skipped runs aren't an outcome flip — collapse to neighboring outcome.
     let outcomes = [ Passed; Skipped; Failed ]
     // After dropping Skipped: P F → 1 transition / 1 gap = 1.0
     test <@ computeFlakiness outcomes = 1.0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``computeFlakiness is 0 when history has fewer than 2 effective runs`` () =
     test <@ computeFlakiness [] = 0.0 @>
     test <@ computeFlakiness [ Passed ] = 0.0 @>
@@ -219,7 +219,7 @@ let private record name (at: DateTime) =
       DurationMs = 1
       RunStartedAt = at }
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``expireHistory drops tests whose NEWEST run predates the retention window`` () =
     let history =
         Map.ofList
@@ -236,12 +236,12 @@ let ``expireHistory drops tests whose NEWEST run predates the retention window``
     test <@ kept |> Map.containsKey "Old.ButStillRunning" @>
     test <@ not (kept |> Map.containsKey "Stale.Renamed") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``expireHistory drops an entry with no records at all`` () =
     let history = Map.ofList [ "Empty.Test", [] ]
     test <@ expireHistory t0 (TimeSpan.FromDays 30.0) history = Map.empty @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``mergeRecords keeps the N most-recent per test and expires the rest`` () =
     let existing =
         Map.ofList
@@ -311,14 +311,14 @@ let private parseVerdictSummary (json: string) : Result<FsHotWatch.Ctrf.Summary,
 let private cleanOneRow =
     """{"results":{"summary":{"tests":1,"passed":1,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"One","status":"passed"}]}}"""
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``verdict evidence rejects a partial clean report`` () =
     let json =
         """{"results":{"summary":{"tests":7,"passed":7,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Only.one","status":"passed"}]}}"""
 
     test <@ Result.isError (parseVerdictSummary json) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``verdict evidence requires all counters to be nonnegative integers`` () =
     for key in [ "tests"; "passed"; "failed"; "pending"; "skipped"; "other" ] do
         for invalid in [ "null"; "-1"; "1.5"; "2147483648"; "1e100"; "true"; "\"one\"" ] do
@@ -332,7 +332,7 @@ let ``verdict evidence requires all counters to be nonnegative integers`` () =
         let accepted = Result.isOk (parseVerdictSummary (root.ToJsonString()))
         Assert.False(accepted, $"accepted absent %s{key}")
 
-[<Theory(Timeout = 5000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("failed")>]
 [<InlineData("other")>]
 [<InlineData("future-status")>]
@@ -343,7 +343,7 @@ let ``verdict evidence rejects rows contradicting a clean summary`` (status: str
 
     test <@ Result.isError (parseVerdictSummary json) @>
 
-[<Theory(Timeout = 5000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("null")>]
 [<InlineData("{}")>]
 [<InlineData("42")>]
@@ -353,7 +353,7 @@ let ``verdict evidence rejects incomplete clean rows`` (row: string) =
     let json = cleanOneRow.Replace("""{"name":"One","status":"passed"}""", row)
     test <@ Result.isError (parseVerdictSummary json) @>
 
-[<Theory(Timeout = 5000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("tests")>]
 [<InlineData("passed")>]
 [<InlineData("pending")>]
@@ -363,7 +363,7 @@ let ``verdict evidence reconciles each clean counter with actual rows`` (key: st
     root.["results"].["summary"].[key] <- System.Text.Json.Nodes.JsonValue.Create(2)
     test <@ Result.isError (parseVerdictSummary (root.ToJsonString())) @>
 
-[<Theory(Timeout = 5000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("not json")>]
 [<InlineData("null")>]
 [<InlineData("[]")>]
@@ -378,7 +378,7 @@ let ``verdict evidence reconciles each clean counter with actual rows`` (key: st
 let ``verdict evidence rejects absent or malformed report structure`` (json: string) =
     test <@ Result.isError (parseVerdictSummary json) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``verdict evidence preserves captured raw exception red summary`` () =
     // Two rows for a summary of three: the raw throw has no row and is counted in both
     // `failed` and `other`. The summary is the authority for a red, so it stands.
@@ -396,7 +396,7 @@ let ``verdict evidence preserves captured raw exception red summary`` () =
 let private crashedHostReport =
     """{"results":{"summary":{"tests":0,"passed":0,"failed":0,"pending":0,"skipped":0,"other":1},"tests":[{"name":"A.one","status":"failed"},{"name":"A.two","status":"passed"},{"name":"A.three","status":"failed"},{"name":"A.four","status":"failed"}]}}"""
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``verdict evidence counts the failed rows of a crashed host whose summary says zero`` () =
     match parseVerdictSummary crashedHostReport with
     | Ok summary ->
@@ -408,13 +408,13 @@ let ``verdict evidence counts the failed rows of a crashed host whose summary sa
         test <@ summary.Passed = 0 @>
     | Error reason -> failwith reason
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the diagnostic summary counts the failed rows of a crashed host whose summary says zero`` () =
     let summary = (FsHotWatch.Ctrf.trySummary crashedHostReport).Value
     test <@ summary.Failed = 3 @>
     test <@ summary.Total = 0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a summary counting more failures than it has failed rows keeps its count`` () =
     // A raw throw is counted in `failed` with no row: the rows only ever RAISE the count.
     let json =
@@ -423,7 +423,7 @@ let ``a summary counting more failures than it has failed rows keeps its count``
     test <@ (FsHotWatch.Ctrf.trySummary json).Value.Failed = 2 @>
     test <@ (parseVerdictSummary json |> Result.map _.Failed) = Ok 2 @>
 
-[<Theory(Timeout = 5000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(true)>]
 [<InlineData(false)>]
 let ``verdict evidence preserves coherent nested and flattened clean reports`` (nested: bool) =
