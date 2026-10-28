@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.5 - 2026-10-28
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.7.4 - 2026-10-25
 
 - chore: rebuild to bundle updated dependencies
