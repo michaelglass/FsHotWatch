@@ -2961,7 +2961,7 @@ let internal renderRepositoryStatus (json: string) : string list =
           let capacity = p["capacity"].GetValue<int>()
           let running = p["running"].GetValue<int>()
           let queued = p["queued"].GetValue<int>()
-          yield $"  test hosts: %d{running} of %d{capacity} slot(s) held, %d{queued} queued"
+          yield $"  processes (test hosts, builds): %d{running} of %d{capacity} slot(s) held, %d{queued} queued"
       for s in sessions do
           let state =
               if s["serving"].GetValue<bool>() then
@@ -3163,8 +3163,9 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
         // that many per session.
         let checks = FsHotWatch.WorkScheduler.Scheduler Environment.ProcessorCount
 
-        // Every session's test hosts take turns at one bound too (AUTOMATION-682): the same
-        // processor count, so two sessions' gates cannot each launch a full set of hosts.
+        // Every session's test hosts and builds take turns at one bound too (AUTOMATION-682,
+        // ADR-052): the same processor count, so two sessions' gates cannot each launch a
+        // full set of hosts on top of their builds.
         let processes = FsHotWatch.WorkScheduler.Scheduler Environment.ProcessorCount
 
         // Every worktree is checked under one virtual root, so identical projects share

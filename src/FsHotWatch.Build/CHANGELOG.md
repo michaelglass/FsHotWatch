@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: in a repository host, a build holds one of the host's process slots while it
+  runs (ADR-052, AUTOMATION-682). Builds and test hosts now take turns at the same
+  bound, so two sessions' builds no longer run on top of the test hosts the bound has
+  already admitted. A template build holds one slot for all its roots. The slot is given
+  back however the build ends. A per-worktree daemon builds exactly as before.
+
 ## 0.7.0-alpha.49 - 2026-10-25
 
 - chore: FSharp.Core is pinned exactly at `[10.1.402]` instead of floating within `10.1.*`.

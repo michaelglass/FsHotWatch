@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: the repository host's process slots are held by builds as well as test hosts
+  (ADR-052, AUTOMATION-682). `fshw status --repository` now prints them as "processes
+  (test hosts, builds): R of N slot(s) held, Q queued".
+
 ## 0.14.0-alpha.128 - 2026-10-28
 
 - **fix: a test host gets xUnit's long-running monitor only when its project asks.**

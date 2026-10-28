@@ -322,7 +322,7 @@ type PluginCtx<'Msg> =
         /// absolute `.fsproj` paths.
         ProjectGraph: ProjectGraphAccessor
         /// This session's lane of its repository host's process scheduler: a plugin that
-        /// launches a heavy child process (a test host) holds one of its slots for as long
+        /// launches a heavy child process (a test host, a build) holds one of its slots for as long
         /// as the process runs, so the host's sessions share one bound (AUTOMATION-682).
         /// `None` for a per-worktree daemon, whose launches are bounded only by its own
         /// configuration.

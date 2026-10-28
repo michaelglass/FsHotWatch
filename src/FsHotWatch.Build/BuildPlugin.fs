@@ -1196,6 +1196,14 @@ let internal describeBuildOverrun
 
     summary, report
 
+/// `work`, holding one of the repository host's process slots for as long as it runs
+/// (AUTOMATION-682, ADR-052). Builds and test hosts take turns at the same bound. `None`,
+/// a per-worktree daemon, is `work` itself.
+let internal admitted (processes: FsHotWatch.WorkScheduler.Lane option) (work: Async<'T>) : Async<'T> =
+    match processes with
+    | None -> work
+    | Some lane -> lane.Run(FsHotWatch.WorkScheduler.JobSpec.interactive, work)
+
 /// `createWith`, with the moment the build's timeout starts counting injected
 /// (`ProcessBounds.armedWhen`). The plugin arms it at the spawn; a test whose claim is
 /// where an overrunning build was stalled arms it once the build has reached the stall,
@@ -1232,6 +1240,11 @@ let internal createArmedWith
 
     // Named in the overrun report.
     let nodeReuseOf command args = nodeReuseFor environment command args
+
+    /// A build's subtask, run holding one of the session's process slots: a build is one
+    /// heavy child at a time, its template roots included, so it holds one slot throughout.
+    let admittedSubtask (ctx: PluginCtx<BuildMsg>) key label work =
+        PluginCtxHelpers.withSubtask ctx key label (admitted ctx.Processes work)
 
     /// Run one build spawn of `command args` with its side log: attached, read when the
     /// build overran, and deleted before this returns. A build that did not overrun has
@@ -1578,7 +1591,7 @@ let internal createArmedWith
                 "build"
                 "build-artifacts"
                 (fun _ ->
-                    PluginCtxHelpers.withSubtask
+                    admittedSubtask
                         ctx
                         "build"
                         "dotnet build"
@@ -1726,7 +1739,7 @@ let internal createArmedWith
                     "build"
                     "build-artifacts"
                     (fun _ ->
-                        PluginCtxHelpers.withSubtask
+                        admittedSubtask
                             ctx
                             "build"
                             $"dotnet build ({roots.Length} roots)"

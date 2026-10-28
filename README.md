@@ -799,12 +799,13 @@ within 100 ms of turn order, so a session with long checks does not take ten tim
 slot-time of one with short checks. A session that was idle comes back level with the
 others. See ADR-051.
 
-The host also bounds its sessions' test hosts: one process scheduler, with the processor
-count as its bound, shared by every session. Each test group holds one slot while it runs,
-so two worktrees' gates cannot each launch a full set of hosts at once.
-`tests.maxParallelProjects` still caps a session's own groups. `status --repository`
-prints `test hosts: R of N slot(s) held, Q queued` (`processes` in `-a`, and each
-session's `processAdmission`). A per-worktree daemon launches as before. See ADR-050.
+The host also bounds its sessions' test hosts and builds: one process scheduler, with the
+processor count as its bound, shared by every session. Each test group holds one slot while
+it runs, and so does each build, so two worktrees' gates cannot each launch a full set of
+hosts on top of their builds. `tests.maxParallelProjects` still caps a session's own
+groups. `status --repository` prints `processes (test hosts, builds): R of N slot(s) held,
+Q queued` (`processes` in `-a`, and each session's `processAdmission`). A per-worktree
+daemon launches and builds as before. See ADR-050 and ADR-052.
 
 Every lifecycle event is also appended to `host-events.jsonl` beside `host.log`: one JSON
 line each, naming the time, the host's pid, the event (`hostStarted`, `attached`,

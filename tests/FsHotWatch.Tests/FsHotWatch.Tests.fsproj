@@ -260,6 +260,7 @@
     <Compile Include="BuildPluginTests.fs" />
     <Compile Include="BuildOverrunTests.fs" />
     <Compile Include="BuildSideLogTests.fs" />
+    <Compile Include="BuildProcessAdmissionTests.fs" />
     <Compile Include="TimeoutMarkerTests.fs" />
     <Compile Include="StarvationTests.fs" />
     <Compile Include="TestPruneStarvationRerunTests.fs" />

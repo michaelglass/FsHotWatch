@@ -3204,7 +3204,7 @@ type Daemon
     member _.Pipeline = pipeline
 
     /// This session's lane of its repository host's process scheduler, which admits its
-    /// test hosts; `None` for a per-worktree daemon.
+    /// test hosts and builds; `None` for a per-worktree daemon.
     member _.Processes: WorkScheduler.Lane option = host.Processes
 
     /// The project dependency graph.
@@ -4814,7 +4814,7 @@ module Daemon =
                     reporters = [ fileReporter ],
                     taskCache = taskCache,
                     fcsSuppressedCodes = fcsSuppressedCodes,
-                    // This session's turn at the test hosts its host admits (AUTOMATION-682).
+                    // This session's turn at the test hosts and builds its host admits (AUTOMATION-682).
                     ?processes = (seams.Processes |> Option.map (fun processes -> processes.Lane repoRoot))
                 )
 
