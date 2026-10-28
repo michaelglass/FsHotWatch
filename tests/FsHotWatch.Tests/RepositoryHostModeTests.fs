@@ -469,9 +469,12 @@ let ``a fallback is recorded in the repository's event log, naming the host's pi
         Directory.CreateDirectory unavailable.Control.Directory |> ignore
         File.WriteAllText(unavailable.Control.PidFile, "77\n")
         test <@ RepositoryHostMode.recordFallback at unavailable @>
+        // A pid file that does not hold a number (torn, or overwritten) names no host.
+        File.WriteAllText(unavailable.Control.PidFile, "not-a-pid\n")
+        test <@ RepositoryHostMode.recordFallback at unavailable @>
 
         let written = File.ReadAllLines log |> Array.filter (fun l -> l <> "")
-        test <@ written.Length = 2 @>
+        test <@ written.Length = 3 @>
 
         let field (line: string) (name: string) =
             use doc = Text.Json.JsonDocument.Parse line
@@ -488,7 +491,8 @@ let ``a fallback is recorded in the repository's event log, naming the host's pi
             test <@ field line "detail" = Some unavailable.Message @>
 
         test <@ field written[0] "hostPid" = None @>
-        test <@ field written[1] "hostPid" = Some "77" @>)
+        test <@ field written[1] "hostPid" = Some "77" @>
+        test <@ field written[2] "hostPid" = None @>)
 
 // ---------------------------------------------------------------------------
 // Real host processes

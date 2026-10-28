@@ -104,16 +104,23 @@ let ownPathsLines (node: JsonNode) : string list =
     match node["ownPaths"] with
     | null -> []
     | ownPaths ->
-        [ for KeyValue(root, entries) in ownPaths.AsObject() do
-              let atOwnPaths =
-                  entries.AsArray() |> Seq.choose SessionFrames.AtOwnPaths.ofJson |> List.ofSeq
+        // `List.collect`/`List.map`, not a `[ for … in … ]` comprehension: the compiler wraps
+        // each comprehension loop's enumerator in a `finally` that tests `:? IDisposable`,
+        // and the not-disposable jump can never be taken (`IEnumerator<T>` always is), so
+        // it would stand as an uncovered branch no test can reach.
+        ownPaths.AsObject()
+        |> List.ofSeq
+        |> List.collect (fun (KeyValue(root, entries)) ->
+            let atOwnPaths =
+                entries.AsArray() |> Seq.choose SessionFrames.AtOwnPaths.ofJson |> List.ofSeq
 
-              if not atOwnPaths.IsEmpty then
-                  yield $"  %s{root} checks %d{atOwnPaths.Length} project(s) at its own paths:"
-
-                  for project, reason in atOwnPaths do
-                      let why = SessionFrames.AtOwnPaths.describe reason
-                      yield $"    %s{project}: %s{why}" ]
+            if atOwnPaths.IsEmpty then
+                []
+            else
+                $"  %s{root} checks %d{atOwnPaths.Length} project(s) at its own paths:"
+                :: (atOwnPaths
+                    |> List.map (fun (project, reason) ->
+                        $"    %s{project}: %s{SessionFrames.AtOwnPaths.describe reason}")))
 
 /// What attaching a worktree came to.
 [<RequireQualifiedAccess>]
