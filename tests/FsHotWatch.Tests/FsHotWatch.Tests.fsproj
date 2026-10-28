@@ -195,6 +195,7 @@
     <Compile Include="FileFreshnessTests.fs" />
     <Compile Include="DeletedFileFreshnessTests.fs" />
     <Compile Include="NewFileSelectionTests.fs" />
+    <Compile Include="ScanThenCheckSelectionTests.fs" />
     <Compile Include="FlakinessTests.fs" />
     <Compile Include="AnalyzersPluginTests.fs" />
     <Compile Include="AnalyzerFindingsTests.fs" />
