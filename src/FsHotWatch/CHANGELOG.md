@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: sessions are served by measured slot-time (ADR-051, AUTOMATION-682). A freed slot
+  goes to the first waiting session, in turn, whose slot-time held is within
+  `FairnessQuantum` (100 ms) of the least any competing session has had. A session with
+  ten-times-longer jobs gets a tenth of the grants rather than ten times the slot-time. An
+  aged bulk job now ranks above interactive work and is always served in turn. A session
+  that wakes catches up to the least service of the sessions that kept working, so it
+  does not come back with banked credit. New `FairnessQuantum`.
+
 - fix: a check's slot is recorded at the moment it is granted (AUTOMATION-682).
   `CheckPipeline` used to acquire a slot and then take charge of it in a separate step.
   If a cancellation checkpoint landed between the two, the slot would be stranded. Today

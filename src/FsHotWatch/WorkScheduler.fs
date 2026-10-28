@@ -48,6 +48,10 @@ module JobSpec =
 /// How long a bulk job waits before it ranks as interactive.
 let DefaultAgingBound = TimeSpan.FromSeconds 5.0
 
+/// How far ahead of the least-served waiting session a session may be and still be served
+/// in its turn (AUTOMATION-682 slice 5).
+let FairnessQuantum = TimeSpan.FromMilliseconds 100.0
+
 /// A scheduler's slots now: how many there are, how many are held, and how many
 /// acquisitions wait for one.
 type SchedulerStatus =
@@ -149,6 +153,44 @@ type Scheduler internal (capacity: int, handingOver: unit -> unit, clock: unit -
     /// The lanes with at least one waiter, in the order they are next served.
     let turns = LinkedList<Lane>()
 
+    /// Which waiting lane a freed slot goes to (AUTOMATION-682 slices 2 and 5). The lanes
+    /// whose next waiter ranks highest compete: an aged bulk job, then an interactive one,
+    /// then bulk. Aged jobs are served in turn: aging is the starvation bound, and no
+    /// accounting may delay it. Otherwise the slot goes to the first lane in turn whose
+    /// service (slot-time held) is within `FairnessQuantum` of the least any competing lane
+    /// has had, so a session with ten-times-longer jobs gets a tenth of the grants instead
+    /// of ten times the slot-time, and sessions of similar cost still simply take turns.
+    /// The lanes holding or waiting for a slot.
+    let active = HashSet<Lane>(HashIdentity.Reference)
+
+    /// `lane` is about to hold or wait for a slot. A lane that was idle catches up to the
+    /// least service of the lanes that kept working, so it comes back level with them
+    /// instead of with credit banked while it was away.
+    let activate (lane: Lane) (now: TimeSpan) =
+        if active.Add lane && active.Count > 1 then
+            active
+            |> Seq.filter (fun other -> not (obj.ReferenceEquals(other, lane)))
+            |> Seq.map (fun other -> other.Service now)
+            |> Seq.min
+            |> fun floor -> lane.CatchUp(now, floor)
+
+    /// `lane` went idle if it neither holds nor waits for a slot now.
+    let settle (lane: Lane) =
+        if not lane.Active then
+            active.Remove lane |> ignore
+
+    let choose (waiting: LinkedList<Lane>) (now: TimeSpan) : Lane =
+        let lanes = List.ofSeq waiting
+        let rankOf (lane: Lane) = lane.NextRank(now, agingBound)
+        let best = lanes |> List.map rankOf |> List.min
+        let competing = lanes |> List.filter (fun lane -> rankOf lane = best)
+
+        if best = 0 then
+            List.head competing
+        else
+            let least = competing |> List.map (fun lane -> lane.Service now) |> List.min
+            competing |> List.find (fun lane -> lane.Service now <= least + FairnessQuantum)
+
     static let monotonic () = Stopwatch.GetElapsedTime 0L
 
     /// A scheduler of `capacity` slots.
@@ -206,6 +248,8 @@ type Scheduler internal (capacity: int, handingOver: unit -> unit, clock: unit -
                 Locking.locked gate (fun () ->
                     let now = clock ()
 
+                    activate lane now
+
                     if running < capacity then
                         running <- running + 1
                         lane.Take(now, job.Class, TimeSpan.Zero)
@@ -238,6 +282,7 @@ type Scheduler internal (capacity: int, handingOver: unit -> unit, clock: unit -
                             node.List.Remove node
                             queued <- queued - 1
                             lane.Abandon waiter.Class
+                            settle lane
 
                             if lane.Waiting = 0 then
                                 turns.Remove lane |> ignore
@@ -262,24 +307,15 @@ type Scheduler internal (capacity: int, handingOver: unit -> unit, clock: unit -
                 if not (releasing.Give now) then
                     invalidOp $"lane %s{releasing.Name} released a slot it does not hold"
 
+                settle releasing
+
                 match turns.First with
                 | null ->
                     running <- running - 1
                     None
                 | first ->
-                    // The first lane in turn whose next waiter is urgent, else the first.
-                    let mutable chosen = first
-                    let mutable look = first
-
-                    while not (isNull look) do
-                        if look.Value.NextIsUrgent(now, agingBound) then
-                            chosen <- look
-                            look <- null
-                        else
-                            look <- look.Next
-
-                    let lane = chosen.Value
-                    turns.Remove chosen
+                    let lane = choose first.List now
+                    turns.Remove lane |> ignore
                     let next = lane.Next(now, agingBound)
                     next.List.Remove next
                     queued <- queued - 1
@@ -309,6 +345,8 @@ and [<Sealed>] Lane internal (scheduler: Scheduler, name: string) =
     /// Slot-time up to `heldSince`; the slots held now add `held × (now - heldSince)`.
     let mutable heldTime = TimeSpan.Zero
     let mutable heldSince = TimeSpan.Zero
+    /// Added to the slot-time held to give this lane's service; raised by `CatchUp`.
+    let mutable serviceOffset = TimeSpan.Zero
 
     let heldUpTo (now: TimeSpan) =
         heldTime + TimeSpan.FromTicks(int64 held * (now - heldSince).Ticks)
@@ -338,9 +376,27 @@ and [<Sealed>] Lane internal (scheduler: Scheduler, name: string) =
         | Interactive -> interactiveWaiters.AddLast waiter
         | Bulk -> bulkWaiters.AddLast waiter
 
-    /// Whether the waiter this lane would serve next is urgent: interactive, or aged.
-    member internal _.NextIsUrgent(now: TimeSpan, agingBound: TimeSpan) : bool =
-        interactiveWaiters.Count > 0 || (agedBulk now agingBound).IsSome
+    /// How the waiter this lane would serve next ranks: 0 for a bulk job aged past the
+    /// bound, 1 for an interactive job, 2 for bulk. Only asked of a lane with a waiter.
+    member internal _.NextRank(now: TimeSpan, agingBound: TimeSpan) : int =
+        if (agedBulk now agingBound).IsSome then 0
+        elif interactiveWaiters.Count > 0 then 1
+        else 2
+
+    /// The slot-time this lane has been charged: what it has held, plus any catch-up it
+    /// was given on waking. This is the one place a slot is charged; a declared cost per
+    /// job (AUTOMATION-1299) would scale the charge here.
+    member internal _.Service(now: TimeSpan) : TimeSpan = heldUpTo now + serviceOffset
+
+    /// Raise this lane's service to at least `floor`, as it wakes.
+    member internal this.CatchUp(now: TimeSpan, floor: TimeSpan) =
+        let behind = floor - this.Service now
+
+        if behind > TimeSpan.Zero then
+            serviceOffset <- serviceOffset + behind
+
+    /// Whether this lane holds or waits for a slot.
+    member internal this.Active: bool = held > 0 || this.Waiting > 0
 
     /// The waiter this lane serves next: the oldest urgent one, else the oldest. Only
     /// asked of a lane with a waiter.

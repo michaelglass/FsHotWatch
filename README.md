@@ -794,6 +794,10 @@ waiting, or bulk work that has waited 5 s, and otherwise to the next session in 
 scan cannot keep another session's save waiting, and a run of saves delays a scan by about
 five seconds at most. `-a` splits each session's `admission` into `interactive` and `bulk`.
 See ADR-049.
+Among sessions competing for a slot, the one that has held the least slot-time goes first,
+within 100 ms of turn order, so a session with long checks does not take ten times the
+slot-time of one with short checks. A session that was idle comes back level with the
+others. See ADR-051.
 
 The host also bounds its sessions' test hosts: one process scheduler, with the processor
 count as its bound, shared by every session. Each test group holds one slot while it runs,
