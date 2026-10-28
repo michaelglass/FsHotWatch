@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.95 - 2026-10-28
+
 - **fix: asking xUnit for long-running reports is a project's choice, off by default.**
   0.13.0-alpha.94 added `--long-running` and a diagnostics `--config-file` to every xUnit
   host it asked for CTRF. xUnit's long-running monitor holds one thread-pool thread for

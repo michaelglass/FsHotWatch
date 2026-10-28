@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.95 - 2026-10-28
+
 - feat: sessions are served by measured slot-time (ADR-051, AUTOMATION-682). A freed slot
   goes to the first waiting session, in turn, whose slot-time held is within
   `FairnessQuantum` (100 ms) of the least any competing session has had. A session with

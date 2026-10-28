@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.128 - 2026-10-28
+
 - **fix: a test host gets xUnit's long-running monitor only when its project asks.**
   0.14.0-alpha.127 gave every xUnit host it asked for CTRF `--long-running` and a
   diagnostics `--config-file`. xUnit's monitor holds one thread-pool thread for the whole
