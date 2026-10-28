@@ -350,3 +350,44 @@ let ``a scan's checks are admitted as bulk work and a change batch's as interact
             let status = lane.Status()
             test <@ status.Bulk.Granted = 1L && status.Interactive.Granted = 1L @>
         | files -> failwith $"expected two files, got %d{files.Length}")
+
+[<Fact(Timeout = 120000)>]
+let ``a check whose caller is cancelled as its slot is handed over gives the slot back`` () =
+    withTempDir "check-grant-cancel" (fun dir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        use cts = new System.Threading.CancellationTokenSource()
+        // The caller is cancelled in the window between the hand-over and its waking.
+        let scheduler = WorkScheduler.Scheduler(1, cts.Cancel)
+        let holder = scheduler.Lane "holder"
+
+        let pipeline =
+            CheckPipeline(checker, repoRoot = dir, admission = scheduler.Lane "session")
+
+        match manyFiles checker pipeline dir 1 with
+        | [ file ] ->
+            test <@ holder.Acquire System.Threading.CancellationToken.None |> Async.RunSynchronously @>
+
+            let check =
+                Async.StartAsTask(pipeline.CheckFile(file, cts.Token), cancellationToken = cts.Token)
+
+            let queued =
+                System.Threading.SpinWait.SpinUntil((fun () -> scheduler.Queued = 1), System.TimeSpan.FromSeconds 30.0)
+
+            test <@ queued @>
+            holder.Release()
+
+            let finished =
+                (check :> System.Threading.Tasks.Task)
+                    .ContinueWith(fun (_: System.Threading.Tasks.Task) -> ())
+                    .Wait(System.TimeSpan.FromSeconds 60.0)
+
+            test <@ finished @>
+            // However the check ended, its slot is back: nothing holds or waits.
+            let settled =
+                System.Threading.SpinWait.SpinUntil(
+                    (fun () -> scheduler.Running = 0 && scheduler.Queued = 0),
+                    System.TimeSpan.FromSeconds 30.0
+                )
+
+            test <@ settled @>
+        | files -> failwith $"expected one file, got %d{files.Length}")

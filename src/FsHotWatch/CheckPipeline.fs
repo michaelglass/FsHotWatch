@@ -313,8 +313,9 @@ type CheckPipeline
 
     /// Wait for a check slot without holding a thread: true once one is held, false
     /// when `ct` gave up first.
-    let waitForSlot (ct: CancellationToken) : Async<bool> =
-        admission.Acquire(CheckCaller.job (), ct)
+    /// `unclaimed` is set to 1 under the scheduler's lock at the moment a slot is granted.
+    let waitForSlot (ct: CancellationToken) (unclaimed: int ref) : Async<bool> =
+        admission.Acquire(CheckCaller.job (), ct, (fun () -> unclaimed.Value <- 1))
 
     // Which frame each project is checked under: its own paths unless a repository host
     // checks its worktrees under one virtual root.
@@ -984,133 +985,146 @@ type CheckPipeline
 
                 // The snapshot build and the FCS check hold a slot; joining another
                 // check's answer or giving way does not.
-                let! entered = waitForSlot ct
+                // 1 while this call holds a slot nobody has taken charge of yet: set under the
+                // scheduler's lock at the grant (AUTOMATION-682), so a cancellation observed
+                // between the grant and the code below cannot strand the slot. Once the code
+                // below takes the slot, it gives it back itself (or hands it to the check it
+                // starts), and the `finally` does nothing.
+                let unclaimed = ref 0
 
-                if not entered then
-                    logCanceled absPath
-                    return None
-                else
-                    enterSlot ()
-                    // Timed from here: the wait for a slot is queueing, not checking.
-                    sw.Restart()
-                    let handedOff = ref false
+                try
+                    let! entered = waitForSlot ct unclaimed
 
-                    let outcome =
-                        try
-                            match
-                                (try
-                                    Ok(framedNow ())
-                                 with ex ->
-                                     Result.Error ex)
-                            with
-                            | Result.Error ex -> Result.Error ex
-                            | Ok(framed, origin) ->
-                                let snapshotTime = sw.Elapsed
+                    if not entered then
+                        logCanceled absPath
+                        return None
+                    else
+                        // This call takes charge of its slot.
+                        Interlocked.Exchange(&unclaimed.contents, 0) |> ignore
+                        enterSlot ()
+                        // Timed from here: the wait for a slot is queueing, not checking.
+                        sw.Restart()
+                        let handedOff = ref false
 
-                                lock gate (fun () ->
-                                    let alive =
-                                        match running.TryGetValue checkedFile with
-                                        | true, r when not r.Cts.IsCancellationRequested && not r.Task.IsCompleted ->
-                                            Some r
-                                        | _ -> None
+                        let outcome =
+                            try
+                                match
+                                    (try
+                                        Ok(framedNow ())
+                                     with ex ->
+                                         Result.Error ex)
+                                with
+                                | Result.Error ex -> Result.Error ex
+                                | Ok(framed, origin) ->
+                                    let snapshotTime = sw.Elapsed
 
-                                    let newerStarted =
-                                        ticket < rediscoveredAt
-                                        || (match lastStarted.TryGetValue checkedFile with
-                                            | true, latest -> latest > ticket
-                                            | false, _ -> false)
+                                    lock gate (fun () ->
+                                        let alive =
+                                            match running.TryGetValue checkedFile with
+                                            | true, r when not r.Cts.IsCancellationRequested && not r.Task.IsCompleted ->
+                                                Some r
+                                            | _ -> None
 
-                                    match alive with
-                                    | Some r when r.Project = project && r.Origin = origin ->
-                                        r.Leases.Value <- r.Leases.Value + 1
-                                        Ok(origin, Join r)
-                                    | _ when newerStarted -> Ok(origin, GiveWay)
-                                    | _ ->
-                                        let cts = new CancellationTokenSource()
-                                        let leases = ref 1
+                                        let newerStarted =
+                                            ticket < rediscoveredAt
+                                            || (match lastStarted.TryGetValue checkedFile with
+                                                | true, latest -> latest > ticket
+                                                | false, _ -> false)
 
-                                        let unwanted = unwantedLine fileName (originText projectName origin)
+                                        match alive with
+                                        | Some r when r.Project = project && r.Origin = origin ->
+                                            r.Leases.Value <- r.Leases.Value + 1
+                                            Ok(origin, Join r)
+                                        | _ when newerStarted -> Ok(origin, GiveWay)
+                                        | _ ->
+                                            let cts = new CancellationTokenSource()
+                                            let leases = ref 1
 
-                                        // The started check owns the slot from here and
-                                        // gives it back however it ends.
-                                        let task =
-                                            Async.StartAsTask(
-                                                async {
-                                                    try
-                                                        return!
-                                                            this.RunCheck(
-                                                                openFile,
-                                                                options,
-                                                                framed,
-                                                                origin,
-                                                                snapshotTime,
-                                                                sw,
-                                                                framedNow,
-                                                                generationNow,
-                                                                cts
-                                                            )
-                                                    finally
+                                            let unwanted = unwantedLine fileName (originText projectName origin)
+
+                                            // The started check owns the slot from here and
+                                            // gives it back however it ends.
+                                            let task =
+                                                Async.StartAsTask(
+                                                    async {
                                                         try
-                                                            retireCheck checkedFile cts leases unwanted
+                                                            return!
+                                                                this.RunCheck(
+                                                                    openFile,
+                                                                    options,
+                                                                    framed,
+                                                                    origin,
+                                                                    snapshotTime,
+                                                                    sw,
+                                                                    framedNow,
+                                                                    generationNow,
+                                                                    cts
+                                                                )
                                                         finally
-                                                            leaveSlot ()
-                                                }
-                                            )
+                                                            try
+                                                                retireCheck checkedFile cts leases unwanted
+                                                            finally
+                                                                leaveSlot ()
+                                                    }
+                                                )
 
-                                        handedOff.Value <- true
+                                            handedOff.Value <- true
 
-                                        let started =
-                                            { Project = project
-                                              Origin = origin
-                                              Caller = caller
-                                              Ticket = ticket
-                                              Cts = cts
-                                              Leases = leases
-                                              Task = task }
+                                            let started =
+                                                { Project = project
+                                                  Origin = origin
+                                                  Caller = caller
+                                                  Ticket = ticket
+                                                  Cts = cts
+                                                  Leases = leases
+                                                  Task = task }
 
-                                        lastStarted[checkedFile] <- ticket
-                                        running[checkedFile] <- started
-                                        Ok(origin, Start(started, alive)))
-                        finally
-                            if not handedOff.Value then
-                                leaveSlot ()
+                                            lastStarted[checkedFile] <- ticket
+                                            running[checkedFile] <- started
+                                            Ok(origin, Start(started, alive)))
+                            finally
+                                if not handedOff.Value then
+                                    leaveSlot ()
 
-                    match outcome with
-                    | Result.Error ex ->
-                        Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
-                        return None
-                    | Ok(_, GiveWay) ->
-                        logCancellation absPath CheckCancellation.GaveWay
-                        return None
-                    | Ok(_, Join r) ->
-                        let line = joinLine fileName r.Caller caller (originText projectName r.Origin)
+                        match outcome with
+                        | Result.Error ex ->
+                            Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
+                            return None
+                        | Ok(_, GiveWay) ->
+                            logCancellation absPath CheckCancellation.GaveWay
+                            return None
+                        | Ok(_, Join r) ->
+                            let line = joinLine fileName r.Caller caller (originText projectName r.Origin)
 
-                        activity.Log line
-                        Logging.debug "check" line
-                        return! this.AwaitRunning(r, absPath, ct)
-                    | Ok(origin, Start(started, superseded)) ->
-                        match superseded with
-                        | Some previous ->
-                            let sharers =
-                                match sharedInFlight inFlight checkedFile with
-                                | Some(_, _, sharers) -> sharers
-                                | None -> 0
+                            activity.Log line
+                            Logging.debug "check" line
+                            return! this.AwaitRunning(r, absPath, ct)
+                        | Ok(origin, Start(started, superseded)) ->
+                            match superseded with
+                            | Some previous ->
+                                let sharers =
+                                    match sharedInFlight inFlight checkedFile with
+                                    | Some(_, _, sharers) -> sharers
+                                    | None -> 0
 
-                            Logging.info
-                                "check"
-                                (supersedeLine
-                                    fileName
-                                    (Path.GetFileName previous.Project)
-                                    previous.Caller
-                                    previous.Origin
-                                    caller
-                                    origin
-                                    sharers)
+                                Logging.info
+                                    "check"
+                                    (supersedeLine
+                                        fileName
+                                        (Path.GetFileName previous.Project)
+                                        previous.Caller
+                                        previous.Origin
+                                        caller
+                                        origin
+                                        sharers)
 
-                            previous.Cts.Cancel()
-                        | None -> ()
+                                previous.Cts.Cancel()
+                            | None -> ()
 
-                        return! this.AwaitRunning(started, absPath, ct)
+                            return! this.AwaitRunning(started, absPath, ct)
+                finally
+                    if Interlocked.Exchange(&unclaimed.contents, 0) = 1 then
+                        admission.Release()
         }
 
     /// Wait for a running check on a lease, without throwing, however the wait ends. A

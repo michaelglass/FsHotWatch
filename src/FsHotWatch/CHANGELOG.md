@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a check's slot is recorded at the moment it is granted (AUTOMATION-682).
+  `CheckPipeline` used to acquire a slot and then take charge of it in a separate step.
+  If a cancellation checkpoint landed between the two, the slot would be stranded. Today
+  no `do!` sits between them, so the window is not reachable, but one added later would
+  have reopened it. The grant now sets a flag under the scheduler's lock, and a `finally`
+  gives back a slot that no code has taken charge of. New internal
+  `Lane.Acquire(job, ct, onGrant)`.
+
 - fix: a scheduler acquisition whose caller is cancelled before it runs no longer queues
   (AUTOMATION-682). `Lane.Acquire` used to queue as soon as it was called, before the
   async that registers the give-up had run. A cancellation observed in between left a

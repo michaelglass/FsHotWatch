@@ -392,6 +392,12 @@ and [<Sealed>] Lane internal (scheduler: Scheduler, name: string) =
     member this.Acquire(job: JobSpec, ct: CancellationToken) : Async<bool> =
         scheduler.Acquire(this, job, ct, ignore)
 
+    /// `Acquire`, with `onGrant` run under the scheduler's lock at the moment a slot becomes
+    /// this acquisition's, so a caller can record that it holds one even if its own
+    /// continuation is then cancelled.
+    member internal this.Acquire(job: JobSpec, ct: CancellationToken, onGrant: unit -> unit) : Async<bool> =
+        scheduler.Acquire(this, job, ct, onGrant)
+
     /// Give back a slot this lane holds. It goes to the next lane in turn. A lane that
     /// holds none is refused: its caller released a slot another lane holds.
     member this.Release() : unit = scheduler.Release this

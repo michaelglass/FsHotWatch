@@ -79,6 +79,10 @@ The fix has two parts:
 - `Lane.Run` sets a held flag under the lock at the moment of the grant, and gives the slot
   back in a `finally`.
 
-`CheckPipeline` still acquires through `Acquire` and then enters its slot in a separate
-step. Its narrower window, a cancellation observed between the grant and `enterSlot`, is
-recorded for the next slice.
+`CheckPipeline` acquired through `Acquire` and then entered its slot in a separate step.
+AUTOMATION-682 slice 4 closed that gap. The grant sets an `unclaimed` flag under the lock,
+and a `finally` around the acquisition returns a slot that no code has taken charge of.
+In today's code no cancellation checkpoint sits between the grant and `enterSlot`, so the
+leak was not reachable. With a `do! Async.Sleep 0` inserted after the grant, the
+regression test "a check whose caller is cancelled as its slot is handed over gives the
+slot back" fails without the flag and passes with it.
