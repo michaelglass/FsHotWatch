@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- build: TestPrune.Core 13.5.1 (was 13.5.0), in lockstep with FsHotWatch.TestPrune, which also
+  moves to TestPrune.Trace 0.7.6. Both declare FSharp.Core >= 10.1.402 (AUTOMATION-1358).
 - feat: `FSHW_LIVE_RESULTS` in a daemon's environment bounds how many check results its
   plugins hold at once (ADR-054, AUTOMATION-683). The default is twice the processor
   count; a value that is not a positive integer is ignored with a warning. `fshw status
