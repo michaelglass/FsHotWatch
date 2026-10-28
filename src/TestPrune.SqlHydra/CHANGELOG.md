@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.3 - 2026-10-28
+
+- Finish: AUTOMATION-1358 pin FSharp.Core exactly so packed floors stop floating
+
+
 ## 0.2.2 - 2026-10-13
 
 - feat(sql): reachability-gated SQL coupling as a walk policy
