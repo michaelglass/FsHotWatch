@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: each lane of a `WorkScheduler` counts its admission (AUTOMATION-682). New
+  `Lane.Status()` (`LaneStatus`: `Queued`, `Running`, `Granted`, `Abandoned`, `Waited`,
+  `LongestWait`, `Held`), `Scheduler.Status()` (`SchedulerStatus`: `Capacity`, `Running`,
+  `Queued`) and their wire forms `LaneStatus.payload` / `SchedulerStatus.payload`.
+  `status --repository` gains an `admission` object per session. Waits run from an
+  acquisition's enqueue to the hand-over of its slot; `Held` is slot-time. A lane that
+  releases a slot it does not hold is now refused (`InvalidOperationException`) instead of
+  freeing another lane's slot: a slot is given back by the lane it was granted to.
+
 - **feat!: a publication is guarded by incarnation, epoch and generation (ADR-046).** A
   scan captures the session's snapshot epoch with its model, and a `FileChecked` that read
   bytes a later change cohort replaced is not published, only counted. A change batch now

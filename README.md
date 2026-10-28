@@ -781,6 +781,13 @@ replaced. A scan that read a file before a save changed it publishes nothing abo
 file; the save's check stands. `fshw status` prints the same for a per-worktree daemon.
 See ADR-045 and ADR-046.
 
+Every session's checks take turns at one bound, the host's processor count. `status
+--repository` prints that bound as `checks: R of N slot(s) held, Q queued` (`scheduler`
+in `-a`), and each session line its own admission (`admission` in `-a`): how many checks
+it was granted a slot for, how many gave up waiting, how many hold or wait for one now,
+how long the granted ones waited in total and at most, and the slot-time they held. A
+session whose waits grow while another holds the slots is the one being kept waiting.
+
 Every lifecycle event is also appended to `host-events.jsonl` beside `host.log`: one JSON
 line each, naming the time, the host's pid, the event (`hostStarted`, `attached`,
 `refused`, `sessionEnded`, `undelivered`, `hostStopped` with `idle` or `requested`) and

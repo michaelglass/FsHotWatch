@@ -164,6 +164,46 @@ let ``two worktrees attach as two sessions, each routed to its own daemon`` () =
         test <@ listed["hostPid"].GetValue<int>() = Environment.ProcessId @>)
 
 [<Fact(Timeout = 60000)>]
+let ``status --repository carries each session's own admission counts`` () =
+    withHost settingsFor daemonFactory (fun fx host ->
+        attachVia host (requestFrom fx.Primary "a") |> attachedId |> ignore
+        attachVia host (requestFrom fx.Secondary "b") |> attachedId |> ignore
+
+        // Counts only grow while the sessions work: what the host reports for a session
+        // lies between that session's own lane read just before and just after.
+        let own () =
+            host.Registry.Sessions
+            |> List.map (fun s -> s.Worktree.Root.Value, (s.Daemon.Pipeline.Admission.Status()).Granted)
+            |> Map.ofList
+
+        let before = own ()
+        let listed = JsonNode.Parse(host.ListSessions())
+
+        let reported =
+            listed["sessions"].AsArray()
+            |> Seq.map (fun s ->
+                let admission = s["admission"]
+
+                test
+                    <@
+                        admission["queued"].GetValue<int>() >= 0
+                        && admission["heldMs"].GetValue<int64>() >= 0L
+                    @>
+
+                s["root"].GetValue<string>(), admission["granted"].GetValue<int64>())
+            |> Map.ofSeq
+
+        let after = own ()
+
+        test <@ reported.Count = 2 @>
+
+        test
+            <@
+                reported
+                |> Map.forall (fun root granted -> before[root] <= granted && granted <= after[root])
+            @>)
+
+[<Fact(Timeout = 60000)>]
 let ``status --repository carries each session's own publication counts`` () =
     withHost settingsFor daemonFactory (fun fx host ->
         attachVia host (requestFrom fx.Primary "a") |> attachedId |> ignore

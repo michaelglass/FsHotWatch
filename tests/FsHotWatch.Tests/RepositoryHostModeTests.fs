@@ -153,6 +153,19 @@ let ``the repository status counts each session's accepted and stale-refused pub
         @>
 
 [<Fact(Timeout = 5000)>]
+let ``the repository status shows the host's check slots and each session's admission`` () =
+    let json =
+        """{"hostPid":7,"endpoint":"e","scheduler":{"capacity":12,"running":3,"queued":40},"sessions":[{"root":"/r","serving":true,"scanGeneration":3,"admission":{"queued":2,"running":1,"granted":5,"abandoned":1,"waitedMs":1500,"longestWaitMs":900,"heldMs":4200}},{"root":"/s","serving":true,"scanGeneration":1}]}"""
+
+    test
+        <@
+            renderRepositoryStatus json = [ "Repository host pid 7 on e: 2 session(s)"
+                                            "  checks: 3 of 12 slot(s) held, 40 queued"
+                                            "  /r  serving, scan generation 3, admission 5 granted / 1 abandoned, 1 running, 2 queued, waited 1500 ms (longest 900 ms), held 4200 ms"
+                                            "  /s  serving, scan generation 1" ]
+        @>
+
+[<Fact(Timeout = 5000)>]
 let ``the repository status names each session's snapshot epoch`` () =
     let json =
         """{"hostPid":7,"endpoint":"e","sessions":[{"root":"/r","serving":true,"scanGeneration":3,"snapshot":{"epoch":5,"manifest":"0123456789abcdef","refused":2}},{"root":"/s","serving":true,"scanGeneration":1}]}"""

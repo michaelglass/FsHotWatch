@@ -2946,6 +2946,14 @@ let internal renderRepositoryStatus (json: string) : string list =
 
     [ yield $"Repository host pid %d{pid} on %s{endpoint}: %d{sessions.Length} session(s)%s{upSince}"
       yield! RepositoryHostMode.hostHealthLines node
+      // A host older than its admission counts (AUTOMATION-682) sends none.
+      match node["scheduler"] with
+      | null -> ()
+      | c ->
+          let capacity = c["capacity"].GetValue<int>()
+          let running = c["running"].GetValue<int>()
+          let queued = c["queued"].GetValue<int>()
+          yield $"  checks: %d{running} of %d{capacity} slot(s) held, %d{queued} queued"
       for s in sessions do
           let state =
               if s["serving"].GetValue<bool>() then
@@ -2977,7 +2985,24 @@ let internal renderRepositoryStatus (json: string) : string list =
                   let refused = p["refused"].GetValue<int64>()
                   $", snapshot epoch %d{epoch} (manifest %s{manifest}, %d{refused} stale refused)"
 
-          yield $"  %s{root}  %s{state}, scan generation %d{generation}%s{attached}%s{publications}%s{snapshot}"
+          // A host older than its admission counts (AUTOMATION-682) sends none.
+          let admission =
+              match s["admission"] with
+              | null -> ""
+              | a ->
+                  let count (name: string) = a[name].GetValue<int64>()
+                  let granted = count "granted"
+                  let abandoned = count "abandoned"
+                  let running = count "running"
+                  let queued = count "queued"
+                  let waited = count "waitedMs"
+                  let longest = count "longestWaitMs"
+                  let held = count "heldMs"
+
+                  $", admission %d{granted} granted / %d{abandoned} abandoned, %d{running} running, %d{queued} queued, waited %d{waited} ms (longest %d{longest} ms), held %d{held} ms"
+
+          yield
+              $"  %s{root}  %s{state}, scan generation %d{generation}%s{attached}%s{publications}%s{snapshot}%s{admission}"
       match node["watch"] with
       | null -> ()
       | watch ->
@@ -3198,6 +3223,7 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
             let node = System.Text.Json.Nodes.JsonObject()
             node["watch"] <- watch
             node["ownPaths"] <- ownPaths.ToJson()
+            node["scheduler"] <- FsHotWatch.WorkScheduler.SchedulerStatus.payload (checks.Status())
             node
 
         let factory (spec: FsHotWatch.SessionRegistry.SessionSpec) =

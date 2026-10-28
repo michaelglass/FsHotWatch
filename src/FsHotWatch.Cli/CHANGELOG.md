@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `fshw status --repository` prints the host's check slots ("checks: R of N
+  slot(s) held, Q queued") and each session's admission ("admission G granted / A
+  abandoned, R running, Q queued, waited W ms (longest L ms), held H ms"); `-a` carries
+  them as `scheduler` and per-session `admission`. A host that sends none prints as
+  before. (AUTOMATION-682.)
+
 - **feat: `fshw insights` names each project's child processes by command**, with how many
   were seen and their CPU time (a lower bound: the process table is read every 30 s), and
   each verdict `timedOut` entry carries them as `children`. (AUTOMATION-1300, slice 5.)

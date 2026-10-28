@@ -36,11 +36,22 @@ let private queue (lane: Lane) (order: ConcurrentQueue<string>) (granted: Semaph
     |> Async.StartAsTask
 
 /// Hands the held slot on `releases` times, one grant at a time, so the order the
-/// grants were made in is the order recorded.
-let private handOn (holder: Lane) (granted: SemaphoreSlim) (releases: int) =
+/// grants were made in is the order recorded. Each release is made by the lane holding
+/// the slot: `holder` first, then whichever of `lanes` was granted it last.
+let private handOn
+    (holder: Lane)
+    (lanes: Lane list)
+    (order: ConcurrentQueue<string>)
+    (granted: SemaphoreSlim)
+    (releases: int)
+    =
+    let mutable current = holder
+
     for _ in 1..releases do
-        holder.Release()
+        current.Release()
         test <@ granted.Wait(TimeSpan.FromSeconds 5.0) @>
+        let last = Seq.last order
+        current <- lanes |> List.find (fun lane -> lane.Name = last)
 
 [<Fact(Timeout = 20000)>]
 let ``no more work runs at once than the capacity, across every lane`` () =
@@ -87,7 +98,7 @@ let ``a session with fifty queued jobs cannot keep another session's one job beh
     let one = queue b order granted
     waitUntil "B's one to queue" (fun () -> scheduler.Queued = 51)
 
-    handOn a granted 51
+    handOn a [ a; b ] order granted 51
 
     let served = List.ofSeq order
     // A is served once, then B: B waits behind one of A's jobs, not fifty.
@@ -111,7 +122,7 @@ let ``waiting sessions are served in turn`` () =
             queue lane order granted |> ignore
             waitUntil "the job to queue" (fun () -> scheduler.Queued = before + 1)
 
-    handOn holder granted 9
+    handOn holder lanes order granted 9
 
     test <@ List.ofSeq order = [ "A"; "B"; "C"; "A"; "B"; "C"; "A"; "B"; "C" ] @>
 
@@ -135,7 +146,7 @@ let ``a waiter whose caller gives up takes no slot and holds up nobody`` () =
     test <@ not abandoned.Result @>
     test <@ scheduler.Queued = 1 @>
 
-    handOn a granted 1
+    handOn a [ a; b ] order granted 1
 
     test <@ waiting.Result && List.ofSeq order = [ "B" ] @>
     test <@ scheduler.Running = 1 && scheduler.Queued = 0 @>
@@ -159,7 +170,7 @@ let ``a lane keeps its place when one of its waiters gives up`` () =
     cts.Cancel()
     test <@ not abandoned.Result @>
 
-    handOn a granted 1
+    handOn a [ a ] order granted 1
 
     test <@ kept.Result && List.ofSeq order = [ "A" ] @>
     a.Release()

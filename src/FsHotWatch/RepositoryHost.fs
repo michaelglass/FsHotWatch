@@ -380,6 +380,7 @@ type RepositoryHost
             entry["attachedAt"] <- JsonValue.Create(s.AttachedAt.ToString "o")
             entry["publications"] <- ProjectModelWire.publicationsPayload (s.Daemon.Publications())
             entry["snapshot"] <- SnapshotEpoch.SnapshotStatus.payload (s.Daemon.SnapshotStatus())
+            entry["admission"] <- WorkScheduler.LaneStatus.payload (s.Daemon.Pipeline.Admission.Status())
             sessions.Add entry
 
         node["sessions"] <- sessions
