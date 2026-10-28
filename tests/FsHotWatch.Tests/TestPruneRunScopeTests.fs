@@ -1738,6 +1738,7 @@ let ``a queued manual filtered force-run clears the prior full receipt when its 
                 fun key _ message ->
                     intents.Add(key, message)
                     System.Threading.Tasks.Task.FromResult(())
+            Processes = None
             RunExclusiveShared =
                 fun _ _ _ _ _ ->
                     match claims with
@@ -1788,6 +1789,7 @@ let ``manual run reply terminates when its shared test host cannot start`` () =
         { recordingCtx with
             Post = fun message -> posted <- Some message
             EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
+            Processes = None
             RunExclusiveShared =
                 fun _ _ _ _ failureMessage ->
                     posted <- Some(failureMessage (InvalidOperationException("host start fault")))
@@ -1825,6 +1827,7 @@ let ``a test host that cannot start leaves the build artifacts valid for the nex
     let ctx =
         { recordingCtx with
             EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
+            Processes = None
             RunExclusiveShared =
                 fun _ _ _ classify failureMessage ->
                     // The framework's own path: the work built against a lease faults,
@@ -3237,6 +3240,7 @@ let ``ordinary unchanged build preserves executed evidence through AlreadyVerifi
         let ctx =
             { recordingCtx with
                 RepoRoot = root
+                Processes = None
                 RunExclusiveShared =
                     fun _ _ work _ _ ->
                         scheduled <- Some work
@@ -3353,6 +3357,7 @@ let ``a suspect re-check of an unchanged file leaves the earned receipt and laun
         let ctx =
             { recordingCtx with
                 RepoRoot = root
+                Processes = None
                 RunExclusiveShared =
                     fun _ _ work _ _ ->
                         scheduled <- Some work
@@ -3442,6 +3447,7 @@ let ``new dependency debt is not retired by unavailable execution after a pass``
 
         let ctx =
             { recordingCtx with
+                Processes = None
                 RunExclusiveShared =
                     fun _ _ work _ _ ->
                         scheduled <- Some work
@@ -3522,6 +3528,7 @@ let ``only-failed resolves current owner failures instead of the command snapsho
 
     let ctx =
         { recordingCtx with
+            Processes = None
             RunExclusiveShared =
                 fun _ _ _ _ _ ->
                     launched <- true

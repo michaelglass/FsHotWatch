@@ -125,9 +125,13 @@ module LaneStatus =
 /// One queued acquisition: what wakes it, its class, and when it queued.
 [<NoComparison; NoEquality>]
 type internal Waiter =
-    { Grant: TaskCompletionSource<bool>
-      Class: JobClass
-      Since: TimeSpan }
+    {
+        Grant: TaskCompletionSource<bool>
+        Class: JobClass
+        Since: TimeSpan
+        /// Runs under the lock when a slot becomes this waiter's.
+        OnGrant: unit -> unit
+    }
 
 /// A fixed number of slots, handed out across lanes in turn. `handingOver` runs on the
 /// releasing thread each time a freed slot passes to a waiter: after the waiter has
@@ -179,9 +183,24 @@ type Scheduler internal (capacity: int, handingOver: unit -> unit, clock: unit -
     member internal _.Read(read: TimeSpan -> 'T) : 'T =
         Locking.locked gate (fun () -> read (clock ()))
 
-    member internal _.Acquire(lane: Lane, job: JobSpec, ct: CancellationToken) : Async<bool> =
+    /// Wait for a slot for `job` on `lane`: true once one is held, false when `ct` gave up
+    /// first. `onGrant` runs under the lock at the moment a slot becomes this
+    /// acquisition's, so a caller can record that it holds one even if its own
+    /// continuation is then cancelled (`Lane.Run`).
+    ///
+    /// Nothing happens until the returned async runs: an acquisition whose caller is
+    /// cancelled before it starts never queues. Queueing when it was merely described left
+    /// a waiter no one would remove, and the slot later handed to it was never released.
+    member internal this.Acquire(lane: Lane, job: JobSpec, ct: CancellationToken, onGrant: unit -> unit) : Async<bool> =
+        Async.FromContinuations(fun (granted, _, _) -> this.Admit(lane, job, ct, onGrant, granted))
+
+    /// The body of an acquisition: grant at once, or queue and register the give-up, then
+    /// answer `granted` with true (a slot is held) or false (`ct` gave up first).
+    member internal _.Admit
+        (lane: Lane, job: JobSpec, ct: CancellationToken, onGrant: unit -> unit, granted: bool -> unit)
+        : unit =
         if ct.IsCancellationRequested then
-            async.Return false
+            granted false
         else
             let waiting =
                 Locking.locked gate (fun () ->
@@ -190,12 +209,14 @@ type Scheduler internal (capacity: int, handingOver: unit -> unit, clock: unit -
                     if running < capacity then
                         running <- running + 1
                         lane.Take(now, job.Class, TimeSpan.Zero)
+                        onGrant ()
                         None
                     else
                         let waiter =
                             { Grant = TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
                               Class = job.Class
-                              Since = now }
+                              Since = now
+                              OnGrant = onGrant }
 
                         let node = lane.Enqueue waiter
                         queued <- queued + 1
@@ -206,7 +227,7 @@ type Scheduler internal (capacity: int, handingOver: unit -> unit, clock: unit -
                         Some node)
 
             match waiting with
-            | None -> async.Return true
+            | None -> granted true
             | Some node ->
                 let waiter = node.Value
 
@@ -223,10 +244,12 @@ type Scheduler internal (capacity: int, handingOver: unit -> unit, clock: unit -
 
                             waiter.Grant.TrySetResult false |> ignore)
 
-                async {
-                    use _ = ct.Register(Action leave)
-                    return! Async.AwaitTask waiter.Grant.Task
-                }
+                let registration = ct.Register(Action leave)
+
+                waiter.Grant.Task.ContinueWith(fun (answer: Task<bool>) ->
+                    registration.Dispose()
+                    granted answer.Result)
+                |> ignore
 
     member internal _.Release(releasing: Lane) : unit =
         let next =
@@ -261,6 +284,7 @@ type Scheduler internal (capacity: int, handingOver: unit -> unit, clock: unit -
                     next.List.Remove next
                     queued <- queued - 1
                     lane.Take(now, next.Value.Class, now - next.Value.Since)
+                    next.Value.OnGrant()
 
                     // A lane with more waiting goes to the back of the turns.
                     if lane.Waiting > 0 then
@@ -361,15 +385,49 @@ and [<Sealed>] Lane internal (scheduler: Scheduler, name: string) =
     /// Wait for a slot for an interactive job, without holding a thread: true once one
     /// is held, false when `ct` gave up first. A held slot is given back with `Release`.
     member this.Acquire(ct: CancellationToken) : Async<bool> =
-        scheduler.Acquire(this, JobSpec.interactive, ct)
+        scheduler.Acquire(this, JobSpec.interactive, ct, ignore)
 
     /// Wait for a slot for `job`, without holding a thread: true once one is held, false
     /// when `ct` gave up first. A held slot is given back with `Release`.
-    member this.Acquire(job: JobSpec, ct: CancellationToken) : Async<bool> = scheduler.Acquire(this, job, ct)
+    member this.Acquire(job: JobSpec, ct: CancellationToken) : Async<bool> =
+        scheduler.Acquire(this, job, ct, ignore)
 
     /// Give back a slot this lane holds. It goes to the next lane in turn. A lane that
     /// holds none is refused: its caller released a slot another lane holds.
     member this.Release() : unit = scheduler.Release this
+
+    /// Run `work` holding one slot for `job`, and give the slot back however `work` ends:
+    /// it returns, it throws, or the caller is cancelled, including in the moment between
+    /// the slot being granted and the work starting. Cancelled before a slot is granted,
+    /// the work never starts.
+    member this.Run(job: JobSpec, work: Async<'T>) : Async<'T> =
+        async {
+            // 1 once a slot is this run's. Set under the scheduler's lock at the grant, so
+            // the `finally` sees it even when the continuation after the grant is cancelled.
+            let held = ref 0
+
+            try
+                let! ct = Async.CancellationToken
+                // Given up while waiting is a cancellation, raised by the acquisition itself.
+                do!
+                    Async.FromContinuations(fun (admitted, _, cancelled) ->
+                        scheduler.Admit(
+                            this,
+                            job,
+                            ct,
+                            (fun () -> held.Value <- 1),
+                            fun granted ->
+                                if granted then
+                                    admitted ()
+                                else
+                                    cancelled (OperationCanceledException ct)
+                        ))
+
+                return! work
+            finally
+                if Interlocked.Exchange(&held.contents, 0) = 1 then
+                    this.Release()
+        }
 
     /// What this lane was admitted, read now.
     member this.Status() : LaneStatus =

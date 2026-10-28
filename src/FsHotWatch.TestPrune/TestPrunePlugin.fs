@@ -5976,6 +5976,9 @@ let private executeTests
     // `tests.maxParallelProjects`: at most this many groups in flight, longest-expected
     // first; `None` launches every group at once.
     (maxParallelProjects: int option)
+    // This session's lane of its repository host's process scheduler: each group holds
+    // one of its slots while it runs (AUTOMATION-682). `None` for a per-worktree daemon.
+    (processes: FsHotWatch.WorkScheduler.Lane option)
     // `tests.traces`, resolved for this run's mode, with the plugin's activity log (which
     // a force run's `ctx = None` would otherwise lose); `None` when not configured, which
     // leaves every launch exactly as it is without traces.
@@ -7153,7 +7156,7 @@ let private executeTests
                     foldAndEmit results
                     return results
                 })
-            |> GroupSchedule.run maxParallelProjects
+            |> GroupSchedule.runAdmitted processes maxParallelProjects
 
         let! groupResults =
             if List.isEmpty preflight.Refusals then
@@ -9856,6 +9859,7 @@ let internal createWithEvidenceAndQueries
                             repoRoot
                             launchDeadline
                             maxParallelProjects
+                            ctx.Processes
                             (tracesFor ctx inputs.Mode)
                             launch.InputTree
                             (compileInputsOf ctx)
@@ -10016,6 +10020,7 @@ let internal createWithEvidenceAndQueries
                             repoRoot
                             launchDeadline
                             maxParallelProjects
+                            ctx.Processes
                             (tracesFor ctx mode)
                             commandLaunch.InputTree
                             (compileInputsOf ctx)

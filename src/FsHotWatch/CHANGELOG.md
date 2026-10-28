@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- fix: a scheduler acquisition whose caller is cancelled before it runs no longer queues
+  (AUTOMATION-682). `Lane.Acquire` used to queue as soon as it was called, before the
+  async that registers the give-up had run. A cancellation observed in between left a
+  waiter that nobody removed, and the slot later handed to it was never released, so the
+  scheduler's capacity shrank by one. Acquisition now happens only when the async runs.
+  New `Lane.Run(job, work)` holds a slot for exactly as long as `work` runs, and gives it
+  back on success, failure or cancellation, including a cancellation in the moment
+  between the grant and the start of the work. Found by GitHub CI run 40682599280.
+
+- feat: a repository host bounds its sessions' heavy child processes with one process
+  scheduler (ADR-050, AUTOMATION-682). New `DaemonHosting.withProcesses`,
+  `HostingSeams.Processes`, `PluginHost ?processes` and `PluginHost.Processes`,
+  `Daemon.Processes`, `PluginHostServices.Processes` and `PluginCtx.Processes` (this
+  session's lane; `None` for a per-worktree daemon). `status --repository` gains each
+  session's `processAdmission`. `WorkScheduler.fs` now compiles before
+  `PluginFramework.fs`. Code that constructs a `PluginCtx` or `PluginHostServices` must
+  set `Processes`.
+
 - feat: every scheduler acquisition carries a `JobSpec` (ADR-049, AUTOMATION-682 /
   AUTOMATION-681 slice 7). New `JobClass` (`Interactive`, `Bulk`), `JobSpec` with
   `JobSpec.interactive` / `JobSpec.bulk`, `Lane.Acquire(job, ct)`, `DefaultAgingBound`

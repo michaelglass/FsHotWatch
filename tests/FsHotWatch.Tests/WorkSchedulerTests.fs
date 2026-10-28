@@ -282,3 +282,74 @@ let ``no core code fans out with an unbounded Async.Parallel`` () =
         |> List.ofArray
 
     test <@ List.isEmpty unbounded @>
+
+// ---------------------------------------------------------------------------
+// Cancellation before the acquisition runs, and after its grant (AUTOMATION-682)
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 5000)>]
+let ``an acquisition cancelled before it runs never queues, and leaks no slot`` () =
+    let scheduler = Scheduler 1
+    let holder = scheduler.Lane "holder"
+    let b = scheduler.Lane "B"
+    use cts = new CancellationTokenSource()
+
+    test <@ holder.Acquire CancellationToken.None |> Async.RunSynchronously @>
+    // The acquisition is described, then its caller is cancelled before it ever runs:
+    // Async.Parallel and Async.StartAsTask both check the token before a child starts.
+    let described = b.Acquire cts.Token
+    cts.Cancel()
+    let ran = Async.StartAsTask(described, cancellationToken = cts.Token)
+
+    let finished =
+        (ran :> Task).ContinueWith(fun (_: Task) -> ()).Wait(TimeSpan.FromSeconds 5.0)
+
+    test <@ finished && ran.IsCanceled @>
+    test <@ scheduler.Queued = 0 @>
+    holder.Release()
+    // The slot went back to the pool, not to a waiter nobody will ever release.
+    test <@ scheduler.Running = 0 @>
+
+[<Fact(Timeout = 5000)>]
+let ``a run whose slot is handed over just as its caller gives up still gives the slot back`` () =
+    use cts = new CancellationTokenSource()
+    // The caller gives up in the window between the hand-over and the waiter waking.
+    let scheduler = Scheduler(1, cts.Cancel)
+    let holder = scheduler.Lane "holder"
+    let b = scheduler.Lane "B"
+    let mutable ran = false
+
+    test <@ holder.Acquire CancellationToken.None |> Async.RunSynchronously @>
+
+    let run =
+        Async.StartImmediateAsTask(b.Run(JobSpec.interactive, async { ran <- true }), cancellationToken = cts.Token)
+
+    test <@ scheduler.Queued = 1 @>
+    holder.Release()
+
+    let finished =
+        (run :> Task).ContinueWith(fun (_: Task) -> ()).Wait(TimeSpan.FromSeconds 5.0)
+
+    test <@ finished @>
+    // Whether the work ran or the cancellation won, the slot is back.
+    test <@ scheduler.Running = 0 && scheduler.Queued = 0 @>
+    test <@ (b.Status()).Running = 0 @>
+
+[<Fact(Timeout = 5000)>]
+let ``a run holds its slot while its work runs and gives it back when the work fails`` () =
+    let scheduler = Scheduler 1
+    let a = scheduler.Lane "A"
+    let mutable inside = -1
+
+    let failing =
+        a.Run(
+            JobSpec.interactive,
+            async {
+                inside <- scheduler.Running
+                failwith "the work failed"
+            }
+        )
+
+    raises<exn> <@ Async.RunSynchronously failing @>
+    test <@ inside = 1 @>
+    test <@ scheduler.Running = 0 @>

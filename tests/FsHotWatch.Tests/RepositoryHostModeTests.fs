@@ -166,6 +166,18 @@ let ``the repository status shows the host's check slots and each session's admi
         @>
 
 [<Fact(Timeout = 5000)>]
+let ``the repository status shows the host's test-host slots`` () =
+    let json =
+        """{"hostPid":7,"endpoint":"e","processes":{"capacity":12,"running":2,"queued":1},"sessions":[{"root":"/r","serving":true,"scanGeneration":3}]}"""
+
+    test
+        <@
+            renderRepositoryStatus json = [ "Repository host pid 7 on e: 1 session(s)"
+                                            "  test hosts: 2 of 12 slot(s) held, 1 queued"
+                                            "  /r  serving, scan generation 3" ]
+        @>
+
+[<Fact(Timeout = 5000)>]
 let ``the repository status names each session's snapshot epoch`` () =
     let json =
         """{"hostPid":7,"endpoint":"e","sessions":[{"root":"/r","serving":true,"scanGeneration":3,"snapshot":{"epoch":5,"manifest":"0123456789abcdef","refused":2}},{"root":"/s","serving":true,"scanGeneration":1}]}"""

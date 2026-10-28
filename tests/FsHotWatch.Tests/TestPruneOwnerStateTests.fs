@@ -38,6 +38,7 @@ let private recordingCtx () : PluginCtx<TestPruneMsg> =
       Log = ignore
       CompleteWithTimeout = ignore
       RunExclusive = fun _ _ -> Claimed
+      Processes = None
       RunExclusiveShared = fun _ _ _ _ _ -> SharedClaimed
       SlotHolder = fun _ -> SlotHolder.Free
       DeclareBoundedWork = FsHotWatch.PluginFramework.BoundedWork.undeclared
@@ -523,6 +524,7 @@ let private launchRecordingCtx (claim: SharedRunClaim) =
             fun key coalescing _ ->
                 intents.Add(key, coalescing)
                 Task.FromResult(())
+        Processes = None
         RunExclusiveShared =
             fun _ _ _ _ _ ->
                 claims <- claims + 1
@@ -627,6 +629,7 @@ let ``a tests run is declared result-first`` () =
 
     let ctx =
         { recordingCtx () with
+            Processes = None
             RunExclusiveShared =
                 fun _ _ workFor _ _ ->
                     runs.Add workFor
@@ -695,6 +698,7 @@ let ``a build landing while a result fold holds the tests key queues without sel
 
                     { new IDisposable with
                         member _.Dispose() = () }
+            Processes = None
             RunExclusiveShared =
                 fun key _ _ _ _ ->
                     effects.Add $"claim: %s{key}"
@@ -747,6 +751,7 @@ let ``a build folded over owed dependency fanout launches it`` () =
 
     let ctx =
         { recordingCtx () with
+            Processes = None
             RunExclusiveShared =
                 fun key _ work _ _ ->
                     Assert.Equal("tests", key)

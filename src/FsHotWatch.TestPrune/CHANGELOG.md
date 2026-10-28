@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: test groups launch through the session's process lane when it has one (ADR-050,
+  AUTOMATION-682). New `GroupSchedule.runAdmitted`: each group holds one slot of the
+  host's process scheduler while it runs, and gives it back on success, failure and
+  cancellation. A group still waiting when the run is cancelled never starts.
+  `tests.maxParallelProjects` still caps the session's own groups. A per-worktree daemon
+  launches as before.
+
 ## 0.13.0-alpha.94 - 2026-10-28
 
 - **fix: a long-running report printed in colour is read.** In CI (`CI`, `GITHUB_ACTIONS`,

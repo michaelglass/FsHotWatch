@@ -343,6 +343,7 @@ let ``a cancelled shared run hands the resource back in the state it was handed`
 
     let services =
         { defaultServices with
+            Processes = None
             ClaimOrQueueSharedRun = fun _ _ -> Some(Invalid "stale before the run")
             ReleaseSharedRun = fun _ state -> releases.Enqueue state }
 
@@ -397,6 +398,7 @@ let ``a shared run whose client goes while it waits for the resource never start
     let services =
         { defaultServices with
             // Another plugin holds the resource: the run is claimed but queued for it.
+            Processes = None
             ClaimOrQueueSharedRun =
                 fun _ start ->
                     queuedStart.Value <- Some start

@@ -321,6 +321,12 @@ type PluginCtx<'Msg> =
         /// graph" and falls back to its symbol-precise behaviour. All paths are
         /// absolute `.fsproj` paths.
         ProjectGraph: ProjectGraphAccessor
+        /// This session's lane of its repository host's process scheduler: a plugin that
+        /// launches a heavy child process (a test host) holds one of its slots for as long
+        /// as the process runs, so the host's sessions share one bound (AUTOMATION-682).
+        /// `None` for a per-worktree daemon, whose launches are bounded only by its own
+        /// configuration.
+        Processes: WorkScheduler.Lane option
     }
 
 /// Minimal read-only view of the project graph exposed to plugins via
@@ -693,6 +699,8 @@ type PluginHostServices =
         /// `PluginCtx.ProjectGraph`. The host supplies `ProjectGraphAccessor.none`
         /// until the daemon installs the live graph.
         ProjectGraph: ProjectGraphAccessor
+        /// The session's process lane, wired into every plugin's `PluginCtx.Processes`.
+        Processes: WorkScheduler.Lane option
         /// Starts plugin work. Supplied by the host so the synchronous failure
         /// boundary is deterministic in framework tests.
         StartAsync: Async<unit> -> unit
@@ -1334,7 +1342,8 @@ let internal registerHandlerForOwner
           SlotHolder = slotHolder
           DeclareBoundedWork = declareBoundedWork
           FcsSuppressedCodes = services.FcsSuppressedCodes
-          ProjectGraph = services.ProjectGraph }
+          ProjectGraph = services.ProjectGraph
+          Processes = services.Processes }
 
     // The narrow context handed to IPC command handlers — see `CommandCtx`.
     let commandCtx: CommandCtx<'Msg> =

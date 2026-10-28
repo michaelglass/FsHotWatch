@@ -116,3 +116,22 @@ let run (maxParallel: int option) (jobs: Async<'T> list) : Async<'T array> =
     match maxParallel with
     | None -> Async.Parallel jobs
     | Some cap -> Async.Parallel(jobs, maxDegreeOfParallelism = cap)
+
+/// `run`, with each group holding one slot of `processes` for as long as it runs: a
+/// group's projects run one after another, so a group is one test host at a time. A
+/// repository host's sessions share one process scheduler, so the host's bound holds
+/// across them (AUTOMATION-682); `maxParallel` still caps this session's own groups. A
+/// group still waiting for a slot when the run is cancelled never starts. `None` is
+/// exactly `run`.
+let runAdmitted
+    (processes: FsHotWatch.WorkScheduler.Lane option)
+    (maxParallel: int option)
+    (jobs: Async<'T> list)
+    : Async<'T array> =
+    match processes with
+    | None -> run maxParallel jobs
+    | Some lane ->
+        run
+            maxParallel
+            (jobs
+             |> List.map (fun job -> lane.Run(FsHotWatch.WorkScheduler.JobSpec.interactive, job)))

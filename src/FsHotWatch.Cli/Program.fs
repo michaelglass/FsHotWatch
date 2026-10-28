@@ -2954,6 +2954,14 @@ let internal renderRepositoryStatus (json: string) : string list =
           let running = c["running"].GetValue<int>()
           let queued = c["queued"].GetValue<int>()
           yield $"  checks: %d{running} of %d{capacity} slot(s) held, %d{queued} queued"
+      // A host older than its process scheduler (AUTOMATION-682) sends none.
+      match node["processes"] with
+      | null -> ()
+      | p ->
+          let capacity = p["capacity"].GetValue<int>()
+          let running = p["running"].GetValue<int>()
+          let queued = p["queued"].GetValue<int>()
+          yield $"  test hosts: %d{running} of %d{capacity} slot(s) held, %d{queued} queued"
       for s in sessions do
           let state =
               if s["serving"].GetValue<bool>() then
@@ -3155,6 +3163,10 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
         // that many per session.
         let checks = FsHotWatch.WorkScheduler.Scheduler Environment.ProcessorCount
 
+        // Every session's test hosts take turns at one bound too (AUTOMATION-682): the same
+        // processor count, so two sessions' gates cannot each launch a full set of hosts.
+        let processes = FsHotWatch.WorkScheduler.Scheduler Environment.ProcessorCount
+
         // Every worktree is checked under one virtual root, so identical projects share
         // FCS's work. Which content of each project is shared, and by which sessions.
         let canonical = FsHotWatch.CanonicalProjects.Registry()
@@ -3224,6 +3236,7 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
             node["watch"] <- watch
             node["ownPaths"] <- ownPaths.ToJson()
             node["scheduler"] <- FsHotWatch.WorkScheduler.SchedulerStatus.payload (checks.Status())
+            node["processes"] <- FsHotWatch.WorkScheduler.SchedulerStatus.payload (processes.Status())
             node
 
         let factory (spec: FsHotWatch.SessionRegistry.SessionSpec) =
@@ -3265,6 +3278,7 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
                     frames
                     (defaultArg imports (fun _ -> None))
                     checks
+                |> FsHotWatch.DaemonHosting.withProcesses processes
 
             let daemon = daemonWith opts config Daemon.RunMode.Watching hosting worktreeRoot
 

@@ -38,7 +38,7 @@ let private acquire (lane: Lane) (job: JobSpec) (label: string) (granted: Concur
 
         return entered
     }
-    |> Async.StartAsTask
+    |> Async.StartImmediateAsTask
 
 /// Release `lane`'s slot and return the label of whoever it was handed to.
 let private handOver (lane: Lane) (granted: ConcurrentQueue<string>) : string =
@@ -56,7 +56,7 @@ let ``an unmarked acquisition is interactive`` () =
     let scheduler, _ = withClock 1
     let a = scheduler.Lane "A"
 
-    test <@ (a.Acquire CancellationToken.None |> Async.StartAsTask).Result @>
+    test <@ (a.Acquire CancellationToken.None |> Async.StartImmediateAsTask).Result @>
     let status = a.Status()
     test <@ status.Interactive.Granted = 1L && status.Bulk.Granted = 0L @>
 
@@ -160,7 +160,7 @@ let ``a lane counts its grants, waits and give-ups per class`` () =
 
     test <@ (acquire a JobSpec.interactive "holder" granted).Result @>
     let bulk = acquire a JobSpec.bulk "bulk" granted
-    let givenUp = a.Acquire(JobSpec.bulk, cts.Token) |> Async.StartAsTask
+    let givenUp = a.Acquire(JobSpec.bulk, cts.Token) |> Async.StartImmediateAsTask
     clock.Advance 3.0
     cts.Cancel()
     test <@ not givenUp.Result @>

@@ -28,7 +28,8 @@ let private withClock (capacity: int) =
     Scheduler(capacity, ignore, clock.Now), clock
 
 /// Acquire on `lane`; the acquisition queues (or is granted) before this returns.
-let private acquire (lane: Lane) (ct: CancellationToken) = lane.Acquire ct |> Async.StartAsTask
+let private acquire (lane: Lane) (ct: CancellationToken) =
+    lane.Acquire ct |> Async.StartImmediateAsTask
 
 [<Fact(Timeout = 5000)>]
 let ``a lane that is granted at once waited nothing`` () =
@@ -234,7 +235,7 @@ let ``under any sequence, the bound holds and every lane's counts add up to the 
 
                 let task =
                     lanes[i].Acquire((if bulk then JobSpec.bulk else JobSpec.interactive), cts.Token)
-                    |> Async.StartAsTask
+                    |> Async.StartImmediateAsTask
 
                 pending[i].Add((cts, task))
             | Release i ->
