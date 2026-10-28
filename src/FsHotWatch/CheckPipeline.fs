@@ -154,14 +154,25 @@ module CheckCaller =
         | caller -> caller
 
 /// A check that is running: what it asked FCS, who started it and its answer.
+///
+/// It is one producer that its callers lease. The caller that starts it holds the first
+/// lease and each caller that joins it takes another; a caller gives its lease back when
+/// it has the answer or gives up waiting. Nobody leaving cancels it: FCS is not handed
+/// a token, because cancelling a check mid-way is not cooperative-safe (ADR-003 records
+/// an FCS internal-error storm under cancellation churn). Only a newer check of a
+/// different snapshot, or a rediscovery, cancels it, and that only drops its answer.
 [<NoComparison; NoEquality>]
 type internal RunningCheck =
-    { Project: string
-      Origin: CheckOrigin
-      Caller: string
-      Ticket: int64
-      Cts: CancellationTokenSource
-      Task: Threading.Tasks.Task<(FileCheckResult * (string * string) list) option> }
+    {
+        Project: string
+        Origin: CheckOrigin
+        Caller: string
+        Ticket: int64
+        Cts: CancellationTokenSource
+        /// Callers waiting on the answer now. Read and written under the pipeline's gate.
+        Leases: int ref
+        Task: Threading.Tasks.Task<(FileCheckResult * (string * string) list) option>
+    }
 
 /// What a check call does about the check of its file that is already running.
 [<NoComparison; NoEquality>]
@@ -199,6 +210,12 @@ let internal cancellationLine (absPath: string) (cancellation: CheckCancellation
 /// The line logged when a check call joins the identical running check of its file.
 let internal joinLine (fileName: string) (runningCaller: string) (joiningCaller: string) (origin: string) : string =
     $"joining the in-flight check of %s{fileName} (%s{origin}) started by %s{runningCaller}, for %s{joiningCaller}: same snapshot, one FCS check"
+
+/// The line logged when a check finishes after every caller of it gave up: the FCS work
+/// was spent for nobody. Counting these lines is how to tell whether cancelling such a
+/// check (were FCS safe to cancel) would pay.
+let internal unwantedLine (fileName: string) (origin: string) : string =
+    $"check of %s{fileName} (%s{origin}) finished with no caller waiting for it; FCS is not cancelled mid-check, so it ran to the end, and nothing is published"
 
 /// The line logged when a newer check supersedes a running check of a DIFFERENT snapshot:
 /// both callers, both origins, and whether the keys matched (they cannot, or it would
@@ -352,6 +369,23 @@ type CheckPipeline
     /// unchecked files is what can redden a verdict.
     let logCancellation (absPath: string) (cancellation: CheckCancellation) =
         Logging.info "check" (cancellationLine absPath cancellation)
+
+    /// Once a started check's FCS work is done: take it out of the registry, so its
+    /// answer (and the typed tree it holds) lives only as long as a caller holding it,
+    /// and say so when no caller is left to take it. `cts` names the check: a newer
+    /// check of the file may already have replaced it in the registry.
+    let retireCheck (checkedFile: AbsFilePath) (cts: CancellationTokenSource) (leases: int ref) (unwanted: string) =
+        let nobodyWaiting =
+            lock gate (fun () ->
+                match running.TryGetValue checkedFile with
+                | true, current when obj.ReferenceEquals(current.Cts, cts) -> running.TryRemove checkedFile |> ignore
+                | _ -> ()
+
+                leases.Value = 0 && not cts.IsCancellationRequested)
+
+        if nobodyWaiting then
+            activity.Log unwanted
+            Logging.info "check" unwanted
 
     let mutable lastFitWarning: string option = None
 
@@ -548,6 +582,9 @@ type CheckPipeline
 
     /// The fit warning last logged, if any.
     member _.LastFitWarning = Volatile.Read(&lastFitWarning)
+
+    /// How many checks are registered as running: started, not yet retired.
+    member internal _.RunningChecks: int = running.Count
 
     /// Clear all registered projects, file mappings, and per-file cancellation tokens.
     ///
@@ -954,10 +991,15 @@ type CheckPipeline
                                             | false, _ -> false)
 
                                     match alive with
-                                    | Some r when r.Project = project && r.Origin = origin -> Ok(origin, Join r)
+                                    | Some r when r.Project = project && r.Origin = origin ->
+                                        r.Leases.Value <- r.Leases.Value + 1
+                                        Ok(origin, Join r)
                                     | _ when newerStarted -> Ok(origin, GiveWay)
                                     | _ ->
                                         let cts = new CancellationTokenSource()
+                                        let leases = ref 1
+
+                                        let unwanted = unwantedLine fileName (originText projectName origin)
 
                                         // The started check owns the slot from here and
                                         // gives it back however it ends.
@@ -978,7 +1020,10 @@ type CheckPipeline
                                                                 cts
                                                             )
                                                     finally
-                                                        leaveSlot ()
+                                                        try
+                                                            retireCheck checkedFile cts leases unwanted
+                                                        finally
+                                                            leaveSlot ()
                                                 }
                                             )
 
@@ -990,6 +1035,7 @@ type CheckPipeline
                                               Caller = caller
                                               Ticket = ticket
                                               Cts = cts
+                                              Leases = leases
                                               Task = task }
 
                                         lastStarted[checkedFile] <- ticket
@@ -1011,7 +1057,7 @@ type CheckPipeline
 
                         activity.Log line
                         Logging.debug "check" line
-                        return! this.AwaitRunning(r, checkedFile, absPath, ct)
+                        return! this.AwaitRunning(r, absPath, ct)
                     | Ok(origin, Start(started, superseded)) ->
                         match superseded with
                         | Some previous ->
@@ -1034,23 +1080,32 @@ type CheckPipeline
                             previous.Cts.Cancel()
                         | None -> ()
 
-                        return! this.AwaitRunning(started, checkedFile, absPath, ct)
+                        return! this.AwaitRunning(started, absPath, ct)
         }
 
-    /// Wait for a running check without throwing, however the wait ends. A caller whose
-    /// own token is cancelled, or whose check was superseded, gets nothing.
+    /// Wait for a running check on a lease, without throwing, however the wait ends. A
+    /// caller whose own token is cancelled leaves at once, giving its lease back while the
+    /// check runs on for any other caller; it, like a caller whose check was superseded,
+    /// gets nothing.
     member private _.AwaitRunning
-        (r: RunningCheck, checkedFile: AbsFilePath, absPath: string, ct: CancellationToken)
+        (r: RunningCheck, absPath: string, ct: CancellationToken)
         : Async<(FileCheckResult * (string * string) list) option> =
         async {
-            let! result = r.Task |> Async.AwaitTask
+            let gaveUp =
+                Threading.Tasks.TaskCompletionSource(Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously)
 
-            // Retire the entry once, so its answer (and the typed tree it holds) is not
-            // kept alive by the registry after every waiter has it.
-            lock gate (fun () ->
-                match running.TryGetValue checkedFile with
-                | true, current when obj.ReferenceEquals(current, r) -> running.TryRemove checkedFile |> ignore
-                | _ -> ())
+            do!
+                async {
+                    use _ = ct.Register(fun () -> gaveUp.TrySetResult() |> ignore)
+
+                    let! _ =
+                        Threading.Tasks.Task.WhenAny(r.Task :> Threading.Tasks.Task, gaveUp.Task)
+                        |> Async.AwaitTask
+
+                    return ()
+                }
+
+            lock gate (fun () -> r.Leases.Value <- r.Leases.Value - 1)
 
             if ct.IsCancellationRequested then
                 logCancellation absPath (CheckCancellation.ByCaller(CheckCaller.current ()))
@@ -1059,7 +1114,7 @@ type CheckPipeline
                 logCancellation absPath CheckCancellation.Superseded
                 return None
             else
-                return result
+                return r.Task.Result
         }
 
     /// Cache-aware wrapper: looks up the cache, on miss reads disk and calls

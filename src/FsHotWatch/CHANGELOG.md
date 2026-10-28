@@ -19,6 +19,15 @@
   now asked for such a project too, and the snapshot still checks it at its own paths
   whatever it answers. New: `CanonicalProjects.Registry.HoldersOf`, `SessionFrames.Reports`.
 
+- fix: a caller that gives up on a running file check returns at once. A check is one
+  producer that its callers lease: the caller that started it and each caller that joined
+  it. A caller whose token is cancelled (a cancelled scan, a stopping session) used to wait
+  for FCS to finish a check it no longer wanted; it now gives its lease back and returns
+  with no answer while the check runs on for any caller still holding one. Nobody leaving
+  cancels the check, because FCS is not safe to cancel mid-check (ADR-043). A check that
+  finishes after every caller left retires itself, so the registry keeps no typed tree for
+  it, and logs "finished with no caller waiting for it".
+
 - feat: a client that falls back from the repository host is recorded. New
   `HostLifecycle.recordFallback path at clientPid fallback` appends a `fellBack` line
   (`Fallback.toJsonLine`: `clientPid`, `hostPid` when known, `reason`, `detail`, `root`)
