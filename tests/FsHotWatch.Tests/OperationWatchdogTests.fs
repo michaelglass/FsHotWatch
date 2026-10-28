@@ -663,6 +663,10 @@ let ``Watchdog logs a host suspension once, when the wall clock outruns the awak
 
     let pinned: FsHotWatch.HostClock.Reading option ref = ref None
     let misread = System.Collections.Concurrent.ConcurrentQueue<string>()
+    // How many ticks have read the wall clock at each reading. Ticks never overlap
+    // (AUTOMATION-1330), so a second tick that reads a reading means the first one to read it
+    // has recorded it.
+    let reads = System.Collections.Concurrent.ConcurrentDictionary<DateTime, int>()
 
     let awakeFromPin () =
         match pinned.Value with
@@ -682,6 +686,7 @@ let ``Watchdog logs a host suspension once, when the wall clock outruns the awak
                 (fun () ->
                     let reading = clocks.Value
                     pinned.Value <- Some reading
+                    reads.AddOrUpdate(reading.Wall, 1, fun _ n -> n + 1) |> ignore
                     reading.Wall),
             log = logged.Enqueue,
             tick = TimeSpan.FromMilliseconds(20.0),
@@ -698,7 +703,15 @@ let ``Watchdog logs a host suspension once, when the wall clock outruns the awak
         { Wall = t0.AddSeconds 30.0
           Awake = TimeSpan.FromSeconds 1030.0 }
 
-    Thread.Sleep 200
+    // A tick has recorded this reading, so the suspension below is measured from it. A fixed
+    // sleep here let a loaded host skip every tick of it, and the suspension was then
+    // measured from t0 (GitHub CI run 40753750026).
+    let readsOf (wall: DateTime) =
+        match reads.TryGetValue wall with
+        | true, n -> n
+        | false, _ -> 0
+
+    waitUntil (fun () -> readsOf (t0.AddSeconds 30.0) >= 2) 5000
     test <@ misread.IsEmpty @>
     test <@ List.isEmpty (suspensions ()) @>
 
