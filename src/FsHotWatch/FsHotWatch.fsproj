@@ -84,6 +84,7 @@
     <Compile Include="ProcessHelper.fs" />
     <Compile Include="FsHwPaths.fs" />
     <Compile Include="ContentHash.fs" />
+    <Compile Include="ActionKey.fs" />
     <Compile Include="SnapshotEpoch.fs" />
     <Compile Include="DaemonIdentity.fs" />
     <Compile Include="MacAttrList.fs" />
@@ -126,6 +127,8 @@
     <Compile Include="TreeHash.fs" />
     <Compile Include="TestEvidenceKey.fs" />
     <Compile Include="TestEvidenceStore.fs" />
+    <Compile Include="OutcomeStore.fs" />
+    <Compile Include="LookupVerdict.fs" />
     <Compile Include="Watcher.fs" />
     <Compile Include="CommandPreprocessor.fs" />
     <Compile Include="SharedWatchPool.fs" />

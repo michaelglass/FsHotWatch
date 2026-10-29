@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: shadow mode for the lookup verdict (ADR-059, AUTOMATION-1362). Every `check` and
+  `confirm` publication also files its results as outcome records under
+  `.fshw/shadow/outcomes`, looks the tree up from the configured requirements, and appends one
+  comparison line to `.fshw/shadow/lookup-verdict.jsonl` (`direction`: agree, stricter, looser
+  or red-vs-missing). It never changes the exit code or `verdict.json`; `FSHW_OUTCOME_SHADOW=0`
+  turns it off. New: `ShadowVerdict`.
+
 - **fix: a non-interactive `check`/`confirm` reports what its settle waits on
   (AUTOMATION-1370).** The settle (`WaitForComplete`) printed nothing off a terminal, so a
   land gate that spent its 150-minute timeout on starved test runs logged only the scan

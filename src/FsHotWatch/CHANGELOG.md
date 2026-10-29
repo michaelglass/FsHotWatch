@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: `ActionKey`, `OutcomeStore` and `LookupVerdict` (ADR-059, AUTOMATION-1362). `ActionKey`
+  is one content key for every action: a length-prefixed fold of labelled input digests, with
+  `moved` naming the labels that differ. `OutcomeStore` files immutable, self-verifying outcome
+  records under that key (temp file and rename, a checksum envelope, history per key with the
+  newest answering and a fail outranking a pass at the same instant, quarantine, and GC by TTL
+  and byte budget). `LookupVerdict.decide` is the verdict as a pure lookup over those records.
+  Nothing decides with them yet: the CLI's shadow mode is their only consumer.
+
 ## 0.10.0-alpha.96 - 2026-10-28
 
 - fix: a cancelled scan or change batch can no longer crash the daemon (ADR-056). In

@@ -73,6 +73,9 @@
     <Compile Include="CrossWorkspaceCacheTests.fs" />
     <Compile Include="TestEvidenceKeyTests.fs" />
     <Compile Include="TestEvidenceStoreTests.fs" />
+    <Compile Include="ActionKeyTests.fs" />
+    <Compile Include="OutcomeStoreTests.fs" />
+    <Compile Include="LookupVerdictTests.fs" />
     <Compile Include="AnalyzerCacheKeyTests.fs" />
     <Compile Include="LintCacheKeyTests.fs" />
     <Compile Include="FileStampTests.fs" />
@@ -244,6 +247,8 @@
     <Compile Include="CheckVerdictTests.fs" />
     <Compile Include="RunClaimTests.fs" />
     <Compile Include="VerdictTests.fs" />
+    <Compile Include="ShadowVerdictTests.fs" />
+    <Compile Include="LookupParityCasesTests.fs" />
     <Compile Include="IpcOutputTests.fs" />
     <Compile Include="ConfirmModelChangeTests.fs" />
     <Compile Include="ConfirmTracesTests.fs" />
