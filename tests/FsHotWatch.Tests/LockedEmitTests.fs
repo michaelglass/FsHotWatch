@@ -59,7 +59,6 @@ let ``an emit under the discovery lock finishes while the scan's other callbacks
     let discovery = Lock()
     use holding = new ManualResetEventSlim(false)
     use queued = new ManualResetEventSlim(false)
-    let emitted = Stopwatch()
 
     // The checked file's own callback, on a thread of its own so a hang is observed by
     // `Join` rather than hanging the test.
@@ -71,9 +70,7 @@ let ``an emit under the discovery lock finishes while the scan's other callbacks
                 try
                     holding.Set()
                     queued.Wait()
-                    emitted.Start()
                     host.EmitFileChecked checkedFile
-                    emitted.Stop()
                 finally
                     discovery.Exit()),
             IsBackground = true,
@@ -86,7 +83,7 @@ let ``an emit under the discovery lock finishes while the scan's other callbacks
         let finished =
             withEveryPoolThreadBusy (fun () ->
                 holder.Start()
-                Assert.True(holding.Wait(TimeSpan.FromSeconds 10.0), "the holder never took the lock")
+                Assert.True(holding.Wait(HangWait), "the holder never took the lock")
 
                 // On the pool's global queue, as continuations posted from outside the pool
                 // are, and so ahead of anything the emit itself posts there. `Task.Run` from
@@ -111,8 +108,6 @@ let ``an emit under the discovery lock finishes while the scan's other callbacks
             $"EmitFileChecked under the lock did not return within %O{bound}: it waits for a pool thread \
               that %d{queuedCallbacks} callbacks waiting on the same lock are queued ahead of"
         )
-
-        Assert.True(emitted.Elapsed < bound, $"the emit took %O{emitted.Elapsed}")
     finally
         releaseFold.Set()
         // Unblocked pool: the holder's emit completes, then every callback gets the lock.
@@ -124,6 +119,7 @@ let ``an emit under the discovery lock finishes while the scan's other callbacks
 /// the posted change first. The pool writer, when it finally runs, finds the writer role
 /// taken and leaves the queue to its holder. Order, not liveness: the emit test above is
 /// the one a writer that needs the pool fails.
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 120000)>]
 let ``a synchronous change publishes an asynchronous one queued ahead of it first, and the pool writer leaves the queue to it``
     ()

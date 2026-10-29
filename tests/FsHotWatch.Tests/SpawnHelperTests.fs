@@ -58,7 +58,7 @@ type private InProcessHelper() =
     /// finish its teardown.
     member _.Shutdown() =
         (connection :> IDisposable).Dispose()
-        Assert.True(server.Wait(10000), "the helper must finish once its request pipe closes")
+        Assert.True(server.Wait(HangWaitMs), "the helper must finish once its request pipe closes")
 
     interface IDisposable with
         member this.Dispose() =
@@ -218,7 +218,7 @@ let ``a helper child that overruns its timeout is killed through the helper`` ()
         Assert.True(isGone pid, "the timed-out child must be dead")
         Assert.Empty(registry.Leaks))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``shutting down the scope kills a running helper child`` () =
     withTempDir "spawn-helper-shutdown" (fun directory ->
         use helper = new InProcessHelper()
@@ -242,7 +242,7 @@ let ``shutting down the scope kills a running helper child`` () =
         let pid = started.Task.Result
         registry.KillAll()
 
-        Assert.True(run.Wait(10000), "the run must end once its child is killed")
+        Assert.True(run.Wait(HangWaitMs), "the run must end once its child is killed")
         Assert.False(isSucceeded run.Result)
         Assert.True(isGone pid, "the scope's shutdown must have killed the child")
         Assert.Empty(registry.Leaks))
@@ -274,7 +274,7 @@ let ``a command the helper cannot start raises what Process.Start would`` () =
             |> ignore)
         |> ignore)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a helper child is observable through its exit and a released child cannot be killed`` () =
     withTempDir "spawn-helper-exit" (fun directory ->
         use helper = new InProcessHelper()
@@ -282,7 +282,7 @@ let ``a helper child is observable through its exit and a released child cannot 
         let child =
             helper.Connection.Start("/bin/sh", shell "exit 7", directory, [], StartBudget)
 
-        Assert.True(child.WaitForExit 10000, "the child must exit")
+        Assert.True(child.WaitForExit HangWaitMs, "the child must exit")
         Assert.True(child.HasExited)
         Assert.Equal(7, child.ExitCode)
 
@@ -617,14 +617,14 @@ let ``attempt reports what the work raised`` () =
     | Some ex -> Assert.Equal("boom", ex.Message)
     | None -> failwith "the failure must be reported"
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a tracked child that has exited is not listed as live`` () =
     let registry = ProcessRegistry.Registry()
 
     use exited =
         Diagnostics.Process.Start(Diagnostics.ProcessStartInfo("/bin/sh", shell "exit 0", UseShellExecute = false))
 
-    Assert.True(exited.WaitForExit 10000, "the fixture child must exit")
+    Assert.True(exited.WaitForExit HangWaitMs, "the fixture child must exit")
     registry.Track exited
     Assert.Empty(registry.LivePids())
     Assert.Empty(registry.Snapshot())

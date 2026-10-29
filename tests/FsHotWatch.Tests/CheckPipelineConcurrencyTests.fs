@@ -13,6 +13,7 @@ open FsHotWatch.Tests.TestHelpers
 
 /// An activity sink that blocks every check it sees start for `hold`, as a check
 /// blocked on I/O or a lock would, and records how many were inside at once.
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 type private BlockingChecks(hold: int) =
     let mutable inside = 0
     let mutable peak = 0
@@ -149,6 +150,7 @@ let ``two sessions checking through one scheduler share its bound`` () =
         test <@ sink.Peak >= 1 && sink.Peak <= 2 @>
         test <@ scheduler.Running = 0 && scheduler.Queued = 0 @>)
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 120000)>]
 let ``a session flooding the checker cannot keep another session's check behind its queue`` () =
     withTempDir "check-fair-shared" (fun dir ->
@@ -248,6 +250,7 @@ let private slowProject (checker: FSharpChecker) (root: string) =
         UseScriptResolutionRules = false },
     AbsFilePath.create file
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 300000)>]
 let ``work two sessions share survives one of them cancelling`` () =
     withTempDir "check-shared-cancel" (fun dir ->

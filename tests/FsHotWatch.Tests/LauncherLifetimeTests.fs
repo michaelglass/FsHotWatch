@@ -24,7 +24,7 @@ let private shQuote (value: string) =
 
 // The second stem carries a quote, a dollar and a backtick: the launch shell
 // must hand the executable path over as ONE word, not run parts of it.
-[<Theory(Timeout = 30000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("owned-child")>]
 [<InlineData("owned '$child`")>]
 let ``production launcher gives its child a process group independent of the caller`` (fileStem: string) =
@@ -65,5 +65,5 @@ let ``production launcher gives its child a process group independent of the cal
                 if not owned.HasExited then
                     owned.Kill()
 
-                Assert.True(owned.WaitForExit 5000, "the fixture child must be reaped")
+                Assert.True(owned.WaitForExit HangWaitMs, "the fixture child must be reaped")
             | None -> ())

@@ -102,7 +102,7 @@ let ``a fixture's git init runs in the fixture's own directory`` () =
 let ``SIGHUP during a beforeRun hook reaps the hook and exits 129`` () =
     withTempDir "run-sighup" (fun root ->
         use init = Process.Start(gitInitStartInfo root)
-        Assert.True(init.WaitForExit 30000 && init.ExitCode = 0, "git init must make the fixture a checkout")
+        Assert.True(init.WaitForExit HangWaitMs && init.ExitCode = 0, "git init must make the fixture a checkout")
 
         let shellPid = Path.Combine(root, "shell.pid")
         let sleepPid = Path.Combine(root, "sleep.pid")
@@ -138,7 +138,7 @@ let ``SIGHUP during a beforeRun hook reaps the hook and exits 129`` () =
             Assert.True(alive hookSleep, "positive control: the hook's child is alive before the signal")
 
             Assert.Equal(0, signal (cli.Id, SIGHUP))
-            Assert.True(cli.WaitForExit 30000, "the CLI must exit after SIGHUP")
+            Assert.True(cli.WaitForExit HangWaitMs, "the CLI must exit after SIGHUP")
 
             let output = stdout.Result + "\n" + stderr.Result
             Assert.True((cli.ExitCode = 129), $"expected exit 129, got %d{cli.ExitCode}:\n%s{output}")
@@ -184,7 +184,7 @@ let private SIGTERM = 15
 let ``SIGTERM to a daemon reaps its spawned test host and logs the shutdown`` () =
     withTempDir "daemon-sigterm" (fun root ->
         use init = Process.Start(gitInitStartInfo root)
-        Assert.True(init.WaitForExit 30000 && init.ExitCode = 0, "git init must make the fixture a checkout")
+        Assert.True(init.WaitForExit HangWaitMs && init.ExitCode = 0, "git init must make the fixture a checkout")
 
         let hostPid = Path.Combine(root, "host.pid")
         let childPid = Path.Combine(root, "child.pid")
@@ -332,7 +332,7 @@ let ``SIGTERM to a repository host reaps every session's test host and logs the 
 
             let command = String.concat " " args
 
-            Assert.True(p.WaitForExit 30000 && p.ExitCode = 0, $"git %s{command} must succeed: %s{err.Result}")
+            Assert.True(p.WaitForExit HangWaitMs && p.ExitCode = 0, $"git %s{command} must succeed: %s{err.Result}")
 
         let main = Path.Combine(dir, "main")
         let second = Path.Combine(dir, "second")

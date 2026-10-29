@@ -55,7 +55,7 @@ type private ChildSpawningPreprocessor
                 entered.Set()
 
                 try
-                    Assert.True(release.Wait(TimeSpan.FromSeconds 30.0), "the fixture preprocessor must be released")
+                    Assert.True(release.Wait(HangWait), "the fixture preprocessor must be released")
                 finally
                     returned.Set()
 
@@ -101,7 +101,7 @@ let private reapSpawned (preprocessor: ChildSpawningPreprocessor) =
             if not child.HasExited then
                 child.Kill(entireProcessTree = true)
 
-            Assert.True(child.WaitForExit(5000), "the fixture-owned child must be reaped")
+            Assert.True(child.WaitForExit(HangWaitMs), "the fixture-owned child must be reaped")
         finally
             child.Dispose()
 
@@ -156,15 +156,12 @@ let ``a child spawned by active daemon work is tracked and reaped on shutdown`` 
                 // Shutdown (the same path `fshw stop` and the wedge self-heal take) reaps it
                 // while the work that spawned it is still running.
                 (daemon :> IDisposable).Dispose()
-                Assert.True(child.WaitForExit(5000), "daemon shutdown must reap the active work's child")
+                Assert.True(child.WaitForExit(HangWaitMs), "daemon shutdown must reap the active work's child")
             finally
                 release.Set()
                 (daemon :> IDisposable).Dispose()
 
                 if entered.IsSet then
-                    Assert.True(
-                        returned.Wait(TimeSpan.FromSeconds 20.0),
-                        "the held preprocessor must return once released"
-                    ))
+                    Assert.True(returned.Wait(HangWait), "the held preprocessor must return once released"))
     finally
         reapSpawned preprocessor

@@ -93,6 +93,7 @@ let private dummyIpc (isRunning: string -> bool) : IpcOps =
 /// What a transport publishes on a clean run: a green owned by
 /// `invocationId`, with a plugin record, a `tests.beforeRun` hook and both on the
 /// timeline — the evidence a later terminal downgrade must keep.
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
 let private publishCleanInvocation (invocationId: string) (root: string) =
     let tree = TreeHash.compute root []
 

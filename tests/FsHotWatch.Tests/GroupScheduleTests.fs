@@ -39,13 +39,13 @@ type private Gated(count: int) =
     /// Wait until `n` jobs in total have started.
     member _.AwaitStarted(n: int) =
         for _ in 1..n do
-            test <@ startedSignal.Wait(TimeSpan.FromSeconds 10.0) @>
+            test <@ startedSignal.Wait(HangWait) @>
 
     member _.Release(i: int) = releases.[i].TrySetResult() |> ignore
     member _.Peak = lock started (fun () -> peak)
     member _.StartOrder = started.ToArray() |> Array.toList
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a cap of 2 never has more than 2 groups in flight and runs them all`` () =
     let gated = Gated 5
     let run = GroupSchedule.run (Some 2) gated.Jobs |> Async.StartAsTask
@@ -60,11 +60,11 @@ let ``a cap of 2 never has more than 2 groups in flight and runs them all`` () =
         if i + 2 <= 4 then
             gated.AwaitStarted 1
 
-    test <@ run.Wait(TimeSpan.FromSeconds 10.0) @>
+    test <@ run.Wait(HangWait) @>
     test <@ gated.Peak = 2 @>
     test <@ run.Result = [| 0; 1; 2; 3; 4 |] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a capped run starts groups in the order it is given`` () =
     let gated = Gated 4
     let run = GroupSchedule.run (Some 1) gated.Jobs |> Async.StartAsTask
@@ -73,11 +73,11 @@ let ``a capped run starts groups in the order it is given`` () =
         gated.AwaitStarted 1
         gated.Release i
 
-    test <@ run.Wait(TimeSpan.FromSeconds 10.0) @>
+    test <@ run.Wait(HangWait) @>
     test <@ gated.StartOrder = [ 0; 1; 2; 3 ] @>
     test <@ gated.Peak = 1 @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``without a cap every group starts at once, exactly as before the option existed`` () =
     // Positive control: the gates would deadlock if any job waited for a slot.
     let gated = Gated 6
@@ -88,7 +88,7 @@ let ``without a cap every group starts at once, exactly as before the option exi
     for i in 0..5 do
         gated.Release i
 
-    test <@ run.Wait(TimeSpan.FromSeconds 10.0) @>
+    test <@ run.Wait(HangWait) @>
 
 [<Fact(Timeout = 30000)>]
 let ``a group still queued when the run is cancelled never starts`` () =
@@ -117,7 +117,7 @@ let ``a group still queued when the run is cancelled never starts`` () =
 
 // --- the host's process capacity (AUTOMATION-682) ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``each group holds one of the host's process slots for its whole run`` () =
     let processes = FsHotWatch.WorkScheduler.Scheduler 1
     let lane = processes.Lane "session"
@@ -138,12 +138,12 @@ let ``each group holds one of the host's process slots for its whole run`` () =
     gated.AwaitStarted 1
     gated.Release(List.last gated.StartOrder)
 
-    test <@ run.Wait(TimeSpan.FromSeconds 10.0) @>
+    test <@ run.Wait(HangWait) @>
     test <@ gated.Peak = 1 @>
     test <@ processes.Running = 0 && processes.Queued = 0 @>
     test <@ (lane.Status()).Granted = 3L @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``another session's test host holds the slot until it is done`` () =
     let processes = FsHotWatch.WorkScheduler.Scheduler 1
     let other = processes.Lane "other"
@@ -163,7 +163,7 @@ let ``another session's test host holds the slot until it is done`` () =
     other.Release()
     gated.AwaitStarted 1
     gated.Release 0
-    test <@ run.Wait(TimeSpan.FromSeconds 10.0) @>
+    test <@ run.Wait(HangWait) @>
 
 [<Fact(Timeout = 30000)>]
 let ``a group that fails gives its slot back`` () =
@@ -218,7 +218,7 @@ let ``a group still waiting for a process slot when the run is cancelled never s
     test <@ processes.Queued = 0 && processes.Running = 1 @>
     other.Release()
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``without a process lane a run is exactly the session's own schedule`` () =
     let gated = Gated 3
     let run = GroupSchedule.runAdmitted None None gated.Jobs |> Async.StartAsTask
@@ -227,7 +227,7 @@ let ``without a process lane a run is exactly the session's own schedule`` () =
     for i in 0..2 do
         gated.Release i
 
-    test <@ run.Wait(TimeSpan.FromSeconds 10.0) @>
+    test <@ run.Wait(HangWait) @>
     test <@ gated.Peak = 3 @>
 
 // --- longestFirst ---

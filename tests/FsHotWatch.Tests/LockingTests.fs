@@ -29,7 +29,7 @@ let ``releases the gate when the work throws`` () =
     test <@ thrown.Message = "boom" @>
     test <@ not gate.IsHeldByCurrentThread @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a second holder waits until the first releases`` () =
     let gate = Lock()
     use entered = new ManualResetEventSlim(false)
@@ -47,7 +47,7 @@ let ``a second holder waits until the first releases`` () =
     test <@ not (second.Wait(TimeSpan.FromMilliseconds 200.0)) @>
     release.Set()
     first.Wait()
-    test <@ second.Wait(TimeSpan.FromSeconds 5.0) @>
+    test <@ second.Wait(FsHotWatch.Tests.TestHelpers.HangWait) @>
 
 [<Fact>]
 let ``monitored returns the work's result and releases the monitor`` () =
@@ -70,7 +70,7 @@ let ``monitored releases the monitor when the work throws`` () =
     test <@ thrown.Message = "boom" @>
     test <@ not (Monitor.IsEntered gate) @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``monitored holds the monitor Wait and Pulse need`` () =
     let gate = obj ()
     let mutable ready = false
@@ -87,4 +87,4 @@ let ``monitored holds the monitor Wait and Pulse need`` () =
         ready <- true
         Monitor.Pulse gate)
 
-    test <@ waiter.Wait(TimeSpan.FromSeconds 5.0) && waiter.Result @>
+    test <@ waiter.Wait(FsHotWatch.Tests.TestHelpers.HangWait) && waiter.Result @>

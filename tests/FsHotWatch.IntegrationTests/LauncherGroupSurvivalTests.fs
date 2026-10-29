@@ -32,7 +32,7 @@ let private reap (proc: Process) =
     if not proc.HasExited then
         proc.Kill()
 
-    Assert.True(proc.WaitForExit 5000, $"fixture process %d{proc.Id} must be reaped")
+    Assert.True(proc.WaitForExit HangWaitMs, $"fixture process %d{proc.Id} must be reaped")
 
 [<Fact(Timeout = 60000)>]
 let ``daemon child survives termination of its isolated caller process group`` () =
@@ -100,7 +100,7 @@ let ``daemon child survives termination of its isolated caller process group`` (
             Assert.False(child.HasExited, "positive control: the child is alive before the signal")
 
             Assert.Equal(0, signal (-fixtureGroup, SIGTERM))
-            Assert.True(outer.WaitForExit 10000, "the isolated caller must actually die with its group")
+            Assert.True(outer.WaitForExit HangWaitMs, "the isolated caller must actually die with its group")
             Assert.False(child.WaitForExit 1000, "the launched child must survive its caller's group")
         finally
             try

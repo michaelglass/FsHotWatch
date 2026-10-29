@@ -70,7 +70,7 @@ let private greenThenCommentEdit (s: Session) =
     File.WriteAllText(s.Gate, "")
     let terminal = beginAwaitNextTerminal s.Host "test-prune"
     s.Host.EmitBuildCompleted BuildSucceeded
-    test <@ terminal.Wait(TimeSpan.FromSeconds 15.0) @>
+    test <@ terminal.Wait(HangWait) @>
     waitForQuiescent s.Host 20000
     test <@ linesOf s.Runs = 1 @>
 

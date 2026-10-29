@@ -97,7 +97,7 @@ let private onRequestSession (tmpDir: string) (dbPath: string) (configs: TestCon
 let private settleAfter (host: PluginHost) (provoke: unit -> unit) =
     let await = beginAwaitNextTerminal host "test-prune"
     provoke ()
-    test <@ await.Wait(TimeSpan.FromSeconds 20.0) @>
+    test <@ await.Wait(HangWait) @>
     waitForQuiescent host 10000
 
 let private build (host: PluginHost) =

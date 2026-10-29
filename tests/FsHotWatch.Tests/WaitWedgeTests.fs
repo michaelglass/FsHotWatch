@@ -9,6 +9,7 @@ open FsHotWatch.Events
 open FsHotWatch.PluginHost
 open FsHotWatch.PluginFramework
 open FsHotWatch.Tests.TestHelpers
+open FsHotWatch.Tests.FakeClock
 
 // A plugin whose handler never returns keeps its inflight count above zero
 // forever, so `AnyPluginBusy` stays true and BOTH satisfaction paths in
@@ -40,6 +41,7 @@ let private stuckHandler (name: string) (release: ManualResetEventSlim) =
       CacheKey = None
       Teardown = None }
 
+[<WallClock("DEBT (AUTOMATION-1369): a sleep standing in for synchronisation before a positive assertion; a known flake risk, to be converted to an event or an injected clock")>]
 [<Fact(Timeout = 60_000)>]
 let ``a plugin stuck busy fails the wait fast, naming it`` () =
     use release = new ManualResetEventSlim(false)
@@ -142,6 +144,7 @@ let ``a second event after a dispatch fault must still be counted correctly`` ()
 
     test <@ waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 10_000 @>
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 60_000)>]
 let ``a dispatch fault must not stomp the status of a live exclusive run`` () =
     // The forced `Failed` a dispatch fault reports follows the SAME ownership rule
@@ -454,7 +457,7 @@ let ``one long declared unit of work with no host events is not a wedge`` () =
         host.RegisterHandler(declaringHandler "cold-start-plugin" (TimeSpan.FromMinutes 5.0) entered release)
         host.EmitBuildCompleted(BuildSucceeded)
 
-        Assert.True(entered.Wait(TimeSpan.FromSeconds 10.0), "the declared work must start")
+        Assert.True(entered.Wait(HangWait), "the declared work must start")
 
         // The shape the detector used to get wrong, asserted rather than assumed: work
         // owned, and no plugin event finishing anywhere in the host.
@@ -491,7 +494,7 @@ let ``declared work held past its own deadline still reads as wedged`` () =
         host.RegisterHandler(declaringHandler "overrunning-plugin" (TimeSpan.FromMilliseconds 200.0) entered release)
         host.EmitBuildCompleted(BuildSucceeded)
 
-        Assert.True(entered.Wait(TimeSpan.FromSeconds 10.0), "the declared work must start")
+        Assert.True(entered.Wait(HangWait), "the declared work must start")
 
         let failure =
             Assert.Throws<TimeoutException>(fun () ->
@@ -528,7 +531,7 @@ let ``declared work past its deadline is named as the work that overran, not as 
         host.RegisterHandler(declaringHandler "overrunning-plugin" (TimeSpan.FromSeconds 1.0) entered release)
         host.EmitBuildCompleted(BuildSucceeded)
 
-        Assert.True(entered.Wait(TimeSpan.FromSeconds 10.0), "the declared work must start")
+        Assert.True(entered.Wait(HangWait), "the declared work must start")
 
         let failure =
             Assert.Throws<TimeoutException>(fun () ->
@@ -561,7 +564,7 @@ let ``a wait that runs out inside declared work names that work and how far into
         host.RegisterHandler(declaringHandler "declaring-plugin" (TimeSpan.FromMinutes 5.0) entered release)
         host.EmitBuildCompleted(BuildSucceeded)
 
-        Assert.True(entered.Wait(TimeSpan.FromSeconds 10.0), "the declared work must start")
+        Assert.True(entered.Wait(HangWait), "the declared work must start")
 
         let failure =
             Assert.Throws<TimeoutException>(fun () ->
@@ -617,32 +620,6 @@ let private declaredThenTailHandler
       CacheKey = None
       Teardown = None }
 
-/// The wedge detector's clock, moved by the test. A stall threshold is a span of silence,
-/// so on real time a test thread descheduled past a short threshold reads as a wedge.
-/// Here only `Advance` moves time.
-type private ManualClock(start: DateTime) =
-    let mutable ticks = start.Ticks
-    let mutable reads = 0L
-
-    /// The detector reads this once per sample, so the read count is the sample count.
-    member _.Now() : DateTime =
-        Interlocked.Increment(&reads) |> ignore
-        DateTime(Interlocked.Read(&ticks), DateTimeKind.Utc)
-
-    member _.Advance(by: TimeSpan) =
-        Interlocked.Add(&ticks, by.Ticks) |> ignore
-
-    /// Returns once the detector has sampled the clock twice more, or `wait` has ended and
-    /// so stopped sampling. A read counted after this call starts sees every `Advance` made
-    /// before it.
-    member _.AwaitSamples(wait: Tasks.Task) =
-        let seen = Interlocked.Read(&reads)
-
-        waitUntilOr
-            "the wedge detector sampling its clock"
-            (fun () -> wait.IsCompleted || Interlocked.Read(&reads) >= seen + 2L)
-            HangWaitMs
-
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the fold after a declaration longer than the stall threshold is not instantly wedged`` () =
     use declaredRelease = new ManualResetEventSlim(false)
@@ -668,7 +645,12 @@ let ``the fold after a declaration longer than the stall threshold is not instan
 
         // The deadline is far past the xUnit cap: only the detector or rest can end this.
         let wait =
-            Daemon.waitForAllTerminalCoreOn clock.Now host (TimeSpan.FromMinutes 10.0) threshold CancellationToken.None
+            Daemon.waitForAllTerminalCoreOn
+                clock.WallNow
+                host
+                (TimeSpan.FromMinutes 10.0)
+                threshold
+                CancellationToken.None
 
         // The declared work outlasts the stall threshold, inside its own bound.
         clock.AwaitSamples wait
@@ -714,7 +696,7 @@ let ``a fold that hangs after its declaration ends is still named wedged`` () =
 
         host.EmitBuildCompleted(BuildSucceeded)
         declaredRelease.Set()
-        Assert.True(tailEntered.Wait(TimeSpan.FromSeconds 10.0), "the remainder of the fold must start")
+        Assert.True(tailEntered.Wait(HangWait), "the remainder of the fold must start")
 
         let failure =
             Assert.Throws<TimeoutException>(fun () ->

@@ -159,7 +159,7 @@ let private projectsRunFor (selection: string option) =
         try
             let terminal = beginAwaitNextTerminal daemon.Host "test-prune"
             daemon.Host.EmitBuildCompleted(BuildSucceeded)
-            test <@ terminal.Wait(TimeSpan.FromSeconds 20.0) @>
+            test <@ terminal.Wait(HangWait) @>
             waitForQuiescent daemon.Host 15000
 
             [ "WriterProject"; "ReaderProject" ]

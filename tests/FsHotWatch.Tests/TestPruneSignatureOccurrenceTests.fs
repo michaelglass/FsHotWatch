@@ -236,7 +236,7 @@ let private StaleSignatureName = "TestPrune.__Signature__.Library.compute"
 // the upgrade. Even once the cold scan re-indexes everything at v14, such a name resolves
 // to no test. That must be a run that verifies the debt, not a zero-test green that
 // discharges it: the guard on names the index does not know is what makes it one.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a signature-node name queued by TestPrune.Core 9 is verified by a real run after the upgrade`` () =
     withTempDir "tp-upgrade-queue" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -320,7 +320,7 @@ let ``a signature-node name queued by TestPrune.Core 9 is verified by a real run
 
         let completion = beginAwaitTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
-        test <@ completion.Wait(System.TimeSpan.FromSeconds 20.0) @>
+        test <@ completion.Wait(HangWait) @>
 
         // No under-selection: the owed name made the plugin run tests rather than green on
         // zero, so the change 9.0.0 queued is verified.

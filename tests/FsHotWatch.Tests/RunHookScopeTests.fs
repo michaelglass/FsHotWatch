@@ -146,7 +146,7 @@ let private signalledMidHookWith
     | Some(signal, finalize) -> onRunSignal signal finalize ignore 129
     | None -> failwith "the signal handlers were not installed"
 
-    test <@ run.Wait(TimeSpan.FromSeconds 30.0) @>
+    test <@ run.Wait(HangWait) @>
     run.Result
 
 let private signalledMidHook bracket root = signalledMidHookWith None bracket root

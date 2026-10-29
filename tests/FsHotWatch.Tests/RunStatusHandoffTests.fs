@@ -32,6 +32,7 @@ type private HandoffMsg = | RunDone
 ///  * "report" — an unrelated per-file terminal, the shape of a symbol-analysis fold.
 ///  * "slow"   — one declared bounded unit of work, then an undeclared tail, each gated
 ///               by the test. The tail is the rest of a fold after its declaration ends.
+[<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
 let private handoffHandler
     (workerGo: ManualResetEventSlim)
     (slowEntered: ManualResetEventSlim)
@@ -110,7 +111,7 @@ let ``a terminal reported while a finished run's result fold is owed leaves the 
 
         // BuildCompleted, hold and report have committed; "slow" holds the mailbox, so the
         // run's result fold has not been processed.
-        Assert.True(slowEntered.Wait(TimeSpan.FromSeconds 10.0), "the slow fold must start")
+        Assert.True(slowEntered.Wait(HangWait), "the slow fold must start")
         test <@ host.CompletedDispatches() = 3L @>
         test <@ host.AnyPluginBusy() @>
 
@@ -133,6 +134,7 @@ let ``a terminal reported while a finished run's result fold is owed leaves the 
         slowRelease.Set()
         tailRelease.Set()
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 60_000)>]
 let ``the verdict wait does not read an owed run result as a wedge once a declared fold ends`` () =
     // The production shape: a finished full-suite run's result fold is queued behind a
@@ -151,7 +153,7 @@ let ``the verdict wait does not read an owed run result as a wedge once a declar
         host.RegisterHandler(handoffHandler workerGo slowEntered slowRelease tailEntered tailRelease)
         openHandoffWindow host workerGo
 
-        Assert.True(slowEntered.Wait(TimeSpan.FromSeconds 10.0), "the slow fold must start")
+        Assert.True(slowEntered.Wait(HangWait), "the slow fold must start")
 
         let wait =
             Daemon.waitForAllTerminalCore
@@ -164,7 +166,7 @@ let ``the verdict wait does not read an owed run result as a wedge once a declar
         // FSHW-WAIT-001 ok: the window must outlast the stall threshold; nothing is awaited.
         Thread.Sleep 800
         slowRelease.Set()
-        Assert.True(tailEntered.Wait(TimeSpan.FromSeconds 10.0), "the tail must start")
+        Assert.True(tailEntered.Wait(HangWait), "the tail must start")
 
         // The declaration has ended and the fold is still finishing. A wedge verdict here
         // would fault the wait within a few ticks.

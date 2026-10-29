@@ -229,7 +229,7 @@ let ``a resource scope round-trips its wire spelling, and anything else is the p
     test <@ DaemonHosting.ResourceScope.parse "" = DaemonHosting.ResourceScope.Process @>
     test <@ DaemonHosting.ResourceScope.parse "elsewhere" = DaemonHosting.ResourceScope.Process @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``RunWith hands serve the daemon's RPC configuration and stops when cancelled`` () =
     withTempDir "run-with" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -267,7 +267,7 @@ let ``RunWith hands serve the daemon's RPC configuration and stops when cancelle
             @>
 
         cts.Cancel()
-        test <@ run.Wait(TimeSpan.FromSeconds 10.0) @>)
+        test <@ run.Wait(HangWait) @>)
 
 [<Fact(Timeout = 60000)>]
 let ``a daemon whose root is deleted stops on its own`` () =
@@ -303,15 +303,15 @@ let ``a daemon whose root is deleted stops on its own`` () =
             Async.StartAsTask(daemon.RunWith(serve, TimeSpan.FromSeconds 5.0, DateTime.UtcNow, cts))
 
         try
-            test <@ served.Task.Wait(TimeSpan.FromSeconds 30.0) @>
+            test <@ served.Task.Wait(HangWait) @>
             test <@ served.Task.Result @>
-            test <@ run.Wait(TimeSpan.FromSeconds 20.0) @>
+            test <@ run.Wait(HangWait) @>
             test <@ cts.IsCancellationRequested @>
         finally
             cts.Cancel()
             run.Wait(TimeSpan.FromSeconds 10.0) |> ignore)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``RunWith waits for serve no longer than its bound`` () =
     withTempDir "run-with-bound" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -327,7 +327,7 @@ let ``RunWith waits for serve no longer than its bound`` () =
 
         daemon.Ready.Wait(TimeSpan.FromSeconds 10.0) |> ignore
         cts.Cancel()
-        test <@ run.Wait(TimeSpan.FromSeconds 10.0) @>)
+        test <@ run.Wait(HangWait) @>)
 
 [<Fact(Timeout = 5000)>]
 let ``a checked cohort's settle line keeps the shape benchmarks parse`` () =

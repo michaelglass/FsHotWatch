@@ -22,6 +22,7 @@
          installed by the pipeline startup below, before any test runs. -->
     <Compile Include="../FsHotWatch.Tests/UserHomeIsolation.fs" Link="UserHomeIsolation.fs" />
     <Compile Include="UserHomeIsolationStartup.fs" />
+    <Compile Include="../FsHotWatch.Tests/WallClock.fs" Link="WallClock.fs" />
     <Compile Include="../FsHotWatch.Tests/TestHelpers.fs" Link="TestHelpers.fs" />
     <Compile Include="ProcessScopeGuard.fs" />
     <Compile Include="ProcessScopeGuardTests.fs" />

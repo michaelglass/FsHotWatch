@@ -45,7 +45,7 @@ let private seamTree (tmpDir: string) =
 let private runToCompletion (host: PluginHost) =
     let terminal = beginAwaitNextTerminal host "test-prune"
     host.EmitBuildCompleted(BuildSucceeded)
-    Assert.True(terminal.Wait(TimeSpan.FromSeconds 20.0), "test-prune never reached a terminal status")
+    Assert.True(terminal.Wait(HangWait), "test-prune never reached a terminal status")
     waitForQuiescent host 5000
 
     match host.GetStatus("test-prune") with

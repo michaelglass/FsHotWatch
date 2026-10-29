@@ -11,7 +11,7 @@ open FsHotWatch.PluginWorkOwner
 let private finish (receipt: Task<unit>) =
     receipt.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``flush coalesces preceding input and keeps subsequent cohorts ordered`` () =
     let store = Store()
     use entered = new ManualResetEventSlim(false)
@@ -33,7 +33,7 @@ let ``flush coalesces preceding input and keeps subsequent cohorts ordered`` () 
 
                     if values.Head = 1 then
                         entered.Set()
-                        Assert.True(release.Wait(TimeSpan.FromSeconds 10.0))
+                        Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
 
                     return state + List.sum values
                 })
@@ -52,7 +52,7 @@ let ``flush coalesces preceding input and keeps subsequent cohorts ordered`` () 
         Assert.True(store.Snapshot.IsBusy, "debounce must already be owned")
         post [ 2 ] (TimeSpan.FromSeconds 5.0) |> ignore
         post [ 3 ] TimeSpan.Zero |> ignore
-        Assert.True(entered.Wait(TimeSpan.FromSeconds 5.0))
+        Assert.True(entered.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
         Assert.Equal<int list>([ 1; 2; 3 ], Seq.head cohorts)
         post [ 4 ] (TimeSpan.FromSeconds 5.0) |> ignore
         post [ 5 ] TimeSpan.Zero |> ignore
@@ -75,7 +75,7 @@ let ``flush coalesces preceding input and keeps subsequent cohorts ordered`` () 
 
         input.Close()
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``close rejects debounce input and retains a live supervised cohort`` () =
     let store = Store()
     use entered = new ManualResetEventSlim(false)
@@ -93,7 +93,7 @@ let ``close rejects debounce input and retains a live supervised cohort`` () =
             (fun state _ _ _ ->
                 async {
                     entered.Set()
-                    Assert.True(release.Wait(TimeSpan.FromSeconds 10.0))
+                    Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
                     return state + 1
                 })
         )
@@ -102,7 +102,7 @@ let ``close rejects debounce input and retains a live supervised cohort`` () =
     let active = input.Post([ 1 ], TimeSpan.Zero)
 
     try
-        Assert.True(entered.Wait(TimeSpan.FromSeconds 5.0))
+        Assert.True(entered.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
         let pending = input.Post([ 2 ], TimeSpan.FromSeconds 5.0)
         input.Close()
         Assert.Throws<ObjectDisposedException>(fun () -> finish pending) |> ignore
@@ -240,7 +240,7 @@ let ``failed debounce scheduler settles its own pending receipt and records fail
     finally
         input.Close()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``obsolete scheduler failure cannot reject its coalesced successor`` () =
     let store = Store()
 
@@ -307,7 +307,7 @@ let ``obsolete scheduler failure cannot reject its coalesced successor`` () =
         firstDelay.SetException(InvalidOperationException(marker))
         // This diagnostic is emitted after the failure transition and receipt
         // effects, so the assertion cannot race ahead of the obsolete handler.
-        Assert.True(failureHandled.Wait(TimeSpan.FromSeconds 5.0))
+        Assert.True(failureHandled.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
         Assert.All(receipts, fun receipt -> Assert.False(receipt.IsCompleted))
         Assert.True(store.Snapshot.IsBusy)
         Assert.Empty(store.Snapshot.Faults)

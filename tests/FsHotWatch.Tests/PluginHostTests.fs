@@ -228,7 +228,7 @@ let ``EmitBuildCompleted with failure reaches plugins`` () =
             | _ -> false
         @>
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``host owns preprocessor work until its outcome is published`` (refuse: bool) =
@@ -260,7 +260,7 @@ let ``host owns preprocessor work until its outcome is published`` (refuse: bool
         System.Threading.Tasks.Task.Run(fun () -> host.RunPreprocessors([ "src/Lib.fs" ]))
 
     try
-        Assert.True(entered.Wait(5000), "preprocessor must reach the controlled work")
+        Assert.True(entered.Wait(HangWaitMs), "preprocessor must reach the controlled work")
         Assert.True(host.AnyPluginBusy(), "preprocessor work must prevent host rest")
         Assert.Contains("owned-preprocessor", host.BusyPluginNames())
     finally
@@ -999,6 +999,7 @@ let ``OnStatusChanged subscriber re-entrantly calling GetAllStatuses does not de
     test <@ observedFromHandler.Value.IsSome @>
     test <@ observedFromHandler.Value.Value |> Map.containsKey "reentrant" @>
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 20000)>]
 let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls GetAllStatuses`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
@@ -1039,7 +1040,7 @@ let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls
 
 // `setStatus` must not block the calling plugin-agent thread on a TCS round-trip to the
 // status agent, while still keeping the two deadlock-freedom tests above green.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``OnStatusChanged subscriber observes the newly-applied status via GetAllStatuses`` () =
     // The trigger fires only AFTER the agent has applied the mutation, so a subscriber
     // reading GetAllStatuses inside the handler sees the new value and never a stale one.
@@ -1079,7 +1080,7 @@ let ``OnStatusChanged subscriber observes the newly-applied status via GetAllSta
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    test <@ seen.Wait(TimeSpan.FromSeconds(5.0)) @>
+    test <@ seen.Wait(HangWait) @>
 
     test
         <@
@@ -1088,7 +1089,7 @@ let ``OnStatusChanged subscriber observes the newly-applied status via GetAllSta
             | _ -> false
         @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a throwing OnStatusChanged subscriber is logged and does not kill status notifications`` () =
     // If the fault escaped, the MailboxProcessor loop would die and every future
     // OnStatusChanged notification would be silently dropped.
@@ -1140,7 +1141,7 @@ let ``a throwing OnStatusChanged subscriber is logged and does not kill status n
 
         // Completed is posted after the Running whose subscriber threw, so its arrival is
         // what proves the trigger loop survived.
-        test <@ sawCompleted.Wait(TimeSpan.FromSeconds(5.0)) @>
+        test <@ sawCompleted.Wait(HangWait) @>
         test <@ threwOnRunning @>
 
         // The trigger agent is FIFO, so by the time Completed was delivered the Running
@@ -1186,6 +1187,7 @@ let ``waitForAllTerminal with TimeSpan.MaxValue does not overflow deadline arith
     let completed = waitTask.Wait(TimeSpan.FromSeconds(5.0))
     test <@ completed @>
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 30000)>]
 let ``waitForAllTerminal waits for downstream plugin that hasn't yet picked up its event`` () =
     // B delays its Idle->Running transition past the legacy 1s stability window, opening a
@@ -1271,6 +1273,7 @@ let ``waitForAllTerminal waits for downstream plugin that hasn't yet picked up i
 
     test <@ final |> Map.forall (fun _ s -> isCompleted s) @>
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 30000)>]
 let ``waitForAllTerminal does not return while a downstream plugin still has events queued in its mailbox after it has already advanced a generation``
     ()
@@ -1358,6 +1361,7 @@ let ``waitForAllTerminal does not return while a downstream plugin still has eve
     let observed = Volatile.Read(&bRunningCount.contents)
     test <@ observed = 1 @>
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 30000)>]
 let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
     // A (FileChanged -> BuildCompleted), B (BuildCompleted -> TestRunCompleted), C
@@ -1455,6 +1459,7 @@ let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
     test <@ completed @>
     test <@ cCompleted @>
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 20000)>]
 let ``waitForAllTerminal completes when plugin fails mid-cycle`` () =
     // Failed is a terminal status, so a crashed plugin still satisfies the wait.
@@ -1534,6 +1539,7 @@ let ``waitForAllTerminal returns within quiescence window when no work is pendin
     test <@ completed @>
     test <@ waitTask.IsCompletedSuccessfully @>
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 20000)>]
 let ``waitForAllTerminal faults with OperationCanceledException when shutdown token fires mid-wait`` () =
     // A foreground client blocked in WaitForComplete while the daemon shuts down: the wait
@@ -1993,6 +1999,7 @@ let ``vanished-diagnostic pruning only treats repository paths as files`` () =
 /// The ledger records the plugin's WHOLE `Running` interval, not the elapsed the
 /// plugin measured for itself: test-prune is `Running` through minutes of symbol
 /// analysis before its own stopwatch starts, and a check waits for all of it.
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 15000)>]
 let ``a plugin's Running to Completed interval is recorded on the host's phase ledger`` () =
     let host = PluginHost.create nullChecker "/tmp/test"

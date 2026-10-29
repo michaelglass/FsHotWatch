@@ -43,7 +43,7 @@ let private disposeChild child =
             // pidfile or a process-name search. Reap only this owned process tree.
             child.Process.Kill(entireProcessTree = true)
 
-        Assert.True(child.Process.WaitForExit(10000), "owned CLI child did not exit after cleanup")
+        Assert.True(child.Process.WaitForExit(HangWaitMs), "owned CLI child did not exit after cleanup")
     finally
         child.Process.Dispose()
 

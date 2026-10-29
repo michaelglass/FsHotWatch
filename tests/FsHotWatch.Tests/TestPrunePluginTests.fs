@@ -99,6 +99,7 @@ let ``changed-files command returns empty list when no files checked`` () =
     test <@ result.IsSome @>
     test <@ result.Value = "[]" @>
 
+[<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
 [<Fact(Timeout = 15000)>]
 let ``test-prune error path sets Failed status on null check results`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
@@ -348,6 +349,7 @@ let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
 
+[<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
 [<Fact(Timeout = 15000)>]
 let ``extension is invoked via AnalyzeEdges during test run`` () =
     withTempDir "tp-ext" (fun tmpDir ->
@@ -691,6 +693,7 @@ let ``FileChecked sets Failed status on analysis error`` () =
         | Failed _ -> ()
         | other -> Assert.Fail($"Expected Failed on analysis error, got: %A{other}"))
 
+[<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
 [<Fact(Timeout = 15000)>]
 let ``FileChecked replaces test-run Completed status with error state`` () =
     withTempDir "tp-reset" (fun tmpDir ->
@@ -1052,7 +1055,7 @@ let ``test failures are reported to error ledger`` () =
 
         test <@ host.HasFailingReasons(warningsAreFailures = true) @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``test errors are cleared when all tests pass`` () =
     withTempDir "tp-ledger-clear" (fun tmpDir ->
         // The second cycle is driven by `run-tests`, not a second BuildCompleted: a warm
@@ -1096,7 +1099,7 @@ let ``test errors are cleared when all tests pass`` () =
         // window by persisting both between the two).
         let await = beginAwaitNextTerminal host "test-prune"
         host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
-        test <@ await.Wait(TimeSpan.FromSeconds 15.0) @>
+        test <@ await.Wait(HangWait) @>
 
         test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
 
@@ -1929,7 +1932,7 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
 // from, and a completion that ran nothing would earn none. So the cold cycle runs the
 // projects once, and must still resolve rather than wedge. The skip itself, where evidence
 // exists, is pinned in `TestPruneModelChangeTests`.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a cold cycle whose changes have no covering test runs once for evidence and completes`` () =
     withTempDir "tp-nothing-to-verify" (fun tmpDir ->
         // The nothing-to-verify skip is relative to a full-suite
@@ -2003,7 +2006,7 @@ let ``a cold cycle whose changes have no covering test runs once for evidence an
         let waitTask =
             waitForAllTerminal host (TimeSpan.FromSeconds 5.0) System.Threading.CancellationToken.None
 
-        test <@ waitTask.Wait(TimeSpan.FromSeconds 8.0) @>)
+        test <@ waitTask.Wait(HangWait) @>)
 
 // The "nothing to verify" green above infers "no covering test" from an EMPTY
 // `QueryAffectedTests` result. That is sound only when the symbol is KNOWN to the index;
@@ -2017,7 +2020,7 @@ let ``a cold cycle whose changes have no covering test runs once for evidence an
 //
 // Unlike the test above, `Lib.foo` here IS covered — only the recreate destroyed the
 // evidence.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a pending symbol orphaned by a DB recreate must not discharge as a zero-test green`` () =
     withTempDir "tp-recreate-orphan" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -2113,7 +2116,7 @@ let ``a pending symbol orphaned by a DB recreate must not discharge as a zero-te
         let completion = beginAwaitTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
 
-        test <@ completion.Wait(TimeSpan.FromSeconds 20.0) @>
+        test <@ completion.Wait(HangWait) @>
 
         // The recreate destroyed the record of what covers `Lib.foo`; it did not verify
         // it. Greening here would discharge real debt having executed nothing.
@@ -2125,7 +2128,7 @@ let ``a pending symbol orphaned by a DB recreate must not discharge as a zero-te
 // with genuinely no covering test, so the vacuous green is reachable through a healthy
 // index. What licenses the shortcut is whether the index KNOWS the name, not how it came
 // to be in its current state.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a queued symbol the index has never heard of must not discharge as a zero-test green`` () =
     withTempDir "tp-unknown-symbol" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -2175,7 +2178,7 @@ let ``a queued symbol the index has never heard of must not discharge as a zero-
         let completion = beginAwaitTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
 
-        test <@ completion.Wait(TimeSpan.FromSeconds 20.0) @>
+        test <@ completion.Wait(HangWait) @>
 
         // The index cannot vouch for `Lib.renamedAway`, so "no covering test" is not
         // proof about it and the run must actually happen.
@@ -3572,6 +3575,7 @@ let ``run-tests with a filter that matches tests executes and reports a real pas
         let projects = doc.RootElement.GetProperty("projects")
         Assert.Equal("passed", projects.[0].GetProperty("status").GetString()))
 
+[<WallClock("DEBT (AUTOMATION-1369): a sleep standing in for synchronisation before a positive assertion; a known flake risk, to be converted to an event or an injected clock")>]
 [<Fact(Timeout = 30000)>]
 let ``run-tests force-executes after an in-flight run finishes instead of instantly bailing`` () =
     // An explicit force-rerun always runs: it waits for the `tests` slot rather than

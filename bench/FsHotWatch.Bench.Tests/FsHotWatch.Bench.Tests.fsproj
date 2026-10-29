@@ -14,6 +14,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="../../tests/FsHotWatch.Tests/WallClock.fs" Link="WallClock.fs" />
     <Compile Include="InstrumentParsingTests.fs" />
     <Compile Include="DaemonLogTests.fs" />
     <Compile Include="RecordAndSummaryTests.fs" />

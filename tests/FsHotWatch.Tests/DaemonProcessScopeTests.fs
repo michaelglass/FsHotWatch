@@ -142,6 +142,7 @@ let ``a daemon run started on the caller's thread leaves the caller's scope as i
 
             test <@ isSucceeded outcome @>)
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 30000)>]
 let ``a child scope started on the caller's thread leaves the caller's scope as it was`` () =
     if not (OperatingSystem.IsWindows()) then

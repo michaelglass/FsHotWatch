@@ -166,7 +166,7 @@ let ``every step is released when it exits, including the one that fails`` () =
 
         test <@ recorder.Ended = (recorder.Started |> List.map _.Pid) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a step reaped by its process scope is released, not left named`` () =
     withTempDir "hookstep-reaped" (fun tmpDir ->
         let recorder = Recorder()
@@ -186,7 +186,7 @@ let ``a step reaped by its process scope is released, not left named`` () =
         // What an interrupted run does to the hook it is inside.
         scope.KillAll()
 
-        test <@ chain.Wait(TimeSpan.FromSeconds 10.0) @>
+        test <@ chain.Wait(HangWait) @>
         test <@ recorder.Ended = [ pid ] @>
         test <@ recorder.Started |> List.length = 1 @>
 

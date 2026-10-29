@@ -786,6 +786,7 @@ let ``teardown cancels CTS and disposes resources`` () =
 // live-FCS integration tests hit only nondeterministically, depending on the loaded SDK.
 // ---------------------------------------------------------------------------
 
+[<WallClock("product timeout under test: the work deliberately outlasts the product's own bound, and the assertion is the typed timeout outcome the product reports")>]
 [<Fact(Timeout = 20000)>]
 let ``analyzers handler times out when work exceeds TimeoutSec`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
@@ -807,6 +808,7 @@ let ``analyzers handler times out when work exceeds TimeoutSec`` () =
         | other -> Assert.Fail $"Expected TimedOut, got {other}"
     | None -> Assert.Fail "Expected LastRun record"
 
+[<WallClock("product timeout under test: the work deliberately outlasts the product's own bound, and the assertion is the typed timeout outcome the product reports")>]
 [<Fact(Timeout = 15000)>]
 let ``timed-out synchronous analyzer cannot overlap the next file`` () =
     // Production change that makes this pass: retain the analyzer concurrency

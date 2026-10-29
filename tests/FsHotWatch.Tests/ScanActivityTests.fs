@@ -98,6 +98,7 @@ let ``withLease releases when the work throws`` () =
 
     test <@ List.isEmpty (ScanLeases.inFlight leases) @>
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact>]
 let ``withLease releases when the work is cancelled`` () =
     // The same criterion for the OTHER terminal path: `fshw stop` cancels the

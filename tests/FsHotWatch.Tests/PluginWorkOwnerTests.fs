@@ -9,10 +9,12 @@ open FsHotWatch.PluginWorkOwner
 
 /// Await a receipt that must already be settled or settle promptly, preserving its exception.
 let private settled (receipt: Task<unit>) =
-    let winner =
-        Task.WhenAny([| receipt :> Task; Task.Delay(TimeSpan.FromSeconds 5.0) |]).GetAwaiter().GetResult()
+    // `WhenAny` of the one task never faults, so this asks only whether it settled.
+    Assert.True(
+        Task.WhenAny([| receipt :> Task |]).Wait(FsHotWatch.Tests.TestHelpers.HangWait),
+        "the receipt must settle within the observation bound"
+    )
 
-    Assert.True(obj.ReferenceEquals(receipt, winner), "the receipt must settle within the observation bound")
     receipt.GetAwaiter().GetResult()
 
 let private claim (owner: Owner<'State>) key =
@@ -266,7 +268,7 @@ let ``queued successor is owned before predecessor receipt completes`` () =
         )
 
     owner.CommitEvent(delivered[0], 1)
-    Assert.True(observed.Wait(TimeSpan.FromSeconds 5.0), "the predecessor receipt must complete")
+    Assert.True(observed.Wait(FsHotWatch.Tests.TestHelpers.HangWait), "the predecessor receipt must complete")
     let atReceipt = observed.Result
     // The successor intent is the only obligation left, so busy means it is owned.
     Assert.True atReceipt.IsBusy
@@ -966,6 +968,7 @@ let ``a row publishes its projection with its value and a failed change publishe
     |> ignore
 
 [<Theory(Timeout = 30000)>]
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<InlineData("publish")>]
 [<InlineData("settle")>]
 [<InlineData("complete-run")>]
@@ -1130,7 +1133,7 @@ let ``async changes posted back to back publish in posting order through the one
         let second = store.ChangeAsync(row, fun _ seen -> (2 * round + 1) :: seen, ())
 
         Assert.True(
-            Task.WaitAll([| first :> Task; second :> Task |], TimeSpan.FromSeconds 10.0),
+            Task.WaitAll([| first :> Task; second :> Task |], FsHotWatch.Tests.TestHelpers.HangWait),
             $"round %d{round}: both changes must publish"
         )
 

@@ -719,7 +719,7 @@ let ``a host killed outright leaves the worktree to the next command, which star
                 // SIGKILL: no shutdown path runs, nothing is cleaned up.
                 use killed = Process.GetProcessById first
                 killed.Kill()
-                test <@ killed.WaitForExit 30000 @>
+                test <@ killed.WaitForExit HangWaitMs @>
 
                 // What the dead host left behind says so.
                 test

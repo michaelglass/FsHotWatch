@@ -11,21 +11,16 @@ open System.Threading
 open System.Threading.Tasks
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.WorkScheduler
-
-type private ManualClock() =
-    let mutable now = TimeSpan.Zero
-    member _.Now() = now
-
-    member _.Advance(seconds: float) =
-        now <- now + TimeSpan.FromSeconds seconds
+open FsHotWatch.Tests.FakeClock
 
 /// Far beyond any wait here, so aging never decides a hand-over in these tests.
 let private noAging = TimeSpan.FromHours 1.0
 
 let private withClock (capacity: int) =
     let clock = ManualClock()
-    Scheduler(capacity, ignore, clock.Now, noAging), clock
+    Scheduler(capacity, ignore, clock.AwakeNow, noAging), clock
 
 /// Queue one labelled interactive acquisition on `lane`; it queues (or is granted)
 /// before this returns, and records its label when granted.
@@ -52,7 +47,7 @@ let private handOver (lane: Lane) (granted: ConcurrentQueue<string>) : string =
 
     Seq.last granted
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``sessions with 1 s and 10 s jobs hold the slot for about the same time`` () =
     let scheduler, clock = withClock 1
     let short = scheduler.Lane "short"
@@ -66,9 +61,9 @@ let ``sessions with 1 s and 10 s jobs hold the slot for about the same time`` ()
     let mutable holder = "short"
 
     // Both sessions always have one more job waiting: continuous contention.
-    while clock.Now() < TimeSpan.FromSeconds 2000.0 do
+    while clock.AwakeNow() < TimeSpan.FromSeconds 2000.0 do
         let lane, jobSeconds = lanes[holder]
-        clock.Advance jobSeconds
+        clock.AdvanceSeconds jobSeconds
         queue lane holder granted |> ignore
         holder <- handOver lane granted
 
@@ -80,7 +75,7 @@ let ``sessions with 1 s and 10 s jobs hold the slot for about the same time`` ()
     // Round-robin by count would have given the long session ten times the slot-time.
     test <@ (short.Status()).Granted > 5L * (long.Status()).Granted @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a session that was idle comes back level with the busy one, not with banked credit`` () =
     let scheduler, clock = withClock 1
     let busy = scheduler.Lane "busy"
@@ -91,7 +86,7 @@ let ``a session that was idle comes back level with the busy one, not with banke
     test <@ (queue busy "busy" granted).Result @>
 
     for _ in 1..50 do
-        clock.Advance 1.0
+        clock.AdvanceSeconds 1.0
         queue busy "busy" granted |> ignore
         test <@ handOver busy granted = "busy" @>
 
@@ -103,7 +98,7 @@ let ``a session that was idle comes back level with the busy one, not with banke
     let mutable holder = "busy"
 
     for _ in 1..12 do
-        clock.Advance 1.0
+        clock.AdvanceSeconds 1.0
         let lane = if holder = "busy" then busy else idle
 
         if holder = "busy" then
@@ -125,17 +120,17 @@ let ``a session that was idle comes back level with the busy one, not with banke
     test <@ longestIdleRun <= 2 @>
     test <@ order |> Seq.filter ((=) "idle") |> Seq.length >= 4 @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an aged bulk job is served first even when its session has held far more`` () =
     let clock = ManualClock()
-    let scheduler = Scheduler(1, ignore, clock.Now, TimeSpan.FromSeconds 5.0)
+    let scheduler = Scheduler(1, ignore, clock.AwakeNow, TimeSpan.FromSeconds 5.0)
     let scan = scheduler.Lane "scan"
     let saves = scheduler.Lane "saves"
     let granted = ConcurrentQueue<string>()
 
     // The scan session has held the slot for a long time.
     test <@ (queue scan "scan-0" granted).Result @>
-    clock.Advance 100.0
+    clock.AdvanceSeconds 100.0
 
     let tier =
         scan.Acquire(JobSpec.bulk, CancellationToken.None) |> Async.StartImmediateAsTask
@@ -145,11 +140,11 @@ let ``an aged bulk job is served first even when its session has held far more``
 
     // Saves keep coming; the tier ages past 5 s and is served despite its session's
     // hundred seconds of service.
-    clock.Advance 5.0
+    clock.AdvanceSeconds 5.0
     queue saves "save-2" granted |> ignore
     saves.Release()
     test <@ tier.Result @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the fairness quantum is 100 ms`` () =
     test <@ FairnessQuantum = TimeSpan.FromMilliseconds 100.0 @>

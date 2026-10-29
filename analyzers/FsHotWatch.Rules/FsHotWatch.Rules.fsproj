@@ -19,6 +19,7 @@
   <ItemGroup>
     <Compile Include="ConventionAnalyzers.fs" />
     <Compile Include="WalkAnalyzer.fs" />
+    <Compile Include="WallClockAnalyzer.fs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Update="FSharp.Core" Version="[10.1.402]" />

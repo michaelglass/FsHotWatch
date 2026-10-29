@@ -147,6 +147,7 @@ let withTrackedSleep (seconds: int) (body: Process -> 'a) : 'a =
 /// For a caller that HANDLES an expiry itself — asserts on the bool with its own message,
 /// or expects the condition to stay false. Every other caller wants `waitUntil`, which
 /// fails the test on expiry.
+[<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
 let waitUntilTrue (condition: unit -> bool) (timeoutMs: int) : bool =
     let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
     let mutable ok = condition ()
@@ -209,6 +210,7 @@ let cancelAcrossTeardown (start: (unit -> unit) -> (unit -> unit) -> IDisposable
 
 /// Run `body` while every thread pool thread is held, then let them go. Process-wide:
 /// a test class using it belongs to the serialized `LogGlobalCollectionName` collection.
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 let withEveryPoolThreadBusy (body: unit -> 'T) : 'T =
     use gate = new ManualResetEventSlim(false)
 
@@ -298,6 +300,7 @@ let awaitServing (pipe: string) (stopped: unit -> string option) : unit =
 /// A caller's budget is not a statement about how fast the filesystem is. The
 /// large ones absorb stalls seen only under full-suite load; the same tests
 /// finish in about a second on their own.
+[<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
 let probeLoop (write: int -> unit) (hasEvent: unit -> bool) (timeoutMs: int) =
     let overall = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
     let mutable probe = 0
@@ -634,6 +637,7 @@ let withEnv (name: string) (value: string option) (body: unit -> unit) =
 ///
 /// This does NOT mask real failures — a failing assertion throws from `body` before
 /// `finally`, so it propagates unchanged.
+[<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
 let private deleteTempDirResilient (tmpDir: string) =
     let mutable remaining = 10
     let mutable deleted = false
@@ -1125,6 +1129,10 @@ let PropertyTestCapMs = 120_000
 /// run stalled them past 5 s and 10 s waits. This only ends work that never finishes.
 [<Literal>]
 let HangWaitMs = 30_000
+
+/// `HangWaitMs` for the `Wait(TimeSpan)` overloads. FSHW-WALL-001 flags an asserted wait
+/// whose budget is a literal; this is the named form a hang-only wait takes instead.
+let HangWait = TimeSpan.FromMilliseconds(float HangWaitMs)
 
 /// The xUnit cap for a test whose daemon discovers a real `.fsproj`. Discovery is an
 /// in-process MSBuild evaluation with no product bound, and a process runs one

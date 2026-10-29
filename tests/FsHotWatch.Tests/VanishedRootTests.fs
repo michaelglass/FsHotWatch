@@ -9,6 +9,7 @@ open Swensen.Unquote
 open FsHotWatch
 open FsHotWatch.Tests.TestHelpers
 
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
 [<Fact(Timeout = 15000)>]
 let ``a root that goes missing shuts the daemon down exactly once`` () =
     let exists = ref true
@@ -81,7 +82,8 @@ let ``a tick in flight when the watch is disposed shuts down before the daemon's
 
     test <@ seen = None @>
 
-[<Fact(Timeout = 15000)>]
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a root that goes missing while the daemon runs cancels its source`` () =
     use cts = new CancellationTokenSource()
     let exists = ref true
@@ -98,4 +100,4 @@ let ``a root that goes missing while the daemon runs cancels its source`` () =
     test <@ not cts.IsCancellationRequested @>
 
     Volatile.Write(&exists.contents, false)
-    test <@ cts.Token.WaitHandle.WaitOne(TimeSpan.FromSeconds 10.0) @>
+    test <@ cts.Token.WaitHandle.WaitOne(HangWait) @>

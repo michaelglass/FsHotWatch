@@ -339,7 +339,7 @@ let ``polling fallback isolates a failing change callback and continues the batc
     test <@ callbacks |> Seq.contains (SourceChanged [ second ]) @>
     test <@ callbacks.Count = 2 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``polling fallback skips overlapping polls and emits nothing after disposal`` () =
     let entered = new ManualResetEventSlim(false)
     let release = new ManualResetEventSlim(false)
@@ -364,7 +364,7 @@ let ``polling fallback skips overlapping polls and emits nothing after disposal`
 
     let first = Thread(ThreadStart(fun () -> watcher.Poll()))
     first.Start()
-    test <@ entered.Wait(TimeSpan.FromSeconds(10.0)) @>
+    test <@ entered.Wait(HangWait) @>
     watcher.Poll()
     test <@ snapshots = 2 @>
     release.Set()
@@ -477,7 +477,7 @@ let ``automatic polling default timer performs a poll`` () =
     let polled = waitUntilTrue (fun () -> Volatile.Read(&snapshots) >= 2) 5000
     test <@ polled @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``automatic polling disposal waits for active callback then prevents later callbacks`` () =
     let mutable callback = ignore
     let entered = new ManualResetEventSlim(false)
@@ -508,7 +508,7 @@ let ``automatic polling disposal waits for active callback then prevents later c
     // that a queued Task may not start within an arbitrary two-second window.
     let active = Thread(ThreadStart callback)
     active.Start()
-    test <@ entered.Wait(TimeSpan.FromSeconds(10.0)) @>
+    test <@ entered.Wait(HangWait) @>
 
     let disposeStarted = new ManualResetEventSlim(false)
     let disposeCompleted = new ManualResetEventSlim(false)
@@ -522,7 +522,7 @@ let ``automatic polling disposal waits for active callback then prevents later c
         )
 
     disposing.Start()
-    test <@ disposeStarted.Wait(TimeSpan.FromSeconds(10.0)) @>
+    test <@ disposeStarted.Wait(HangWait) @>
     test <@ not disposeCompleted.IsSet @>
     release.Set()
     active.Join()

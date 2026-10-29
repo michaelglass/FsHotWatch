@@ -289,6 +289,7 @@ let ``Watchdog WedgeReport fires once the injected clock crosses threshold`` () 
 
 // --- Live Watchdog: injected stuck op makes the timer emit the overrun record ---
 
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
 [<Fact(Timeout = 10000)>]
 let ``Watchdog timer emits the structured overrun record exactly once for a stuck op`` () =
     let logged = System.Collections.Concurrent.ConcurrentBag<string>()
@@ -355,6 +356,7 @@ let ``Watchdog re-arms the overrun record for a new op after End`` () =
     test <@ logcontains "first-op" @>
     test <@ logcontains "second-op" @>
 
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
 [<Fact(Timeout = 10000)>]
 let ``Watchdog does not emit overrun for an op that ends before threshold`` () =
     let logged = System.Collections.Concurrent.ConcurrentBag<string>()
@@ -646,6 +648,7 @@ let ``compactingCollect runs a full blocking collection`` () =
 
 // --- Host suspension: the wall clock runs through a sleep, the awake clock does not ---
 
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
 [<Fact(Timeout = 10000)>]
 let ``Watchdog logs a host suspension once, when the wall clock outruns the awake clock`` () =
     let logged = System.Collections.Concurrent.ConcurrentQueue<string>()
@@ -735,7 +738,8 @@ let ``Watchdog logs a host suspension once, when the wall clock outruns the awak
 // had logged the suspension rewound the previous-tick reading, and the next tick logged
 // the same suspension a second time. This forces that interleaving: one tick reads the
 // pre-sleep clocks and is held; the clocks move; the held tick is released.
-[<Fact(Timeout = 10000)>]
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Watchdog logs a host suspension once when a tick that read the clocks before it finishes after it`` () =
     let logged = System.Collections.Concurrent.ConcurrentQueue<string>()
 
@@ -782,7 +786,7 @@ let ``Watchdog logs a host suspension once when a tick that read the clocks befo
     // A tick reads the awake-paced clocks (the ones the watchdog started from) and is
     // held before it records them.
     armed.Value <- 1
-    test <@ held.Wait(TimeSpan.FromSeconds 5.0) @>
+    test <@ held.Wait(HangWait) @>
 
     // The lid closes while it is held. Other ticks may see it in the meantime.
     clocks.Value <-

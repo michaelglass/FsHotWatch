@@ -151,6 +151,7 @@ let ``lint skips file with null ParseResults without crashing`` () =
     | Failed(msg, _, _) -> Assert.Fail($"Should not fail -- got: %s{msg}")
     | _ -> ()
 
+[<WallClock("product timeout under test: the work deliberately outlasts the product's own bound, and the assertion is the typed timeout outcome the product reports")>]
 [<Fact(Timeout = 20000)>]
 let ``lint handler times out when runner exceeds TimeoutSec`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"

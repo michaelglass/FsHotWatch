@@ -136,6 +136,7 @@ let ``a test run whose client has gone is cancelled and its host reaped`` () =
     finally
         reap hostPid
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 60000)>]
 let ``a test run the daemon owes is not cancelled when a client goes`` () =
     let root = isolatedRoot ()

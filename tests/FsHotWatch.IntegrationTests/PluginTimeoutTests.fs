@@ -86,7 +86,14 @@ let ``FileCommandPlugin honors timeoutSec and records TimedOut`` () =
 /// trivial child that only a wedged box keeps past it. The wait sits above the product's
 /// whole teardown (1 s timeout, 10 s read, 10 s kill, ~2 s settle, 2 s drain), so the
 /// product reports first.
-[<Fact(Timeout = 60000)>]
+///
+/// Load (AUTOMATION-1364): failed once in a full run at load ~150 and passed alone; the failing
+/// assertion was not captured. The product decides every bound under the wait, so the wait and
+/// cap only end a hang: 45 s left ~20 s over the teardown for spawning `sh` at that load, now
+/// 2 x `HangWaitMs` over it. If `ps` misses the product's own 10 s `TeardownBudget`, the report
+/// says the tree is unknown and the tree assertions still fail: that bound is the product's.
+[<Fact(Timeout = RealCheckTestCapMs)>]
+[<WallClock("real host: a real sh tree overruns a real product timeout and the real process table is read; the claim is what the product reports about the real OS, so it runs on real time")>]
 let ``an overrunning build names its command, budget, tree and what the kill left`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -103,7 +110,7 @@ let ``an overrunning build names its command, budget, tree and what the kill lef
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    waitForTerminalStatus host "build" 45000
+    waitForTerminalStatus host "build" (25_000 + 2 * HangWaitMs)
 
     let summary =
         match (List.last (host.GetHistory "build")).Outcome with
@@ -132,6 +139,7 @@ let ``an overrunning build names its command, budget, tree and what the kill lef
 /// A backgrounded descendant that outlives the shell that spawned it is NAMED as
 /// leaked. The kill is injected to take only the root — the shape of a tree kill that
 /// misses a descendant — and the real process table must then show the child alive.
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
 [<Fact(Timeout = 60000)>]
 let ``a descendant that outlives the killed shell is named as a survivor`` () =
     let psi =

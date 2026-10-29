@@ -83,6 +83,7 @@ let ``dependencyFiles: excludes .config/dotnet-tools.json (not a package-graph i
 /// Regression for a production false-stale: bumping `.config/dotnet-tools.json`
 /// (a tool version bump) must NOT make a project look stale — assets newer than
 /// every real dependency input but older than the tools manifest stay Fresh.
+[<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectProjectFreshness: assets older than dotnet-tools.json but newer than real deps is Fresh`` () =
     withTempDir "deps-tools-bump" (fun root ->
@@ -976,7 +977,8 @@ let ``restoreSteps: full stack (paket groups + tools) orders restore, per-group 
 
 // ---- concurrent recovery: the in-flight restore must not read as a failed one ----
 
-[<Fact(Timeout = 30000)>]
+[<WallClock("DEBT (AUTOMATION-1369): a sleep standing in for synchronisation before a positive assertion; a known flake risk, to be converted to an event or an injected clock")>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``evaluateProject: a concurrent evaluation waits for an in-flight restore instead of skipping`` () =
     // MEASURED in production before this test existed: of 38 `deps still stale
     // (recovery already attempted)` events, 36 had an `auto-restored OK` for the SAME
@@ -1014,7 +1016,7 @@ let ``evaluateProject: a concurrent evaluation waits for an in-flight restore in
             System.Threading.Volatile.Write(&restored.contents, true)
             r)
 
-    Assert.True(restoreEntered.Wait(TimeSpan.FromSeconds 10.0), "the first evaluation never reached the restore")
+    Assert.True(restoreEntered.Wait(HangWait), "the first evaluation never reached the restore")
 
     // The loser evaluates while the restore is in flight.
     let loser =

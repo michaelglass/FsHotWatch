@@ -45,6 +45,7 @@ let private withRepo body =
 
 /// Run `trigger` against a host that is discovering its model (`Rediscovering`), publish
 /// the model half a second into the run, then release the tests. Returns the log.
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 let private runWhileDiscovering (repoRoot: string) (trigger: PluginHost -> unit) =
     let handshake = Path.Combine(repoRoot, "handshake")
     let started = handshake + ".started"

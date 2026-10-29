@@ -403,7 +403,7 @@ let ``read of a path that is a directory is empty, never a throw`` () =
     Directory.CreateDirectory asFile |> ignore
     test <@ List.isEmpty (Profile.read asFile) @>
 
-[<Fact(Timeout = 30_000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``the recorder samples on its own timer between start and finish`` () =
     let dir = tempRunDir ()
     use sampled = new Threading.ManualResetEventSlim(false)
@@ -419,7 +419,7 @@ let ``the recorder samples on its own timer between start and finish`` () =
     let recorder =
         Profile.start dir "Timed.Tests" None 1 readLoad (fun _ -> None) (TimeSpan.FromMilliseconds 20.0)
 
-    test <@ sampled.Wait(TimeSpan.FromSeconds 20.0) @>
+    test <@ sampled.Wait(FsHotWatch.Tests.TestHelpers.HangWait) @>
     Profile.finish recorder "passed" (Ok [])
 
     let samples =

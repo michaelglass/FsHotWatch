@@ -98,6 +98,7 @@ let ``Completed verdict summary is captured in history`` () =
     let r = List.head (host.GetHistory("summarizer"))
     test <@ r.Summary = Some "did the thing" @>
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 15000)>]
 let ``Completed verdict elapsed is recorded in history`` () =
     let host = PluginHost.create nullChecker "/tmp/test"

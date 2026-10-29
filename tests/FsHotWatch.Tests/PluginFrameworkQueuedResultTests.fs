@@ -15,6 +15,7 @@ open FsHotWatch.Tests.PluginFrameworkFixtures
 
 type private Msg = Finished
 
+[<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
 let private waitFor (deadline: TimeSpan) (condition: unit -> bool) =
     let until = DateTime.UtcNow + deadline
 
@@ -23,7 +24,7 @@ let private waitFor (deadline: TimeSpan) (condition: unit -> bool) =
 
     condition ()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a finished run's result shows as a queued-result subtask until the plugin picks it up`` () =
     use runMayFinish = new ManualResetEventSlim(false)
     use blockerStarted = new ManualResetEventSlim(false)
@@ -80,7 +81,7 @@ let ``a finished run's result shows as a queued-result subtask until the plugin 
 
     dispatchAndAwait registration (DispatchFileChanged SolutionChanged)
     registration.Dispatch(DispatchFileChanged SolutionChanged)
-    test <@ blockerStarted.Wait(TimeSpan.FromSeconds 5.0) @>
+    test <@ blockerStarted.Wait(FsHotWatch.Tests.TestHelpers.HangWait) @>
 
     // The run finishes while the mailbox is occupied: its result is now queued, and
     // the framework says so from that moment.
@@ -94,7 +95,7 @@ let ``a finished run's result shows as a queued-result subtask until the plugin 
     test <@ not resultFolded.IsSet @>
 
     blockerMayReturn.Set()
-    test <@ resultFolded.Wait(TimeSpan.FromSeconds 5.0) @>
+    test <@ resultFolded.Wait(FsHotWatch.Tests.TestHelpers.HangWait) @>
     test <@ waitFor (TimeSpan.FromSeconds 5.0) (fun () -> recorded () = [ "start", key; "end", key ]) @>
 
 [<Fact(Timeout = 15000)>]

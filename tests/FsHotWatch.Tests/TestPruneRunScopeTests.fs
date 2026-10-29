@@ -1778,7 +1778,7 @@ let ``a queued manual filtered force-run clears the prior full receipt when its 
     test <@ intents.Count = 1 @>
     test <@ claims.IsEmpty @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``manual run reply terminates when its shared test host cannot start`` () =
     let handler =
         create ":memory:" (isolatedRoot ()) (Some [ projConfig "ProjA" ]) None None None None []
@@ -1811,7 +1811,7 @@ let ``manual run reply terminates when its shared test host cannot start`` () =
         handler.PrepareCommit.Value claimedState finalState |> Async.RunSynchronously
 
     prepared.Finalize |> Async.RunSynchronously
-    test <@ reply.Task.Wait 5000 @>
+    test <@ reply.Task.Wait HangWaitMs @>
     test <@ reply.Task.Result.Contains("test host could not start") @>
     test <@ reply.Task.Result.Contains("host start fault") @>
     test <@ finalState.EvidenceReceipt.IsNone @>
@@ -3490,7 +3490,7 @@ let ``new dependency debt is not retired by unavailable execution after a pass``
         | PluginStatus.Failed _ -> ()
         | other -> Assert.Fail($"new dependency work cannot reuse the prior green, got %A{other}"))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``only-failed resolves current owner failures instead of the command snapshot`` () =
     // A `Request` never sees state, so `run-tests --only-failed` posts its request and the
     // plugin picks the failed projects from the state it folds the request into. A
@@ -3515,7 +3515,7 @@ let ``only-failed resolves current owner failures instead of the command snapsho
     |> Async.RunSynchronously
     |> ignore
 
-    test <@ refused.Task.Wait 5000 @>
+    test <@ refused.Task.Wait HangWaitMs @>
     test <@ refused.Task.Result.Contains "no previous results" @>
 
     // Folded into a state that now owes ProjB, the same request selects ProjB alone and

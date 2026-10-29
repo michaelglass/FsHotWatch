@@ -349,12 +349,12 @@ let ``killing session B's registry leaves session A's child running`` () =
 
     try
         registryB.KillAll()
-        test <@ childB.WaitForExit 10000 @>
+        test <@ childB.WaitForExit HangWaitMs @>
         test <@ not childA.HasExited @>
     finally
         registryA.KillAll()
 
-    test <@ childA.WaitForExit 10000 @>
+    test <@ childA.WaitForExit HangWaitMs @>
 
 [<Fact(Timeout = 60000)>]
 let ``a bare command is found on the session's PATH, not the host's`` () =

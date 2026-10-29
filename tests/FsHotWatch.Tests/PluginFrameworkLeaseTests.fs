@@ -424,7 +424,7 @@ let ``a shared run whose client goes while it waits for the resource never start
     test <@ List.ofSeq releases = [ Ready ] @>
     test <@ not (Seq.contains "run-done" probe.Folds) @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a cancelled run's child processes are reaped`` () =
     let probe = { newProbe () with SpawnChild = true }
     let harness = register probe true
@@ -438,7 +438,7 @@ let ``a cancelled run's child processes are reaped`` () =
 
         client.Cancel()
 
-        test <@ child.WaitForExit(10000) @>
+        test <@ child.WaitForExit(HangWaitMs) @>
         test <@ idle harness @>
     finally
         if not child.HasExited then
@@ -457,6 +457,7 @@ let private summaryOf (status: PluginStatus) =
 /// the status its `Running` displaced — through the same funnel every report takes — and
 /// that funnel still drops an unrelated terminal while a FINISHED run's result fold is
 /// owed, letting only the run's own verdict land.
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 30000)>]
 let ``a cancelled run restores its displaced status and an owed run verdict still gates terminals`` () =
     let statuses = Collections.Concurrent.ConcurrentQueue<PluginStatus>()

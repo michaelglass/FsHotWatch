@@ -49,6 +49,10 @@
 ///
 ///   FSHW-WALK-001 — no recursive directory walk that can follow a directory
 ///   symlink. It lives in its own file, `WalkAnalyzer.fs`.
+///
+///   FSHW-WALL-001 — in TEST sources: no sleeps, stopwatch upper bounds or short literal
+///   asserted waits; inject a clock or a fake host, or allowlist with
+///   `[<WallClock("reason")>]`. It lives in its own file, `WallClockAnalyzer.fs`.
 module FsHotWatch.Rules.ConventionAnalyzers
 
 open FSharp.Analyzers.SDK
