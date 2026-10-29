@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: `fshw verdict` reads are shadowed too (ADR-059 §7, AUTOMATION-1362). Each read
+  looks the CURRENT tree up in the shadow outcome store and appends a line labelled
+  `verdict` to `.fshw/shadow/lookup-verdict.jsonl`, beside what the read reported
+  (`applies:<outcome>`, `stale`, `in-flight`). A read files no record and evicts nothing;
+  stdout, the exit code and `verdict.json` are untouched. New: `Verdict.reportWithTree`,
+  `ShadowVerdict.ofRead`, `observeRead`, `observeReadWith`.
+
 ## 0.14.0-alpha.130 - 2026-10-29
 
 - feat: shadow mode for the lookup verdict (ADR-059, AUTOMATION-1362). Every `check` and

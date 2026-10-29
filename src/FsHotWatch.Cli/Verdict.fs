@@ -3587,16 +3587,27 @@ let private reportAgainst (repoRoot: string) (v: Verdict) (currentTree: TreeHash
 /// `report`, also returning what the current tree's key covered (`None` when no verdict
 /// was read, so no tree was hashed). One walk feeds both, so the description is of the
 /// very files the applicability decision hashed.
-let reportWithCoverage (repoRoot: string) (excludePatterns: string list) : Report * TreeHash.Coverage option =
+/// `reportWithCoverage`, also returning the current tree it judged the verdict against
+/// (`None` when no verdict was read, so no tree was hashed).
+let reportWithTree
+    (repoRoot: string)
+    (excludePatterns: string list)
+    : Report * TreeHash.Coverage option * TreeHash.Tree option =
     match read repoRoot with
     | Reading.Missing ->
         Report.NoVerdict
             $"no verdict at %s{RelativePath} — run `fshw check` (or `fshw confirm` for unfiltered full-suite evidence)",
+        None,
         None
-    | Reading.Unreadable reason -> Report.NoVerdict $"%s{RelativePath} is unusable: %s{reason}", None
+    | Reading.Unreadable reason -> Report.NoVerdict $"%s{RelativePath} is unusable: %s{reason}", None, None
     | Reading.Found v ->
         let walked = TreeHash.files repoRoot excludePatterns
-        reportAgainst repoRoot v (TreeHash.ofWalked walked), Some(TreeHash.coverage repoRoot walked)
+        let tree = TreeHash.ofWalked walked
+        reportAgainst repoRoot v tree, Some(TreeHash.coverage repoRoot walked), Some tree
+
+let reportWithCoverage (repoRoot: string) (excludePatterns: string list) : Report * TreeHash.Coverage option =
+    let report, covered, _ = reportWithTree repoRoot excludePatterns
+    report, covered
 
 let report (repoRoot: string) (excludePatterns: string list) : Report =
     fst (reportWithCoverage repoRoot excludePatterns)

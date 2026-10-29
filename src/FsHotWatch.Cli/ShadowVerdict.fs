@@ -213,8 +213,8 @@ let direction (today: Class) (lookup: Class) : string =
     | Class.Green, _ -> "stricter"
     | _ -> "red-vs-missing"
 
-/// The log line for one comparison.
-let line (o: Observation) (answer: LookupVerdict.Answer) (recorded: int) : string =
+/// The log line for one comparison, under the command label `command`.
+let lineAs (command: string) (o: Observation) (answer: LookupVerdict.Answer) (recorded: int) : string =
     let strings (items: string list) =
         let a = JsonArray()
 
@@ -249,7 +249,7 @@ let line (o: Observation) (answer: LookupVerdict.Answer) (recorded: int) : strin
     let root = JsonObject()
     root["schema"] <- LogSchema
     root["at"] <- o.RecordedAt.ToString("o")
-    root["command"] <- o.Command
+    root["command"] <- command
     root["tree"] <- o.Tree
     root["producer"] <- o.Producer
     root["today"] <- today
@@ -258,6 +258,9 @@ let line (o: Observation) (answer: LookupVerdict.Answer) (recorded: int) : strin
     root["direction"] <- dir
     root["recorded"] <- recorded
     root.ToJsonString()
+
+/// The log line for one publication: labelled with its own command.
+let line (o: Observation) (answer: LookupVerdict.Answer) (recorded: int) : string = lineAs o.Command o answer recorded
 
 /// File `o`'s records, look the tree up, and append the comparison to the shadow log.
 /// Returns the lookup's answer. `testProjects` are the configured test projects.
@@ -282,6 +285,27 @@ let observeWith (repoRoot: string) (store: OutcomeStore.Store) (testProjects: st
     store.Gc(o.RecordedAt, keep) |> ignore
     answer
 
+/// The shadow of a `fshw verdict` READ: look the CURRENT tree up and log the comparison with
+/// what the read reported, labelled `verdict`. A read files no record and evicts nothing —
+/// reading cannot perturb.
+let observeReadWith (repoRoot: string) (store: OutcomeStore.Store) (testProjects: string list) (o: Observation) =
+    let answer =
+        LookupVerdict.decide (requirements o testProjects) (fun k -> store.Lookup k |> Option.map _.Outcome)
+
+    let path = logPath repoRoot
+    Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+    File.AppendAllText(path, lineAs "verdict" o answer 0 + "\n")
+    answer
+
+/// The shadow store of `repoRoot`, with the default TTL and byte budget.
+let storeAt (repoRoot: string) =
+    OutcomeStore.Store(
+        { Root = storeRoot repoRoot
+          Ttl = OutcomeStore.defaultTtl
+          MaxBytes = OutcomeStore.defaultMaxBytes
+          Log = Logging.info "shadow" }
+    )
+
 /// The configured test projects of `repoRoot`, by the name its reports carry.
 let configuredTestProjects (repoRoot: string) : Result<string list, string> =
     TestEvidenceKey.configsOf repoRoot |> Result.map (Map.keys >> List.ofSeq)
@@ -293,16 +317,7 @@ let observe (repoRoot: string) (o: Observation) : unit =
         try
             match configuredTestProjects repoRoot with
             | Error reason -> Logging.warn "shadow" $"lookup verdict not computed: %s{reason}"
-            | Ok projects ->
-                let store =
-                    OutcomeStore.Store(
-                        { Root = storeRoot repoRoot
-                          Ttl = OutcomeStore.defaultTtl
-                          MaxBytes = OutcomeStore.defaultMaxBytes
-                          Log = Logging.info "shadow" }
-                    )
-
-                observeWith repoRoot store projects o |> ignore
+            | Ok projects -> observeWith repoRoot (storeAt repoRoot) projects o |> ignore
         with ex ->
             Logging.warn "shadow" $"lookup verdict not computed: %s{ex.GetType().Name}: %s{ex.Message}"
 
@@ -363,3 +378,50 @@ let ofVerdict (repoRoot: string) (v: Verdict.Verdict) : Observation =
                         Skipped = s.Skipped }
                     Passed = s.Failed = 0 || (s.StarvedRerun |> Option.exists _.PassedAlone) } ]
       RecordedAt = DateTimeOffset(DateTime.SpecifyKind(v.ProducedAt, DateTimeKind.Utc)) }
+
+/// The observation a `fshw verdict` read makes: the verdict on disk, judged against the
+/// CURRENT tree and the CURRENT fshw binary, with today's answer being what the read reported
+/// (`Applies` keeps the verdict's own class; `Stale` and `InFlight` are no answer). `None`
+/// when there is no verdict to read, so nothing names the plugins or the command to require.
+let ofRead
+    (repoRoot: string)
+    (report: Verdict.Report)
+    (currentTree: string)
+    (currentProducer: string)
+    (now: DateTimeOffset)
+    : Observation option =
+    let read (v: Verdict.Verdict) (today: Class) (todayOutcome: string) =
+        { ofVerdict repoRoot v with
+            Tree = currentTree
+            Producer = currentProducer
+            Today = today
+            TodayOutcome = todayOutcome
+            ExitCode = Verdict.reportExitCode report
+            Concluded = false
+            Suites = []
+            RecordedAt = now }
+
+    match report with
+    | Verdict.Report.Applies v ->
+        let concluded = ofVerdict repoRoot v
+        Some(read v concluded.Today ("applies:" + concluded.TodayOutcome))
+    | Verdict.Report.Stale(v, _) -> Some(read v Class.Missing "stale")
+    | Verdict.Report.InFlight(v, _) -> Some(read v Class.Missing "in-flight")
+    | Verdict.Report.NoVerdict _ -> None
+
+/// The shadow of one `fshw verdict` read. Never throws, writes no record, and never touches
+/// stdout, the exit code or the verdict file.
+let observeRead (repoRoot: string) (report: Verdict.Report) (currentTree: TreeHash.Tree option) : unit =
+    if enabledBy (Environment.GetEnvironmentVariable KillSwitchEnvVar) then
+        try
+            match currentTree, configuredTestProjects repoRoot with
+            | None, _ -> ()
+            | _, Error reason -> Logging.warn "shadow" $"lookup verdict not computed: %s{reason}"
+            | Some tree, Ok projects ->
+                let producer = DaemonIdentity.BinaryIdentity.render (Verdict.Producer.current ())
+
+                match ofRead repoRoot report tree.Hash producer DateTimeOffset.UtcNow with
+                | None -> ()
+                | Some o -> observeReadWith repoRoot (storeAt repoRoot) projects o |> ignore
+        with ex ->
+            Logging.warn "shadow" $"lookup verdict not computed: %s{ex.GetType().Name}: %s{ex.Message}"

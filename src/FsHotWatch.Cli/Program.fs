@@ -4232,7 +4232,7 @@ let private executeCommandRendered
                 exitCode
         | Verdict ->
             // Pure read: no daemon, no IPC, no run, so it costs nothing to call in a loop.
-            let report, covered = Verdict.reportWithCoverage repoRoot config.Exclude
+            let report, covered, currentTree = Verdict.reportWithTree repoRoot config.Exclude
 
             // STDOUT IS THE MACHINE SURFACE, and nothing else may touch it: an agent
             // piping this must get an envelope that parses, every time. (`UI.success`
@@ -4241,6 +4241,10 @@ let private executeCommandRendered
             // agent give up and go back to grepping.) Every human line below goes to
             // stderr, where the rest of the CLI's prose already lives.
             printfn "%s" (Verdict.serializeReportWith report covered)
+
+            // ADR-059 shadow mode: what the outcome store answers for the CURRENT tree, logged
+            // beside what this read reports. No record, no stdout, no change to the exit code.
+            ShadowVerdict.observeRead repoRoot report currentTree
 
             let say (line: string) = eprintfn "%s" line
 

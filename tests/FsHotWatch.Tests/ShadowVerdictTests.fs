@@ -287,3 +287,196 @@ let ``observe reads the configured test projects and never throws`` () =
         File.WriteAllText(Path.Combine(repo, ".fshw.json"), "{ not json")
         observe repo confirmGreen
         test <@ logLines repo |> List.length = 1 @>)
+
+// ---------------------------------------------------------------------------
+// `fshw verdict` reads (ADR-059 §7): the CURRENT tree looked up beside what the read reports.
+// ---------------------------------------------------------------------------
+
+let private publishedVerdict (command: Verdict.Command) (outcome: Verdict.Outcome) (exitCode: int) =
+    Verdict.create
+        command
+        (BaselineFixtures.reportOf (IpcParsing.FullSuite(2, None)))
+        ({ Hash = "sha256:published"
+           FileCount = 1
+           SkippedCount = 0
+           DeclaredCount = 0
+           AbsentDeclarationCount = 0 }
+        : TreeHash.Tree)
+        (Some [])
+        outcome
+        exitCode
+        [ { Name = "lint"
+            Outcome = Verdict.PluginOutcome.Ok
+            ElapsedMs = Some 1L
+            Summary = None } ]
+        []
+        Verdict.CheckComparison.notRecorded
+        []
+        ProjectModelFixtures.available
+
+let private greenConfirm () =
+    publishedVerdict Verdict.Confirm (Verdict.Green BaselineFixtures.baseline) 0
+
+[<Fact>]
+let ``a read with no verdict on disk has nothing to compare`` () =
+    test <@ ofRead "/w" (Verdict.Report.NoVerdict "none") "sha256:t1" "fshw 1" t0 = None @>
+
+[<Fact>]
+let ``a read that applies keeps the verdict's class, judged against the current tree and binary`` () =
+    let o =
+        ofRead "/w" (Verdict.Report.Applies(greenConfirm ())) "sha256:now" "fshw 2" t0
+        |> Option.get
+
+    test <@ o.Today = Class.Green @>
+    test <@ o.TodayOutcome = "applies:green" @>
+    test <@ o.Tree = "sha256:now" @>
+    test <@ o.Producer = "fshw 2" @>
+    test <@ o.Command = "confirm" @>
+    test <@ not o.Concluded @>
+    test <@ List.isEmpty o.Suites @>
+    test <@ o.RecordedAt = t0 @>
+
+[<Fact>]
+let ``a stale or in-flight read is no answer today`` () =
+    let stale =
+        ofRead "/w" (Verdict.Report.Stale(greenConfirm (), "moved")) "sha256:now" "fshw 1" t0
+        |> Option.get
+
+    let inFlight =
+        ofRead "/w" (Verdict.Report.InFlight(greenConfirm (), "running")) "sha256:now" "fshw 1" t0
+        |> Option.get
+
+    test <@ (stale.Today, stale.TodayOutcome, stale.ExitCode) = (Class.Missing, "stale", 4) @>
+    test <@ (inFlight.Today, inFlight.TodayOutcome, inFlight.ExitCode) = (Class.Missing, "in-flight", 6) @>
+
+[<Fact>]
+let ``a read answers from what publications filed, labels its line verdict, and files nothing`` () =
+    withStore (fun repo store ->
+        observeWith repo store projects confirmGreen |> ignore
+        let before = List.length (allFilesUnder "*.json" (storeRoot repo))
+
+        let read =
+            { confirmGreen with
+                Concluded = false
+                Suites = []
+                RecordedAt = t0.AddMinutes 3.0 }
+
+        test <@ observeReadWith repo store projects read = LookupVerdict.Answer.Green @>
+        let line = logLines repo |> List.last
+        test <@ (str [ "command" ] line) = "verdict" @>
+        test <@ (str [ "direction" ] line) = "agree" @>
+        test <@ (num [ "recorded" ] line) = 0 @>
+        let after = List.length (allFilesUnder "*.json" (storeRoot repo))
+        test <@ after = before @>)
+
+[<Fact>]
+let ``a stale read of a tree the store already verified is looser, not a disagreement about the code`` () =
+    withStore (fun repo store ->
+        observeWith repo store projects confirmGreen |> ignore
+
+        let staleRead =
+            { confirmGreen with
+                Today = Class.Missing
+                TodayOutcome = "stale"
+                ExitCode = 4
+                Concluded = false
+                Suites = [] }
+
+        test <@ observeReadWith repo store projects staleRead = LookupVerdict.Answer.Green @>
+        test <@ (str [ "direction" ] (logLines repo |> List.last)) = "looser" @>)
+
+[<Fact>]
+let ``observeRead with no tree hashed logs nothing`` () =
+    withTempDir "shadow-read" (fun repo ->
+        observeRead repo (Verdict.Report.NoVerdict "none") None
+        test <@ not (File.Exists(logPath repo)) @>)
+
+[<Fact>]
+let ``observeRead logs a verdict line for a read with a tree, and nothing when the config is unreadable`` () =
+    withTempDir "shadow-read-io" (fun repo ->
+        Directory.CreateDirectory(Path.Combine(repo, ".fshw")) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(repo, ".fshw.json"),
+            """{ "tests": { "projects": [ { "project": "A.Tests" } ] } }"""
+        )
+
+        let tree: TreeHash.Tree =
+            { Hash = "sha256:now"
+              FileCount = 1
+              SkippedCount = 0
+              DeclaredCount = 0
+              AbsentDeclarationCount = 0 }
+
+        observeRead repo (Verdict.Report.Stale(greenConfirm (), "moved")) (Some tree)
+        let line = logLines repo |> List.exactlyOne
+        test <@ (str [ "command" ] line) = "verdict" @>
+        test <@ (str [ "tree" ] line) = "sha256:now" @>
+        test <@ (str [ "today"; "outcome" ] line) = "stale" @>
+
+        // No verdict to read: nothing to compare, nothing logged.
+        observeRead repo (Verdict.Report.NoVerdict "none") (Some tree)
+        test <@ logLines repo |> List.length = 1 @>
+
+        // An unreadable config is logged, never thrown.
+        File.WriteAllText(Path.Combine(repo, ".fshw.json"), "{ not json")
+        observeRead repo (Verdict.Report.Applies(greenConfirm ())) (Some tree)
+        test <@ logLines repo |> List.length = 1 @>)
+
+[<Fact>]
+let ``a shadow that cannot write its log is logged and never thrown, on publication and read`` () =
+    withTempDir "shadow-unwritable" (fun repo ->
+        Directory.CreateDirectory(Path.Combine(repo, ".fshw")) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(repo, ".fshw.json"),
+            """{ "tests": { "projects": [ { "project": "A.Tests" } ] } }"""
+        )
+
+        // A FILE where the shadow directory belongs: every write under it fails.
+        File.WriteAllText(directory repo, "in the way")
+
+        let tree: TreeHash.Tree =
+            { Hash = "sha256:now"
+              FileCount = 1
+              SkippedCount = 0
+              DeclaredCount = 0
+              AbsentDeclarationCount = 0 }
+
+        observe repo confirmGreen
+        observeRead repo (Verdict.Report.Applies(greenConfirm ())) (Some tree)
+        test <@ File.Exists(directory repo) @>)
+
+[<Fact>]
+let ``a plugin still running in a read verdict records nothing and is required`` () =
+    let v =
+        Verdict.create
+            Verdict.Check
+            (BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)))
+            ({ Hash = "sha256:published"
+               FileCount = 1
+               SkippedCount = 0
+               DeclaredCount = 0
+               AbsentDeclarationCount = 0 }
+            : TreeHash.Tree)
+            (Some [])
+            (Verdict.Incomplete "still running")
+            2
+            [ { Name = "lint"
+                Outcome = Verdict.PluginOutcome.Running
+                ElapsedMs = None
+                Summary = None }
+              { Name = "build"
+                Outcome = Verdict.PluginOutcome.TimedOut
+                ElapsedMs = Some 1L
+                Summary = None } ]
+            []
+            Verdict.CheckComparison.notRecorded
+            []
+            ProjectModelFixtures.available
+
+    let o =
+        ofRead "/w" (Verdict.Report.Applies v) "sha256:now" "fshw 1" t0 |> Option.get
+
+    test <@ o.Plugins = [ "lint", None; "build", Some OutcomeStore.Outcome.Fail ] @>
+    test <@ o.TodayOutcome = "applies:incomplete" @>
