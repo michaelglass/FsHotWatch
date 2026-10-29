@@ -126,3 +126,35 @@ waiting to land.
 `mise run release` cuts the release, and `mise run release-dry-run` shows what it
 would tag. This policy does not change either command; it only decides when to run
 them.
+
+## Merging to this repository's `main`
+
+The sections above are about USING fshw. This one is the rule for changing FsHotWatch
+itself (`CLAUDE.md` is gitignored here, so the rule lives in this file).
+
+Before every push to `main` — a merge, a re-land, a revert — run BOTH:
+
+1. `mise run ci` — the full-suite `confirm` plus the integration suite, on this machine.
+2. `mise run ci-linux` — GitHub Actions' CI jobs (`build`, `integration`, `lint-project`)
+   in a local Linux container, with the workflow's SDK band, coverage floors, `CI` /
+   `GITHUB_ACTIONS` environment and a non-root user. Needs a Docker daemon (Docker
+   Desktop, OrbStack or colima). Exit 0 = every job green; it prints each step's exit and
+   duration and leaves logs, coverage and `.fshw/test-runs` in `.ci-linux/`.
+
+Do not push `main` unless both exit 0. `mise run ci` alone is not enough: every
+FsHotWatch CI red inspected 2026-10-05..28 (14 runs) passed on macOS and failed only on
+Linux — coverage floors that measure differently there, real-process tests, wall-clock and
+cancellation tests — and all four reverts of that period were Linux-only failures.
+
+- `CI_LINUX_JOBS=build mise run ci-linux` runs one job; `mise run ci-linux -- <checkout>`
+  runs another checkout (any revision, including one older than the script).
+- ci-linux derives its steps from `.github/workflows/ci.yml` and transcribes the shared
+  reusable workflows; it REFUSES to run (exit 2) when either upstream file changed since
+  the transcription. Update `scripts/ci-linux/steps.sh` to match, then the pinned blob ids
+  in `scripts/ci-linux.sh`. Do not set `CI_LINUX_ACCEPT_WORKFLOW_DRIFT=1` to get past it.
+- It runs on the host's architecture (arm64 on Apple silicon); GitHub's runner is x64. The
+  ANSI long-running-report red that GitHub hit on bc0918d7 (fixed by 5ed72a5f) reproduces on
+  arm64, but an x64-only difference is possible. `CI_LINUX_PLATFORM=linux/amd64` emulates
+  x64 when it might.
+- After pushing, watch the commit's GitHub CI run to the end anyway. A local green is
+  strong evidence, not the verdict; if GitHub goes red, revert first and diagnose after.

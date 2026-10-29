@@ -316,6 +316,20 @@ run = "dotnet fsi scripts/check-msbuild-deps.fsx && dotnet run --project src/FsH
 # that CI runs it too. `compile` stays, because the check reads a BUILT deps.json.
 depends = ["compile", "lint-project", "coverage-check", "sync-docs-check"]
 
+[tasks.ci-linux]
+description = "Run GitHub Actions' CI jobs (build, integration, lint-project) in a local Linux container. Required before every push to main."
+# `ci` above runs on THIS machine, which is macOS for every maintainer here, and every
+# FsHotWatch CI red inspected 2026-10-05..28 (14 runs) passed on macOS and failed only on
+# GitHub's Linux runner: Linux coverage floors, a real-process test, wall-clock and
+# cancellation tests. All four reverts of the period were Linux-only failures. This task
+# runs the same jobs as GitHub, on Linux, before the push (AUTOMATION-1363).
+#
+# The steps are DERIVED from .github/workflows/ci.yml, not restated (scripts/ci-linux/steps.sh
+# says why), and the run refuses to start when an upstream reusable workflow it transcribes
+# has changed. Needs a Docker daemon (Docker Desktop, OrbStack or colima). Pass a checkout
+# path to run another revision: `mise run ci-linux -- .workspaces/<name>`.
+run = "bash scripts/ci-linux.sh"
+
 [tasks.check-msbuild-deps]
 description = "Verify app-local MSBuild support assemblies are not downgraded"
 run = "dotnet fsi scripts/check-msbuild-deps.fsx"
