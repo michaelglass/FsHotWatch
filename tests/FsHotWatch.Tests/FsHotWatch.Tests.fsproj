@@ -280,6 +280,7 @@
     <Compile Include="AnalyzerMaterializationTests.fs" />
     <Compile Include="GatePurityTests.fs" />
     <Compile Include="CiParityTests.fs" />
+    <Compile Include="CiLinuxTests.fs" />
     <Compile Include="ToolchainPinTests.fs" />
     <Compile Include="CoverageFloorCompletenessTests.fs" />
     <Compile Include="BenchmarkPlacementTests.fs" />

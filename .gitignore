@@ -91,3 +91,6 @@ docs/plans/
 cache-events.log
 .claude/scheduled_tasks.lock
 .ci-runs/
+
+# ci-linux: logs, coverage and fshw test runs of the local Linux CI container (scripts/ci-linux.sh)
+.ci-linux/
