@@ -47,6 +47,7 @@ let private writeFakeDotnet path =
         path,
         """#!/bin/sh
 set -eu
+if [ -n "${FAKE_START_DELAY_SEC:-}" ]; then sleep "$FAKE_START_DELAY_SEC"; fi
 count=0
 if [ -f "$FAKE_COUNT_FILE" ]; then count=$(cat "$FAKE_COUNT_FILE"); fi
 count=$((count + 1))
@@ -95,7 +96,6 @@ let private runBarrier root fakeDotnet probeParent project packageId settings =
     start.Environment["TESTPRUNE_NUGET_PROBE_PARENT"] <- probeParent
     start.Environment["TESTPRUNE_NUGET_PROBE_ATTEMPTS"] <- "1"
     start.Environment["TESTPRUNE_NUGET_PROBE_DELAY_MS"] <- "1"
-    start.Environment["TESTPRUNE_NUGET_PROBE_PROCESS_TIMEOUT_MS"] <- "1000"
     settings |> List.iter (fun (key, value) -> start.Environment[key] <- value)
 
     use child = Process.Start start
@@ -154,6 +154,15 @@ let private probeDirectories path =
     else
         [||]
 
+/// The successful barrier, with its exit checked BEFORE any capture is read: a run that
+/// failed (a probe timed out on a loaded box) is reported by its exit code and stderr,
+/// not by a `FileNotFoundException` on a capture the fake never wrote (AUTOMATION-1379).
+let private succeeded (result: BarrierResult) =
+    Assert.True(
+        result.ExitCode = 0,
+        $"the barrier exited %d{result.ExitCode}\nstdout:\n%s{result.Stdout}\nstderr:\n%s{result.Stderr}"
+    )
+
 [<Fact>]
 let ``success probes one exact version from only nuget org with a fresh cache`` () =
     scratch (fun project fakeDotnet probeParent capture countFile ->
@@ -167,6 +176,7 @@ let ``success probes one exact version from only nuget org with a fresh cache`` 
         let first =
             runBarrier (repoRoot ()) fakeDotnet probeParent project "Example.Package" settings
 
+        succeeded first
         let argv = File.ReadAllLines(Path.Combine(capture, "argv.txt"))
         let firstPackages = argv[5]
         let probe = File.ReadAllText(Path.Combine(capture, "probe.csproj"))
@@ -191,6 +201,7 @@ let ``success probes one exact version from only nuget org with a fresh cache`` 
         let second =
             runBarrier (repoRoot ()) fakeDotnet probeParent project "Example.Package" settings
 
+        succeeded second
         let secondArgv = File.ReadAllLines(Path.Combine(capture, "argv.txt"))
         test <@ second.ExitCode = 0 && secondArgv[5] <> firstPackages @>
         test <@ probeDirectories probeParent |> Array.isEmpty @>)
@@ -211,6 +222,7 @@ let ``tool package uses an exact isolated tool install instead of PackageReferen
                   "FAKE_CAPTURE_DIR", capture
                   "FAKE_COUNT_FILE", countFile ]
 
+        succeeded result
         let argv = File.ReadAllLines(Path.Combine(capture, "argv.txt"))
         let packages = File.ReadAllText(Path.Combine(capture, "nuget-packages.txt"))
         let config = File.ReadAllText(Path.Combine(capture, "NuGet.Config"))
@@ -325,3 +337,26 @@ let ``a wedged restore is killed within its bound and cleaned up`` () =
         test <@ result.DescendantExited = Some true @>
         test <@ result.Stderr.Contains("restore timed out") @>
         test <@ probeDirectories probeParent |> Array.isEmpty @>)
+
+[<Fact>]
+let ``a fake dotnet slower than a second to start is waited out, not timed out`` () =
+    // A loaded box can take more than a second just to start the fake's shell. Only the
+    // timeout test means to time a probe out; every other test waits a probe out under
+    // the script's own bound.
+    scratch (fun project fakeDotnet probeParent capture countFile ->
+        writeProject project [ "Example.Package" ] [ "1.2.3-alpha.4" ] false
+
+        let result =
+            runBarrier
+                (repoRoot ())
+                fakeDotnet
+                probeParent
+                project
+                "Example.Package"
+                [ "FAKE_MODE", "success"
+                  "FAKE_START_DELAY_SEC", "2"
+                  "FAKE_CAPTURE_DIR", capture
+                  "FAKE_COUNT_FILE", countFile ]
+
+        succeeded result
+        test <@ File.Exists(Path.Combine(capture, "argv.txt")) @>)
