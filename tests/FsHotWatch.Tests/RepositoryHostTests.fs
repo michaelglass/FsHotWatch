@@ -1132,14 +1132,25 @@ let ``a host whose only worktree is deleted ends that session, and then exits id
     withRepository (fun fx ->
         let settings = settingsFor fx
         use cts = new CancellationTokenSource()
-        // Long enough that a loaded box still attaches before the new host idles out.
-        let idleGrace = TimeSpan.FromSeconds 10.0
+        // The idle watch reads this clock, so the grace passes when the test moves it, never
+        // because a loaded box was slow to attach or to notice the deletion (AUTOMATION-1377).
+        let clock = FakeClock.ManualClock()
+        let idleGrace = TimeSpan.FromMinutes 5.0
+        let registry = TaskCompletionSource<SessionRegistry>()
+
+        let observe (r: SessionRegistry) =
+            registry.TrySetResult r |> ignore
+
+            { new IDisposable with
+                member _.Dispose() = () }
 
         let running =
-            Task.Run(fun () -> RepositoryHost.run settings checkingFactory idleGrace cts)
+            Task.Run(fun () ->
+                RepositoryHost.runObservedOn clock.WallNow observe settings checkingFactory idleGrace cts)
 
         try
-            test <@ waitUntilTrue (fun () -> RepositoryIpc.isRunning settings.Control.Endpoint) 20000 @>
+            test <@ registry.Task.Wait(HangWait) @>
+            test <@ waitUntilTrue (fun () -> RepositoryIpc.isRunning settings.Control.Endpoint) HangWaitMs @>
 
             let reply =
                 RepositoryIpc.attach settings.Control.Endpoint (encodeRequest (requestFrom fx.Primary "a"))
@@ -1147,11 +1158,23 @@ let ``a host whose only worktree is deleted ends that session, and then exits id
                 |> Result.defaultWith (exchangeException >> raise)
                 |> decodeResponse
 
-            test <@ reply |> Result.map attachedId |> Result.isOk @>
+            let id =
+                match reply with
+                | Ok response -> attachedId response
+                | Error error -> failwith $"the attach was refused: %A{error}"
+
+            let session = (registry.Task.Result.TryGet id).Value
 
             test <@ deleteWhileWritten fx.Primary.Root.Value 10000 @>
 
-            test <@ running.Wait(idleGrace + TimeSpan.FromSeconds 30.0) @>
+            // The deletion ends the session: the event, not a wait for time to pass.
+            test <@ session.Ended.Wait(HangWait) @>
+            test <@ waitUntilTrue (fun () -> List.isEmpty registry.Task.Result.Sessions) HangWaitMs @>
+            test <@ not running.IsCompleted @>
+
+            // Then the whole grace passes with no session, and the host exits idle.
+            clock.Advance(idleGrace + TimeSpan.FromSeconds 1.0)
+            test <@ running.Wait(HangWait) @>
             test <@ running.Result = HostRun.Stopped @>
         finally
             cts.Cancel()

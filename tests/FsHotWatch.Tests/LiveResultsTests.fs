@@ -80,9 +80,13 @@ let ``a producer that gives up while waiting never takes a place`` () =
     test <@ bound.Status().Queued = 0 && bound.Status().Abandoned = 1L @>
 
     first.SetResult()
-    waitUntil (fun () -> bound.Status().Live = 0) 10000
-    // The place the give-up never took is free: the next producer is granted at once.
-    test <@ (holdUntil bound Task.CompletedTask CancellationToken.None).IsCompletedSuccessfully @>
+    // The place the give-up never took is free: the next producer is granted. Awaited, not
+    // read synchronously: `Live` drops before the lane is released, so a grant read the
+    // instant `Live = 0` races that release on a loaded box (AUTOMATION-1376). With the
+    // bound at one, a place the give-up had taken would leave this hold queued for good.
+    let next = holdUntil bound Task.CompletedTask CancellationToken.None
+    test <@ next.Wait within @>
+    test <@ bound.Status().Queued = 0 && bound.Status().Abandoned = 1L @>
 
 [<Fact(Timeout = 10000)>]
 let ``a publication that throws gives its place back`` () =

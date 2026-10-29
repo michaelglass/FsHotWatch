@@ -449,10 +449,10 @@ type HostRun =
     /// Something exists at the repository's virtual root, which must never exist.
     | VirtualRootExists of path: string
 
-/// `run`, handing `observe` the host's session registry once it exists; what `observe`
-/// returns is disposed before the registry ends its sessions. A signal handler reads the
-/// live sessions through it, to reap what every session spawned.
-let runObserved
+/// `runObserved`, reading the idle watch's time from `wallNow`: a test moves it to cross the
+/// grace when it says, not when a loaded box gets there.
+let internal runObservedOn
+    (wallNow: unit -> DateTime)
     (observe: SessionRegistry -> IDisposable)
     (settings: HostSettings)
     (factory: SessionFactory)
@@ -504,14 +504,14 @@ let runObserved
                             Async.StartImmediateAsTask(RepositoryIpc.serve settings.Control.Endpoint host.Handlers cts)
 
                         // Idle exit: no session attached for the whole grace period.
-                        let mutable idleSince = DateTime.UtcNow
+                        let mutable idleSince = wallNow ()
 
                         while not cts.IsCancellationRequested do
                             cts.Token.WaitHandle.WaitOne(TimeSpan.FromSeconds 1.0) |> ignore
 
                             let busy = not (List.isEmpty registry.Sessions)
 
-                            match idleTick idleGrace DateTime.UtcNow idleSince busy host.TryRetire with
+                            match idleTick idleGrace (wallNow ()) idleSince busy host.TryRetire with
                             | Some since -> idleSince <- since
                             | None ->
                                 Logging.info "host" $"no session for %s{string idleGrace}; exiting"
@@ -536,6 +536,18 @@ let runObserved
             ran
         finally
             lock.Dispose()
+
+/// `run`, handing `observe` the host's session registry once it exists; what `observe`
+/// returns is disposed before the registry ends its sessions. A signal handler reads the
+/// live sessions through it, to reap what every session spawned.
+let runObserved
+    (observe: SessionRegistry -> IDisposable)
+    (settings: HostSettings)
+    (factory: SessionFactory)
+    (idleGrace: TimeSpan)
+    (cts: CancellationTokenSource)
+    : HostRun =
+    runObservedOn (fun () -> DateTime.UtcNow) observe settings factory idleGrace cts
 
 /// Take the repository's host lock, serve the endpoint until `cts` is cancelled or no
 /// session has been attached for `idleGrace`, then end every session and release the
