@@ -67,6 +67,7 @@
         <Compile Include="AgentEnvelope.fs" />
         <Compile Include="ConfirmTraces.fs" />
         <Compile Include="ProgressRenderer.fs" />
+        <Compile Include="SettleHeartbeat.fs" />
         <Compile Include="IpcOutput.fs" />
         <Compile Include="ScanHeartbeat.fs" />
         <Compile Include="SourceRef.fs" />

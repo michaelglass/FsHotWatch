@@ -253,6 +253,7 @@
     <Compile Include="AgentModeConfigTests.fs" />
     <Compile Include="AgentEnvelopeTests.fs" />
     <Compile Include="ScanHeartbeatTests.fs" />
+    <Compile Include="SettleHeartbeatTests.fs" />
     <Compile Include="CliGrammarRootTests.fs" />
     <Compile Include="HookStepSubtaskTests.fs" />
     <Compile Include="DeadCodeTests.fs" />

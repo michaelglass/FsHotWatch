@@ -708,7 +708,14 @@ let renderIpcResult
 /// AND something has earned evidence for the current project model), so `isSettled` is
 /// wired to that RPC's completion. The status reads here are for RENDERING ONLY and never
 /// decide the verdict.
-let private pollUntilSettled
+///
+/// The clock, the pause between readings, the line sink and the interactive switch are
+/// the caller's, so the reporting of a long wait is testable without one.
+let internal pollUntilSettledWith
+    (now: unit -> DateTime)
+    (pause: unit -> unit)
+    (report: string -> unit)
+    (interactive: bool)
     (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
     (getStatus: unit -> string)
     (isSettled: unit -> bool)
@@ -716,6 +723,12 @@ let private pollUntilSettled
     let mutable prevLineCount = 0
     let mutable prevRendered = ""
     let mutable allDone = false
+    // A non-interactive reader has no redraw: it hears what the wait is on at an interval
+    // instead, or it hears nothing for the whole settle (AUTOMATION-1370).
+    let mutable ticker = SettleHeartbeat.Ticker.start (now ())
+
+    if not interactive then
+        report SettleHeartbeat.settlingLabel
 
     while not allDone do
         let statusJson = getStatus ()
@@ -725,7 +738,14 @@ let private pollUntilSettled
         // `isSettled` and graded from `getErrors`, both of which fail closed on their own.
         let parsed = parsePluginStatuses statusJson |> Result.defaultValue Map.empty
 
-        if UI.isInteractive then
+        if not interactive then
+            let due, next =
+                SettleHeartbeat.Ticker.tick SettleHeartbeat.interval (now ()) parsed ticker
+
+            ticker <- next
+            due |> Option.iter report
+
+        if interactive then
             let lines = renderStatuses parsed
             let progress = String.concat "\n" lines
 
@@ -743,11 +763,25 @@ let private pollUntilSettled
         allDone <- isSettled ()
 
         if not allDone then
-            Thread.Sleep(200)
+            pause ()
 
-    if UI.isInteractive && prevLineCount > 0 then
+    if interactive && prevLineCount > 0 then
         for _ in 1..prevLineCount do
             Console.Error.Write("\x1b[A\x1b[2K")
+
+let private pollUntilSettled
+    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
+    (getStatus: unit -> string)
+    (isSettled: unit -> bool)
+    : unit =
+    pollUntilSettledWith
+        FsHotWatch.HostClock.system.WallNow
+        (fun () -> Thread.Sleep(200))
+        SettleHeartbeat.emitLine
+        UI.isInteractive
+        renderStatuses
+        getStatus
+        isSettled
 
 /// True when `ex` (walking its inner-exception chain) indicates the daemon shut down or
 /// the IPC pipe dropped WHILE a `WaitForComplete` verdict wait was in flight — as opposed
