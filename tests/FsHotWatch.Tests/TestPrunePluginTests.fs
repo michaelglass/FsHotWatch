@@ -5149,6 +5149,72 @@ let ``ingestAndEmitCoverage with an empty raw cobertura does NOT clobber an exis
         test <@ summary.Covered = 0 @>
         test <@ File.ReadAllText sharedOut = priorGood @>)
 
+// AUTOMATION-1371. A green full run whose report holds no coverage at all (an empty
+// `<packages />`) after the project had runtime coverage measured nothing; it did not
+// measure "covers nothing". Ingesting it as a full replacement emptied the project's
+// runtime-coverage rows, so later selection treated the project as reaching no source file.
+// It is coverage MISSING: the prior rows are kept and the run is flagged for that project.
+[<Fact>]
+let ``a green full run with an empty coverage report keeps the project's coverage rows and is flagged coverage-missing``
+    ()
+    =
+    withTempDir "cov-empty-full" (fun dir ->
+        let repoRoot = dir
+        let db = seedSymbolDb (Path.Combine(dir, "test.db")) "src/Foo.fs" 10 12
+        let absFile = Path.Combine(repoRoot, "src/Foo.fs")
+        let rawPath = Path.Combine(dir, "coverage.baseline.cobertura.xml")
+        let sharedOut = Path.Combine(dir, "coverage", CoberturaName)
+
+        File.WriteAllText(rawPath, mkCobertura "Foo.dll" absFile [ (10, 3); (11, 1) ])
+
+        let first =
+            ingestAndEmitCoverage db repoRoot "run-good" (Some sharedOut) [ coverageInput "Tests" true rawPath ]
+
+        test <@ first.Failures.IsEmpty && first.CoverageMissing.IsEmpty @>
+        test <@ db.GetRuntimeCoverageProjects([ "src/Foo.fs" ]) = [ "Tests" ] @>
+        let emittedBefore = File.ReadAllText sharedOut
+
+        File.WriteAllText(
+            rawPath,
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?><coverage line-rate=\"1\"><packages /></coverage>"
+        )
+
+        let outcome =
+            ingestAndEmitCoverage db repoRoot "run-empty" (Some sharedOut) [ coverageInput "Tests" true rawPath ]
+
+        test <@ db.GetRuntimeCoverageProjects([ "src/Foo.fs" ]) = [ "Tests" ] @>
+        test <@ File.ReadAllText sharedOut = emittedBefore @>
+        // Flagged, not failed: the tests passed, and what selection relies on was kept.
+        test <@ outcome.Failures.IsEmpty @>
+
+        test
+            <@
+                outcome.CoverageMissing
+                |> List.exactlyOne
+                |> fun missing -> missing.Project = "Tests" && missing.Reason.StartsWith "coverage missing"
+            @>)
+
+// The guard is about WIPING rows. A project whose runs have never covered a production file
+// (its only instrumented module is excluded, say) writes an empty report on every green run;
+// that is its honest measurement and still ingests, advancing its baseline.
+[<Fact>]
+let ``an empty full coverage report from a project with no runtime coverage rows ingests as before`` () =
+    withTempDir "cov-empty-full-norows" (fun dir ->
+        let repoRoot = dir
+        let db = seedSymbolDb (Path.Combine(dir, "test.db")) "src/Foo.fs" 10 12
+        let rawPath = Path.Combine(dir, "coverage.baseline.cobertura.xml")
+        File.WriteAllText(rawPath, "<?xml version=\"1.0\"?><coverage><packages /></coverage>")
+
+        let outcome =
+            ingestAndEmitCoverage db repoRoot "run-empty" None [ coverageInput "Tests" true rawPath ]
+
+        test <@ outcome.Failures.IsEmpty && outcome.CoverageMissing.IsEmpty @>
+
+        let availability =
+            db.GetRuntimeCoverageAvailability([ "Tests" ], DateTimeOffset.UtcNow.AddMinutes(-1.0))
+
+        test <@ availability = [ ("Tests", TestPrune.Domain.Current) ] @>)
+
 [<Fact>]
 let ``ingestAndEmitCoverage with no inputs leaves a prior emitted cobertura untouched`` () =
     // Every project skipped or deferred, so nothing to emit from.

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: a green full run whose coverage report holds no lines (an empty `<packages />`) no
+  longer wipes the runtime coverage of a project that has some (AUTOMATION-1371). It was
+  ingested as a full replacement, so later selection treated the project as reaching no
+  source file. Such a report is now coverage missing: it is not ingested, the project's prior
+  runtime and ratchet rows are kept, and the run's log flags it ("coverage missing"); the
+  tests' result stands. The baseline's watermark does not advance, so kept rows age into a
+  stale baseline that widens selection to the whole project. A project with no runtime rows
+  (its runs never reach a production file) still ingests its empty report; an empty partial
+  report still merges nothing; a malformed one still revokes the prior evidence. New:
+  `CoverageIngestOutcome.CoverageMissing`.
+
 - feat: a settled `test-scope` reply carries `outcomeKeys`: each configured project's
   full-run outcome key over the tree as it is NOW (ADR-059 step 7b), computed from the
   current model when no run is in flight. New: `TestEvidenceRun.currentOutcomeKeys`.

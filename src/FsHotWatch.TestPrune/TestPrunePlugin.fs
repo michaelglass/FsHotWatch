@@ -378,11 +378,18 @@ let internal symbolGraphLooksIncomplete (ingested: int) (skipped: int) : bool =
 ///
 /// Invariants:
 /// - An empty / aborted raw cobertura parses to zero rows → ingests nothing →
-///   cannot clobber the DB or the emitted file.
+///   cannot clobber the DB or the emitted file. A FULL one for a project that holds
+///   runtime coverage is not ingested at all (`coverageMissingFromFullReceipt`).
 /// - If NO raw inputs exist on disk, the shared cobertura is NOT written, so a
 ///   prior good emission is never overwritten with nothing.
 type CoverageIngestOutcome =
-    { Failures: CoverageIngestFailure list }
+    {
+        /// Receipts that could not be ingested: each project is reported errored and owed.
+        Failures: CoverageIngestFailure list
+        /// Full receipts that measured nothing for a project that holds runtime coverage:
+        /// not ingested, the prior rows kept, and the run flagged. The tests' result stands.
+        CoverageMissing: CoverageIngestFailure list
+    }
 
 let internal coverageIngestFailures outcome = outcome.Failures
 
@@ -707,6 +714,49 @@ let private projectRatchetCobertura (db: Database) : string option =
         root.Add packages
         Some(XDocument(root).ToString(SaveOptions.DisableFormatting))
 
+/// Whether `project` holds any runtime-coverage row (a source file its tests reached).
+let private holdsRuntimeCoverage (db: Database) (project: string) =
+    use conn = db.OpenConnection()
+    use cmd = conn.CreateCommand()
+    cmd.CommandText <- "SELECT EXISTS(SELECT 1 FROM runtime_coverage WHERE test_project = @project);"
+    cmd.Parameters.AddWithValue("@project", project) |> ignore
+    Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture) <> 0L
+
+/// A FULL receipt with no `<line>` at all (an empty `<packages />`) from a green run, for a
+/// project that holds runtime coverage, measured nothing: the coverage is MISSING, not
+/// "covers nothing" (AUTOMATION-1371). Ingesting it would replace the project's rows with
+/// none, and selection would then treat the project as reaching no source file. So it is
+/// not ingested: the prior runtime and ratchet rows are kept, and the run is flagged. The
+/// baseline's watermark does not advance, so kept rows age into a stale baseline and widen
+/// selection to the whole project rather than standing in for a measurement for ever.
+///
+/// Not this case: a project with no rows (one whose runs never reach a production file
+/// writes an empty report every time, and that ingests as before); a partial receipt (it
+/// only merges, so an empty one removes nothing); a MALFORMED receipt (its policy is to
+/// revoke the prior evidence, and the ingest does that).
+let internal coverageMissingFromFullReceipt
+    (db: Database)
+    (input: CoverageInput)
+    (xml: string)
+    : CoverageIngestFailure option =
+    let holdsNoLines () =
+        try
+            List.isEmpty (parseCobertura xml)
+        with :? System.Xml.XmlException ->
+            false
+
+    if
+        input.Scope = CoverageRunScope.Full
+        && holdsNoLines ()
+        && holdsRuntimeCoverage db input.Project
+    then
+        Some
+            { Project = input.Project
+              Reason =
+                $"coverage missing: successful full test run wrote a runtime coverage report with no lines at %s{input.RawPath}" }
+    else
+        None
+
 let internal invalidateCoverageReceiptFailure (db: Database) (failure: CoverageIngestFailure) =
     db.InvalidateRuntimeCoverage failure.Project
     removeProjectRatchetCoverage db failure.Project |> ignore
@@ -733,27 +783,35 @@ let internal ingestAndEmitCoverageForProjects
         else
             pruneProjectRatchetCoverage db enabledRatchetProjects
 
-    let accepted, failures =
-        (([], []), existing)
-        ||> List.fold (fun (accepted, failures) input ->
+    let accepted, failures, coverageMissing =
+        (([], [], []), existing)
+        ||> List.fold (fun (accepted, failures, coverageMissing) input ->
             try
                 let xml = File.ReadAllText input.RawPath
 
-                // Runtime selection needs every configured project's provenance,
-                // including projects excluded from the consumer ratchet.
-                ingestRuntimeCoverage db (Some repoRoot) input.Project input.Scope runId xml
-                |> ignore
+                match coverageMissingFromFullReceipt db input xml with
+                | Some missing ->
+                    Logging.warn
+                        "test-prune"
+                        $"%s{input.Project}: %s{missing.Reason}; its prior runtime coverage is kept"
 
-                let ratchetResult =
-                    if input.IncludeInRatchet && Set.contains input.Project enabledRatchetProjects then
-                        let result = ingestCobertura db (Some repoRoot) xml
-                        persistProjectRatchetCoverage db repoRoot input xml
-                        Some result
-                    else
-                        removeProjectRatchetCoverage db input.Project |> ignore
-                        None
+                    accepted, failures, missing :: coverageMissing
+                | None ->
+                    // Runtime selection needs every configured project's provenance,
+                    // including projects excluded from the consumer ratchet.
+                    ingestRuntimeCoverage db (Some repoRoot) input.Project input.Scope runId xml
+                    |> ignore
 
-                (input, ratchetResult) :: accepted, failures
+                    let ratchetResult =
+                        if input.IncludeInRatchet && Set.contains input.Project enabledRatchetProjects then
+                            let result = ingestCobertura db (Some repoRoot) xml
+                            persistProjectRatchetCoverage db repoRoot input xml
+                            Some result
+                        else
+                            removeProjectRatchetCoverage db input.Project |> ignore
+                            None
+
+                    (input, ratchetResult) :: accepted, failures, coverageMissing
             with ex ->
                 // A malformed FULL receipt has the same replacement semantics as
                 // a missing one: neither runtime selection nor the consumer ratchet
@@ -774,7 +832,7 @@ let internal ingestAndEmitCoverageForProjects
                     "test-prune"
                     $"runtime coverage post-processing failed for %s{input.Project}: %s{failure.Reason}"
 
-                accepted, failure :: failures)
+                accepted, failure :: failures, coverageMissing)
 
     let ratchetInputs =
         accepted
@@ -824,7 +882,8 @@ let internal ingestAndEmitCoverageForProjects
     with ex ->
         Logging.error "test-prune" $"coverage emission failed: %s{ex.Message}"
 
-    { Failures = List.rev failures }
+    { Failures = List.rev failures
+      CoverageMissing = List.rev coverageMissing }
 
 let internal ingestAndEmitCoverage
     (db: Database)
@@ -7332,6 +7391,10 @@ let private executeTests
                 enabledRatchetProjects
                 configuredCoverageOutput
                 collectedInputs
+
+        // Coverage missing (AUTOMATION-1371): the prior rows were kept; the run says so.
+        for missing in coverageOutcome.CoverageMissing do
+            logToCtx $"%s{missing.Project}: %s{missing.Reason}; its prior runtime coverage is kept"
 
         let coverageFailures = receiptFailures @ coverageIngestFailures coverageOutcome
 
