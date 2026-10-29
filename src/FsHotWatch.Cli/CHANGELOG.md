@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `"optionsRecords": true` in `.fshw.json`, or `FSHW_OPTIONS_RECORDS=1` (`0` turns it off
+  whatever the config says), files each evaluation of the projects' options and replays it on
+  a daemon restart whose every input is byte-identical, instead of evaluating with MSBuild
+  (ADR-059 §18, AUTOMATION-1372). OFF by default, and independent of `checkRecords`.
+
 - feat: `"checkRecords": true` in `.fshw.json`, or `FSHW_CHECK_RECORDS=1` (`0` turns it off
   whatever the config says), files every completed check as a `check` record and answers
   later checks from the records, across daemon restarts (ADR-059 §17, AUTOMATION-1361). OFF

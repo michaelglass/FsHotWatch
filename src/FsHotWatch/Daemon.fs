@@ -4942,6 +4942,10 @@ module Daemon =
             /// Whether checks are filed as `check` records and answered from them across
             /// restarts (ADR-059 §17, AUTOMATION-1361). OFF by default: `"checkRecords": true`.
             CheckRecords: bool
+            /// Whether each evaluation of the projects' options is filed, and replayed by a
+            /// restart whose every input is byte-identical, instead of evaluating again
+            /// (ADR-059 §18, AUTOMATION-1372). OFF by default: `"optionsRecords": true`.
+            OptionsRecords: bool
         }
 
     module DaemonOptions =
@@ -4960,7 +4964,8 @@ module Daemon =
               Hosting = DaemonHosting.standalone ()
               Restore = DepsFreshness.productionRestoreRunner
               LiveResultBound = LiveResults.DefaultBound
-              CheckRecords = false }
+              CheckRecords = false
+              OptionsRecords = false }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
     /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
@@ -4984,9 +4989,8 @@ module Daemon =
             ProjectSnapshots.invalidate checker options
 
     /// Build the daemon, with `processRegistry` installed (see `createWithCore`).
-    /// The MSBuild workspace loader a daemon evaluates `repoRoot`'s projects with when none
-    /// is injected. A test that wraps it holds a real evaluation where it chooses.
-    let internal msbuildWorkspaceLoader (repoRoot: string) : IWorkspaceLoader =
+    /// The SDK MSBuild evaluates `repoRoot`'s projects from, located for this process.
+    let internal msbuildToolsPath (repoRoot: string) : Types.ToolsPath =
         // Init.init writes the muxer it is given into this process's
         // DOTNET_HOST_PATH when that is unset, and in-process FCS finds the SDK
         // as dirname(DOTNET_HOST_PATH). Its own lookup returns the first PATH
@@ -4995,8 +4999,39 @@ module Daemon =
             Paths.dotnetRoot.Value
             |> Option.map (fun exe -> FileInfo(ProcessHelper.installedDotnet exe.FullName))
 
-        let toolsPath = Init.init (DirectoryInfo(repoRoot)) muxer
-        WorkspaceLoader.Create(toolsPath, [])
+        Init.init (DirectoryInfo(repoRoot)) muxer
+
+    /// The MSBuild workspace loader a daemon evaluates `repoRoot`'s projects with when none
+    /// is injected. A test that wraps it holds a real evaluation where it chooses.
+    let internal msbuildWorkspaceLoader (repoRoot: string) : IWorkspaceLoader =
+        WorkspaceLoader.Create(msbuildToolsPath repoRoot, [])
+
+    /// The daemon's MSBuild loader with options records (ADR-059 §18, AUTOMATION-1372): an
+    /// evaluation is filed in `repoRoot`'s outcome store, and replayed by a later daemon
+    /// for as long as every input it read is byte-identical.
+    let internal optionsRecordsLoader (repoRoot: string) : IWorkspaceLoader =
+        let (Types.ToolsPath sdk) = msbuildToolsPath repoRoot
+        let inner = WorkspaceLoader.Create(Types.ToolsPath sdk, [])
+        let root = Path.GetFullPath repoRoot
+        let toolchain = OptionsInputs.toolchain ()
+
+        let globalProperties =
+            [ for KeyValue(name, value) in ProjectLoader.getGlobalProps None [] Set.empty -> name, value ]
+
+        OptionsRecords.CachingLoader(
+            inner,
+            OptionsInputs.list,
+            OutcomeStore.openFor repoRoot (Logging.info "options-records"),
+            (fun projects ->
+                { Root = root
+                  Projects = projects |> List.map Path.GetFullPath
+                  Toolchain = toolchain
+                  Sdk = sdk
+                  GlobalProperties = globalProperties }),
+            OptionsRecords.processEnvironment,
+            Logging.info "options-records"
+        )
+        :> IWorkspaceLoader
 
     let private constructDaemon
         (processRegistry: ProcessRegistry.Registry)
@@ -5133,6 +5168,7 @@ module Daemon =
             let loader =
                 match workspaceLoader with
                 | Some loader -> loader
+                | None when opts.OptionsRecords -> optionsRecordsLoader repoRoot
                 | None -> msbuildWorkspaceLoader repoRoot
 
             // Plugins read the model from the host publication. A settled model is

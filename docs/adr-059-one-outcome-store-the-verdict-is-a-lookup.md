@@ -439,7 +439,7 @@ store:
    stops the work at phase 1.
 
 The project-options cache (4–10 s per restart) is filed separately as a quick win. It is an
-accelerator, and no verdict reads it.
+accelerator, and no verdict reads it. §18 records it.
 
 ## 15. What a gate waits on, and the forced scan (AUTOMATION-1370)
 
@@ -564,7 +564,7 @@ dependency order".
 - `usedSignaturesHash`;
 - the file's API signature.
 
-The `options` kind is reserved beside `check` for AUTOMATION-1372.
+The `options` kind is reserved beside `check` for AUTOMATION-1372 (§18).
 
 **The merge bar for every step.** Tests show four things. A restart replays every filed
 check, and the replay equals a forced re-check. An edited file misses. An API edit upstream
@@ -603,3 +603,105 @@ replays the one before it. Each daemon logs this tally as it stops
 
 A comment edit is not cut off within the scan that re-checks it. The files after it are keyed
 by the edited file's content until its new record is filed, so they are re-checked as well.
+
+## 18. Amendment (AUTOMATION-1372): project options are records in the same store
+
+§14 left the project-options cache as a quick win: MSBuild evaluation, through Ionide's
+design-time build, costs every daemon restart 4–10 s, and the 1361 spike read the options back
+from a JSON file in 0.03 s. §17 reserved the `options` kind beside `check` for it. It is an
+accelerator. No verdict reads it, and a miss only costs the evaluation that runs today.
+
+**A stale replay is far worse than a miss.** A wrong option set makes every check of every file
+wrong in a way nothing downstream can see. So the key covers what the evaluation actually read,
+and the filer refuses whenever it cannot be sure.
+
+**Two kinds, one store** (`OptionsRecords`, `OptionsInputs`):
+- **`options-inputs`**, keyed by the request: the checkout root, the project files asked for,
+  the toolchain (fshw's, Ionide's and the running MSBuild's assembly identities), the SDK
+  MSBuild runs from (its resolved path, which names its version and what `global.json`
+  resolved to), and the global properties. Its record names what the last evaluation of that
+  request read, and the `options` key it filed. It is only an index: a missing or wrong one is
+  a miss.
+- **`options`**, keyed by the request and the state, read from disk at lookup, of every input
+  that evaluation read:
+  - `read:<path>`, a file's bytes: the project files, every resolved import (SDK imports
+    included), each project's `project.assets.json`, every compile item the design-time build
+    generated under `obj/` (a replay does not regenerate one a clean removed), and every file
+    MSBuild opened;
+  - `probe:<path>`, a path's bytes, `directory` or `absent`: each path MSBuild asked about (an
+    `Exists` condition, a missing import, `GetDirectoryNameOfFileAbove`), and the
+    `Directory.Build.*`, `Directory.Packages.props` and `global.json` of every directory above
+    each project;
+  - `listing:<kind>:<depth>:<dir>/<pattern>`, the names in a directory listing MSBuild made: a
+    wildcard import such as `obj/*.props`, and every directory an item glob walked, including
+    the SDK's default `**/*.resx` (on for F# projects);
+  - `env:<name>`, the value of every variable set whose name the evaluation's files mention as
+    `$(Name)` or `GetEnvironmentVariable`, case-insensitively, and of every `DOTNET_*`,
+    `MSBUILD*` and `NUGET_*` variable set.
+
+  A record is replayed only when every one of those is byte-identical. A miss names the labels
+  that moved.
+
+**How the inputs are found.** After Ionide evaluates, each project is evaluated again,
+evaluation only, with Ionide's own global properties (`ProjectLoader.getGlobalProps`), both
+without and with its target framework, as Ionide does. The evaluation runs through an
+`EvaluationContext` over a recording `MSBuildFileSystemBase`. That records every file-system
+question the evaluation asks, so the key is not a guess at what MSBuild reads. MSBuild loads
+import XML without asking the file system, so `Project.Imports` adds the imports. The design-time
+build reads the assets file after evaluation, so that is added explicitly.
+
+**When nothing is filed.**
+- A project failed to load, or none loaded.
+- An input's status-change time (`FileStamp`, which no copy can set back) is later than the
+  evaluation's start, less the racy window. An absent path is judged by the nearest directory
+  above it that exists, so a file read and then deleted during the evaluation is caught.
+  Measured on the box: none of the checkout's ancestors (home included) changed in two minutes
+  of normal work. A busy ancestor only costs misses.
+- MSBuild listed a directory TREE (a recursive enumeration). None did on intelligence or
+  FsHotWatch. A walk that follows what MSBuild's follows (hidden directories, directory
+  symlinks) need not terminate, and one that does not (`SafeWalk`) would key a different
+  listing, so such an evaluation is simply not filed.
+- A load with custom properties or a binary log always evaluates.
+
+**What the key does not cover (judgement calls).**
+- **Files the design-time targets read after evaluation, other than the assets file.**
+  `ResolveAssemblyReferences` reads the package and reference-pack DLLs the assets file and the
+  SDK name. Both are immutable per version, and both versions are keyed. A target that reads a
+  file the evaluation never names would be missed.
+- **Property functions that call `System.IO` directly**, not through MSBuild's file system.
+  The `Directory.Build.props` look-up is seen by the recorder in the tests (a test that drops
+  the walk-up probes still misses on a new one), and the walk-up probes cover it a second time.
+- **Directory listings are names, not contents.** That is what an item glob depends on. Matched
+  files whose bytes matter (imports) are `read:` inputs too.
+- **The checkout root is in the request key**, so options are never shared between checkouts.
+  Every path in them belongs to one checkout, and sharing would mean betting that nothing else
+  in an evaluation depends on where the checkout is. One evaluation per workspace is cheap next
+  to that bet.
+- **`AllProperties` and `AllItems` are not filed.** They are the evaluation's full dumps, which
+  fshw never reads, and they would make a record many times larger. A replay carries them empty.
+
+**Verified on real trees** (the spike's method: idle-gated, a fresh process per run, three runs).
+- **intelligence**, 25 projects, SDK 10.0.401:
+  - MSBuild evaluation took 6.90–7.31 s, plus 1.12–1.20 s mapping;
+  - a replay took 87.8–88.9 ms, plus 23 ms mapping, with 0 evaluations;
+  - **about 8.1 s saved per restart**;
+  - a replay equalled a fresh evaluation for 25 of 25 projects.
+- **FsHotWatch**, 14 projects:
+  - evaluation took 2.93–3.05 s, plus 0.53–0.60 s;
+  - a replay took 45–46 ms, plus 11 ms;
+  - **about 3.5 s saved**, 0 mismatches.
+
+A miss costs the listing as well: about 2.0 s on intelligence (9.1 s against 7.1 s) and 1.0 s on
+FsHotWatch. A restart over unchanged bytes is the common case, so the trade is taken.
+Re-discoveries after a project edit pay the listing. Moving the listing off the discovery path,
+after the options are registered, is the follow-up if that cost shows up.
+
+**Flag: `optionsRecords`** (`FSHW_OPTIONS_RECORDS`), OFF by default. It is a sibling of
+`checkRecords`, not the same flag:
+- the two accelerators fail differently. A stale option set is wrong everywhere, and a stale
+  check is wrong in one file;
+- §14's abandon criterion stops check records, and must not take the options cache down with it,
+  or the reverse;
+- each can be measured on intelligence with the other off.
+
+Both file into the same store and share its GC.

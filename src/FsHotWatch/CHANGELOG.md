@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- feat: `OptionsRecords`, persisted project options (ADR-059 §18, AUTOMATION-1372). With
+  `DaemonOptions.OptionsRecords` on, the daemon's MSBuild loader files each evaluation in the
+  one outcome store, as two records beside the `check` records:
+  - `options-inputs`, keyed by the request (checkout root, project files, toolchain, SDK,
+    global properties), naming what the evaluation read;
+  - `options`, keyed by the request and the current state of every one of those inputs.
+    It holds Ionide's `ProjectOptions`, without the `AllProperties` and `AllItems` dumps.
+
+  `OptionsInputs.list` finds the inputs by evaluating each project again through a
+  recording MSBuild file system: every file read, every path probed (`Exists`, a skipped
+  import, the files found walking up), every directory listed (wildcard imports, item globs),
+  plus each resolved import, the package assets, generated compile items and every variable
+  named as `$(Name)`.
+  A restart over byte-identical inputs replays the options with no evaluation. An evaluation
+  in which a project failed, or whose inputs changed while it ran, is never filed. Measured:
+  a restart on intelligence takes 0.11 s instead of 8.2 s; one on FsHotWatch takes 0.06 s
+  instead of 3.6 s.
+- build: `FsHotWatch` compiles against the SDK's `Microsoft.Build` and
+  `Microsoft.Build.Framework`, unshipped, as Ionide.ProjInfo uses them. They are not package
+  references, so no MSBuild dependency becomes app-local.
+
 - feat: a daemon with check records on logs, as it stops, how many checks it answered from
   records, how many it started in FCS and how many a plugin demanded
   (`check-records: this daemon: …`; ADR-059 §17 step 3). The restart test reads it: a

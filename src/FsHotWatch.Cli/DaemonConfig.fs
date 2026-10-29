@@ -462,6 +462,10 @@ type DaemonConfiguration =
         /// `"checkRecords": true` files checks as `check` records and answers from them
         /// across restarts (ADR-059 §17, AUTOMATION-1361). Off when absent.
         CheckRecords: bool
+        /// `"optionsRecords": true` files each evaluation of the projects' options and replays it
+        /// on a restart whose every input is byte-identical (ADR-059 §18, AUTOMATION-1372).
+        /// Off when absent.
+        OptionsRecords: bool
         Analyzers:
             {| Paths: string list
                FailOnSeverity: DiagnosticSeverity
@@ -586,6 +590,7 @@ let private defaultConfigFor (repoRoot: string) =
       Lint = true
       Cache = NoCache
       CheckRecords = false
+      OptionsRecords = false
       Analyzers = None
       Tests = None
       FileCommands = []
@@ -930,18 +935,26 @@ let private parseTestProject (p: JsonElement) : TestProjectConfig =
       NameHungTests = nameHungTests
       Weight = weight }
 
-/// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
-/// Whether check records run (ADR-059 §17): `FSHW_CHECK_RECORDS` (`1`/`true` on, `0`/`false` off)
-/// overrides the configured `checkRecords`, so one daemon can be measured with them on
-/// without editing a tracked `.fshw.json`. Any other value is the configured one.
-let resolveCheckRecords (configured: bool) (env: string -> string) : bool =
-    match env "FSHW_CHECK_RECORDS" with
+/// A record flag as `variable` overrides it: `1`/`true` on, `0`/`false` off, anything else
+/// the configured value. So one daemon can be measured with it on without editing a tracked
+/// `.fshw.json`.
+let private resolveRecordFlag (variable: string) (configured: bool) (env: string -> string) : bool =
+    match env variable with
     | "1"
     | "true" -> true
     | "0"
     | "false" -> false
     | _ -> configured
 
+/// Whether check records run (ADR-059 §17): `FSHW_CHECK_RECORDS` overrides `checkRecords`.
+let resolveCheckRecords (configured: bool) (env: string -> string) : bool =
+    resolveRecordFlag "FSHW_CHECK_RECORDS" configured env
+
+/// Whether options records run (ADR-059 §18): `FSHW_OPTIONS_RECORDS` overrides `optionsRecords`.
+let resolveOptionsRecords (configured: bool) (env: string -> string) : bool =
+    resolveRecordFlag "FSHW_OPTIONS_RECORDS" configured env
+
+/// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
 let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
     use doc = JsonDocument.Parse(json)
     let root = doc.RootElement
@@ -1016,6 +1029,13 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | true, v when v.ValueKind = JsonValueKind.True -> true
         | true, v when v.ValueKind = JsonValueKind.False || v.ValueKind = JsonValueKind.Null -> false
         | true, v -> raise (ConfigErrorException $"checkRecords: %s{describeValue v} is not true or false")
+        | false, _ -> false
+
+    let optionsRecords =
+        match root.TryGetProperty("optionsRecords") with
+        | true, v when v.ValueKind = JsonValueKind.True -> true
+        | true, v when v.ValueKind = JsonValueKind.False || v.ValueKind = JsonValueKind.Null -> false
+        | true, v -> raise (ConfigErrorException $"optionsRecords: %s{describeValue v} is not true or false")
         | false, _ -> false
 
     let cache =
@@ -1738,6 +1758,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       Lint = lint
       Cache = cache
       CheckRecords = checkRecords
+      OptionsRecords = optionsRecords
       Analyzers = analyzers
       Tests = tests
       FileCommands = fileCommands

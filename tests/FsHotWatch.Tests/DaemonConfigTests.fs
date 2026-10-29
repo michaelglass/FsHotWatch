@@ -547,6 +547,28 @@ let ``FSHW_CHECK_RECORDS overrides the configured checkRecords either way, and n
     test <@ resolveCheckRecords true (env null) @>
     test <@ not (resolveCheckRecords false (env "maybe")) @>
 
+[<Fact(Timeout = 15000)>]
+let ``parseConfig optionsRecords is off unless set true, refuses anything else, and is not checkRecords`` () =
+    test <@ (parseConfig "{}" defaults).OptionsRecords = false @>
+    test <@ (parseConfig """{"optionsRecords": true}""" defaults).OptionsRecords = true @>
+    test <@ (parseConfig """{"optionsRecords": false}""" defaults).OptionsRecords = false @>
+    test <@ (parseConfig """{"optionsRecords": null}""" defaults).OptionsRecords = false @>
+    test <@ (parseConfig """{"checkRecords": true}""" defaults).OptionsRecords = false @>
+    test <@ (parseConfig """{"optionsRecords": true}""" defaults).CheckRecords = false @>
+    raises<ConfigErrorException> <@ parseConfig """{"optionsRecords": 1}""" defaults @>
+
+[<Fact(Timeout = 15000)>]
+let ``FSHW_OPTIONS_RECORDS overrides the configured optionsRecords either way, and FSHW_CHECK_RECORDS does not`` () =
+    let env (variable: string) (value: string) : string -> string =
+        fun name -> if name = variable then value else null
+
+    test <@ resolveOptionsRecords false (env "FSHW_OPTIONS_RECORDS" "1") @>
+    test <@ resolveOptionsRecords false (env "FSHW_OPTIONS_RECORDS" "true") @>
+    test <@ not (resolveOptionsRecords true (env "FSHW_OPTIONS_RECORDS" "0")) @>
+    test <@ not (resolveOptionsRecords true (env "FSHW_OPTIONS_RECORDS" "false")) @>
+    test <@ not (resolveOptionsRecords false (env "FSHW_CHECK_RECORDS" "1")) @>
+    test <@ resolveOptionsRecords true (env "FSHW_OPTIONS_RECORDS" "maybe") @>
+
 // --- parseConfig: cache ---
 
 [<Fact(Timeout = 15000)>]

@@ -1585,6 +1585,16 @@
       "line": 98,
       "branch": 88,
       "reason": "new file (AUTOMATION-1362 step 3, ADR-059 §7: shadow mode). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-29 on macOS by a coverage run of LookupVerdictTests + ShadowVerdictTests + LookupParityCasesTests + IpcOutputTests + RunOnceOutputTests (a subset of the suite, so a lower bound): line 98.4% (187/190), branch 88.9% (80/90). Uncovered: the catch-all arm of observe (an unexpected exception) and edges of the scope and plugin-outcome matches. Platform-neutral."
+    },
+    "OptionsRecords.fs": {
+      "line": 99,
+      "branch": 80,
+      "reason": "new file (AUTOMATION-1372, ADR-059 §18: persisted project options, the CachingLoader and the record formats). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-29 on macOS by OptionsRecordsTests with coverage: line 99.7% (363/364), branch 80.3% (167/208). Uncovered: the inputs-record reader refusing another schema (line 436), and compiler-generated edges of the JSON, option and record matches. Platform-neutral: file IO, hashing and JSON only."
+    },
+    "OptionsInputs.fs": {
+      "line": 100,
+      "branch": 80,
+      "reason": "new file (AUTOMATION-1372, ADR-059 §18: listing what an MSBuild evaluation read through a recording MSBuildFileSystemBase). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-29 on macOS by OptionsRecordsTests with coverage (real MSBuild evaluations): line 100% (120/120), branch 80.0% (32/40). Uncovered: a null search pattern MSBuild never passes, and compiler-generated edges of the option and loop matches. Platform-neutral: the evaluations run the same SDK files on every platform."
     }
   },
   "countFloors": {

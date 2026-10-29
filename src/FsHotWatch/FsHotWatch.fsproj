@@ -129,6 +129,8 @@
     <Compile Include="TestEvidenceStore.fs" />
     <Compile Include="OutcomeStore.fs" />
     <Compile Include="CheckRecords.fs" />
+    <Compile Include="OptionsRecords.fs" />
+    <Compile Include="OptionsInputs.fs" />
     <Compile Include="LookupVerdict.fs" />
     <Compile Include="Watcher.fs" />
     <Compile Include="CommandPreprocessor.fs" />
@@ -175,5 +177,21 @@
     <PackageReference Include="FSharp.Compiler.Service" Version="[43.12.402]" />
     <PackageReference Include="Ionide.ProjInfo" Version="0.74.2" />
     <PackageReference Include="Ionide.ProjInfo.FCS" Version="0.74.2" />
+  </ItemGroup>
+
+  <!-- MSBuild's evaluation API, for `OptionsInputs` (AUTOMATION-1372). Compiled against the
+       building SDK's own assemblies and never copied: at run time MSBuild is the SDK's, which
+       Ionide.ProjInfo locates (`Init.init`), exactly as for Ionide's own use of it. Not a
+       package reference: a package would bring app-local copies of MSBuild's dependencies,
+       which is the downgrade `scripts/check-msbuild-deps.fsx` guards against. -->
+  <ItemGroup>
+    <Reference Include="Microsoft.Build">
+      <HintPath>$(MSBuildBinPath)/Microsoft.Build.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Build.Framework">
+      <HintPath>$(MSBuildBinPath)/Microsoft.Build.Framework.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 </Project>

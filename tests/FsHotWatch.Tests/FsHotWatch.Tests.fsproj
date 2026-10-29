@@ -243,6 +243,7 @@
     <Compile Include="SnapshotMemoTests.fs" />
     <Compile Include="CheckCacheReferencedOutputTests.fs" />
     <Compile Include="CheckRecordsTests.fs" />
+    <Compile Include="OptionsRecordsTests.fs" />
     <Compile Include="SolutionScopeTests.fs" />
     <Compile Include="DaemonConfigTests.fs" />
     <Compile Include="InitConfigTests.fs" />
@@ -326,6 +327,20 @@
     <ProjectReference Include="../../src/FsHotWatch.Build/FsHotWatch.Build.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj" />
+  </ItemGroup>
+
+  <!-- OptionsRecordsTests drives `OptionsInputs.RecordingFileSystem`, an MSBuild file system,
+       directly. Compiled against the SDK's MSBuild and never copied, as `FsHotWatch` is: at run
+       time MSBuild is the one Ionide.ProjInfo locates. -->
+  <ItemGroup>
+    <Reference Include="Microsoft.Build">
+      <HintPath>$(MSBuildBinPath)/Microsoft.Build.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Build.Framework">
+      <HintPath>$(MSBuildBinPath)/Microsoft.Build.Framework.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>
