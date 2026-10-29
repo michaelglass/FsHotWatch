@@ -91,3 +91,15 @@ SqlHydra. `ReleaseOrchestrationTests` derives those levels from
 `semantic-tagger.json` and fails when `mise.toml` disagrees. Never replace it with an unscoped
 `fssemantictagger release`; independent tag workflows cannot enforce cross-tag
 NuGet dependency ordering.
+
+### Release train
+
+TestPrune follows FsHotWatch's release train (FsHotWatch `AGENTS.md`, "Release train").
+FsHotWatch bundles TestPrune, so each TestPrune release becomes an FsHotWatch release and
+then a consumer pin bump. The rules are the same:
+- Release at most once a day, batching that day's merges. Never release per merge.
+- Only the maintainer, or the agent the maintainer has assigned to this repository, runs
+  `mise run release`.
+- Release only from a `main` whose GitHub CI is green on the exact commit being released.
+- Cut the TestPrune release before that day's FsHotWatch train, so FsHotWatch can take it
+  in the same train.
