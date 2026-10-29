@@ -7102,7 +7102,48 @@ let private executeTests
                     lock traceRunsLock (fun () ->
                         traceRuns <- traceRuns |> List.filter (fun t -> t.Project <> config.Project))
 
-                    let! result, _, reading = launchSampled runToken config
+                    // PREFLIGHTED LIKE ANY LAUNCH. The run-wide preflight certified this
+                    // tree before the first attempt, not after it. A first attempt torn down
+                    // with its whole tree takes the coverage controller with it before it puts
+                    // back the assemblies it instrumented in this project's output, and a
+                    // coverage run over an instrumented copy passes and writes an empty report
+                    // (land entry 224: 56,724 -> 0 covered entries). The copies the build made
+                    // are repaired from their origins first, and a tree this cannot certify
+                    // is not launched: its re-run is deferred, never a pass.
+                    let refusal =
+                        deriveProjectBin config.Args repoRoot
+                        |> Option.bind (fun target ->
+                            let checkedTree =
+                                StaleArtifactPreflight.run repoRoot DateTime.UtcNow [ config.Project, target ]
+
+                            for repaired in checkedTree.Healed do
+                                let line =
+                                    $"%s{config.Project}: repaired %s{repaired} before its re-run alone (the first \
+                                      attempt's teardown left it differing from the build's copy)"
+
+                                Logging.warn "test-prune" line
+                                logToCtx line
+
+                            checkedTree.Refusals |> List.tryHead |> Option.map _.Reason)
+
+                    let! result, reading =
+                        match refusal with
+                        | Some reason ->
+                            async {
+                                Logging.warn "test-prune" $"%s{config.Project}: not re-run alone — %s{reason}"
+                                logToCtx $"{config.Project}: not re-run alone — {reason}"
+
+                                let notLaunched: Starvation.Reading =
+                                    { Cores = Environment.ProcessorCount
+                                      Samples = [] }
+
+                                return TestsDeferred reason, notLaunched
+                            }
+                        | None ->
+                            async {
+                                let! result, _, reading = launchSampled runToken config
+                                return result, reading
+                            }
 
                     let outcome =
                         match result with

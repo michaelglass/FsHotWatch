@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a starved project's re-run alone is preflighted like any launch (AUTOMATION-1352).
+  A first attempt torn down with its whole tree kills the coverage controller before it
+  restores the assemblies it instrumented in the test output, and a coverage run over those
+  copies passes and writes an empty report (`<packages />`). The re-run now repairs every
+  copy that differs from its origin first, so its report measures the build. A tree the
+  preflight cannot certify is not re-run: the project is deferred, never a pass.
+
 ## 0.13.0-alpha.96 - 2026-10-28
 
 - build: TestPrune.Core 13.5.1 and TestPrune.Trace 0.7.6 (was 13.5.0 and 0.7.4). Both declare
