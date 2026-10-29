@@ -226,7 +226,8 @@ let private wiring (store: TestEvidenceStore.Store) (toolchain: Lazy<string>) : 
       Toolchain = toolchain
       Loaded = TestEvidenceKey.LoadedEnvironment.empty
       ProducerHash = "p"
-      ExcludePatterns = [] }
+      ExcludePatterns = []
+      Outcomes = None }
 
 let private tempStore (dir: string) =
     TestEvidenceStore.Store(

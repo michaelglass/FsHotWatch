@@ -467,3 +467,47 @@ points.
   `R(c, T)` has a record, the answer is final for `T`. A run queued for keys that already
   have records is redundant work, which the scheduler may drop. It cannot hold the verdict
   open.
+
+## 16. Step 7a, and the analyzer cache's cross-workspace replay
+
+**Step 7a (merged as the first half of step 7).** The test runner records every project it
+launched in the box-wide outcome store (`OutcomeStore.openFor`, beside the evidence
+store):
+
+- The record's key is `TestEvidenceRun.testActionKey`: K_P's labels as `kp:<label>`, K_P
+  itself, and `run-scope` (`full` or `impact`).
+- K_P is taken at **launch** and must still hold at completion. A run whose inputs moved
+  under it files nothing. That closes the half of 641 and 699 that shadow v1 cannot see,
+  a run graded at another tree.
+- Passes and fails are both recorded, a timeout as a fail. A run that verified nothing
+  (deferred, errored, no match) files nothing.
+
+Step 7b gives the shadow these keys: the test-scope reply carries each project's
+completion-time K_P, and `test:<project>` gains the K_P record as an alternative.
+
+**The analyzer cache's replay across workspaces is the box-wide reuse working as
+intended** (checked 2026-10-29, after `pin130` replayed 2,611 files on its first gate and
+`./build.fsx lint` agreed with 0 findings). The key, `AnalyzersPlugin` `analyzers-merkle-v7`
+under `TaskCache.scopeToToolchain`, is content-addressed and workspace-free:
+
+- the file, **repo-relative** (`CachePathIdentity.keyOf`);
+- the source bytes;
+- the analyzer config chain's content;
+- the fail-on-severity threshold;
+- `used-signatures`, the shape of what the file resolved upstream;
+- `fcs-signature`;
+- the .NET toolchain.
+
+The analyzer set enters twice:
+
+- by **repo-relative path** (`analyzer-paths`);
+- by **identity** (`analyzer-inputs`, `AnalyzerIdentity`): for an in-repository analyzer,
+  the PDB's document checksums, re-verified against the tree on disk, plus its references
+  and project file; otherwise the DLL's byte digest.
+
+A disagreement between that receipt and the tree is a refusal, never a fallback. Two
+workspaces whose analyzer DLLs differ in any rule therefore compute different keys, and a
+replay cannot hide a finding a different analyzer set would report.
+
+The remaining trust boundary is the receipt itself: an analyzer built from sources the tree
+still holds. That is the property ADR-011 states.

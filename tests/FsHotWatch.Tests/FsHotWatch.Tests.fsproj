@@ -159,6 +159,7 @@
     <Compile Include="TestPrunePluginTestSupport.fs" />
     <Compile Include="TestEvidenceProducerTests.fs" />
     <Compile Include="TestEvidenceRunTests.fs" />
+    <Compile Include="TestOutcomeRecordsTests.fs" />
     <Compile Include="TestPrunePluginTests.fs" />
     <Compile Include="TestPruneNamedDispatchTests.fs" />
     <Compile Include="TestPruneFreshnessGateTests.fs" />

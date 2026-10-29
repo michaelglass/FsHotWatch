@@ -13639,7 +13639,10 @@ let internal evidenceWiringWhen
                       Toolchain = lazy (TestEvidenceKey.toolchainOf repoRoot)
                       Loaded = loaded
                       ProducerHash = ContentHash.ofText CheckCache.toolchainIdentity
-                      ExcludePatterns = excludePatterns }
+                      ExcludePatterns = excludePatterns
+                      // ADR-059 step 7: every completed project run is recorded, box-wide,
+                      // under the K_P it ran over. The shadow verdict reads these next.
+                      Outcomes = Some(OutcomeStore.openFor repoRoot (Logging.info "test-prune")) }
             with ex ->
                 Logging.warn "test-prune" $"test evidence: off — the store could not be opened: %s{ex.Message}"
                 None

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: the test runner records every project it launched in the box-wide outcome store
+  (ADR-059 §16, AUTOMATION-1362). The record is a pass or a fail, keyed by the K_P the
+  project had at launch (`TestEvidenceRun.testActionKey`), and filed only when that key still
+  holds at completion. A run whose inputs moved under it files nothing. **BREAKING
+  (internal):** `TestEvidenceRun.Wiring` gains `Outcomes`. New: `testActionKey`,
+  `outcomeRecordOf`.
+
 - fix: the test-prune task cache key pins the tree (ADR-059 §4, AUTOMATION-1362). It folds the
   input tree's content identity (`ReceiptInputTree.read`) beside the changed symbols, so two
   clean-building trees no longer compute one key. On a cold scan the changed-symbols term is

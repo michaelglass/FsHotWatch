@@ -167,7 +167,8 @@ let private wiringFor (store: TestEvidenceStore.Store) : TestEvidenceRun.Wiring 
       Toolchain = lazy "test-toolchain"
       Loaded = TestEvidenceKey.LoadedEnvironment.empty
       ProducerHash = "test-producer"
-      ExcludePatterns = [] }
+      ExcludePatterns = []
+      Outcomes = None }
 
 /// Stand a daemon up over `root` with `evidence` wiring and a scope, as a LONG-LIVED
 /// checkout: one that earned a full-suite baseline before these runs, the way the default
@@ -627,3 +628,31 @@ let ``a green whose coverage failed to ingest is not published`` () =
             run (checkoutFull (coverageIn b) true b (Some(wiringFor store)) false)
 
         test <@ launched = [ "TX" ] @>)
+
+[<Fact(Timeout = 60000)>]
+let ``every project a run launched is recorded in the outcome store under its K_P (ADR-059 step 7)`` () =
+    withRepo (fun store rootNamed ->
+        let root = rootNamed "a"
+
+        let outcomes =
+            OutcomeStore.Store(
+                { Root = Path.Combine(root, "..", "outcomes")
+                  Ttl = TimeSpan.FromDays 14.0
+                  MaxBytes = 64L * 1024L * 1024L
+                  Log = ignore }
+            )
+
+        let wiring =
+            { wiringFor store with
+                Outcomes = Some outcomes }
+
+        let a = checkout root (Some wiring) false
+        let launched, completed = run a
+        test <@ launched = testProjects @>
+        test <@ allGreen completed @>
+
+        let recorded =
+            allFilesUnder "*.json" (Path.Combine(root, "..", "outcomes", "records"))
+            |> List.length
+
+        test <@ recorded = List.length testProjects @>)

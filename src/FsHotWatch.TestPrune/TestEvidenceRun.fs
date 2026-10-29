@@ -33,6 +33,9 @@ type Wiring =
         /// not address cannot decide a key either, and a path-bearing generated file there
         /// would give every checkout its own key.
         ExcludePatterns: string list
+        /// The box-wide outcome store (ADR-059) every completed project run is recorded in,
+        /// under the K_P of the inputs it ran over. `None` records nothing.
+        Outcomes: OutcomeStore.Store option
     }
 
 /// Where a reused project's green came from.
@@ -333,6 +336,59 @@ let qualifies
     | TestsErrored _
     | TestsNoMatch _ -> Error "the run verified nothing"
 
+/// The outcome-store action key of a test project's run over K_P `key`, in `scope`
+/// (`full` or `impact`). K_P's own labels travel in as `kp:<label>`, so a miss names the K_P
+/// input that moved (ADR-059 §1).
+let testActionKey (key: TestEvidenceKey.Key) (scope: string) : ActionKey.ActionKey =
+    ActionKey.create
+        "test"
+        ((key.Labels |> List.map (fun (label, digest) -> "kp:" + label, digest))
+         @ [ "kp", key.Value; "run-scope", scope ])
+
+/// The outcome record a completed project run files (ADR-059 §11 step 7): a pass or a fail,
+/// under the K_P its inputs had at LAUNCH, only when that is still the key at completion. A
+/// run whose inputs moved under it describes no tree and files nothing (641, 699); so does a
+/// project with no key, and a run that verified nothing.
+let outcomeRecordOf
+    (candidate: Candidate)
+    (launchKey: Result<TestEvidenceKey.Key, string> option)
+    (completionKey: Result<TestEvidenceKey.Key, string> option)
+    (run: ProducedRun)
+    (producer: TestEvidenceStore.Producer)
+    : OutcomeStore.Record option =
+    let outcome =
+        match run.Result with
+        | TestsPassed(_, filtered, _) -> Some(OutcomeStore.Outcome.Pass, filtered)
+        | TestsFailed(_, filtered, _) -> Some(OutcomeStore.Outcome.Fail, filtered)
+        | TestsTimedOut(_, _, filtered, _) -> Some(OutcomeStore.Outcome.Fail, filtered)
+        | TestsDeferred _
+        | TestsErrored _
+        | TestsNoMatch _ -> None
+
+    match launchKey, completionKey, outcome with
+    | Some(Ok atLaunch), Some(Ok atCompletion), Some(outcome, filtered) when atLaunch.Value = atCompletion.Value ->
+        Some
+            { Key = testActionKey atLaunch (if filtered then "impact" else "full")
+              Subject = candidate.Project
+              Outcome = outcome
+              Counts =
+                run.Report
+                |> Option.bind Ctrf.trySummary
+                |> Option.map (fun s ->
+                    ({ Total = s.Total
+                       Passed = s.Passed
+                       Failed = s.Failed
+                       Skipped = s.Skipped }
+                    : OutcomeStore.Counts))
+              DurationMs = None
+              Producer =
+                ({ Binary = producer.ProducerHash
+                   Worktree = producer.Worktree
+                   RunId = Some producer.RunId }
+                : OutcomeStore.Producer)
+              RecordedAt = producer.EarnedAt }
+    | _ -> None
+
 /// The entry a qualifying run publishes.
 let entryOf
     (repoRoot: string)
@@ -431,9 +487,33 @@ let publish
     (runOf: Candidate -> ProducedRun option)
     (producer: TestEvidenceStore.Producer)
     : int =
-    plan.Candidates
-    |> List.filter (fun c -> not (reused.ContainsKey c.Project))
-    |> List.choose (fun c -> runOf c |> Option.map (fun run -> c, run))
+    let launched =
+        plan.Candidates
+        |> List.filter (fun c -> not (reused.ContainsKey c.Project))
+        |> List.choose (fun c -> runOf c |> Option.map (fun run -> c, run))
+
+    match plan.Wiring.Outcomes with
+    | Some outcomes ->
+        let records =
+            launched
+            |> List.choose (fun (candidate, run) ->
+                outcomeRecordOf
+                    candidate
+                    (Map.tryFind candidate.Project plan.LaunchKeys)
+                    (Map.tryFind candidate.Project reconciled.Keys)
+                    run
+                    producer)
+
+        for record in records do
+            outcomes.Record record |> ignore
+
+        // The box-wide store is bounded by TTL and bytes (ADR-059 §2). GC can only turn a hit
+        // into a miss, and it spares what this run just filed.
+        outcomes.Gc(producer.EarnedAt, records |> List.map _.Key.Value |> Set.ofList)
+        |> ignore
+    | None -> ()
+
+    launched
     |> List.filter (fun (candidate, run) ->
         match
             qualifies
