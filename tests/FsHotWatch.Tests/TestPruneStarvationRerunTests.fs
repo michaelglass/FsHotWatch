@@ -135,3 +135,178 @@ let ``a red that is not a timeout is never re-run, even when declared and starve
         test <@ not (File.Exists(Starvation.pathIn runDir "Slow.Tests")) @>
     finally
         File.Delete marker
+
+// ---------------------------------------------------------------------------
+// A starved first attempt's coverage controller, killed before it restores
+// ---------------------------------------------------------------------------
+//
+// On macOS a coverage run instruments the assemblies it measures IN the test project's
+// output (`Common.dll` becomes the instrumented one, `Common.dll.orig` the backup) and
+// its controller puts them back once the test host exits. A starved host that has to be
+// killed with its tree (the stop grace ran out) takes the controller with it, so the
+// instrumented copies stay. A coverage run over an already-instrumented copy measures
+// nothing: measured against xunit.v3 + Microsoft.Testing.Platform + CodeCoverage 18.9.0,
+// it passes and writes a well-formed, empty report (`<packages />`, 178 bytes), and the
+// next one does the same. That was land entry 224: the re-run alone passed and the
+// coverage-count gate read 56,724 -> 0 covered entries for that report.
+//
+// The stand-in: a runner whose first launch leaves its `Common.dll` copy holding
+// different bytes from its origin and then hangs past the timeout, and whose second
+// launch writes an empty report when that copy is still the altered one and a covered
+// one when it holds the build's bytes.
+
+/// A synthetic repo: `Tests` references `Common`; both are built, the copy of
+/// `Common.dll` in the test output holds its origin's bytes, and every source is older
+/// than every output.
+type private Built =
+    { Root: string
+      Fsproj: string
+      TestsSrc: string
+      CommonDll: string
+      CommonDllCopy: string }
+
+let private builtRepo (root: string) : Built =
+    let builtAt = DateTime.UtcNow.AddHours(-1.0)
+    let sourcedAt = builtAt.AddMinutes(-10.0)
+    let p (parts: string list) = Path.Combine(Array.ofList parts)
+
+    let writeAt (path: string) (content: string) (at: DateTime) =
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllText(path, content)
+        File.SetLastWriteTimeUtc(path, at)
+
+    let commonDir = p [ root; "Common" ]
+    let testsDir = p [ root; "Tests" ]
+    let commonOut = p [ commonDir; "bin"; "Debug"; "net10.0" ]
+    let testsOut = p [ testsDir; "bin"; "Debug"; "net10.0" ]
+    let fsproj = p [ testsDir; "Tests.fsproj" ]
+
+    writeAt (p [ commonDir; "Common.fsproj" ]) "<Project Sdk=\"Microsoft.NET.Sdk\" />" sourcedAt
+    writeAt (p [ commonDir; "Common.fs" ]) "module Common" sourcedAt
+    writeAt (p [ commonOut; "Common.dll" ]) "built" builtAt
+
+    writeAt
+        fsproj
+        "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <ProjectReference Include=\"../Common/Common.fsproj\" />\n  </ItemGroup>\n</Project>"
+        sourcedAt
+
+    writeAt (p [ testsDir; "Tests.fs" ]) "module Tests" sourcedAt
+    writeAt (p [ testsOut; "Tests" ]) "" builtAt
+    writeAt (p [ testsOut; "Tests.dll" ]) "" builtAt
+    writeAt (p [ testsOut; "Common.dll" ]) "built" builtAt
+
+    { Root = root
+      Fsproj = fsproj
+      TestsSrc = p [ testsDir; "Tests.fs" ]
+      CommonDll = p [ commonOut; "Common.dll" ]
+      CommonDllCopy = p [ testsOut; "Common.dll" ] }
+
+/// The runner: its first launch runs `firstAttempt`, then hangs past the 2 s timeout;
+/// its second writes the report to the path after `--coverage-output` — empty when the
+/// copy of `Common.dll` still holds the first attempt's bytes, covered when it holds the
+/// build's — and passes.
+let private coverageRunner (repo: Built) (marker: string) (firstAttempt: string) : TestConfig =
+    let script = Path.Combine(repo.Root, "runner.sh")
+
+    File.WriteAllText(
+        script,
+        $"out=''\n\
+          prev=''\n\
+          for a in \"$@\"; do [ \"$prev\" = --coverage-output ] && out=\"$a\"; prev=\"$a\"; done\n\
+          if [ ! -f '%s{marker}' ]; then\n\
+            touch '%s{marker}'\n\
+            %s{firstAttempt}\n\
+            exec sleep 60\n\
+          fi\n\
+          if [ \"$(cat '%s{repo.CommonDllCopy}')\" = instrumented ]; then\n\
+            printf '<coverage><packages /></coverage>' > \"$out\"\n\
+          else\n\
+            printf '<coverage><packages><package name=\"Common\"><classes><class name=\"Common\" filename=\"Common/Common.fs\"><lines><line number=\"1\" hits=\"3\" /></lines></class></classes></package></packages></coverage>' > \"$out\"\n\
+          fi\n\
+          exit 0\n"
+    )
+
+    { hangsOnceThenPasses marker (Some alwaysStarved) with
+        Project = "Tests"
+        Args = $"\"%s{script}\" --project \"%s{repo.Fsproj}\"" }
+
+/// Run `config` once with coverage; its status, the run directory and the baseline path.
+let private runOnceWithCoverage (root: string) (config: TestConfig) : string * string * string =
+    let baseline = Path.Combine(root, "coverage", "Tests", BaselineName)
+
+    let coveragePaths _ =
+        let dir = Path.Combine(root, "coverage", "Tests")
+
+        Some
+            { Baseline = baseline
+              Partial = Path.Combine(dir, PartialName)
+              Cobertura = Path.Combine(root, "coverage", CoberturaName)
+              IncludeInRatchet = false
+              ArgsTemplate = "--coverage-output \"{output}\"" }
+
+    let host = PluginHost.create (Unchecked.defaultof<_>) root
+
+    let handler =
+        create (Path.Combine(root, "tp.db")) root (Some [ config ]) None None None (Some coveragePaths) []
+
+    host.RegisterHandler(handler)
+
+    let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
+    test <@ result.IsSome @>
+
+    use doc = JsonDocument.Parse(result.Value)
+
+    let status =
+        doc.RootElement.GetProperty("projects").[0].GetProperty("status").GetString()
+
+    let runDir =
+        Directory.GetDirectories(FsHotWatch.Ctrf.reportsDir root) |> Array.exactlyOne
+
+    status, runDir, baseline
+
+[<Fact(Timeout = 120_000)>]
+let ``a re-run alone measures the build's assemblies, not the copies a killed first attempt left instrumented`` () =
+    let marker = markerIn ()
+    let repo = builtRepo (isolatedRoot ())
+
+    try
+        let config =
+            coverageRunner repo marker $"printf instrumented > '%s{repo.CommonDllCopy}'"
+
+        let status, runDir, baseline = runOnceWithCoverage repo.Root config
+
+        test <@ status = "passed" @>
+
+        match Starvation.tryRead (Starvation.pathIn runDir "Tests") with
+        | Some stored -> test <@ stored.PassedAlone @>
+        | None -> failwith $"no starvation record in %s{runDir}"
+
+        // The report the coverage gate reads is the re-run's, and it measured something.
+        test <@ (File.ReadAllText baseline).Contains "hits=\"3\"" @>
+        test <@ File.ReadAllText repo.CommonDllCopy = File.ReadAllText repo.CommonDll @>
+    finally
+        File.Delete marker
+
+[<Fact(Timeout = 120_000)>]
+let ``a re-run alone over build output it cannot certify is not launched, and is never a pass`` () =
+    let marker = markerIn ()
+    let repo = builtRepo (isolatedRoot ())
+
+    try
+        // An edit lands while the first attempt runs: the test assembly no longer
+        // describes its sources, and no file on disk holds the bytes that would.
+        let config = coverageRunner repo marker $"touch '%s{repo.TestsSrc}'"
+
+        let status, runDir, baseline = runOnceWithCoverage repo.Root config
+
+        test <@ status = "deferred" @>
+
+        match Starvation.tryRead (Starvation.pathIn runDir "Tests") with
+        | Some stored ->
+            test <@ not stored.PassedAlone @>
+            test <@ stored.Summary.Contains "was deferred" @>
+        | None -> failwith $"no starvation record in %s{runDir}"
+
+        test <@ not (File.Exists baseline) @>
+    finally
+        File.Delete marker
