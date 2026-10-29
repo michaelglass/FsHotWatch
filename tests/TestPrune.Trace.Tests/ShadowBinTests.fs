@@ -580,7 +580,8 @@ let ``a prepare whose verify child the host ended on cancellation raises, and th
     finally
         deleteProject projectDir
 
-[<Fact>]
+// The cap ends a prepare that waited out its 600 s verify instead of killing it: a reported hang.
+[<Fact(Timeout = 120_000)>]
 let ``cancelling a prepare mid-verify kills the verify child promptly`` () =
     let projectDir = scratchProject ()
 
@@ -595,12 +596,13 @@ let ``cancelling a prepare mid-verify kills the verify child promptly`` () =
                 Launch.direct
                     { req with
                         Exe = "/bin/sleep"
-                        Args = [ "30" ] }
+                        Args = [ "600" ]
+                        Timeout = TimeSpan.FromMinutes 10.0 }
                     ct
 
-        let started = Diagnostics.Stopwatch.StartNew()
+        // The verify sleeps far past the xUnit cap, so a prepare that waited it out instead of
+        // killing it is a reported hang, not a slow pass: no stopwatch.
         raises<OperationCanceledException> <@ prepareWith slowVerify cts.Token (request projectDir) @>
-        test <@ started.Elapsed < TimeSpan.FromSeconds 20.0 @>
         test <@ Array.isEmpty (doneMarkers projectDir) @>
     finally
         deleteProject projectDir

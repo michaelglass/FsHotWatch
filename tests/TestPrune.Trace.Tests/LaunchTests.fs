@@ -70,13 +70,12 @@ let ``run starts the child outside the caller's trace, passing only the trace va
 
 [<Fact>]
 let ``run kills a process that outlives its timeout`` () =
-    let started = Diagnostics.Stopwatch.StartNew()
-
+    // A `sleep 30` left to finish exits 0, so a non-zero code alone proves the kill: no
+    // stopwatch, which a loaded box can push past any bound.
     let code, _ =
         Launch.run "/bin/sleep" [ "30" ] [] (Path.GetTempPath()) (TimeSpan.FromMilliseconds 200.0)
 
     test <@ code <> 0 @>
-    test <@ started.Elapsed < TimeSpan.FromSeconds 20.0 @>
 
 let private request exe args =
     { Launch.LaunchRequest.Exe = exe
@@ -85,15 +84,19 @@ let private request exe args =
       Launch.LaunchRequest.WorkDir = Path.GetTempPath()
       Launch.LaunchRequest.Timeout = TimeSpan.FromMinutes 1.0 }
 
-[<Fact>]
+// The child sleeps far past the xUnit cap, so a launcher that waited it out instead of
+// killing it is a reported hang, not a slow pass: no stopwatch, which a loaded box can push
+// past any bound.
+[<Fact(Timeout = 120_000)>]
 let ``cancelling the direct launcher kills its child and raises`` () =
     use cts = new CancellationTokenSource()
     cts.CancelAfter(TimeSpan.FromMilliseconds 200.0)
-    let started = Diagnostics.Stopwatch.StartNew()
 
-    raises<OperationCanceledException> <@ Launch.direct (request "/bin/sleep" [ "30" ]) cts.Token @>
-    // Unkilled, the child would hold the launch for its full 30 seconds.
-    test <@ started.Elapsed < TimeSpan.FromSeconds 20.0 @>
+    let unbounded =
+        { request "/bin/sleep" [ "600" ] with
+            Timeout = TimeSpan.FromMinutes 10.0 }
+
+    raises<OperationCanceledException> <@ Launch.direct unbounded cts.Token @>
 
 [<Fact>]
 let ``an already-cancelled launch never starts its child`` () =

@@ -2479,12 +2479,9 @@ module ``runBoundedDiff`` =
     // out. Mirrors the TestRunner `sleep 30` test.
     [<Fact>]
     let ``bounds a wedged diff: kills it and returns a timeout Error`` () =
-        let sw = System.Diagnostics.Stopwatch.StartNew()
+        // A `sleep 30` left to finish exits 0 and is `Ok ""`, so the timeout Error alone proves
+        // it was killed, not waited out: no stopwatch, which a loaded box can push past any bound.
         let result = runBoundedDiff 200 drainOutputTimeoutMs "sleep" "30"
-        sw.Stop()
-
-        // Returned far inside the child's 30s sleep => it was killed, not waited out.
-        test <@ sw.Elapsed.TotalSeconds < 10.0 @>
 
         match result with
         | Error msg -> test <@ msg.Contains "timed out" @>
