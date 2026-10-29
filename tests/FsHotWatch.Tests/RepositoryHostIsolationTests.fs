@@ -277,7 +277,6 @@ let ``T2: reloading A's configuration replaces A alone`` () =
         test <@ obj.ReferenceEquals((world.Host.Registry.TryGet world.SessionB).Value.Daemon, daemonB) @>)
 
 /// Start `methodName` on `session` and abandon it: the client goes away mid-call.
-[<WallClock("DEBT (AUTOMATION-1369): a sleep standing in for synchronisation before a positive assertion; a known flake risk, to be converted to an event or an injected clock")>]
 let private abandon (world: World) (session: SessionId) (methodName: string) (args: obj array) =
     use pipe =
         new NamedPipeClientStream(".", world.Endpoint, PipeDirection.InOut, PipeOptions.Asynchronous)
@@ -295,7 +294,9 @@ let private abandon (world: World) (session: SessionId) (methodName: string) (ar
     let rpc = new JsonRpc(new HeaderDelimitedMessageHandler(pipe :> Stream))
     rpc.StartListening()
     let pending = rpc.InvokeAsync<string>(methodName, args)
-    Thread.Sleep 200
+    // The session reads requests off this connection in order, so once a later request is
+    // answered it has the abandoned one: the client goes away mid-call, not before it.
+    test <@ rpc.InvokeAsync<string>("GetStatus", [||]).Wait(HangWait) @>
     rpc.Dispose()
     pending
 

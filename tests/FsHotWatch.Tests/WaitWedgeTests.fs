@@ -25,12 +25,14 @@ open FsHotWatch.Tests.FakeClock
 // a stopped agent never does.
 
 /// Blocks until the test releases it — the real shape: a handler that never returns.
-let private stuckHandler (name: string) (release: ManualResetEventSlim) =
+let private stuckHandlerEntering (name: string) (entered: ManualResetEventSlim) (release: ManualResetEventSlim) =
     { Name = PluginName.create name
       Init = ()
       Update =
         fun _ctx state _event ->
             async {
+                // The handler is running the event: the test waits on this, never on time.
+                entered.Set()
                 // The event stays counted in flight until the test releases this.
                 release.Wait()
                 return state
@@ -41,19 +43,22 @@ let private stuckHandler (name: string) (release: ManualResetEventSlim) =
       CacheKey = None
       Teardown = None }
 
-[<WallClock("DEBT (AUTOMATION-1369): a sleep standing in for synchronisation before a positive assertion; a known flake risk, to be converted to an event or an injected clock")>]
+let private stuckHandler (name: string) (release: ManualResetEventSlim) =
+    stuckHandlerEntering name (new ManualResetEventSlim(false)) release
+
 [<Fact(Timeout = 60_000)>]
 let ``a plugin stuck busy fails the wait fast, naming it`` () =
     use release = new ManualResetEventSlim(false)
+    use entered = new ManualResetEventSlim(false)
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
 
     try
-        host.RegisterHandler(stuckHandler "wedged-plugin" release)
+        host.RegisterHandler(stuckHandlerEntering "wedged-plugin" entered release)
 
         host.EmitBuildCompleted(BuildSucceeded)
 
-        // Let the mailbox pick the event up so the inflight count is non-zero.
-        Thread.Sleep 200
+        // The mailbox has picked the event up and its handler is running it.
+        test <@ entered.Wait(HangWait) @>
 
         test <@ host.AnyPluginBusy() @>
         test <@ host.BusyPluginNames() |> List.contains "wedged-plugin" @>

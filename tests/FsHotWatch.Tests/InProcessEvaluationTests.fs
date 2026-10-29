@@ -97,7 +97,6 @@ let ``overlapping evaluations leave the process standing where it stood`` () =
             test <@ deleteWhileWritten (Path.Combine(root, "first")) 10000 @>
             test <@ processWorkingDirectoryExists () @>))
 
-[<WallClock("DEBT (AUTOMATION-1369): a sleep standing in for synchronisation before a positive assertion; a known flake risk, to be converted to an event or an injected clock")>]
 [<Fact(Timeout = 60000)>]
 let ``an evaluation in flight when a test moves back cannot leave the process in the test's scratch tree`` () =
     // The cascade behind AUTOMATION-1295, in one test. The host verb stands the process in
@@ -138,8 +137,22 @@ let ``an evaluation in flight when a test moves back cannot leave the process in
                         Task.Run(fun () -> daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously |> ignore)
 
                     test <@ entered.Wait(HangWait) @>
-                    // The evaluation finishes only once the test is on its way back out.
-                    Task.Delay(500).ContinueWith(fun (_: Task) -> release.Set()) |> ignore
+
+                    // The evaluation finishes only once the test is on its way back out: its
+                    // move back waits for the evaluation in flight, so release it once this
+                    // thread is seen blocked there, not after a guessed delay.
+                    let testThread = Thread.CurrentThread
+
+                    Task.Run(fun () ->
+                        try
+                            waitUntilOr
+                                "the test blocking on its way back out"
+                                (fun () -> testThread.ThreadState.HasFlag ThreadState.WaitSleepJoin)
+                                HangWaitMs
+                        finally
+                            release.Set())
+                    |> ignore
+
                     run)
 
             test <@ evaluation.Wait(HangWait) @>

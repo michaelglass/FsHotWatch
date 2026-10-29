@@ -82,6 +82,36 @@ let ``a process whose working directory is deleted names it for a relative path 
     finally
         Directory.Delete(scratch, true)
 
+/// The daemon's own MSBuild loader, held at its door: each load signals `entered` and
+/// waits for `release` before the real evaluation runs. The daemon calls its loader inside
+/// its evaluation lock, so while this holds, an evaluation is in flight, for as long as the
+/// test says rather than for however long MSBuild happens to take (AUTOMATION-1380).
+type private HeldLoader
+    (inner: Ionide.ProjInfo.IWorkspaceLoader, entered: ManualResetEventSlim, release: ManualResetEventSlim) =
+    let hold () =
+        entered.Set()
+        release.Wait(HangWait) |> ignore
+
+    interface Ionide.ProjInfo.IWorkspaceLoader with
+        member _.LoadProjects(paths) =
+            hold ()
+            inner.LoadProjects(paths)
+
+        member _.LoadProjects(paths, properties, binlog) =
+            hold ()
+            inner.LoadProjects(paths, properties, binlog)
+
+        member _.LoadSln(path) =
+            hold ()
+            inner.LoadSln(path)
+
+        member _.LoadSln(path, properties, binlog) =
+            hold ()
+            inner.LoadSln(path, properties, binlog)
+
+        [<CLIEvent>]
+        member _.Notifications = inner.Notifications
+
 // A daemon's MSBuild evaluation stands the process in the project's directory. Deleting
 // that directory under it leaves the evaluation unable to return, and the process stands
 // in a directory that no longer exists, so every relative path and every `Process.Start`
@@ -101,25 +131,47 @@ let ``deleting a scratch tree a daemon is evaluating in waits the evaluation out
     // The unreadable package graph a daemon test's probe writes leave behind.
     File.WriteAllText(Path.Combine(projectDir, "obj", "project.assets.json"), "{\"version\":3,\"probe\":1}")
 
-    let standingInProject () =
-        try
-            let here = Directory.GetCurrentDirectory()
-            here.Contains(Path.GetFileName root) && Path.GetFileName here = "MyProj"
-        with :? FileNotFoundException ->
-            false
+    use entered = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
 
     withProcessWorkingDirectory None (fun () ->
         use daemon =
-            FsHotWatch.Daemon.Daemon.createWith
+            FsHotWatch.Daemon.Daemon.createWithWorkspaceLoader
                 Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
                 root
                 FsHotWatch.Daemon.Daemon.DaemonOptions.defaults
+                (HeldLoader(FsHotWatch.Daemon.Daemon.msbuildWorkspaceLoader root, entered, release))
+                (Ionide.ProjInfo.FCS.mapManyOptions >> Seq.toList)
 
         let discovery =
             Tasks.Task.Run(fun () -> daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously |> ignore)
 
-        test <@ waitUntilTrue standingInProject 60000 @>
-        deleteTempDir root
-        test <@ discovery.Wait(TimeSpan.FromSeconds 60.0) @>
+        // An evaluation is in flight, and stays so until released.
+        test <@ entered.Wait(HangWait) @>
+
+        // The teardown, on a thread of its own: the evaluation must hold it back.
+        let deleteFailure = ref None
+
+        let deleter =
+            Thread(fun () ->
+                try
+                    deleteTempDir root
+                with ex ->
+                    deleteFailure.Value <- Some ex.Message)
+
+        deleter.Start()
+
+        waitUntilOr
+            "the teardown blocking on the evaluation in flight"
+            (fun () -> not deleter.IsAlive || deleter.ThreadState.HasFlag ThreadState.WaitSleepJoin)
+            HangWaitMs
+
+        // Held back: the tree is still there for the evaluation to finish in.
+        test <@ deleter.IsAlive && Directory.Exists root @>
+
+        release.Set()
+        test <@ deleter.Join(HangWait) @>
+        test <@ deleteFailure.Value = None @>
+        test <@ discovery.Wait(HangWait) @>
         test <@ processWorkingDirectoryExists () @>
         test <@ not (Directory.Exists root) @>)

@@ -977,7 +977,6 @@ let ``restoreSteps: full stack (paket groups + tools) orders restore, per-group 
 
 // ---- concurrent recovery: the in-flight restore must not read as a failed one ----
 
-[<WallClock("DEBT (AUTOMATION-1369): a sleep standing in for synchronisation before a positive assertion; a known flake risk, to be converted to an event or an injected clock")>]
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``evaluateProject: a concurrent evaluation waits for an in-flight restore instead of skipping`` () =
     // MEASURED in production before this test existed: of 38 `deps still stale
@@ -1018,17 +1017,27 @@ let ``evaluateProject: a concurrent evaluation waits for an in-flight restore in
 
     Assert.True(restoreEntered.Wait(HangWait), "the first evaluation never reached the restore")
 
-    // The loser evaluates while the restore is in flight.
-    let loser =
-        System.Threading.Tasks.Task.Run(fun () ->
-            evaluateProject probe sigZero assetsYes blockingRunner tracker "P.fsproj")
+    // The loser evaluates while the restore is in flight, on a thread of its own so the
+    // test can see it block at the gate instead of guessing how long it takes to get there.
+    let loserResult = ref None
 
-    // Give the loser a moment to reach the gate, then let the restore finish.
-    System.Threading.Thread.Sleep 250
+    let loser =
+        System.Threading.Thread(fun () ->
+            loserResult.Value <- Some(evaluateProject probe sigZero assetsYes blockingRunner tracker "P.fsproj"))
+
+    loser.Start()
+
+    // Nothing else in the loser's path blocks: it is waiting at the gate the winner holds.
+    waitUntilOr
+        "the concurrent evaluation blocking at the recovery gate"
+        (fun () -> loser.ThreadState.HasFlag System.Threading.ThreadState.WaitSleepJoin)
+        HangWaitMs
+
     releaseRestore.Set()
 
     let winnerResult = winner.Result
-    let loserResult = loser.Result
+    test <@ loser.Join(HangWait) @>
+    let loserResult = loserResult.Value.Value
 
     test <@ winnerResult = RecoveredOk @>
     // The project restored successfully, so the concurrent evaluation must not report

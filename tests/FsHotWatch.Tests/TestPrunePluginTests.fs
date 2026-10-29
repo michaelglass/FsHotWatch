@@ -3575,7 +3575,6 @@ let ``run-tests with a filter that matches tests executes and reports a real pas
         let projects = doc.RootElement.GetProperty("projects")
         Assert.Equal("passed", projects.[0].GetProperty("status").GetString()))
 
-[<WallClock("DEBT (AUTOMATION-1369): a sleep standing in for synchronisation before a positive assertion; a known flake risk, to be converted to an event or an injected clock")>]
 [<Fact(Timeout = 30000)>]
 let ``run-tests force-executes after an in-flight run finishes instead of instantly bailing`` () =
     // An explicit force-rerun always runs: it waits for the `tests` slot rather than
@@ -3602,11 +3601,16 @@ let ``run-tests force-executes after an in-flight run finishes instead of instan
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
+        let running =
+            beginAwaitStatus host "test-prune" (function
+                | Running _ -> true
+                | _ -> false)
+
         // Kick off the background run, which holds RunExclusive "tests".
         host.EmitBuildCompleted(BuildSucceeded)
 
-        // Give it a moment to acquire the slot before forcing a rerun into it.
-        Thread.Sleep(300)
+        // The run holds the slot before a rerun is forced into it.
+        test <@ running.Wait(HangWait) @>
 
         let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
 
