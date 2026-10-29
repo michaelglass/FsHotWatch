@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: the test-prune task cache key pins the tree (ADR-059 §4, AUTOMATION-1362). It folds the
+  input tree's content identity (`ReceiptInputTree.read`) beside the changed symbols, so two
+  clean-building trees no longer compute one key. On a cold scan the changed-symbols term is
+  empty whatever the tree holds, and a comment edit used to compute the key of the green it
+  followed. A tree that cannot be read is uncacheable. **BREAKING (internal):** `cacheKeyFor`
+  takes an `inputTree` thunk after `fullSuiteScopeHash`. Existing cache entries no longer hit.
+
 ## 0.13.0-alpha.97 - 2026-10-29
 
 - fix: a red run is not retried by its own debt over the same tree (AUTOMATION-1373). Every

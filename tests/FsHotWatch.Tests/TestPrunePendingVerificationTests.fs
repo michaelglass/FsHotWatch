@@ -1865,6 +1865,7 @@ let ``cacheKeyFor: a confirm cannot replay an impact-filtered run's cached verdi
             (fun () -> None)
             (fun () -> "same-structure")
             (fun () -> fullSuiteScope)
+            (fun () -> Some "tree")
             (fun () -> false)
             (fun () -> true)
             (fun _ -> true)
@@ -1889,6 +1890,7 @@ let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
             (fun () -> Some "deps")
             (fun () -> "struct")
             (fun () -> None)
+            (fun () -> Some "tree")
             (fun () -> false)
             (fun () -> true)
             (fun _ -> true)
@@ -1899,6 +1901,7 @@ let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
         FsHotWatch.TaskCache.merkleCacheKey
             [ "plugin-version", "test-prune-merkle-v2"
               "event", "BuildCompleted"
+              "input-tree", "tree"
               "changed-symbols", "s"
               "project-structure", "struct"
               "build-outcome", "succeeded"
@@ -1925,6 +1928,7 @@ let ``cacheKeyFor: two full-suite runs over the same tree DO share a key`` () =
             (fun () -> None)
             (fun () -> "same-structure")
             (fun () -> Some "full")
+            (fun () -> Some "tree")
             (fun () -> false)
             (fun () -> true)
             (fun _ -> true)
@@ -1944,6 +1948,7 @@ let ``cacheKeyFor refuses BuildCompleted while the process has NO test evidence`
             (fun () -> None)
             (fun () -> "same-structure")
             (fun () -> Some "full")
+            (fun () -> Some "tree")
             (fun () -> false)
             (fun () -> hasEvidence)
             (fun _ -> true)
@@ -1982,6 +1987,7 @@ let ``the TestsFinished WRITE is not gated on session evidence`` () =
             (fun () -> None)
             (fun () -> "same-structure")
             (fun () -> Some "full")
+            (fun () -> Some "tree")
             (fun () -> false)
             // No evidence yet — this run is the one about to provide it.
             (fun () -> false)
@@ -2318,3 +2324,26 @@ let ``run-tests bounds its wait: a run that outlives the budget reports busy, ne
                 // Let the daemon-side run finish so the temp dir can be cleaned.
                 File.WriteAllText(release, "")
                 waitUntil (fun () -> not (host.AnyPluginBusy())) 30000))
+
+[<Fact(Timeout = 10000)>]
+let ``cacheKeyFor: two trees with the same symbols and structure no longer share a key`` () =
+    // ADR-059 §4: the key used to pin no tree. On a cold scan `changed-symbols` is empty
+    // whatever the tree holds, so a comment edit computed the key of the green it followed.
+    let keyOver (tree: string option) =
+        cacheKeyFor
+            (fun () -> "same-symbols")
+            (fun () -> None)
+            (fun () -> None)
+            (fun () -> "same-structure")
+            (fun () -> None)
+            (fun () -> tree)
+            (fun () -> false)
+            (fun () -> true)
+            (fun _ -> true)
+            (BuildCompleted BuildSucceeded)
+
+    test <@ (keyOver (Some "sha256:t1")).IsSome @>
+    test <@ keyOver (Some "sha256:t1") = keyOver (Some "sha256:t1") @>
+    test <@ keyOver (Some "sha256:t1") <> keyOver (Some "sha256:t2") @>
+    // A tree that cannot be read is uncacheable, never keyed on a placeholder.
+    test <@ keyOver None = None @>

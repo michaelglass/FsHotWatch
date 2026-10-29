@@ -7673,6 +7673,12 @@ let internal cacheKeyFor
     // `None` rather than "impact" for the inner loop keeps the ordinary key
     // byte-identical to the pre-feature one, so existing on-disk caches keep hitting.
     (fullSuiteScopeHash: unit -> string option)
+    // The content identity of the tree this event is about (`ReceiptInputTree.read`): the
+    // term that PINS THE TREE (ADR-059 §4). The changed-symbols term cannot, since on a cold
+    // scan this event is dispatched before the FCS pass; so two clean-building trees used to
+    // compute one key. `None` (a hole, an unreadable file) makes the event uncacheable rather
+    // than keying it on a placeholder two different trees would share.
+    (inputTree: unit -> string option)
     // True while a failure no covering run has passed is outstanding.
     // While it is, this plugin does not participate in the task cache AT ALL:
     //   * no REPLAY — a cached green served on a BuildCompleted would skip the handler,
@@ -7727,20 +7733,23 @@ let internal cacheKeyFor
     // The `-v2` salt orphans entries written, which cached FAILED
     // verdicts and could replay them on a now-green tree. Bump it again for any change
     // that makes an old entry unsound, rather than asking users to wipe the cache.
-    let outcomeKey (buildOutcome: string) =
-        FsHotWatch.TaskCache.merkleCacheKey (
-            [ "plugin-version", "test-prune-merkle-v2"
-              "event", "BuildCompleted"
-              "changed-symbols", changedSymbolsHash ()
-              // The one term that pins the SHAPE of the tree. The
-              // changed-symbols term cannot: on a scan this event is dispatched before
-              // the FCS pass, so it is empty whatever the tree holds.
-              "project-structure", projectStructureHash ()
-              "build-outcome", buildOutcome ]
-            @ optionalEntry "pending-queue" (pendingQueueHash ())
-            @ optionalEntry "depends-on" (dependsOnHash ())
-            @ optionalEntry "full-suite-scope" (fullSuiteScopeHash ())
-        )
+    let outcomeKey (buildOutcome: string) : ContentHash option =
+        inputTree ()
+        |> Option.map (fun tree ->
+            FsHotWatch.TaskCache.merkleCacheKey (
+                [ "plugin-version", "test-prune-merkle-v2"
+                  "event", "BuildCompleted"
+                  "input-tree", tree
+                  "changed-symbols", changedSymbolsHash ()
+                  // The one term that pins the SHAPE of the tree. The
+                  // changed-symbols term cannot: on a scan this event is dispatched before
+                  // the FCS pass, so it is empty whatever the tree holds.
+                  "project-structure", projectStructureHash ()
+                  "build-outcome", buildOutcome ]
+                @ optionalEntry "pending-queue" (pendingQueueHash ())
+                @ optionalEntry "depends-on" (dependsOnHash ())
+                @ optionalEntry "full-suite-scope" (fullSuiteScopeHash ())
+            ))
 
     match event with
     | BuildCompleted BuildSucceeded ->
@@ -7758,7 +7767,7 @@ let internal cacheKeyFor
         | Some _, _, _
         | _, true, _
         | _, _, false -> None
-        | None, false, true -> Some(outcomeKey "succeeded")
+        | None, false, true -> outcomeKey "succeeded"
     | Custom(TestsFinished(_, completed, _)) ->
         // A FAILED test outcome must never be served from cache as a current verdict.
         // Unlike BuildPlugin — whose result is a pure function of its content-merkle
@@ -7840,13 +7849,13 @@ let internal cacheKeyFor
             && (pendingQueueHash ()).IsNone
             && not (hasOutstandingFailures ())
         then
-            Some(outcomeKey "succeeded")
+            outcomeKey "succeeded"
         else
             None
     | BuildCompleted(BuildFailed errs) ->
         // Shares `outcomeKey` with the BuildSucceeded arm so the salt and the
         // pending-queue/dependsOn entries can never split across the two.
-        Some(outcomeKey ("failed:" + String.concat "|" (List.sort errs)))
+        outcomeKey ("failed:" + String.concat "|" (List.sort errs))
     | FileChecked r ->
         // `fcs-signature` captures cross-file FCS state so upstream symbol changes
         // invalidate this file's cached symbol-diff.
@@ -13591,6 +13600,7 @@ let internal createWithEvidenceAndQueries
                     dependsOnHash
                     structureHash
                     fullSuiteScopeHash
+                    (fun () -> ReceiptInputTree.read repoRoot)
                     hasOutstandingFailures
                     sessionHasTestEvidence
                     (mayReplay state.PendingIdentities)

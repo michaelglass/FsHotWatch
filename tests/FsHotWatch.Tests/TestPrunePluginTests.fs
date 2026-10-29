@@ -5362,6 +5362,7 @@ let private outcomeCacheKey event =
         (fun () -> None)
         (fun () -> "structure")
         (fun () -> None)
+        (fun () -> Some "tree")
         (fun () -> false)
         (fun () -> true)
         (fun _ -> true)
@@ -5710,6 +5711,7 @@ let ``cacheKeyFor: a FileChecked key reads only the cheap outstanding-red guard`
             (fun () ->
                 fullSuiteScopeCalls <- fullSuiteScopeCalls + 1
                 None)
+            (fun () -> Some "tree")
             (fun () ->
                 outstandingCalls <- outstandingCalls + 1
                 false)
@@ -5746,6 +5748,7 @@ let ``a prior test failure makes FileChecked uncacheable so it cannot relabel th
             (fun () -> None)
             (fun () -> "structure")
             (fun () -> None)
+            (fun () -> Some "tree")
             (fun () -> true)
             (fun () -> true)
             (fun _ -> true)
@@ -5764,6 +5767,7 @@ let ``a FileChecked hit is offered only where the index may vouch for the analys
             (fun () -> None)
             (fun () -> "structure")
             (fun () -> None)
+            (fun () -> Some "tree")
             (fun () -> false)
             (fun () -> true)
             (fun r ->
@@ -5808,6 +5812,7 @@ let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state``
                 structureCalls <- structureCalls + 1
                 "structure")
             (fun () -> None)
+            (fun () -> Some "tree")
             (fun () -> false)
             (fun () -> true)
             (fun _ -> true)
@@ -5899,6 +5904,8 @@ let ``a failed test run is not cached, so a later run on the same key is a miss 
                 // repoRoot, and this test's tmpDir holds no project files.
                 (fun () -> projectStructureHash tmpDir)
                 (fun () -> None)
+                // The same input tree the live handler reads.
+                (fun () -> ReceiptInputTree.read tmpDir)
                 (fun () -> false)
                 (fun () -> true)
                 (fun _ -> true)

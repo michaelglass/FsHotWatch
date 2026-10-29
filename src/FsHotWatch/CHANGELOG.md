@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: whether a referenced assembly is a type provider is remembered per file CONTENT, not
+  per write time (ADR-008, ADR-059 §6, AUTOMATION-1200). An assembly copied or restored under
+  its old write time (`cp -p`, `rsync -a`, a checkout) is judged by its new bytes. The hash
+  comes from the shared `CheckCache.FileContentHasher`, so an unchanged file is not re-read.
+
 ## 0.10.0-alpha.97 - 2026-10-29
 
 - feat: `ActionKey`, `OutcomeStore` and `LookupVerdict` (ADR-059, AUTOMATION-1362). `ActionKey`

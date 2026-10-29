@@ -1323,6 +1323,7 @@ let ``no cache participation while a red is outstanding`` () =
             (fun () -> None)
             (fun () -> "same-structure")
             (fun () -> None)
+            (fun () -> Some "tree")
             (fun () -> hasOutstanding)
             (fun () -> true)
             (fun _ -> true)

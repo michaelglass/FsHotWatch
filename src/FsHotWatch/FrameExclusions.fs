@@ -105,8 +105,13 @@ let private optionReadsFromProjectDirectory (option: string) =
     || option.StartsWith("@", StringComparison.Ordinal)
 
 /// Whether the assembly at `path` declares itself a type provider. Read from its
-/// metadata, once per file and write time.
-let private typeProviderCache = ConcurrentDictionary<string * DateTime, bool>()
+/// metadata, once per file CONTENT (ADR-008, ADR-059 §6, AUTOMATION-1200): a write time is
+/// not a content oracle, and a file copied or restored under its old write time has new
+/// bytes the answer must follow. The content hash comes from the shared hasher, which
+/// re-reads a file only when its (inode, change time) stamp moves.
+let private typeProviderCache = ConcurrentDictionary<string * string, bool>()
+
+let private contentHasher = CheckCache.FileContentHasher()
 
 /// The type an assembly-level attribute constructs, by name: `""` when its constructor
 /// is not a reference to another assembly's type (the assembly defines the attribute
@@ -145,7 +150,7 @@ let isTypeProviderAssembly (path: string) =
             false
 
     File.Exists path
-    && typeProviderCache.GetOrAdd((path, File.GetLastWriteTimeUtc path), fun _ -> read ())
+    && typeProviderCache.GetOrAdd((path, contentHasher.Hash path), fun _ -> read ())
 
 /// Why `options`' project must be checked at its own paths, if it must. `readSource`
 /// reads a source file.

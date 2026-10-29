@@ -244,3 +244,21 @@ let ``an attribute of a generic type is read without mistaking it for a provider
         builder.Save path
         let options = optionsWith dir [ "A.fs", "module A" ] [ $"-r:%s{path}" ]
         test <@ FrameExclusions.exclusionFor File.ReadAllText options = None @>)
+
+[<Fact>]
+let ``a reference rewritten under the same write time is judged by its new bytes (AUTOMATION-1200)`` () =
+    // ADR-008 and ADR-059 §6: a write time is not a content oracle. A file restored or copied
+    // with its old write time (`cp -p`, `rsync -a`, a checkout) has new bytes the answer must
+    // follow. The time below is a fixed value the test sets, not a reading of the clock.
+    withTempDir "frame-exclusion-same-mtime" (fun dir ->
+        let path = Path.Combine(dir, "Swapped.dll")
+        let fixedTime = System.DateTime(2026, 1, 1, 0, 0, 0, System.DateTimeKind.Utc)
+        File.WriteAllText(path, "not an assembly")
+        File.SetLastWriteTimeUtc(path, fixedTime)
+        test <@ not (FrameExclusions.isTypeProviderAssembly path) @>
+
+        let provider = Path.Combine(dir, "Provider.dll")
+        writeProviderAssembly provider
+        File.Copy(provider, path, true)
+        File.SetLastWriteTimeUtc(path, fixedTime)
+        test <@ FrameExclusions.isTypeProviderAssembly path @>)
