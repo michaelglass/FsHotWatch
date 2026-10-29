@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `"checkRecords": true` in `.fshw.json`, or `FSHW_CHECK_RECORDS=1` (`0` turns it off
+  whatever the config says), files every completed check as a `check` record and answers
+  later checks from the records, across daemon restarts (ADR-059 §17, AUTOMATION-1361). OFF
+  by default.
+
 - feat: the shadow verdict accepts the test runner's K_P records (ADR-059 step 7b,
   AUTOMATION-1362). A settled `test-scope` reply names each project's full-run outcome key
   over the tree as it is now (`outcomeKeys`); `TestRunReport.OutcomeKeys` reads it, dropping

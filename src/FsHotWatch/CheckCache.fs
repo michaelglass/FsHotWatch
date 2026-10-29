@@ -724,6 +724,8 @@ let hashDiagnosticsOrFailure (extract: unit -> DiagnosticSignature seq) : string
 let fcsCheckSignature (checkResults: FileCheckState) : string =
     match checkResults with
     | ParseOnly -> "parse-only"
+    // What the filed check answered (ADR-059 §17): computed from the live diagnostics then.
+    | Replayed outputs -> outputs.FcsSignature
     | FullCheck results when isNull (box results) ->
         // Test fixtures pass Unchecked.defaultof<FSharpCheckFileResults>; treat
         // the same as ParseOnly so callers get a stable signature.

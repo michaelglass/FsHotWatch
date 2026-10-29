@@ -714,6 +714,10 @@ type PluginHostServices =
         ClaimOrQueueSharedRun: string -> (SharedResourceState -> SharedRunStart) -> SharedResourceState option
         /// Release ownership and wake exactly the oldest waiter, if present.
         ReleaseSharedRun: string -> SharedResourceState -> unit
+        /// A real FCS check of the file a `Replayed` result names (ADR-059 §17): what the
+        /// framework runs `Update` on when a plugin has no cached answer for a replay. None
+        /// when the check did not complete.
+        DemandCheck: FileCheckResult -> Async<FileCheckResult option>
     }
 
 /// The replay summary for a per-file cache entry, derived from the plugin's LIVE
@@ -1945,7 +1949,43 @@ let internal registerHandlerForOwner
                                         | Some replayed ->
                                             return Result.Ok(replayedState state event replayed, None, false)
                                         | None ->
-                                            let! result = runAndCache identity event state cacheKeyOpt
+                                            // ADR-059 §17: `Update` never sees a replayed check. With
+                                            // no cached answer for it, the plugin waits here for a
+                                            // real check of the file and runs on that, so its status
+                                            // and work cover the file as for any other event. No real
+                                            // check is a fault, never a silent skip: the plugin fails.
+                                            let! liveEvent, liveKey =
+                                                match event with
+                                                | FileChecked({ CheckResults = Replayed _ } as replayedCheck) ->
+                                                    async {
+                                                        let! live = services.DemandCheck replayedCheck
+
+                                                        let liveEvent =
+                                                            match live with
+                                                            | Some({ CheckResults = FullCheck _ } as full) ->
+                                                                FileChecked
+                                                                    { full with
+                                                                        ModelGeneration = replayedCheck.ModelGeneration }
+                                                            | _ ->
+                                                                raise (
+                                                                    ReplayedResultException(
+                                                                        $"plugin %s{pluginName} (its demanded check did not complete)",
+                                                                        AbsFilePath.value replayedCheck.File
+                                                                    )
+                                                                )
+
+                                                        let liveKey =
+                                                            if cacheable liveEvent then
+                                                                handler.CacheKey
+                                                                |> Option.bind (fun key -> key state liveEvent)
+                                                            else
+                                                                None
+
+                                                        return liveEvent, liveKey
+                                                    }
+                                                | _ -> async.Return(event, cacheKeyOpt)
+
+                                            let! result = runAndCache identity liveEvent state liveKey
 
                                             return
                                                 result |> Result.map (fun (candidate, write) -> candidate, write, true)

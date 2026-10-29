@@ -154,6 +154,7 @@ let private check (session: WorktreeSession) (file: AbsFilePath) =
 let private fullCheck (result: FileCheckResult) =
     match result.CheckResults with
     | FullCheck results -> results
+    | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
     | ParseOnly -> failwith $"%s{AbsFilePath.value result.File} was only parsed"
 
 let private messages (result: FileCheckResult) =

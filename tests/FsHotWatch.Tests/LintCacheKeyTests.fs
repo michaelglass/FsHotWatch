@@ -38,6 +38,7 @@ let private typedLint (root: string) (result: FileCheckResult) =
     let typeCheckResults =
         match result.CheckResults with
         | FullCheck r -> Some r
+        | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
         | ParseOnly -> None
 
     let lintParams =

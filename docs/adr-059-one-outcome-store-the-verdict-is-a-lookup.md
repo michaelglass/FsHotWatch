@@ -574,3 +574,13 @@ misses exactly the files it reaches. A check whose inputs moved before filing is
 
 The abandon criterion of §14 stands: if a clean restart on intelligence takes over 5 s, or a
 replay disagrees with a forced check, the flag stays off.
+
+**Step 2 found that an API signature must not depend on enumeration order.** The
+intelligence-scale measurement compared each filed record with a forced live check. 560 of
+2,670 API signatures differed, with no source change. FCS enumerates an entity's members and
+nested entities in an order that can differ between processes, and `ApiSignature` named them in
+that order. A record filed by one daemon would therefore miss in the next one. `ApiSignature`
+now sorts an entity's members and nested entities ordinally before naming them
+(`ApiSignatureTests` "an entity's members are named in ordinal order"). After the fix, 0 of
+2,670 replays disagreed with a forced check, and a clean restart took 2.2–2.7 s with 0 FCS
+checks. The in-memory API key changes with it, which is harmless: it was never persisted.

@@ -329,6 +329,8 @@ let usedSignaturesHash
     : string option =
     match checkResults with
     | ParseOnly -> Some "parse-only"
+    // What the filed check answered (ADR-059 §17).
+    | Replayed outputs -> outputs.UsedSignatures
     | FullCheck results when isNull (box results) -> Some "full-check-null"
     | FullCheck results ->
         match usedSignaturesMemo.TryGetValue results with

@@ -302,7 +302,7 @@ let ``a reverted edit is served again: the store is addressed by content`` () =
         for file in files do
             test <@ replay tree reverted tree.B file |> Option.isSome @>)
 
-let private sampleOutputs (root: string) : CheckRecords.CheckOutputs =
+let private sampleOutputs (root: string) : CheckOutputs =
     let bFile = Path.Combine(root, "src", "B.fs")
 
     { Diagnostics =
@@ -366,3 +366,98 @@ let ``a pipeline with no store files and replays nothing`` () =
         test <@ pipeline.PersistCheckRecords() = 0 @>
         test <@ pipeline.ReplayCheck(AbsFilePath.create tree.A1, tree.A) = None @>
         test <@ List.isEmpty (pipeline.ReplayProject tree.A) @>)
+
+/// What a consumer of `FSharpDiagnostic` reads of each diagnostic.
+let private seenBy (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) =
+    [ for d in diagnostics ->
+          {| File = d.FileName
+             Start = d.StartLine, d.StartColumn
+             End = d.EndLine, d.EndColumn
+             Number = d.ErrorNumber
+             Severity = d.Severity
+             Subcategory = d.Subcategory
+             Message = d.Message |} ]
+
+[<Fact(Timeout = 240000)>]
+let ``a restarted pipeline answers every filed file as Replayed, read by consumers exactly as the live check`` () =
+    withTempDir "check-records-pipeline" (fun dir ->
+        let tree, store, files, _, _ = seeded dir
+        let pipeline, counter = restart tree (Some store) toolchain tree.B
+
+        let replayed =
+            [ for file in files -> file, (pipeline.CheckFile(AbsFilePath.create file) |> Async.RunSynchronously).Value ]
+            |> Map.ofList
+
+        test <@ counter.Started = 0 @>
+
+        test
+            <@
+                replayed
+                |> Map.forall (fun _ r ->
+                    match r.CheckResults with
+                    | Replayed _ -> true
+                    | _ -> false)
+            @>
+
+        // A live check of each, demanded past the store, through a fresh pipeline.
+        let live, liveCounter = restart tree (Some store) toolchain tree.B
+
+        for file in files do
+            let liveResult =
+                (live.CheckFileLive(AbsFilePath.create file, optionsFor tree file)
+                 |> Async.RunSynchronously)
+                    .Value
+
+            test
+                <@
+                    match liveResult.CheckResults with
+                    | FullCheck _ -> true
+                    | _ -> false
+                @>
+
+            test <@ liveResult.Source = replayed[file].Source @>
+
+            test
+                <@
+                    (FileCheckResult.diagnostics replayed[file] |> Option.map seenBy) = (FileCheckResult.diagnostics
+                                                                                             liveResult
+                                                                                         |> Option.map seenBy)
+                @>
+
+            test
+                <@
+                    CheckCache.fcsCheckSignature replayed[file].CheckResults = CheckCache.fcsCheckSignature
+                        liveResult.CheckResults
+                @>
+
+            test
+                <@
+                    CacheInputs.usedSignaturesHash
+                        (Some tree.Root)
+                        replayed[file].ProjectOptions
+                        replayed[file].CheckResults = CacheInputs.usedSignaturesHash
+                        (Some tree.Root)
+                        liveResult.ProjectOptions
+                        liveResult.CheckResults
+                @>
+
+            test
+                <@
+                    ApiSignature.ofCheck replayed[file].Source replayed[file].CheckResults = ApiSignature.ofCheck
+                        liveResult.Source
+                        liveResult.CheckResults
+                @>
+
+        test <@ liveCounter.Started = files.Length @>)
+
+[<Fact(Timeout = 240000)>]
+let ``a replayed result refuses, loudly, to stand in for a typed tree`` () =
+    withTempDir "check-records-loud" (fun dir ->
+        let tree, store, _, _, _ = seeded dir
+        let pipeline, _ = restart tree (Some store) toolchain tree.B
+
+        let replayed =
+            (pipeline.CheckFile(AbsFilePath.create tree.A1) |> Async.RunSynchronously).Value
+
+        raises<ReplayedResultException> <@ FileCheckResult.requireTypedTree "a test" replayed @>
+        raises<ReplayedResultException> <@ ApiSignature.signatureText replayed.Source replayed.CheckResults @>)

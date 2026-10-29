@@ -94,6 +94,7 @@
     <Compile Include="LockedEmitTests.fs" />
     <Compile Include="PluginFrameworkTests.fs" />
     <Compile Include="PluginFrameworkFixtures.fs" />
+    <Compile Include="ReplayedDemandTests.fs" />
     <Compile Include="PluginFrameworkOwnershipTests.fs" />
     <Compile Include="PluginFrameworkRunOwnershipTests.fs" />
     <Compile Include="PluginFrameworkQueuedResultTests.fs" />

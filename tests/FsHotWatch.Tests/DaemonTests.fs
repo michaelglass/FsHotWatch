@@ -3311,6 +3311,7 @@ let ``superseded owned change retries its admitted source against the current mo
 
         match checkedSource.CheckResults with
         | FullCheck _ -> ()
+        | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
         | ParseOnly -> failwith "the successor must publish actual completed FCS analysis"
 
         Assert.True(preprocessingAttempts >= 2, "the admitted source must reach the successor attempt"))

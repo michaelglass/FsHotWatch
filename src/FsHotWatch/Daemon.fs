@@ -126,10 +126,20 @@ let internal fcsLedgerWrites
             @ suspectCheckEntries reportable
           SelfIncompatible = selfIncompatible }
 
+/// File the checks a scan or change batch completed as `check` records (ADR-059 §17), and
+/// say how many and how long it took. A no-op when check records are off.
+let private persistCheckRecords (pipeline: CheckPipeline) =
+    let sw = Diagnostics.Stopwatch.StartNew()
+    let filed = pipeline.PersistCheckRecords()
+
+    if filed > 0 then
+        Logging.info "check-records" $"filed %d{filed} check record(s) in %d{sw.ElapsedMilliseconds} ms"
+
 let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) (checkResult: Events.FileCheckResult) =
-    match checkResult.CheckResults with
-    | ParseOnly -> ()
-    | FullCheck checkResults ->
+    // Live or replayed (ADR-059 §17): a replay reports the diagnostics its check filed.
+    match FileCheckResult.diagnostics checkResult with
+    | None -> ()
+    | Some diagnostics ->
         // Merge global suppressed codes with per-file #nowarn directives.
         // Workaround for https://github.com/dotnet/fsharp/issues/9796.
         // Shared with TestPrunePlugin's `hasFcsErrors` cache-poisoning gate and
@@ -151,7 +161,7 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
         let project = Path.GetFileName checkResult.ProjectOptions.ProjectFileName
 
         let writes =
-            fcsLedgerWrites suppression (FileCheckResult.textToReal checkResult) project checkResults.Diagnostics
+            fcsLedgerWrites suppression (FileCheckResult.textToReal checkResult) project diagnostics
 
         // A self-incompatible diagnostic still here is a fault in THIS process. The
         // check that produced it may have been re-checked once in `CheckPipeline`, or
@@ -2532,6 +2542,7 @@ let private processBatchAttempt
             // "flush and decide" against.
             if dispatchedFiles.Count > 0 then
                 ctx.Pipeline.SettleApiIndex()
+                persistCheckRecords ctx.Pipeline
                 seal ()
 
             batchPhase.Complete(Some $"change batch: %d{dispatchedFiles.Count} file(s) checked")
@@ -4697,6 +4708,7 @@ let private performScan
             // Without it an analysis-only repository earns no receipt and can never be
             // green, and a plugin waiting for the cohort waits forever.
             pipeline.SettleApiIndex()
+            persistCheckRecords pipeline
 
             publishCurrent (fun () ->
                 host.EmitBatchCheckedFor(
@@ -4923,6 +4935,9 @@ module Daemon =
             /// (ADR-054). A check whose result would exceed it waits to publish.
             /// `LiveResults.DefaultBound` by default; `FSHW_LIVE_RESULTS` overrides it.
             LiveResultBound: int
+            /// Whether checks are filed as `check` records and answered from them across
+            /// restarts (ADR-059 §17, AUTOMATION-1361). OFF by default: `"checkRecords": true`.
+            CheckRecords: bool
         }
 
     module DaemonOptions =
@@ -4940,7 +4955,8 @@ module Daemon =
               CheckerCacheSizeFactor = DefaultCheckerCacheSizeFactor
               Hosting = DaemonHosting.standalone ()
               Restore = DepsFreshness.productionRestoreRunner
-              LiveResultBound = LiveResults.DefaultBound }
+              LiveResultBound = LiveResults.DefaultBound
+              CheckRecords = false }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
     /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
@@ -5063,6 +5079,13 @@ module Daemon =
             let checks =
                 (seams.Checks(WorkScheduler.Scheduler Environment.ProcessorCount)).Lane repoRoot
 
+            // ADR-059 §17: the box-wide outcome store, when check records are on.
+            let checkRecordStore =
+                if opts.CheckRecords then
+                    Some(OutcomeStore.openFor repoRoot (Logging.info "check-records"))
+                else
+                    None
+
             let pipeline =
                 match cacheBackend, cacheKeyProvider with
                 | Some b, Some kp ->
@@ -5074,7 +5097,8 @@ module Daemon =
                         repoRoot = repoRoot,
                         frames = seams.Frames,
                         imports = seams.Imports,
-                        admission = checks
+                        admission = checks,
+                        ?checkRecords = checkRecordStore
                     )
                 | Some b, None ->
                     CheckPipeline(
@@ -5084,7 +5108,8 @@ module Daemon =
                         repoRoot = repoRoot,
                         frames = seams.Frames,
                         imports = seams.Imports,
-                        admission = checks
+                        admission = checks,
+                        ?checkRecords = checkRecordStore
                     )
                 | _ ->
                     CheckPipeline(
@@ -5093,7 +5118,8 @@ module Daemon =
                         repoRoot = repoRoot,
                         frames = seams.Frames,
                         imports = seams.Imports,
-                        admission = checks
+                        admission = checks,
+                        ?checkRecords = checkRecordStore
                     )
 
             Logging.info "cache" (FsHotWatch.InMemoryCheckCache.describeCheckCache opts.CheckCache)
@@ -5130,6 +5156,10 @@ module Daemon =
                 )
 
             let daemonCtRef = ref CancellationToken.None
+
+            // ADR-059 §17: a plugin with no cached answer for a replayed check gets a live one.
+            host.SetCheckDemand(fun replayed ->
+                pipeline.CheckFileLive(replayed.File, replayed.ProjectOptions, daemonCtRef.Value))
 
             let delayForChange change =
                 match change with

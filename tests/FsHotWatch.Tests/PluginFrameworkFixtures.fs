@@ -31,7 +31,9 @@ let defaultServices: PluginHostServices =
       StartAsync = Async.Start
       Processes = None
       ClaimOrQueueSharedRun = fun _ _ -> Some Ready
-      ReleaseSharedRun = fun _ _ -> () }
+      ReleaseSharedRun = fun _ _ -> ()
+      // A test that dispatches a replayed check states what its demand answers.
+      DemandCheck = fun _ -> async { return None } }
 
 /// Register a handler with no-op host services, capturing its commands.
 let registerWith (handler: PluginHandler<'State, 'Msg>) (registerCommand: (string * CommandHandler -> unit) option) =

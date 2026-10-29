@@ -98,6 +98,7 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
       Format = Auto
       Lint = true
       Cache = NoCache
+      CheckRecords = false
       Analyzers = None
       Tests =
         if testProjects.IsEmpty then

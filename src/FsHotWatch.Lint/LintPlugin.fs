@@ -245,9 +245,8 @@ let create
     let lintFile =
         defaultArg lintRunner (fun result ->
             let typeCheckResults =
-                match result.CheckResults with
-                | FullCheck r -> Some r
-                | ParseOnly -> None
+                // Lint runs on a live check only: the framework never hands Update a replay.
+                FileCheckResult.requireTypedTree "lint" result
 
             let parsedInfo: Lint.ParsedFileInformation =
                 { Ast = result.ParseResults.ParseTree

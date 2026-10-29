@@ -208,6 +208,7 @@ let f x =
         let diagnostics =
             match result.CheckResults with
             | FullCheck cr -> cr.Diagnostics
+            | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
             | ParseOnly -> [||]
 
         test <@ diagnostics.Length > 0 @>
@@ -259,6 +260,7 @@ let x : int = "not-an-int"
                 |> Array.exists (fun d ->
                     d.ErrorNumber = 1
                     && d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+            | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
             | ParseOnly -> false
 
         test <@ hasErrorDiagnostic @>
@@ -288,6 +290,7 @@ let x : int = "not-an-int"
         let hasErrorDiagnostic =
             match result.CheckResults with
             | FullCheck cr -> cr.Diagnostics |> Array.exists (fun d -> d.ErrorNumber = 1)
+            | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
             | ParseOnly -> false
 
         test <@ hasErrorDiagnostic @>

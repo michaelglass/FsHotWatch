@@ -211,8 +211,18 @@ let private entityText (entity: FSharpEntity) =
 
                       $"case %s{case.Name} %s{accessText case.Accessibility} of %s{fields} [%s{attributesText case.Attributes}] %s{docText case.XmlDoc}")
 
-              yield! entity.MembersFunctionsAndValues |> Seq.map memberText
-              yield! entity.NestedEntities |> Seq.map (fun nested -> "nested " + entityName nested) ]
+              // Ordinal order: FCS enumerates members in an order that is not stable across
+              // processes, and a signature filed by one process is compared with a live one in
+              // another (ADR-059 §17). Member order is not observable to a later file.
+              yield!
+                  entity.MembersFunctionsAndValues
+                  |> Seq.map memberText
+                  |> Seq.sortWith (fun a b -> String.CompareOrdinal(a, b))
+
+              yield!
+                  entity.NestedEntities
+                  |> Seq.map (fun nested -> "nested " + entityName nested)
+                  |> Seq.sortWith (fun a b -> String.CompareOrdinal(a, b)) ]
 
     $"entity %s{entityName entity} [%s{kinds}] %s{accessText entity.Accessibility} <%s{genericsText entity.GenericParameters}> [%s{attributesText entity.Attributes}] %s{docText entity.XmlDoc}\n  "
     + String.concat "\n  " body
@@ -262,6 +272,7 @@ let private declarationsOf (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFil
 let signatureText (source: string) (checkResults: FileCheckState) : string option =
     match checkResults with
     | ParseOnly -> None
+    | Replayed _ -> raise (ReplayedResultException("ApiSignature.signatureText", "(a replayed check)"))
     | _ when assemblyAttribute.IsMatch source -> None
     | FullCheck results when isNull (box results) -> None
     | FullCheck results ->
@@ -280,4 +291,7 @@ let signatureText (source: string) (checkResults: FileCheckState) : string optio
 /// The API signature hash of a checked file, or None when the file has no signature of its
 /// own and its content must stand in for it.
 let ofCheck (source: string) (checkResults: FileCheckState) : string option =
-    signatureText source checkResults |> Option.map CheckCache.sha256Hex
+    match checkResults with
+    // The signature the filed check declared (ADR-059 §17).
+    | Replayed outputs -> outputs.ApiSignature
+    | _ -> signatureText source checkResults |> Option.map CheckCache.sha256Hex

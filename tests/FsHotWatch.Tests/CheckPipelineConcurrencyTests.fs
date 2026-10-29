@@ -311,6 +311,7 @@ let ``work two sessions share survives one of them cancelling`` () =
 
                 match result.CheckResults with
                 | FullCheck results -> results
+                | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
                 | ParseOnly -> failwith "session B's check was aborted when session A cancelled"
 
         let bResults = fullCheck bCheck.Result

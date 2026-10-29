@@ -573,6 +573,7 @@ let defaultTestConfig () : FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
       Format = FsHotWatch.Cli.DaemonConfig.Auto
       Lint = true
       Cache = FsHotWatch.Cli.DaemonConfig.NoCache
+      CheckRecords = false
       Analyzers = None
       Tests = None
       FileCommands = []

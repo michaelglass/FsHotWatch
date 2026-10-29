@@ -527,6 +527,26 @@ let ``parseConfig lint false disables lint`` () =
     let config = parseConfig """{"lint": false}""" defaults
     test <@ config.Lint = false @>
 
+[<Fact(Timeout = 15000)>]
+let ``parseConfig checkRecords is off unless set true, and refuses anything else`` () =
+    test <@ (parseConfig "{}" defaults).CheckRecords = false @>
+    test <@ (parseConfig """{"checkRecords": true}""" defaults).CheckRecords = true @>
+    test <@ (parseConfig """{"checkRecords": false}""" defaults).CheckRecords = false @>
+    test <@ (parseConfig """{"checkRecords": null}""" defaults).CheckRecords = false @>
+    raises<ConfigErrorException> <@ parseConfig """{"checkRecords": "yes"}""" defaults @>
+
+[<Fact(Timeout = 15000)>]
+let ``FSHW_CHECK_RECORDS overrides the configured checkRecords either way, and nothing else does`` () =
+    let env (value: string) : string -> string =
+        fun name -> if name = "FSHW_CHECK_RECORDS" then value else null
+
+    test <@ resolveCheckRecords false (env "1") @>
+    test <@ resolveCheckRecords false (env "true") @>
+    test <@ not (resolveCheckRecords true (env "0")) @>
+    test <@ not (resolveCheckRecords true (env "false")) @>
+    test <@ resolveCheckRecords true (env null) @>
+    test <@ not (resolveCheckRecords false (env "maybe")) @>
+
 // --- parseConfig: cache ---
 
 [<Fact(Timeout = 15000)>]
