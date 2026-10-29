@@ -3392,6 +3392,12 @@ type Daemon
 
     let mutable disposed = false
 
+    // Settles when the scan `RunWithIpc` starts on serving has settled, however it ended.
+    let startupScanSettled =
+        System.Threading.Tasks.TaskCompletionSource(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+
     // The trees this daemon has already re-checked suspect answers for (`SuspectRecheck`).
     let retriedTrees = SuspectRecheck.RetriedTrees()
 
@@ -3519,6 +3525,12 @@ type Daemon
 
     /// Signalled when the daemon is ready to accept file change events.
     member _.Ready = ready
+
+    /// Completes once the scan a serving daemon starts on its own has settled: every scan
+    /// admitted after it waits behind it, so a test that awaits this knows no unseen scan
+    /// is still to land.
+    member internal _.StartupScanSettled: System.Threading.Tasks.Task =
+        startupScanSettled.Task
 
     interface IDisposable with
         member this.Dispose() =
@@ -4020,6 +4032,10 @@ type Daemon
 
                 // Race against cancellation so a slow scan doesn't block shutdown.
                 let scanTask = Async.StartAsTask(this.ScanAll())
+
+                scanTask.ContinueWith(fun (_: System.Threading.Tasks.Task) ->
+                    startupScanSettled.TrySetResult() |> ignore)
+                |> ignore
 
                 do!
                     [| scanTask :> System.Threading.Tasks.Task
@@ -4948,6 +4964,20 @@ module Daemon =
             ProjectSnapshots.invalidate checker options
 
     /// Build the daemon, with `processRegistry` installed (see `createWithCore`).
+    /// The MSBuild workspace loader a daemon evaluates `repoRoot`'s projects with when none
+    /// is injected. A test that wraps it holds a real evaluation where it chooses.
+    let internal msbuildWorkspaceLoader (repoRoot: string) : IWorkspaceLoader =
+        // Init.init writes the muxer it is given into this process's
+        // DOTNET_HOST_PATH when that is unset, and in-process FCS finds the SDK
+        // as dirname(DOTNET_HOST_PATH). Its own lookup returns the first PATH
+        // entry as spelled, so hand it the installed muxer instead.
+        let muxer =
+            Paths.dotnetRoot.Value
+            |> Option.map (fun exe -> FileInfo(ProcessHelper.installedDotnet exe.FullName))
+
+        let toolsPath = Init.init (DirectoryInfo(repoRoot)) muxer
+        WorkspaceLoader.Create(toolsPath, [])
+
     let private constructDaemon
         (processRegistry: ProcessRegistry.Registry)
         (checker: FSharpChecker)
@@ -5073,17 +5103,7 @@ module Daemon =
             let loader =
                 match workspaceLoader with
                 | Some loader -> loader
-                | None ->
-                    // Init.init writes the muxer it is given into this process's
-                    // DOTNET_HOST_PATH when that is unset, and in-process FCS finds the SDK
-                    // as dirname(DOTNET_HOST_PATH). Its own lookup returns the first PATH
-                    // entry as spelled, so hand it the installed muxer instead.
-                    let muxer =
-                        Paths.dotnetRoot.Value
-                        |> Option.map (fun exe -> FileInfo(ProcessHelper.installedDotnet exe.FullName))
-
-                    let toolsPath = Init.init (DirectoryInfo(repoRoot)) muxer
-                    WorkspaceLoader.Create(toolsPath, [])
+                | None -> msbuildWorkspaceLoader repoRoot
 
             // Plugins read the model from the host publication. A settled model is
             // announced while its attempt still holds discovery admission, so the

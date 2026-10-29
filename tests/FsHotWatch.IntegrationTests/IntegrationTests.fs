@@ -2400,7 +2400,7 @@ let ``IgnoreFilterCache is safe under concurrent Get`` () =
 // parallel content) and are excluded from coverage.
 // ---------------------------------------------------------------------------
 
-[<WallClock("DEBT (AUTOMATION-1369): a sleep standing in for synchronisation before a positive assertion; a known flake risk, to be converted to an event or an injected clock")>]
+[<WallClock("real host: two real `sleep 1` builds, and the elapsed time is asserted only as a LOWER bound, which load can lengthen but never break")>]
 [<Fact(Timeout = 30000)>]
 let ``concurrent FileChanged events run two builds sequentially`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -2433,10 +2433,15 @@ let ``concurrent FileChanged events run two builds sequentially`` () =
     host.RegisterHandler(counter)
     host.RegisterHandler(handler)
 
+    let running =
+        beginAwaitStatus host "build" (function
+            | Running _ -> true
+            | _ -> false)
+
     host.EmitFileChanged(SourceChanged [ "src/A.fs" ])
-    // RunExclusive must have marked the slot Running before the second dispatch
-    // evaluates the policy.
-    System.Threading.Thread.Sleep(100)
+    // RunExclusive has marked the slot Running before the second dispatch evaluates the
+    // policy: awaited, not slept for.
+    test <@ running.Wait(HangWait) @>
     host.EmitFileChanged(SourceChanged [ "src/B.fs" ])
 
     waitUntil (fun () -> !buildCompletedCount >= 2) 15000

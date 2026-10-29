@@ -186,7 +186,6 @@ finding. `rg 'WallClock\("'` lists every exception with its reason. The reasons 
 | `product timeout under test` | the work deliberately outlasts the product's own bound |
 | `simulated work` | fake work given a duration so events overlap; outcomes are awaited by event |
 | `LIVE` | a real tree, real signals and the real process table |
-| `DEBT (AUTOMATION-1369)` | a sleep standing in for synchronisation before a positive assertion: known flake risk, still to convert |
 
 When the rule landed, the tree was converted as follows. 249 short literal asserted waits
 became `HangWaitMs` / `HangWait`, and each enclosing literal xUnit cap below 60 s became
@@ -194,7 +193,11 @@ became `HangWaitMs` / `HangWait`, and each enclosing literal xUnit cap below 60 
 reported. Six positive observation bounds `Task.WhenAny(t, Task.Delay n)` became
 `Task.WhenAny([| t |]).Wait(HangWait)`, which has no sleep. One redundant stopwatch bound
 (`LockedEmitTests`) was removed. `ShutdownEscalationTests`' LIVE test (AUTOMATION-1354) moved
-to `SettledEscalationOps`. Every remaining site carries a reason.
+to `SettledEscalationOps`. Every remaining site carries a reason. The seven `DEBT (AUTOMATION-1369)`
+sites that slept to let something happen before a positive assertion were then converted:
+each now awaits the event it was waiting for (a handler entered, a status reached, a session
+ended, a thread seen blocked at a gate, a reply on the same connection) or reads a
+`FakeClock.ManualClock`, and that reason is no longer in use.
 
 ## Keeping it true
 

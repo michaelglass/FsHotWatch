@@ -993,7 +993,6 @@ let ``daemon RunWithIpc responds to IPC queries`` () =
         with :? AggregateException ->
             ())
 
-[<WallClock("DEBT (AUTOMATION-1369): a sleep standing in for synchronisation before a positive assertion; a known flake risk, to be converted to an event or an injected clock")>]
 [<Fact(Timeout = 60000)>]
 let ``check forces a from-disk scan: forceScanAndWait advances the scan generation, wait-only does not`` () =
     // Regression for the 221/224 disease: `check`/`confirm`'s first daemon step
@@ -1018,14 +1017,15 @@ let ``check forces a from-disk scan: forceScanAndWait advances the scan generati
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
 
         try
-            // Drain the startup scan + one forced scan down to a stable baseline
-            // generation, so nothing is in flight when we measure below.
+            // The scan a serving daemon starts on its own settles first, so no scan this
+            // test did not ask for can land below. Scans run one at a time, in admission
+            // order, so once this forced scan returns nothing is in flight.
+            test <@ daemon.StartupScanSettled.Wait(HangWait) @>
+
             FsHotWatch.Cli.Program.forceScanAndWait FsHotWatch.Cli.Program.defaultIpcOps pipeName None
             |> ignore
 
-            waitUntil (fun () -> daemon.GetScanGeneration() >= 1L) 20000
             test <@ daemon.GetScanGeneration() >= 1L @>
-            Thread.Sleep(500)
             let genBaseline = daemon.GetScanGeneration()
 
             // Simulate a watcher-missed idle edit: change disk with no scan. The
@@ -1040,7 +1040,6 @@ let ``check forces a from-disk scan: forceScanAndWait advances the scan generati
             |> Async.RunSynchronously
             |> ignore
 
-            Thread.Sleep(300)
             test <@ daemon.GetScanGeneration() = genBaseline @>
 
             // FIXED behavior — forceScanAndWait forces a fresh from-disk
@@ -1048,8 +1047,9 @@ let ``check forces a from-disk scan: forceScanAndWait advances the scan generati
             FsHotWatch.Cli.Program.forceScanAndWait FsHotWatch.Cli.Program.defaultIpcOps pipeName None
             |> ignore
 
-            waitUntil (fun () -> daemon.GetScanGeneration() > genBaseline) 20000
-            test <@ daemon.GetScanGeneration() > genBaseline @>
+            // Exactly one scan since the baseline: the forced one. Had the wait-only call
+            // admitted a scan, it would have run first and this would read two.
+            test <@ daemon.GetScanGeneration() = genBaseline + 1L @>
         finally
             cts.Cancel()
 
