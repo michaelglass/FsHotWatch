@@ -230,7 +230,17 @@ let private hangingKillOf (p: Process) (kill: unit -> unit) : IOwnedChild =
         member _.WaitForExit milliseconds = p.WaitForExit milliseconds |> ignore
         member _.Escalate() = None }
 
-[<Fact(Timeout = 30000)>]
+// AUTOMATION-1354: this test once failed under a loaded full run, its 15 s escalation
+// unfinished. The cause is the one AUTOMATION-1312 measured for the kill-side LIVE tests:
+// `liveEscalationOps` bounds each process-table read at 2 s, a loaded box misses it, and a
+// missed read leaves the tree unproven, which escalation rightly never signals — so ten
+// polls of missed reads outlast the budget. The escalation now runs on
+// `SettledEscalationOps` (retry the read until `ps` answers; after SIGKILL, wait for the
+// members to be gone), and the registry's budget only ends a hang. What the test proves is
+// unchanged: a real SIGTERM-ignoring tree, behind a kill that hangs, is SIGKILLed (137) and
+// reaped, and nothing is LEAKED.
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+[<WallClock("LIVE: a real sh tree, real signals and the real process table — the claim is about the real OS, so it runs on real time; every wait in it is a named hang budget")>]
 let ``LIVE: a real tree that ignores SIGTERM, behind a kill that hangs at shutdown, is SIGKILLed and reaped`` () =
     // `sh` and its `sleep` both ignore SIGTERM (an ignored disposition survives exec).
     let psi =
@@ -247,19 +257,21 @@ let ``LIVE: a real tree that ignores SIGTERM, behind a kill that hangs at shutdo
         Assert.True(Result.isOk owned, $"%A{owned}")
 
         let child =
-            escalatingWith (ProcessHelper.shutdownEscalationFor owned) (hangingKillOf p kill)
+            escalatingWith
+                (ProcessHelper.shutdownEscalationWith (SettledEscalationOps.settledOps ()) owned)
+                (hangingKillOf p kill)
 
         let registry =
             Registry(
                 None,
                 { fast with
-                    Escalation = TimeSpan.FromSeconds 15.0 }
+                    Escalation = FsHotWatch.Tests.TestHelpers.HangWait }
             )
 
         Assert.True(registry.AdmitChild(p, child))
         registry.KillAll()
 
-        Assert.True(p.WaitForExit 5000, "the escalated child is still running")
+        Assert.True(p.WaitForExit FsHotWatch.Tests.TestHelpers.HangWaitMs, "the escalated child is still running")
         // Killed by SIGKILL — the 128 + signum convention.
         Assert.Equal(137, p.ExitCode)
         Assert.Empty(registry.Leaks)
@@ -269,6 +281,6 @@ let ``LIVE: a real tree that ignores SIGTERM, behind a kill that hangs at shutdo
         try
             if not p.HasExited then
                 p.Kill(entireProcessTree = true)
-                p.WaitForExit 5000 |> ignore
+                p.WaitForExit FsHotWatch.Tests.TestHelpers.HangWaitMs |> ignore
         finally
             p.Dispose()
