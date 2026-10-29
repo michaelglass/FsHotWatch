@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: a settled `test-scope` reply carries `outcomeKeys`: each configured project's
+  full-run outcome key over the tree as it is NOW (ADR-059 step 7b), computed from the
+  current model when no run is in flight. New: `TestEvidenceRun.currentOutcomeKeys`.
+
 - feat: the test runner records every project it launched in the box-wide outcome store
   (ADR-059 §16, AUTOMATION-1362). The record is a pass or a fail, keyed by the K_P the
   project had at launch (`TestEvidenceRun.testActionKey`), and filed only when that key still

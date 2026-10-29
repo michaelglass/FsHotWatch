@@ -656,3 +656,63 @@ let ``every project a run launched is recorded in the outcome store under its K_
             |> List.length
 
         test <@ recorded = List.length testProjects @>)
+
+/// The `outcomeKeys` a settled `test-scope` reply names, by project.
+let private outcomeKeysIn (c: Checkout) : Map<string, string> =
+    match c.Host.RunCommand("test-scope", [||]) |> Async.RunSynchronously with
+    | Some reply ->
+        let root = (System.Text.Json.JsonDocument.Parse reply).RootElement.Clone()
+
+        match root.TryGetProperty "outcomeKeys" with
+        | true, keys when keys.ValueKind = System.Text.Json.JsonValueKind.Object ->
+            keys.EnumerateObject()
+            |> Seq.map (fun p -> p.Name, p.Value.GetString())
+            |> Map.ofSeq
+        | _ -> Map.empty
+    | None -> Map.empty
+
+[<Fact(Timeout = 60000)>]
+let ``a settled test-scope reply names the outcome key each project's full run over THIS tree has (ADR-059 step 7b)``
+    ()
+    =
+    withRepo (fun store rootNamed ->
+        let root = rootNamed "a"
+
+        let outcomes =
+            OutcomeStore.Store(
+                { Root = Path.Combine(root, "..", "outcomes")
+                  Ttl = TimeSpan.FromDays 14.0
+                  MaxBytes = 64L * 1024L * 1024L
+                  Log = ignore }
+            )
+
+        let a =
+            checkout
+                root
+                (Some
+                    { wiringFor store with
+                        Outcomes = Some outcomes })
+                false
+
+        run a |> ignore
+
+        // Each named key is the one the run's own record was filed under: the lookup a
+        // shadow verdict makes finds the pass this run earned.
+        let keys = outcomeKeysIn a
+        test <@ Set.ofSeq keys.Keys = Set.ofList testProjects @>
+
+        for KeyValue(_, key) in keys do
+            test <@ outcomes.Lookup key |> Option.map _.Outcome = Some OutcomeStore.Outcome.Pass @>
+
+        // The keys describe the tree as it is NOW: after an edit no run has seen, they move,
+        // and nothing on file answers for them.
+        edit root (List.head libs) "let edited = 2"
+        let moved = outcomeKeysIn a
+        test <@ not (Map.isEmpty moved) @>
+        test <@ moved |> Map.exists (fun project key -> keys[project] <> key) @>
+
+        test
+            <@
+                moved
+                |> Map.forall (fun project key -> key = keys[project] || (outcomes.Lookup key).IsNone)
+            @>)

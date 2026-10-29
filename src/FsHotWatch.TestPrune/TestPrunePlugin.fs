@@ -9137,6 +9137,33 @@ let internal createWithEvidenceAndQueries
     let observeTestInputs (ctx: PluginCtx<TestPruneMsg>) =
         ObservedModel.testInputs ctx.ProjectGraph (defaultArg testConfigs [] |> List.map _.Project)
 
+    /// The evidence candidates of `configs`: each project the model knows a `.fsproj` for, with
+    /// its reference closure and keyed configuration.
+    let evidenceCandidates (graph: ProjectGraphAccessor) (configs: TestConfig list) : TestEvidenceRun.Candidate list =
+        let files = ObservedModel.projectFiles graph
+
+        configs
+        |> List.choose (fun config ->
+            Map.tryFind config.Project files
+            |> Option.map (fun fsproj ->
+                { TestEvidenceRun.Candidate.Project = config.Project
+                  ProjectFile = fsproj
+                  Closure = TestEvidenceRun.closureOf graph.GetProjectReferences fsproj
+                  TestConfig = canonicalTestConfig config }))
+
+    /// The outcome-store key of each configured project's full run over the tree as it is now
+    /// (ADR-059 step 7b), for the `test-scope` reply. Empty without a store or without the
+    /// model's compile-input identities: nothing can be keyed then.
+    let currentOutcomeKeys (graph: ProjectGraphAccessor) : Map<string, string> =
+        match evidence, ObservedModel.inputs graph with
+        | Some wiring, Some identities ->
+            TestEvidenceRun.currentOutcomeKeys
+                wiring
+                repoRoot
+                (fun fsproj -> Map.tryFind fsproj identities)
+                (evidenceCandidates graph (defaultArg testConfigs []))
+        | _ -> Map.empty
+
     /// The test-evidence plan of a run about to launch `configs`: every project the model
     /// can key, and a lookup for each one `launching` admits that has no outstanding
     /// failure, when `lookups` allows any. `None` without a store, or without the
@@ -9155,18 +9182,8 @@ let internal createWithEvidenceAndQueries
                 Logging.info "test-prune" "test evidence: the project model publishes no identities — nothing keyed"
                 None
             | Some identities ->
-                let files = ObservedModel.projectFiles ctx.ProjectGraph
                 let failing = outstanding |> List.map _.Project |> Set.ofList
-
-                let candidates: TestEvidenceRun.Candidate list =
-                    configs
-                    |> List.choose (fun config ->
-                        Map.tryFind config.Project files
-                        |> Option.map (fun fsproj ->
-                            { Project = config.Project
-                              ProjectFile = fsproj
-                              Closure = TestEvidenceRun.closureOf ctx.ProjectGraph.GetProjectReferences fsproj
-                              TestConfig = canonicalTestConfig config }))
+                let candidates = evidenceCandidates ctx.ProjectGraph configs
 
                 let plan =
                     TestEvidenceRun.plan
@@ -10499,6 +10516,14 @@ let internal createWithEvidenceAndQueries
                                        baselineAbsent = baselineAbsent |}
                                 )
                         | None ->
+                            // ADR-059 step 7b: each project's full-run outcome key over this tree,
+                            // for the shadow lookup verdict. Settled replies only: a run in flight
+                            // has no answer yet, and keying the tree is a walk.
+                            let outcomeKeys =
+                                System.Collections.Generic.Dictionary<string, string>(
+                                    currentOutcomeKeys ctx.ProjectGraph
+                                )
+
                             let evidenceCoverage =
                                 receipt
                                 |> Option.map (fun receipt -> receipt.Coverage)
@@ -10543,7 +10568,8 @@ let internal createWithEvidenceAndQueries
                                            runId = runId
                                            evidence = evidence
                                            seeds = seeds
-                                           seedCount = seedCount |}
+                                           seedCount = seedCount
+                                           outcomeKeys = outcomeKeys |}
                                     )
                             | ScopeFiltered(ran, total) ->
                                 return
@@ -10560,7 +10586,8 @@ let internal createWithEvidenceAndQueries
                                            runId = runId
                                            evidence = evidence
                                            seeds = seeds
-                                           seedCount = seedCount |}
+                                           seedCount = seedCount
+                                           outcomeKeys = outcomeKeys |}
                                     )
                             | ScopeNone total ->
                                 let zero =
@@ -10605,7 +10632,8 @@ let internal createWithEvidenceAndQueries
                                            unrunnableProjects =
                                             (ZeroSelection.unrunnable zero
                                              |> UnrunnableCoverage.projects
-                                             |> Set.toArray) |}
+                                             |> Set.toArray)
+                                           outcomeKeys = outcomeKeys |}
                                     )
                     })
 

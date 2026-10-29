@@ -861,6 +861,25 @@ type GradedEvidenceReading =
 /// Read a `test-scope` reply's `evidence` field (`{runId, modelGeneration, refusals}`).
 /// Absent is `NotReported`; `null`, or an entry without a parseable run id and
 /// generation, is `Reported None`: an entry that cannot be placed is not evidence.
+/// The `outcomeKeys` object of a `test-scope` reply (ADR-059 step 7b): project to outcome
+/// key. A value that is not a key is dropped, never looked up; anything but an object is
+/// `None`.
+let tryReadOutcomeKeys (field: JsonElement option) : Map<string, string> option =
+    match field with
+    | Some keys when keys.ValueKind = JsonValueKind.Object ->
+        keys.EnumerateObject()
+        |> Seq.choose (fun p ->
+            if
+                p.Value.ValueKind = JsonValueKind.String
+                && ActionKey.isValue (p.Value.GetString())
+            then
+                Some(p.Name, p.Value.GetString())
+            else
+                None)
+        |> Map.ofSeq
+        |> Some
+    | _ -> None
+
 let tryReadGradedEvidence (field: JsonElement option) : GradedEvidenceReading =
     match field with
     | None -> GradedEvidenceReading.NotReported
@@ -955,6 +974,10 @@ type TestRunReport =
         SeedFanout: SeedFanoutReading option
         /// The evidence the daemon holds for `RunId`, from the same reply.
         GradedEvidence: GradedEvidenceReading
+        /// Each project's full-run outcome-store key over the tree as it is now, as the
+        /// daemon computed it (ADR-059 step 7b). `None` when the reply did not say: an older
+        /// daemon, a run in flight, or no reply at all. Read by the shadow verdict only.
+        OutcomeKeys: Map<string, string> option
     }
 
 module TestRunReport =
@@ -977,7 +1000,8 @@ module TestRunReport =
           NotSelected = None
           SelectedBy = None
           SeedFanout = None
-          GradedEvidence = GradedEvidenceReading.NotReported }
+          GradedEvidence = GradedEvidenceReading.NotReported
+          OutcomeKeys = None }
 
     /// The report for a daemon/host with NO `test-scope` command: no
     /// test projects are configured, so there is no scope, no run, and nothing a
@@ -1175,7 +1199,8 @@ let parseTestRunReport (json: string) : TestRunReport =
           NotSelected = notSelected
           SelectedBy = selectedBy
           SeedFanout = seedFanout
-          GradedEvidence = tryReadGradedEvidence (Json.tryProp root "evidence") }
+          GradedEvidence = tryReadGradedEvidence (Json.tryProp root "evidence")
+          OutcomeKeys = tryReadOutcomeKeys (Json.tryProp root "outcomeKeys") }
     with ex ->
         TestRunReport.ofScopeOnly (
             ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply could not be parsed: %s{ex.Message}"

@@ -100,11 +100,12 @@ let ``699: a verdict whose own suites report a failure is never looked up green`
                         Failed = 1
                         Skipped = 0 }
                     Passed = false } ]
-              RecordedAt = t0 }
+              RecordedAt = t0
+              OutcomeKeys = Map.empty }
 
         test
             <@
-                observeWith repo store [ "Database.Tests" ] contradictory = LookupVerdict.Answer.Red
+                observeWith repo store None [ "Database.Tests" ] contradictory = LookupVerdict.Answer.Red
                     [ "test:Database.Tests" ]
             @>)
 
@@ -151,11 +152,12 @@ let ``1242: a configured test project the model never discovered is still requir
                         Failed = 0
                         Skipped = 0 }
                     Passed = true } ]
-              RecordedAt = t0 }
+              RecordedAt = t0
+              OutcomeKeys = Map.empty }
 
         test
             <@
-                observeWith repo store [ "FsHotWatch.Tests"; "FsHotWatch.Bench.Tests" ] o = LookupVerdict.Answer.Missing
+                observeWith repo store None [ "FsHotWatch.Tests"; "FsHotWatch.Bench.Tests" ] o = LookupVerdict.Answer.Missing
                     [ "test:FsHotWatch.Bench.Tests" ]
             @>)
 

@@ -2820,7 +2820,8 @@ let ``the graded run is looked up in the evidence its own test-scope reply sent`
         let gradedWith evidence =
             { BaselineFixtures.reportOf (FullSuite(1, None)) with
                 RunId = Some BaselineFixtures.runId
-                GradedEvidence = evidence }
+                GradedEvidence = evidence
+                OutcomeKeys = None }
 
         let held: IpcParsing.ModelReceipt =
             { RunId = Some BaselineFixtures.runId
@@ -2892,7 +2893,8 @@ let ``the receipt reads line names the graded run, its reply's evidence and the 
     let report =
         { BaselineFixtures.reportOf (FullSuite(1, None)) with
             RunId = Some graded
-            GradedEvidence = IpcParsing.GradedEvidenceReading.Reported None }
+            GradedEvidence = IpcParsing.GradedEvidenceReading.Reported None
+            OutcomeKeys = None }
 
     let ledger =
         IpcParsing.DaemonEvidence.Served(

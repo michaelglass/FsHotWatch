@@ -1021,3 +1021,16 @@ let ``a graded evidence the reply does not send, or that cannot be placed, is no
         | _ -> GradedEvidenceReading.Reported None
 
     test <@ (parseTestRunReport (fullReply extra)).GradedEvidence = expected @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a test-scope reply's outcome keys are read per project, and a reply without them says nothing`` () =
+    // ADR-059 step 7b: the outcome-store key each project's full run over this tree has.
+    let key = "ak1:" + String.replicate 64 "a"
+
+    let report =
+        parseTestRunReport (fullReply $""","outcomeKeys":{{"A.Tests":"%s{key}","B.Tests":"not a key"}}""")
+
+    // A value that is not a key is dropped, never looked up.
+    test <@ report.OutcomeKeys = Some(Map.ofList [ "A.Tests", key ]) @>
+    test <@ (parseTestRunReport (fullReply "")).OutcomeKeys = None @>
+    test <@ (parseTestRunReport (fullReply ""","outcomeKeys":"oops" """)).OutcomeKeys = None @>

@@ -90,6 +90,10 @@ type Observation =
         ImpactFiltered: bool
         Suites: Suite list
         RecordedAt: DateTimeOffset
+        /// Each project's full-run outcome key over this tree, as the daemon computed it
+        /// (ADR-059 step 7b): a record the test runner filed under it satisfies the project.
+        /// Empty when the daemon did not say.
+        OutcomeKeys: Map<string, string>
     }
 
 let pluginKey (o: Observation) (name: string) =
@@ -122,12 +126,25 @@ let requirements (o: Observation) (testProjects: string list) : LookupVerdict.Re
       for project in testProjects do
           let full = [ testKey o project FullScope ]
 
+          // The record the test runner filed under this project's K_P, when the daemon named
+          // the key: the K_P of the tree as it is now, so no other tree's run can answer.
+          let byKp =
+              match Map.tryFind project o.OutcomeKeys with
+              | Some value ->
+                  // Only `Value` is looked up; the daemon keyed the inputs.
+                  [ [ ({ Kind = "test"
+                         Value = value
+                         Inputs = [] }
+                      : ActionKey.ActionKey) ] ]
+              | None -> []
+
           { LookupVerdict.Requirement.Name = "test:" + project
             LookupVerdict.Requirement.Alternatives =
               if o.Command = "confirm" then
-                  [ full ]
+                  [ full ] @ byKp
               else
-                  [ full; [ testKey o project ImpactScope; baselineKey o.Producer project ] ] } ]
+                  [ full; [ testKey o project ImpactScope; baselineKey o.Producer project ] ]
+                  @ byKp } ]
 
 /// The outcome records a publication files. None for one that did not conclude.
 ///
@@ -264,13 +281,24 @@ let line (o: Observation) (answer: LookupVerdict.Answer) (recorded: int) : strin
 
 /// File `o`'s records, look the tree up, and append the comparison to the shadow log.
 /// Returns the lookup's answer. `testProjects` are the configured test projects.
-let observeWith (repoRoot: string) (store: OutcomeStore.Store) (testProjects: string list) (o: Observation) =
+/// The answer for a key: the shadow store's, else the K_P store's, where the test runner files.
+let private lookupIn (store: OutcomeStore.Store) (kpStore: OutcomeStore.Store option) (key: string) =
+    match store.Lookup key with
+    | Some record -> Some record.Outcome
+    | None -> kpStore |> Option.bind (fun kp -> kp.Lookup key) |> Option.map _.Outcome
+
+let observeWith
+    (repoRoot: string)
+    (store: OutcomeStore.Store)
+    (kpStore: OutcomeStore.Store option)
+    (testProjects: string list)
+    (o: Observation)
+    =
     let records = recordsOf o testProjects
     let recorded = records |> List.filter store.Record |> List.length
     let required = requirements o testProjects
 
-    let answer =
-        LookupVerdict.decide required (fun k -> store.Lookup k |> Option.map _.Outcome)
+    let answer = LookupVerdict.decide required (lookupIn store kpStore)
 
     let path = logPath repoRoot
     Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
@@ -288,9 +316,15 @@ let observeWith (repoRoot: string) (store: OutcomeStore.Store) (testProjects: st
 /// The shadow of a `fshw verdict` READ: look the CURRENT tree up and log the comparison with
 /// what the read reported, labelled `verdict`. A read files no record and evicts nothing —
 /// reading cannot perturb.
-let observeReadWith (repoRoot: string) (store: OutcomeStore.Store) (testProjects: string list) (o: Observation) =
+let observeReadWith
+    (repoRoot: string)
+    (store: OutcomeStore.Store)
+    (kpStore: OutcomeStore.Store option)
+    (testProjects: string list)
+    (o: Observation)
+    =
     let answer =
-        LookupVerdict.decide (requirements o testProjects) (fun k -> store.Lookup k |> Option.map _.Outcome)
+        LookupVerdict.decide (requirements o testProjects) (lookupIn store kpStore)
 
     let path = logPath repoRoot
     Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
@@ -306,6 +340,14 @@ let storeAt (repoRoot: string) =
           Log = Logging.info "shadow" }
     )
 
+/// The box-wide store the test runner files K_P records in, opened only when the daemon named
+/// keys to look up: a publication with none has nothing to read there.
+let kpStoreFor (repoRoot: string) (o: Observation) : OutcomeStore.Store option =
+    if Map.isEmpty o.OutcomeKeys then
+        None
+    else
+        Some(OutcomeStore.openFor repoRoot (Logging.info "shadow"))
+
 /// The configured test projects of `repoRoot`, by the name its reports carry.
 let configuredTestProjects (repoRoot: string) : Result<string list, string> =
     TestEvidenceKey.configsOf repoRoot |> Result.map (Map.keys >> List.ofSeq)
@@ -317,7 +359,9 @@ let observe (repoRoot: string) (o: Observation) : unit =
         try
             match configuredTestProjects repoRoot with
             | Error reason -> Logging.warn "shadow" $"lookup verdict not computed: %s{reason}"
-            | Ok projects -> observeWith repoRoot (storeAt repoRoot) projects o |> ignore
+            | Ok projects ->
+                observeWith repoRoot (storeAt repoRoot) (kpStoreFor repoRoot o) projects o
+                |> ignore
         with ex ->
             Logging.warn "shadow" $"lookup verdict not computed: %s{ex.GetType().Name}: %s{ex.Message}"
 
@@ -377,7 +421,8 @@ let ofVerdict (repoRoot: string) (v: Verdict.Verdict) : Observation =
                         Failed = s.Failed
                         Skipped = s.Skipped }
                     Passed = s.Failed = 0 || (s.StarvedRerun |> Option.exists _.PassedAlone) } ]
-      RecordedAt = DateTimeOffset(DateTime.SpecifyKind(v.ProducedAt, DateTimeKind.Utc)) }
+      RecordedAt = DateTimeOffset(DateTime.SpecifyKind(v.ProducedAt, DateTimeKind.Utc))
+      OutcomeKeys = Map.empty }
 
 /// The observation a `fshw verdict` read makes: the verdict on disk, judged against the
 /// CURRENT tree and the CURRENT fshw binary, with today's answer being what the read reported
@@ -422,6 +467,8 @@ let observeRead (repoRoot: string) (report: Verdict.Report) (currentTree: TreeHa
 
                 match ofRead repoRoot report tree.Hash producer DateTimeOffset.UtcNow with
                 | None -> ()
-                | Some o -> observeReadWith repoRoot (storeAt repoRoot) projects o |> ignore
+                | Some o ->
+                    observeReadWith repoRoot (storeAt repoRoot) (kpStoreFor repoRoot o) projects o
+                    |> ignore
         with ex ->
             Logging.warn "shadow" $"lookup verdict not computed: %s{ex.GetType().Name}: %s{ex.Message}"

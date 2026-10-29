@@ -345,6 +345,24 @@ let testActionKey (key: TestEvidenceKey.Key) (scope: string) : ActionKey.ActionK
         ((key.Labels |> List.map (fun (label, digest) -> "kp:" + label, digest))
          @ [ "kp", key.Value; "run-scope", scope ])
 
+/// The outcome-store key of each candidate's FULL run over the tree as it is NOW (ADR-059
+/// step 7b): what a lookup verdict asks the store for. A candidate with no key is absent, so
+/// nothing can stand in for it.
+let currentOutcomeKeys
+    (wiring: Wiring)
+    (repoRoot: string)
+    (optionsHash: string -> string option)
+    (candidates: Candidate list)
+    : Map<string, string> =
+    keysOf wiring repoRoot optionsHash candidates
+    |> fst
+    |> Map.toList
+    |> List.choose (fun (project, key) ->
+        match key with
+        | Ok key -> Some(project, (testActionKey key "full").Value)
+        | Error _ -> None)
+    |> Map.ofList
+
 /// The outcome record a completed project run files (ADR-059 §11 step 7): a pass or a fail,
 /// under the K_P its inputs had at LAUNCH, only when that is still the key at completion. A
 /// run whose inputs moved under it describes no tree and files nothing (641, 699); so does a

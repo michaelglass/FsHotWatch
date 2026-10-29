@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: the shadow verdict accepts the test runner's K_P records (ADR-059 step 7b,
+  AUTOMATION-1362). A settled `test-scope` reply names each project's full-run outcome key
+  over the tree as it is now (`outcomeKeys`); `TestRunReport.OutcomeKeys` reads it, dropping
+  any value that is not a key. A record under that key in the box-wide outcome store now
+  satisfies the project's test requirement, and a fail there is red.
+  `ShadowVerdict.observeWith` and `observeReadWith` take the K_P store; new: `kpStoreFor`.
+
 - feat: `fshw verdict` reads are shadowed too (ADR-059 §7, AUTOMATION-1362). Each read
   looks the CURRENT tree up in the shadow outcome store and appends a line labelled
   `verdict` to `.fshw/shadow/lookup-verdict.jsonl`, beside what the read reported

@@ -45,7 +45,8 @@ let private confirmGreen: Observation =
       FullSuite = true
       ImpactFiltered = false
       Suites = [ suite "r1" "A.Tests" 0; suite "r1" "B.Tests" 0 ]
-      RecordedAt = t0 }
+      RecordedAt = t0
+      OutcomeKeys = Map.empty }
 
 let private projects = [ "A.Tests"; "B.Tests" ]
 
@@ -76,7 +77,7 @@ let private logLines (repo: string) =
 [<Fact>]
 let ``a green confirm is looked up green from what it recorded, and the log says they agree`` () =
     withStore (fun repo store ->
-        let answer = observeWith repo store projects confirmGreen
+        let answer = observeWith repo store None projects confirmGreen
         test <@ answer = LookupVerdict.Answer.Green @>
         let line = logLines repo |> List.exactlyOne
         test <@ (str [ "schema" ] line) = LogSchema @>
@@ -92,7 +93,7 @@ let ``a later publication that ran nothing answers from the records already on f
     // The restart case: a new daemon, nothing in memory, the same bytes. Today's verdict
     // could not conclude; the lookup still knows the tree was verified.
     withStore (fun repo store ->
-        observeWith repo store projects confirmGreen |> ignore
+        observeWith repo store None projects confirmGreen |> ignore
 
         let ranNothing =
             { confirmGreen with
@@ -104,7 +105,7 @@ let ``a later publication that ran nothing answers from the records already on f
                 GradedRunId = None
                 RecordedAt = t0.AddMinutes 5.0 }
 
-        test <@ observeWith repo store projects ranNothing = LookupVerdict.Answer.Green @>
+        test <@ observeWith repo store None projects ranNothing = LookupVerdict.Answer.Green @>
         let line = logLines repo |> List.last
         test <@ (str [ "direction" ] line) = "looser" @>
         test <@ (num [ "recorded" ] line) = 0 @>)
@@ -112,7 +113,7 @@ let ``a later publication that ran nothing answers from the records already on f
 [<Fact>]
 let ``a store opened afresh over the same directory gives the same answer`` () =
     withStore (fun repo store ->
-        observeWith repo store projects confirmGreen |> ignore
+        observeWith repo store None projects confirmGreen |> ignore
 
         let reopened =
             OutcomeStore.Store(
@@ -127,12 +128,12 @@ let ``a store opened afresh over the same directory gives the same answer`` () =
                 Concluded = false
                 Suites = [] }
 
-        test <@ observeWith repo reopened projects ranNothing = LookupVerdict.Answer.Green @>)
+        test <@ observeWith repo reopened None projects ranNothing = LookupVerdict.Answer.Green @>)
 
 [<Fact>]
 let ``another tree finds none of those records`` () =
     withStore (fun repo store ->
-        observeWith repo store projects confirmGreen |> ignore
+        observeWith repo store None projects confirmGreen |> ignore
 
         let otherTree =
             { confirmGreen with
@@ -142,7 +143,7 @@ let ``another tree finds none of those records`` () =
 
         test
             <@
-                observeWith repo store projects otherTree = LookupVerdict.Answer.Missing
+                observeWith repo store None projects otherTree = LookupVerdict.Answer.Missing
                     [ "plugin:build"; "plugin:lint"; "diagnostics"; "test:A.Tests"; "test:B.Tests" ]
             @>)
 
@@ -153,7 +154,7 @@ let ``a confirm that did not run a configured project is missing it, whatever to
             { confirmGreen with
                 Suites = [ suite "r1" "A.Tests" 0 ] }
 
-        test <@ observeWith repo store projects onlyA = LookupVerdict.Answer.Missing [ "test:B.Tests" ] @>
+        test <@ observeWith repo store None projects onlyA = LookupVerdict.Answer.Missing [ "test:B.Tests" ] @>
         test <@ (str [ "direction" ] (logLines repo |> List.last)) = "stricter" @>)
 
 [<Fact>]
@@ -166,7 +167,7 @@ let ``a failed suite is red and records no baseline`` () =
                 ExitCode = 1
                 Suites = [ suite "r1" "A.Tests" 1; suite "r1" "B.Tests" 0 ] }
 
-        test <@ observeWith repo store projects red = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>
+        test <@ observeWith repo store None projects red = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>
         test <@ store.Lookup (baselineKey red.Producer "A.Tests").Value = None @>
         test <@ store.Lookup (baselineKey red.Producer "B.Tests").Value <> None @>)
 
@@ -181,7 +182,7 @@ let ``a failing plugin and a red diagnostic are both red`` () =
                       "lint", Some OutcomeStore.Outcome.Fail ]
                 DiagnosticsFailed = true }
 
-        test <@ observeWith repo store projects red = LookupVerdict.Answer.Red [ "plugin:lint"; "diagnostics" ] @>)
+        test <@ observeWith repo store None projects red = LookupVerdict.Answer.Red [ "plugin:lint"; "diagnostics" ] @>)
 
 [<Fact>]
 let ``a plugin still running records nothing and is missing`` () =
@@ -190,13 +191,13 @@ let ``a plugin still running records nothing and is missing`` () =
             { confirmGreen with
                 Plugins = [ "build", Some OutcomeStore.Outcome.Pass; "lint", None ] }
 
-        test <@ observeWith repo store projects running = LookupVerdict.Answer.Missing [ "plugin:lint" ] @>)
+        test <@ observeWith repo store None projects running = LookupVerdict.Answer.Missing [ "plugin:lint" ] @>)
 
 [<Fact>]
 let ``an impact-filtered check is green on its selection plus each project's full baseline`` () =
     withStore (fun repo store ->
         // A full green on an earlier tree earns each project's baseline.
-        observeWith repo store projects { confirmGreen with Tree = "sha256:t0" }
+        observeWith repo store None projects { confirmGreen with Tree = "sha256:t0" }
         |> ignore
 
         let check =
@@ -210,7 +211,7 @@ let ``an impact-filtered check is green on its selection plus each project's ful
                 RecordedAt = t0.AddMinutes 1.0 }
 
         // B.Tests had nothing selected: an impact pass of zero tests, under its baseline.
-        test <@ observeWith repo store projects check = LookupVerdict.Answer.Green @>
+        test <@ observeWith repo store None projects check = LookupVerdict.Answer.Green @>
 
         test
             <@
@@ -233,7 +234,7 @@ let ``an impact-filtered check with no full baseline is missing, as today's exit
                 ImpactFiltered = true
                 Suites = [ suite "r1" "A.Tests" 0 ] }
 
-        test <@ classOf (observeWith repo store projects check) = Class.Missing @>
+        test <@ classOf (observeWith repo store None projects check) = Class.Missing @>
         test <@ (flag [ "agree" ] (logLines repo |> List.last)) @>)
 
 [<Fact>]
@@ -244,7 +245,7 @@ let ``an impact batch never stands in for the full suite under confirm`` () =
             { confirmGreen with
                 Suites = [ suite "r0" "B.Tests" 0; suite "r1" "A.Tests" 0 ] }
 
-        test <@ observeWith repo store projects o = LookupVerdict.Answer.Missing [ "test:B.Tests" ] @>)
+        test <@ observeWith repo store None projects o = LookupVerdict.Answer.Missing [ "test:B.Tests" ] @>)
 
 [<Fact>]
 let ``an unconcluded publication files nothing`` () =
@@ -352,7 +353,7 @@ let ``a stale or in-flight read is no answer today`` () =
 [<Fact>]
 let ``a read answers from what publications filed, labels its line verdict, and files nothing`` () =
     withStore (fun repo store ->
-        observeWith repo store projects confirmGreen |> ignore
+        observeWith repo store None projects confirmGreen |> ignore
         let before = List.length (allFilesUnder "*.json" (storeRoot repo))
 
         let read =
@@ -361,7 +362,7 @@ let ``a read answers from what publications filed, labels its line verdict, and 
                 Suites = []
                 RecordedAt = t0.AddMinutes 3.0 }
 
-        test <@ observeReadWith repo store projects read = LookupVerdict.Answer.Green @>
+        test <@ observeReadWith repo store None projects read = LookupVerdict.Answer.Green @>
         let line = logLines repo |> List.last
         test <@ (str [ "command" ] line) = "verdict" @>
         test <@ (str [ "direction" ] line) = "agree" @>
@@ -372,7 +373,7 @@ let ``a read answers from what publications filed, labels its line verdict, and 
 [<Fact>]
 let ``a stale read of a tree the store already verified is looser, not a disagreement about the code`` () =
     withStore (fun repo store ->
-        observeWith repo store projects confirmGreen |> ignore
+        observeWith repo store None projects confirmGreen |> ignore
 
         let staleRead =
             { confirmGreen with
@@ -382,7 +383,7 @@ let ``a stale read of a tree the store already verified is looser, not a disagre
                 Concluded = false
                 Suites = [] }
 
-        test <@ observeReadWith repo store projects staleRead = LookupVerdict.Answer.Green @>
+        test <@ observeReadWith repo store None projects staleRead = LookupVerdict.Answer.Green @>
         test <@ (str [ "direction" ] (logLines repo |> List.last)) = "looser" @>)
 
 [<Fact>]
@@ -480,3 +481,89 @@ let ``a plugin still running in a read verdict records nothing and is required``
 
     test <@ o.Plugins = [ "lint", None; "build", Some OutcomeStore.Outcome.Fail ] @>
     test <@ o.TodayOutcome = "applies:incomplete" @>
+
+// ---------------------------------------------------------------------------
+// Step 7b: the daemon's K_P outcome keys (ADR-059 §16).
+// ---------------------------------------------------------------------------
+
+let private kpRecord (key: ActionKey.ActionKey) (outcome: OutcomeStore.Outcome) : OutcomeStore.Record =
+    { Key = key
+      Subject = "kp"
+      Outcome = outcome
+      Counts = None
+      DurationMs = None
+      Producer =
+        { Binary = "fshw 1"
+          Worktree = "/elsewhere"
+          RunId = Some "r9" }
+      RecordedAt = t0 }
+
+let private withKpStore (body: string -> OutcomeStore.Store -> OutcomeStore.Store -> unit) =
+    withStore (fun repo store ->
+        let kp =
+            OutcomeStore.Store(
+                { Root = Path.Combine(repo, "kp-store")
+                  Ttl = TimeSpan.FromDays 14.0
+                  MaxBytes = 100_000_000L
+                  Log = ignore }
+            )
+
+        body repo store kp)
+
+let private kpA = ActionKey.create "test" [ "kp", "A" ]
+let private kpB = ActionKey.create "test" [ "kp", "B" ]
+
+/// A confirm over a tree no publication recorded, the daemon naming each project's K_P key.
+let private freshTree =
+    { confirmGreen with
+        Tree = "sha256:fresh"
+        Concluded = false
+        Suites = []
+        Plugins = []
+        OutcomeKeys = Map.ofList [ "A.Tests", kpA.Value; "B.Tests", kpB.Value ] }
+
+[<Fact>]
+let ``a project's K_P record satisfies its test requirement on a tree no publication recorded`` () =
+    withKpStore (fun repo store kp ->
+        kp.Record(kpRecord kpA OutcomeStore.Outcome.Pass) |> ignore
+        kp.Record(kpRecord kpB OutcomeStore.Outcome.Pass) |> ignore
+
+        // Every test is satisfied from the box-wide store; only the tree's own diagnostics
+        // are still owed.
+        test <@ observeWith repo store (Some kp) projects freshTree = LookupVerdict.Answer.Missing [ "diagnostics" ] @>)
+
+[<Fact>]
+let ``a K_P fail is red, and a project the daemon named no key for is still missing`` () =
+    withKpStore (fun repo store kp ->
+        kp.Record(kpRecord kpA OutcomeStore.Outcome.Fail) |> ignore
+
+        let onlyA =
+            { freshTree with
+                OutcomeKeys = Map.ofList [ "A.Tests", kpA.Value ] }
+
+        test <@ observeWith repo store (Some kp) projects onlyA = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
+
+[<Fact>]
+let ``with no K_P store the named keys decide nothing`` () =
+    withKpStore (fun repo store _ ->
+        test
+            <@
+                observeWith repo store None projects freshTree = LookupVerdict.Answer.Missing
+                    [ "diagnostics"; "test:A.Tests"; "test:B.Tests" ]
+            @>)
+
+[<Fact>]
+let ``a read looks the K_P keys up as well, and files nothing in either store`` () =
+    withKpStore (fun repo store kp ->
+        kp.Record(kpRecord kpA OutcomeStore.Outcome.Pass) |> ignore
+        kp.Record(kpRecord kpB OutcomeStore.Outcome.Pass) |> ignore
+
+        test
+            <@ observeReadWith repo store (Some kp) projects freshTree = LookupVerdict.Answer.Missing [ "diagnostics" ] @>
+
+        test <@ List.length (allFilesUnder "*.json" (Path.Combine(repo, "kp-store"))) = 2 @>)
+
+[<Fact>]
+let ``the K_P store is opened only when the daemon named keys to look up`` () =
+    test <@ (kpStoreFor "/w" freshTree).IsSome @>
+    test <@ (kpStoreFor "/w" confirmGreen).IsNone @>
