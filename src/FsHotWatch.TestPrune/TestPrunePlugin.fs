@@ -2112,6 +2112,16 @@ type InFlightRun =
         WatcherReported: Set<string>
     }
 
+/// A run that concluded red over the tree it launched on: what it launched against, so a
+/// later launch can tell a retry of it from new work (AUTOMATION-1373).
+type RedConclusion =
+    {
+        /// Each symbol the run launched against, at its debt revision then.
+        SymbolRevisions: Map<string, int64>
+        /// The input tree it launched and concluded over.
+        Tree: string
+    }
+
 type TestPruneState =
     {
         Debt: VerificationDebt
@@ -2124,6 +2134,11 @@ type TestPruneState =
         /// The run holding the "tests" key whose result is not folded yet, if a launch
         /// here claimed it. Cleared by that run's completion fold.
         InFlight: InFlightRun option
+        /// The last completed run, when it executed and came back red over an unmoved
+        /// tree; `None` after any other completion. An owed launch over the same tree with
+        /// nothing owed that this run did not launch against would only retry it, so it is
+        /// not made (`onlyRetriesRed`). In memory only: a restart may retry once.
+        LastRed: RedConclusion option
         /// The receipt identity of the input tree when the last `BatchChecked` folded its
         /// check results. Read only once a session baseline exists, the only time
         /// `DiffWait` asks for it.
@@ -9063,6 +9078,7 @@ let internal createWithEvidenceAndQueries
         { Debt = loadedDebt
           Mode = initialMode
           InFlight = None
+          LastRed = None
           SealedTree = None
           AwaitingDiff = None
           OwedRunHeld = false
@@ -10919,6 +10935,32 @@ let internal createWithEvidenceAndQueries
         (state.InFlight |> Option.exists (fun run -> run.Scope = LaunchedFullSuite))
         && (TestMode.skips RerunIntents state.Mode || bootScan)
 
+    /// Whether an owed launch now would only retry the red run that concluded last
+    /// (AUTOMATION-1373). That run launched against every symbol owed now, each at the
+    /// revision it is at now, over the tree there is now, and no dependency fanout has
+    /// arrived since: the same selection over the same bytes. Its red is the answer for
+    /// those inputs. Under CPU starvation a retry costs as long as the run did, and every
+    /// cohort that folded while it ran had queued one, so a gate never converged.
+    ///
+    /// Not launching can never make a green: the debt stays owed, the red stays standing.
+    /// An edit, a newly owed symbol, a fanout, or a full suite requested moves one of these
+    /// and launches as before. A run that executed nothing is no conclusion and is retried.
+    let onlyRetriesRed (state: TestPruneState) =
+        match state.LastRed with
+        | Some red ->
+            not (TestMode.requestsFullSuite state.Mode)
+            && Set.isEmpty state.PendingForceRunProjects
+            && Set.union state.Debt.PendingQueue (Set.ofList state.ChangedSymbols)
+               |> Set.forall (fun symbol -> Map.tryFind symbol red.SymbolRevisions = Some(revisionOf state.Debt symbol))
+            && ReceiptInputTree.matches (Some red.Tree) (ReceiptInputTree.read repoRoot)
+        | None -> false
+
+    /// Say why an owed launch was not made (`onlyRetriesRed`).
+    let logRedStands (trigger: string) (state: TestPruneState) =
+        Logging.info
+            "test-prune"
+            $"%s{trigger}: %s{owedDescription state.Debt} — all of it was in the run that concluded red over this same tree, so a launch would only retry it; that result stands until the tree or what is owed moves (AUTOMATION-1373)"
+
     /// Discharge what a BootScan cohort owes when the last completed run already covered
     /// it: that run passed every runnable project in full over the tree and model the
     /// cohort sealed on, every file the cohort checked is part of that tree, and the
@@ -11102,6 +11144,9 @@ let internal createWithEvidenceAndQueries
                     "test-prune"
                     "Queued impact rerun is stale — nothing is owed, no dependency fanout remains, and the evidence covers the current tree"
 
+                rerunState
+            | Ok rerunState when onlyRetriesRed rerunState ->
+                logRedStands "Queued impact rerun" rerunState
                 rerunState
             | Ok rerunState ->
                 Logging.info "test-prune" "Re-running tests (queued during previous run)"
@@ -11860,6 +11905,12 @@ let internal createWithEvidenceAndQueries
                                 return flushedState
                         else
                             match testConfigs with
+                            | Some configs when not configs.IsEmpty && onlyRetriesRed flushedState ->
+                                logRedStands "BatchChecked" flushedState
+
+                                return
+                                    { flushedState with
+                                        AwaitingDiff = None }
                             | Some configs when not configs.IsEmpty ->
                                 // Drain UNCONDITIONALLY when the slot is free. Never defer
                                 // to "the BuildCompleted that is surely coming": several
@@ -12446,6 +12497,20 @@ let internal createWithEvidenceAndQueries
                             // let a later unrelated run claim it implicitly.
                             DebtDuringFullRun = Map.empty
                             InFlight = None
+                            // A conclusion only when the run executed to a red over the
+                            // tree and model it launched under (`onlyRetriesRed`).
+                            LastRed =
+                                match completed.Outcome, launch.InputTreeHash, currentInputTree with
+                                | Normal, Some launched, Some current when
+                                    launched = current
+                                    && launch.ModelGeneration = currentModelGeneration
+                                    && completed.Results
+                                       |> Map.exists (fun _ result -> TestResult.verdict result = Refuted)
+                                    ->
+                                    Some
+                                        { SymbolRevisions = launch.SymbolRevisions
+                                          Tree = current }
+                                | _ -> None
                             Mode =
                                 (endRun
                                     (completed.Results
