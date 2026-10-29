@@ -94,3 +94,35 @@ Fine. Any command auto-starts it. `—` (em-dash) state = idle, not broken.
 - Run `dotnet build` / `test` / `fantomas` / `fsharplint` directly — results will lag fshw's cache.
 - Kill or restart the daemon to "force a refresh" — `fshw check` does that without losing warm state.
 - Edit files in `.fshw/` — it's daemon state (cache, pid, lock, test history, logs).
+
+## Release train (for maintainers of this repo)
+
+FsHotWatch releases in a **batched train, at most once a day**. Merging a change to
+`main` is not a reason to release. Each release costs every consumer a pin bump and a
+full gate. When releases come per merge, consumers' pin bumps go stale while still
+waiting to land.
+
+- **Who cuts it:** one releaser, either the maintainer or the agent the maintainer has
+  assigned to this repository. Any other agent that merges here does **not** run
+  `mise run release`. It merges, watches that commit's GitHub CI until it finishes,
+  and leaves the release to the train.
+- **When:** at most once per day, after that day's merges, from the current head of
+  `main`. If nothing that consumers would notice merged since the last release, skip
+  the day.
+- **Only from a green `main`:**
+  - GitHub CI must be green on the exact commit being released. A run that is still
+    in progress does not count, and neither does a green run on an earlier commit.
+    The tagger also requires a green CI run, but check the commit yourself; do not
+    rely on the tagger alone.
+  - Once the consumer canary runs in CI, it must pass on that commit as well.
+  - When `main` is red, the train waits for the fix. Do not release around a red.
+- **Out-of-train releases:** only when a published release is broken for a consumer,
+  and only by the maintainer or on their explicit instruction. It still needs green
+  CI, and it counts as that day's train.
+- **Consumers** pin train releases only, with one pin bump per release they adopt. A
+  newer pin bump replaces any older one still waiting to land; it does not queue
+  behind it.
+
+`mise run release` cuts the release, and `mise run release-dry-run` shows what it
+would tag. This policy does not change either command; it only decides when to run
+them.
