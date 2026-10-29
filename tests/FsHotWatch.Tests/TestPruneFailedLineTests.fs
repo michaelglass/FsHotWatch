@@ -262,3 +262,43 @@ let ``the classes a report ran are read only from a complete report, skipped row
     let truncated = report.Replace("\"tests\":2", "\"tests\":3")
     test <@ classesRunOfReport truncated = None @>
     test <@ classesRunOfReport (ctrf []) = None @>
+
+// --- a project killed at its timeout, with no report ---
+
+/// The field shape: the project hit its 600 s limit, wrote no CTRF report, and its
+/// captured output holds only the gate's prose, one line of which opens with "failed".
+let private timedOutRun =
+    TestsTimedOut(String.concat "\n" gateProse, TimeSpan.FromSeconds 600.0, false, TimeSpan.FromSeconds 600.0)
+
+let private timeoutSubject =
+    $"%s{project}: run timed out after 600s and its host was killed"
+
+[<Fact(Timeout = 10000)>]
+let ``a timed-out run with no report files one project-level red that names the timeout, not the prose`` () =
+    let red =
+        failuresOf noRunLog noReport Map.empty (results timedOutRun) |> List.exactlyOne
+
+    test <@ red.Class = None @>
+    test <@ red.Method = None @>
+    test <@ red.Entry.Message.StartsWith timeoutSubject @>
+    test <@ not (red.Entry.Message.StartsWith "failed") @>
+
+[<Fact(Timeout = 10000)>]
+let ``a timed-out run's report counts no prose line as a failed test`` () =
+    let report =
+        formatFailureReport (RedRunEnding.ofResult timedOutRun) [] project savedLog (String.concat "\n" gateProse)
+
+    test <@ report.Head = $"%s{timeoutSubject}; 0 test(s) printed 'failed' before the kill:" @>
+    test <@ report |> List.forall (fun l -> not (l.StartsWith "  failed")) @>
+
+[<Fact(Timeout = 20000)>]
+let ``a timed-out run with no report leaves the ledger naming the timeout, through the real handler`` () =
+    withTempDir "failed-line-timeout" (fun repoRoot ->
+        let timedOut = finished repoRoot None timedOutRun (fullSuiteLaunch [ project ])
+
+        let final, _ = drive repoRoot [ timedOut ]
+
+        let red = final.OutstandingFailures |> List.exactlyOne
+
+        test <@ red.Class = None @>
+        test <@ red.Entry.Message.StartsWith timeoutSubject @>)
