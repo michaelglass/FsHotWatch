@@ -124,6 +124,9 @@ type AnalyzersState =
         Stamps: ReplayStamps
     }
 
+    // Out-of-repo compile items are never analyzed (see the `FileChecked` arm).
+    interface ISkipsOutOfRepoFiles
+
     // A replayed analysis is recorded by the rule a live fold applies: only a result
     // published against the model published now is analyzed (see `notCurrent`), and a
     // completed analysis replaces the file's entries and crashes with the ones it

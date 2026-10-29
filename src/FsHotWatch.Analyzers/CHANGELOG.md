@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: the analyzers state is `ISkipsOutOfRepoFiles`. A replayed check of a NuGet `_content`
+  source is answered without a live check (ADR-059 §17 step 3); the plugin never analyzes one.
+
 ## 0.7.0-alpha.51 - 2026-10-25
 
 - **fix: FSharp.Compiler.Service is pinned exactly at `[43.12.402]`** (FSharp.Core at

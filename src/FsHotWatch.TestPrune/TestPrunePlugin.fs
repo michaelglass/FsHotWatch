@@ -2337,6 +2337,10 @@ type TestPruneState =
         /// `PendingAnalysis`, by repo-relative path. The flush that writes them records
         /// them as what the index holds; a retirement drops them with the analyses.
         PendingIdentities: Map<string, string>
+        /// Whether a `FileChecked` task-cache entry may stand in for analysing a check now
+        /// (`IndexedAnalysis.mayReplay` over the index and `PendingIdentities`). The entry is
+        /// written whenever a file is analysed; this decides only whether it may be READ.
+        IndexGuard: IndexedAnalysis.Guard
         /// Files whose analysis a project-model change retired before any flush wrote
         /// it. The index lacks them, so it cannot vouch for what covers anything while
         /// one remains: the run falls back as for `UnanalyzableFiles`, and no change
@@ -2399,6 +2403,12 @@ type TestPruneState =
 
     interface IAnalysisEvidenceState with
         member this.AnalysisEvidence = this.AnalysisReceipt
+
+    // ADR-059 §17: an analysis is cached when it runs, so a restart finds it; it replays only
+    // once the index holds it.
+    interface IFileCacheReadGuard with
+        member this.MayReadFileCache result =
+            this.IndexGuard.MayReplay(this.PendingIdentities, result)
 
     // A replayed `FileChecked` is recorded by the rule a live fold applies: only a result
     // published against the model published now describes it (see `notCurrent`).
@@ -7818,9 +7828,6 @@ let internal cacheKeyFor
     // handler that rule lives in. The warm inner loop is untouched — once this session's
     // first run lands there IS coverage, and later BuildCompleteds replay as before.
     (sessionHasTestEvidence: unit -> bool)
-    // Whether a `FileChecked` hit may stand in for the analysis (`IndexedAnalysis`).
-    // Where it may not, the event is uncacheable and the file is analysed.
-    (mayReplay: FileCheckResult -> bool)
     (event: PluginEvent<TestPruneMsg>)
     : ContentHash option =
     let optionalEntry (name: string) (value: string option) =
@@ -7976,9 +7983,8 @@ let internal cacheKeyFor
         // a covering test run clears the red; healthy trees keep the hot path.
         if hasOutstandingFailures () then
             None
-        // The cache is derived from the index; see `IndexedAnalysis` for the rule.
-        elif not (mayReplay r) then
-            None
+        // The entry is written for every analysis and READ only where the index holds it
+        // (`IndexedAnalysis`, through the state's `IFileCacheReadGuard`).
         else
             Some(
                 FsHotWatch.TaskCache.merkleCacheKey
@@ -9222,6 +9228,7 @@ let internal createWithEvidenceAndQueries
           NotSelected = Map.empty
           PendingIdentities = Map.empty
           Unindexed = Set.empty
+          IndexGuard = IndexedAnalysis.Guard mayReplay
           FailedExtensions = Map.empty
           // The previous session's reds, quarantined into the first run.
           OutstandingFailures = loadedFailures
@@ -13737,7 +13744,6 @@ let internal createWithEvidenceAndQueries
                     (fun () -> ReceiptInputTree.read repoRoot)
                     hasOutstandingFailures
                     sessionHasTestEvidence
-                    (mayReplay state.PendingIdentities)
                     event
 
         Some cacheKey

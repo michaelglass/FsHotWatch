@@ -17,6 +17,9 @@ let LintTimeoutDefaultSec = 120
 type LintState =
     { WarningsByFile: Map<AbsFilePath, string list> }
 
+    // Out-of-repo compile items are never linted (see the `FileChecked` arm).
+    interface ISkipsOutOfRepoFiles
+
     // A replayed lint is recorded by the rule a live fold applies: only a result published
     // against the model published now is linted (see `notCurrent`), and a completed lint
     // replaces the file's warnings with the ones it reported. A failed one leaves them.

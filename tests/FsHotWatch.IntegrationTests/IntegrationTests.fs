@@ -115,7 +115,7 @@ let ``an in-test analyzer build names its own working directory`` () =
 
     test <@ psi.WorkingDirectory = repoRoot @>
 
-let private exampleAnalyzerPath =
+let internal exampleAnalyzerPath =
     lazy (buildAnalyzerProject "ExampleAnalyzer" (Path.Combine(findRepoRoot (), "examples/ExampleAnalyzer")))
 
 let private conventionRulesPath =

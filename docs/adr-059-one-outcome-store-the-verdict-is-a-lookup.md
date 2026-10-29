@@ -584,3 +584,22 @@ now sorts an entity's members and nested entities ordinally before naming them
 (`ApiSignatureTests` "an entity's members are named in ordinal order"). After the fix, 0 of
 2,670 replays disagreed with a forced check, and a clean restart took 2.2–2.7 s with 0 FCS
 checks. The in-memory API key changes with it, which is harmless: it was never persisted.
+
+**Step 3: the daemon end to end.** `CheckRecordsRestartTests` runs the real CLI daemon, with
+build, lint, a real analyzer and TestPrune, over a fixture repository with check records on.
+The first daemon checks, files its records and stops. A second daemon over the unchanged tree
+reaches the same green with 4 checks replayed, 0 FCS checks started and 0 demanded. An API edit
+made while no daemon ran re-checks the edited file and the files compiled after it, 3 of 4, and
+replays the one before it. Each daemon logs this tally as it stops
+(`check-records: this daemon: …`). The test found two demand sources, both now fixed:
+- **TestPrune never cached a first analysis.** Its `FileChecked` key was refused until the index
+  held the analysis, which refused the write as well as the read. A file analysed once had no
+  entry, so a restart demanded it. The key no longer asks the index. The state refuses only the
+  read (`IFileCacheReadGuard`, `IndexedAnalysis.Guard`). Writing an entry for an analysis that is
+  never flushed is sound: its read still needs the index to hold exactly that analysis.
+- **Lint and analyzers skip NuGet `_content` sources** without a terminal status, so they cache
+  nothing for them. A replay of such a file was demanded only to be skipped. Their states are
+  `ISkipsOutOfRepoFiles`, and the framework answers that replay as `Update` would.
+
+A comment edit is not cut off within the scan that re-checks it. The files after it are keyed
+by the edited file's content until its new record is filed, so they are re-checked as well.

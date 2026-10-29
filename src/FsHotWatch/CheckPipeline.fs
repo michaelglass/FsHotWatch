@@ -320,6 +320,9 @@ type CheckPipeline
     let mutable checksInSlots = 0
     let mutable checksInSlotsPeak = 0
     let mutable checkStarts = 0L
+    // ADR-059 §17: answers served from check records, and live checks a plugin demanded.
+    let mutable recordReplays = 0L
+    let mutable checkDemands = 0L
 
     let enterSlot () =
         let now = Interlocked.Increment &checksInSlots
@@ -595,6 +598,8 @@ type CheckPipeline
 
                 // The walk keyed these bytes; a file that moved since is a miss, not a replay.
                 if openFile.Version = contentHash then
+                    Interlocked.Increment &recordReplays |> ignore
+
                     Some
                         { File = AbsFilePath.create absPath
                           Source = openFile.Text
@@ -687,6 +692,16 @@ type CheckPipeline
     /// How many checks this pipeline has started in FCS, cumulative: one per
     /// `check start` line, whether the check then completed or was cancelled.
     member internal _.CheckStarts: int64 = Volatile.Read &checkStarts
+
+    /// What this pipeline answered from check records, what it started in FCS and how many
+    /// of those checks a plugin demanded (ADR-059 §17), as a daemon logs it when it stops.
+    /// None with no store: there is nothing to tally.
+    member internal _.CheckRecordsTally: string option =
+        match checkRecords with
+        | None -> None
+        | Some _ ->
+            Some
+                $"%d{Volatile.Read &recordReplays} check(s) replayed from check records, %d{Volatile.Read &checkStarts} FCS check(s) started, %d{Volatile.Read &checkDemands} demanded by a plugin"
 
     /// Re-key the slots indexed since the last call by the signatures recorded since.
     ///
@@ -1573,6 +1588,7 @@ type CheckPipeline
                     logCanceled absPath
                     return None
                 else
+                    Interlocked.Increment &checkDemands |> ignore
                     return! this.CheckFileCached(absPath, options, ct, ticket, false)
             with :? OperationCanceledException ->
                 logCanceled absPath

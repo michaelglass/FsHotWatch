@@ -197,3 +197,160 @@ let ``a change is never read as covered by nothing while a retired file is missi
             test <@ runCount () > before @>
         finally
             host.Teardown())
+
+/// Project `P` registered with a pipeline that files check records under `root/outcomes`,
+/// as a daemon with `checkRecords` on does, on its own checker: each call is a new process.
+let private recordingPipeline (root: string) (files: string list) =
+    let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+
+    let store =
+        OutcomeStore.Store(
+            { Root = Path.Combine(root, "outcomes")
+              Ttl = OutcomeStore.defaultTtl
+              MaxBytes = OutcomeStore.defaultMaxBytes
+              Log = ignore }
+        )
+
+    let pipeline = CheckPipeline(checker, repoRoot = root, checkRecords = store)
+    let first = List.head files
+
+    let options, _ =
+        checker.GetProjectOptionsFromScript(
+            first,
+            SourceText.ofString (File.ReadAllText first),
+            assumeDotNetFramework = false
+        )
+        |> Async.RunSynchronously
+
+    pipeline.RegisterProject(
+        "P",
+        { options with
+            ProjectFileName = Path.Combine(root, "tests", "P", "P.fsproj")
+            SourceFiles = List.toArray files }
+    )
+
+    pipeline
+
+let private checkEach (pipeline: CheckPipeline) (files: string list) =
+    files
+    |> List.map (fun file ->
+        pipeline.CheckFile(AbsFilePath.create file)
+        |> Async.RunSynchronously
+        |> Option.defaultWith (fun () -> failwith $"no check result for {file}"))
+
+/// TestPrune analyses every file of `P` from live checks and seals the cohort, filing the
+/// checks as records; then a restart replays each file from its record and hands the
+/// replays to a new TestPrune instance over `restartCache`. The files the restarted plugin
+/// demanded a live check of, and its status.
+let private restartedTestPruneDemands
+    (root: string)
+    (restartCache: FsHotWatch.TaskCache.ITaskCache -> FsHotWatch.TaskCache.ITaskCache)
+    =
+    let files = writeProject root
+    let dbPath = Path.Combine(root, "tp.db")
+
+    let cache =
+        FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+    // The first daemon: live checks, analysed and indexed, then filed.
+    let first = recordingPipeline root files
+    let live = checkEach first files
+
+    test
+        <@
+            live
+            |> List.forall (fun r ->
+                match r.CheckResults with
+                | FullCheck _ -> true
+                | _ -> false)
+        @>
+
+    let host =
+        FsHotWatch.PluginHost.PluginHost(sharedChecker.Value, root, taskCache = cache)
+
+    host.WorkStore.PublishProjectModel(model 1L)
+    host.RegisterHandler(TestPrunePlugin.create dbPath root (Some [ config root ]) None None None None [])
+
+    try
+        for result in live do
+            host.EmitFileChecked(stamped 1L result)
+
+        waitForQuiescent host 20000
+        host.EmitBatchChecked(batch 1L files)
+        waitForQuiescent host 20000
+    finally
+        host.Teardown()
+
+    test <@ first.PersistCheckRecords() = files.Length @>
+
+    // The restart: every file is answered from its record, with no FCS check.
+    let second = recordingPipeline root files
+    let replayed = checkEach second files
+
+    test
+        <@
+            replayed
+            |> List.forall (fun r ->
+                match r.CheckResults with
+                | Replayed _ -> true
+                | _ -> false)
+        @>
+
+    let demanded = Collections.Concurrent.ConcurrentQueue<string>()
+
+    let restarted =
+        FsHotWatch.PluginHost.PluginHost(sharedChecker.Value, root, taskCache = restartCache cache)
+
+    restarted.WorkStore.PublishProjectModel(model 1L)
+
+    restarted.SetCheckDemand(fun replay ->
+        demanded.Enqueue(Path.GetFileName(AbsFilePath.value replay.File))
+        second.CheckFileLive(replay.File, replay.ProjectOptions))
+
+    restarted.RegisterHandler(TestPrunePlugin.create dbPath root (Some [ config root ]) None None None None [])
+
+    try
+        for result in replayed do
+            restarted.EmitFileChecked(stamped 1L result)
+
+        waitForQuiescent restarted 20000
+        restarted.EmitBatchChecked(batch 1L files)
+        waitForQuiescent restarted 20000
+
+        List.ofSeq demanded |> List.sort, restarted.GetStatus FsHotWatch.PluginActivity.TestPrunePluginName
+    finally
+        restarted.Teardown()
+
+/// ADR-059 §17 step 3: a restarted daemon hands TestPrune replayed checks. TestPrune's
+/// per-file analysis is keyed by the stored FCS signature and the indexed analysis, so with
+/// its task cache warm it replays every file without demanding a live check.
+[<Fact(Timeout = 240000)>]
+let ``a restarted TestPrune answers replayed checks from its own task cache, demanding no live check`` () =
+    withTempDir "tp-replayed-warm" (fun root ->
+        let demanded, status = restartedTestPruneDemands root id
+        test <@ List.isEmpty demanded @>
+
+        test
+            <@
+                match status with
+                | Some(Completed _) -> true
+                | _ -> false
+            @>)
+
+/// The control: with no task cache to answer from, every replayed file is demanded live,
+/// so the warm test's empty list is a measurement, not a demand path that never fires.
+[<Fact(Timeout = 240000)>]
+let ``a restarted TestPrune with no cached analysis demands a live check of every replayed file`` () =
+    withTempDir "tp-replayed-cold" (fun root ->
+        let demanded, status =
+            restartedTestPruneDemands root (fun _ ->
+                FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache)
+
+        test <@ demanded = [ "Attr.fs"; "Tests.fs"; "Value.fs" ] @>
+
+        test
+            <@
+                match status with
+                | Some(Completed _) -> true
+                | _ -> false
+            @>)

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- feat: a daemon with check records on logs, as it stops, how many checks it answered from
+  records, how many it started in FCS and how many a plugin demanded
+  (`check-records: this daemon: …`; ADR-059 §17 step 3). The restart test reads it: a
+  daemon restarted over an unchanged tree replays every file with 0 FCS checks and 0
+  demands, and an edit made while it was stopped re-checks only the edited file and the
+  files after it.
+  - `IFileCacheReadGuard`: a plugin state can refuse to READ a `FileChecked` task-cache
+    entry it still WRITES. A refused replayed check is demanded live.
+  - `ISkipsOutOfRepoFiles`: a plugin state that never inspects a compile item outside the
+    repository has a replayed check of one answered without a demand.
+
 - feat: a check answered from a `check` record is `FileCheckState.Replayed` (ADR-059 §17,
   AUTOMATION-1361). It carries what the check reported, and no FCS objects.
   - **What reads a replay.** The FCS ledger, the cohort seal, `PluginHost`'s checked-file

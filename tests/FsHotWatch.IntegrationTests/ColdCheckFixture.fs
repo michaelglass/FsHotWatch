@@ -163,8 +163,12 @@ let ``observes the selected source value`` () =
     File.WriteAllText(Path.Combine(receipts, "{name}.txt"), "observed 2")
 """
 
-let withDaemon clock root body =
-    Assert.False(Directory.Exists(Path.Combine(root, ".fshw")))
+/// Own a foreground daemon in `root` for `body`, then stop it. `requireCold`: no earlier daemon
+/// has run here. The body's result, and the daemon's own output once it has stopped.
+let withDaemonOutput requireCold clock root body =
+    if requireCold then
+        Assert.False(Directory.Exists(Path.Combine(root, ".fshw")))
+
     let cli = cliAssembly ()
     // The child CLI hashes its physical working directory. Path.GetFullPath
     // leaves macOS /var symlinks intact, so resolve it through an owned child.
@@ -203,7 +207,9 @@ let withDaemon clock root body =
                 disposeChild daemon
 
     match outcome with
-    | Ok result -> result
+    | Ok result ->
+        // Stopped and reaped above: its streams have closed.
+        result, output clock daemon
     | Error failure ->
         // The verdict says WHAT refused; only the daemon's own log says what its plugins
         // did to get there, and the scenario's temporary directory is deleted with it.
@@ -218,6 +224,10 @@ let withDaemon clock root body =
                 $"(the daemon's output could not be read: %s{readFailure.Message})"
 
         raise (Exception($"%s{failure.Message}\n\n--- owned daemon output ---\n%s{daemonLog}", failure))
+
+/// Own a foreground daemon in a tree no daemon has run in, for `body`.
+let withDaemon clock root body =
+    withDaemonOutput true clock root body |> fst
 
 /// Run one verb against the owned daemon and read the verdict it left behind.
 let private verb clock root cli (name: string) (flags: string list) =

@@ -365,7 +365,9 @@ let ``a pipeline with no store files and replays nothing`` () =
         let pipeline, _ = restart tree None toolchain tree.B
         test <@ pipeline.PersistCheckRecords() = 0 @>
         test <@ pipeline.ReplayCheck(AbsFilePath.create tree.A1, tree.A) = None @>
-        test <@ List.isEmpty (pipeline.ReplayProject tree.A) @>)
+        test <@ List.isEmpty (pipeline.ReplayProject tree.A) @>
+        // No store, nothing to summarise: a daemon without check records logs no tally.
+        test <@ pipeline.CheckRecordsTally = None @>)
 
 /// What a consumer of `FSharpDiagnostic` reads of each diagnostic.
 let private seenBy (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) =
@@ -448,7 +450,21 @@ let ``a restarted pipeline answers every filed file as Replayed, read by consume
                         liveResult.CheckResults
                 @>
 
-        test <@ liveCounter.Started = files.Length @>)
+        test <@ liveCounter.Started = files.Length @>
+
+        // What a daemon logs as it stops (ADR-059 §17): every answer replayed, then every
+        // live check demanded and started.
+        test
+            <@
+                pipeline.CheckRecordsTally = Some
+                    "4 check(s) replayed from check records, 0 FCS check(s) started, 0 demanded by a plugin"
+            @>
+
+        test
+            <@
+                live.CheckRecordsTally = Some
+                    "0 check(s) replayed from check records, 4 FCS check(s) started, 4 demanded by a plugin"
+            @>)
 
 [<Fact(Timeout = 240000)>]
 let ``a replayed result refuses, loudly, to stand in for a typed tree`` () =

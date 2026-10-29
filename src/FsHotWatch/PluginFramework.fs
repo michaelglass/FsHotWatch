@@ -572,6 +572,24 @@ type IFileReplayState<'State> =
         analysis: Result<ErrorEntry list, string> ->
             'State
 
+/// A state that writes a `FileChecked` task-cache entry whenever its plugin analyses a
+/// check, but lets one stand in for `Update` only where it vouches for it (ADR-059 §17).
+/// TestPrune's entries derive from its impact index (`IndexedAnalysis`): an entry may be
+/// read only once the index holds that analysis, yet it must be written when the analysis
+/// runs, or a restarted daemon finds nothing to answer a replayed check with and demands a
+/// live one. The handler's `CacheKey` names the entry; `MayReadFileCache` says only whether
+/// a lookup may happen now. A refused lookup runs `Update`, which writes the entry.
+type IFileCacheReadGuard =
+    abstract MayReadFileCache: result: FileCheckResult -> bool
+
+/// A state whose plugin never inspects a compile item outside the repository (NuGet
+/// `_content` sources; `PathFilter.isOutsideRepoScoped`): its `Update` leaves the state
+/// unchanged for one and reports nothing. It caches nothing for such a file either, so after
+/// a restart a replayed check of it would find no entry and demand a live check only to be
+/// skipped. The framework answers that replay as `Update` would, without the demand
+/// (ADR-059 §17). Scoped by the host's repository root.
+type ISkipsOutOfRepoFiles = interface end
+
 /// Declarative plugin definition.
 [<NoComparison; NoEquality>]
 type PluginHandler<'State, 'Msg> =
@@ -1610,6 +1628,16 @@ let internal registerHandlerForOwner
                         | FileChecked result -> result.ModelGeneration = currentModelGeneration ()
                         | _ -> true
 
+                    /// Whether `event` is a replayed check of a file outside the repository, for a
+                    /// plugin that never inspects one (`ISkipsOutOfRepoFiles`).
+                    let skipsReplayedFile (state: 'State) (event: PluginEvent<'Msg>) =
+                        match event, box state with
+                        | FileChecked { CheckResults = Replayed _
+                                        File = file },
+                          (:? ISkipsOutOfRepoFiles) ->
+                            FsHotWatch.PathFilter.isOutsideRepoScoped (Some services.RepoRoot) (AbsFilePath.value file)
+                        | _ -> false
+
                     /// The state a replayed event leaves. A replay skips `Update`, but a
                     /// `FileChecked` hit is a completed analysis of the same inputs, and a
                     /// state that records per-file outcomes records this one too, against
@@ -1940,14 +1968,26 @@ let internal registerHandlerForOwner
                                         //
                                         // The WRITE keeps the real key: a Custom window is how the entry
                                         // the next `BuildCompleted` hits gets minted at all.
+                                        //
+                                        // A state may also refuse to READ a `FileChecked` entry it
+                                        // still writes (`IFileCacheReadGuard`).
                                         let replayKeyOpt =
-                                            match event with
-                                            | Custom _ -> None
+                                            match event, box state with
+                                            | Custom _, _ -> None
+                                            | FileChecked result, (:? IFileCacheReadGuard as guard) when
+                                                not (guard.MayReadFileCache result)
+                                                ->
+                                                None
                                             | _ -> cacheKeyOpt
 
                                         match tryReplayCache event replayKeyOpt with
                                         | Some replayed ->
                                             return Result.Ok(replayedState state event replayed, None, false)
+                                        // ADR-059 §17: a replayed check of a file this plugin never
+                                        // inspects needs no live one. `Update` would leave the state as
+                                        // it is (`ISkipsOutOfRepoFiles`); so does this.
+                                        | None when skipsReplayedFile state event ->
+                                            return Result.Ok(state, None, false)
                                         | None ->
                                             // ADR-059 §17: `Update` never sees a replayed check. With
                                             // no cached answer for it, the plugin waits here for a

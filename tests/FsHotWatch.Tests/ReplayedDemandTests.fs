@@ -195,3 +195,144 @@ let ``a refused replay names the consumer that asked and the file`` () =
 
     test <@ ex.Consumer = "a test" @>
     test <@ ex.File = "/tmp/repo/A.fs" @>
+
+/// A state that lets its plugin's `FileChecked` entries be read only while `Allow` holds.
+type private GuardedState =
+    { Allow: bool ref }
+
+    interface IFileCacheReadGuard with
+        member this.MayReadFileCache _ = this.Allow.Value
+
+[<Fact(Timeout = 30000)>]
+let ``a state that refuses to read a file's entry still writes it, and a refused replay is demanded live`` () =
+    let allow = ref false
+    let runs = ConcurrentQueue<string>()
+    let demanded = ConcurrentQueue<string>()
+    let file = "/tmp/repo/A.fs"
+
+    let handler: PluginHandler<GuardedState, unit> =
+        { Name = PluginName.create "guarded"
+          Init = { Allow = allow }
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChecked result ->
+                        runs.Enqueue(
+                            match result.CheckResults with
+                            | Replayed _ -> "replayed"
+                            | _ -> "live"
+                        )
+
+                        // A terminal status is what makes the work cacheable at all.
+                        ctx.ReportStatus(PluginStatus.completedNow "analysed" System.TimeSpan.Zero)
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChecked
+          CacheKey =
+            Some(fun _ event ->
+                match event with
+                | FileChecked result ->
+                    Some(FsHotWatch.TaskCache.merkleCacheKey [ "file", AbsFilePath.value result.File ])
+                | _ -> None)
+          PrepareCommit = None
+          Teardown = None }
+
+    let services =
+        { defaultServices with
+            TaskCache = Some(FsHotWatch.TaskCache.InMemoryTaskCache())
+            DemandCheck =
+                fun replayed ->
+                    async {
+                        demanded.Enqueue(AbsFilePath.value replayed.File)
+
+                        return
+                            Some
+                                { replayed with
+                                    CheckResults = FullCheck Unchecked.defaultof<_> }
+                    } }
+
+    let registration = registerHandler services handler
+    // No model published: an unstamped check is cacheable.
+    let live =
+        { TestHelpers.fakeFileCheckResult file with
+            CheckResults = FullCheck Unchecked.defaultof<_>
+            ModelGeneration = None }
+
+    let replay =
+        { replayedResult file with
+            ModelGeneration = None }
+
+    // Refused: the plugin runs, twice, and its entry is written all the same.
+    dispatchAndAwait registration (DispatchFileChecked live)
+    dispatchAndAwait registration (DispatchFileChecked live)
+    test <@ List.ofSeq runs = [ "live"; "live" ] @>
+
+    // Allowed: the entry written while refused answers the check.
+    allow.Value <- true
+    dispatchAndAwait registration (DispatchFileChecked live)
+    dispatchAndAwait registration (DispatchFileChecked replay)
+    test <@ runs.Count = 2 @>
+    test <@ demanded.IsEmpty @>
+
+    // Refused again: a replayed check cannot be answered from the entry, so it is demanded.
+    allow.Value <- false
+    dispatchAndAwait registration (DispatchFileChecked replay)
+    test <@ List.ofSeq demanded = [ file ] @>
+    test <@ List.ofSeq runs = [ "live"; "live"; "live" ] @>
+
+/// A state whose plugin never inspects a compile item outside the repository.
+type private InRepoOnlyState =
+    { Marker: unit }
+
+    interface ISkipsOutOfRepoFiles
+
+[<Fact(Timeout = 30000)>]
+let ``a replayed check of a file the plugin never inspects is answered without a demand`` () =
+    let runs = ConcurrentQueue<string>()
+    let demanded = ConcurrentQueue<string>()
+
+    let handler: PluginHandler<InRepoOnlyState, unit> =
+        { Name = PluginName.create "in-repo-only"
+          Init = { Marker = () }
+          Update =
+            fun _ state event ->
+                async {
+                    match event with
+                    | FileChecked result -> runs.Enqueue(AbsFilePath.value result.File)
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChecked
+          CacheKey = None
+          PrepareCommit = None
+          Teardown = None }
+
+    let services =
+        { defaultServices with
+            DemandCheck =
+                fun replayed ->
+                    async {
+                        demanded.Enqueue(AbsFilePath.value replayed.File)
+
+                        return
+                            Some
+                                { replayed with
+                                    CheckResults = FullCheck Unchecked.defaultof<_> }
+                    } }
+
+    let registration = registerHandler services handler
+    // A package's `_content` source, outside the repository root `/tmp/repo`.
+    dispatchAndAwait registration (DispatchFileChecked(replayedResult "/nuget/xunit/_content/Reporters.fs"))
+    test <@ demanded.IsEmpty @>
+    test <@ runs.IsEmpty @>
+
+    // The repository's own file is still demanded and run.
+    dispatchAndAwait registration (DispatchFileChecked(replayedResult "/tmp/repo/A.fs"))
+    test <@ List.ofSeq demanded = [ "/tmp/repo/A.fs" ] @>
+    test <@ List.ofSeq runs = [ "/tmp/repo/A.fs" ] @>

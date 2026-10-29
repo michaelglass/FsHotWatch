@@ -3565,6 +3565,10 @@ type Daemon
                 lifetime.Dispose()
                 watcher |> Option.iter (fun w -> (w :> IDisposable).Dispose())
 
+                // ADR-059 §17: what check records saved this daemon, and what they did not.
+                pipeline.CheckRecordsTally
+                |> Option.iter (fun tally -> Logging.info "check-records" $"this daemon: %s{tally}")
+
     /// Register a declarative framework-managed plugin handler.
     ///
     /// Registration starts the plugin's worker, which captures the current context: the

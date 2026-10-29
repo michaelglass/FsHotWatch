@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: the lint state is `ISkipsOutOfRepoFiles`. A replayed check of a NuGet `_content` source
+  is answered without a live check (ADR-059 §17 step 3); the plugin never lints one.
+
 ## 0.7.0-alpha.37 - 2026-10-25
 
 - chore: FSharp.Core is pinned exactly at `[10.1.402]` instead of floating within `10.1.*`.

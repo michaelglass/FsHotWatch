@@ -5436,7 +5436,6 @@ let private outcomeCacheKey event =
         (fun () -> Some "tree")
         (fun () -> false)
         (fun () -> true)
-        (fun _ -> true)
         event
 
 [<Fact(Timeout = 15000)>]
@@ -5789,7 +5788,6 @@ let ``cacheKeyFor: a FileChecked key reads only the cheap outstanding-red guard`
             (fun () ->
                 sessionEvidenceCalls <- sessionEvidenceCalls + 1
                 true)
-            (fun _ -> true)
             (FileChecked(fakeFileCheckResult "/src/A.fs"))
 
     // It still produces a key — it is a pure function of THIS file.
@@ -5822,16 +5820,16 @@ let ``a prior test failure makes FileChecked uncacheable so it cannot relabel th
             (fun () -> Some "tree")
             (fun () -> true)
             (fun () -> true)
-            (fun _ -> true)
             (FileChecked(fakeFileCheckResult "/src/TestHelper.fs"))
 
     test <@ key.IsNone @>
 
 [<Fact(Timeout = 10000)>]
-let ``a FileChecked hit is offered only where the index may vouch for the analysis`` () =
-    let result = fakeFileCheckResult "/src/A.fs"
-
-    let keyWhen may =
+let ``a FileChecked entry is keyed for every analysis; only reading it waits on the index`` () =
+    // ADR-059 §17: the key no longer asks the index. Refusing it there refused the WRITE too,
+    // so a first analysis was never cached and a restarted daemon had nothing to replay.
+    // The read is guarded instead, by the state (`IFileCacheReadGuard`, `IndexedAnalysis.Guard`).
+    let key =
         cacheKeyFor
             (fun () -> "symbols")
             (fun () -> None)
@@ -5841,14 +5839,20 @@ let ``a FileChecked hit is offered only where the index may vouch for the analys
             (fun () -> Some "tree")
             (fun () -> false)
             (fun () -> true)
-            (fun r ->
-                test <@ r.File = result.File @>
-                may)
-            (FileChecked result)
+            (FileChecked(fakeFileCheckResult "/src/A.fs"))
 
-    // Refused, the event is uncacheable: no replay and no write, so the file is analysed.
-    test <@ (keyWhen false).IsNone @>
-    test <@ (keyWhen true).IsSome @>
+    test <@ key.IsSome @>
+
+    let seen = Collections.Generic.List<Map<string, string> * string>()
+
+    let guard =
+        FsHotWatch.TestPrune.IndexedAnalysis.Guard(fun pending result ->
+            seen.Add((pending, AbsFilePath.value result.File))
+            pending.IsEmpty)
+
+    test <@ guard.MayReplay(Map.empty, fakeFileCheckResult "/src/A.fs") @>
+    test <@ not (guard.MayReplay(Map.ofList [ "src/A.fs", "i1" ], fakeFileCheckResult "/src/A.fs")) @>
+    test <@ seen |> Seq.map snd |> List.ofSeq = [ "/src/A.fs"; "/src/A.fs" ] @>
 
 [<Fact(Timeout = 10000)>]
 let ``the index is the authority a FileChecked replay answers to`` () =
@@ -5886,7 +5890,6 @@ let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state``
             (fun () -> Some "tree")
             (fun () -> false)
             (fun () -> true)
-            (fun _ -> true)
             (BuildCompleted BuildSucceeded)
 
     let salted = keyWith (Some "migration-hash-v1")
@@ -5979,7 +5982,6 @@ let ``a failed test run is not cached, so a later run on the same key is a miss 
                 (fun () -> ReceiptInputTree.read tmpDir)
                 (fun () -> false)
                 (fun () -> true)
-                (fun _ -> true)
                 (BuildCompleted BuildSucceeded))
                 .Value
 

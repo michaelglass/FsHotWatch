@@ -43,6 +43,7 @@
     <Compile Include="RunSignalTests.fs" />
     <Compile Include="TestPruneTracesIntegrationTests.fs" />
     <Compile Include="IntegrationTests.fs" />
+    <Compile Include="CheckRecordsRestartTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

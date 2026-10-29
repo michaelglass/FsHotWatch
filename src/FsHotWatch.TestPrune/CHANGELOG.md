@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: TestPrune caches a file's `FileChecked` analysis when it first runs, not only once the
+  index already holds it (ADR-059 §17 step 3). The key no longer asks the index; reading the
+  entry still does, through the state's `IFileCacheReadGuard` (`IndexedAnalysis.Guard`). Before,
+  a file analysed once was never cached, so a daemon restarted with check records on demanded
+  a live check of every such file. **BREAKING (internal):** `cacheKeyFor` loses its
+  `mayReplay` argument; `TestPruneState` gains `IndexGuard`.
+
 - fix: a daemon whose own `test-impact.db` was written by a NEWER TestPrune.Core starts
   instead of dying at plugin registration with `SchemaNewerThanConsumerException`
   (AUTOMATION-1401). A failed land that bumped the pin left the land worktree's index

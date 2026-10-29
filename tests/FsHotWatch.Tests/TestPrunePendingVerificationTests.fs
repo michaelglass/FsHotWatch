@@ -1868,7 +1868,6 @@ let ``cacheKeyFor: a confirm cannot replay an impact-filtered run's cached verdi
             (fun () -> Some "tree")
             (fun () -> false)
             (fun () -> true)
-            (fun _ -> true)
             (BuildCompleted BuildSucceeded)
 
     let innerLoopKey = keyWithScope None
@@ -1893,7 +1892,6 @@ let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
             (fun () -> Some "tree")
             (fun () -> false)
             (fun () -> true)
-            (fun _ -> true)
             (BuildCompleted BuildSucceeded)
 
     // The same inputs, hand-built with no full-suite-scope entry at all.
@@ -1931,7 +1929,6 @@ let ``cacheKeyFor: two full-suite runs over the same tree DO share a key`` () =
             (fun () -> Some "tree")
             (fun () -> false)
             (fun () -> true)
-            (fun _ -> true)
             (BuildCompleted BuildSucceeded)
 
     test <@ fullSuiteKey () = fullSuiteKey () @>
@@ -1951,7 +1948,6 @@ let ``cacheKeyFor refuses BuildCompleted while the process has NO test evidence`
             (fun () -> Some "tree")
             (fun () -> false)
             (fun () -> hasEvidence)
-            (fun _ -> true)
             (BuildCompleted BuildSucceeded)
 
     test <@ (keyWithEvidence false).IsNone @>
@@ -1991,7 +1987,6 @@ let ``the TestsFinished WRITE is not gated on session evidence`` () =
             (fun () -> false)
             // No evidence yet — this run is the one about to provide it.
             (fun () -> false)
-            (fun _ -> true)
             allPassed
 
     test <@ key.IsSome @>
@@ -2339,7 +2334,6 @@ let ``cacheKeyFor: two trees with the same symbols and structure no longer share
             (fun () -> tree)
             (fun () -> false)
             (fun () -> true)
-            (fun _ -> true)
             (BuildCompleted BuildSucceeded)
 
     test <@ (keyOver (Some "sha256:t1")).IsSome @>
