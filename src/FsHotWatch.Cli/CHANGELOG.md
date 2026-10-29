@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **fix: a non-interactive `check`/`confirm` reports what its settle waits on
+  (AUTOMATION-1370).** The settle (`WaitForComplete`) printed nothing off a terminal, so a
+  land gate that spent its 150-minute timeout on starved test runs logged only the scan
+  wait's `Scanning...` label, which on a warm daemon returns at once. The settle now prints
+  `Waiting for the daemon to settle (build, checks, tests)...` when it begins, then every
+  30 s a line naming each running plugin, its elapsed time and its subtasks
+  (`settling 1h 15m: still running: test-prune (1h 15m) [primary 1h 15m]`), or says that
+  no plugin is running and the daemon still owns work or owes evidence. New:
+  `SettleHeartbeat`, `IpcOutput.pollUntilSettledWith` (clock, pause and sink injected).
+
 ## 0.14.0-alpha.129 - 2026-10-28
 
 - build: TestPrune.Core 13.5.1 (was 13.5.0), in lockstep with FsHotWatch.TestPrune, which also
