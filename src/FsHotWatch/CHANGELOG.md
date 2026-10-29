@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.97 - 2026-10-29
+
 - feat: `ActionKey`, `OutcomeStore` and `LookupVerdict` (ADR-059, AUTOMATION-1362). `ActionKey`
   is one content key for every action: a length-prefixed fold of labelled input digests, with
   `moved` naming the labels that differ. `OutcomeStore` files immutable, self-verifying outcome

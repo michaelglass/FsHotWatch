@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.97 - 2026-10-29
+
 - fix: a red run is not retried by its own debt over the same tree (AUTOMATION-1373). Every
   cohort that folded while a run was in flight queued a re-run for the symbols that run was
   launched to verify. When the run came back red (starved projects time out), those symbols

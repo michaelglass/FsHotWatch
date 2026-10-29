@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.130 - 2026-10-29
+
 - feat: shadow mode for the lookup verdict (ADR-059, AUTOMATION-1362). Every `check` and
   `confirm` publication also files its results as outcome records under
   `.fshw/shadow/outcomes`, looks the tree up from the configured requirements, and appends one
