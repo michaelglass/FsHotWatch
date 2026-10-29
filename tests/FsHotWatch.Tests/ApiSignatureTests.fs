@@ -236,3 +236,52 @@ let ``a later file's result standing across an upstream line shift analyses as a
         test <@ standing.TestMethods = fresh.TestMethods @>
         test <@ standing.Attributes = fresh.Attributes @>
         test <@ standing.ParentLinks = fresh.ParentLinks @>)
+
+// ADR-059 §17: a filed signature must equal a live one in any later process. FCS
+// enumerates an entity's members in an order that is not stable across processes (seen
+// on intelligence: a union's compiler-generated `IsX` properties), so the text names them
+// in ordinal order, never in the order FCS happened to give.
+[<Fact(Timeout = 2 * RealCheckWaitMs)>]
+let ``an entity's members are named in ordinal order, never in the order FCS enumerates them`` () =
+    withTempDir "api-signature-order" (fun root ->
+        let source =
+            String.concat
+                "\n"
+                [ "module Ordered"
+                  "type Var = | Zeta | Alpha | Mike | Bravo"
+                  "type Thing() ="
+                  "    member _.Zulu = 1"
+                  "    member _.Alpha = 2"
+                  "" ]
+
+        let check = checkAlone root "Ordered.fs" source
+
+        let text = (FsHotWatch.ApiSignature.signatureText source (FullCheck check)).Value
+
+        // Each entity block: its header line, then its body lines indented by two spaces.
+        let blocks =
+            text.Split '\n'
+            |> Array.fold
+                (fun (acc: string list list) line ->
+                    if line.StartsWith "  " then
+                        match acc with
+                        | current :: rest -> (line :: current) :: rest
+                        | [] -> [ [ line ] ]
+                    else
+                        [] :: acc)
+                []
+            |> List.map List.rev
+
+        let memberLines (block: string list) =
+            block |> List.filter (fun line -> line.TrimStart().StartsWith "val ")
+
+        // Positive control: the union's `IsX` members are there to be ordered.
+        test
+            <@
+                blocks
+                |> List.exists (fun b -> memberLines b |> List.exists (fun l -> l.Contains "IsAlpha"))
+            @>
+
+        for block in blocks do
+            let members = memberLines block
+            test <@ members = List.sortWith (fun a b -> String.CompareOrdinal(a, b)) members @>)

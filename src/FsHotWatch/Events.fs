@@ -101,11 +101,47 @@ type BuildResult =
     | BuildSucceeded
     | BuildFailed of errors: string list
 
-/// Whether a file was fully type-checked or only parsed (check aborted).
+/// One FCS diagnostic as a `check` record keeps it (`CheckRecords`, ADR-059 §17): every
+/// field a consumer reads, paths as the worktree reads them.
+type StoredDiagnostic =
+    {
+        FileName: string
+        StartLine: int
+        StartColumn: int
+        EndLine: int
+        EndColumn: int
+        ErrorNumber: int
+        /// `%A` of `FSharpDiagnosticSeverity`, as `CheckCache.fcsCheckSignature` spells it.
+        Severity: string
+        Subcategory: string
+        Message: string
+    }
+
+/// What a file's check produced, without FCS objects: what a `check` record files and a
+/// `Replayed` result carries.
+type CheckOutputs =
+    {
+        Diagnostics: StoredDiagnostic list
+        /// `CheckCache.fcsCheckSignature` of the check.
+        FcsSignature: string
+        /// `CacheInputs.usedSignaturesHash` of the check; None when it could not be described.
+        UsedSignatures: string option
+        /// `ApiSignature.ofCheck`: None when the file has no signature of its own.
+        ApiSignature: string option
+    }
+
+/// Whether a file was fully type-checked, only parsed (check aborted), or answered from a
+/// filed `check` record (ADR-059 §17).
 [<NoComparison>]
 type FileCheckState =
     | FullCheck of FSharpCheckFileResults
     | ParseOnly
+    /// The outputs of a check filed earlier for exactly these inputs. Carries NO FCS
+    /// objects: `FileCheckResult.ParseResults` is null for it. A plugin never receives one
+    /// in `Update` — the framework serves it from the plugin's cache or demands a real
+    /// check (`PluginHostServices.DemandCheck`) — and code that needs the typed tree must
+    /// match it and fail loudly (`FileCheckResult.requireTypedTree`), never assume.
+    | Replayed of CheckOutputs
 
 /// When a check read its inputs, and what it typed against (ADR-047).
 type CheckedAgainst =
@@ -153,6 +189,19 @@ type FileCheckResult =
         Upstream: CheckedAgainst option
     }
 
+/// A consumer asked a replayed check result (`FileCheckState.Replayed`) for FCS objects it
+/// does not have. Thrown, never absorbed: a consumer that silently assumed a full check
+/// would otherwise degrade to a wrong answer (ADR-059 §17).
+type ReplayedResultException(consumer: string, file: string) =
+    inherit
+        System.InvalidOperationException(
+            $"%s{consumer} asked a REPLAYED check result of %s{file} for FCS objects it does not carry; \
+              it must demand a real check instead (ADR-059 §17)"
+        )
+
+    member _.Consumer = consumer
+    member _.File = file
+
 module FileCheckResult =
     /// What suppresses `result`'s diagnostics: `configured` codes, the file's `#nowarn`,
     /// read against the compiler flags it was checked under (`FcsSuppression`). An aborted
@@ -173,6 +222,50 @@ module FileCheckResult =
         |> Map.fold
             (fun (rendered: string) stored original -> rendered.Replace(stored, original))
             (PathFrame.textFrom result.Frame text)
+
+    /// FCS diagnostics rebuilt from what a `check` record kept: the same severity, number,
+    /// range, subcategory and message, so every consumer of `FSharpDiagnostic` (the ledger,
+    /// `FcsSuppression.blockingErrors`, the seal) reads a replay exactly as it read the check.
+    let diagnosticsOfOutputs (outputs: CheckOutputs) : FSharp.Compiler.Diagnostics.FSharpDiagnostic[] =
+        [| for d in outputs.Diagnostics ->
+               let severity =
+                   match d.Severity with
+                   | "Error" -> FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error
+                   | "Warning" -> FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning
+                   | "Info" -> FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Info
+                   | "Hidden" -> FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Hidden
+                   | other -> invalidOp $"a check record names an unknown diagnostic severity %s{other}"
+
+               let range =
+                   FSharp.Compiler.Text.Range.mkRange
+                       d.FileName
+                       (FSharp.Compiler.Text.Position.mkPos d.StartLine d.StartColumn)
+                       (FSharp.Compiler.Text.Position.mkPos d.EndLine d.EndColumn)
+
+               FSharp.Compiler.Diagnostics.FSharpDiagnostic.Create(
+                   severity,
+                   d.Message,
+                   d.ErrorNumber,
+                   range,
+                   subcategory = d.Subcategory
+               ) |]
+
+    /// The diagnostics a check reported, live or replayed; None for a check that did not
+    /// complete.
+    let diagnostics (result: FileCheckResult) : FSharp.Compiler.Diagnostics.FSharpDiagnostic[] option =
+        match result.CheckResults with
+        | FullCheck results -> Some results.Diagnostics
+        | Replayed outputs -> Some(diagnosticsOfOutputs outputs)
+        | ParseOnly -> None
+
+    /// The typed tree of a full check, for `consumer`; None for an aborted check. A
+    /// replayed result has none, and asking for it is a defect in the caller, not a
+    /// degraded answer: it throws `ReplayedResultException` naming the consumer.
+    let requireTypedTree (consumer: string) (result: FileCheckResult) : FSharpCheckFileResults option =
+        match result.CheckResults with
+        | FullCheck results -> Some results
+        | ParseOnly -> None
+        | Replayed _ -> raise (ReplayedResultException(consumer, AbsFilePath.value result.File))
 
 /// Result of checking all files in a project.
 [<NoComparison>]
@@ -1006,13 +1099,12 @@ module internal AnalysisFileEvidence =
     /// `suppressedCodes` or the file's own `#nowarn` silences (`FcsSuppression.Suppression.silences`).
     let fromResult (suppressedCodes: Set<int>) (result: FileCheckResult) (symbolAnalysis: Result<unit, string>) =
         let refusals =
-            [ match result.CheckResults with
-              | ParseOnly -> yield "type checking did not complete"
-              | FullCheck checkedResult ->
+            // Live or replayed (ADR-059 §17): the same blocking errors either way.
+            [ match FileCheckResult.diagnostics result with
+              | None -> yield "type checking did not complete"
+              | Some diagnostics ->
                   for diagnostic in
-                      FcsSuppression.blockingErrors
-                          (FileCheckResult.suppression suppressedCodes result)
-                          checkedResult.Diagnostics do
+                      FcsSuppression.blockingErrors (FileCheckResult.suppression suppressedCodes result) diagnostics do
                       yield diagnostic.Message
 
               match symbolAnalysis with

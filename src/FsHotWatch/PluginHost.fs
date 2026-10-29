@@ -82,6 +82,20 @@ type PluginHost
     // agent threads.
     let mutable projectGraphAccessor = PluginFramework.ProjectGraphAccessor.none
 
+    /// How a plugin with no cached answer for a replayed check gets a real one (ADR-059 §17).
+    /// Until the daemon installs its pipeline's, asking is a defect, and says so.
+    let mutable checkDemand: FileCheckResult -> Async<FileCheckResult option> =
+        fun result ->
+            async {
+                return
+                    raise (
+                        ReplayedResultException(
+                            "the plugin host (no checker installed to demand a check from)",
+                            AbsFilePath.value result.File
+                        )
+                    )
+            }
+
     // The one publication of owned work: every registered plugin's owner row, plus the
     // host's own operations (dispatch fan-out, preprocessor passes). Busy, progress and
     // fault answers are read from one pinned snapshot of it.
@@ -236,6 +250,9 @@ type PluginHost
     /// live `ProjectGraph`, before registering plugins.
     member _.SetProjectGraph(accessor: PluginFramework.ProjectGraphAccessor) = projectGraphAccessor <- accessor
 
+    /// Install how a replayed check is turned into a real one (`PluginHostServices.DemandCheck`).
+    member _.SetCheckDemand(demand: FileCheckResult -> Async<FileCheckResult option>) = checkDemand <- demand
+
     /// This session's lane of its host's process scheduler; `None` for a per-worktree daemon.
     member _.Processes: WorkScheduler.Lane option = processes
 
@@ -299,7 +316,8 @@ type PluginHost
                   GetCanonicalDllPath = fun p -> projectGraphAccessor.GetCanonicalDllPath p }
               StartAsync = Async.Start
               ClaimOrQueueSharedRun = fun key start -> sharedRunScheduler.ClaimOrQueue(key, start)
-              ReleaseSharedRun = fun key state -> sharedRunScheduler.Release(key, state) }
+              ReleaseSharedRun = fun key state -> sharedRunScheduler.Release(key, state)
+              DemandCheck = fun result -> checkDemand result }
 
         let plugin = PluginFramework.registerHandlerWithOwner workStore services handler
 
@@ -543,7 +561,9 @@ type PluginHost
     /// file stays unchecked until a full check succeeds.
     member _.EmitFileChecked(result: FileCheckResult) =
         match result.CheckResults with
-        | FullCheck _ -> checkedFiles[result.File] <- ()
+        // A replay is a completed check of exactly these inputs (ADR-059 §17).
+        | FullCheck _
+        | Replayed _ -> checkedFiles[result.File] <- ()
         | ParseOnly -> ()
 
         dispatchToAll (PluginFramework.DispatchFileChecked result)
@@ -554,7 +574,9 @@ type PluginHost
     /// has stopped, holds nothing, and the remaining plugins still receive it.
     member _.EmitFileChecked(result: FileCheckResult, place: LiveResults.Place) =
         match result.CheckResults with
-        | FullCheck _ -> checkedFiles[result.File] <- ()
+        // A replay is a completed check of exactly these inputs (ADR-059 §17).
+        | FullCheck _
+        | Replayed _ -> checkedFiles[result.File] <- ()
         | ParseOnly -> ()
 
         touchActivity ()

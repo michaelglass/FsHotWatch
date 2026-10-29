@@ -38,7 +38,8 @@ let private defaultServices: PluginHostServices =
       StartAsync = Async.Start
       Processes = None
       ClaimOrQueueSharedRun = fun _ _ -> Some Ready
-      ReleaseSharedRun = fun _ _ -> () }
+      ReleaseSharedRun = fun _ _ -> ()
+      DemandCheck = fun _ -> async { return None } }
 
 /// Helper: register a handler with no-op host functions by default.
 let private registerWith

@@ -57,39 +57,12 @@ let OptionsKind = "options"
 [<Literal>]
 let OutputsSchema = "fshw-check-outputs-v1"
 
-/// One FCS diagnostic as a record keeps it: every field a consumer reads, paths as the
-/// worktree reads them.
-type StoredDiagnostic =
-    {
-        FileName: string
-        StartLine: int
-        StartColumn: int
-        EndLine: int
-        EndColumn: int
-        ErrorNumber: int
-        /// `%A` of `FSharpDiagnosticSeverity`, as `fcsCheckSignature` spells it.
-        Severity: string
-        Subcategory: string
-        Message: string
-    }
-
-/// What a file's check produced, without FCS objects.
-type CheckOutputs =
-    {
-        Diagnostics: StoredDiagnostic list
-        /// `CheckCache.fcsCheckSignature` of the check.
-        FcsSignature: string
-        /// `CacheInputs.usedSignaturesHash` of the check; None when it could not be described.
-        UsedSignatures: string option
-        /// `ApiSignature.ofCheck`: None when the file has no signature of its own.
-        ApiSignature: string option
-    }
-
 module CheckOutputs =
     /// The outputs of a full check; None for one that did not complete.
     let ofResult (repoRoot: string option) (result: FileCheckResult) : CheckOutputs option =
         match result.CheckResults with
         | ParseOnly -> None
+        | Replayed outputs -> Some outputs
         | FullCheck results when isNull (box results) -> None
         | FullCheck results ->
             let toReal = FileCheckResult.textToReal result

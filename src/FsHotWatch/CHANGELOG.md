@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- feat: a check answered from a `check` record is `FileCheckState.Replayed` (ADR-059 §17,
+  AUTOMATION-1361). It carries what the check reported, and no FCS objects.
+  - **What reads a replay.** The FCS ledger, the cohort seal, `PluginHost`'s checked-file
+    set, `fcsCheckSignature`, `usedSignaturesHash` and `ApiSignature.ofCheck`.
+    `FileCheckResult.diagnostics` rebuilds the `FSharpDiagnostic`s.
+  - **A plugin never sees one in `Update`.** With no cached answer for it, the framework
+    demands a live check (`PluginHostServices.DemandCheck`,
+    `CheckPipeline.CheckFileLive`) and runs `Update` on that. A demand that does not
+    complete fails the plugin.
+  - **Code that needs the typed tree throws on a replay** (`requireTypedTree`,
+    `ReplayedResultException`). It never degrades.
+  - **The daemon** files records after each scan and change batch while
+    `DaemonOptions.CheckRecords` is on.
+- fix: `ApiSignature` names an entity's members and nested entities in ordinal order. FCS
+  enumerates members in an order that is not stable across processes (a union's generated
+  `IsX` properties, on intelligence), so one process's signature for the same file differed
+  from another's.
+
 - feat: `CheckRecords`, the persisted check-result store (ADR-059 §14, §17,
   AUTOMATION-1361). A `check` record holds:
   - a file's diagnostics;

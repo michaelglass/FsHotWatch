@@ -3137,6 +3137,7 @@ let internal daemonWith
             RunMode = runMode
             CheckCache = checkCache
             ExcludePatterns = config.Exclude
+            CheckRecords = resolveCheckRecords config.CheckRecords Environment.GetEnvironmentVariable
             ExtraWatchPatterns = extraWatchPatterns
             FsEventsLatencySeconds = float config.FsEventsLatencyMs / 1000.0
             IdleExitMin = idleExit.ThresholdMin

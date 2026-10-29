@@ -225,6 +225,7 @@ let private withFixtureBoundedOf
                                         |> Array.filter (fun d ->
                                             d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
                                         |> Array.length
+                                    | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
                                     | ParseOnly -> -1 }
                         | BatchChecked batch -> seals.Enqueue batch
                         | _ -> ()

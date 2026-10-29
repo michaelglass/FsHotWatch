@@ -276,7 +276,7 @@ type internal PendingRecord =
         ContentUpstream: string
         /// Each project output the check read (absolute), with its content hash then.
         ProjectOutputs: (string * string) list
-        Outputs: CheckRecords.CheckOutputs
+        Outputs: CheckOutputs
     }
 
 /// Manages project options and performs incremental file checking with the warm FSharpChecker.
@@ -566,6 +566,50 @@ type CheckPipeline
         && pending.ProjectOutputs
            |> List.forall (fun (output, hash) -> hashFile output = hash)
 
+    /// Each project's walk of the store, once per generation (`BeginGeneration`), as the
+    /// upstream tables are: a walk is O(files), and a scan asks once per file.
+    let replayWalks =
+        ConcurrentDictionary<string, Lazy<Map<string, CheckRecords.FileRecord>>>()
+
+    /// What a filed `check` record answers for `absPath`, as a `Replayed` result; None
+    /// without a store or a record, or when the bytes on disk are not the bytes it keys.
+    let replayFromRecords (absPath: string) (options: FSharpProjectOptions) (contentHash: string) =
+        match checkRecords with
+        | None -> None
+        | Some store ->
+            let walk =
+                replayWalks.GetOrAdd(
+                    $"%s{options.ProjectFileName}|%s{getProjectOptionsHashRelativeTo repoRoot options}",
+                    fun _ ->
+                        lazy
+                            (CheckRecords
+                                .Walk(store, checkToolchain, repoRoot, hashFile, CheckRecords.readOnly)
+                                .Project(options)
+                             |> List.map (fun record -> record.File, record)
+                             |> Map.ofList)
+                )
+
+            match Map.tryFind absPath walk.Value with
+            | Some { Key = key; Outputs = Some outputs } when key.Inputs |> List.contains ("content", contentHash) ->
+                let openFile = ProjectSnapshots.readOpenFile hashFile absPath
+
+                // The walk keyed these bytes; a file that moved since is a miss, not a replay.
+                if openFile.Version = contentHash then
+                    Some
+                        { File = AbsFilePath.create absPath
+                          Source = openFile.Text
+                          ParseResults = Unchecked.defaultof<_>
+                          CheckResults = Replayed outputs
+                          ProjectOptions = options
+                          Version = Interlocked.Increment(&nextVersion)
+                          ModelGeneration = None
+                          Frame = None
+                          Placed = Map.empty
+                          Upstream = None }
+                else
+                    None
+            | _ -> None
+
     member _.NextVersion() = Interlocked.Increment(&nextVersion)
 
     /// File every pending check whose inputs still hold as a `check` record, each project
@@ -612,12 +656,16 @@ type CheckPipeline
             for entry in snapshot do
                 pendingRecords.TryRemove entry |> ignore
 
+            // New records: the next replay walks the store again.
+            if filed > 0 then
+                replayWalks.Clear()
+
             filed
 
     /// What a filed `check` record says about `filePath` in `options`' project, keyed by
     /// the files on disk now; None when the store holds no record for these inputs (or no
     /// store is configured). Reads the store only: no FCS.
-    member _.ReplayCheck(filePath: AbsFilePath, options: FSharpProjectOptions) : CheckRecords.CheckOutputs option =
+    member _.ReplayCheck(filePath: AbsFilePath, options: FSharpProjectOptions) : CheckOutputs option =
         match checkRecords with
         | None -> None
         | Some store ->
@@ -713,6 +761,7 @@ type CheckPipeline
     /// Logged once per distinct warning.
     member _.BeginGeneration() =
         upstreamFingerprints.BeginGeneration()
+        replayWalks.Clear()
 
         match cacheBackend with
         | Some(:? IScopedCheckCache as scoped) ->
@@ -758,6 +807,8 @@ type CheckPipeline
         projectOptionsByFile.Clear()
         projectOptionsByProject.Clear()
         projectOptionsHashCache.Clear()
+
+        replayWalks.Clear()
 
         if clearCheckCache then
             cacheBackend |> Option.iter (fun b -> b.Clear())
@@ -1283,7 +1334,7 @@ type CheckPipeline
     /// (`ApiSignature.ofCheck`), so the files after it can be keyed by it, with or without
     /// a cache.
     member private this.CheckFileCached
-        (absPath: string, options: FSharpProjectOptions, ct: CancellationToken, ticket: int64)
+        (absPath: string, options: FSharpProjectOptions, ct: CancellationToken, ticket: int64, replay: bool)
         : Async<FileCheckResult option> =
         async {
             if ct.IsCancellationRequested then
@@ -1350,6 +1401,13 @@ type CheckPipeline
                         cacheTally.LookedUp(CacheLookupOutcome.Miss miss)
                         None
                     | None -> None
+
+                // Missed in memory: a filed `check` record for exactly these inputs answers
+                // without FCS (ADR-059 §17), unless the caller demands a live check.
+                let cached =
+                    match cached with
+                    | None when replay -> replayFromRecords absPath options contentHash
+                    | other -> other
 
                 match cached with
                 | Some cached ->
@@ -1424,6 +1482,8 @@ type CheckPipeline
                                 "check"
                                 $"Not caching %s{Path.GetFileName absPath}: its inputs moved during the check"
                         | ParseOnly -> ()
+                        // CheckFileCore asks FCS; a replay here would be a defect, not an answer.
+                        | Replayed _ -> raise (ReplayedResultException("CheckPipeline (an FCS check)", absPath))
                     | None -> ()
 
                     // The upstream the check was keyed by, when nothing it depends on moved
@@ -1458,7 +1518,7 @@ type CheckPipeline
                     | false, _ ->
                         Logging.debug "check" $"No project options for: %s{absPath}"
                         return None
-                    | true, (options :: _) -> return! this.CheckFileCached(absPath, options, fileToken, ticket)
+                    | true, (options :: _) -> return! this.CheckFileCached(absPath, options, fileToken, ticket, true)
                     | true, [] ->
                         Logging.debug "check" $"No project options for: %s{absPath}"
                         return None
@@ -1491,7 +1551,29 @@ type CheckPipeline
                     Logging.debug "check" $"Not checked on its own (a generated compile item): %s{absPath}"
                     return None
                 else
-                    return! this.CheckFileCached(absPath, options, fileToken, ticket)
+                    return! this.CheckFileCached(absPath, options, fileToken, ticket, true)
+            with :? OperationCanceledException ->
+                logCanceled absPath
+                return None
+        }
+
+    /// `CheckFileWithOptions`, never answered from a filed `check` record: what a plugin
+    /// with no cached answer for a `Replayed` result demands (ADR-059 §17). The in-memory
+    /// cache still answers, with the FCS objects it holds.
+    member this.CheckFileLive
+        (filePath: AbsFilePath, options: FSharpProjectOptions, ?ct: CancellationToken)
+        : Async<FileCheckResult option> =
+        async {
+            let ct = defaultArg ct CancellationToken.None
+            let absPath = AbsFilePath.value filePath
+            let ticket = Interlocked.Increment(&nextTicket)
+
+            try
+                if ct.IsCancellationRequested then
+                    logCanceled absPath
+                    return None
+                else
+                    return! this.CheckFileCached(absPath, options, ct, ticket, false)
             with :? OperationCanceledException ->
                 logCanceled absPath
                 return None

@@ -59,6 +59,7 @@ let private withCheckedText (source: string) action =
 
         match result.CheckResults with
         | FullCheck _ -> ()
+        | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
         | ParseOnly -> failwith "the fixture requires an actual completed type check"
 
         action
@@ -345,6 +346,7 @@ let ``completed analysis distinguishes compiler warnings from missing or failed 
                 checkedResult.Diagnostics,
                 fun diagnostic -> diagnostic.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning
             )
+        | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
         | ParseOnly -> Assert.Fail "the fixture requires an actual completed type check"
 
         let outcome = AnalysisFileEvidence.fromResult Set.empty result (Ok())

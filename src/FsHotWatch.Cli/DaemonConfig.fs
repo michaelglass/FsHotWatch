@@ -459,6 +459,9 @@ type DaemonConfiguration =
         Format: FormatMode
         Lint: bool
         Cache: CacheBackendConfig
+        /// `"checkRecords": true` files checks as `check` records and answers from them
+        /// across restarts (ADR-059 §17, AUTOMATION-1361). Off when absent.
+        CheckRecords: bool
         Analyzers:
             {| Paths: string list
                FailOnSeverity: DiagnosticSeverity
@@ -582,6 +585,7 @@ let private defaultConfigFor (repoRoot: string) =
       Format = Auto
       Lint = true
       Cache = NoCache
+      CheckRecords = false
       Analyzers = None
       Tests = None
       FileCommands = []
@@ -927,6 +931,17 @@ let private parseTestProject (p: JsonElement) : TestProjectConfig =
       Weight = weight }
 
 /// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
+/// Whether check records run (ADR-059 §17): `FSHW_CHECK_RECORDS` (`1`/`true` on, `0`/`false` off)
+/// overrides the configured `checkRecords`, so one daemon can be measured with them on
+/// without editing a tracked `.fshw.json`. Any other value is the configured one.
+let resolveCheckRecords (configured: bool) (env: string -> string) : bool =
+    match env "FSHW_CHECK_RECORDS" with
+    | "1"
+    | "true" -> true
+    | "0"
+    | "false" -> false
+    | _ -> configured
+
 let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
     use doc = JsonDocument.Parse(json)
     let root = doc.RootElement
@@ -995,6 +1010,13 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         match root.TryGetProperty("lint") with
         | true, v -> v.GetBoolean()
         | _ -> true
+
+    let checkRecords =
+        match root.TryGetProperty("checkRecords") with
+        | true, v when v.ValueKind = JsonValueKind.True -> true
+        | true, v when v.ValueKind = JsonValueKind.False || v.ValueKind = JsonValueKind.Null -> false
+        | true, v -> raise (ConfigErrorException $"checkRecords: %s{describeValue v} is not true or false")
+        | false, _ -> false
 
     let cache =
         let refuse (detail: string) =
@@ -1715,6 +1737,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       Format = format
       Lint = lint
       Cache = cache
+      CheckRecords = checkRecords
       Analyzers = analyzers
       Tests = tests
       FileCommands = fileCommands

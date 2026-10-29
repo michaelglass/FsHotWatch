@@ -7461,6 +7461,8 @@ let private executeTests
 let internal fcsErrorCount (suppression: Suppression) (state: FileCheckState) : int =
     match state with
     | FullCheck cr -> (blockingErrors suppression cr.Diagnostics).Length
+    // The diagnostics the filed check reported (ADR-059 §17).
+    | Replayed outputs -> (blockingErrors suppression (FileCheckResult.diagnosticsOfOutputs outputs)).Length
     | ParseOnly -> 0
 
 /// FCS cache-poisoning gate. A `FileChecked` whose FCS result reports any
@@ -11560,6 +11562,7 @@ let internal createWithEvidenceAndQueries
                                 // consumed. Do not inspect ProjectOptions: an aborted FCS
                                 // check may not carry usable options either.
                                 ""
+                            | Replayed _ -> raise (ReplayedResultException("test-prune symbol analysis", fileStr))
                             | FullCheck _ ->
                                 let raw = result.ProjectOptions.ProjectFileName |> Path.GetFileNameWithoutExtension
 
@@ -11620,6 +11623,7 @@ let internal createWithEvidenceAndQueries
                                     result.ParseResults
                                     checkResults
                                     projectName
+                            | Replayed _ -> raise (ReplayedResultException("test-prune symbol analysis", fileStr))
                             | ParseOnly ->
                                 Error
                                     "FCS produced parse-only results; full type-check results are required for impact analysis"

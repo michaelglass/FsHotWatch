@@ -1273,6 +1273,7 @@ let ``createCliContext carries a real typed tree through the reflection construc
     let checkResultsObj =
         match checkResults with
         | FullCheck cr -> box cr
+        | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
         | ParseOnly -> null
 
     let context =
@@ -1338,6 +1339,7 @@ let ``the configured analyzer set walks a typed tree from this FCS and fires eve
     let checkResultsObj =
         match checkResults with
         | FullCheck cr -> box cr
+        | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
         | ParseOnly -> null
 
     // A plant that does not compile yields a partial tree the rules may skip, so the
@@ -1349,6 +1351,7 @@ let ``the configured analyzer set walks a typed tree from this FCS and fires eve
             |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
             |> Array.map (fun d -> d.Message)
             |> List.ofArray
+        | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
         | ParseOnly -> [ "parse only" ]
 
     test <@ List.isEmpty compileErrors @>
@@ -1356,6 +1359,7 @@ let ``the configured analyzer set walks a typed tree from this FCS and fires eve
     let realTypedTree =
         match checkResults with
         | FullCheck cr -> box cr.ImplementationFile
+        | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
         | ParseOnly -> noTypedTree
 
     let client =

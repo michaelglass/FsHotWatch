@@ -2316,6 +2316,7 @@ let ``a FullCheck whose parse failed is unanalysable, not analysed from a recove
             <@
                 match checkedResult.CheckResults with
                 | FullCheck _ -> true
+                | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
                 | ParseOnly -> false
             @>
 

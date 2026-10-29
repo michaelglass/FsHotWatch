@@ -80,7 +80,9 @@ let internal stampOf
       ConfigDigest = configDigest
       Typed =
         match result.CheckResults with
-        | FullCheck _ -> true
+        // A replay stands for the full check it filed (ADR-059 §17).
+        | FullCheck _
+        | Replayed _ -> true
         | ParseOnly -> false }
 
 /// The inputs a cache key named for each file, handed from the key computation to the
@@ -506,6 +508,7 @@ let internal noTypedTree: obj =
 let internal typedTreeOf (checkResults: FileCheckState) : obj =
     match checkResults with
     | ParseOnly -> noTypedTree
+    | Replayed _ -> raise (ReplayedResultException("analyzers (typed tree)", "(a replayed check)"))
     | FullCheck results ->
         try
             box results.ImplementationFile
@@ -817,6 +820,7 @@ let internal createWithSeams
                         let checkResultsObj =
                             match result.CheckResults with
                             | FullCheck cr -> box cr
+                            | Replayed _ -> raise (ReplayedResultException("analyzers", fileStr))
                             | ParseOnly ->
                                 debug "analyzers" $"Running parse-only analyzers for %s{fileStr}"
                                 null
