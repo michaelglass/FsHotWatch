@@ -1553,7 +1553,17 @@
         "branch": 91,
         "reason": "new file (AUTOMATION-681 slice 3, ADR-045: the session snapshot epoch, its manifest, and the ledger a daemon advances from accepted change cohorts). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-27 on macOS by SnapshotEpochTests with coverage: line 69/70 (the 70th, the Ledger constructor the daemon uses, is covered by the DaemonTests/RepositoryHostTests snapshot tests in the full suite), branch 22/24 (~91.7%). Uncovered: the compiler-generated null check of `use stream`, and the plain-IOException arm of readFile (a sharing violation, which a POSIX file system does not raise). Platform-neutral: no platform-specific path."
       }
-    ]
+    ],
+    "ActionKey.fs": {
+      "line": 100,
+      "branch": 71,
+      "reason": "new file (AUTOMATION-1362 step 2, ADR-059 §1: the one ActionKey recipe). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-29 on macOS by mise run test-direct: line 100% (39/39), branch 71.4% (10/14); the uncovered edges are compiler-generated edges of the hex-digit and duplicate-label predicates. Pure, so platform-neutral."
+    },
+    "OutcomeStore.fs": {
+      "line": 84,
+      "branch": 64,
+      "reason": "new file (AUTOMATION-1362 step 2, ADR-059 §2: the outcome store). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-29 on macOS by mise run test-direct: line 84.6% (154/182), branch 64.3% (54/84). Uncovered: the IO-failure arms (a quarantine or eviction that cannot move or delete, a write that throws) and the per-exception arms of decode. Platform-neutral file IO only."
+    }
   },
   "countFloors": {
     "AnalyzerIdentity.fs": [
