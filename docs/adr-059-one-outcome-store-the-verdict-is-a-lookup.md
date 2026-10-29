@@ -1,0 +1,315 @@
+# ADR-059: One outcome store; the verdict is a lookup; the daemon only accelerates
+
+Status: Accepted (2026-10-29). AUTOMATION-1362 (epic). Supersedes, at the switch (§9), the
+verdict-currency parts of ADR-018, 019, 021, 022, 023, 033 and 034, and makes the
+correctness half of ADR-045 to 048 unnecessary. The maintainer's direction was to write this
+and implement it without waiting for review ("we can change after the fact"), so the
+judgement calls are recorded here (§12) rather than asked.
+
+## Context
+
+The convergence analysis (intelligence `results/handoffs/fshw-thrash-analysis-2026-10-29.md`,
+§5 and §6) counted:
+
+- 24 persisted stores that can affect correctness, plus 5 in-process memos;
+- four different "are these the same inputs?" functions, each with its own walk and its own
+  exclude handling:
+  - `TreeHash` (the verdict);
+  - `TestEvidenceKey` `K_P` (shared test evidence);
+  - `ProjectModel.ProjectInputs` (whole-project evidence);
+  - `TaskCache.merkleCacheKey` (plugin task results);
+- a verdict that still *grades live daemon state*:
+  - plugin statuses;
+  - "settled";
+  - receipts and Earned evidence held in memory;
+  - generation-keyed fast paths.
+
+Two defect classes dominate the six-week history, and both follow from that shape:
+
+- **Chain C, "a key omits an input"** (16 tickets): 948, 1099, 1138, 1150, 1151, 1200,
+  1217, 1247, 1003, 1255, 1256, 1273, 793, 1116, 1246, 824. Each new key re-derived its
+  input set, so each could miss something.
+- **Chain D, "no verdict, stale verdict, or false green from bookkeeping"** (25 tickets):
+  800, 833, 838, 859, 873, 881, 887, 895, 897, 903, 941, 958, 962, 1040, 1104, 1107, 1110,
+  1112, 1129, 1228, 1250, 1268, 1337, 1352, 1355.
+
+AUTOMATION-681, 682 and 683 (46 slice commits, 19 ADRs, 3 reverts) exist mostly to make
+the live state that a verdict reads race-free.
+
+FCS checker state cannot be serialised, so the warm daemon stays. The question is only
+whether **correctness** reads its memory. This ADR says it must not.
+
+## Decision, in one paragraph
+
+Every unit of verifiable work is an **action** with an **ActionKey**: a content digest of
+its declared inputs, computed by one function over one walk. Every completed action
+writes an immutable **outcome record** under its key to one **outcome store**. A verdict
+for tree `T` is a **lookup**: compute the required actions for `T`, then look up a record
+for each. It is green if all of them passed, red if any failed, and "no verdict" if any is
+missing. `check` means "make the missing records exist, then look up". `confirm` means the
+same with every test action required in full. `verdict` means look up without running
+anything. The daemon fills the store faster, and that is all it does. Killing it, racing
+it or restarting it can delay or omit a record. It can never make a stale record look
+current, because a record is found only by the key of the inputs it was produced from.
+
+## 1. One ActionKey
+
+```
+ActionKey(kind, inputs) =
+  "ak1:" + lowerhex(sha256(utf8(
+      "fshw-action-v1" LF kind LF
+      for each (label, digest) in inputs, sorted by label (ordinal):
+          len(label) ":" label "|" len(digest) ":" digest "|"
+  )))
+```
+
+- **Inputs are labelled digests.** A miss names the label that moved, which today's
+  `TestEvidenceKey.moved` and `KeyFingerprints` do in two different ways. A digest is a
+  file's `ContentHash`, a nested ActionKey, or a tree digest. Nesting is how a key over many
+  files stays a merkle key.
+- **The encoding is length-prefixed,** as `merkleCacheKey` already is, so no label/value
+  split can collide. Labels are unique: a duplicate label is a programming error and
+  throws.
+- **One walk, one exclude model.** Every file input of every action is a *projection* of a
+  single walk: `TreeHash.files`, the verdict walk with `exclude` plus `verdictInputs`.
+  `TestEvidenceKey.snapshot` already partitions that walk instead of walking again. Every
+  other key does the same, so no second walker and no second exclude, gitignore or
+  `SourceExcludedDirs` list can exist. Chain C's exclude members (1003, 1255, 1256, 1273,
+  1274) are made impossible, not fixed one at a time.
+- **One toolchain identity.** Today there are three: `TestEvidenceKey.toolchainOf`,
+  `CheckCache.toolchainIdentity` and `TaskCache.scopeToToolchain`. The ActionKey takes
+  one `toolchain` label from one function. That makes 1217 and 1247 moot.
+- **No time in any key.** No mtime and no "racy window". Content only (ADR-008).
+
+**Migration.** During shadow mode the four legacy functions keep their byte-exact recipes.
+Changing them would invalidate every verdict and every evidence entry on every machine,
+and it would confound the shadow comparison. At the switch, they are re-expressed as
+ActionKey kinds (`tree`, `test`, `project-inputs`, `task`) in one release, with each
+`Algorithm`/`Version` bumped once. That costs one cold cache per machine.
+
+## 2. The outcome store
+
+- **Location:** `~/.cache/fshw/outcomes/<repository namespace>/`. It is box-wide and
+  shared by every checkout of one repository, exactly as the test-evidence store is
+  (`TestEvidenceStore.directoryFor`). Keys are content addresses with repo-relative paths,
+  so two checkouts holding the same bytes compute the same key, and a record earned in one
+  speaks for the other. Every API takes its root explicitly. Tests use a temporary root
+  and never the user's cache (the 1100 lesson).
+- **Format:** one immutable JSON file per record, at
+  `records/<key[4..5]>/<key>/<recordId>.json`. `recordId` is the sha256 of the payload, so
+  re-recording an identical outcome is a no-op. The payload holds:
+  - `schema: "fshw-outcome-v1"`, `key`, `kind` and `subject` (for example the project);
+  - `inputs` (the labelled digests);
+  - `outcome`: `pass` or `fail`, with counts where they apply;
+  - `measurements` (duration);
+  - `producer` (fshw binary identity, worktree, run id);
+  - `recordedAt`.
+
+  The file is an envelope `{checksum, payload}`, as in `TestEvidenceStore`.
+- **Atomic write protocol:**
+  1. Serialise.
+  2. Write to `tmp/<guid>` in the same filesystem.
+  3. Rename to the final path. Never overwrite: if the final path exists, it holds the
+     same bytes by construction, so drop the temp file.
+
+  A torn file, a bad checksum or an unknown schema is a **miss**. The file is moved to
+  `quarantine/`. Nothing in the store can make a result green that a real run did not
+  produce.
+- **Reading:** `lookup key` returns the newest record for the key, ordered by
+  `recordedAt` with ties going to `fail`. `history key` returns all of them; that is the
+  flakiness input (§9 of the analysis). Several records per key is the point: a flake is
+  two outcomes for one input set, and it is recorded rather than overwritten.
+- **GC:** `gc now ttl maxBytes` deletes whole key directories whose newest record is
+  older than `ttl` (default 14 days). It then evicts the oldest keys until the store is
+  under `maxBytes` (default 256 MB). GC is opportunistic, run after a publication, and it
+  never deletes a key the publication just looked up. It is correctness-neutral: GC can
+  turn a hit into a miss, and a miss means "run".
+
+## 3. The lookup verdict
+
+`LookupVerdict.decide required lookup` returns `Green`, `Red failing` or
+`Missing missing`. These map onto the **existing** outcomes and exit codes: green is 0,
+red is 1, and missing is the existing "no verdict" (3). **No verdict state, exit code or
+ledger is added.**
+
+The required set for command `c` on tree `T`, `R(c, T)`:
+
+- **`plugin:<name>`**, one per configured non-test plugin (build, lint, analyzers, format,
+  coverage, file commands). Its key covers the tree digest, the plugin name and the
+  producer. Later, each plugin's own declared inputs replace the tree digest (§11).
+- **`diagnostics`**: the FCS ledger, the `fcs` red-cause source that no plugin owns
+  (ADR-024 case 3). Its key covers the tree digest and the producer.
+- **`test:<project>`**, one per test project in the configured scope (`tests.projects`
+  minus `tests.excluded`):
+  - Under `confirm`, a passing record of scope **`full`** is required.
+  - Under `check`, either a passing `full` record, **or** a passing `impact` record for
+    this tree's selection **and** a passing `full` record for the project under some
+    earlier key. The second is the baseline of ADR-021, read from the store instead of
+    from `full-suite-baseline.json`.
+
+**Restart.** The store is on disk, and records are found only by content keys. A new daemon
+(or none at all: `fshw verdict`) answers exactly as the old one would have for the same
+bytes. The daemon's memory can add records. It is never consulted.
+
+**Selection** (which tests an `impact` record covers) is out of scope here. The shadow
+takes today's selection from the run report. AUTOMATION-975/976 replace it with traces.
+
+## 4. Ledgers #8–#14 and the test-prune task key
+
+Each ledger is replaced by a *query* over the store. None of them survives as a file.
+
+| # | Ledger | Becomes | Makes moot |
+|---|---|---|---|
+| 8 | `full-suite-baseline.json` | "is there a passing `full` record for project P" | 833, 1032, 895 |
+| 9 | `pending-verification.json` | the required actions with no passing record at the current key | 800, 1040 |
+| 10 | `outstanding-failures.json` | the newest record for the key is `fail`, so the result is red until a passing record exists at the current key | 801 (a flake rate is `history`) |
+| 11 | `whole-project-evidence.json` | a passing `full` test record at `K_P`, the project's ActionKey | 1320's sidecar |
+| 12 | `runtime-coverage-not-ingested.json` | coverage is the action `coverage:<project>`; no record means missing | 1352 |
+| 13 | `runtime-coverage-obligations.json` | the same as 12 | 1352 |
+| 14 | `owner-publication-pending` | nothing: a crash leaves records missing, and missing already means "run" | 1347 |
+
+**The test-prune task key** (`TestPrunePlugin.cacheKeyFor`) does not pin the tree. It keys
+on the in-memory changed-symbol set, the pending-queue hash and `sessionHasTestEvidence`,
+and that is why it needs the fail-closed `sessionHasTestEvidence` guard.
+
+- **Step one (shadow phase):** add the tree digest as a key input. Adding an input can only
+  turn hits into misses, never the reverse, so it is safe on its own.
+- **At the switch:** the whole-run test-prune cache is deleted. A `BuildCompleted` whose
+  required test actions all have records is a no-op by lookup, which is what the cache
+  approximated.
+
+## 5. TestPrune schema bumps stop deleting state
+
+The ledgers were pushed out of the TestPrune DB into sidecar JSON because a schema bump
+**deletes the DB file** (`Database.openCheckedConnection`; `PendingVerification.fs`
+says so). Two changes end that:
+
+1. **Outcomes never live in the TestPrune DB.** The outcome store is fshw's own,
+   independent file tree. No TestPrune schema can reach it.
+2. **In TestPrune, a schema rebuild drops and recreates core tables only, in one
+   transaction.** Plugin-owned tables, and anything core did not create, are kept. The
+   file is no longer deleted. The symbol index is derived data and is still rebuilt
+   (`WasRecreated` stays). What a bump can no longer do is destroy state that is not
+   derivable from the sources.
+
+This makes 951's class (a non-additive schema meeting an older consumer) a refusal rather
+than a deletion. That half already exists as `SchemaNewerThanConsumerException`.
+
+## 6. Dropping the mtime-keyed `typeProviderCache` (1200)
+
+`FrameExclusions.typeProviderCache` keys on `(path, mtime)`, the last mtime key, against
+ADR-008. It is re-keyed on `(path, ContentHash.ofFile path)`. The verdict is then a pure
+function of the bytes. Hashing costs a read, but a provider DLL is read only when an
+option names it, which is once per project-options evaluation.
+
+## 7. Shadow mode
+
+- **Where:** at every verdict publication (`check` and `confirm`, `IpcOutput`), and at
+  every `fshw verdict` read.
+- **What:**
+  1. Project the run's results into outcome records, and write them.
+  2. Compute `R(c, T)` from the configuration, not from the run.
+  3. Look the required set up in the store.
+  4. Compare the lookup's outcome with today's.
+- **The log:** one line is appended to `.fshw/shadow/lookup-verdict.jsonl`:
+
+  ```json
+  {"schema":"fshw-shadow-v1","at":"…","command":"check|confirm|verdict",
+   "tree":"sha256:…","today":{"outcome":"green|red|no-verdict|…","exit":0},
+   "lookup":{"outcome":"green|red|missing","missing":["test:…"],"failing":["plugin:lint"]},
+   "agree":true,"producer":"…","daemonStartedAt":"…"}
+  ```
+
+  This is a **diagnostic log, not a ledger.** Nothing reads it to make a decision. It
+  exists only to measure the switch criterion, and deleting it changes no answer.
+- **Agreement** compares outcome classes: green with green, red with red, and anything
+  else with missing. A disagreement is never noise. Each one is either a false green in
+  today's verdict, a lost record or a mis-derived `R(c, T)`. It gets a ticket before the
+  count continues.
+- **Kill switch:** `FSHW_OUTCOME_SHADOW=0`. Shadow work is wrapped so that a failure in it
+  is logged and **never** changes today's exit code or `verdict.json`.
+
+The first shadow keys test actions by **tree digest**, which gives parity with
+`verdict.json`'s addressing and no reuse across trees. Re-keying them on `K_P`, written by
+the daemon's test runner, is the step that turns the store into an accelerator (§11). The
+switch criterion is measured on the K_P keys.
+
+## 8. The switch criterion
+
+The switch needs **0 disagreements over 50 consecutive intelligence lands** (server side)
+**or**, laptop side, all of the following:
+
+- 0 disagreements over **50 consecutive shadow lines** with `command ≠ verdict`, across
+  FsHotWatch's own `mise run ci` and intelligence `./build.fsx check` runs;
+- at least **10 `confirm`** lines, at least **10 lines from the first publication after a
+  daemon start** (a changed `daemonStartedAt`), and at least **5 `verdict` reads** on a tree
+  whose last publication was a different command;
+- every one of those `verdict` reads agreeing as well.
+
+It is measured with `jq` over the logs:
+
+```sh
+jq -s '[.[] | select(.command != "verdict")] | .[-50:] | map(select(.agree | not)) | length' \
+  .fshw/shadow/lookup-verdict.jsonl
+```
+
+A disagreement resets the count. There are no "expected" disagreement classes. If one
+appears by design, then `R(c, T)` is wrong: fix it, and restart the count.
+
+## 9. Deletion plan after the switch
+
+These are deleted in this order. Each is its own commit, with `mise run ci` and GitHub CI
+green:
+
+1. The verdict reads the lookup, and the shadow log goes.
+2. Ledgers #8–#14, with their load/save, recovery and tests.
+3. Receipts and their grading: `EvidenceReceipt`, `receiptSpeaksFor`, Earned evidence,
+   `CohortSeal`, settled-read grading (ADR-033, 034), and the receipt-refusal path in
+   `IpcOutput.publishVerdictWithReason`.
+4. The whole-run test-prune task cache (§4).
+5. The four legacy key functions, re-expressed as ActionKey kinds (§1).
+6. `TestEvidenceStore`, folded into the outcome store. It is already a content-addressed
+   store of `test` records under `K_P`; it becomes those records.
+7. Re-scope the live-state guards (ADR-045 to 048 epochs, incarnations and generation CAS)
+   to throughput and memory. Delete those whose only purpose was verdict correctness.
+
+## 10. Which tickets each part makes moot
+
+- **§1 One ActionKey:** 1003, 1217, 1247, 1255, 1256, 1273, 1274, and the reason for 1138,
+  1150 and 1151.
+- **§2–3 Store and lookup verdict:** 838, 859, 873, 887, 897, 903, 1104, 1107, 1129, 1228,
+  1268, 1337, 1355, and the correctness stake in 938 and 939's remaining phases and in
+  1359 and 1360.
+- **§4 Ledgers:** 800, 801, 833, 895, 1032, 1040, 1320 (sidecar), 1347, 1352.
+- **§5 Schema:** 885, 905, 951, 1041, and 1151's cold re-index cost.
+- **§6:** 1200.
+
+## 11. Implementation order (each step lands green on its own)
+
+1. This ADR.
+2. `ActionKey`: the pure function, the labelled inputs and `moved`, with tests.
+3. `OutcomeStore`: atomic immutable records, lookup, history, quarantine and GC, with
+   tests on a temporary root.
+4. `LookupVerdict`: `decide` and `R(c, T)`, as pure functions with tests.
+5. Shadow: record at publication, compare, and append the log; also at `fshw verdict`.
+   **This is shadow mode.**
+6. The test-prune task key pins the tree (§4, step one), and `typeProviderCache` is
+   re-keyed (§6).
+7. Re-key `test` records on `K_P` from the daemon's test runner. Accumulate shadow data.
+8. TestPrune: a rebuild that keeps non-core tables (§5).
+9. The switch (§8), then the deletions (§9).
+
+## 12. Judgement calls made without review
+
+- **Box-wide store, not per-checkout:** the same choice as the evidence store, for
+  cross-checkout reuse. A per-checkout store would be simpler, but it would make a fresh
+  workspace cold. That is the 1320 and 1304 cost this work exists to remove.
+- **Several records per key, and the newest wins:** this keeps flake history as data
+  instead of overwriting it. Ordering by `recordedAt` is a tie-break between *outcomes*,
+  not a freshness rule. No record expires by time except through GC.
+- **The first shadow keys tests by tree digest:** this gives exact parity with
+  `verdict.json` first, so early disagreements point at bookkeeping, not at key design.
+- **The shadow log is not a ledger:** it is a diagnostic and write-only. Nothing reads it
+  for a decision. "No new ledgers" is therefore kept.
+- **No `tree` ActionKey replaces `TreeHash` during shadow:** that is deferred to the switch
+  to avoid a fleet-wide cold cache in the middle of the comparison.
