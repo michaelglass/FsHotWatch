@@ -301,6 +301,7 @@ type MacFsEventsTests() =
 
                 test <@ ex.Message.Contains("at most") @>)
 
+    [<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
     [<Fact(Timeout = 150000)>]
     member _.``FsEventStream never delivers an event under an excluded path``() =
         if not isMacOS then
@@ -367,6 +368,7 @@ type MacFsEventsTests() =
                 let paths = lock lockObj (fun () -> detectedPaths)
                 test <@ paths |> List.exists (fun p -> p.EndsWith("Test.fs")) @>)
 
+    [<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
     [<Fact(Timeout = 150000)>]
     member _.``FsEventStream detects file modification``() =
         if not isMacOS then

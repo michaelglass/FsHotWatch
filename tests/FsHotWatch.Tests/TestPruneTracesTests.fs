@@ -838,6 +838,7 @@ let private ingestTypeUse (root: string) (index: IndexFold) (lines: ResizeArray<
 
 /// A fold that is still writing the index when ingestion starts: it indexes `write` only
 /// after `delay`, then reports folded. `asked` counts the waits.
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 let private slowFold (delay: TimeSpan) (write: unit -> unit) (asked: int ref) : IndexFold =
     { Folded =
         fun () ->

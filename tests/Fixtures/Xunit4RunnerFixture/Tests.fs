@@ -35,6 +35,7 @@ type Hanging() =
 /// (the runner's reporting, a sibling quick test) is not held, so the count is then
 /// re-sampled for up to a second and the lowest reading wins.
 type PoolProbe() =
+    [<FsHotWatch.Tests.WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
     [<Fact>]
     member _.``no pool thread is held by other work``() =
         if not (String.IsNullOrEmpty(Environment.GetEnvironmentVariable "FSHW_FIXTURE_POOL_PROBE")) then

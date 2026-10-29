@@ -289,6 +289,7 @@ let private holdFirst
 
 /// Two checks of one project under way when `invalidate` runs, and the errors each
 /// reports.
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 let private checksAcrossInvalidation (invalidate: FSharpChecker -> FSharpProjectOptions -> unit) =
     withTempDir "snapshot-invalidate-inflight" (fun dir ->
         let checker = FsHotWatch.Daemon.Daemon.createChecker ()

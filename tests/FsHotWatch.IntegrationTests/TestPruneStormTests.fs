@@ -16,6 +16,7 @@ open FsHotWatch.Tests.TestHelpers
 // in the integration suite for that reason — do not move it back and widen the
 // sleep instead.
 
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
 [<Fact(Timeout = 30000)>]
 let ``rerun storm: plugin reaches terminal state after BuildCompleted hammering subsides`` () =
     withTempDir "tp-rerun-storm" (fun tmpDir ->

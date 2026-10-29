@@ -131,7 +131,7 @@ let private reap (probe: Probe) =
     | Some child when not child.HasExited -> child.Kill true
     | _ -> ()
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a test run set off by a client's scan is cancelled and its hosts reaped when that client goes`` () =
     let probe = newProbe ()
     let host = hostWith probe
@@ -145,7 +145,7 @@ let ``a test run set off by a client's scan is cancelled and its hosts reaped wh
 
         client.Cancel()
 
-        test <@ child.WaitForExit 10000 @>
+        test <@ child.WaitForExit HangWaitMs @>
         test <@ idle host @>
         test <@ List.ofSeq probe.Folds = [ "withdrawn" ] @>
         // Nothing relaunched it: the client that wanted it is gone.

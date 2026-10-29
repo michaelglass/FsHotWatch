@@ -29,7 +29,11 @@
     <!-- Registers the xUnit pipeline startup that initialises FSharp.Core's
          quotation statics on one thread before tests run in parallel. See the file. -->
     <Compile Include="QuotationStaticInit.fs" />
+    <!-- Before TestHelpers: the FSHW-WALL-001 allowlist attribute, used from there on. -->
+    <Compile Include="WallClock.fs" />
     <Compile Include="TestHelpers.fs" />
+    <!-- After TestHelpers: the one fake clock tests move by hand. -->
+    <Compile Include="FakeClock.fs" />
     <!-- After TestHelpers: fails the test after which the process working directory is gone. -->
     <Compile Include="ProcessWorkingDirectoryGuard.fs" />
     <!-- After TestHelpers (uses withTempDir + probeLoop), before every test file
@@ -50,6 +54,7 @@
     <Compile Include="ProjectModelTests.fs" />
     <Compile Include="SnapshotEpochTests.fs" />
     <Compile Include="ProcessHelperTests.fs" />
+    <Compile Include="SettledEscalationOps.fs" />
     <Compile Include="KillEscalationTests.fs" />
     <Compile Include="ShutdownEscalationTests.fs" />
     <Compile Include="ProcessOwnershipTests.fs" />

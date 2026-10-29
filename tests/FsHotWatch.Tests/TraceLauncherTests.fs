@@ -57,32 +57,40 @@ let private reap (child: Task<Process>) =
             with :? InvalidOperationException ->
                 ()
 
-            Assert.True(p.WaitForExit 5000, "the test must reap the child it started")
+            Assert.True(
+                p.WaitForExit FsHotWatch.Tests.TestHelpers.HangWaitMs,
+                "the test must reap the child it started"
+            )
         finally
             p.Dispose()
 
-/// Whether `task` settles, faulted or not, within ten seconds.
+/// Whether `task` settles, faulted or not, before a hang-only budget. `WhenAny` of the one
+/// task never faults, so this asks only whether it settled.
 let private settles (task: Task) =
-    obj.ReferenceEquals(Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds 10.0)).Result, task)
+    Task.WhenAny([| task |]).Wait(FsHotWatch.Tests.TestHelpers.HangWait)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``closing the owning process scope mid-verify kills the verify child`` () =
     let scope = ProcessRegistry.Registry()
     use _ = ProcessRegistry.install scope
     let child, launch = launchObserved slowVerify CancellationToken.None
 
     try
-        Assert.True(child.Wait(TimeSpan.FromSeconds 10.0), "the verify child must start")
+        Assert.True(child.Wait(FsHotWatch.Tests.TestHelpers.HangWait), "the verify child must start")
         Assert.Contains(scope.Snapshot(), fun tracked -> tracked.Id = child.Result.Id)
 
         scope.KillAll()
 
-        Assert.True(child.Result.WaitForExit 7000, "closing the scope must kill the verify child")
+        Assert.True(
+            child.Result.WaitForExit FsHotWatch.Tests.TestHelpers.HangWaitMs,
+            "closing the scope must kill the verify child"
+        )
+
         Assert.True(settles launch, "the launch must end once its child is killed")
     finally
         reap child
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``cancelling the run mid-verify kills the verify child and raises, leaving its scope open`` () =
     let scope = ProcessRegistry.Registry()
     use _ = ProcessRegistry.install scope
@@ -90,11 +98,15 @@ let ``cancelling the run mid-verify kills the verify child and raises, leaving i
     let child, launch = launchObserved slowVerify cts.Token
 
     try
-        Assert.True(child.Wait(TimeSpan.FromSeconds 10.0), "the verify child must start")
+        Assert.True(child.Wait(FsHotWatch.Tests.TestHelpers.HangWait), "the verify child must start")
 
         cts.Cancel()
 
-        Assert.True(child.Result.WaitForExit 7000, "cancelling the run must kill the verify child")
+        Assert.True(
+            child.Result.WaitForExit FsHotWatch.Tests.TestHelpers.HangWaitMs,
+            "cancelling the run must kill the verify child"
+        )
+
         Assert.True(settles launch, "the launch must end once its child is killed")
         Assert.True(launch.IsFaulted || launch.IsCanceled)
 

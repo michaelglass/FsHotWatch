@@ -40,6 +40,7 @@ let private hammerTreeBriefly (dir: string) (burst: TimeSpan) : Thread =
     t.Start()
     t
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 20000)>]
 let ``withTempDir cleanup tolerates a daemon still writing into the dir`` () =
     // Repeat so the cleanup window reliably overlaps a live writer: the bug threw

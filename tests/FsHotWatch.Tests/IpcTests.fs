@@ -702,6 +702,7 @@ let ``ScanStatus prefixes the wedge report when a stuck op is in flight`` () =
     // The underlying scan line is still present.
     test <@ status.Contains("complete: 10 files") @>
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``status stays responsive over a real pipe while another op is wedged`` () =
     // End-to-end acceptance: a real daemon over a real pipe, ONE RPC op blocked
@@ -870,6 +871,7 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
 
     test <@ Map.isEmpty (getParsed "no-such") @>
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``WaitForScan resolves immediately when generation already advanced`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -1500,6 +1502,7 @@ let ``repeated scan force via IPC increments generation each time`` () =
         if System.IO.Directory.Exists tmpDir then
             System.IO.Directory.Delete(tmpDir, true)
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``WaitForScan client observes failure when daemon is shut down mid-wait`` () =
     // Companion to the WaitForComplete shutdown test, for the OTHER blocking wait: a
@@ -1586,6 +1589,7 @@ let private writeMalformedFrame (pipeName: string) (payload: byte[]) : bool =
     with _ ->
         false
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``server keeps accepting connections after a malformed-frame client`` () =
     let pipeName = $"fshw-wedge-{Guid.NewGuid():N}"
@@ -1792,7 +1796,8 @@ let ``RPC deadline includes a synchronous callback before its task is returned``
         test <@ entered.Task.Wait(HangWaitMs) @>
 
         let settledInTime =
-            obj.ReferenceEquals(Task.WhenAny(call :> Task, Task.Delay(HangWaitMs)).Result, call)
+            // `WhenAny` of the one task never faults, so this asks only whether it settled.
+            Task.WhenAny([| call :> Task |]).Wait(HangWait)
 
         test <@ settledInTime @>
         let ex = Assert.Throws<AggregateException>(fun () -> call.Wait())

@@ -11,33 +11,27 @@ open Swensen.Unquote
 open FsCheck
 open FsCheck.FSharp
 open FsHotWatch.WorkScheduler
+open FsHotWatch.Tests.FakeClock
 open FsHotWatch.Tests.TestHelpers
 
 /// A clock the test moves by hand.
-type private ManualClock() =
-    let mutable now = TimeSpan.Zero
-    member _.Now() = now
-
-    member _.Advance(seconds: float) =
-        now <- now + TimeSpan.FromSeconds seconds
-
 let private seconds (s: float) = TimeSpan.FromSeconds s
 
 let private withClock (capacity: int) =
     let clock = ManualClock()
-    Scheduler(capacity, ignore, clock.Now), clock
+    Scheduler(capacity, ignore, clock.AwakeNow), clock
 
 /// Acquire on `lane`; the acquisition queues (or is granted) before this returns.
 let private acquire (lane: Lane) (ct: CancellationToken) =
     lane.Acquire ct |> Async.StartImmediateAsTask
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a lane that is granted at once waited nothing`` () =
     let scheduler, clock = withClock 1
     let a = scheduler.Lane "A"
 
     test <@ (acquire a CancellationToken.None).Result @>
-    clock.Advance 3.0
+    clock.AdvanceSeconds 3.0
 
     let status = a.Status()
     test <@ status.Lane = "A" @>
@@ -47,21 +41,21 @@ let ``a lane that is granted at once waited nothing`` () =
     // The slot is held now, so its held time runs up to the clock.
     test <@ status.Held = seconds 3.0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a waiter's wait runs from its enqueue to the hand-over, and the slot moves lanes`` () =
     let scheduler, clock = withClock 1
     let a = scheduler.Lane "A"
     let b = scheduler.Lane "B"
 
     test <@ (acquire a CancellationToken.None).Result @>
-    clock.Advance 2.0
+    clock.AdvanceSeconds 2.0
     let waiting = acquire b CancellationToken.None
     test <@ (b.Status()).Queued = 1 && (b.Status()).Running = 0 @>
 
-    clock.Advance 7.0
+    clock.AdvanceSeconds 7.0
     a.Release()
     test <@ waiting.Result @>
-    clock.Advance 1.0
+    clock.AdvanceSeconds 1.0
 
     let sa = a.Status()
     let sb = b.Status()
@@ -77,7 +71,7 @@ let ``a waiter's wait runs from its enqueue to the hand-over, and the slot moves
                                    Queued = 0 }
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``waits add up, and the longest is kept`` () =
     let scheduler, clock = withClock 1
     let holder = scheduler.Lane "holder"
@@ -85,12 +79,12 @@ let ``waits add up, and the longest is kept`` () =
 
     test <@ (acquire holder CancellationToken.None).Result @>
     let first = acquire b CancellationToken.None
-    clock.Advance 4.0
+    clock.AdvanceSeconds 4.0
     let second = acquire b CancellationToken.None
-    clock.Advance 1.0
+    clock.AdvanceSeconds 1.0
     holder.Release()
     test <@ first.Result @>
-    clock.Advance 2.0
+    clock.AdvanceSeconds 2.0
     b.Release()
     test <@ second.Result @>
 
@@ -103,7 +97,7 @@ let ``waits add up, and the longest is kept`` () =
             && status.LongestWait = seconds 5.0
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a waiter that gives up is counted abandoned, not granted, and adds no wait`` () =
     let scheduler, clock = withClock 1
     let a = scheduler.Lane "A"
@@ -112,7 +106,7 @@ let ``a waiter that gives up is counted abandoned, not granted, and adds no wait
 
     test <@ (acquire a CancellationToken.None).Result @>
     let abandoned = acquire b cts.Token
-    clock.Advance 6.0
+    clock.AdvanceSeconds 6.0
     cts.Cancel()
     test <@ not abandoned.Result @>
 
@@ -120,7 +114,7 @@ let ``a waiter that gives up is counted abandoned, not granted, and adds no wait
     test <@ status.Abandoned = 1L && status.Granted = 0L && status.Queued = 0 @>
     test <@ status.Waited = TimeSpan.Zero && status.Running = 0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a caller that has already given up counts nothing`` () =
     let scheduler, _ = withClock 1
     let a = scheduler.Lane "A"
@@ -131,7 +125,7 @@ let ``a caller that has already given up counts nothing`` () =
     let status = a.Status()
     test <@ status.Granted = 0L && status.Abandoned = 0L && status.Queued = 0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a lane releasing a slot another lane holds is refused, and the slot stays held`` () =
     let scheduler, _ = withClock 2
     let a = scheduler.Lane "A"
@@ -143,7 +137,7 @@ let ``a lane releasing a slot another lane holds is refused, and the slot stays 
     test <@ (a.Status()).Running = 1 && (b.Status()).Running = 0 @>
     test <@ scheduler.Running = 1 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a lane's status is a JSON object with its counts and times in milliseconds`` () =
     let status =
         { Lane = "/r"
@@ -173,7 +167,7 @@ let ``a lane's status is a JSON object with its counts and times in milliseconds
             json = """{"queued":2,"running":1,"granted":5,"abandoned":1,"waitedMs":1500,"longestWaitMs":900,"heldMs":4200,"chargedMs":8400,"interactive":{"granted":4,"abandoned":0,"waitedMs":500,"longestWaitMs":300},"bulk":{"granted":1,"abandoned":1,"waitedMs":1000,"longestWaitMs":900}}"""
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a scheduler's status is a JSON object with its capacity and what is held and queued`` () =
     let json =
         (SchedulerStatus.payload
@@ -230,7 +224,7 @@ let ``under any sequence, the bound holds and every lane's counts add up to the 
 
         for step in steps do
             match step with
-            | Advance s -> clock.Advance(float s)
+            | Advance s -> clock.AdvanceSeconds(float s)
             | Acquire(i, bulk) ->
                 let cts = new CancellationTokenSource()
 

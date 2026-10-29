@@ -11,6 +11,7 @@ open System.Threading
 [<DllImport("libc", EntryPoint = "setsid", SetLastError = true)>]
 extern int private createSession()
 
+[<FsHotWatch.Tests.WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
 [<EntryPoint>]
 let main args =
     match args with

@@ -36,7 +36,14 @@ let private writeController (path: string) (started: string) (restored: string) 
           touch \"%s{restored}\"\n"
     )
 
-[<Fact(Timeout = 60000)>]
+// Load (AUTOMATION-1364): this failed once in a full run at load ~150 and passed alone. The
+// likely mechanism (not proven): the 1 s timeout runs from the spawn, so a starved controller
+// can be killed before it runs `touch started`, which fails the test on scheduling rather than
+// on the kill order it exists to prove. TestPrune project timeouts cannot be armed on a
+// child's first write, so the timeout is 5 s: wide enough for a starved `sh` to reach its
+// `wait`, at a cost of 4 s per run. The wait and cap sit above it and the product's teardown.
+[<Fact(Timeout = RealCheckTestCapMs)>]
+[<WallClock("real host: a real sh controller and child, a real product timeout and a real tree kill; the claim is the order the real OS sees the signals in, so it runs on real time with a timeout sized for a starved shell")>]
 let ``a test host killed at its timeout is stopped from the bottom up, so its controller restores and a marker names the timeout``
     ()
     =
@@ -54,7 +61,7 @@ let ``a test host killed at its timeout is stopped from the bottom up, so its co
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = Some 1
+                TimeoutSec = Some 5
                 ReportVerificationFormat = AutoDetect
                 Starvation = None
                 CheckSkip = None
@@ -66,7 +73,7 @@ let ``a test host killed at its timeout is stopped from the bottom up, so its co
         host.RegisterHandler(create ":memory:" tmpDir (Some configs) None None None None [])
         host.EmitBuildCompleted(BuildSucceeded)
 
-        waitForTerminalStatus host "test-prune" 45000
+        waitForTerminalStatus host "test-prune" (2 * HangWaitMs)
 
         test <@ File.Exists started @>
         test <@ File.Exists restored @>
@@ -75,4 +82,4 @@ let ``a test host killed at its timeout is stopped from the bottom up, so its co
             allFilesUnder ("SlowTests" + TimeoutMarker.Suffix) (Ctrf.reportsDir tmpDir)
 
         test <@ markers.Length = 1 @>
-        test <@ (File.ReadAllText markers[0]).Contains "TIMED OUT after 1s" @>)
+        test <@ (File.ReadAllText markers[0]).Contains "TIMED OUT after 5s" @>)

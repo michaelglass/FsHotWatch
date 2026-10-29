@@ -161,7 +161,7 @@ let ``the host names a plugin holding an exclusive run until its result fold com
         test <@ List.isEmpty (host.ExclusiveHolders()) @>
 
         host.EmitBuildCompleted(BuildSucceeded)
-        Assert.True(claimed.Wait(TimeSpan.FromSeconds 10.0), "the run must start")
+        Assert.True(claimed.Wait(HangWait), "the run must start")
         test <@ host.ExclusiveHolders() = [ "holder" ] @>
 
         workerGo.Set()

@@ -2132,6 +2132,7 @@ let ``countPlugins returns 0 for stripped config`` () =
 
 // --- watchConfigFile ---
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 15000)>]
 let ``watchRepoConfigFile returns no-op disposable when no config file exists`` () =
     withTempDir "cfg-watch-none" (fun tmpDir ->
@@ -2140,7 +2141,7 @@ let ``watchRepoConfigFile returns no-op disposable when no config file exists`` 
         System.Threading.Thread.Sleep(50)
         test <@ not called @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``watchRepoConfigFile watches an existing config file`` () =
     withTempDir "cfg-watch-existing" (fun tmpDir ->
         let path = Path.Combine(tmpDir, ".fshw.json")
@@ -2148,14 +2149,14 @@ let ``watchRepoConfigFile watches an existing config file`` () =
         use signal = new System.Threading.ManualResetEventSlim(false)
         use _watcher = watchRepoConfigFile tmpDir (fun _ -> signal.Set())
         File.WriteAllText(path, """{"lint": false}""")
-        test <@ signal.Wait(5000) @>)
+        test <@ signal.Wait(HangWaitMs) @>)
 
 // --- the config poller ---
 
 /// A 20 ms look interval, so each test waits on the poller for milliseconds.
 let private pollEvery = System.TimeSpan.FromMilliseconds 20.0
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the config poller reports a rewrite of .fshw.json`` () =
     withTempDir "cfg-poll-write" (fun tmpDir ->
         let path = Path.Combine(tmpDir, ".fshw.json")
@@ -2169,10 +2170,11 @@ let ``the config poller reports a rewrite of .fshw.json`` () =
                 signal.Set())
 
         File.WriteAllText(path, """{"lint": false}""")
-        test <@ signal.Wait(5000) @>
+        test <@ signal.Wait(HangWaitMs) @>
         test <@ observed.Value.Contains("config changed") @>)
 
-[<Fact(Timeout = 15000)>]
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the config poller reports a rewrite, not the empty file the writer truncated first`` () =
     // An in-place save truncates the file, then writes the new content. The
     // truncated file sits on disk for several looks here, as it can for a slow
@@ -2196,11 +2198,11 @@ let ``the config poller reports a rewrite, not the empty file the writer truncat
             let content = System.Text.Encoding.UTF8.GetBytes("""{"lint": false}""")
             stream.Write(content, 0, content.Length)
 
-        test <@ signal.Wait(5000) @>
+        test <@ signal.Wait(HangWaitMs) @>
         let first = Seq.head reasons
         test <@ first.Contains("config changed") @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the config poller reports a config saved by rename into place`` () =
     withTempDir "cfg-poll-rename" (fun tmpDir ->
         let path = Path.Combine(tmpDir, ".fshw.json")
@@ -2216,9 +2218,10 @@ let ``the config poller reports a config saved by rename into place`` () =
         let staged = Path.Combine(tmpDir, ".fshw.json.tmp")
         File.WriteAllText(staged, "{not valid json")
         File.Move(staged, path, true)
-        test <@ signal.Wait(5000) @>
+        test <@ signal.Wait(HangWaitMs) @>
         test <@ observed.Value.Contains("invalid") @>)
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 15000)>]
 let ``the config poller stays silent for an untouched or deleted .fshw.json`` () =
     // A deletion is not a config change: only a write, creation or rename into
@@ -2233,7 +2236,7 @@ let ``the config poller stays silent for an untouched or deleted .fshw.json`` ()
         System.Threading.Thread.Sleep 200
         test <@ calls = 0 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a look that read the config before its deletion cannot report it after a later look saw it gone`` () =
     // The poller's looks are Timer callbacks, and a look that outlasts the interval runs
     // beside the next one. Here the earlier look has read the file as it was before the
@@ -2250,7 +2253,7 @@ let ``a look that read the config before its deletion cannot report it after a l
 
     let readBeforeDeletion () =
         earlierRead.Set()
-        Assert.True(releaseEarlier.Wait(System.TimeSpan.FromSeconds 10.0), "the fixture must release the earlier look")
+        Assert.True(releaseEarlier.Wait(HangWait), "the fixture must release the earlier look")
         saved
 
     let look readStamp =
@@ -2260,7 +2263,7 @@ let ``a look that read the config before its deletion cannot report it after a l
         )
 
     let earlier = look readBeforeDeletion
-    Assert.True(earlierRead.Wait(System.TimeSpan.FromSeconds 10.0), "the earlier look never read the stamp")
+    Assert.True(earlierRead.Wait(HangWait), "the earlier look never read the stamp")
     let later = look (fun () -> None)
 
     // The later look's chance to commit first. A look that waits for the earlier one
@@ -2268,11 +2271,7 @@ let ``a look that read the config before its deletion cannot report it after a l
     later.Wait(System.TimeSpan.FromMilliseconds 500.0) |> ignore
     releaseEarlier.Set()
 
-    test
-        <@
-            earlier.Wait(System.TimeSpan.FromSeconds 10.0)
-            && later.Wait(System.TimeSpan.FromSeconds 10.0)
-        @>
+    test <@ earlier.Wait(HangWait) && later.Wait(HangWait) @>
 
     test <@ not earlier.Result && not later.Result @>
     test <@ lastStamp.Value = None @>
@@ -2752,7 +2751,7 @@ let ``loadConfig tolerates a declared input that is not on disk yet — but the 
         let tree = FsHotWatch.TreeHash.compute tmpDir []
         test <@ tree.AbsentDeclarationCount = 1 @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``registered test owner honors the actual declared project identity`` () =
     // The exclusion names a DIRECTORY; the symbol index keys tests by the project FILE's
     // name. Registration must hand the plugin the discovered file name, or the declared
@@ -2792,7 +2791,7 @@ let ``registered test owner honors the actual declared project identity`` () =
         try
             let terminal = beginAwaitNextTerminal daemon.Host "test-prune"
             daemon.Host.EmitBuildCompleted(FsHotWatch.Events.BuildSucceeded)
-            Assert.True(terminal.Wait(System.TimeSpan.FromSeconds 15.0))
+            Assert.True(terminal.Wait(HangWait))
             waitForQuiescent daemon.Host 15000
             Assert.Empty(FsHotWatch.Tests.TestPrunePluginTestSupport.PendingQueueHelpers.loadQueue tmpDir)
 

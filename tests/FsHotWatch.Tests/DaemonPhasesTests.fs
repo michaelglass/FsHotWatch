@@ -12,6 +12,7 @@ open FsHotWatch.DaemonPhases
 // so its two promises are: every phase that began is recorded on every exit, and a
 // reader taking a snapshot mid-phase sees that time rather than a hole.
 
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
 [<Fact(Timeout = 15000)>]
 let ``a phase that began and completed is recorded with its scope, detail and a non-zero elapsed`` () =
     let ledger = Ledger()
@@ -26,6 +27,7 @@ let ``a phase that began and completed is recorded with its scope, detail and a 
         test <@ record.Elapsed >= TimeSpan.FromMilliseconds 15.0 @>
     | other -> failwith $"expected exactly one completed phase, got %A{other}"
 
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
 [<Fact(Timeout = 15000)>]
 let ``a phase disposed without Complete is still recorded — wall time was spent either way`` () =
     let ledger = Ledger()
@@ -51,6 +53,7 @@ let ``Complete after Dispose does not record the phase twice`` () =
 
     test <@ ledger.Snapshot(DateTime.UtcNow) |> List.length = 1 @>
 
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
 [<Fact(Timeout = 15000)>]
 let ``an in-flight phase appears in the snapshot clipped at now and marked in flight`` () =
     let ledger = Ledger()

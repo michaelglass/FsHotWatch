@@ -29,7 +29,7 @@ let private scopeOf (host: PluginHost) =
 let private landBuild (host: PluginHost) =
     let terminal = beginAwaitNextTerminal host "test-prune"
     host.EmitBuildCompleted BuildSucceeded
-    Assert.True(terminal.Wait(TimeSpan.FromSeconds 15.0), "test-prune never reported a terminal status")
+    Assert.True(terminal.Wait(HangWait), "test-prune never reported a terminal status")
     waitForQuiescent host 20000
 
 [<Fact(Timeout = 60000)>]

@@ -508,6 +508,7 @@ let ``afterTests TestProjects does not fire when no listed project matches`` () 
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 20000)>]
 let ``afterTests TestProjects fires exactly once across progressive deltas`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -577,6 +578,7 @@ let ``afterTests TestProjects fires again on a fresh batch`` () =
 // The other tests build the CommandTrigger inline, so a bug in the config→trigger glue
 // (a parser yielding AfterTests = None for a valid JSON list) would pass all of them.
 // This one goes through parseConfig.
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 15000)>]
 let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style plugin`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"

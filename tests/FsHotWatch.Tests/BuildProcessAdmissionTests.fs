@@ -140,11 +140,11 @@ let ``a test host waits for another session's build to give the slot back`` () =
             test <@ spinUntil (fun () -> processes.Queued = 1) @>
             test <@ not started.IsSet @>
             File.WriteAllText(release, "")
-            test <@ started.Wait(TimeSpan.FromSeconds 20.0) @>
+            test <@ started.Wait(HangWait) @>
             test <@ linesOf log = [ "start-a"; "end-a" ] @>
             test <@ processes.Running = 1 @>
             releaseHost.SetResult()
-            test <@ tests.Wait(TimeSpan.FromSeconds 20.0) @>
+            test <@ tests.Wait(HangWait) @>
         finally
             File.WriteAllText(release, "")
             releaseHost.TrySetResult() |> ignore
@@ -166,13 +166,13 @@ let ``a build waits for another session's test host to give the slot back`` () =
                 GroupSchedule.runAdmitted (Some(processes.Lane "b")) None [ job ]
                 |> Async.StartAsTask
 
-            test <@ started.Wait(TimeSpan.FromSeconds 20.0) @>
+            test <@ started.Wait(HangWait) @>
             File.WriteAllText(release, "")
             changeIn host root
             test <@ spinUntil (fun () -> processes.Queued = 1) @>
             test <@ List.isEmpty (linesOf log) @>
             releaseHost.SetResult()
-            test <@ tests.Wait(TimeSpan.FromSeconds 20.0) @>
+            test <@ tests.Wait(HangWait) @>
         finally
             File.WriteAllText(release, "")
             releaseHost.TrySetResult() |> ignore
@@ -214,7 +214,7 @@ let ``a build cancelled while it waits for a slot never starts and leaves no wai
     other.Release()
     test <@ processes.Running = 0 @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a build cancelled while it runs gives its slot back`` () =
     let processes = WorkScheduler.Scheduler 1
     let lane = processes.Lane "session"
@@ -231,7 +231,7 @@ let ``a build cancelled while it runs gives its slot back`` () =
     let run =
         Async.StartAsTask(BuildPlugin.admitted (Some lane) building, cancellationToken = cts.Token)
 
-    test <@ started.Wait(TimeSpan.FromSeconds 20.0) @>
+    test <@ started.Wait(HangWait) @>
     test <@ processes.Running = 1 @>
     cts.Cancel()
     test <@ outcomeOf run = "cancelled" @>

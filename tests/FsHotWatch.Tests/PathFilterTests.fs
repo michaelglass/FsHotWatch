@@ -217,6 +217,7 @@ let ``collectIgnoreRules works when no ignore files exist`` () =
 
 // --- IgnoreFilterCache invalidation ---
 
+[<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
 [<Fact(Timeout = 20000)>]
 let ``IgnoreFilterCache reloads when gitignore is modified`` () =
     withTempDir "cache-reload-gitignore" (fun tmpDir ->
@@ -235,6 +236,7 @@ let ``IgnoreFilterCache reloads when gitignore is modified`` () =
         test <@ filter2 (Path.Combine(tmpDir, "build.fsx")) @>
         test <@ not (filter2 (Path.Combine(tmpDir, "debug.log"))) @>)
 
+[<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
 [<Fact(Timeout = 20000)>]
 let ``IgnoreFilterCache reloads when fantomasignore is modified`` () =
     withTempDir "cache-reload-fantomas" (fun tmpDir ->

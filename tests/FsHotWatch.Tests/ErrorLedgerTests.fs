@@ -752,7 +752,7 @@ let private silentReporter () = onReport (fun _ _ _ -> ())
 /// The production reporter writes files. A reporter stuck in I/O must not hold the
 /// ledger: every plugin thread writing behind it would park, which is the pool
 /// starvation the lock-free ledger exists to prevent.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a reporter stuck in I/O blocks no other writer and no reader`` () =
     use entered = new System.Threading.ManualResetEventSlim(false)
     use release = new System.Threading.ManualResetEventSlim(false)
@@ -772,7 +772,7 @@ let ``a reporter stuck in I/O blocks no other writer and no reader`` () =
 
     try
         // The reporter is now inside its Report, holding whatever it holds.
-        test <@ entered.Wait(TimeSpan.FromSeconds 10.0) @>
+        test <@ entered.Wait(HangWait) @>
 
         let other =
             Task.Factory.StartNew(
@@ -782,13 +782,13 @@ let ``a reporter stuck in I/O blocks no other writer and no reader`` () =
                 TaskCreationOptions.LongRunning
             )
 
-        test <@ other.Wait(TimeSpan.FromSeconds 10.0) @>
+        test <@ other.Wait(HangWait) @>
         test <@ other.Result |> Map.containsKey "a.fs" @>
         test <@ other.Result |> Map.containsKey "b.fs" @>
     finally
         release.Set()
 
-    test <@ first.Wait(TimeSpan.FromSeconds 10.0) @>
+    test <@ first.Wait(HangWait) @>
     delivered ledger
 
 /// `lock` is re-entrant. A reporter that writes back into the ledger from inside a
@@ -1050,7 +1050,7 @@ let ``every read sees each write whole while writers run`` () =
     finally
         stop.Set()
 
-    test <@ reader.Wait(TimeSpan.FromSeconds 30.0) @>
+    test <@ reader.Wait(HangWait) @>
     test <@ Seq.isEmpty torn @>
 
     // At rest, the files with findings and the keys with revisions are the same set.

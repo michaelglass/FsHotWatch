@@ -27,7 +27,7 @@ let private reap (child: Process) =
         with :? InvalidOperationException ->
             ()
 
-        Assert.True(child.WaitForExit(5000), "the fixture must reap the child it owns")
+        Assert.True(child.WaitForExit(HangWaitMs), "the fixture must reap the child it owns")
     finally
         child.Dispose()
 
@@ -64,7 +64,7 @@ type private PidAnnouncement() =
 // Admission closes with shutdown
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a process registering after shutdown cannot escape its owning registry`` () =
     let registry = ProcessRegistry.Registry()
     registry.KillAll()
@@ -73,7 +73,10 @@ let ``a process registering after shutdown cannot escape its owning registry`` (
         Assert.False(child.HasExited)
         registry.Track child
 
-        Assert.True(child.WaitForExit(5000), "a registry that has shut down must reap a child registering afterwards")
+        Assert.True(
+            child.WaitForExit(HangWaitMs),
+            "a registry that has shut down must reap a child registering afterwards"
+        )
 
         Assert.Empty(registry.Snapshot()))
 
@@ -120,7 +123,7 @@ let ``a child that launches while its scope shuts down is refused, not reported`
 /// for it: the launching thread is refused at admission and reaps it. Shutdown must not
 /// return before that, or a caller that exits right after it (a signalled run) ends the
 /// process while the child is still running, and the child outlives the run.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``shutdown waits for a launch between spawn and admission to be reaped`` () =
     let registry = ProcessRegistry.Registry()
     use _ = ProcessRegistry.install registry
@@ -140,10 +143,10 @@ let ``shutdown waits for a launch between spawn and admission to be reaped`` () 
         // Released twice, as a `finally` after an explicit release would: counted once.
         launch.Dispose()
 
-        Assert.True(shutdown.Wait 10000, "shutdown returns once the launch is resolved")
+        Assert.True(shutdown.Wait HangWaitMs, "shutdown returns once the launch is resolved")
         Assert.Empty(registry.Leaks))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a launch reserved in an operation's scope holds its parent's shutdown too`` () =
     let parent = ProcessRegistry.Registry()
     let scope = ProcessRegistry.Registry(Some parent)
@@ -155,10 +158,10 @@ let ``a launch reserved in an operation's scope holds its parent's shutdown too`
     first.Dispose()
     Assert.False(shutdown.Wait 300, "one launch is still in flight")
     second.Dispose()
-    Assert.True(shutdown.Wait 10000, "the parent's shutdown returns once every launch is released")
+    Assert.True(shutdown.Wait HangWaitMs, "the parent's shutdown returns once every launch is released")
 
 /// A launch whose spawn fails releases its reservation: shutdown does not wait on it.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a launch that fails to start does not hold shutdown`` () =
     withTempDir "failed-launch" (fun directory ->
         let registry = ProcessRegistry.Registry()
@@ -174,7 +177,7 @@ let ``a launch that fails to start does not hold shutdown`` () =
             |> ignore)
         |> ignore
 
-        Assert.True(Task.Run(fun () -> registry.KillAll()).Wait 2000, "a failed launch must not hold shutdown"))
+        Assert.True(Task.Run(fun () -> registry.KillAll()).Wait HangWaitMs, "a failed launch must not hold shutdown"))
 
 /// A launch that never resolves does not hold shutdown for good: it gives up after its
 /// budget and says what it left behind.
@@ -195,7 +198,7 @@ let ``shutdown gives up on a launch that never resolves, and says so`` () =
 
     Assert.Contains(lines, fun line -> line.Contains "1 launch(es) still between spawn and admission")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a shut scope refuses a launch reservation and leaves its parent unreserved`` () =
     let parent = ProcessRegistry.Registry()
     let scope = ProcessRegistry.Registry(Some parent)
@@ -206,7 +209,7 @@ let ``a shut scope refuses a launch reservation and leaves its parent unreserved
 
     Assert.Contains("has shut down", refusal.Message)
     // The parent's reservation was released: its shutdown does not wait for it.
-    Assert.True(Task.Run(fun () -> parent.KillAll()).Wait 2000, "the refused launch must not hold the parent")
+    Assert.True(Task.Run(fun () -> parent.KillAll()).Wait HangWaitMs, "the refused launch must not hold the parent")
 
 [<Fact(Timeout = 30000)>]
 let ``a launch with no scope installed reserves nothing`` () =
@@ -274,12 +277,10 @@ let ``disposing a tracked live child cannot earn successful operation retirement
 /// Wait for an operation's completion task to settle, without letting a faulted
 /// completion throw from a `finally`.
 let private settles (completion: Task) =
-    let winner =
-        Task.WhenAny([| completion; Task.Delay(TimeSpan.FromSeconds 10.0) |]).GetAwaiter().GetResult()
+    // `WhenAny` of the one task never faults, so this asks only whether it settled.
+    Task.WhenAny([| completion |]).Wait(FsHotWatch.Tests.TestHelpers.HangWait)
 
-    obj.ReferenceEquals(completion, winner)
-
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``deadline terminates its own process without killing a sibling operation`` () =
     let parent = ProcessRegistry.Registry()
     use _ = ProcessRegistry.install parent
@@ -309,7 +310,7 @@ let ``deadline terminates its own process without killing a sibling operation`` 
         Assert.Equal(WorkTimedOut(TimeSpan.FromSeconds 3.0), outcome)
         let child = announcement.Observer.Result
 
-        Assert.True(child.WaitForExit(7000), "the deadline must terminate the operation's own child")
+        Assert.True(child.WaitForExit(HangWaitMs), "the deadline must terminate the operation's own child")
         Assert.False(sibling.HasExited, "the deadline must not reach a sibling owned by the parent")
         Assert.Contains(sibling, parent.Snapshot())
         Assert.DoesNotContain(parent.Snapshot(), fun tracked -> tracked.Id = child.Id)
@@ -322,7 +323,7 @@ let ``deadline terminates its own process without killing a sibling operation`` 
             parent.KillAll()
             Assert.True(settles completion, "the timed-out operation must settle during cleanup")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a timed-out operation cannot launch a child after its deadline`` () =
     withTempDir "late-launch" (fun directory ->
         let parent = ProcessRegistry.Registry()
@@ -332,7 +333,7 @@ let ``a timed-out operation cannot launch a child after its deadline`` () =
         let outcome, completion =
             runWithCancellableDeadline (fun _ -> false) (TimeSpan.FromSeconds 1.0) (fun _ignoresToken ->
                 // Deliberately waits for the EXPIRY, not the token: it launches after it.
-                Assert.True(expired.Wait(TimeSpan.FromSeconds 10.0), "the fixture must be released")
+                Assert.True(expired.Wait(HangWait), "the fixture must be released")
 
                 runProcess
                     "/bin/sh"
@@ -548,7 +549,7 @@ type private HeldScheduler() =
         for task in pending do
             ThreadPool.QueueUserWorkItem(fun _ -> this.Execute task) |> ignore
 
-[<Fact(Timeout = 40000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``runProcess preserves target exit and output without pumping the caller context`` () =
     withTempDir "process-caller-context" (fun root ->
         let scheduler = HeldScheduler()
@@ -583,7 +584,7 @@ let ``runProcess preserves target exit and output without pumping the caller con
         let thread = scheduler.RunFirstOnOwnThread()
 
         try
-            Assert.True(caller.Wait(TimeSpan.FromSeconds 20.0), "the caller did not settle")
+            Assert.True(caller.Wait(HangWait), "the caller did not settle")
             Assert.Empty(registry.Snapshot())
             Assert.Empty(registry.Leaks)
 
@@ -598,7 +599,7 @@ let ``runProcess preserves target exit and output without pumping the caller con
             registry.KillAll()
             Assert.True(thread.Join(TimeSpan.FromSeconds 10.0), "the caller thread did not exit"))
 
-[<Theory(Timeout = 30000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``exclusive completion cannot retire before its tracked child exits`` (failWork: bool) =
@@ -633,7 +634,7 @@ let ``exclusive completion cannot retire before its tracked child exits`` (failW
                                     started <- true
                                     ProcessRegistry.track child
                                     entered.Set()
-                                    Assert.True(release.Wait(TimeSpan.FromSeconds 10.0))
+                                    Assert.True(release.Wait(HangWait))
 
                                     if failWork then
                                         raise workFailure
@@ -657,7 +658,7 @@ let ``exclusive completion cannot retire before its tracked child exits`` (failW
 
     try
         host.EmitFileChanged(Events.SourceChanged [ "/tmp/exclusive-child.fs" ])
-        Assert.True(entered.Wait(TimeSpan.FromSeconds 5.0), "exclusive work must launch its actual child")
+        Assert.True(entered.Wait(HangWait), "exclusive work must launch its actual child")
         Assert.False(child.HasExited)
         Assert.Contains(child, parent.Snapshot())
         Assert.True(host.AnyPluginBusy())
@@ -690,7 +691,7 @@ let ``exclusive completion cannot retire before its tracked child exits`` (failW
             if not child.HasExited then
                 child.Kill(entireProcessTree = true)
 
-            Assert.True(child.WaitForExit(5000), "fixture must reap only its own child")
+            Assert.True(child.WaitForExit(HangWaitMs), "fixture must reap only its own child")
 
         parent.KillAll()
         host.Teardown()

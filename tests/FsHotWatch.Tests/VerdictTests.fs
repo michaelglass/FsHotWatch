@@ -1431,6 +1431,7 @@ let ``a verdict written before runs[] existed rehydrates as ONE batch, named by 
             test <@ back.Suites |> List.map (fun s -> s.Project) = [ "Lib.Tests" ] @>
         | other -> failwith $"expected a readable verdict, got %A{other}")
 
+[<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
 [<Fact>]
 let ``tidyRunsDir rotates old RUNS and purges the pre flat layout`` () =
     withTempDir "ctrf-tidy" (fun root ->
@@ -1471,6 +1472,7 @@ let ``tidyRunsDir rotates old RUNS and purges the pre flat layout`` () =
 // deleted leaves `fshw verdict` naming reports that are gone, so every run the verdict
 // names survives the tidy, however old: its top-level `runId`, each `runs[].runId`, and
 // the full-suite baseline it was graded against.
+[<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
 [<Fact>]
 let ``tidyRunsDir keeps every run the verdict names`` () =
     withTempDir "ctrf-tidy-verdict" (fun root ->
@@ -1506,6 +1508,7 @@ let ``tidyRunsDir keeps every run the verdict names`` () =
 
 // A verdict that names no run (absent, without `runs`, `runs` not an array, unreadable)
 // protects nothing: the tidy is plain rotation, and a bad verdict never stops it.
+[<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
 [<Theory>]
 [<InlineData("<absent>")>]
 [<InlineData("""{ "outcome": { "kind": "green" } }""")>]
@@ -1545,6 +1548,7 @@ let ``tryReadReport reads only files named as reports`` () =
         test <@ (Ctrf.tryReadReport id report).IsSome @>
         test <@ Ctrf.tryReadReport id copy = None @>)
 
+[<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
 [<Fact(Timeout = 60000)>]
 let ``tidyRunsDir cannot FAULT the run it is cleaning up after, however the directory moves`` () =
     // The tidy once enumerated the run directory TWICE and applied the second

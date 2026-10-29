@@ -85,7 +85,7 @@ let private session (tmpDir: string) (dbPath: string) (configs: TestConfig list)
 let private buildAndSettle (host: PluginHost) : PluginStatus =
     let await = beginAwaitNextTerminal host "test-prune"
     host.EmitBuildCompleted(BuildSucceeded)
-    test <@ await.Wait(TimeSpan.FromSeconds 20.0) @>
+    test <@ await.Wait(HangWait) @>
     waitForQuiescent host 10000
 
     match host.GetStatus("test-prune") with

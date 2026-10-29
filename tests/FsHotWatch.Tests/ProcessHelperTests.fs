@@ -155,6 +155,7 @@ let ``runProcess returns Succeeded when fast`` () =
 let ``runWithTimeout returns WorkCompleted when work completes in time`` () =
     Assert.Equal(WorkCompleted 42, runWithTimeout (TimeSpan.FromSeconds 1.0) (fun () -> 42))
 
+[<WallClock("product timeout under test: the work deliberately outlasts the product's own bound, and the assertion is the typed timeout outcome the product reports")>]
 [<Fact(Timeout = 20000)>]
 let ``runWithTimeout returns WorkTimedOut when work exceeds timeout`` () =
     let result =
@@ -184,7 +185,7 @@ let ``runWithCancellableTimeout with InfiniteTimeSpan passes a non-cancelled tok
     | WorkCompleted requested -> Assert.False(requested)
     | WorkTimedOut _ -> Assert.Fail "expected completion"
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``runWithCancellableTimeout CANCELS a stuck unit on timeout (no orphaned thread)`` () =
     // A timed-out in-process unit used to leave its orphan thread running, still holding
     // whatever lock it grabbed. The flags below prove the token actually fired and the
@@ -207,8 +208,8 @@ let ``runWithCancellableTimeout CANCELS a stuck unit on timeout (no orphaned thr
     | WorkTimedOut _ -> ()
     | WorkCompleted _ -> Assert.Fail "expected timeout"
 
-    Assert.True(observedCancellation.Wait(TimeSpan.FromSeconds 5.0), "work never observed cancellation — orphaned")
-    Assert.True(workExited.Wait(TimeSpan.FromSeconds 5.0), "work thread never exited — orphaned")
+    Assert.True(observedCancellation.Wait(HangWait), "work never observed cancellation — orphaned")
+    Assert.True(workExited.Wait(HangWait), "work thread never exited — orphaned")
 
 [<Fact(Timeout = 20000)>]
 let ``runWithCancellableTimeout cancelled unit releases its lock so the next unit proceeds`` () =
@@ -236,7 +237,7 @@ let ``runWithCancellableTimeout cancelled unit releases its lock so the next uni
     if acquiredByB then
         gate.Release() |> ignore
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an expired deadline keeps its token source alive through a late registration`` () =
     // A synchronous callback can reach its first token-aware Async boundary only
     // after the caller has observed timeout. Disposing the CTS at timeout made that
@@ -257,7 +258,7 @@ let ``an expired deadline keeps its token source alive through a late registrati
 
     let outcome, completion =
         runWithCancellableDeadline (fun _ -> false) (TimeSpan.FromMilliseconds 20.0) (fun ct ->
-            Assert.True(expired.Wait(TimeSpan.FromSeconds 10.0), "the fixture must release the work")
+            Assert.True(expired.Wait(HangWait), "the fixture must release the work")
             // A registration on a cancelled token runs its callback at once and never
             // throws, even when the source is disposed. The token's wait handle does
             // throw then, so a source disposed at the timeout always fails this work.
@@ -273,7 +274,7 @@ let ``an expired deadline keeps its token source alive through a late registrati
     // the token has already been cancelled.
     expired.Set()
 
-    Assert.True(completion.Wait(TimeSpan.FromSeconds 10.0), "timed-out work never completed")
+    Assert.True(completion.Wait(HangWait), "timed-out work never completed")
     Assert.Equal(System.Threading.Tasks.TaskStatus.RanToCompletion, completion.Status)
     Assert.True(registered.IsSet, "late token registration did not execute")
 
@@ -395,7 +396,7 @@ let private recordingJob (ran: int ref) (published: Threading.ManualResetEventSl
         ran.Value <- Threading.Thread.CurrentThread.ManagedThreadId
         fun () -> published.Set()
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a deadline worker survives a job that throws`` () =
     // An exception escaping a worker would crash the daemon. The worker swallows it,
     // counts itself idle, and takes the next job.
@@ -415,11 +416,11 @@ let ``a deadline worker survives a job that throws`` () =
     use published = new Threading.ManualResetEventSlim(false)
     pool.Post(recordingJob later published)
 
-    Assert.True(published.Wait(TimeSpan.FromSeconds 10.0), "the job after the throw never ran")
+    Assert.True(published.Wait(HangWait), "the job after the throw never ran")
     Assert.Equal(thrower.Value, later.Value)
     Assert.Equal(1, pool.Created)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a deadline worker survives an outcome publish that throws`` () =
     let pool = FsHotWatch.DeadlineWorkers.Pool()
     let first = ref 0
@@ -433,13 +434,13 @@ let ``a deadline worker survives an outcome publish that throws`` () =
             publishing.Set()
             failwith "publish failed")
 
-    Assert.True(publishing.Wait(TimeSpan.FromSeconds 10.0), "the first job never published")
+    Assert.True(publishing.Wait(HangWait), "the first job never published")
 
     let later = ref 0
     use published = new Threading.ManualResetEventSlim(false)
     pool.Post(recordingJob later published)
 
-    Assert.True(published.Wait(TimeSpan.FromSeconds 10.0), "the job after the failed publish never ran")
+    Assert.True(published.Wait(HangWait), "the job after the failed publish never ran")
     Assert.Equal(first.Value, later.Value)
     Assert.Equal(1, pool.Created)
 
@@ -1260,30 +1261,19 @@ let ``resolveLaunchDeadline: junk / non-positive override falls back to the defa
 // bounded number of iterations.
 
 let private fakeClock (start: DateTime) : FsHotWatch.HostClock.Clock * (int -> unit) =
-    let wall = ref start
-    let awake = ref TimeSpan.Zero
-
-    let advance (ms: int) =
-        wall.Value <- wall.Value.AddMilliseconds(float ms)
-        awake.Value <- awake.Value + TimeSpan.FromMilliseconds(float ms)
-
-    { WallNow = (fun () -> wall.Value)
-      AwakeNow = (fun () -> awake.Value) },
-    advance
+    let clock = FakeClock.ManualClock(start)
+    clock.Clock, (float >> TimeSpan.FromMilliseconds >> clock.Advance)
 
 /// A host that sleeps through every poll: each poll is `awakeMs` of awake time and
 /// `sleptMs` more of wall clock.
 let private sleepingHostClock (awakeMs: int) (sleptMs: int) : FsHotWatch.HostClock.Clock * (int -> unit) =
-    let wall = ref (DateTime(2026, 10, 5, 15, 30, 0, DateTimeKind.Utc))
-    let awake = ref TimeSpan.Zero
+    let clock =
+        FakeClock.ManualClock(DateTime(2026, 10, 5, 15, 30, 0, DateTimeKind.Utc))
 
-    let advance (_: int) =
-        wall.Value <- wall.Value.AddMilliseconds(float (awakeMs + sleptMs))
-        awake.Value <- awake.Value + TimeSpan.FromMilliseconds(float awakeMs)
-
-    { WallNow = (fun () -> wall.Value)
-      AwakeNow = (fun () -> awake.Value) },
-    advance
+    clock.Clock,
+    fun (_: int) ->
+        clock.Advance(TimeSpan.FromMilliseconds(float awakeMs))
+        clock.Suspend(TimeSpan.FromMilliseconds(float sleptMs))
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``launchWatchdogLoopWith: time the host spent suspended counts against neither deadline`` () =

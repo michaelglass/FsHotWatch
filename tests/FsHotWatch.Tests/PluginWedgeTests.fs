@@ -307,6 +307,7 @@ let ``ambientBound agrees with resolveBound over the live environment`` () =
     // Whatever the environment says, the bound is always a positive window.
     test <@ ambientBound () > TimeSpan.Zero @>
 
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
 [<Fact(Timeout = 15000)>]
 let ``createMonitor fires the recovery on a wedged plugin and stops after disposal`` () =
     let wedges = ResizeArray<string>()
@@ -339,6 +340,7 @@ let ``createMonitor fires the recovery on a wedged plugin and stops after dispos
     test <@ count = 1 @>
     test <@ (lock wedges (fun () -> wedges.[0])).Contains "wedged on 'analyzers'" @>
 
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
 [<Fact(Timeout = 15000)>]
 let ``createMonitor leaves a healthy daemon completely alone`` () =
     // The over-correction guard: with nothing Running and nothing busy the monitor

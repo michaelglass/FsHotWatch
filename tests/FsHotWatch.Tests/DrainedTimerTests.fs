@@ -21,7 +21,7 @@ let ``a tick that starts after the ticks stopped does nothing`` () =
     ticks.Run()
     test <@ ran.Value = 1 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``stopping waits for the tick running now`` () =
     use entered = new ManualResetEventSlim()
     use release = new ManualResetEventSlim()
@@ -34,19 +34,19 @@ let ``stopping waits for the tick running now`` () =
             Volatile.Write(&finished.contents, true))
 
     let running = Task.Run(fun () -> ticks.Run())
-    test <@ entered.Wait(TimeSpan.FromSeconds 10.0) @>
+    test <@ entered.Wait(FsHotWatch.Tests.TestHelpers.HangWait) @>
 
     let stopping = Task.Run(fun () -> ticks.Stop())
     test <@ not (stopping.Wait(TimeSpan.FromMilliseconds 200.0)) @>
 
     release.Set()
-    test <@ stopping.Wait(TimeSpan.FromSeconds 10.0) @>
+    test <@ stopping.Wait(FsHotWatch.Tests.TestHelpers.HangWait) @>
     // Stop returned only after the tick had finished.
     let tickFinished = Volatile.Read &finished.contents
     test <@ tickFinished @>
-    test <@ running.Wait(TimeSpan.FromSeconds 10.0) @>
+    test <@ running.Wait(FsHotWatch.Tests.TestHelpers.HangWait) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a tick that stops its own timer does not wait for itself`` () =
     let ticks = ref Unchecked.defaultof<DrainedTimer.Ticks>
     let ran = ref 0
@@ -57,10 +57,11 @@ let ``a tick that stops its own timer does not wait for itself`` () =
             ticks.Value.Stop())
 
     let first = Task.Run(fun () -> ticks.Value.Run())
-    test <@ first.Wait(TimeSpan.FromSeconds 10.0) @>
+    test <@ first.Wait(FsHotWatch.Tests.TestHelpers.HangWait) @>
     ticks.Value.Run()
     test <@ ran.Value = 1 @>
 
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
 [<Fact(Timeout = 15000)>]
 let ``a timer ticks until it is disposed, and not after`` () =
     let ran = ref 0

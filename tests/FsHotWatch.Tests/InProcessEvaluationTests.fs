@@ -93,10 +93,11 @@ let ``overlapping evaluations leave the process standing where it stood`` () =
             let secondRun =
                 Task.Run(fun () -> secondDaemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously |> ignore)
 
-            test <@ Task.WaitAll([| firstRun; secondRun |], TimeSpan.FromSeconds 30.0) @>
+            test <@ Task.WaitAll([| firstRun; secondRun |], HangWait) @>
             test <@ deleteWhileWritten (Path.Combine(root, "first")) 10000 @>
             test <@ processWorkingDirectoryExists () @>))
 
+[<WallClock("DEBT (AUTOMATION-1369): a sleep standing in for synchronisation before a positive assertion; a known flake risk, to be converted to an event or an injected clock")>]
 [<Fact(Timeout = 60000)>]
 let ``an evaluation in flight when a test moves back cannot leave the process in the test's scratch tree`` () =
     // The cascade behind AUTOMATION-1295, in one test. The host verb stands the process in
@@ -136,12 +137,12 @@ let ``an evaluation in flight when a test moves back cannot leave the process in
                     let run =
                         Task.Run(fun () -> daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously |> ignore)
 
-                    test <@ entered.Wait(TimeSpan.FromSeconds 30.0) @>
+                    test <@ entered.Wait(HangWait) @>
                     // The evaluation finishes only once the test is on its way back out.
                     Task.Delay(500).ContinueWith(fun (_: Task) -> release.Set()) |> ignore
                     run)
 
-            test <@ evaluation.Wait(TimeSpan.FromSeconds 30.0) @>
+            test <@ evaluation.Wait(HangWait) @>
             afterEvaluation <- Directory.GetCurrentDirectory())
 
         test <@ processWorkingDirectoryExists () @>

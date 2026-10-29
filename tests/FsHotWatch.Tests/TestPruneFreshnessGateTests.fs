@@ -1358,6 +1358,7 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
 // RED-BEFORE-GREEN: implement `OnceMemo.GetOrAdd` as `entries.GetOrAdd(key, factory)` and
 // this counts 16 factory runs, not 1.
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 30000)>]
 let ``OnceMemo runs the value factory exactly ONCE per key under concurrent access`` () =
     let memo = ArtifactFreshness.OnceMemo<string, int>()

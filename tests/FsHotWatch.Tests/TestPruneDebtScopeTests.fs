@@ -22,7 +22,7 @@ let private settleBuild (tmpDir: string) (dbPath: string) (configs: TestConfig l
     host.RegisterHandler(createWithScope resolve dbPath tmpDir (Some configs) None None None None [])
     let terminal = beginAwaitNextTerminal host "test-prune"
     host.EmitBuildCompleted(BuildSucceeded)
-    Assert.True(terminal.Wait(TimeSpan.FromSeconds 15.0), "test-prune never reported a terminal status")
+    Assert.True(terminal.Wait(HangWait), "test-prune never reported a terminal status")
     waitForQuiescent host 20000
     host
 

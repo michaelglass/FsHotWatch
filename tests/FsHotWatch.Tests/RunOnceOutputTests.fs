@@ -960,6 +960,7 @@ let ``run-once overwrites a current green before surfacing total discovery failu
             | other -> failwithf "expected incomplete discovery verdict, got %A" other
         | other -> failwithf "expected discovery failure to replace the seeded green, got %A" other)
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 60000)>]
 let ``run-once waits for an initial discovery still inside the real loader`` () =
     withProjectOnlyRepo "runonce-in-progress-discovery" (fun repoRoot ->
@@ -1000,7 +1001,7 @@ let ``run-once waits for an initial discovery still inside the real loader`` () 
                     (noTestProjectsConfig ()))
 
         try
-            test <@ loader.Entered(0).Wait(TimeSpan.FromSeconds(10.0)) @>
+            test <@ loader.Entered(0).Wait(HangWait) @>
 
             let premature =
                 System.Threading.Tasks.Task.WhenAny(driver, System.Threading.Tasks.Task.Delay(1000))

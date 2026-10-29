@@ -9,9 +9,11 @@ open System.Threading
 open System.Threading.Tasks
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.WorkScheduler
 
 /// Waits until `condition` holds, failing the test after five seconds.
+[<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
 let private waitUntil (what: string) (condition: unit -> bool) =
     let deadline = DateTime.UtcNow.AddSeconds 5.0
 
@@ -49,11 +51,12 @@ let private handOn
 
     for _ in 1..releases do
         current.Release()
-        test <@ granted.Wait(TimeSpan.FromSeconds 5.0) @>
+        test <@ granted.Wait(FsHotWatch.Tests.TestHelpers.HangWait) @>
         let last = Seq.last order
         current <- lanes |> List.find (fun lane -> lane.Name = last)
 
-[<Fact(Timeout = 20000)>]
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``no more work runs at once than the capacity, across every lane`` () =
     let scheduler = Scheduler 3
     let mutable inside = 0
@@ -83,7 +86,7 @@ let ``no more work runs at once than the capacity, across every lane`` () =
     test <@ peak >= 1 && peak <= 3 @>
     test <@ scheduler.Running = 0 && scheduler.Queued = 0 @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a session with fifty queued jobs cannot keep another session's one job behind them`` () =
     let scheduler = Scheduler 1
     let a = scheduler.Lane "A"
@@ -105,7 +108,7 @@ let ``a session with fifty queued jobs cannot keep another session's one job beh
     test <@ served |> List.findIndex ((=) "B") = 1 @>
     test <@ one.Result && flood |> List.forall _.Result @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``waiting sessions are served in turn`` () =
     // A frozen clock: every lane's slot-time stays equal, so turn order alone decides
     // (ADR-051). On the real clock a hand-over slower than `FairnessQuantum` under a loaded
@@ -129,7 +132,7 @@ let ``waiting sessions are served in turn`` () =
 
     test <@ List.ofSeq order = [ "A"; "B"; "C"; "A"; "B"; "C"; "A"; "B"; "C" ] @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a waiter whose caller gives up takes no slot and holds up nobody`` () =
     let scheduler = Scheduler 1
     let a = scheduler.Lane "A"
@@ -156,7 +159,7 @@ let ``a waiter whose caller gives up takes no slot and holds up nobody`` () =
     b.Release()
     test <@ scheduler.Running = 0 @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a lane keeps its place when one of its waiters gives up`` () =
     let scheduler = Scheduler 1
     let a = scheduler.Lane "A"
@@ -179,7 +182,7 @@ let ``a lane keeps its place when one of its waiters gives up`` () =
     a.Release()
     test <@ scheduler.Running = 0 && scheduler.Queued = 0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a waiter given up just after a slot was handed to it keeps the slot`` () =
     use cts = new CancellationTokenSource()
     // Gives up in the window between the hand-over and the waiter waking.
@@ -199,7 +202,7 @@ let ``a waiter given up just after a slot was handed to it keeps the slot`` () =
     b.Release()
     test <@ scheduler.Running = 0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a caller that has already given up is refused at once`` () =
     let scheduler = Scheduler 1
     use cts = new CancellationTokenSource()
@@ -208,16 +211,17 @@ let ``a caller that has already given up is refused at once`` () =
     test <@ not ((scheduler.Lane "A").Acquire cts.Token |> Async.RunSynchronously) @>
     test <@ scheduler.Running = 0 && scheduler.Queued = 0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``releasing a slot nobody holds is a bug, not a no-op`` () =
     let scheduler = Scheduler 1
     raises<InvalidOperationException> <@ (scheduler.Lane "A").Release() @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a scheduler has at least one slot`` () =
     raises<ArgumentOutOfRangeException> <@ Scheduler 0 @>
 
-[<Fact(Timeout = 15000)>]
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parallelWithin never has more jobs in flight than its bound, and keeps their order`` () =
     let gate = obj ()
     let inFlight = ref 0
@@ -239,7 +243,7 @@ let ``parallelWithin never has more jobs in flight than its bound, and keeps the
     test <@ results = [| 1..20 |] @>
     test <@ peak.Value = 3 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parallelWithin runs one at a time when asked for none`` () =
     let results =
         parallelWithin 0 [ async { return 1 }; async { return 2 } ]
@@ -270,7 +274,7 @@ let private parallelSites (path: string) =
         else
             None)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``no core code fans out with an unbounded Async.Parallel`` () =
     // A tier or batch of checks fans out through `parallelWithin`, bounded by the
     // admission slots, so how much one fan-out holds live does not grow with the files.
@@ -290,7 +294,7 @@ let ``no core code fans out with an unbounded Async.Parallel`` () =
 // Cancellation before the acquisition runs, and after its grant (AUTOMATION-682)
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an acquisition cancelled before it runs never queues, and leaks no slot`` () =
     let scheduler = Scheduler 1
     let holder = scheduler.Lane "holder"
@@ -313,7 +317,7 @@ let ``an acquisition cancelled before it runs never queues, and leaks no slot`` 
     // The slot went back to the pool, not to a waiter nobody will ever release.
     test <@ scheduler.Running = 0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a run whose slot is handed over just as its caller gives up still gives the slot back`` () =
     use cts = new CancellationTokenSource()
     // The caller gives up in the window between the hand-over and the waiter waking.
@@ -338,7 +342,7 @@ let ``a run whose slot is handed over just as its caller gives up still gives th
     test <@ scheduler.Running = 0 && scheduler.Queued = 0 @>
     test <@ (b.Status()).Running = 0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a run holds its slot while its work runs and gives it back when the work fails`` () =
     let scheduler = Scheduler 1
     let a = scheduler.Lane "A"

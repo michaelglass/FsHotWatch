@@ -79,6 +79,7 @@ let ``TimestampCacheKeyProvider returns consistent hash for same file`` () =
     finally
         File.Delete(tempFile)
 
+[<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
 [<Fact(Timeout = 20000)>]
 let ``cache key is content-addressed: same bytes + different mtime → same hash`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
@@ -99,6 +100,7 @@ let ``cache key is content-addressed: same bytes + different mtime → same hash
     finally
         File.Delete(tempFile)
 
+[<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
 [<Fact(Timeout = 20000)>]
 let ``TimestampCacheKeyProvider returns different hash after file modification`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
@@ -124,6 +126,7 @@ let private rememberingHasher () =
 
 /// Replaces `path` with `content` (the same length as before) through `replace`, then
 /// puts back the last-write time it had: what a restore of an older DLL does.
+[<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
 let private restoreSameLengthPreservingMtime (replace: string -> string -> unit) (path: string) (content: string) =
     // Past the change-time granularity (a kernel tick on Linux), so the replacement's
     // status change is a different time from the original's; the racy window covers

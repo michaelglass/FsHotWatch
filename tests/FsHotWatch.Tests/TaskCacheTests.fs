@@ -440,6 +440,7 @@ let ``plugin skips Update on cache hit and replays errors`` () =
             |> List.sumBy (fun (_, entries) -> entries.Length) = 1
         @>
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 15000)>]
 let ``plugin stores result on cache miss then hits on second event`` () =
     let cache = InMemoryTaskCache()

@@ -48,14 +48,14 @@ let ``a test's own spawn is admitted to the per-test scope`` () = spawnsIntoTheT
 [<Fact(Timeout = 30000)>]
 let ``a test with a timeout spawns into the per-test scope too`` () = spawnsIntoTheTestScope ()
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``closing a scope reaps what is still running in it`` () =
     if not (OperatingSystem.IsWindows()) then
         let scope = openScope ()
         let pid, run = startSleeper ()
         close scope
         test <@ waitUntilTrue (fun () -> not (alive pid)) 5000 @>
-        test <@ run.Wait(TimeSpan.FromSeconds 10.0) @>
+        test <@ run.Wait(HangWait) @>
 
 [<Fact>]
 let ``closing a scope fails when a spawn in it had no registry`` () =

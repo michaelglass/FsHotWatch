@@ -10,7 +10,7 @@ open FsHotWatch.PluginFramework
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.Tests.PluginFrameworkFixtures
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executor fault fails accepted event receipts instead of abandoning their waiters`` () =
     use entered = new System.Threading.ManualResetEventSlim(false)
     use release = new System.Threading.ManualResetEventSlim(false)
@@ -28,7 +28,7 @@ let ``executor fault fails accepted event receipts instead of abandoning their w
                 fun _ _ _ ->
                     async {
                         entered.Set()
-                        Assert.True(release.Wait(10000), "fixture must release the failing event")
+                        Assert.True(release.Wait(HangWaitMs), "fixture must release the failing event")
                         return raise (System.InvalidOperationException("update fault"))
                     } }
 
@@ -37,7 +37,7 @@ let ``executor fault fails accepted event receipts instead of abandoning their w
 
     let queued =
         try
-            Assert.True(entered.Wait(5000), "the first event must reach its controlled update")
+            Assert.True(entered.Wait(HangWaitMs), "the first event must reach its controlled update")
             registration.DispatchTracked(DispatchFileChanged SolutionChanged).Value
         finally
             release.Set()
@@ -46,11 +46,10 @@ let ``executor fault fails accepted event receipts instead of abandoning their w
     Assert.True(registration.Fault().IsSome, "the failed update must stay recorded in the owner snapshot")
 
     for receipt in [ first; queued ] do
-        Assert.Throws<System.InvalidOperationException>(fun () ->
-            receipt.Wait(System.TimeSpan.FromSeconds 1.0).GetAwaiter().GetResult())
+        Assert.Throws<System.InvalidOperationException>(fun () -> receipt.Wait(HangWait).GetAwaiter().GetResult())
         |> ignore
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``read command returns committed snapshot while an update is blocked`` () =
     // A read queued behind Update hangs until unrelated work finishes. The approved
     // snapshot contract requires the last committed state to remain readable.
@@ -99,9 +98,14 @@ let ``read command returns committed snapshot while an update is blocked`` () =
     let committedEvent = receipt.Value.Wait(System.TimeSpan.FromSeconds 10.0)
 
     try
-        Assert.True(entered.Task.Wait(5000), "the update must enter before probing the read")
+        Assert.True(entered.Task.Wait(HangWaitMs), "the update must enter before probing the read")
         let read = readCount [||] |> Async.StartAsTask
-        Assert.True(read.Wait(2000), "read command waited behind the blocked update instead of reading a snapshot")
+
+        Assert.True(
+            read.Wait(HangWaitMs),
+            "read command waited behind the blocked update instead of reading a snapshot"
+        )
+
         Assert.Equal("42", read.Result)
         Assert.False(committedEvent.IsCompleted, "a blocked update has not committed")
     finally
@@ -114,7 +118,7 @@ let ``read command returns committed snapshot while an update is blocked`` () =
     let committed = readCount [||] |> Async.RunSynchronously
     Assert.Equal("43", committed)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a completed event receipt cannot acknowledge a different blocked event`` () =
     let entered = System.Threading.Tasks.TaskCompletionSource<unit>()
     let release = System.Threading.Tasks.TaskCompletionSource<unit>()
@@ -157,7 +161,7 @@ let ``a completed event receipt cannot acknowledge a different blocked event`` (
     let read = snd registeredCmd.Value
 
     try
-        Assert.True(entered.Task.Wait(5000))
+        Assert.True(entered.Task.Wait(HangWaitMs))
         Assert.False(secondCommit.IsCompleted)
         Assert.True(registration.IsBusy())
         Assert.Equal("1", read [||] |> Async.RunSynchronously)
@@ -167,7 +171,7 @@ let ``a completed event receipt cannot acknowledge a different blocked event`` (
 
     Assert.Equal("2", read [||] |> Async.RunSynchronously)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``request posts intent without waiting for a state snapshot`` () =
     let entered = System.Threading.Tasks.TaskCompletionSource<unit>()
     let release = System.Threading.Tasks.TaskCompletionSource<unit>()
@@ -209,22 +213,22 @@ let ``request posts intent without waiting for a state snapshot`` () =
     let mutable invocation: System.Threading.Tasks.Task<string> option = None
 
     try
-        Assert.True(entered.Task.Wait(5000), "the preceding update must enter")
+        Assert.True(entered.Task.Wait(HangWaitMs), "the preceding update must enter")
         let pending = request [||] |> Async.StartAsTask
         invocation <- Some pending
-        Assert.True(pending.Wait(2000), "request waited for a state snapshot before posting intent")
+        Assert.True(pending.Wait(HangWaitMs), "request waited for a state snapshot before posting intent")
         Assert.Equal("accepted", pending.Result)
         Assert.False(committed.Task.IsCompleted, "acceptance is not an owner commit")
     finally
         release.TrySetResult(()) |> ignore
 
         invocation
-        |> Option.iter (fun pending -> Assert.True(pending.Wait(5000), "the request must drain"))
+        |> Option.iter (fun pending -> Assert.True(pending.Wait(HangWaitMs), "the request must drain"))
 
-        Assert.True(committed.Task.Wait(5000), "the posted intent must reach its owner")
+        Assert.True(committed.Task.Wait(HangWaitMs), "the posted intent must reach its owner")
         waitUntil (fun () -> not (registration.IsBusy())) 5000
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a failed update cannot acknowledge its event as committed`` () =
     let failure = System.InvalidOperationException("fixture update refused publication")
     let entered = System.Threading.Tasks.TaskCompletionSource<unit>()
@@ -251,19 +255,17 @@ let ``a failed update cannot acknowledge its event as committed`` () =
         |> Option.defaultWith (fun () -> failwith "subscribed event must be admitted")
 
     let settled = receipt.Wait(System.TimeSpan.FromSeconds 5.0)
-    Assert.True(entered.Task.Wait(5000), "actual update must enter before observing its receipt")
+    Assert.True(entered.Task.Wait(HangWaitMs), "actual update must enter before observing its receipt")
 
-    let winner =
-        System.Threading.Tasks.Task.WhenAny(settled, System.Threading.Tasks.Task.Delay(5000)).GetAwaiter().GetResult()
-
-    Assert.Same(settled, winner)
+    // `WhenAny` of the one task never faults, so this asks only whether it settled.
+    Assert.True(System.Threading.Tasks.Task.WhenAny([| settled :> System.Threading.Tasks.Task |]).Wait(HangWait))
 
     let observed =
         Assert.Throws<System.InvalidOperationException>(fun () -> settled.GetAwaiter().GetResult())
 
     Assert.Same(failure, observed)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``event receipt and cache wait for durable finalization after candidate publication`` () =
     let signal () =
         System.Threading.Tasks.TaskCompletionSource<unit>(
@@ -325,13 +327,13 @@ let ``event receipt and cache wait for durable finalization after candidate publ
           File = None }
 
     try
-        Assert.True(preparing.Task.Wait(5000), "actual prepare must enter")
+        Assert.True(preparing.Task.Wait(HangWaitMs), "actual prepare must enter")
         Assert.Equal("4", read ())
         Assert.True(registration.IsBusy())
         Assert.False(receipt.IsCompleted)
         Assert.True((cache.TryGet composite key).IsNone)
         prepared.TrySetResult(()) |> ignore
-        Assert.True(finalizing.Task.Wait(5000), "actual finalizer must enter")
+        Assert.True(finalizing.Task.Wait(HangWaitMs), "actual finalizer must enter")
         Assert.Equal("5", read ())
         Assert.True(registration.IsBusy())
         Assert.False(receipt.IsCompleted)
@@ -393,7 +395,7 @@ let ``durable commit failures fault the actual receipt and retain the appropriat
     Assert.Equal(1L, registration.CompletedDispatches())
     Assert.False(registration.IsBusy())
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ordinary cache write sees published candidate while its event is still owned`` () =
     let inner = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
     let writing = System.Threading.Tasks.TaskCompletionSource<unit>()
@@ -442,7 +444,7 @@ let ``ordinary cache write sees published candidate while its event is still own
         registration.DispatchTracked(DispatchBuildCompleted BuildSucceeded).Value.Wait(System.TimeSpan.FromSeconds 10.0)
 
     try
-        Assert.True(writing.Task.Wait(5000), "actual cache write must enter")
+        Assert.True(writing.Task.Wait(HangWaitMs), "actual cache write must enter")
         Assert.Equal("2", readCommand.Value [||] |> Async.RunSynchronously)
         Assert.True(registration.IsBusy())
         Assert.False(receipt.IsCompleted)
@@ -453,7 +455,7 @@ let ``ordinary cache write sees published candidate while its event is still own
 
     Assert.Equal(1L, registration.CompletedDispatches())
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``failed diagnostic reporting cannot retire an event twice or kill its executor`` () =
     let failure = System.InvalidOperationException("original update failed")
     let reported = System.Threading.Tasks.TaskCompletionSource<unit>()
@@ -489,7 +491,7 @@ let ``failed diagnostic reporting cannot retire an event twice or kill its execu
             .Value.Wait(System.TimeSpan.FromSeconds 5.0)
 
     Assert.Same(failure, Assert.Throws<System.InvalidOperationException>(fun () -> first.GetAwaiter().GetResult()))
-    Assert.True(reported.Task.Wait(5000), "failure reporting must actually be attempted")
+    Assert.True(reported.Task.Wait(HangWaitMs), "failure reporting must actually be attempted")
     dispatchAndAwait registration (DispatchFileChanged(SourceChanged [ "/succeed" ]))
     Assert.Equal(1L, registration.CompletedDispatches())
     Assert.True(registration.Fault().IsNone, "genuine successful work supersedes the failed update")

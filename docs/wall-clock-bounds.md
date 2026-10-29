@@ -118,6 +118,11 @@ that meets rule 2.
 | `TestPruneRunnerFamilyTests` "run-tests invokes the real xUnit 4 runner…" | `TimeoutSec = 30` over a real `dotnet run` (MSBuild evaluation and a test host) under a 60 s cap; the assertion is the CTRF verification | CAN-FLAKE (red 3 times in loaded full gates; about 1.4 s alone, even under 24 CPU burners) | **Fixed.** `TimeoutSec = 240` only ends a hang, under a 300 s cap |
 | `TestPruneProfileTests` "a real xUnit host killed at its timeout still gets per-class lines" | the claim needs the host killed AFTER its quick tests printed, so its `TimeoutSec` (from the spawn) decides it | rule 2 by construction | The host starts from its apphost, not through `dotnet run`, so the only work the timeout must outlast is one child starting and finishing two trivial tests; `TimeoutSec` is `HangWaitMs / 1000` (30 s) under a 300 s cap, once per case (with and without `nameHungTests`) |
 | `TestPruneProfileTests` "fshw's default launch of a real xUnit host holds none of its thread-pool threads" | the fixture's `PoolProbe` waits 0.5 s, then fails if a pool thread stays held by other work for a whole further second of 10 ms samples | rule 1 with a reason: a held thread is a constant, a transient one is not | Work passing through (the runner's reporting, a sibling quick test) frees its thread within the window, so one sample at 0 passes; the monitor it exists to catch holds its thread from assembly start to the end (10 of 10 runs red with `--long-running 10`, 0 of 20 without). `TimeoutSec = 240` only ends a hang, under a 300 s cap |
+| `ShutdownEscalationTests` "LIVE: a real tree that ignores SIGTERM, behind a kill that hangs at shutdown, is SIGKILLed and reaped" (AUTOMATION-1354) | `liveEscalationOps` bounds each `ps` read at 2 s; a loaded box misses it, the tree reads as unproven and is never signalled, and ten polls of missed reads outlast the registry's 15 s escalation budget | CAN-FLAKE (escalation unfinished in a loaded full run 10-28) | **Fixed.** The escalation runs on `SettledEscalationOps.settledOps` (`ProcessHelper.shutdownEscalationWith`): the read is retried until `ps` answers, and after SIGKILL the pause waits for the members to be gone, as AUTOMATION-1312 did for `KillEscalationTests`. The registry budget is `HangWait` and only ends a hang. The claim, SIGKILL (137), reaped and nothing LEAKED, is unchanged. |
+| `TestHostTimeoutTests` "a test host killed at its timeout is stopped from the bottom up…" | `TimeoutSec = 1` from the spawn, over a real `sh` controller that must `touch started` first | CAN-FLAKE (red once at load ~150 10-29, green alone; mechanism not proven) | **Widened.** TestPrune project timeouts cannot be armed on a child's first write, so the timeout is 5 s, enough for a starved shell to reach its `wait`. Wait `2 * HangWaitMs`, cap `RealCheckTestCapMs`. |
+| `PluginTimeoutTests` "an overrunning build names its command, budget, tree and what the kill left" | a 45 s wait (~20 s over the product's teardown) under a 60 s cap | CAN-FLAKE (red once at load ~150 10-29, green alone; failing assertion not captured) | **Widened.** Wait `25 s + 2 * HangWaitMs`, cap `RealCheckTestCapMs`. If `ps` misses the product's own 10 s `TeardownBudget` the tree assertions can still fail: that bound is the product's. |
+| `IntegrationTests` "TestPrunePlugin with failing test reports failure" | a 5 s xUnit cap below its own 10 s and 30 s waits, over one `false` child | CAN-FLAKE (cancelled at load ~150 10-29) | **Fixed.** Waits `HangWaitMs`, cap `SyncHangBackstopMs`. |
+| `WorkSchedulerFairnessTests` "sessions with 1 s and 10 s jobs hold the slot for about the same time", and every other `WorkScheduler*Tests` fact | 5–20 s xUnit caps over in-process work on the injected clock: ~400 hand-overs, each awaiting a grant continuation on the pool | CAN-FLAKE (overran 10 s at load 197–274 10-29, green on rerun) | **Fixed.** The time the scheduler reads was already `ManualClock`; the caps are `SyncHangBackstopMs`, so they only report a hang. |
 
 ## Hang caps (fail-safe, excluded from the tables)
 
@@ -139,6 +144,58 @@ One line per kind. Each meets rule 2 as written above.
 - `SnapshotVersionTests` `WhenAny(checkD, Delay 5 s)`: lets a defective invalidation's re-check finish before releasing `S`. On a slow box the defect may go unseen, but a correct run waits out the 5 s and passes.
 - `PathFilterTests` `Thread.Sleep 1100`: waits out filesystem mtime granularity before a change.
 
+## Enforced: FSHW-WALL-001 (AUTOMATION-1364)
+
+The tables above were swept three times, and each sweep was followed by new flakes. The
+rule `FSHW-WALL-001` (`analyzers/FsHotWatch.Rules/WallClockAnalyzer.fs`) now stops the
+class at review time. `check` and `confirm --run-once` load it with the other house rules,
+so `mise run ci` and GitHub CI fail on a finding. In test sources it flags:
+
+1. **a sleep**: `Thread.Sleep`, `Task.Delay` or `Async.Sleep`, except `Timeout.Infinite`
+   (hung work that only cancellation ends);
+2. **a stopwatch upper bound** inside an assertion: `elapsed < X` (or `X > elapsed`) where
+   the small side reads `Elapsed`, `ElapsedMilliseconds`, `ElapsedTicks`, `GetElapsedTime`
+   or a `Stopwatch`. Lower bounds and equalities are rule 3 and not flagged;
+3. **a short literal asserted wait**: inside a positive assertion, `Wait` / `WaitOne` /
+   `WaitAll` / `WaitAny` / `WaitForExit` with a literal budget under 30 s. Use a named
+   budget (`HangWaitMs`, or `HangWait` for the `TimeSpan` overloads) or a `RealCheck*`
+   literal. Negated waits (`not (x.Wait 200)`, `Assert.False`) are negative windows and are
+   not flagged.
+
+**The seams.** Time comes from one production seam, `HostClock.Clock` (wall and awake
+time), or a `unit -> DateTime` / `unit -> TimeSpan` cut from it (`WorkScheduler`,
+`Daemon.waitForAllTerminalCoreOn`, the launch and operation watchdogs). Tests move
+`FsHotWatch.Tests.FakeClock.ManualClock` (`tests/FsHotWatch.Tests/FakeClock.fs`), which
+replaced five private copies. Child-process behaviour is injected through the existing OS
+seams: `ProcessHelper.EscalationOps` (with `KillEscalationTests`' `FakeOs`),
+`ProcessRegistry.IOwnedChild`, and the CLI's `StopOps` / `ProcessOps`. A LIVE escalation
+test uses `SettledEscalationOps.settledOps`, the real OS with its two load-racing waits
+replaced by events. There is no general fake for `ProcessHelper.runProcess`, so a test that
+needs a real child stays a real-host test.
+
+**The allowlist** is `[<WallClock("reason")>]` (`tests/FsHotWatch.Tests/WallClock.fs`) on
+the test, member, type or module. A missing or blank reason allows nothing and is itself a
+finding. `rg 'WallClock\("'` lists every exception with its reason. The reasons in use are:
+
+| Reason prefix | Means |
+|---|---|
+| `polling primitive` | the interval between polls; the caller's budget reports a condition that never holds |
+| `negative window` | asserts something does NOT happen; rule 3 |
+| `timestamp granularity` | a later write's mtime or clock reading must differ |
+| `real host` | a real timer, process, signal, clock or filesystem event is the subject |
+| `product timeout under test` | the work deliberately outlasts the product's own bound |
+| `simulated work` | fake work given a duration so events overlap; outcomes are awaited by event |
+| `LIVE` | a real tree, real signals and the real process table |
+| `DEBT (AUTOMATION-1369)` | a sleep standing in for synchronisation before a positive assertion: known flake risk, still to convert |
+
+When the rule landed, the tree was converted as follows. 249 short literal asserted waits
+became `HangWaitMs` / `HangWait`, and each enclosing literal xUnit cap below 60 s became
+`SyncHangBackstopMs`. Neither change touches a passing run; they only change how a hang is
+reported. Six positive observation bounds `Task.WhenAny(t, Task.Delay n)` became
+`Task.WhenAny([| t |]).Wait(HangWait)`, which has no sleep. One redundant stopwatch bound
+(`LockedEmitTests`) was removed. `ShutdownEscalationTests`' LIVE test (AUTOMATION-1354) moved
+to `SettledEscalationOps`. Every remaining site carries a reason.
+
 ## Keeping it true
 
 - Assert what happened, not how long it took. Prefer an outcome (`TimedOut`, a typed
@@ -150,4 +207,5 @@ One line per kind. Each meets rule 2 as written above.
   silence the threshold measures.
 - Over real tool work, size caps and waits from the product's own bound with the literals
   above, never from how long the tool usually takes.
-- A new upper wall-clock bound needs a row in this file.
+- A new upper wall-clock bound needs a row in this file, and FSHW-WALL-001 will ask for it:
+  a real-time test that is not converted carries `[<WallClock("reason")>]`.

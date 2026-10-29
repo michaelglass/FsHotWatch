@@ -477,7 +477,7 @@ let ``a traced run joins against the analysis admitted while it ran, however far
             armed.Set()
             host.EmitFileChecked blocker
             host.EmitBatchChecked(fakeBatchChecked [ Path.Combine(root, "K.fsx") ])
-            test <@ entered.Wait(TimeSpan.FromSeconds 30.0) @>
+            test <@ entered.Wait(HangWait) @>
             host.EmitFileChecked indexing
             host.EmitBatchChecked(fakeBatchChecked [ Path.Combine(root, "L.fsx") ])
 

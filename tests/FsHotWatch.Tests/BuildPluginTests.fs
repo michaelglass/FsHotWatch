@@ -659,6 +659,7 @@ let ``file changes observed during a test host defer the build until that run co
 /// The build here is a shell stand-in for exactly that check: it skips when its output is
 /// newer than its source, otherwise it snapshots the source, waits on a gate (the first
 /// time only), and writes the snapshot.
+[<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
 [<Fact(Timeout = 20000)>]
 let ``an edit during an in-flight build is rebuilt, not trusted to a newer stale output`` () =
     withTempDir "edit-during-build" (fun tmpDir ->
@@ -802,6 +803,7 @@ let ``a force-run cancelled after it started still releases the build deferral``
                 "the change was deferred behind a run that no longer exists"
             )))
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 let private overlappingBuildAndTest (buildDelay: string) (testDelay: string) =
     withTempDir "build-test-overlap" (fun tmpDir ->
         let countFile = System.IO.Path.Combine(tmpDir, "build-count")
@@ -1266,7 +1268,7 @@ let ``build plugin reports errors on failed build`` () =
 
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build plugin handles exception from runProcess`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1278,7 +1280,7 @@ let ``build plugin handles exception from runProcess`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    test <@ terminal.Wait 15000 @>
+    test <@ terminal.Wait HangWaitMs @>
     let status = terminal.Result
 
     test
@@ -1736,6 +1738,7 @@ let ``BuildPlugin cache reads are limited to genuine build-trigger events`` () =
 
     test <@ stored.IsSome @>
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 15000)>]
 let ``cached build lifecycle still defers one source change until the test run completes`` () =
     withTempDir "build-cache-test-lifecycle" (fun tmpDir ->
@@ -1863,6 +1866,7 @@ let ``BuildInputsHasher produces stable hash for unchanged files`` () =
         let h = BuildInputsHasher(graph)
         test <@ h.Compute() = h.Compute() @>)
 
+[<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
 [<Fact(Timeout = 15000)>]
 let ``BuildInputsHasher hash differs when a source file's content changes`` () =
     withTempDir "binhasher-content" (fun tmpDir ->
@@ -3403,6 +3407,7 @@ let ``production wiring refuses an mtime-stale cache replay`` () =
         let production = keyOf (legacyProductionPlugin graph) fileEvt
         test <@ production.IsNone @>)
 
+[<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
 [<Fact(Timeout = 30000)>]
 let ``a build that leaves an output missing cannot make cached success replayable`` () =
     // A command that omits a graph project is a configuration failure, not evidence
@@ -3835,6 +3840,7 @@ let ``a pending dependency copy suppresses the cache LOOKUP only, never the STOR
         test <@ lookupKey.IsNone @>
         test <@ storeKey.IsSome @>)
 
+[<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
 [<Fact(Timeout = 30000)>]
 let ``a build that leaves a dependency copy divergent cannot make cached success replayable`` () =
     // A byte-divergent copy is attributable stale code. A successful subprocess that

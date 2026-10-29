@@ -1400,6 +1400,122 @@ let ``FSHW-WAIT-001 is scoped to test sources`` () =
         test <@ findings.IsEmpty @>)
 
 // ===========================================================================
+// FSHW-WALL-001 — wall-clock time as a test's synchronisation or its claim
+// (AUTOMATION-1364). Every finding's message names the `[<WallClock("…")>]` allowlist.
+// ===========================================================================
+
+/// Stand-ins for the names FSHW-WALL-001 keys on. The rule is syntactic, so a local
+/// `WallClockAttribute` and `Assert` reproduce the real ones.
+let private wallPreamble =
+    [ "module Test"
+      "open System"
+      "open System.Diagnostics"
+      "open System.Threading"
+      "open System.Threading.Tasks"
+      "type WallClockAttribute(reason: string) ="
+      "    inherit Attribute()"
+      "    new() = WallClockAttribute(\"\")"
+      "    member _.Reason = reason"
+      "module Assert ="
+      "    let True (condition: bool, message: string) = if not condition then failwith message"
+      "    let False (condition: bool, message: string) = if condition then failwith message"
+      "let test (assertion: Microsoft.FSharp.Quotations.Expr<bool>) = ignore assertion"
+      "let HangWaitMs = 30_000" ]
+
+let private wallFindingsIn (fileName: string) (source: string) =
+    runRulesOnFile fileName source
+    |> List.filter (fun e -> e.Message.Contains "WallClock(")
+
+/// One of each shape the rule exists for, every one of them seen in a flake ticket.
+let private wallViolationsSource =
+    fsSource (
+        wallPreamble
+        @ [ "let sleeps () ="
+            "    Thread.Sleep 10"
+            "    (Task.Delay 10).Wait()"
+            "    async { do! Async.Sleep 10 } |> Async.RunSynchronously"
+            "let stopwatchUpperBound () ="
+            "    let sw = Stopwatch.StartNew()"
+            "    test <@ sw.Elapsed < TimeSpan.FromSeconds 1.0 @>"
+            "    test <@ TimeSpan.FromSeconds 1.0 > sw.Elapsed @>"
+            "let shortLiteralWaits () ="
+            "    use signal = new ManualResetEventSlim(false)"
+            "    Assert.True(signal.Wait(5000), \"the event within 5 s\")"
+            "    test <@ signal.Wait(TimeSpan.FromSeconds 5.0) @>" ]
+    )
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-WALL-001 fires on sleeps, stopwatch upper bounds and short literal asserted waits`` () =
+    withAnalyzerGate (fun () ->
+        let findings = wallFindingsIn "WallControlTests.fs" wallViolationsSource
+
+        // Three sleeps, two upper bounds on a stopwatch, two short literal waits.
+        test <@ findings.Length = 7 @>
+        test <@ findings |> List.forall (fun e -> e.Severity = DiagnosticSeverity.Error) @>
+        test <@ (findings |> List.filter (fun e -> e.Message.Contains "A sleep in a test")).Length = 3 @>
+        test <@ (findings |> List.filter (fun e -> e.Message.Contains "reads a stopwatch")).Length = 2 @>
+
+        test
+            <@
+                (findings
+                 |> List.filter (fun e -> e.Message.Contains "literal millisecond budget"))
+                    .Length = 2
+            @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-WALL-001 stays silent on allowlisted tests and on shapes load cannot turn red`` () =
+    withAnalyzerGate (fun () ->
+        let source =
+            fsSource (
+                wallPreamble
+                @ [ // Allowlisted with a reason, on a binding and on a module.
+                    "[<WallClock(\"real host: a real timer is the subject\")>]"
+                    "let realTimer () = Thread.Sleep 10"
+                    "[<WallClock(\"negative windows throughout\")>]"
+                    "module Windows ="
+                    "    let window () = Thread.Sleep 10"
+                    "let unflagged () ="
+                    "    use signal = new ManualResetEventSlim(false)"
+                    "    let sw = Stopwatch.StartNew()"
+                    // Negative windows: load can only make them miss a defect.
+                    "    test <@ not (signal.Wait 200) @>"
+                    "    Assert.False(signal.Wait(200), \"nothing within 200 ms\")"
+                    // A named hang budget, a non-blocking read, a literal already sized as a hang cap.
+                    "    test <@ signal.Wait(HangWaitMs) || true @>"
+                    "    test <@ not (signal.Wait 0) @>"
+                    "    test <@ signal.Wait(TimeSpan.FromSeconds 60.0) || true @>"
+                    // A lower bound and an equality on an elapsed time.
+                    "    test <@ sw.Elapsed >= TimeSpan.Zero @>"
+                    "    test <@ sw.Elapsed = sw.Elapsed @>"
+                    // Hung work that only cancellation ends.
+                    "    (Task.Delay(Timeout.Infinite, CancellationToken.None)) |> ignore" ]
+            )
+
+        test <@ (wallFindingsIn "WallControlTests.fs" source).IsEmpty @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-WALL-001 allows nothing for an allowlist attribute with no reason`` () =
+    withAnalyzerGate (fun () ->
+        let source =
+            fsSource (
+                wallPreamble
+                @ [ "[<WallClock>]"
+                    "let bare () = Thread.Sleep 10"
+                    "[<WallClock(\"  \")>]"
+                    "let blank () = Thread.Sleep 10" ]
+            )
+
+        let findings = wallFindingsIn "WallControlTests.fs" source
+
+        // Each reasonless attribute is a finding, AND the sleep under it is still flagged.
+        test <@ (findings |> List.filter (fun e -> e.Message.Contains "needs its reason")).Length = 2 @>
+        test <@ (findings |> List.filter (fun e -> e.Message.Contains "A sleep in a test")).Length = 2 @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-WALL-001 is scoped to test sources`` () =
+    withAnalyzerGate (fun () -> test <@ (wallFindingsIn "Temp.fs" wallViolationsSource).IsEmpty @>)
+
+// ===========================================================================
 // BuildPlugin — success and failure
 // ===========================================================================
 
@@ -1551,7 +1667,10 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
                 | _ -> false
             @>)
 
-[<Fact(Timeout = 5000)>]
+// One trivial `false` child: its waits are hang-only (`HangWaitMs`) under the sync backstop. The old
+// 5 s cap sat below the test's own 10 s and 30 s waits, so a loaded box (load ~150) cancelled it
+// before either wait could decide.
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``TestPrunePlugin with failing test reports failure`` () =
     let dbPath = Path.Combine(Path.GetTempPath(), $"fshw-tp-fail-{Guid.NewGuid():N}.db")
 
@@ -1580,9 +1699,9 @@ let ``TestPrunePlugin with failing test reports failure`` () =
         host.RegisterHandler(handler)
 
         host.EmitBuildCompleted(BuildSucceeded)
-        waitForTerminalStatus host "test-prune" 10000
+        waitForTerminalStatus host "test-prune" HangWaitMs
 
-        waitForQuiescent host 30000
+        waitForQuiescent host HangWaitMs
 
         let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ cmdResult.IsSome @>
@@ -1699,6 +1818,7 @@ let ``FileCommandPlugin reports failure on bad command`` () =
 // rerun — end-to-end: clear cache + synthetic file event re-runs plugin
 // ===========================================================================
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 15000)>]
 let ``rerun re-executes a cached FileCommandPlugin`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-rerun-{Guid.NewGuid():N}")
@@ -2106,6 +2226,7 @@ let ``ProcessRegistry.killAll terminates tracked live processes`` () =
 // Outer timeout 20s leaves headroom over the internal ceiling (8s registration
 // deadline + 5s task.Wait = 13s) so a real failure surfaces as an assertion
 // rather than a silent xUnit timeout.
+[<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
 [<Fact(Timeout = 20000)>]
 let ``ProcessRegistry.killAll kills a child started via runProcess from another thread`` () =
     let registry = FsHotWatch.ProcessRegistry.Registry()
@@ -2279,6 +2400,7 @@ let ``IgnoreFilterCache is safe under concurrent Get`` () =
 // parallel content) and are excluded from coverage.
 // ---------------------------------------------------------------------------
 
+[<WallClock("DEBT (AUTOMATION-1369): a sleep standing in for synchronisation before a positive assertion; a known flake risk, to be converted to an event or an injected clock")>]
 [<Fact(Timeout = 30000)>]
 let ``concurrent FileChanged events run two builds sequentially`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -2508,6 +2630,7 @@ let private makeControllablePlugin (name: string) =
     {| Handler = handler
        Release = release |}
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 30000)>]
 let ``waitForPluginTerminalIfRunning returns when plugin reaches terminal`` () =
     let host = FsHotWatch.PluginHost.PluginHost(Unchecked.defaultof<_>, "/tmp")
@@ -3146,6 +3269,7 @@ let private waitForIpcServer (pipeName: string) (timeoutMs: int) : bool =
     waitUntil serverUp timeoutMs
     serverUp ()
 
+[<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
 [<Fact(Timeout = 180000)>]
 let ``daemon stays responsive to status while mid auto-rebuild after a multi-file batch`` () =
     withTempDir "fshw-wedge-rebuild" (fun tmpDir ->

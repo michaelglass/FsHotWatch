@@ -156,6 +156,7 @@ let ``PendingVerification: hash is order-independent and empty-distinct`` () =
 // `.fshw/test-prune/pending-verification.json`.
 // =============================================================================
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = SyncHangBackstopMs)>]
 [<Trait("Regression", "LifecycleMailboxOrder")>]
 let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the symbols`` () =
@@ -2217,6 +2218,7 @@ let private runCount (runs: string) =
     else
         0
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 60000)>]
 let ``run-tests refused the slot is QUEUED and still runs — never a green it did not earn`` () =
     withTempDir "tp-rerun-queued" (fun tmpDir ->

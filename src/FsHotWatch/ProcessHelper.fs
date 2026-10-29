@@ -1367,11 +1367,18 @@ let internal escalationFor (owned: Result<OwnedPid, string>) : (unit -> Escalati
     escalationWith liveEscalationOps owned
 
 /// What the registry runs when a shutdown's kill of this child does not return
-/// (`ProcessRegistry.IOwnedChild.Escalate`): the escalation's survivors. `None` without a
-/// recorded identity, exactly as for `escalationFor`.
-let internal shutdownEscalationFor (owned: Result<OwnedPid, string>) : (unit -> (int * string) list) option =
-    escalationFor owned
+/// (`ProcessRegistry.IOwnedChild.Escalate`), against `ops`: the escalation's survivors.
+/// `None` without a recorded identity, exactly as for `escalationWith`.
+let internal shutdownEscalationWith
+    (ops: EscalationOps)
+    (owned: Result<OwnedPid, string>)
+    : (unit -> (int * string) list) option =
+    escalationWith ops owned
     |> Option.map (fun escalate -> fun () -> (escalate ()).Survivors)
+
+/// `shutdownEscalationWith` the real OS.
+let internal shutdownEscalationFor (owned: Result<OwnedPid, string>) : (unit -> (int * string) list) option =
+    shutdownEscalationWith liveEscalationOps owned
 
 /// Classify the bounded post-exit drain. The capture is the child's COMPLETE output
 /// only if the wait returned inside the window AND both pumps ended at EOF; anything

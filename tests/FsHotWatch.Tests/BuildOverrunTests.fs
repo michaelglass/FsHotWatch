@@ -643,7 +643,7 @@ let ``only SIG_IGN reads as ignored`` () =
     Assert.False(isIgnoredDisposition 0n)
     Assert.False(isIgnoredDisposition 0x1234n)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``sendInterrupt stops a live process`` () =
     interruptibleChildren ()
 
@@ -651,7 +651,7 @@ let ``sendInterrupt stops a live process`` () =
         Diagnostics.Process.Start(Diagnostics.ProcessStartInfo("sleep", "30", UseShellExecute = false))
 
     test <@ sendInterrupt p.Id = Ok() @>
-    test <@ p.WaitForExit 10000 @>
+    test <@ p.WaitForExit FsHotWatch.Tests.TestHelpers.HangWaitMs @>
 
 [<Fact>]
 let ``sendInterrupt to a process that does not exist is an error, not a success`` () =
@@ -682,7 +682,7 @@ let ``interruptPause waits one poll`` () =
 let ``interruptWith no grace interrupts nothing`` () =
     test <@ interruptWith None [ row 10 1 "x" ] = None @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``interruptWith a grace interrupts a live tree and sees it exit`` () =
     interruptibleChildren ()
 
@@ -692,7 +692,7 @@ let ``interruptWith a grace interrupts a live tree and sees it exit`` () =
     let i = interruptWith (Some(TimeSpan.FromSeconds 10.0)) [ row p.Id 1 "sleep 30" ]
     test <@ i |> Option.map _.Signalled = Some [ p.Id ] @>
     test <@ i |> Option.map _.Exited = Some true @>
-    test <@ p.WaitForExit 10000 @>
+    test <@ p.WaitForExit FsHotWatch.Tests.TestHelpers.HangWaitMs @>
 
 // ---------------------------------------------------------------------------
 // StopSignal / sendTerminate / stopWith — the stop a test host's teardown sends
@@ -702,13 +702,13 @@ let ``each stop signal is named for the signal it sends`` () =
     test <@ StopSignal.Interrupt.Name = "SIGINT" @>
     test <@ StopSignal.Terminate.Name = "SIGTERM" @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``sendTerminate stops a live process`` () =
     use p =
         Diagnostics.Process.Start(Diagnostics.ProcessStartInfo("sleep", "30", UseShellExecute = false))
 
     test <@ StopSignal.Terminate.Send p.Id = Ok() @>
-    test <@ p.WaitForExit 10000 @>
+    test <@ p.WaitForExit FsHotWatch.Tests.TestHelpers.HangWaitMs @>
 
 [<Fact>]
 let ``sendTerminate to a process that does not exist is an error, not a success`` () =
@@ -728,7 +728,7 @@ let ``sendTerminate to a process that does not exist is an error, not a success`
 let ``stopWith nothing stops nothing`` () =
     test <@ stopWith None [ row 10 1 "x" ] = None @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``stopWith SIGTERM and a grace stops a live tree, sees it exit and names the signal`` () =
     use p =
         Diagnostics.Process.Start(Diagnostics.ProcessStartInfo("sleep", "30", UseShellExecute = false))
@@ -744,9 +744,9 @@ let ``stopWith SIGTERM and a grace stops a live tree, sees it exit and names the
     test <@ i |> Option.map _.Signal = Some "SIGTERM" @>
     test <@ i |> Option.map _.Signalled = Some [ p.Id ] @>
     test <@ i |> Option.map _.Exited = Some true @>
-    test <@ p.WaitForExit 10000 @>
+    test <@ p.WaitForExit FsHotWatch.Tests.TestHelpers.HangWaitMs @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``stopWith deepest-first stops a live single-process tree`` () =
     use p =
         Diagnostics.Process.Start(Diagnostics.ProcessStartInfo("sleep", "30", UseShellExecute = false))
@@ -762,7 +762,7 @@ let ``stopWith deepest-first stops a live single-process tree`` () =
     test <@ i |> Option.map _.Signal = Some "SIGTERM" @>
     test <@ i |> Option.map _.Signalled = Some [ p.Id ] @>
     test <@ i |> Option.map _.Exited = Some true @>
-    test <@ p.WaitForExit 10000 @>
+    test <@ p.WaitForExit FsHotWatch.Tests.TestHelpers.HangWaitMs @>
 
 [<Fact>]
 let ``interruptTree records that it sent SIGINT`` () =

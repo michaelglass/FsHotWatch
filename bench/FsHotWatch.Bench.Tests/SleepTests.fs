@@ -90,6 +90,7 @@ let ``the problem names only the power events inside the window`` () =
                 "machine slept 200 s inside this record's window (pmset: Sleep 09:32:12, DarkWake 09:32:14)"
         @>
 
+[<FsHotWatch.Tests.WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
 [<Fact>]
 let ``the real clocks agree while this test runs awake`` () =
     let w = Sleep.openWindow Sleep.system

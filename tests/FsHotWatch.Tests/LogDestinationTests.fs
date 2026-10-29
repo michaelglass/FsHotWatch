@@ -75,6 +75,7 @@ let private wedgeFailure (register: PluginHost -> unit) (afterEmit: unit -> unit
             CancellationToken.None
         |> fun t -> t.GetAwaiter().GetResult())
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 let private stuckWedge () =
     use release = new ManualResetEventSlim(false)
 
@@ -91,7 +92,7 @@ let private overranWedge () =
     try
         wedgeFailure
             (fun host -> host.RegisterHandler(overrunningHandler "overrunning-plugin" entered release))
-            (fun () -> Assert.True(entered.Wait(TimeSpan.FromSeconds 10.0), "the declared work must start"))
+            (fun () -> Assert.True(entered.Wait(HangWait), "the declared work must start"))
     finally
         release.Set()
 

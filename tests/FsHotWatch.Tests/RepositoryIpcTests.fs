@@ -238,6 +238,7 @@ let private attachPreamble =
 // The orphaned-host incident: an attach that took longer than the preamble bound on a
 // loaded box registered its session, then had its reply cancelled. The client read
 // "no reply", and the session it never learned of kept the host up for 11 hours.
+[<WallClock("product timeout under test: the work deliberately outlasts the product's own bound, and the assertion is the typed timeout outcome the product reports")>]
 [<Fact(Timeout = 60000)>]
 let ``an attach that outlasts the preamble bound is still answered`` () =
     let slowAttach _ =
@@ -342,7 +343,7 @@ let ``an attach whose client left before the answer is undone`` () =
             (writeFrame client attachPreamble CancellationToken.None).Wait()
             client.Dispose())
 
-    test <@ opened.Wait(TimeSpan.FromSeconds 30.0) && opened.Result.IsNone @>
+    test <@ opened.Wait(FsHotWatch.Tests.TestHelpers.HangWait) && opened.Result.IsNone @>
     test <@ undone.Task.IsCompleted && undone.Task.Result = "attached" @>
     test <@ logged |> Seq.exists (fun line -> line.Contains "could not be sent") @>
 
@@ -369,7 +370,7 @@ let ``a session call whose client left before it was accepted is not served`` ()
 
             client.Dispose())
 
-    test <@ opened.Wait(TimeSpan.FromSeconds 30.0) && opened.Result.IsNone @>
+    test <@ opened.Wait(FsHotWatch.Tests.TestHelpers.HangWait) && opened.Result.IsNone @>
     test <@ logged |> Seq.exists (fun line -> line.Contains "could not be sent") @>
 
 [<Fact(Timeout = 60000)>]
@@ -386,6 +387,6 @@ let ``a connection that sends no preamble within the bound is closed, and says s
 
     let opened, logged = openOnce (TimeSpan.FromMilliseconds 200.0) handlers ignore
 
-    test <@ opened.Wait(TimeSpan.FromSeconds 30.0) && opened.Result.IsNone @>
+    test <@ opened.Wait(FsHotWatch.Tests.TestHelpers.HangWait) && opened.Result.IsNone @>
     test <@ not attachSeen.Value @>
     test <@ logged |> Seq.exists (fun line -> line.Contains "no preamble within") @>

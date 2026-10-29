@@ -255,6 +255,7 @@ let private nullChecker =
 /// Probe the watched directory until the daemon processes an event (proves watcher is live).
 /// Uses repeated file writes so however long watcher setup takes doesn't cause timeouts.
 /// Then waits for events to stabilize before returning.
+[<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
 let private waitForDaemonReady (srcDir: string) (changeCount: unit -> int) =
     probeUntilEvent srcDir (fun () -> changeCount () > 0) 60000
 
@@ -992,6 +993,7 @@ let ``daemon RunWithIpc responds to IPC queries`` () =
         with :? AggregateException ->
             ())
 
+[<WallClock("DEBT (AUTOMATION-1369): a sleep standing in for synchronisation before a positive assertion; a known flake risk, to be converted to an event or an injected clock")>]
 [<Fact(Timeout = 60000)>]
 let ``check forces a from-disk scan: forceScanAndWait advances the scan generation, wait-only does not`` () =
     // Regression for the 221/224 disease: `check`/`confirm`'s first daemon step
@@ -1274,7 +1276,7 @@ let ``formatScanStatusWith surfaces unchecked count as non-ok when incomplete`` 
     test <@ status = "incomplete: 65 files checked, 5 unchecked in 15.5s" @>
     test <@ status.ToLowerInvariant().Contains("unchecked") @>
 
-[<Theory(Timeout = 30000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``blocked scan discovery remains owned and observable`` (readStatus: bool) =
@@ -1297,13 +1299,13 @@ let ``blocked scan discovery remains owned and observable`` (readStatus: bool) =
         let mutable observation: Task<ScanState * int64> option = None
 
         try
-            Assert.True(loader.Entered.Wait(TimeSpan.FromSeconds 10.0), "scan must enter controlled discovery")
+            Assert.True(loader.Entered.Wait(HangWait), "scan must enter controlled discovery")
 
             if readStatus then
                 let reading = Task.Run(fun () -> daemon.GetScanState(), daemon.GetScanGeneration())
 
                 observation <- Some reading
-                Assert.True(reading.Wait(TimeSpan.FromSeconds 5.0), "scan observation must not wait for the loader")
+                Assert.True(reading.Wait(HangWait), "scan observation must not wait for the loader")
                 let state, generation = reading.GetAwaiter().GetResult()
 
                 match state with
@@ -1325,7 +1327,7 @@ let ``blocked scan discovery remains owned and observable`` (readStatus: bool) =
         Assert.Equal(1L, daemon.GetScanGeneration())
         Assert.False(daemon.Host.AnyPluginBusy(), "a settled scan must retire its own work"))
 
-[<Theory(Timeout = 30000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``watcher change remains owned through debounce and blocked rediscovery`` (waitForDiscovery: bool) =
@@ -1358,10 +1360,7 @@ let ``watcher change remains owned through debounce and blocked rediscovery`` (w
             deliver SolutionChanged
 
             if waitForDiscovery then
-                Assert.True(
-                    loader.Entered.Wait(TimeSpan.FromSeconds 5.0),
-                    "the change must enter controlled discovery"
-                )
+                Assert.True(loader.Entered.Wait(HangWait), "the change must enter controlled discovery")
 
             Assert.True(
                 daemon.Host.AnyPluginBusy(),
@@ -1414,7 +1413,7 @@ let ``disposed daemon rejects scan admission instead of abandoning its receipt``
             | :? OperationCanceledException -> ()
             | :? ObjectDisposedException -> ())
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``failed scan receipt reaches IPC and a later scan recovers`` () =
     withTempDir "scan-failed-receipt" (fun tmpDir ->
         let sourceDir = Path.Combine(tmpDir, "src")
@@ -1447,7 +1446,7 @@ let ``failed scan receipt reaches IPC and a later scan recovers`` () =
             let scan =
                 Async.StartAsTask(daemon.ScanAll(), cancellationToken = requestLifetime.Token)
 
-            test <@ loader.Entered(1).Wait(TimeSpan.FromSeconds 5.0) @>
+            test <@ loader.Entered(1).Wait(HangWait) @>
             requestLifetime.Cancel()
             loader.Resume(1)
 
@@ -1629,7 +1628,8 @@ let ``a scan publishes no more results than its bound while a plugin has not com
         let final = daemon.Host.LiveResults.Status()
         test <@ final.Peak = 1 && final.Admitted = 3L @>)
 
-[<Theory(Timeout = 30000)>]
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false, false)>]
 [<InlineData(true, false)>]
 [<InlineData(true, true)>]
@@ -1746,10 +1746,10 @@ let ``scan waits for discovery and re-scans when its captured model is invalidat
         try
             if rediscoverAfterCapture then
                 scan <- Some(Async.StartAsTask(daemon.ScanAll()))
-                test <@ preprocessorEntered.Wait(TimeSpan.FromSeconds(10.0)) @>
+                test <@ preprocessorEntered.Wait(HangWait) @>
 
             rediscovery <- Some(Async.StartAsTask(daemon.DiscoverAndRegisterProjects()))
-            test <@ loader.Entered(1).Wait(TimeSpan.FromSeconds(10.0)) @>
+            test <@ loader.Entered(1).Wait(HangWait) @>
             test <@ daemon.Pipeline.GetRegisteredProjects().IsEmpty @>
 
             if not rediscoverAfterCapture then
@@ -2491,7 +2491,7 @@ let ``a project change whose admission outlives the watcher's bound is still app
         let lines = System.Collections.Concurrent.ConcurrentQueue<string>()
 
         try
-            test <@ entered.Wait(TimeSpan.FromSeconds 5.0) @>
+            test <@ entered.Wait(HangWait) @>
 
             do
                 use _sink =
@@ -3280,7 +3280,7 @@ let private withSupersededChange
             // The barrier is after both model capture and ContentTracker admission.
             // Deliver no second event: a retry that rechecks the dedup tracker loses this input.
             (callback.Value |> Option.get) (SourceChanged [ source ])
-            Assert.True(admitted.Wait(TimeSpan.FromSeconds 10.0), "the original change must be admitted")
+            Assert.True(admitted.Wait(HangWait), "the original change must be admitted")
             daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
             release.Set()
 
@@ -3552,7 +3552,7 @@ let ``a scan's result about a file a later save re-checked is refused, and no st
         try
             holdNext <- 1
             let scan = Async.StartAsTask(daemon.ScanAll())
-            Assert.True(scanHeld.Wait(TimeSpan.FromSeconds 20.0), "the scan must reach its preprocessors")
+            Assert.True(scanHeld.Wait(HangWait), "the scan must reach its preprocessors")
             let capturedEpoch = daemon.Snapshot().Epoch
 
             let saved = "module Late\nlet other = 2\n"
@@ -3570,7 +3570,7 @@ let ``a scan's result about a file a later save re-checked is refused, and no st
             // the save's bytes, and the held scan checks the old ones.
             File.WriteAllText(late, "module Late\nlet other = 1\n")
             release.Set()
-            Assert.True(scan.Wait(TimeSpan.FromSeconds 30.0), "the released scan must complete")
+            Assert.True(scan.Wait(HangWait), "the released scan must complete")
 
             Assert.True(
                 SpinWait.SpinUntil(
@@ -3681,7 +3681,7 @@ let ``a scan's answers read before a save's cohort, landing after it, are refuse
             if Threading.Interlocked.Increment(&heldReads.contents) = 2 then
                 scanHeld.Set()
 
-            Assert.True(release.Wait(TimeSpan.FromSeconds 30.0), "the save must release the scan"))
+            Assert.True(release.Wait(HangWait), "the save must release the scan"))
 
         let checkedFiles = System.Collections.Concurrent.ConcurrentQueue<string * string>()
         let seals = System.Collections.Concurrent.ConcurrentQueue<BatchChecked>()
@@ -3712,7 +3712,7 @@ let ``a scan's answers read before a save's cohort, landing after it, are refuse
 
         try
             let scan = Async.StartAsTask(daemon.ScanAll())
-            Assert.True(scanHeld.Wait(TimeSpan.FromSeconds 20.0), "the scan must have read both files")
+            Assert.True(scanHeld.Wait(HangWait), "the scan must have read both files")
             let capturedEpoch = daemon.Snapshot().Epoch
 
             // A new declaration: Early.fs's signature moves, so the batch re-checks Late.fs.
@@ -3729,7 +3729,7 @@ let ``a scan's answers read before a save's cohort, landing after it, are refuse
 
             test <@ daemon.Snapshot().Epoch <> capturedEpoch @>
             release.Set()
-            Assert.True(scan.Wait(TimeSpan.FromSeconds 30.0), "the released scan must complete")
+            Assert.True(scan.Wait(HangWait), "the released scan must complete")
 
             Assert.True(
                 SpinWait.SpinUntil(
@@ -3873,7 +3873,8 @@ let ``discovery coordinator starts without a completed epoch and recovers after 
 
     test <@ coordinator.Completed.IsSome @>
 
-[<Fact(Timeout = 15000)>]
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``stable discovery admission includes attempts queued behind the active loader`` () =
     let coordinator = DiscoveryCoordinator()
     let firstEntered = new Threading.ManualResetEventSlim(false)
@@ -3902,7 +3903,7 @@ let ``stable discovery admission includes attempts queued behind the active load
             )
             |> Some
 
-        test <@ firstEntered.Wait(TimeSpan.FromSeconds(10.0)) @>
+        test <@ firstEntered.Wait(HangWait) @>
 
         second <-
             Async.StartAsTask(
@@ -3918,7 +3919,7 @@ let ``stable discovery admission includes attempts queued behind the active load
         test <@ waitUntilTrue (fun () -> coordinator.RequestedGeneration = 2L) 10000 @>
         let stable = coordinator.WaitForStableAdmission()
         firstResume.Set()
-        test <@ secondEntered.Wait(TimeSpan.FromSeconds(10.0)) @>
+        test <@ secondEntered.Wait(HangWait) @>
 
         let premature =
             System.Threading.Tasks.Task.WhenAny(stable, System.Threading.Tasks.Task.Delay(1000))
@@ -3944,7 +3945,7 @@ let ``discovery failure marker rejects null and unrelated messages`` () =
     test <@ not (isTotalDiscoveryFailureMessage null) @>
     test <@ not (isTotalDiscoveryFailureMessage "some other configuration error") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``verdict admission waits while the real loader seam is between clear and completion`` () =
     withTempDir "daemon-discovery-race" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src")
@@ -3972,7 +3973,7 @@ let ``verdict admission waits while the real loader seam is between clear and co
 
         try
             discovery <- Async.StartAsTask(daemon.DiscoverAndRegisterProjects()) |> Some
-            test <@ loader.Entered.Wait(TimeSpan.FromSeconds(10.0)) @>
+            test <@ loader.Entered.Wait(HangWait) @>
 
             // The graph/pipeline have been cleared and the loader has not returned.
             // This exact window used to be misread as a completed zero-load result.
@@ -4030,7 +4031,7 @@ let ``verdict admission waits while the real loader seam is between clear and co
 // it is in flight there is no completed outcome to read: `DiscoverySnapshot` is
 // `None` by design. The model says so as a value, so a reader waits instead of
 // mistaking the absence for a missing or empty model.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a rediscovery in flight after a completed attempt reads as rediscovering, not as no model`` () =
     withTempDir "daemon-discovery-in-flight" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src")
@@ -4076,7 +4077,7 @@ let ``a rediscovery in flight after a completed attempt reads as rediscovering, 
             | Some deliver -> deliver (ProjectChanged [ projectPath ])
             | None -> failwith "the daemon constructed no watcher"
 
-            test <@ loader.Entered(1).Wait(TimeSpan.FromSeconds 10.0) @>
+            test <@ loader.Entered(1).Wait(HangWait) @>
             test <@ daemon.DiscoverySnapshot() = None @>
             test <@ daemon.ProjectModel() = ProjectModel.Observation.Rediscovering 2L @>
 
@@ -4087,7 +4088,8 @@ let ``a rediscovery in flight after a completed attempt reads as rediscovering, 
         finally
             loader.Resume(1))
 
-[<Theory(Timeout = 30000)>]
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``verdict admission restarts when discovery begins after the host wait starts`` (secondAttemptLoads: bool) =
@@ -4138,11 +4140,11 @@ let ``verdict admission restarts when discovery begins after the host wait start
         let mutable rediscovery: System.Threading.Tasks.Task option = None
 
         try
-            test <@ hostWaitEntered.Wait(TimeSpan.FromSeconds(10.0)) @>
+            test <@ hostWaitEntered.Wait(HangWait) @>
 
             let running = Async.StartAsTask(daemon.DiscoverAndRegisterProjects())
             rediscovery <- Some(running :> System.Threading.Tasks.Task)
-            test <@ loader.Entered(1).Wait(TimeSpan.FromSeconds(10.0)) @>
+            test <@ loader.Entered(1).Wait(HangWait) @>
 
             // The loader began only after verdict admission. Releasing the already-running
             // host wait must not let the stale terminal host state win the race.
@@ -5002,7 +5004,8 @@ let private discoveredOne: DiscoverySnapshot =
       OptionsMapped = 1
       Registered = 1 }
 
-[<Fact(Timeout = 15000)>]
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a cohort cannot capture a settled model before it is published`` () =
     use availableEntered = new ManualResetEventSlim(false)
     use releaseAvailable = new ManualResetEventSlim(false)
@@ -5020,7 +5023,7 @@ let ``a cohort cannot capture a settled model before it is published`` () =
         |> Async.StartAsTask
 
     try
-        Assert.True(availableEntered.Wait(TimeSpan.FromSeconds 5.0), "the attempt must announce its model")
+        Assert.True(availableEntered.Wait(HangWait), "the attempt must announce its model")
         let captured = coordinator.Capture id |> Async.StartAsTask
         let first = Task.WhenAny(captured, Task.Delay 500).GetAwaiter().GetResult()
         // A cohort captured now could be dispatched before any plugin can observe the
@@ -5032,7 +5035,7 @@ let ``a cohort cannot capture a settled model before it is published`` () =
         releaseAvailable.Set()
         run.GetAwaiter().GetResult()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a captured model refuses publication once any later attempt begins or settles`` () =
     let coordinator = DiscoveryCoordinator()
     let succeed () = async { return discoveredOne, () }
@@ -5057,7 +5060,7 @@ let ``a captured model refuses publication once any later attempt begins or sett
             })
         |> Async.StartAsTask
 
-    Assert.True(entered.Wait(TimeSpan.FromSeconds 5.0))
+    Assert.True(entered.Wait(HangWait))
     // Same counts, but an attempt is between clear and completion.
     refuses captured
     release.Set()
@@ -5375,7 +5378,7 @@ let ``a scan blocked in discovery beyond the stall threshold is not a wedge`` ()
         let scan = Async.StartAsTask(daemon.ScanAll())
 
         try
-            Assert.True(loader.Entered.Wait(TimeSpan.FromSeconds 10.0), "the scan must enter controlled discovery")
+            Assert.True(loader.Entered.Wait(HangWait), "the scan must enter controlled discovery")
 
             // The scan owns work and no plugin dispatch is completing, which is exactly
             // the shape the old detector called WEDGED. It is inside its deadline, so the
@@ -5425,7 +5428,7 @@ let ``supervised work held past its own deadline still reads as wedged`` () =
 
     try
         queue.Submit((), CancellationToken.None) |> ignore
-        Assert.True(entered.Wait(TimeSpan.FromSeconds 10.0), "the controlled operation must start")
+        Assert.True(entered.Wait(HangWait), "the controlled operation must start")
 
         let waiting =
             waitForAllTerminalCore
@@ -6039,7 +6042,7 @@ let ``a re-evaluation says which projects' compile inputs it actually changed`` 
 /// that scan: every file it checks is read after the request arrived. `fshw check`
 /// against a daemon still in its cold scan sends exactly that request, and running it
 /// as a second full scan re-checked every registered file for nothing.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a scan requested before the running scan read the tree is answered by it`` () =
     withTempDir "scan-coalesce" (fun tmpDir ->
         let sourceDir = Path.Combine(tmpDir, "src")
@@ -6061,7 +6064,7 @@ let ``a scan requested before the running scan read the tree is answered by it``
                     |> List.map (fun project -> makeProjectOptions project.ProjectFileName [] []))
 
         let first = Async.StartAsTask(daemon.ScanAll())
-        test <@ loader.Entered(0).Wait(TimeSpan.FromSeconds 10.0) @>
+        test <@ loader.Entered(0).Wait(HangWait) @>
 
         // Admitted while the first scan is still discovering — before it read any file.
         let second =
@@ -6156,7 +6159,7 @@ let private withHeldFirstScan
 [<Fact(Timeout = 120000)>]
 let ``a scan requested mid-scan over the tree that scan checked is answered by it`` () =
     withHeldFirstScan "scan-mid-unchanged" (fun daemon _ entered release first ->
-        test <@ entered.Wait(TimeSpan.FromSeconds 30.0) @>
+        test <@ entered.Wait(HangWait) @>
 
         let second =
             daemon.AdmitScan().WaitAsync(TimeSpan.FromSeconds 10.0).GetAwaiter().GetResult()
@@ -6175,7 +6178,7 @@ let ``a scan requested mid-scan over the tree that scan checked is answered by i
 [<Fact(Timeout = 120000)>]
 let ``a scan requested mid-scan is a real scan when an input changed after the scan read it`` () =
     withHeldFirstScan "scan-mid-changed" (fun daemon projectPath entered release first ->
-        test <@ entered.Wait(TimeSpan.FromSeconds 30.0) @>
+        test <@ entered.Wait(HangWait) @>
 
         let second =
             daemon.AdmitScan().WaitAsync(TimeSpan.FromSeconds 10.0).GetAwaiter().GetResult()
@@ -6259,7 +6262,7 @@ let ``the tree differs from a scan's stamp by model, membership, source text or 
 /// A scan request can be answered without a new generation. A waiter bound to that
 /// request resolves when it settles, or `WaitForScan G` sent after `Scan` would wait for
 /// a generation nothing will make.
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a waiter bound to a request answered without a new generation resolves when it settles`` () =
     let signal = FsHotWatch.Daemon.ScanSignal()
     signal.SignalGeneration 1L
@@ -6274,7 +6277,7 @@ let ``a waiter bound to a request answered without a new generation resolves whe
 
     receipt.SetResult(())
 
-    test <@ waiter.Wait(TimeSpan.FromSeconds 2.0) @>
+    test <@ waiter.Wait(HangWait) @>
 
 /// A project with no `obj/project.assets.json` is restored before it is checked. The
 /// daemon restores through `DaemonOptions.Restore`, so a test daemon never runs a real
@@ -6563,7 +6566,7 @@ let ``the settle re-check waits for a held test run and never interrupts it`` ()
         try
             daemon.Host.ReportErrors(PluginActivity.FcsInternalPluginName, sourcePath, [ suspectEntry ])
             daemon.Host.EmitBuildCompleted(BuildSucceeded)
-            Assert.True(claimed.Wait(TimeSpan.FromSeconds 10.0), "the test run must start")
+            Assert.True(claimed.Wait(HangWait), "the test run must start")
 
             // The wait the re-check makes while the run holds its key. What it sees is
             // recorded, then the run is allowed to finish on its own.

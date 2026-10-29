@@ -716,7 +716,7 @@ let ``a configuration change the host sees ends that session, and only that one`
         let b = attachedId (attachVia host (requestFrom fx.Secondary "b"))
         let sessionA = (host.Registry.TryGet a).Value
         reload[fx.Primary.Root.Value]()
-        test <@ sessionA.Ended.Wait(TimeSpan.FromSeconds 20.0) @>
+        test <@ sessionA.Ended.Wait(HangWait) @>
         test <@ waitUntilTrue (fun () -> (host.Registry.TryGet a).IsNone) 5000 @>
         test <@ (host.Registry.TryGet b).IsSome @>)
 
@@ -743,7 +743,7 @@ let ``an attach in flight keeps the host from retiring`` () =
     withHost blocking daemonFactory (fun fx host ->
         let attaching = Task.Run(fun () -> attachVia host (requestFrom fx.Primary "a"))
 
-        test <@ entered.Wait(TimeSpan.FromSeconds 30.0) @>
+        test <@ entered.Wait(HangWait) @>
         let retiredMidAttach = host.TryRetire()
         gate.Set()
         let id = attachedId (attaching.Result)
@@ -902,7 +902,7 @@ let ``a host with no session exits after its idle grace`` () =
         let run =
             Task.Run(fun () -> RepositoryHost.run (settingsFor fx) daemonFactory (TimeSpan.FromMilliseconds 200.0) cts)
 
-        test <@ run.Wait(TimeSpan.FromSeconds 30.0) @>
+        test <@ run.Wait(HangWait) @>
         test <@ run.Result = HostRun.Stopped @>)
 
 [<Fact(Timeout = 120000)>]

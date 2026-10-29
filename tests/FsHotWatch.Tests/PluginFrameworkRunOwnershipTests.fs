@@ -11,7 +11,7 @@ open FsHotWatch.PluginFramework
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.Tests.PluginFrameworkFixtures
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``failed queued starter is acknowledged after the tail accepts handoff`` () =
     use tailEntered = new System.Threading.ManualResetEventSlim(false)
     use releaseTail = new System.Threading.ManualResetEventSlim(false)
@@ -37,7 +37,7 @@ let ``failed queued starter is acknowledged after the tail accepts handoff`` () 
             fun state ->
                 Assert.Equal(Ready, state)
                 tailEntered.Set()
-                Assert.True(releaseTail.Wait(10000), "fixture must release the tail starter")
+                Assert.True(releaseTail.Wait(HangWaitMs), "fixture must release the tail starter")
                 SharedStarted
         )
 
@@ -47,7 +47,7 @@ let ``failed queued starter is acknowledged after the tail accepts handoff`` () 
         System.Threading.Tasks.Task.Run(fun () -> scheduler.Release("artifacts", Ready))
 
     try
-        Assert.True(tailEntered.Wait(5000), "the tail must receive ownership")
+        Assert.True(tailEntered.Wait(HangWaitMs), "the tail must receive ownership")
         Assert.False(acknowledged.IsSet, "failed starter still owns completion until handoff returns")
     finally
         releaseTail.Set()
@@ -57,7 +57,7 @@ let ``failed queued starter is acknowledged after the tail accepts handoff`` () 
     scheduler.Release("artifacts", Ready)
     Assert.Equal(Some Ready, scheduler.ClaimOrQueue("artifacts", fun _ -> SharedStarted))
 
-[<Theory(Timeout = 20000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("classification")>]
 [<InlineData("handoff")>]
 let ``exclusive ownership survives shared completion processing`` (blockedStage: string) =
@@ -69,7 +69,7 @@ let ``exclusive ownership survives shared completion processing`` (blockedStage:
     let pause stage =
         if blockedStage = stage then
             entered.Set()
-            Assert.True(release.Wait(10000), "test must release the completion stage")
+            Assert.True(release.Wait(HangWaitMs), "test must release the completion stage")
 
     let services =
         { defaultServices with
@@ -96,7 +96,7 @@ let ``exclusive ownership survives shared completion processing`` (blockedStage:
 
     try
         dispatchAndAwait registration (DispatchFileChanged SolutionChanged)
-        Assert.True(entered.Wait(5000), "shared completion must reach the controlled stage")
+        Assert.True(entered.Wait(HangWaitMs), "shared completion must reach the controlled stage")
         Assert.True(registration.IsBusy(), "completion still owns outstanding work")
         let ctx = capturedCtx.Value
         let secondClaim = ctx.RunExclusive "work" (async { return SharedFinished })
@@ -317,7 +317,7 @@ let ``throwing shared startup failure mapper still releases both owners`` () =
             | _ -> false
     )
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``shared startup failure retains local ownership through resource handoff`` () =
     use entered = new System.Threading.ManualResetEventSlim(false)
     use release = new System.Threading.ManualResetEventSlim(false)
@@ -329,7 +329,7 @@ let ``shared startup failure retains local ownership through resource handoff`` 
             ReleaseSharedRun =
                 fun _ _ ->
                     entered.Set()
-                    Assert.True(release.Wait(10000), "fixture must release shared handoff") }
+                    Assert.True(release.Wait(HangWaitMs), "fixture must release shared handoff") }
 
     let original =
         sharedWakeHandler "startup-handoff" (fun _ -> async { return SharedFinished })
@@ -358,7 +358,7 @@ let ``shared startup failure retains local ownership through resource handoff`` 
                 (fun ex -> SharedFailed ex.Message))
 
     try
-        Assert.True(entered.Wait(5000), "startup cleanup must reach the controlled handoff")
+        Assert.True(entered.Wait(HangWaitMs), "startup cleanup must reach the controlled handoff")
 
         Assert.True(
             ctx.SlotHolder "work" = SlotHolder.LiveRun,
@@ -593,7 +593,7 @@ let ``a terminal before shared admission cannot cache work that is claimed or qu
     Assert.False(registration.IsBusy())
     Assert.True(registration.Fault().IsNone)
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``executor fault preserves a live worker until cleanup and suppresses its completion fold`` failedStartup =
@@ -634,7 +634,7 @@ let ``executor fault preserves a live worker until cleanup and suppresses its co
             ReleaseSharedRun =
                 fun _ _ ->
                     entered.Set()
-                    Assert.True(release.Wait(10000), "fixture must release actual startup cleanup") }
+                    Assert.True(release.Wait(HangWaitMs), "fixture must release actual startup cleanup") }
 
     let registration = registerHandlerForOwner owner services handler
     dispatchAndAwait registration (DispatchFileChanged SolutionChanged)
@@ -658,13 +658,13 @@ let ``executor fault preserves a live worker until cleanup and suppresses its co
                         "work"
                         (async {
                             entered.Set()
-                            Assert.True(release.Wait(10000), "fixture must release actual work")
+                            Assert.True(release.Wait(HangWaitMs), "fixture must release actual work")
                             return SharedFinished
                         })
                 ))
 
     try
-        Assert.True(entered.Wait(5000), "work or shared cleanup must actually start")
+        Assert.True(entered.Wait(HangWaitMs), "work or shared cleanup must actually start")
         owner.FaultExecutor failure
         Assert.True(owner.Snapshot.IsRunning "work")
         Assert.True(registration.IsBusy(), "faulting the executor does not invent worker cleanup")

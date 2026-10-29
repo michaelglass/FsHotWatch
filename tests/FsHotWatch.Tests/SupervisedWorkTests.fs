@@ -9,10 +9,12 @@ open FsHotWatch.PluginWorkOwner
 
 /// Await a receipt that must settle within the observation bound, preserving its exception.
 let private awaitResult (work: Task<unit>) =
-    let winner =
-        Task.WhenAny([| work :> Task; Task.Delay(TimeSpan.FromSeconds 5.0) |]).GetAwaiter().GetResult()
+    // `WhenAny` of the one task never faults, so this asks only whether it settled.
+    Assert.True(
+        Task.WhenAny([| work :> Task |]).Wait(FsHotWatch.Tests.TestHelpers.HangWait),
+        "the operation receipt must settle within the observation bound"
+    )
 
-    Assert.True(obj.ReferenceEquals(work, winner), "the operation receipt must settle within the observation bound")
     work.GetAwaiter().GetResult()
 
 /// A deadline scheduler that hands its expiry to the test instead of arming a timer.
@@ -28,7 +30,7 @@ let private capturedDeadline () =
 
     schedule, (fun () -> scheduled.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``closing admission rejects queued work but retains a live callback until cleanup`` () =
     let store = Store()
     use entered = new ManualResetEventSlim(false)
@@ -46,7 +48,7 @@ let ``closing admission rejects queued work but retains a live callback until cl
             (fun state (_: int) _ _ ->
                 async {
                     entered.Set()
-                    Assert.True(release.Wait(TimeSpan.FromSeconds 10.0))
+                    Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
                     return state + 1
                 })
         )
@@ -54,7 +56,7 @@ let ``closing admission rejects queued work but retains a live callback until cl
     let active = queue.Submit(1, CancellationToken.None)
 
     try
-        Assert.True(entered.Wait(TimeSpan.FromSeconds 5.0))
+        Assert.True(entered.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
         let queued = queue.Submit(2, CancellationToken.None)
         queue.Close()
         Assert.Throws<ObjectDisposedException>(fun () -> awaitResult queued) |> ignore
@@ -81,7 +83,7 @@ let ``closing admission rejects queued work but retains a live callback until cl
 
         queue.Close()
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``deadline records failure without retiring a noncooperative callback`` () =
     let store = Store()
     use entered = new ManualResetEventSlim(false)
@@ -102,7 +104,7 @@ let ``deadline records failure without retiring a noncooperative callback`` () =
                 async {
                     leakedPublish.Value <- publish
                     entered.Set()
-                    Assert.True(release.Wait(TimeSpan.FromSeconds 10.0))
+                    Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
                     return state + 1
                 }),
             scheduleDeadline = schedule
@@ -111,7 +113,7 @@ let ``deadline records failure without retiring a noncooperative callback`` () =
     let active = queue.Submit(1, CancellationToken.None)
 
     try
-        Assert.True(entered.Wait(TimeSpan.FromSeconds 5.0))
+        Assert.True(entered.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
         let expire = expiry ()
         expire ()
         Assert.True(store.Snapshot.IsBusy)
@@ -150,7 +152,7 @@ let ``deadline records failure without retiring a noncooperative callback`` () =
 
         queue.Close()
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``completion notification stays owned and remains covered by its deadline`` () =
     let store = Store()
     use notifying = new ManualResetEventSlim(false)
@@ -167,7 +169,7 @@ let ``completion notification stays owned and remains covered by its deadline`` 
             (fun state _ -> state),
             (fun _ ->
                 notifying.Set()
-                Assert.True(release.Wait(TimeSpan.FromSeconds 10.0))),
+                Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))),
             (fun state (_: int) _ _ -> async { return state + 1 }),
             scheduleDeadline = schedule
         )
@@ -175,7 +177,7 @@ let ``completion notification stays owned and remains covered by its deadline`` 
     let active = queue.Submit(1, CancellationToken.None)
 
     try
-        Assert.True(notifying.Wait(TimeSpan.FromSeconds 5.0))
+        Assert.True(notifying.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
         Assert.Equal(1, queue.State)
         Assert.True(store.Snapshot.IsBusy)
         Assert.False(active.IsCompleted)
@@ -195,7 +197,7 @@ let ``completion notification stays owned and remains covered by its deadline`` 
 
         queue.Close()
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``handoff transition failure settles accepted receipts and closes admission`` () =
     let store = Store()
     use entered = new ManualResetEventSlim(false)
@@ -214,7 +216,7 @@ let ``handoff transition failure settles accepted receipts and closes admission`
             (fun state (_: int) _ _ ->
                 async {
                     entered.Set()
-                    Assert.True(release.Wait(TimeSpan.FromSeconds 10.0))
+                    Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
                     return state + 1
                 })
         )
@@ -223,7 +225,7 @@ let ``handoff transition failure settles accepted receipts and closes admission`
     let queued = ref None
 
     try
-        Assert.True(entered.Wait(TimeSpan.FromSeconds 5.0))
+        Assert.True(entered.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
         let next = queue.Submit(2, CancellationToken.None)
         queued.Value <- Some next
         release.Set()
@@ -295,7 +297,7 @@ let ``worker scope charges teardown failures to its owner rather than the reques
     finally
         queue.Close()
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``admission after caller timeout still launches and settles its work`` () =
     let store = Store()
 
@@ -328,19 +330,19 @@ let ``admission after caller timeout still launches and settles its work`` () =
             blocker,
             fun _ () ->
                 entered.Set()
-                Assert.True(release.Wait(TimeSpan.FromSeconds 12.0))
+                Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
                 (), ()
         )
 
     try
-        Assert.True(entered.Wait(TimeSpan.FromSeconds 5.0))
+        Assert.True(entered.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
 
         Assert.Throws<TimeoutException>(fun () -> queue.Submit((), CancellationToken.None) |> ignore)
         |> ignore
 
         release.Set()
         awaitResult held
-        Assert.True(started.Wait(TimeSpan.FromSeconds 5.0), "the late admission lost its worker launch")
+        Assert.True(started.Wait(FsHotWatch.Tests.TestHelpers.HangWait), "the late admission lost its worker launch")
         Assert.True(SpinWait.SpinUntil((fun () -> store.Snapshot.CompletedEvents = 1L), TimeSpan.FromSeconds 5.0))
         Assert.False(store.Snapshot.IsBusy)
         Assert.Equal(1, queue.State)
@@ -349,7 +351,7 @@ let ``admission after caller timeout still launches and settles its work`` () =
         awaitResult held
         queue.Close()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``shared execution deadline retains an exclusive capability until real completion`` () =
     let store = Store()
     let owner = Owner((), store, "exclusive")
@@ -368,7 +370,7 @@ let ``shared execution deadline retains an exclusive capability until real compl
             (fun _ ->
                 async {
                     entered.Set()
-                    Assert.True(release.Wait(TimeSpan.FromSeconds 10.0))
+                    Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
                 })
             (fun outcome releaseDeadline ->
                 releaseDeadline ()
@@ -379,7 +381,7 @@ let ``shared execution deadline retains an exclusive capability until real compl
         |> fun work -> Async.StartAsTask(work, cancellationToken = CancellationToken.None)
 
     try
-        Assert.True(entered.Wait(TimeSpan.FromSeconds 5.0))
+        Assert.True(entered.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
         expiry () ()
         Assert.True(store.Snapshot.IsBusy)
         Assert.NotEmpty store.Snapshot.Faults
@@ -575,7 +577,7 @@ let ``supervisor constructed without flowing context still settles its actual wo
     finally
         queue.Close()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``deadline publication failure still cancels work and late timer callbacks cannot reopen ownership`` () =
     let expire = ref ignore
     use entered = new ManualResetEventSlim(false)
@@ -596,7 +598,7 @@ let ``deadline publication failure still cancels work and late timer callbacks c
             (fun token ->
                 async {
                     entered.Set()
-                    Assert.True(release.Wait(TimeSpan.FromSeconds 5.))
+                    Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
                     cancelled.Value <- token.IsCancellationRequested
                 })
             (fun outcome release ->
@@ -605,7 +607,7 @@ let ``deadline publication failure still cancels work and late timer callbacks c
         |> Async.StartAsTask
 
     try
-        Assert.True(entered.Wait(TimeSpan.FromSeconds 5.))
+        Assert.True(entered.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
         expire.Value()
         release.Set()
         let outcome = work.WaitAsync(TimeSpan.FromSeconds 5.).GetAwaiter().GetResult()
@@ -621,7 +623,7 @@ let ``deadline publication failure still cancels work and late timer callbacks c
         release.Set()
         work.WaitAsync(TimeSpan.FromSeconds 5.).GetAwaiter().GetResult() |> ignore
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``work admitted during completion notification stays queued until predecessor cleanup`` () =
     let store = Store()
     use finishing = new ManualResetEventSlim(false)
@@ -638,7 +640,7 @@ let ``work admitted during completion notification stays queued until predecesso
             (fun state ->
                 if state = 1 then
                     finishing.Set()
-                    Assert.True(release.Wait(TimeSpan.FromSeconds 5.))),
+                    Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))),
             (fun state request _ _ -> async.Return(state + request))
         )
 
@@ -646,7 +648,7 @@ let ``work admitted during completion notification stays queued until predecesso
     let next = ref None
 
     try
-        Assert.True(finishing.Wait(TimeSpan.FromSeconds 5.))
+        Assert.True(finishing.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
         let second = queue.Submit(2, CancellationToken.None)
         next.Value <- Some second
         Assert.False first.IsCompleted
@@ -664,7 +666,7 @@ let ``work admitted during completion notification stays queued until predecesso
         next.Value |> Option.iter awaitResult
         queue.Close()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``throwing cancellation registration cannot abandon the still running owned callback`` () =
     let store = Store()
     use entered = new ManualResetEventSlim(false)
@@ -688,7 +690,7 @@ let ``throwing cancellation registration cannot abandon the still running owned 
                             failwith "cancellation callback refused")
 
                     entered.Set()
-                    Assert.True(release.Wait(TimeSpan.FromSeconds 5.))
+                    Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
                     return state + 1
                 })
         )
@@ -696,9 +698,9 @@ let ``throwing cancellation registration cannot abandon the still running owned 
     let active = queue.Submit(1, CancellationToken.None)
 
     try
-        Assert.True(entered.Wait(TimeSpan.FromSeconds 5.))
+        Assert.True(entered.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
         queue.Close()
-        Assert.True(cancelled.Wait(TimeSpan.FromSeconds 5.))
+        Assert.True(cancelled.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
         Assert.True store.Snapshot.IsBusy
         Assert.False active.IsCompleted
         release.Set()

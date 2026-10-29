@@ -280,6 +280,7 @@ let ``Activity after RecordTerminal starts a fresh recording`` () =
     test <@ (List.item 0 hist).ActivityTail = [ "first" ] @>
     test <@ (List.item 1 hist).ActivityTail = [ "second" ] @>
 
+[<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
 [<Fact(Timeout = 15000)>]
 let ``UpdateSubtask replaces label without changing StartedAt`` () =
     let s = State()

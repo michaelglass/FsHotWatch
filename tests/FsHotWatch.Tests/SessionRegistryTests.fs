@@ -219,7 +219,7 @@ let ``a session that asks to shut down ends itself, not its sibling`` () =
 
         // The `Shutdown` RPC, an idle-exit and a wedge restart all take this path.
         configA.RequestShutdown()
-        test <@ sa.Ended.Wait(TimeSpan.FromSeconds 20.0) @>
+        test <@ sa.Ended.Wait(HangWait) @>
         test <@ waitUntilTrue (fun () -> registry.TryGet sa.Id |> Option.isNone) 5000 @>
         test <@ not sb.Ended.IsCompleted @>
         test <@ registry.Sessions |> List.map (fun s -> s.Id) = [ sb.Id ] @>)
@@ -248,7 +248,7 @@ let ``a session whose run faults is removed and releases what it owned; its sibl
             Result.toOption (registry.Start(sessionIdFor b, specFor logs "b" b []))
             |> Option.get
 
-        test <@ sa.Ended.Wait(TimeSpan.FromSeconds 20.0) @>
+        test <@ sa.Ended.Wait(HangWait) @>
         test <@ waitUntilTrue (fun () -> registry.TryGet sa.Id |> Option.isNone) 5000 @>
         test <@ disposedA.Value = 1 @>
         test <@ sa.Serving.IsCanceled @>
@@ -346,12 +346,12 @@ let ``stopping one session never reaps a sibling's children`` () =
 
         try
             test <@ registry.Detach sb.Id @>
-            test <@ childB.WaitForExit 10000 @>
+            test <@ childB.WaitForExit HangWaitMs @>
             test <@ not childA.HasExited @>
         finally
             registry.Detach sa.Id |> ignore
 
-        test <@ childA.WaitForExit 10000 @>)
+        test <@ childA.WaitForExit HangWaitMs @>)
 
 [<Fact(Timeout = 60000)>]
 let ``an older incarnation of a live worktree is not the live session`` () =

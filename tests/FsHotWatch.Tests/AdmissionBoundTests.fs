@@ -49,7 +49,7 @@ let private givesUpWithinBound (store: Store) (wait: unit -> unit) =
         )
 
     try
-        Assert.True(entered.Wait(TimeSpan.FromSeconds 5.0))
+        Assert.True(entered.Wait(HangWait))
 
         let elapsed, outcome =
             withEveryPoolThreadBusy (fun () ->

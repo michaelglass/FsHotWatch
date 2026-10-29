@@ -292,7 +292,7 @@ let ``shared run that finds the resource unusable still invalidates the lease`` 
 
     test <@ scheduler.ClaimOrQueue("artifacts", fun _ -> SharedStarted) = Some(Invalid "build output is invalid") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``faulted shared owner releases its lease and wakes an accounted waiter`` () =
     let scheduler = SharedRunScheduler()
     let ownerStarted = new System.Threading.ManualResetEventSlim(false)
@@ -332,16 +332,16 @@ let ``faulted shared owner releases its lease and wakes an accounted waiter`` ()
                 }))
 
     owner.Dispatch(DispatchFileChanged SolutionChanged)
-    test <@ ownerStarted.Wait 5000 @>
+    test <@ ownerStarted.Wait HangWaitMs @>
     waiter.Dispatch(DispatchFileChanged SolutionChanged)
     test <@ waiter.IsBusy() @>
     test <@ not (waiterStarted.Wait 100) @>
 
     releaseOwner.Set()
-    test <@ waiterStarted.Wait 5000 @>
+    test <@ waiterStarted.Wait HangWaitMs @>
     waitUntil (fun () -> not (waiter.IsBusy())) 5000
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``shared work factory exception releases local and shared ownership`` () =
     let scheduler = SharedRunScheduler()
     let factoryStarted = new System.Threading.ManualResetEventSlim(false)
@@ -375,17 +375,17 @@ let ``shared work factory exception releases local and shared ownership`` () =
     owner.Dispatch(DispatchFileChanged SolutionChanged)
 
     try
-        test <@ factoryStarted.Wait 15000 @>
+        test <@ factoryStarted.Wait HangWaitMs @>
         waiter.Dispatch(DispatchFileChanged SolutionChanged)
     finally
         // Never strand the worker when an earlier assertion fails under a loaded
         // suite; that would hang the test host and contaminate later tests.
         releaseFactory.Set()
 
-    test <@ waiterStarted.Wait 10000 @>
+    test <@ waiterStarted.Wait HangWaitMs @>
     waitUntil (fun () -> not (owner.IsBusy()) && not (waiter.IsBusy())) 10000
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``shared result classifier exception invalidates resource and wakes waiter`` () =
     let scheduler = SharedRunScheduler()
     let ownerStarted = new System.Threading.ManualResetEventSlim(false)
@@ -422,7 +422,7 @@ let ``shared result classifier exception invalidates resource and wakes waiter``
                 }))
 
     owner.Dispatch(DispatchFileChanged SolutionChanged)
-    test <@ ownerStarted.Wait 5000 @>
+    test <@ ownerStarted.Wait HangWaitMs @>
 
     try
         waiter.Dispatch(DispatchFileChanged SolutionChanged)
@@ -431,7 +431,7 @@ let ``shared result classifier exception invalidates resource and wakes waiter``
     finally
         releaseOwner.Set()
 
-    test <@ waiterStarted.Wait 5000 @>
+    test <@ waiterStarted.Wait HangWaitMs @>
     waitUntil (fun () -> not (owner.IsBusy()) && not (waiter.IsBusy())) 5000
 
 [<Fact(Timeout = 15000)>]
@@ -1442,6 +1442,7 @@ let ``plugin not subscribing to BatchChecked does not receive event`` () =
 
 // --- safeUpdate × exclusive runs ----------------------------
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 20000)>]
 let ``a handler throw while an exclusive run is in flight does not stomp a terminal status over it`` () =
     // The forced-Failed net exists for "threw before any terminal report, and nothing else
@@ -1682,6 +1683,7 @@ let ``RunExclusive returns SlotBusy when the slot is held — the work is NOT st
 
     openAndDrain gate reg
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 20000)>]
 let ``a terminal stamped by ANY plugin path while a run is in flight is suppressed at the funnel`` () =
     // The ownership rule lives at the ONE choke point every plugin-originated status passes
@@ -1787,6 +1789,7 @@ let ``a terminal stamped by ANY plugin path while a run is in flight is suppress
 // plugins with no cache key, which is exactly the ones TestPrune and Build are not.
 // ---------------------------------------------------------------------------
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 20000)>]
 let ``cache path: a terminal stamped while a run is in flight is neither reported NOR cached`` () =
     // The suppressed terminal must not sneak into the task cache either: a cached
@@ -2051,6 +2054,7 @@ let ``cache path: a per-file result finished while a run is in flight is withhel
 
     openAndDrain gate reg
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 20000)>]
 let ``cache path: a handler that LAUNCHES a run does not cache the terminal it reported first`` () =
     // TestPrune's queued-rerun shape: report the completed run's verdict, then immediately
@@ -2210,6 +2214,7 @@ let ``cache path: a Failed terminal IS cached — with its verdict intact`` () =
         test <@ v.Elapsed = System.TimeSpan.FromSeconds 7.0 @>
     | other -> failwithf "expected a cached run Failed carrying its verdict, got %A" other
 
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = 25000)>]
 let ``cache path: only an EARNED terminal is written — every other shape is skipped`` () =
     // The cache-write gate decides whether a result can be REPLAYED as a verdict later, so
@@ -2318,6 +2323,7 @@ type private RigResult =
 /// plugin reports, run `raceTheClaim` while it is parked, then unpark. `raceTheClaim` is
 /// handed the SAME work async on both paths, so neither can pass by quietly failing to start
 /// a run.
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 let private runRig (raceTheClaim: PluginCtx<RigMsg> -> RegisteredPlugin -> Async<RigMsg> -> unit) =
     let statuses = ResizeArray<PluginStatus>()
     let violations = ResizeArray<string>()
@@ -2444,6 +2450,7 @@ let private assertNoTerminalOnLiveRun (result: RigResult) =
     // last thing the host saw must be the live run, not a verdict nobody earned.
     test <@ result.Statuses |> List.tryLast |> Option.map PluginStatus.isTerminal = Some false @>
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 60000)>]
 let ``a claim from a FOREIGN thread cannot land a stale terminal on the live run`` () =
     // The claim arrives on a thread that is NOT the plugin's mailbox — a legal use of the
@@ -2628,6 +2635,7 @@ type private RecordingLedger() =
     member _.Snapshot() =
         lock gate (fun () -> entries |> Seq.map (fun kv -> kv.Key, kv.Value) |> Seq.sortBy fst |> Seq.toList)
 
+[<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<Fact(Timeout = 20000)>]
 let ``a cached whole-run replay leaves findings for files outside the batch`` () =
     async {
