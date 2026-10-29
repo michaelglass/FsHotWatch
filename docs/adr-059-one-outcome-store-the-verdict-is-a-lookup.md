@@ -511,3 +511,66 @@ replay cannot hide a finding a different analyzer set would report.
 
 The remaining trust boundary is the receipt itself: an analyzer built from sources the tree
 still holds. That is the property ADR-011 states.
+
+## 17. Amendment (AUTOMATION-1361 phase 1+2a): the `check` key is canonical
+
+The phase 1 of §14 had no consumer on its own. A persisted record holds no FCS objects, so it
+cannot be handed to anything that reads `FileCheckResult`, and every plugin and the cohort seal
+read it. Phases 1 and 2 therefore ship as one deliverable, "1+2a", behind a flag that defaults
+OFF. It has three steps, each merged on its own while the flag is off:
+
+1. The `check` record, keyed canonically (this section; `CheckRecords`).
+2. A `Replayed` arm of the check result, consumed by the FCS ledger, the seal, lint and
+   analyzers. A plugin that finds no answer in its own cache demands a real check. A plugin
+   that would read FCS objects from a `Replayed` result fails loudly; it never degrades.
+3. TestPrune's per-file analysis, replayed from its task cache.
+
+**The in-memory API key cannot be persisted as it is.** `UpstreamFingerprints.ForApi` names
+each earlier file by whatever signatures were recorded *before* its table was built.
+- A cold scan therefore keys every file by its content.
+- A later generation keys the same bytes by signature (`SettleApiIndex` then re-keys).
+
+Persisted under that key, a record would be filed under one key and looked up under another.
+
+**The canonical key.** It is an ActionKey of kind `check` over these labelled inputs:
+- `toolchain`;
+- `options`, the relative options hash;
+- `file`, repository-relative;
+- `content`;
+- `project-outputs`, the bytes of every referenced project's output. That is stricter than
+  the in-memory per-entry guard (ADR-037).
+- `upstream`, the chain of §14, with one difference: each earlier file is named by the API
+  signature **in its own record, under its own canonical key**, or by its content where the
+  store holds no record or the record declares no signature.
+
+Records are filed only in compile order. `CheckPipeline.PersistCheckRecords` walks each
+project after the projects it references, and each file after the files before it. So the
+writer computes exactly the key a later reader will. A check is filed only while its inputs
+still hold:
+- its bytes;
+- its content upstream, which is exact and history-free;
+- its options;
+- every project output it read.
+
+Soundness is the in-memory API key's induction, made history-free.
+
+**A miss is never wrong, only slow.** An earlier file with no record is named by its content,
+so the files after it miss until it is re-checked and filed. That is the spike's "lazily, in
+dependency order".
+
+**What a record carries.** The outputs object (`fshw-check-outputs-v1`) holds:
+- the diagnostics, with in-repository paths relative;
+- `fcsCheckSignature`;
+- `usedSignaturesHash`;
+- the file's API signature.
+
+The `options` kind is reserved beside `check` for AUTOMATION-1372.
+
+**The merge bar for every step.** Tests show four things. A restart replays every filed
+check, and the replay equals a forced re-check. An edited file misses. An API edit upstream
+misses every later file, in its own project and downstream. A comment edit upstream is cut
+off once the edited file is re-checked. A changed option, toolchain or referenced output
+misses exactly the files it reaches. A check whose inputs moved before filing is not filed.
+
+The abandon criterion of §14 stands: if a clean restart on intelligence takes over 5 s, or a
+replay disagrees with a forced check, the flag stays off.

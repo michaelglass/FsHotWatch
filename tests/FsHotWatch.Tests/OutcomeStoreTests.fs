@@ -195,3 +195,28 @@ let ``the store directory is namespaced per repository under the shared cache`` 
     let dir = directoryFor "/some/repo"
     test <@ dir.Contains(Path.Combine("cache", "outcomes")) @>
     test <@ dir.EndsWith(Path.Combine(RepoIdentity.namespaceOf "/some/repo", "v1")) @>
+
+[<Fact>]
+let ``a record's outputs are read back as filed, and a record without outputs has none`` () =
+    withStore defaultMaxBytes (fun _ _ store ->
+        let withOutputs = keyFor "tree-outputs"
+        let without = keyFor "tree-no-outputs"
+        let outputs = """{"schema":"x","diagnostics":[{"message":"a \"quoted\" <b>"}]}"""
+        test <@ store.RecordWithOutputs(recordOf withOutputs Outcome.Pass t0, Some outputs) @>
+        test <@ store.Record(recordOf without Outcome.Pass t0) @>
+
+        let read (key: ActionKey.ActionKey) =
+            store.LookupWithOutputs key.Value |> Option.map snd
+
+        let roundTripped = read withOutputs |> Option.flatten
+
+        test
+            <@
+                roundTripped
+                |> Option.map Text.Json.Nodes.JsonNode.Parse
+                |> Option.map _.ToJsonString() = Some(Text.Json.Nodes.JsonNode.Parse(outputs).ToJsonString())
+            @>
+
+        test <@ read without = Some None @>
+        test <@ store.Lookup(withOutputs.Value) = Some(recordOf withOutputs Outcome.Pass t0) @>
+        test <@ store.LookupWithOutputs "not a key" = None @>)

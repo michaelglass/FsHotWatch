@@ -90,7 +90,7 @@ let private outcomeToken =
     | Outcome.Pass -> "pass"
     | Outcome.Fail -> "fail"
 
-let private serializePayload (r: Record) : string =
+let private serializePayload (r: Record) (outputs: string option) : string =
     let o = JsonObject()
     o["key"] <- r.Key.Value
     o["kind"] <- r.Key.Kind
@@ -127,6 +127,12 @@ let private serializePayload (r: Record) : string =
 
     o["producer"] <- producer
     o["recordedAt"] <- r.RecordedAt.ToString("o")
+
+    // ADR-059 §14: what the action produced, for a kind whose record carries outputs.
+    match outputs with
+    | Some text -> o["outputs"] <- JsonNode.Parse text
+    | None -> ()
+
     o.ToJsonString()
 
 let private required (el: JsonElement) (name: string) : JsonElement =
@@ -134,7 +140,7 @@ let private required (el: JsonElement) (name: string) : JsonElement =
     | Some v -> v
     | None -> raise (FormatException $"no %s{name}")
 
-let private parsePayload (payload: string) : Record =
+let private parsePayload (payload: string) : Record * string option =
     use doc = JsonDocument.Parse payload
     let o = doc.RootElement
     let str (el: JsonElement) name = (required el name).GetString()
@@ -157,6 +163,10 @@ let private parsePayload (payload: string) : Record =
 
     let producer = required o "producer"
 
+    let outputs =
+        Json.tryProp o "outputs"
+        |> Option.map (fun (el: JsonElement) -> el.GetRawText())
+
     { Key = key
       Subject = str o "subject"
       Outcome = outcome
@@ -172,7 +182,8 @@ let private parsePayload (payload: string) : Record =
         { Binary = str producer "binary"
           Worktree = str producer "worktree"
           RunId = Json.tryString producer "runId" }
-      RecordedAt = DateTimeOffset.Parse(str o "recordedAt", Globalization.CultureInfo.InvariantCulture) }
+      RecordedAt = DateTimeOffset.Parse(str o "recordedAt", Globalization.CultureInfo.InvariantCulture) },
+    outputs
 
 let private envelope (payload: string) : string =
     let o = JsonObject()
@@ -182,7 +193,7 @@ let private envelope (payload: string) : string =
     o.ToJsonString()
 
 /// Read an envelope back: the record, or why it is not one.
-let private decode (text: string) : Result<Record, string> =
+let private decode (text: string) : Result<Record * string option, string> =
     try
         use doc = JsonDocument.Parse text
         let o = doc.RootElement
@@ -203,9 +214,9 @@ let private decode (text: string) : Result<Record, string> =
     | :? IndexOutOfRangeException as ex -> Error ex.Message
 
 /// Newest last; at the same instant a pass sorts before a fail, so the last is the fail.
-let private chronological (records: Record list) =
+let private chronological (records: (Record * 'a) list) =
     records
-    |> List.sortBy (fun r -> r.RecordedAt, (if r.Outcome = Outcome.Fail then 1 else 0))
+    |> List.sortBy (fun (r, _) -> r.RecordedAt, (if r.Outcome = Outcome.Fail then 1 else 0))
 
 type Store(settings: Settings) =
     let root = settings.Root
@@ -232,9 +243,9 @@ type Store(settings: Settings) =
         with ex ->
             settings.Log $"outcome store: could not quarantine %s{path}: %s{ex.Message}"
 
-    /// Every readable record filed under `keyValue`, oldest first. A file that is not a
-    /// record of THAT key is quarantined and left out.
-    let readKey (keyValue: string) : Record list =
+    /// Every readable record filed under `keyValue` with its outputs, oldest first. A file
+    /// that is not a record of THAT key is quarantined and left out.
+    let readKeyWithOutputs (keyValue: string) : (Record * string option) list =
         let dir = directoryOf keyValue
 
         if not (Directory.Exists dir) then
@@ -248,10 +259,13 @@ type Store(settings: Settings) =
                           Error ex.Message
 
                   match text |> Result.bind decode with
-                  | Ok record when record.Key.Value = keyValue -> yield record
+                  | Ok(record, outputs) when record.Key.Value = keyValue -> yield record, outputs
                   | Ok _ -> quarantine file "the record is filed under another key"
                   | Error why -> quarantine file why ]
             |> chronological
+
+    let readKey (keyValue: string) : Record list =
+        readKeyWithOutputs keyValue |> List.map fst
 
     let writeOnce (path: string) (text: string) =
         Directory.CreateDirectory tmpDir |> ignore
@@ -277,9 +291,13 @@ type Store(settings: Settings) =
 
     /// File `record`. Never throws: a store that cannot be written costs a future lookup,
     /// not the run that produced the record. Returns whether it is filed.
-    member _.Record(record: Record) : bool =
+    member this.Record(record: Record) : bool = this.RecordWithOutputs(record, None)
+
+    /// File `record` with `outputs`, a JSON object's text naming what the action produced
+    /// (ADR-059 §14). Never throws, as `Record`.
+    member _.RecordWithOutputs(record: Record, outputs: string option) : bool =
         try
-            let payload = serializePayload record
+            let payload = serializePayload record outputs
 
             let path =
                 Path.Combine(directoryOf record.Key.Value, ContentHash.ofText payload + ".json")
@@ -293,6 +311,13 @@ type Store(settings: Settings) =
     /// Every record of `keyValue`, oldest first; empty for a value that is not a key.
     member _.History(keyValue: string) : Record list =
         if ActionKey.isValue keyValue then readKey keyValue else []
+
+    /// `Lookup` with the record's outputs: `None` is a miss.
+    member _.LookupWithOutputs(keyValue: string) : (Record * string option) option =
+        if ActionKey.isValue keyValue then
+            readKeyWithOutputs keyValue |> List.tryLast
+        else
+            None
 
     /// The answer for `keyValue`: its newest record, a fail outranking a pass at the same
     /// instant. `None` is a miss.
