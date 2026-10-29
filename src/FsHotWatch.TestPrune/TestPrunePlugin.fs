@@ -7673,6 +7673,45 @@ let internal tryRepairSchemaDrift (dbPath: string) (ex: exn) =
                 "test-prune"
                 $"Could not delete stale cache DB %s{dbPath}: %s{deleteEx.Message}. Delete it manually and restart the daemon."
 
+/// Where a daemon sets aside its own index when a NEWER TestPrune.Core wrote it:
+/// `test-impact.db.schema-v<N>`, beside the original. The suffix names the schema that
+/// wrote it, so a consumer at that schema or newer can recognise the file and reuse it
+/// (renaming it back); this consumer never opens it.
+let internal quarantinedIndexPath (dbPath: string) (foundVersion: int) : string = $"%s{dbPath}.schema-v%d{foundVersion}"
+
+/// Open the daemon's own impact index at `dbPath`. When a NEWER TestPrune.Core wrote it
+/// (`SchemaNewerThanConsumerException` naming this very file), the index is a cache this
+/// consumer can rebuild, so it is moved aside to `quarantinedIndexPath` with its SQLite
+/// sidecars, kept intact, and a fresh index is opened in its place. Before this, the
+/// refusal escaped plugin registration: a land worktree left forward-migrated by a failed
+/// pin bump stopped every later, older-pinned daemon from starting at all.
+///
+/// TestPrune.Core's refusal itself stands: it must never downgrade a newer file in place.
+let internal openOwnIndex (dbPath: string) (walkPolicy: WalkPolicy) : Database =
+    try
+        Database.create (dbPath, walkPolicy)
+    with SchemaNewerThanConsumerException(_, found, supported) ->
+        let aside = quarantinedIndexPath dbPath found
+
+        for ext in [ ""; "-wal"; "-shm" ] do
+            if File.Exists(dbPath + ext) then
+                File.Move(dbPath + ext, aside + ext, true)
+            elif File.Exists(aside + ext) then
+                // A sidecar left by an earlier quarantine must not pair with this file.
+                File.Delete(aside + ext)
+
+        Logging.warn
+            "test-prune"
+            $"%s{dbPath} was written by TestPrune.Core schema v%d{found}; this daemon supports schema v%d{supported}. Moved it aside to %s{aside} (kept for a consumer at schema v%d{found} or newer) and starting on a fresh test-impact index."
+
+        let fresh = Database.create (dbPath, walkPolicy)
+
+        Logging.info
+            "test-prune"
+            $"Started a fresh test-impact index at %s{dbPath} (schema v%d{supported}); it rebuilds as files are checked."
+
+        fresh
+
 /// The line an extension refresh writes per extension that answered: its edge count and
 /// how long the whole refresh (every extension, one call) took.
 let internal extensionStoredLine (name: string) (edgeCount: int) (refreshMs: int64) : string =
@@ -8059,7 +8098,7 @@ let internal createWithEvidenceAndQueries
                         folded.Task
                   Bound = TraceRun.indexFoldBound } })
 
-    let db = Database.create (dbPath, walkPolicy)
+    let db = openOwnIndex dbPath walkPolicy
     let busyTimeout = dbBusyTimeout db
     let queries = queriesOf db
     let configuredTestProjects = testConfigs |> Option.defaultValue []

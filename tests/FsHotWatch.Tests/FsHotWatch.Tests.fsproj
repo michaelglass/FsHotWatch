@@ -195,6 +195,7 @@
     <Compile Include="TestPruneImpactQueryCountTests.fs" />
     <Compile Include="TestPruneConfirmPassThroughTests.fs" />
     <Compile Include="TestPruneWalkPolicyTests.fs" />
+    <Compile Include="TestPruneSchemaQuarantineTests.fs" />
     <Compile Include="TestModeSeamTests.fs" />
     <Compile Include="TracedLaunchTests.fs" />
     <Compile Include="TestPruneTracesTests.fs" />

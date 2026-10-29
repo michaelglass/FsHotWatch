@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a daemon whose own `test-impact.db` was written by a NEWER TestPrune.Core starts
+  instead of dying at plugin registration with `SchemaNewerThanConsumerException`
+  (AUTOMATION-1401). A failed land that bumped the pin left the land worktree's index
+  forward-migrated, and every later, older-pinned land then failed to start its daemon. The
+  index is a cache: the newer file (and its SQLite sidecars) is moved aside to
+  `test-impact.db.schema-v<N>`, kept intact for a consumer at that schema, and the daemon
+  opens a fresh index, logging both steps. TestPrune.Core's refusal is unchanged.
+
 - fix: a green full run whose coverage report holds no lines (an empty `<packages />`) no
   longer wipes the runtime coverage of a project that has some (AUTOMATION-1371). It was
   ingested as a full replacement, so later selection treated the project as reaching no
