@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a red run is not retried by its own debt over the same tree (AUTOMATION-1373). Every
+  cohort that folded while a run was in flight queued a re-run for the symbols that run was
+  launched to verify. When the run came back red (starved projects time out), those symbols
+  stayed owed and the re-run launched the same selection over the same bytes, so under load a
+  gate never converged: at about 80 minutes a run, the 140-minute verdict deadline expired
+  first. A queued re-run, and a cohort's drain, now launch nothing when the last run concluded
+  red over the current tree and model, every owed symbol was in that run at its current
+  revision, no dependency fanout is pending and no full suite is requested. The red stands and
+  the debt stays owed, so this can never make a green. An edit, a newly owed symbol or a fanout
+  launches as before; a run that executed nothing is still retried.
 - fix: a starved project's re-run alone is preflighted like any launch (AUTOMATION-1352).
   A first attempt torn down with its whole tree kills the coverage controller before it
   restores the assemblies it instrumented in the test output, and a coverage run over those
