@@ -66,14 +66,18 @@ let toSymbolStore (db: Database) : SymbolStore =
 ///
 /// The contract, in both directions:
 ///
-/// * Core owns the FILE. Opening it (`Database.create`) checks `PRAGMA user_version` and,
-///   on a file OLDER than its `SchemaVersion`, DELETES and recreates it — dropping every
-///   plugin table with it, because core cannot migrate a table it knows nothing about. A
-///   file NEWER than its `SchemaVersion` it refuses to open at all; `pluginStoreAt` is
-///   how a plugin-only process reaches its table regardless.
-/// * A plugin therefore owns its tables but may never ASSUME they exist. Run idempotent
-///   `CREATE TABLE IF NOT EXISTS` DDL before every read and write, and store only what can
-///   be re-derived (Falco re-seeds its routes each run) — never the sole copy of anything.
+/// * Core owns its own tables, not the file. Opening it (`Database.create`) checks
+///   `PRAGMA user_version` and, on a file OLDER than its `SchemaVersion`, drops and
+///   recreates core's tables in one transaction and keeps every other table with its rows
+///   (FsHotWatch ADR-059 §5). A file NEWER than its `SchemaVersion` it refuses to open at
+///   all; `pluginStoreAt` is how a plugin-only process reaches its table regardless.
+/// * A plugin row keyed on a core id should declare `ON DELETE CASCADE` (or `SET NULL`):
+///   the rebuild renumbers core ids, and the plugin's own key action is what clears the
+///   rows that pointed at the old ones. A NO ACTION key makes the rebuild impossible, and
+///   core then falls back to deleting the file.
+/// * A plugin therefore owns its tables but may never ASSUME they exist (the file may be
+///   new, or deleted by that fallback). Run idempotent `CREATE TABLE IF NOT EXISTS` DDL
+///   before every read and write.
 /// * A plugin must not touch core's tables. It has the connection; nothing enforces this
 ///   but the boundary.
 type PluginStore =
@@ -83,7 +87,7 @@ type PluginStore =
     }
 
 /// Create a PluginStore from a Database instance. Taking a live `Database` is what makes
-/// the seam safe: the schema-version check (and any delete+recreate it triggers) has
+/// the seam safe: the schema-version check (and any rebuild it triggers) has
 /// already run by the time a plugin gets a connection, so a plugin table created through
 /// this store cannot be silently dropped a moment later by core's own open path.
 let toPluginStore (db: Database) : PluginStore = { OpenConnection = db.OpenConnection }
@@ -95,8 +99,7 @@ let toPluginStore (db: Database) : PluginStore = { OpenConnection = db.OpenConne
 /// concern: it opens a file of any core schema version, including one newer than the
 /// TestPrune.Core it links, which `Database.create` refuses. The plugin contract above is
 /// unchanged, and it is what makes this safe: the table is created `IF NOT EXISTS` before
-/// every use and holds nothing that cannot be re-seeded, because core still deletes the
-/// file on its own next `SchemaVersion` bump.
+/// every use, and core's own next `SchemaVersion` bump rebuilds only core's tables.
 let pluginStoreAt (dbPath: string) : PluginStore =
     { OpenConnection = fun () -> openPluginConnection dbPath }
 

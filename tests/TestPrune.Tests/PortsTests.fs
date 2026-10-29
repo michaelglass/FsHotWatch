@@ -164,10 +164,11 @@ module ``PluginStore without core schema`` =
         test <@ not (File.Exists path) @>
 
     [<Fact>]
-    let ``core recreating an older database drops the plugin table with it`` () =
-        // Pins the newer-on-older direction as it stands: core owns the file, and a
-        // `SchemaVersion` bump deletes it wholesale. A plugin table written through
-        // `pluginStoreAt` into an older-schema file does not survive core's next open.
+    let ``core rebuilding an older database keeps the plugin table and its rows`` () =
+        // The newer-on-older direction: a `SchemaVersion` bump rebuilds core's tables only
+        // (FsHotWatch ADR-059 §5). A plugin table written through `pluginStoreAt` into an
+        // older-schema file survives core's next open with its rows, and so does any other
+        // table core did not create.
         let path = stampedDb (SchemaVersion - 1)
 
         try
@@ -180,7 +181,10 @@ module ``PluginStore without core schema`` =
             test
                 <@
                     scalar conn "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'plugin_facts'"
-                    :?> int64 = 0L
+                    :?> int64 = 1L
                 @>
+
+            test <@ scalar conn "SELECT v FROM plugin_facts WHERE k = 'route'" :?> string = "/health" @>
+            test <@ scalar conn "SELECT note FROM sentinel WHERE id = 1" :?> string = "kept" @>
         finally
             cleanupDb path

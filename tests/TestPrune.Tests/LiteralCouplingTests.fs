@@ -136,7 +136,11 @@ let assertsMessage () =
             do
                 use connection = initial.OpenConnection()
                 use command = connection.CreateCommand()
-                command.CommandText <- "CREATE TABLE pre_literal_marker (id INTEGER); PRAGMA user_version = 10;"
+                // A core row marks the pre-literal index: a rebuild drops core's tables (and only
+                // those), so the marker's absence is what proves the index was not reused.
+                command.CommandText <-
+                    "INSERT INTO index_metadata (key, value) VALUES ('pre_literal_marker', 'v10'); PRAGMA user_version = 10;"
+
                 command.ExecuteNonQuery() |> ignore
 
             let reopened = Database.create dbPath
@@ -144,7 +148,7 @@ let assertsMessage () =
 
             use connection = reopened.OpenConnection()
             use command = connection.CreateCommand()
-            command.CommandText <- "SELECT COUNT(*) FROM sqlite_master WHERE name = 'pre_literal_marker'"
+            command.CommandText <- "SELECT COUNT(*) FROM index_metadata WHERE key = 'pre_literal_marker'"
             test <@ Convert.ToInt32(command.ExecuteScalar()) = 0 @>
         finally
             for suffix in [ ""; "-shm"; "-wal" ] do

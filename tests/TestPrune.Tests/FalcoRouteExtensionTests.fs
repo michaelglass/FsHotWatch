@@ -340,13 +340,13 @@ module ``RouteStore survives a core schema recreate`` =
 
         cmd.ExecuteScalar() :?> int64 > 0L
 
-    /// THE CONTRACT: core owns the FILE and deletes it on a `SchemaVersion` mismatch,
-    /// dropping the plugin's table with it — core cannot migrate a table it knows nothing
-    /// about. That is only safe because the plugin recreates its table on demand and its
-    /// contents are re-seeded every run. This test drives exactly that drop → recreate
-    /// path: a store that assumed its table existed would throw "no such table" here.
+    /// THE CONTRACT: core owns its own tables, not the file. A `SchemaVersion` mismatch
+    /// rebuilds core's tables and keeps the plugin's, rows included (FsHotWatch ADR-059 §5).
+    /// The plugin still never assumes its table exists, because the file can be new or
+    /// deleted outright (core's fallback when an in-place rebuild is refused); this test
+    /// drives both: the bump that keeps the table, then a drop the store must survive.
     [<Fact>]
-    let ``a core schema bump drops the route table; the store recreates it on demand`` () =
+    let ``a core schema bump keeps the route table; the store recreates it when it is gone`` () =
         let tempDir = createTempDir ()
 
         try
@@ -366,17 +366,25 @@ module ``RouteStore survives a core schema recreate`` =
             test <@ routes.GetAll().Length = 1 @>
 
             // Stamp an incompatible (older) core schema version: the next core open
-            // delete+recreates the file.
+            // rebuilds core's tables in place.
             setUserVersion dbPath (SchemaVersion - 1)
 
             let db2 = Database.create dbPath
             test <@ db2.WasRecreated @>
 
-            // The plugin's table really is gone — the test below is not vacuous.
-            test <@ not (routeTableExists dbPath) @>
-
-            // Reads recreate it and report an honest empty, rather than throwing.
+            // The plugin's table and its routes are kept.
             let routes2 = RouteStore(toPluginStore db2)
+            test <@ routes2.GetAll().Length = 1 @>
+
+            // A table that IS gone (a new or deleted file) reads as an honest empty and is
+            // recreated, rather than throwing "no such table".
+            do
+                use conn = openRawConnection dbPath
+                use cmd = conn.CreateCommand()
+                cmd.CommandText <- "DROP TABLE route_handlers"
+                cmd.ExecuteNonQuery() |> ignore
+
+            test <@ not (routeTableExists dbPath) @>
             test <@ routes2.GetAll() |> List.isEmpty @>
             test <@ routeTableExists dbPath @>
 

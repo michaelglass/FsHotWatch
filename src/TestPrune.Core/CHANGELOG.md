@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: a schema rebuild keeps the tables core did not create. Opening a file older than
+  `SchemaVersion` (or an unversioned one with tables) used to delete the whole file, taking
+  every plugin's and host's tables with it — FsHotWatch keeps state in the same file. It now
+  drops and recreates core's own tables (exactly those its DDL creates) in one transaction
+  and stamps the version; every other table keeps its rows, except those its own foreign
+  keys cascade from the dropped core rows, since a rebuild renumbers core ids.
+  `WasRecreated` is still true. A non-core table with a NO ACTION foreign key to a core row
+  makes the drop impossible; the transaction rolls back and the file is deleted and
+  recreated as before. Plugin contract (`Ports.PluginStore`): key rows on core ids with
+  `ON DELETE CASCADE` (or `SET NULL`), and keep issuing `CREATE TABLE IF NOT EXISTS`.
+
 ## 13.5.1 - 2026-10-28
 
 - Finish: AUTOMATION-1358 pin FSharp.Core exactly so packed floors stop floating

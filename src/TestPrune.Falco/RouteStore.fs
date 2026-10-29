@@ -21,11 +21,11 @@ type RouteHandlerEntry =
 module private RouteTable =
 
     /// DDL for the route table TestPrune.Falco owns inside TestPrune's cache database.
-    /// Issued before every read and write, never once at startup: core deletes and
-    /// recreates the database file whenever its own `SchemaVersion` moves, taking plugin
-    /// tables with it (core cannot migrate a table it knows nothing about). `IF NOT EXISTS`
-    /// makes that drop a non-event — the next call recreates the table, and the routes
-    /// themselves are re-seeded every run, so nothing here is the sole copy of anything.
+    /// Issued before every read and write, never once at startup: the table is kept across
+    /// a core `SchemaVersion` bump (core rebuilds only its own tables), but the file may be
+    /// new, or deleted by core when an in-place rebuild is refused. `IF NOT EXISTS` makes
+    /// either a non-event — the next call recreates the table, and the routes themselves
+    /// are re-seeded every run.
     [<Literal>]
     let ddl =
         """

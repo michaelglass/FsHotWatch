@@ -319,8 +319,8 @@ let private openConnectionWaiting (busyTimeout: TimeSpan) (dbPath: string) =
         raise ex
 
 /// Increment this whenever the schema changes in a backwards-incompatible way.
-/// An OLDER file is deleted and recreated; a NEWER one (written by a later
-/// TestPrune.Core) is refused with `SchemaNewerThanConsumerException` before any DDL.
+/// An OLDER file has its core tables dropped and recreated in place (`rebuildCoreTables`);
+/// a NEWER one (written by a later TestPrune.Core) is refused with `SchemaNewerThanConsumerException` before any DDL.
 ///
 /// Every added column or table needs a bump: `CREATE TABLE IF NOT EXISTS` does not
 /// migrate an existing table, so without one a stale DB survives open and throws
@@ -446,11 +446,13 @@ let private openConnectionWaiting (busyTimeout: TimeSpan) (dbPath: string) =
 ///          body or initializer below that line changed no property hash. A file not
 ///          re-indexed would keep those one-line hashes.
 ///
-/// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
-/// table too — core cannot migrate a table it does not know about. That is safe only
-/// because a plugin store must treat its table as absent until it has issued its own
-/// `CREATE TABLE IF NOT EXISTS` (see `Ports.PluginStore`), and its contents must be
-/// derivable again (seeded per run), never the sole copy of anything.
+/// A `SchemaVersion` bump rebuilds the tables core's DDL creates and nothing else
+/// (FsHotWatch ADR-059 §5). Every other table in the file (a plugin's, a host's such as FsHotWatch's)
+/// keeps its rows, except those its own foreign keys cascade from the dropped core rows:
+/// core ids are renumbered by a rebuild, so a row keyed on one is not kept pointing at a
+/// stranger. Only when that rebuild cannot run (a non-core table's foreign key forbids
+/// the drop) is the file deleted, so a plugin store must still issue its own
+/// `CREATE TABLE IF NOT EXISTS` before every use (see `Ports.PluginStore`).
 ///
 /// Public so external read-only consumers (e.g. FsHotWatch's `fshw dead-code`) can probe
 /// a live DB's `PRAGMA user_version` for compatibility BEFORE opening via
@@ -508,8 +510,43 @@ let deleteCacheFiles (dbPath: string) =
 let private hasUserTables (conn: SqliteConnection) =
     scalarInt64 conn "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';" > 0L
 
-/// Open a connection, deleting and recreating the database if its schema is older than
-/// this version's, and refusing it if newer. Returns `(connection, wasFresh)`; see
+/// The tables core's `schema` creates, in the order it creates them. A table is core's
+/// because this DDL creates it, so the list cannot drift from the schema. Parents precede
+/// the tables that reference them, so dropping in reverse never trips a core foreign key.
+let private coreTables =
+    Text.RegularExpressions.Regex.Matches(schema, @"CREATE TABLE IF NOT EXISTS (\w+)")
+    |> Seq.map (fun m -> m.Groups[1].Value)
+    |> List.ofSeq
+
+/// Drop and recreate core's tables in `conn`'s file, in one transaction, and stamp
+/// `SchemaVersion`; every other table is kept (see `SchemaVersion`). Foreign keys are on,
+/// so a kept table's own `ON DELETE` actions run against the dropped core rows. `Error`
+/// when SQLite refuses the drop (a kept table's NO ACTION key still points at a core
+/// row); the transaction is rolled back and the file is exactly as it was found.
+let private rebuildCoreTables (conn: SqliteConnection) : Result<unit, SqliteException> =
+    execute conn "BEGIN IMMEDIATE;"
+
+    try
+        // Another process may have rebuilt the file between the version read and this
+        // write lock; a second rebuild would only throw its fresh index away.
+        if readUserVersion conn < SchemaVersion then
+            for table in List.rev coreTables do
+                execute conn $"DROP TABLE IF EXISTS \"%s{table}\";"
+
+            execute conn schema
+            execute conn $"PRAGMA user_version = %d{SchemaVersion};"
+
+        execute conn "COMMIT;"
+        Ok()
+    // `BEGIN IMMEDIATE` (outside this `try`) is where a lock another connection holds
+    // surfaces; once it is held, a WAL-mode writer has nothing left to wait on.
+    with :? SqliteException as ex ->
+        execute conn "ROLLBACK;"
+        Error ex
+
+/// Open a connection, rebuilding core's tables in place if the schema is older than this
+/// version's (`rebuildCoreTables`; the file is deleted and recreated only when that is
+/// refused), and refusing the file if newer. Returns `(connection, wasFresh)`; see
 /// `Database.WasRecreated` for what `wasFresh` obliges a caller with a derived cache to do.
 let private openCheckedConnection (busyTimeout: TimeSpan) (dbPath: string) : SqliteConnection * bool =
     let openConnection = openConnectionWaiting busyTimeout
@@ -534,18 +571,25 @@ let private openCheckedConnection (busyTimeout: TimeSpan) (dbPath: string) : Sql
             raise (SchemaNewerThanConsumerException(dbPath, version, SchemaVersion))
 
         // `user_version = 0` on a file with existing tables is a pre-versioning stale
-        // DB — CREATE TABLE IF NOT EXISTS won't migrate its schema, so recreate.
+        // DB (or one a plugin seeded first) — CREATE TABLE IF NOT EXISTS won't migrate
+        // its schema, so rebuild.
         let isIncompatible =
             if version = SchemaVersion then false
             elif version = 0 then hasUserTables conn
             else true
 
         if isIncompatible then
-            eprintfn $"Schema version mismatch (found v%d{version}, expected v%d{SchemaVersion}). Recreating database."
+            eprintfn
+                $"Schema version mismatch (found v%d{version}, expected v%d{SchemaVersion}). Rebuilding the index tables; other tables are kept."
 
-            release ()
-            deleteCacheFiles dbPath
-            (openConnection dbPath, true)
+            match rebuildCoreTables conn with
+            | Ok() -> (conn, true)
+            | Error refused ->
+                eprintfn $"The in-place rebuild was refused (%s{refused.Message}). Recreating database."
+
+                release ()
+                deleteCacheFiles dbPath
+                (openConnection dbPath, true)
         else
             (conn, false)
     else
@@ -606,7 +650,8 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
                 execute conn $"PRAGMA user_version = %d{SchemaVersion};")
 
     /// True when this DB had no usable prior state when opened — the file did not exist,
-    /// or an incompatible schema (a `SchemaVersion` bump) forced a delete+recreate. A
+    /// or an incompatible schema (a `SchemaVersion` bump) forced core's tables to be
+    /// rebuilt (non-core tables are kept; see `SchemaVersion`). A
     /// consumer with a sibling cache derived from this DB's symbols (e.g. an FCS check
     /// cache that decides which files to re-index) should invalidate it when this is true:
     /// the recreated DB has lost every symbol the stale cache assumes is still indexed.
@@ -637,10 +682,12 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
     /// a process that never touches core's tables), never by constructing a connection
     /// string.
     ///
-    /// A plugin owns its tables; core owns the FILE. Core will delete and recreate the
-    /// file on a `SchemaVersion` mismatch, dropping plugin tables with it, so a plugin
-    /// must issue idempotent `CREATE TABLE IF NOT EXISTS` DDL before every use and must
-    /// never store anything it cannot re-derive.
+    /// A plugin owns its tables; core owns its own. A `SchemaVersion` mismatch rebuilds
+    /// core's tables only and keeps the plugin's, so a plugin table survives a bump. A row
+    /// keyed on a core id should declare `ON DELETE CASCADE` (or `SET NULL`): the rebuild
+    /// renumbers core ids, and a NO ACTION key makes the rebuild fall back to deleting the
+    /// file. A plugin must still issue idempotent `CREATE TABLE IF NOT EXISTS` DDL before
+    /// every use: the file may be absent, freshly created, or deleted by that fallback.
     member _.OpenConnection() : SqliteConnection = openConnection dbPath
 
     /// Capture the literal nodes that point at changed production symbols in the

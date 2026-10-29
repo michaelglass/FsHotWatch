@@ -330,15 +330,17 @@ separate build step — can own a table inside TestPrune's cache database
 via `Ports.toPluginStore db`, which hands it a connection. Core never
 learns what the table means.
 
-The contract runs both ways. Core owns the file: opening it as a `Database`
-checks the schema version and, on a file older than its own, deletes and
-recreates it — dropping extension tables with it, because core cannot
-migrate a table it knows nothing about. A file newer than its own it
+The contract runs both ways. Core owns its own tables, not the file: opening
+it as a `Database` checks the schema version and, on a file older than its
+own, drops and recreates core's tables in one transaction and keeps every
+other table with its rows. A row keyed on a core id should declare
+`ON DELETE CASCADE` (or `SET NULL`), because the rebuild renumbers core ids;
+a NO ACTION key makes the rebuild impossible, and core then deletes the file
+as a fallback. A file newer than its own it
 refuses to open (`SchemaNewerThanConsumerException`, naming the version to
 upgrade to) rather than run its DDL against a schema it does not know. So
 an extension owns its tables but must never assume they exist: issue
-`CREATE TABLE IF NOT EXISTS` before every read and write, and store only
-what you can re-derive (Falco re-seeds its routes each run).
+`CREATE TABLE IF NOT EXISTS` before every read and write.
 
 A process that only touches its extension table — a route-seeding build
 step, say — has no stake in core's schema and should not inherit that

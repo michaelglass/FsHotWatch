@@ -2045,6 +2045,155 @@ module ``Schema version migration`` =
         finally
             cleanupDb path
 
+    let private rowsOf (dbPath: string) (sql: string) =
+        use conn = openRawConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- sql
+        use reader = cmd.ExecuteReader()
+        let rows = ResizeArray<string>()
+
+        while reader.Read() do
+            rows.Add(reader.GetString 0)
+
+        List.ofSeq rows
+
+    let private tableExists (dbPath: string) (name: string) =
+        rowsOf dbPath $"SELECT name FROM sqlite_master WHERE type = 'table' AND name = '%s{name}'"
+        |> List.isEmpty
+        |> not
+
+    let private executeRaw (dbPath: string) (sql: string) =
+        use conn = openRawConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- sql
+        cmd.ExecuteNonQuery() |> ignore
+
+    // ADR-059 §5 (AUTOMATION-1362 step 8). Core owns its own tables, not the file: a
+    // schema rebuild drops and recreates the tables core's DDL creates and keeps every
+    // other table, rows included. FsHotWatch keeps state in the same file, and a bump
+    // that deleted it forced cold work it could not re-derive cheaply.
+    [<Fact>]
+    let ``a schema rebuild keeps a table core did not create, with its rows`` () =
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+
+            executeRaw
+                path
+                "CREATE TABLE host_state (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+                 INSERT INTO host_state (k, v) VALUES ('a', '1'), ('b', '2');"
+
+            setUserVersion path 1
+
+            let rebuilt = Database.create path
+            test <@ rebuilt.WasRecreated @>
+            test <@ rebuilt.GetSymbolsInFile "src/Lib.fs" |> List.isEmpty @>
+            test <@ getUserVersion path = SchemaVersion @>
+            test <@ rowsOf path "SELECT k || '=' || v FROM host_state ORDER BY k" = [ "a=1"; "b=2" ] @>
+
+            // The rebuilt core tables are fully usable at the current schema.
+            rebuilt.RebuildProjects([ standardGraph ])
+            test <@ (rebuilt.GetSymbolsInFile "src/Lib.fs").Length = 1 @>
+            test <@ not (Database.create path).WasRecreated @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``a pre-versioning database keeps its non-core tables when its core tables are rebuilt`` () =
+        // `user_version = 0` with tables reads as a pre-versioning index (or a file a plugin
+        // seeded through `Ports.pluginStoreAt` before core ever opened it). Only the tables
+        // core creates are rebuilt.
+        let path = tempDbPath ()
+
+        try
+            executeRaw
+                path
+                "CREATE TABLE symbols (id INTEGER PRIMARY KEY, legacy TEXT);
+                 INSERT INTO symbols (legacy) VALUES ('old');
+                 CREATE TABLE host_state (k TEXT PRIMARY KEY);
+                 INSERT INTO host_state (k) VALUES ('kept');"
+
+            let db = Database.create path
+            test <@ db.WasRecreated @>
+            test <@ getUserVersion path = SchemaVersion @>
+            test <@ rowsOf path "SELECT k FROM host_state" = [ "kept" ] @>
+
+            test
+                <@
+                    not (
+                        rowsOf path "SELECT name FROM pragma_table_info('symbols')"
+                        |> List.contains "legacy"
+                    )
+                @>
+
+            db.RebuildProjects([ standardGraph ])
+            test <@ (db.GetSymbolsInFile "src/Lib.fs").Length = 1 @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``a schema rebuild cascades into a kept table only the rows that pointed at core rows`` () =
+        // A plugin table may key its rows on core ids (FsHotWatch's project ratchet coverage
+        // references `symbol_occurrences(id) ON DELETE CASCADE`). The rebuild renumbers every
+        // core id, so a kept row still naming an old id would silently attach to whichever
+        // new row reuses it. The plugin's declared FK action runs instead: the dependent
+        // rows go, the table and its unrelated rows stay.
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+
+            executeRaw
+                path
+                "CREATE TABLE host_coverage (
+                     occurrence_id INTEGER NOT NULL REFERENCES symbol_occurrences(id) ON DELETE CASCADE,
+                     hits INTEGER NOT NULL);
+                 INSERT INTO host_coverage (occurrence_id, hits) SELECT id, 7 FROM symbol_occurrences;
+                 CREATE TABLE host_meta (k TEXT PRIMARY KEY);
+                 INSERT INTO host_meta (k) VALUES ('settled');"
+
+            test <@ rowsOf path "SELECT CAST(COUNT(*) AS TEXT) FROM host_coverage" <> [ "0" ] @>
+
+            setUserVersion path 1
+
+            let rebuilt = Database.create path
+            test <@ rebuilt.WasRecreated @>
+            test <@ tableExists path "host_coverage" @>
+            test <@ rowsOf path "SELECT CAST(COUNT(*) AS TEXT) FROM host_coverage" = [ "0" ] @>
+            test <@ rowsOf path "SELECT k FROM host_meta" = [ "settled" ] @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``a kept table whose foreign key forbids the rebuild falls back to recreating the file`` () =
+        // A NO ACTION foreign key from a non-core table to a core row makes the in-place
+        // drop fail. The rebuild is one transaction, so nothing is half-dropped: it rolls
+        // back, and the open falls back to deleting the file, as every rebuild once did.
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+
+            executeRaw
+                path
+                "CREATE TABLE host_pin (symbol_id INTEGER NOT NULL REFERENCES symbols(id));
+                 INSERT INTO host_pin (symbol_id) SELECT id FROM symbols;"
+
+            setUserVersion path 1
+
+            let rebuilt = Database.create path
+            test <@ rebuilt.WasRecreated @>
+            test <@ getUserVersion path = SchemaVersion @>
+            test <@ not (tableExists path "host_pin") @>
+            rebuilt.RebuildProjects([ standardGraph ])
+            test <@ (rebuilt.GetSymbolsInFile "src/Lib.fs").Length = 1 @>
+        finally
+            cleanupDb path
+
     [<Fact>]
     let ``refuses a database stamped newer than SchemaVersion and leaves it untouched`` () =
         // A newer TestPrune.Core stamped v999 on this file. This version's DDL was written
