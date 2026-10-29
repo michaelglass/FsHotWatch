@@ -1563,6 +1563,16 @@
       "line": 84,
       "branch": 64,
       "reason": "new file (AUTOMATION-1362 step 2, ADR-059 §2: the outcome store). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-29 on macOS by mise run test-direct: line 84.6% (154/182), branch 64.3% (54/84). Uncovered: the IO-failure arms (a quarantine or eviction that cannot move or delete, a write that throws) and the per-exception arms of decode. Platform-neutral file IO only."
+    },
+    "LookupVerdict.fs": {
+      "line": 100,
+      "branch": 100,
+      "reason": "new file (AUTOMATION-1362 step 3, ADR-059 §3: the verdict as a pure lookup). Explicit so that a report which drops this file fails coverage-check. Measured 2026-10-29 on macOS by a coverage run of LookupVerdictTests + ShadowVerdictTests + LookupParityCasesTests + IpcOutputTests + RunOnceOutputTests: line 100% (20/20), branch 100% (10/10). Pure, so platform-neutral."
+    },
+    "ShadowVerdict.fs": {
+      "line": 98,
+      "branch": 88,
+      "reason": "new file (AUTOMATION-1362 step 3, ADR-059 §7: shadow mode). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-29 on macOS by a coverage run of LookupVerdictTests + ShadowVerdictTests + LookupParityCasesTests + IpcOutputTests + RunOnceOutputTests (a subset of the suite, so a lower bound): line 98.4% (187/190), branch 88.9% (80/90). Uncovered: the catch-all arm of observe (an unexpected exception) and edges of the scope and plugin-outcome matches. Platform-neutral."
     }
   },
   "countFloors": {

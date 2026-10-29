@@ -1411,6 +1411,11 @@ let private publishVerdictWithReason
         | Some _ -> ()
         | None -> Verdict.write repoRoot v
 
+        // ADR-059 shadow mode: what the outcome store would answer for this tree, logged
+        // beside what this build answered. Never throws, never touches the exit code or
+        // the verdict file.
+        ShadowVerdict.observe repoRoot (ShadowVerdict.ofVerdict repoRoot v)
+
         if not UI.isInteractive then
             VerdictTerminal.line ""
 

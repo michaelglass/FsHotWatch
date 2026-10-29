@@ -215,9 +215,10 @@ option names it, which is once per project-options evaluation.
 
   ```json
   {"schema":"fshw-shadow-v1","at":"…","command":"check|confirm|verdict",
-   "tree":"sha256:…","today":{"outcome":"green|red|no-verdict|…","exit":0},
+   "tree":"sha256:…","producer":"…",
+   "today":{"outcome":"green|red|incomplete|model-unavailable","class":"green|red|missing","exit":0},
    "lookup":{"outcome":"green|red|missing","missing":["test:…"],"failing":["plugin:lint"]},
-   "agree":true,"producer":"…","daemonStartedAt":"…"}
+   "agree":true,"direction":"agree|stricter|looser|red-vs-missing","recorded":7}
   ```
 
   This is a **diagnostic log, not a ledger.** Nothing reads it to make a decision. It
@@ -241,8 +242,9 @@ The switch needs **0 disagreements over 50 consecutive intelligence lands** (ser
 
 - 0 disagreements over **50 consecutive shadow lines** with `command ≠ verdict`, across
   FsHotWatch's own `mise run ci` and intelligence `./build.fsx check` runs;
-- at least **10 `confirm`** lines, at least **10 lines from the first publication after a
-  daemon start** (a changed `daemonStartedAt`), and at least **5 `verdict` reads** on a tree
+- at least **10 `confirm`** lines, at least **10 lines with `recorded: 0`** (a publication
+  that ran nothing, such as the first after a daemon restart, and answered only from records
+  already on file), and at least **5 `verdict` reads** on a tree
   whose last publication was a different command;
 - every one of those `verdict` reads agreeing as well.
 
@@ -255,6 +257,36 @@ jq -s '[.[] | select(.command != "verdict")] | .[-50:] | map(select(.agree | not
 
 A disagreement resets the count. There are no "expected" disagreement classes. If one
 appears by design, then `R(c, T)` is wrong: fix it, and restart the count.
+
+**Amendment (step 3, 2026-10-29): the direction of a disagreement.** Every line also
+carries a `direction`:
+
+- `agree`;
+- `stricter`: today is green and the lookup is not;
+- `looser`: the lookup is green and today is not;
+- `red-vs-missing`.
+
+`stricter` and `red-vs-missing` count against the criterion with no exception.
+
+`looser` is the case the lookup exists for. A restarted daemon, or a check that ran
+nothing, refuses (exit 3) a tree the store already holds a full green for. A `looser` line
+counts as agreement only when a `confirm` line on the **same tree** is green with
+`direction: agree`. Otherwise it counts as a disagreement:
+
+```sh
+jq -s '[.[] | select(.direction == "looser")] as $l
+       | [.[] | select(.command == "confirm" and .direction == "agree"
+                       and .lookup.outcome == "green") | .tree] as $ok
+       | $l | map(select(.tree as $t | $ok | index($t) | not)) | length' \
+  .fshw/shadow/lookup-verdict.jsonl
+```
+
+**Amendment (step 3): where the shadow store lives.** During shadow the store is
+`.fshw/shadow/outcomes`, per checkout. Tree-keyed records gain nothing from sharing across
+checkouts, and a box-wide store written by every test that publishes a verdict in a
+temporary repository is how 1100 leaked 98k directories. The store moves box-wide (§2)
+together with the K_P re-key (§11 step 7). The location is only the root the store is
+opened with.
 
 ## 9. Deletion plan after the switch
 
@@ -313,3 +345,125 @@ green:
   for a decision. "No new ledgers" is therefore kept.
 - **No `tree` ActionKey replaces `TreeHash` during shadow:** that is deferred to the switch
   to avoid a fleet-wide cold cache in the middle of the comparison.
+
+## 13. Triage of 2026-10-29: folded, obviated and blocked tickets
+
+**Folded into this epic, each a parity case** (`tests/FsHotWatch.Tests/LookupParityCasesTests.fs`).
+The ActionKey and the lookup must get each one right. Today's machinery got each one wrong,
+so its disagreement on these is expected:
+
+| Ticket | The case | How the lookup gets it right |
+|---|---|---|
+| 641 | A test-prune claim was replayed after a hashed input the tests read had changed | The test action's key folds every file it reads, so a moved file means no record answers |
+| 698 | A `notInputs` file read by a file-command gate can never invalidate its claim | A plugin's key folds what *it* reads, independent of the verdict tree's exclusions |
+| 699 | A green verdict whose own suites report a failure | A failed suite is a `fail` record, and any fail is red |
+| 1027 | An analyzer pass whose examined plus replayed files do not cover the model | One `analyze` requirement per model file; one without a record is missing |
+| 1242 | A configured test project outside the discovery roots is never keyed | Requirements come from the configuration, not the model, so it is required and missing |
+| 109 | "A pure `decide`, with effects as data" | `LookupVerdict.decide` is a pure function of recorded outcomes, and any store instance over the same directory gives the same answer |
+
+641 and 699 have a second half that the shadow cannot yet see. In both, a run graded at
+another tree had its reports filed for this one. Run directories carry no tree identity,
+so shadow v1, which records from the published verdict, inherits whatever today's
+grading accepted. That half is closed by step 7: the test runner writes records at launch
+under the K_P of the inputs it actually ran over. Its tests land with that step.
+
+**Obviated and cancelled.** These are covered by the deletion plan (§9):
+
+- **1104** (filter-class receipts that never republish) and **1129**: §9.3, receipts and
+  their grading.
+- **800** (`test-rerun` spending a verdict; pending verification): §9.2, ledger #9.
+- **696** (test-prune's summary cannot tell "passed" from "ran nothing"): a `test` record
+  carries counts, so a zero-test record is visible as one. The summary line is no longer
+  an input to any verdict (§9.1).
+
+**On the path:**
+
+- **1355** (`confirm` returned a prior run's verdict for an identical tree). Under the
+  lookup, the contract is explicit. `confirm` requires a `full` record for every test
+  project at this tree's keys. A record earned by an earlier invocation over the same bytes
+  satisfies it, by design, and the record names its producing `runId`. "Forces execution"
+  is not a property any verdict can verify, so `confirm --fresh` remains the verb for a new
+  run. Until the switch, 1355 is documented behaviour, pinned by a test.
+- **1200** (the mtime-keyed `typeProviderCache`): §6, in step 6.
+
+**Blocked by this epic.** There are 28 tickets, including 938, 939, 682's remaining
+scheduler work, 914 and 1331. Their live-state machinery is **not extended**. Where they
+guard verdict correctness they are moot at the switch (§9.7). Where they guard throughput
+or memory, they are re-scoped against the lookup afterwards.
+
+## 14. The check-result store is part of the one store (AUTOMATION-1361)
+
+The 1361 spike (intelligence `results/handoffs/AUTOMATION-1361-spike-2026-10-29.md`) found:
+
+- **Persisting FCS checker state is a NO-GO** without an FCS fork.
+- **A persisted, content-addressed check-result store with early cutoff and lazy re-check is
+  a GO.** Its prototype served every result after a clean restart in 0.23 s, against a
+  301 s median cold scan. One test-file edit after a restart took 13.6 s. It had 0
+  mismatches against a full re-check.
+
+That store is **not a fourth store.** It is the `check(file)` action of this ADR, filed in the
+same outcome store:
+
+- **Its key is an ActionKey of kind `check`** over:
+  - the file's content;
+  - the **API signatures** of the earlier files in its project (`ApiSignature` /
+    `makeApiCacheKey`, made repository-relative);
+  - the project's options other than `-o:`;
+  - the upstream projects' output stamps;
+  - the toolchain.
+
+  The API-signature cutoff is mandatory. A content-only key made one comment edit miss
+  1,584 files, 121 s, which is barely better than cold.
+- **Its record's outputs are what plugins need without FCS objects:**
+  - the diagnostics;
+  - `fcsCheckSignature`;
+  - `usedSignaturesHash`;
+  - the file's own API signature, which feeds the next file's key.
+
+  The record format gains an optional `outputs` object for this. A `test` record has none.
+- **Plugin task results converge on the same schema:** `lint`, `analyze`, `format` and
+  `build` actions keyed by ActionKey. `TaskCache`/`FileTaskCache` become a read-through view
+  over outcome records, then go (§9.5). TestPrune's `test-impact.db` stays a **derived index**:
+  symbol to test, rebuildable, and never the sole copy of an outcome (§5). Its rows are the
+  input to selection, not to the verdict.
+
+**Phasing.** This is §11 step 7b, after the K_P re-key, because both need the box-wide
+store:
+
+1. Persist `check` records, serve the hits at boot, and lazily re-check the misses in
+   dependency order.
+2. Add a `Replayed` arm of `FileCheckResult`, built from a record with no FCS objects, for
+   plugins to consume. A plugin-cache miss demands a real check of that file.
+3. **Abandon criterion** (the spike's): a clean restart on intelligence over 5 s, or a
+   replayed result that disagrees with a forced re-check in the nightly full suite. Either
+   stops the work at phase 1.
+
+The project-options cache (4–10 s per restart) is filed separately as a quick win. It is an
+accelerator, and no verdict reads it.
+
+## 15. What a gate waits on, and the forced scan (AUTOMATION-1370)
+
+1370's handoff (intelligence `results/handoffs/AUTOMATION-1370-2026-10-29.md`) raised three
+points.
+
+- **What the gate is waiting on is the lookup's own `Missing` list.** It is not a separate
+  field, and it is not a rendering of plugin statuses. `decide` names every requirement with
+  no deciding record, which is precisely what the gate waits on. The heartbeat prints that
+  list. Which daemon work will *produce* a missing record (`formatTimeoutDetail`'s
+  knowledge) is accelerator detail. It may annotate the line, but it is never what decides
+  that the gate is done.
+- **The forced scan is not waited for** (`forceScanAndWait`'s `WaitForScan(-1)` returns
+  at once on a warm daemon). 1370 suggested keying the lookup on the forced scan's
+  generation. **Judgement call: no.** A generation is live daemon state, and keying a verdict
+  on it is the defect class this ADR removes.
+  - Under the lookup, `check` computes `R(c, T)` from the bytes on disk and then waits
+    until every requirement has a record. It does not wait for a scan to finish.
+  - A scan that did not happen leaves records missing, and missing is never green. The
+    wait is therefore correct whether or not the scan was waited on.
+  - Until the switch, today's bug stays today's. A shadow `stricter` line is the detector
+    for it.
+- **A gate under load cannot converge,** because outstanding symbols keep queueing new test
+  runs while one is in flight. Under the lookup, convergence is per tree. Once every key of
+  `R(c, T)` has a record, the answer is final for `T`. A run queued for keys that already
+  have records is redundant work, which the scheduler may drop. It cannot hold the verdict
+  open.
