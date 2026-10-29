@@ -1571,6 +1571,11 @@
       "branch": 64,
       "reason": "new file (AUTOMATION-1362 step 2, ADR-059 §2: the outcome store). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-29 on macOS by mise run test-direct: line 84.6% (154/182), branch 64.3% (54/84). Uncovered: the IO-failure arms (a quarantine or eviction that cannot move or delete, a write that throws) and the per-exception arms of decode. Platform-neutral file IO only."
     },
+    "CheckRecords.fs": {
+      "line": 96,
+      "branch": 71,
+      "reason": "new file (AUTOMATION-1361 phase 1+2a step 1, ADR-059 §17: the canonical, persisted check record). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-29 on macOS by mise run test-direct: line 96.6% (142/147), branch 71.2% (37/52). Uncovered: the ParseOnly arm of CheckOutputs.ofResult, the PE and IL-module project-reference arms (the tests reference F# projects), a source listed twice in one project, and a generated compile item; the rest are compiler-generated edges of the record and option matches. Platform-neutral: file IO and hashing only."
+    },
     "LookupVerdict.fs": {
       "line": 100,
       "branch": 100,

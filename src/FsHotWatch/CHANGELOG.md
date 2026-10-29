@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- feat: `CheckRecords`, the persisted check-result store (ADR-059 §14, §17,
+  AUTOMATION-1361). A `check` record holds:
+  - a file's diagnostics;
+  - `fcsCheckSignature`;
+  - `usedSignaturesHash`;
+  - its API signature.
+
+  It is filed in the one outcome store under a canonical key, and earlier files are named by
+  the signatures in their own records, so writer and reader compute the same key.
+  `CheckPipeline` gains `?checkRecords` and three members: `PersistCheckRecords` (it files,
+  in compile order, every check whose inputs still hold), `ReplayCheck` and `ReplayProject`
+  (both read the store and never call FCS). `OutcomeStore` records may carry an optional
+  `outputs` object (`RecordWithOutputs`, `LookupWithOutputs`). Nothing in the daemon uses
+  either yet.
+
 - fix: whether a referenced assembly is a type provider is remembered per file CONTENT, not
   per write time (ADR-008, ADR-059 §6, AUTOMATION-1200). An assembly copied or restored under
   its old write time (`cp -p`, `rsync -a`, a checkout) is judged by its new bytes. The hash

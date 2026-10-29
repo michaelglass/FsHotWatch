@@ -263,6 +263,22 @@ let internal supersedeLine
 
     $"cancelling the in-flight check of %s{fileName} (%s{originText runningProject running}) started by %s{runningCaller}, for %s{newCaller} (generation %d{next.Generation}): %s{keys}; %d{sharers} other in-flight check(s) share the cancelled project type-check"
 
+/// A check whose inputs held while it ran, waiting to be filed as a `check` record
+/// (`CheckPipeline.PersistCheckRecords`): what it read, and what it reported.
+[<NoComparison; NoEquality>]
+type internal PendingRecord =
+    {
+        Options: FSharpProjectOptions
+        ContentHash: string
+        OptionsHash: string
+        /// `CheckCache.upstreamFingerprints`' entry for the file when it was checked: exact
+        /// and history-free, so "still holds" is a comparison.
+        ContentUpstream: string
+        /// Each project output the check read (absolute), with its content hash then.
+        ProjectOutputs: (string * string) list
+        Outputs: CheckRecords.CheckOutputs
+    }
+
 /// Manages project options and performs incremental file checking with the warm FSharpChecker.
 type CheckPipeline
     (
@@ -275,8 +291,13 @@ type CheckPipeline
         ?frames: PathFrame.FrameChoice,
         ?imports: ProjectSnapshots.ReferencePlacement,
         ?maxConcurrentChecks: int,
-        ?admission: WorkScheduler.Lane
+        ?admission: WorkScheduler.Lane,
+        ?checkRecords: OutcomeStore.Store,
+        ?checkToolchain: string
     ) =
+    /// The checker build `check` records are keyed by: this process's, unless a test
+    /// stands in another.
+    let checkToolchain = defaultArg checkToolchain toolchainIdentity
     let activity = defaultArg activity noopSink
 
     /// How many checks may build their snapshot or run in FCS at once. A caller asks
@@ -518,7 +539,99 @@ type CheckPipeline
         | Some(:? IScopedCheckCache as scoped) when not (scoped.Admits options.ProjectFileName) -> None
         | other -> other
 
+    /// Checks whose inputs held while they ran, waiting to be filed as `check` records
+    /// (`CheckRecords`), by (file, project). Filed in compile order by
+    /// `PersistCheckRecords`, which is what makes their keys canonical.
+    let pendingRecords = ConcurrentDictionary<struct (string * string), PendingRecord>()
+
+    /// Whether a pending check still describes the disk: the same bytes, the same
+    /// content upstream (`contentTableOf`, one table per project) and options, and every
+    /// project output it read unchanged.
+    let pendingHolds
+        (contentTableOf: FSharpProjectOptions -> Collections.Generic.IReadOnlyDictionary<string, string> * string)
+        (options: FSharpProjectOptions)
+        (file: string)
+        (pending: PendingRecord)
+        =
+        let table, whole = contentTableOf options
+
+        let contentUpstream =
+            match table.TryGetValue file with
+            | true, fingerprint -> fingerprint
+            | false, _ -> whole
+
+        pending.ContentHash = hashFile file
+        && pending.OptionsHash = getProjectOptionsHashRelativeTo repoRoot options
+        && pending.ContentUpstream = contentUpstream
+        && pending.ProjectOutputs
+           |> List.forall (fun (output, hash) -> hashFile output = hash)
+
     member _.NextVersion() = Interlocked.Increment(&nextVersion)
+
+    /// File every pending check whose inputs still hold as a `check` record, each project
+    /// after the projects it references and each file after the files before it, so each
+    /// record is keyed by its earlier files' records (`CheckRecords`). A pending check
+    /// whose inputs moved is dropped. Returns how many records were filed; 0 with no store.
+    member _.PersistCheckRecords() : int =
+        match checkRecords with
+        | None -> 0
+        | Some store ->
+            let snapshot = pendingRecords.ToArray()
+            let mutable filed = 0
+            let tables = Collections.Generic.Dictionary<string, _>()
+
+            let contentTableOf (options: FSharpProjectOptions) =
+                let memoKey =
+                    $"%s{options.ProjectFileName}|%s{getProjectOptionsHashRelativeTo repoRoot options}"
+
+                match tables.TryGetValue memoKey with
+                | true, table -> table
+                | false, _ ->
+                    let table = CheckCache.upstreamFingerprints hashFile repoRoot options
+                    tables[memoKey] <- table
+                    table
+
+            let filer: CheckRecords.Filer =
+                fun options file key ->
+                    match pendingRecords.TryGetValue(struct (file, options.ProjectFileName)) with
+                    | true, pending when pendingHolds contentTableOf options file pending ->
+                        if CheckRecords.file store repoRoot checkToolchain file key pending.Outputs then
+                            filed <- filed + 1
+                            Some pending.Outputs
+                        else
+                            None
+                    | _ -> None
+
+            let walk = CheckRecords.Walk(store, checkToolchain, repoRoot, hashFile, filer)
+
+            for KeyValue(_, pending) in snapshot do
+                walk.Project pending.Options |> ignore
+
+            // Filed, found filed already, or moved: none of these is waiting any more. A
+            // newer check of the same file replaced its entry and stays.
+            for entry in snapshot do
+                pendingRecords.TryRemove entry |> ignore
+
+            filed
+
+    /// What a filed `check` record says about `filePath` in `options`' project, keyed by
+    /// the files on disk now; None when the store holds no record for these inputs (or no
+    /// store is configured). Reads the store only: no FCS.
+    member _.ReplayCheck(filePath: AbsFilePath, options: FSharpProjectOptions) : CheckRecords.CheckOutputs option =
+        match checkRecords with
+        | None -> None
+        | Some store ->
+            CheckRecords
+                .Walk(store, checkToolchain, repoRoot, hashFile, CheckRecords.readOnly)
+                .File(AbsFilePath.value filePath, options)
+            |> Option.bind _.Outputs
+
+    /// `ReplayCheck` for every file of `options`' project in one walk, in compile order.
+    member _.ReplayProject(options: FSharpProjectOptions) : CheckRecords.FileRecord list =
+        match checkRecords with
+        | None -> []
+        | Some store ->
+            CheckRecords.Walk(store, checkToolchain, repoRoot, hashFile, CheckRecords.readOnly).Project(options)
 
     /// The most checks this pipeline has had building a snapshot or in FCS at once.
     member internal _.CheckConcurrencyPeak: int = Volatile.Read &checksInSlotsPeak
@@ -1281,6 +1394,17 @@ type CheckPipeline
                                 $"Not caching %s{Path.GetFileName absPath}: its answer declared a type incompatible with itself"
                         | FullCheck _ when held ->
                             recordSignature absPath options contentHash r
+
+                            if checkRecords.IsSome then
+                                CheckRecords.CheckOutputs.ofResult repoRoot r
+                                |> Option.iter (fun checkOutputs ->
+                                    pendingRecords[slot] <-
+                                        { Options = options
+                                          ContentHash = contentHash
+                                          OptionsHash = getProjectOptionsHashRelativeTo repoRoot options
+                                          ContentUpstream = contentUpstream
+                                          ProjectOutputs = outputs
+                                          Outputs = checkOutputs })
 
                             match cacheBackend, cacheKey with
                             | Some backend, Some key ->

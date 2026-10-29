@@ -240,6 +240,7 @@
     <Compile Include="ImportStoreTests.fs" />
     <Compile Include="SnapshotMemoTests.fs" />
     <Compile Include="CheckCacheReferencedOutputTests.fs" />
+    <Compile Include="CheckRecordsTests.fs" />
     <Compile Include="SolutionScopeTests.fs" />
     <Compile Include="DaemonConfigTests.fs" />
     <Compile Include="InitConfigTests.fs" />

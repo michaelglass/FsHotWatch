@@ -281,7 +281,7 @@ let internal isUnderRoot (repoRoot: string option) (path: string) =
 /// against, and the cache serves diagnostics FCS would no longer produce.
 /// The `-r:` assemblies of `opts` that are not a referenced F# project's output, and its
 /// non-F# project references, as upstream-fingerprint parts: see `upstreamFingerprintsWith`.
-let private addAssemblyParts
+let internal addAssemblyParts
     (parts: System.Collections.Generic.List<string>)
     (hashFile: string -> string)
     (stampFile: string -> string)
@@ -306,7 +306,7 @@ let private addAssemblyParts
 
 /// A non-F# project reference (IL or PE) as an upstream-fingerprint part: its output and
 /// the stamp FCS re-reads it on.
-let private otherReferencePart (repoRoot: string option) (output: string) (stamp: DateTime) =
+let internal otherReferencePart (repoRoot: string option) (output: string) (stamp: DateTime) =
     $"other-ref:%s{relativizeOption repoRoot output}@%d{stamp.Ticks}"
 
 /// The fingerprint tables, with or without the assembly and non-F# project references.
