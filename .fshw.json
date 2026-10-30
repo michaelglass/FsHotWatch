@@ -79,7 +79,6 @@
     ]
   },
   "tests": {
-    "beforeRun": "dotnet build",
     "projects": [
       {
         "project": "FsHotWatch.Tests",
