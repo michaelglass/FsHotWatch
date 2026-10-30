@@ -2002,6 +2002,25 @@ let internal stopDaemonWith
             else
                 StopOutcome.Stopped delivered
 
+/// What a stop that began at `since` interrupted, in one line, when the daemon recorded
+/// work in flight as it shut down (`Interruption`). `None` when it owned nothing.
+let internal stopInterruptionNotice (since: DateTime) (repoRoot: string) : string option =
+    FsHotWatch.Interruption.tryRead repoRoot
+    |> FsHotWatch.Interruption.since since
+    |> Option.map (fun record ->
+        let work = String.concat ", " record.InFlight
+
+        $"Interrupted work in flight: %s{work}. Output it was writing may be \
+          incomplete; the next scan re-stamps the sources so the next build replaces it \
+          (.fshw/interrupted.json).")
+
+/// The reason a check records when it ended without publishing a verdict. A daemon shut
+/// down under the check since it began says so, so that the cause is not guessed at.
+let internal endedWithoutVerdictReason (since: DateTime) (repoRoot: string) : string =
+    match FsHotWatch.Interruption.tryRead repoRoot |> FsHotWatch.Interruption.since since with
+    | Some record -> $"the check was interrupted: %s{FsHotWatch.Interruption.describe record}"
+    | None -> "the check ended without publishing a verdict for this invocation"
+
 /// What `stop` prints, and the exit code that goes with it. The exit code is part of
 /// the report, not decoration: a wrapper reads the code and never the prose, so a
 /// message that claims nothing beside an exit 0 that claims everything is the same
@@ -2795,7 +2814,7 @@ let internal withRunHooksCommandUsingSignals
             error.Throw()
             exitCode
         | None ->
-            finalize "the check ended without publishing a verdict for this invocation" false
+            finalize (endedWithoutVerdictReason invocation.OriginUtc repoRoot) false
             signal.Settle exitCode
 
 let internal withRunHooksCommand
@@ -3945,8 +3964,14 @@ let private executeCommandRendered
             // to stop it would defeat the command.
             link.Stop(fun () ->
                 withIpcNoHeal daemonLog (fun () ->
-                    stopDaemonWith ipc defaultFileOps defaultStopOps repoRoot pipeName
-                    |> reportStopOutcome))
+                    let stopping = DateTime.UtcNow
+
+                    let code =
+                        stopDaemonWith ipc defaultFileOps defaultStopOps repoRoot pipeName
+                        |> reportStopOutcome
+
+                    stopInterruptionNotice stopping repoRoot |> Option.iter UI.warn
+                    code))
         | Scan ->
             let scan () =
                 withIpc (fun () ->

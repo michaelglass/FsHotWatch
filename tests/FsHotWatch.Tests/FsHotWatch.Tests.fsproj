@@ -80,6 +80,7 @@
     <Compile Include="AnalyzerCacheKeyTests.fs" />
     <Compile Include="LintCacheKeyTests.fs" />
     <Compile Include="FileStampTests.fs" />
+    <Compile Include="InterruptionTests.fs" />
     <Compile Include="CheckCacheTests.fs" />
     <Compile Include="CacheInputsTests.fs" />
     <Compile Include="ApiSignatureTests.fs" />

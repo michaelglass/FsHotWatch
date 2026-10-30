@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: `fshw stop` names the work it interrupted (AUTOMATION-670): `Interrupted work in flight:
+  build. Output it was writing may be incomplete; …`. A `check` whose daemon was shut down under
+  it records `the check was interrupted: the daemon … was shut down … while build was running — a
+  requested stop …, not a crash or an out-of-memory kill` instead of `the check ended without
+  publishing a verdict for this invocation`.
+
 - fix: a client whose TMPDIR differs from the daemon's reaches the daemon (AUTOMATION-1106). On
   Unix .NET puts a named pipe's socket under the resolving process's `$TMPDIR`, so a client in an
   agent sandbox (`/tmp`) and a daemon started from a login shell (`/var/folders/…`) computed the
