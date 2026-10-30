@@ -89,21 +89,20 @@
         <ProjectReference Include="../FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj" />
         <ProjectReference Include="../FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj" />
         <ProjectReference Include="../FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj" />
+        <!-- TestPrune's extensions (routes, SQL) and, for `fshw dead-code`, TestPrune.Core's
+             DeadCode analysis and SymbolStore (transitive via FsHotWatch.TestPrune, made explicit
+             for compile-time access). Built from this repository's source (AUTOMATION-1367). -->
+        <ProjectReference Include="../TestPrune.Core/TestPrune.Core.fsproj" />
+        <ProjectReference Include="../TestPrune.Falco/TestPrune.Falco.fsproj" />
+        <ProjectReference Include="../TestPrune.Sql/TestPrune.Sql.fsproj" />
+        <ProjectReference Include="../TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj" />
     </ItemGroup>
 
     <ItemGroup>
         <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.303" PrivateAssets="All" />
         <PackageReference Include="CommandTree" Version="0.13.0" />
-        <PackageReference Include="TestPrune.Falco" Version="4.0.4" />
-        <PackageReference Include="TestPrune.Sql" Version="0.3.1" />
-        <PackageReference Include="TestPrune.SqlHydra" Version="0.2.2" />
-        <!-- Direct refs for `fshw dead-code`: TestPrune.Core's DeadCode analysis +
-             SymbolStore (transitive via FsHotWatch.TestPrune, made explicit for
-             compile-time access), and Microsoft.Data.Sqlite to probe the DB's
-             schema version before opening (so we never recreate the daemon's DB). -->
-        <!-- Keep in lockstep with FsHotWatch.TestPrune's TestPrune.Core pin so
-             NuGet doesn't see a downgrade. -->
-        <PackageReference Include="TestPrune.Core" Version="13.5.2" />
+        <!-- Microsoft.Data.Sqlite to probe the DB's schema version before opening (so we
+             never recreate the daemon's DB). -->
         <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
                 <PackageReference Update="FSharp.Core" Version="[10.1.402]" />
     </ItemGroup>

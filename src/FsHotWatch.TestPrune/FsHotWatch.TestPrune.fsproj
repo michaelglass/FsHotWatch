@@ -63,16 +63,17 @@
 
   <ItemGroup>
     <ProjectReference Include="../FsHotWatch/FsHotWatch.fsproj" />
+    <!-- TestPrune lives in this repository (AUTOMATION-1367), so the plugin builds against its
+         source rather than a released package: a cross-cutting fix is one commit and one CI run,
+         with no release-then-pin step between them. Packed, these become package dependencies
+         at the referenced projects' own versions. TestPrune.Trace brings the weaver, shadow
+         bin, ingestion and trace store (`tests.traces`) and, transitively, the recorder. -->
+    <ProjectReference Include="../TestPrune.Core/TestPrune.Core.fsproj" />
+    <ProjectReference Include="../TestPrune.Trace/TestPrune.Trace.fsproj" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.303" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="[10.1.402]" />
-    <PackageReference Include="TestPrune.Core" Version="13.5.2" />
-    <!-- Per-test trace recording (`tests.traces`): the weaver, shadow bin, ingestion and
-         trace store. 0.7.7 is built against TestPrune.Core 13.5.2 and declares FSharp.Core >= 10.1.402
-         (AUTOMATION-1358 pinned it in TestPrune). Never 0.7.5: that rebundle declares FSharp.Core
-         >= 10.1.403, past this repository's exact 10.1.402 pin. -->
-    <PackageReference Include="TestPrune.Trace" Version="0.7.7" />
   </ItemGroup>
 </Project>

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- build: TestPrune.Core and TestPrune.Trace are ProjectReferences to their source in this repository
+  (AUTOMATION-1367: TestPrune moved here with its history), not PackageReferences to released
+  versions. Packed, they are still package dependencies at the referenced projects' versions
+  (TestPrune.Core 13.5.2, TestPrune.Trace 0.7.7, unchanged).
+
 ## 0.13.0-alpha.98 - 2026-10-30
 
 - build: TestPrune.Core 13.5.2 and TestPrune.Trace 0.7.7 (were 13.5.1 and 0.7.6). A schema rebuild
