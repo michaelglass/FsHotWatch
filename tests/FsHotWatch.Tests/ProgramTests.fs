@@ -1380,6 +1380,54 @@ let ``a kill probe refused with EPERM means alive, not gone`` () =
 let ``a nonsense pid is never probed`` () =
     test <@ not (processAliveByProbe (fun _ -> failwith "should not be probed") (fun () -> 0) 0) @>
 
+// --- what a stop interrupted (AUTOMATION-670) ---
+
+let private interruptedAt = DateTime(2026, 10, 30, 22, 40, 20, DateTimeKind.Utc)
+
+let private recordInterruption (root: string) =
+    FsHotWatch.Interruption.record
+        root
+        { At = interruptedAt
+          Pid = 4242
+          InFlight = [ "build" ] }
+
+[<Fact>]
+let ``a stop that interrupted work says what it interrupted`` () =
+    withTempDir "stop-interrupted" (fun root ->
+        recordInterruption root
+
+        match stopInterruptionNotice (interruptedAt.AddSeconds -1.0) root with
+        | Some line ->
+            test <@ line.Contains "build" @>
+            test <@ line.Contains "incomplete" @>
+        | None -> failwith "the stop interrupted a build and must say so")
+
+[<Fact>]
+let ``a stop says nothing about an interruption from before it`` () =
+    withTempDir "stop-earlier-interruption" (fun root ->
+        recordInterruption root
+
+        test <@ stopInterruptionNotice (interruptedAt.AddSeconds 1.0) root = None @>)
+
+[<Fact>]
+let ``a check whose daemon was shut down under it names the shutdown as its reason`` () =
+    withTempDir "check-interrupted" (fun root ->
+        recordInterruption root
+
+        let reason = endedWithoutVerdictReason (interruptedAt.AddSeconds -5.0) root
+
+        test <@ reason.Contains "shut down" @>
+        test <@ reason.Contains "build" @>
+        test <@ reason.Contains "not a crash" @>)
+
+[<Fact>]
+let ``a check that ended without a verdict and without a shutdown keeps the plain reason`` () =
+    withTempDir "check-not-interrupted" (fun root ->
+        test
+            <@
+                endedWithoutVerdictReason interruptedAt root = "the check ended without publishing a verdict for this invocation"
+            @>)
+
 // --- stopDaemonWith ---
 
 [<Fact(Timeout = 15000)>]
