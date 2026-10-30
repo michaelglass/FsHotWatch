@@ -451,8 +451,12 @@ with its position in its chain, exact command, outcome and elapsed milliseconds.
 steps that RAN appear — the step after a fail-fast failure is absent, not zero.
 `observedElapsedMs` is the wall time seen by the wrapping CLI, and `timingSpans[]`
 places plugin and hook work on that one timeline, measured from the origin the
-invocation captured before any hook ran. The human summary unions overlapping
-intervals before reporting attributed time, so nested work is never counted twice.
+invocation captured before any hook ran. That timeline is wall time, the clock the
+daemon stamps its work with, so work done after the host wakes from sleep is still
+placed; a suspension during the invocation is named in `timingIncompleteReasons`,
+because that stretch is sleep that no span explains. The human summary unions
+overlapping intervals before reporting attributed time, so nested work is never
+counted twice.
 `timingIncompleteReasons[]` names evidence that was missing, stale (a plugin run or
 hook step from an earlier invocation), malformed or out of range — reported
 separately from the attribution percentage, so a figure over refused evidence cannot

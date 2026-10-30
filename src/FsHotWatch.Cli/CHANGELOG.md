@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: verdict timing attribution reads one clock (AUTOMATION-1092). Spans the daemon stamps
+  with the wall clock were placed against an observed window measured by a Stopwatch, which
+  stops while macOS sleeps, so daemon work done after a resume fell past the window and was
+  dropped with no reason recorded. `observedElapsedMs`, hook offsets and daemon spans are now
+  all wall time from the invocation's origin, read through `HostClock.Clock`; a suspension of
+  at least 5 s during the invocation adds a `timingIncompleteReasons` entry
+  (`host was suspended ~Ns during this invocation: …`). API: `Verdict.Invocation` holds
+  `Clock: HostClock.Clock` and `Origin: HostClock.Reading` (`OriginUtc` is now a member), and
+  `Invocation.startOn clock id` starts one on an injected clock.
+
 - feat: `analyzers.scope` in `.fshw.json` — `{ "<configured path>": { "include": [globs] } }` or
   `{ "exclude": [globs] }` — runs one analyzer path only on the files its scope admits (gitignore-style,
   repository-relative globs). A path with no scope runs on every file, as before, and an unscoped config

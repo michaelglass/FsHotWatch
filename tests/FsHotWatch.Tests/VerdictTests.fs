@@ -6372,6 +6372,77 @@ let ``daemon phases are clipped to the invocation window`` () =
     test <@ overrunning |> Option.map (fun s -> s.StartOffsetMs, s.ElapsedMs) = Some(8000L, 2000L) @>
 
 // ---------------------------------------------------------------------------
+// one clock domain: a host suspension neither drops nor hides work
+// ---------------------------------------------------------------------------
+
+/// The daemon stamps its work with the wall clock. The invocation's observed window
+/// used to be a Stopwatch, which stops while macOS sleeps, so work done after a resume
+/// landed past the window and was dropped with no reason recorded. Both now read the
+/// same clock, and a suspension inside the invocation is named.
+[<Fact>]
+let ``daemon work after a host suspension is attributed, and the suspension is named`` () =
+    let clock = FsHotWatch.Tests.FakeClock.ManualClock()
+    let invocation = Verdict.Invocation.startOn clock.Clock "suspended"
+    let origin = invocation.OriginUtc
+
+    clock.AdvanceSeconds 10.0
+    // The host sleeps for ten minutes: the wall clock moves, the awake clock does not.
+    clock.Suspend(TimeSpan.FromSeconds 600.0)
+    clock.AdvanceSeconds 20.0
+
+    let observed = Verdict.Invocation.elapsedMs invocation
+    test <@ observed = 630_000L @>
+
+    let phase: FsHotWatch.DaemonPhases.PhaseRecord =
+        { Scope = "plugin.build"
+          StartedAt = origin.AddSeconds 615.0
+          Elapsed = TimeSpan.FromSeconds 10.0
+          Detail = None }
+
+    test
+        <@
+            Verdict.TimingSpan.ofDaemonPhase invocation observed phase = Some
+                { Scope = "plugin.build"
+                  StartOffsetMs = 615_000L
+                  ElapsedMs = 10_000L
+                  Detail = None }
+        @>
+
+    let reasons = Verdict.Invocation.timingReasons invocation
+    test <@ reasons.Length = 1 @>
+    test <@ reasons.Head.Contains "host was suspended ~600s" @>
+
+[<Fact>]
+let ``an invocation the host never slept through names no suspension`` () =
+    let clock = FsHotWatch.Tests.FakeClock.ManualClock()
+    let invocation = Verdict.Invocation.startOn clock.Clock "awake"
+    clock.AdvanceSeconds 30.0
+    test <@ Verdict.Invocation.elapsedMs invocation = 30_000L @>
+    test <@ List.isEmpty (Verdict.Invocation.timingReasons invocation) @>
+
+[<Fact>]
+let ``a terminal verdict written after a host suspension names the suspension`` () =
+    withTempDir "verdict-terminal-suspended" (fun root ->
+        makeRepo root
+        let clock = FsHotWatch.Tests.FakeClock.ManualClock()
+        let invocation = Verdict.Invocation.startOn clock.Clock "terminal-suspended"
+        clock.Suspend(TimeSpan.FromSeconds 120.0)
+        clock.AdvanceSeconds 1.0
+
+        Verdict.writeHookFailure root [] Verdict.Check invocation [] [] "beforeRun refused"
+
+        match Verdict.read root with
+        | Verdict.Reading.Found v ->
+            test
+                <@
+                    v.TimingIncompleteReasons
+                    |> List.exists (fun r -> r.Contains "host was suspended ~120s")
+                @>
+
+            test <@ v.ObservedElapsedMs = Some 121_000L @>
+        | other -> failwith $"expected a readable terminal verdict, got %A{other}")
+
+// ---------------------------------------------------------------------------
 // a green names the baseline it is relative to, on disk and back
 // ---------------------------------------------------------------------------
 

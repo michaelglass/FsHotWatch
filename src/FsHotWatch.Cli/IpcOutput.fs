@@ -1389,7 +1389,10 @@ let private publishVerdictWithReason
               // and says so here as well as in `outcome` — the two questions are read
               // by different consumers. Completeness itself is DERIVED from the spans
               // (`Attribution.incompleteReasons`); this list holds only what was refused.
-              RefusedEvidence = hookReasons @ Option.toList terminalIncompleteReason
+              RefusedEvidence =
+                hookReasons
+                @ Option.toList terminalIncompleteReason
+                @ Verdict.Invocation.timingReasons invocation
               ObservedElapsedMs = Some observedSoFar
               InvocationId = Some invocation.Id }
 

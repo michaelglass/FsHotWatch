@@ -2528,7 +2528,9 @@ let internal makeRunHookRunner
                             else "fail" },
                         { Scope = scope
                           StartOffsetMs = startOffsetMs
-                          ElapsedMs = stopwatch.ElapsedMilliseconds
+                          // On the invocation's timeline, the same clock as its offset; the
+                          // hook record above keeps the step's own running time.
+                          ElapsedMs = max 0L (Verdict.Invocation.elapsedMs invocation - startOffsetMs)
                           Detail = Some cmd }
                     ))
 
@@ -2704,7 +2706,7 @@ let internal withRunHooksCommandUsingSignals
                         invocation.Id
                         hooks
                         spans
-                        []
+                        (Verdict.Invocation.timingReasons invocation)
                         (Some(Verdict.Invocation.elapsedMs invocation))
                 )
             then
