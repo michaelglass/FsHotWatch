@@ -3315,55 +3315,93 @@ let ``stale artifacts suppress the cache LOOKUP only, never the STORE`` () =
         test <@ lookupKey.IsNone @>
         test <@ storeKey.IsSome @>)
 
-[<Fact(Timeout = 30000)>]
+/// A terminal status's verdict summary; `None` while non-terminal.
+let private terminalSummaryOf (status: PluginStatus) =
+    match status with
+    | Completed(_, v) -> Some v.Summary
+    | Failed(_, _, v) -> Some v.Summary
+    | _ -> None
+
+/// The NEXT terminal "build" status whose summary satisfies `pred`. Subscribed before
+/// the caller emits, so the status cannot be published before anyone is listening.
+let private beginAwaitBuildVerdict (host: PluginHost) (pred: string -> bool) =
+    beginAwaitStatusWith host "build" false (fun s -> terminalSummaryOf s |> Option.exists pred)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a warm cache does not replay a pass over stale outputs — the build recovers itself`` () =
     // END TO END, through the framework's real replay path with a real task cache: warm
     // the cache with a passing build, then make the outputs stale WITHOUT moving the
     // merkle. Before the fix this replayed `built … (cached)` forever and only
-    // `dotnet fshw stop` appeared to break it. `touch <dll>` stands in for a build that
-    // actually re-emits its artifact, so the recovery is observable.
+    // `dotnet fshw stop` appeared to break it. `touch` stands in for a build that
+    // actually re-emits its artifact, and also drops a marker, so "a build ran" is
+    // observed as the command's own effect rather than inferred from the clock.
+    //
+    // AUTOMATION-1404: this test used to WAIT for `dll mtime > source mtime`. That
+    // ordering compares two clocks: the source mtime came from the test (or from the
+    // plugin's re-stamp, `DateTime.UtcNow`, nanosecond-fine), and the DLL's from the
+    // kernel's coarse file clock, which on Linux lags real time by up to a tick. In a
+    // Linux container a `touch` right after a fine-grained re-stamp landed EARLIER than
+    // it in 275 of 500 shell trials; the wait then sat out its 15 s (a ci-linux red at
+    // load 40). `touch -r <stamp>` now writes the DLL with a reading taken BEFORE the
+    // build — the worst a lagging clock can do — on every platform, and the old wait
+    // fails against it every time. The outcome is awaited as the verdict event instead.
     withOneProjectGraph "replay-e2e" (fun (graph, srcPath, dllPath) ->
+        let dir = System.IO.Path.GetDirectoryName dllPath
+        let ranMarker = System.IO.Path.Combine(dir, "build-ran")
+        let clockStamp = System.IO.Path.Combine(dir, "clock-stamp")
+        System.IO.File.WriteAllText(clockStamp, "")
+
         let cache =
             FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
 
         let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cache)
-        let handler = BuildPlugin.create "touch" dllPath [] graph [] None [] None
+
+        let handler =
+            BuildPlugin.create "touch" $"-r %s{clockStamp} %s{dllPath} %s{ranMarker}" [] graph [] None [] None
+
         host.RegisterHandler(handler)
 
+        let warmVerdict = beginAwaitBuildVerdict host (fun _ -> true)
         host.EmitFileChanged(SourceChanged [ srcPath ])
-        waitForTerminalStatus host "build" 20000
-        let warm = terminalSummary host
-        test <@ not (warm.Contains "(cached)") @>
+        test <@ warmVerdict.Wait HangWaitMs @>
+        let warm = terminalSummaryOf warmVerdict.Result
+        test <@ warm |> Option.exists (fun s -> not (s.Contains "(cached)")) @>
+        test <@ System.IO.File.Exists ranMarker @>
+        System.IO.File.Delete ranMarker
 
         // POSITIVE CONTROL: nothing changed, so the very next dispatch MUST be served
         // from the cache. This is what proves the "(cached)" detector below can fire —
-        // and that the gate has not quietly turned every check into a rebuild.
+        // and that the gate has not quietly turned every check into a rebuild. The
+        // command did not run, so the marker is still gone.
+        let replayVerdict = beginAwaitBuildVerdict host (fun s -> s.Contains "(cached)")
         host.EmitFileChanged(SourceChanged [ srcPath ])
+        test <@ replayVerdict.Wait HangWaitMs @>
+        test <@ not (System.IO.File.Exists ranMarker) @>
 
-        let replayed =
-            waitUntilTrue (fun () -> (terminalSummary host).Contains "(cached)") 10000
+        // Now the wedge: an output older than its sources — a `bin/` from another
+        // workspace, or a build that never re-linked — with the sources' bytes, and so
+        // the merkle and the stored entry, unmoved. Aging the DLL rather than touching
+        // the source keeps the plugin's re-stamp (`restampEditedSince`, which has its own
+        // tests) out of the comparison: the source predates the warm build.
+        let srcTime = System.IO.File.GetLastWriteTimeUtc srcPath
+        System.IO.File.SetLastWriteTimeUtc(dllPath, srcTime.AddMinutes -1.0)
 
-        test <@ replayed @>
-
-        // Now the wedge: touch the source, same bytes, so the merkle is unmoved and the
-        // stored entry still matches — but the DLL is older than its source.
-        let dllTime = System.IO.File.GetLastWriteTimeUtc dllPath
-        System.IO.File.SetLastWriteTimeUtc(srcPath, dllTime.AddMilliseconds 1.0)
+        let recoveredVerdict =
+            beginAwaitBuildVerdict host (fun s -> not (s.Contains "(cached)"))
 
         host.EmitFileChanged(SourceChanged [ srcPath ])
+        test <@ recoveredVerdict.Wait HangWaitMs @>
 
-        // A REAL build ran: `touch` moved the DLL past its source again.
-        let rebuilt =
-            waitUntilTrue
-                (fun () -> System.IO.File.GetLastWriteTimeUtc dllPath > System.IO.File.GetLastWriteTimeUtc srcPath)
-                15000
+        // A REAL build ran — the command's own marker says so — and its verdict is a
+        // fresh pass over the output it re-emitted, not a replayed one.
+        test <@ System.IO.File.Exists ranMarker @>
 
-        test <@ rebuilt @>
-        waitForSettled host "build" 15000
-
-        // …and the verdict is a fresh one, not a replayed pass.
-        let recovered = terminalSummary host
-        test <@ not (recovered.Contains "(cached)") @>)
+        test
+            <@
+                match recoveredVerdict.Result with
+                | Completed _ -> true
+                | _ -> false
+            @>)
 
 // ---------------------------------------------------------------------------
 // Case 1 production enforcement. `createWith false` is the exact legacy
