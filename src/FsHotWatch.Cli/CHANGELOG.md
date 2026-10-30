@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- build: TestPrune.Core 13.5.2 and TestPrune.Falco 4.0.4 (were 13.5.1 and 4.0.2), in lockstep with
+  FsHotWatch.TestPrune. A schema rebuild of test-impact.db now keeps the tables TestPrune.Core did
+  not create, such as Falco's route tables (AUTOMATION-1362 step 8). Both declare FSharp.Core >= 10.1.402.
 - feat: `"optionsRecords": true` in `.fshw.json`, or `FSHW_OPTIONS_RECORDS=1` (`0` turns it off
   whatever the config says), files each evaluation of the projects' options and replays it on
   a daemon restart whose every input is byte-identical, instead of evaluating with MSBuild

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- build: TestPrune.Core 13.5.2 and TestPrune.Trace 0.7.7 (were 13.5.1 and 0.7.6). A schema rebuild
+  of test-impact.db now keeps the tables TestPrune.Core did not create (AUTOMATION-1362 step 8).
+  Both declare FSharp.Core >= 10.1.402. FsHotWatch.TestPrune and FsHotWatch.Cli pin Core together.
 - fix: TestPrune caches a file's `FileChecked` analysis when it first runs, not only once the
   index already holds it (ADR-059 §17 step 3). The key no longer asks the index; reading the
   entry still does, through the state's `IFileCacheReadGuard` (`IndexedAnalysis.Guard`). Before,
