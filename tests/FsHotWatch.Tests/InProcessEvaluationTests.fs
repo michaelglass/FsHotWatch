@@ -162,6 +162,62 @@ let ``an evaluation in flight when a test moves back cannot leave the process in
         test <@ afterEvaluation = original @>)
 
 [<Fact(Timeout = 60000)>]
+let ``a read at a settled working directory waits out an evaluation in flight`` () =
+    // AUTOMATION-1411: a test reading the working directory while a daemon evaluates
+    // read that daemon's scratch project, not its own. The evaluation is held standing in
+    // its project; the read must see where the process stood before it, not the project.
+    withProcessWorkingDirectory None (fun () ->
+        let original = Directory.GetCurrentDirectory()
+
+        withTempDir "eval-read" (fun root ->
+            let projectDir = repository root "reader"
+            use entered = new ManualResetEventSlim(false)
+            use release = new ManualResetEventSlim(false)
+
+            let loader =
+                DirectoryMovingLoader(
+                    projectDir,
+                    ignore,
+                    fun () ->
+                        entered.Set()
+                        release.Wait(HangWait) |> ignore
+                )
+
+            use daemon =
+                Daemon.createWithWorkspaceLoader
+                    Unchecked.defaultof<FSharpChecker>
+                    (Path.Combine(root, "reader"))
+                    oneShotDaemonOptions
+                    loader
+                    (fun _ -> [])
+
+            let evaluation =
+                Task.Run(fun () -> daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously |> ignore)
+
+            test <@ entered.Wait(HangWait) @>
+
+            let seen = ref ""
+
+            let reader =
+                Thread(ThreadStart(fun () -> seen.Value <- atSettledWorkingDirectory Directory.GetCurrentDirectory))
+
+            reader.Start()
+
+            // Release the evaluation once the reader has read, or is seen waiting for it:
+            // never after a guessed delay.
+            try
+                waitUntilOr
+                    "the reader to read, or to wait for the evaluation"
+                    (fun () -> not reader.IsAlive || reader.ThreadState.HasFlag ThreadState.WaitSleepJoin)
+                    HangWaitMs
+            finally
+                release.Set()
+
+            test <@ reader.Join(HangWait) @>
+            test <@ evaluation.Wait(HangWait) @>
+            test <@ seen.Value = original @>))
+
+[<Fact(Timeout = 60000)>]
 let ``deleting a scratch tree the process stands in fails the test that did it and moves the process out`` () =
     // A test that leaves the process standing in its own scratch tree (as the host verb
     // does) must fail ITSELF, with the process moved somewhere that exists, rather than

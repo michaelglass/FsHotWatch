@@ -288,10 +288,11 @@ let ``makeCacheKey produces different keys for different files`` () =
 
 // --- InMemoryCheckCache tests ---
 
-/// An entry for `file` that referenced no project outputs.
+/// An entry for `file`, under a fixed root, that referenced no project outputs. Rooted, so
+/// it never reads the process working directory (AUTOMATION-1411).
 let private makeTestResult (file: string) (version: int64) : CachedCheck =
     { Result =
-        { File = AbsFilePath.create file
+        { File = AbsFilePath.create (Path.Combine("/repo", file))
           Source = "test"
           ParseResults = Unchecked.defaultof<_>
           CheckResults = ParseOnly
@@ -316,7 +317,7 @@ let ``InMemoryCheckCache stores and retrieves results`` () =
     cache.Set key result
 
     match cache.TryGet key with
-    | Some r -> Assert.Equal(AbsFilePath.create "test.fs", r.Result.File)
+    | Some r -> Assert.Equal(AbsFilePath.create "/repo/test.fs", r.Result.File)
     | None -> Assert.Fail("Expected Some but got None")
 
 [<Fact(Timeout = 15000)>]

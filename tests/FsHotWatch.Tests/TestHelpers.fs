@@ -762,6 +762,13 @@ let withProcessWorkingDirectory (dir: string option) (body: unit -> 'a) : 'a =
     finally
         FsHotWatch.Daemon.whileNoEvaluationRuns (fun () -> Directory.SetCurrentDirectory original)
 
+/// Run `body`, which reads the process working directory or resolves a relative path
+/// against it, while no in-process evaluation runs (AUTOMATION-1411). An evaluation
+/// stands the process in its project until it finishes, and one can outlive the test
+/// that started it, so a reader in the serialized collection can still meet one.
+let atSettledWorkingDirectory (body: unit -> 'a) : 'a =
+    FsHotWatch.Daemon.whileNoEvaluationRuns body
+
 /// What an in-process MSBuild evaluation does to the process working directory: note
 /// where the process stands, stand it in `projectDir`, run `meanwhile`, then put back
 /// the directory it noted, which a concurrent evaluation may have moved it to. Run
