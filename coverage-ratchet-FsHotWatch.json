@@ -1607,7 +1607,21 @@
       "line": 98,
       "branch": 80,
       "reason": "new file (AUTOMATION-1368: fshw analytics over the outcome store and the shadow ledger). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-30 on macOS by mise run ci (test-direct): line 98.8% (317/321), branch 80.2% (69/86). Uncovered: the unparsable-timestamp arm of parseShadowLine and edges of the render and JSON matches. Pure computation plus file reads; platform-neutral."
-    }
+    },
+    "Interruption.fs": [
+      {
+        "line": 91,
+        "branch": 92,
+        "reason": "New file (AUTOMATION-670). Measured 2026-10-30 on macOS by the unit suite (mise run ci, test-direct): line 91.3%, branch 92.9%, rounded down. Uncovered: the two failure arms of `repair` (a source that cannot be re-stamped, a record that cannot be deleted), which only log.",
+        "platform": "macos"
+      },
+      {
+        "line": 91,
+        "branch": 92,
+        "reason": "New file (AUTOMATION-670). Platform-neutral: no arm depends on the OS (File/Directory/JSON only), so Linux reaches what macOS reaches; set to the macOS measurement (line 91.3%, branch 92.9%, 2026-10-30) and to be confirmed by the Linux CI run of this commit.",
+        "platform": "linux"
+      }
+    ]
   },
   "countFloors": {
     "AnalyzerIdentity.fs": [

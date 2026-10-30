@@ -8,6 +8,15 @@
   the 10 s `TeardownBudget` on a saturated box no longer turns its claim into "tree termination
   UNKNOWN".
 
+- fix: a daemon shut down while it owns work says so, and repairs what the killed work left
+  (AUTOMATION-670). `fshw stop`, a signal or a `.fshw.json` edit cancels the daemon, and the build
+  it was running is killed mid-write: a 132-byte assembly that MSBuild then treats as up to date,
+  because it is newer than its sources. The daemon now writes `.fshw/interrupted.json` at the
+  instant it is cancelled, naming the work it owned (nothing for an idle daemon), and logs it ahead
+  of the killed build's `exit=137`. The next scan re-stamps every source it dispatches before the
+  build sees them, so the next build recompiles instead of trusting the half-written output, and
+  clears the record. `Interruption` is the module.
+
 - fix: the native FSEvents start-retry budget is sized from the refusals actually seen
   (AUTOMATION-1109). macOS refused the stream for 50 s and 71 s in the two real episodes,
   and the old 100/300/900 ms budget (1.3 s) rescued neither. `NativeStartRetry.defaults` now

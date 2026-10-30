@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: `fshw stop` names the work it interrupted (AUTOMATION-670): `Interrupted work in flight:
+  build. Output it was writing may be incomplete; …`. A `check` whose daemon was shut down under
+  it records `the check was interrupted: the daemon … was shut down … while build was running — a
+  requested stop …, not a crash or an out-of-memory kill` instead of `the check ended without
+  publishing a verdict for this invocation`.
+
 - fix: a client waits out a starting daemon's FSEvents start-retry budget (AUTOMATION-1414).
   The daemon listens only once its watcher has started, and since AUTOMATION-1109 it retries a
   refused FSEvents stream for up to 85.5 s, but a client waited 30 s: it exited 2 while the daemon

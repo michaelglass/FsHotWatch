@@ -1058,6 +1058,105 @@ let ``check forces a from-disk scan: forceScanAndWait advances the scan generati
             with :? AggregateException ->
                 ())
 
+[<Fact(Timeout = 90000)>]
+let ``an edit no watcher reported reaches the build subscribers before check settles`` () =
+    // AUTOMATION-675: a live daemon missed a source write, and the check that followed
+    // read as "nothing to do". This daemon has NO watcher (OneShot), so every edit below
+    // is one the watcher missed. `check`'s daemon sequence — the forced scan, then the
+    // verdict settle — must still hand the edited bytes to the plugins that build, before
+    // the settle returns.
+    withTempDir "missed-edit" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Missed.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let sourcePath = Path.Combine(srcDir, "Missed.fs")
+        File.WriteAllText(sourcePath, "module Missed\nlet value = 1\n")
+        let objDir = Path.Combine(srcDir, "obj")
+        Directory.CreateDirectory(objDir) |> ignore
+        File.WriteAllText(Path.Combine(objDir, "project.assets.json"), "{}")
+
+        let loader =
+            CountingWorkspaceLoader(
+                [ { minimalLoadedProject projectPath with
+                      SourceFiles = [ sourcePath ] } ]
+            )
+
+        let checker = sharedChecker.Value
+
+        let fcsOptions =
+            let options, _ =
+                checker.GetProjectOptionsFromScript(
+                    sourcePath,
+                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
+                )
+                |> Async.RunSynchronously
+
+            { options with
+                ProjectFileName = projectPath
+                SourceFiles = [| sourcePath |] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                tmpDir
+                { oneShotDaemonOptions with
+                    RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun projects -> projects |> List.map (fun _ -> fcsOptions))
+                (fun _ _ _ _ _ -> failwith "this daemon must see no file events")
+
+        // What a build subscriber read of the source each time it was told the source
+        // changed.
+        let seen = System.Collections.Concurrent.ConcurrentQueue<string>()
+        let real = FsHotWatch.CommandPreprocessor.realPathOf
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "build-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | FileChanged(SourceChanged files) when
+                            files |> List.exists (fun f -> real f = real sourcePath)
+                            ->
+                            seen.Enqueue(File.ReadAllText sourcePath)
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        let cts = new CancellationTokenSource()
+        let pipeName = $"fshw-{Guid.NewGuid():N}"
+        let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
+        daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+
+        try
+            test <@ daemon.StartupScanSettled.Wait(HangWait) @>
+            test <@ seen |> Seq.exists (fun text -> text.Contains "value = 1") @>
+
+            File.WriteAllText(sourcePath, "module Missed\nlet value = 2\n")
+
+            let ipc = FsHotWatch.Cli.Program.defaultIpcOps
+
+            FsHotWatch.Cli.Program.forceScanAndWait ipc pipeName None |> ignore
+            ipc.WaitForComplete pipeName -1 |> Async.RunSynchronously |> ignore
+
+            test <@ seen |> Seq.exists (fun text -> text.Contains "value = 2") @>
+        finally
+            cts.Cancel()
+
+            try
+                task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+            with :? AggregateException ->
+                ())
+
 [<Fact(Timeout = 15000)>]
 let ``daemon RegisterProject stores options in pipeline`` () =
     withTempDir "daemon" (fun tmpDir ->
@@ -1275,6 +1374,151 @@ let ``formatScanStatusWith surfaces unchecked count as non-ok when incomplete`` 
     // checked count as (registered - unchecked).
     test <@ status = "incomplete: 65 files checked, 5 unchecked in 15.5s" @>
     test <@ status.ToLowerInvariant().Contains("unchecked") @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a daemon shut down while it owns work records what it interrupted`` () =
+    // AUTOMATION-670: `fshw stop` mid-work left damaged output and no trace of the
+    // cause. The shutdown is a cancellation; at that instant the daemon names the work
+    // it owned in `.fshw/interrupted.json`.
+    withTempDir "daemon-interrupted" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "Blocked.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let loader = BlockingWorkspaceLoader([])
+
+        use daemon =
+            Daemon.createWithWorkspaceLoader nullChecker tmpDir oneShotDaemonOptions loader (fun _ -> [])
+
+        let cts = new CancellationTokenSource()
+        let pipeName = $"fshw-{Guid.NewGuid():N}"
+        let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
+
+        try
+            // The startup scan is held in discovery: the daemon owns a scan.
+            Assert.True(loader.Entered.Wait(HangWait), "the startup scan must enter discovery")
+            Assert.Contains("scan", daemon.Host.BusyPluginNames())
+            let earliest = DateTime.UtcNow.AddSeconds -1.0
+
+            cts.Cancel()
+
+            match FsHotWatch.Interruption.tryRead tmpDir with
+            | Some record ->
+                test <@ record.InFlight |> List.contains "scan" @>
+                test <@ record.Pid = Environment.ProcessId @>
+                test <@ record.At >= earliest @>
+            | None -> failwith "a shutdown that interrupted a scan must leave a record"
+        finally
+            loader.Resume()
+
+            try
+                task.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+            with :? AggregateException ->
+                ())
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a daemon shut down idle leaves no interruption record`` () =
+    withTempDir "daemon-idle-stop" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
+        let cts = new CancellationTokenSource()
+        let pipeName = $"fshw-{Guid.NewGuid():N}"
+        let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
+
+        try
+            test <@ daemon.StartupScanSettled.Wait(HangWait) @>
+            Assert.True(SpinWait.SpinUntil((fun () -> not (daemon.Host.AnyPluginBusy())), HangWait))
+
+            cts.Cancel()
+
+            test <@ FsHotWatch.Interruption.tryRead tmpDir = None @>
+        finally
+            try
+                task.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+            with :? AggregateException ->
+                ())
+
+[<Fact(Timeout = 90000)>]
+let ``the scan after an interrupted shutdown re-stamps its sources and clears the record`` () =
+    // The interrupted build may have left an output newer than its sources, which a
+    // timestamp up-to-date check would trust. The next scan re-stamps every source it
+    // dispatches, before the build subscribers see them.
+    withTempDir "daemon-interrupted-repair" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Repaired.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let sourcePath = Path.Combine(srcDir, "Repaired.fs")
+        File.WriteAllText(sourcePath, "module Repaired\nlet value = 1\n")
+        let objDir = Path.Combine(srcDir, "obj")
+        Directory.CreateDirectory(objDir) |> ignore
+        File.WriteAllText(Path.Combine(objDir, "project.assets.json"), "{}")
+        let stamped = DateTime.UtcNow.AddHours -1.0
+        File.SetLastWriteTimeUtc(sourcePath, stamped)
+
+        FsHotWatch.Interruption.record
+            tmpDir
+            { At = DateTime.UtcNow.AddMinutes -1.0
+              Pid = 1
+              InFlight = [ "build" ] }
+
+        let loader =
+            CountingWorkspaceLoader(
+                [ { minimalLoadedProject projectPath with
+                      SourceFiles = [ sourcePath ] } ]
+            )
+
+        let checker = sharedChecker.Value
+
+        let fcsOptions =
+            let options, _ =
+                checker.GetProjectOptionsFromScript(
+                    sourcePath,
+                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
+                )
+                |> Async.RunSynchronously
+
+            { options with
+                ProjectFileName = projectPath
+                SourceFiles = [| sourcePath |] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                tmpDir
+                { oneShotDaemonOptions with
+                    RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun projects -> projects |> List.map (fun _ -> fcsOptions))
+                (fun _ _ _ _ _ -> failwith "this scan must not construct a watcher")
+
+        // When a build subscriber is told about the source, it must already be re-stamped.
+        let stampsSeen = System.Collections.Concurrent.ConcurrentQueue<DateTime>()
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "build-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | FileChanged(SourceChanged _) -> stampsSeen.Enqueue(File.GetLastWriteTimeUtc sourcePath)
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        daemon.ScanAll() |> Async.RunSynchronously
+
+        test <@ File.GetLastWriteTimeUtc sourcePath > stamped @>
+        test <@ FsHotWatch.Interruption.tryRead tmpDir = None @>
+
+        Assert.True(SpinWait.SpinUntil((fun () -> not stampsSeen.IsEmpty), TimeSpan.FromSeconds 10.0))
+        test <@ stampsSeen |> Seq.forall (fun seen -> seen > stamped) @>)
 
 [<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]

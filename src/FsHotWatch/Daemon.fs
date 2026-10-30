@@ -3879,6 +3879,26 @@ type Daemon
                 // cannot be told from one this daemon never owned.
                 let rootPresent = VanishedRoot.mark repoRoot (Logging.warn "daemon")
 
+                // Every way this daemon ends is `cts.Cancel()`: a stop request, a signal, a
+                // `.fshw.json` edit, idle exit, a vanished root. The work it owns at that
+                // instant is killed where it stands, so name it on disk for whoever meets
+                // what it left (`Interruption`). Idle exit owns nothing and records nothing.
+                use _interruption =
+                    cts.Token.Register(fun () ->
+                        let owned = host.BusyPluginNames()
+
+                        if not owned.IsEmpty then
+                            let interrupted: Interruption.Record =
+                                { At = DateTime.UtcNow
+                                  Pid = Environment.ProcessId
+                                  InFlight = owned }
+
+                            Interruption.record repoRoot interrupted
+
+                            Logging.warn
+                                "daemon"
+                                $"Shutting down with work in flight: %s{Interruption.describe interrupted}")
+
                 // Started on this thread: a server creates its listening instances
                 // before its first wait, so the daemon accepts connections before this
                 // method goes on. Queued to the thread pool instead, a loaded box could
@@ -4475,6 +4495,15 @@ let private performScan
                 // After the preprocessors' rewrites, before any check: one upstream
                 // fingerprint table per project for the whole scan.
                 pipeline.BeginGeneration()
+
+                // Before the build subscribers see the sources: a shutdown that killed a
+                // build may have left an output newer than its sources, and a timestamp
+                // up-to-date check would trust it (`Interruption`).
+                Interruption.repair ctx.RepoRoot files
+                |> Option.iter (fun interrupted ->
+                    Logging.warn
+                        "scan"
+                        $"re-stamped %d{files.Length} source(s) so the next build replaces any output the interrupted shutdown left: %s{Interruption.describe interrupted}")
 
                 publishCurrent (fun () -> host.EmitFileChangedFor(consumers, SourceChanged files))
 
