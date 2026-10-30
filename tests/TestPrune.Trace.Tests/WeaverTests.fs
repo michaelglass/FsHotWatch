@@ -112,7 +112,8 @@ let private withWeave passes (f: string -> WeaveResult -> unit) =
         deleteScratch dir
 
 /// Every method's sequence points, decoded with SRM (the reader MS CodeCoverage uses), as
-/// (method row, [(document, startLine, startColumn, endLine, endColumn, isHidden, ilOffset)]).
+/// (method row, [((document, startLine, startColumn, endLine, endColumn, isHidden), ilOffset)]):
+/// what line coverage reads from a point, paired with where in the IL it sits.
 let private sequencePoints (pdbPath: string) =
     use fs = File.OpenRead pdbPath
     use provider = MetadataReaderProvider.FromPortablePdbStream fs
@@ -127,12 +128,7 @@ let private sequencePoints (pdbPath: string) =
                   [ for sp in info.GetSequencePoints() ->
                         let doc = reader.GetString(reader.GetDocument(sp.Document).Name)
 
-                        Path.GetFileName doc,
-                        sp.StartLine,
-                        sp.StartColumn,
-                        sp.EndLine,
-                        sp.EndColumn,
-                        sp.IsHidden,
+                        (Path.GetFileName doc, sp.StartLine, sp.StartColumn, sp.EndLine, sp.EndColumn, sp.IsHidden),
                         sp.Offset ]
 
               yield row, sps ]
@@ -169,7 +165,7 @@ let private endMarkerRows (dllPath: string) =
     let sizes = codeSizes dllPath
 
     sequencePoints (Path.ChangeExtension(dllPath, ".pdb"))
-    |> Map.filter (fun row sps -> sps |> List.exists (fun (_, _, _, _, _, _, off) -> off = sizes.[row]))
+    |> Map.filter (fun row sps -> sps |> List.exists (fun (_, off) -> off = sizes.[row]))
     |> Map.keys
     |> Seq.toList
 
@@ -303,7 +299,7 @@ let ``woven PDBs decode with System.Reflection.Metadata and the end-of-method ma
 let private onlyShifted (dir: string) (original: Map<int, _>) =
     let woven = sequencePoints (Path.Combine(dir, "FxLib.pdb"))
     let sizes = codeSizes (Path.Combine(dir, "FxLib.dll"))
-    let strip = List.map (fun (d, sl, sc, el, ec, h, _) -> d, sl, sc, el, ec, h)
+    let strip = List.map fst
 
     // Same methods, same lines, columns, documents and hidden flags: the inputs to
     // line coverage are unchanged, so coverage with and without weaving is identical.
@@ -322,7 +318,7 @@ let private onlyShifted (dir: string) (original: Map<int, _>) =
         |> Map.toList
         |> List.collect (fun (row, sps) ->
             sps
-            |> List.filter (fun (_, _, _, _, _, _, off) -> off > sizes.[row])
+            |> List.filter (fun (_, off) -> off > sizes.[row])
             |> List.map (fun sp -> row, sp))
 
     outside =! []

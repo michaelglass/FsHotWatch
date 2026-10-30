@@ -62,7 +62,7 @@ type WeaveResult =
       Outputs: string list
       Stats: WeaveStats }
 
-exception private WeaveFailure of WeaveError
+exception private WeaveFailureException of WeaveError
 
 /// Debug F# builds carry DebuggableAttribute with DisableOptimizations (0x100). Anything
 /// else may have inlined small functions across assemblies, whose entry probes then
@@ -160,7 +160,7 @@ let private endOfMethodPoints asmName (t: TypeDefinition) (meth: MethodDefinitio
         |> Seq.filter (fun sp -> not (offsets.Contains sp.Offset))
         |> Seq.map (fun sp ->
             if sp.Offset <> body.CodeSize then
-                raise (WeaveFailure(UnboundSequencePoint(asmName, typeKey t + "::" + meth.Name)))
+                raise (WeaveFailureException(UnboundSequencePoint(asmName, typeKey t + "::" + meth.Name)))
 
             sp)
         |> Seq.toList
@@ -190,7 +190,7 @@ let private readModule (recorderPath: string) (input: WeaveInput) =
     let name = Path.GetFileNameWithoutExtension input.Path
 
     if not (File.Exists(Path.ChangeExtension(input.Path, ".pdb"))) then
-        raise (WeaveFailure(MissingPdb name))
+        raise (WeaveFailureException(MissingPdb name))
 
     let resolver = new DefaultAssemblyResolver()
     resolver.AddSearchDirectory(Path.GetDirectoryName(Path.GetFullPath input.Path))
@@ -209,7 +209,7 @@ let private readModule (recorderPath: string) (input: WeaveInput) =
 
     if isOptimized m.Assembly then
         m.Dispose()
-        raise (WeaveFailure(Optimized name))
+        raise (WeaveFailureException(Optimized name))
 
     m, input.Mode
 
@@ -372,7 +372,7 @@ let weaveWith
 
                     match PdbCheck.decodeFailures (Path.ChangeExtension(dst, ".pdb")) with
                     | [] -> dst
-                    | failures -> raise (WeaveFailure(PdbCorrupt(asmName, failures.Length))))
+                    | failures -> raise (WeaveFailureException(PdbCorrupt(asmName, failures.Length))))
                 |> Seq.toList
 
             Ok
@@ -386,7 +386,7 @@ let weaveWith
                       EndOfMethodSequencePointsMoved = moved
                       Touched = touched |> Seq.map (fun kv -> kv.Key, List.ofSeq kv.Value) |> Map.ofSeq } }
         with
-        | WeaveFailure e -> Error e
+        | WeaveFailureException e -> Error e
         | :? OperationCanceledException -> reraise ()
         | ex -> Error(CecilFailed(current.Value, ex.Message))
     finally

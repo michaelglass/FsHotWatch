@@ -33,6 +33,8 @@ let internal awaitOutput (t: Task<string>) : string = t.GetAwaiter().GetResult()
 /// Follows the POSIX `timeout(1)` convention (124 = "the command timed out"), so a
 /// wedged run surfaces as a clear, distinct non-zero exit rather than a silent hang.
 [<Literal>]
+// Public API (a `[<Literal>]` consumers can match on): a rename is a breaking change.
+// fsharplint:disable-next-line LiteralNames
 let timeoutExitCode = 124
 
 /// Default hang-detector timeout for a single test-project run, in milliseconds.
@@ -64,6 +66,8 @@ let internal resolveTestRunTimeoutMs () : int =
 /// instant, so 30s behaves exactly as an unbounded read on every healthy run and only
 /// fires on the grandchild-pipe wedge that this bound exists to break.
 [<Literal>]
+// Public API (a `[<Literal>]` consumers can match on): a rename is a breaking change.
+// fsharplint:disable-next-line LiteralNames
 let drainOutputTimeoutMs = 30_000
 
 /// Bound the post-exit drain of a process's redirected stdout/stderr.

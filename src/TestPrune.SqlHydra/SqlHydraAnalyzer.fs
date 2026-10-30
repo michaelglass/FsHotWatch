@@ -119,6 +119,8 @@ type SqlHydraExtension(generatedModulePrefix: string) =
                 (nameof generatedModulePrefix)
                 "Generated module prefix must be a dot-separated qualified name without empty or surrounding-whitespace segments"
 
+    // Public API: consumers call `extractFacts`, and renaming it breaks every one of them.
+    // fsharplint:disable-next-line MemberNames
     static member extractFacts (prefix: string) (store: SymbolStore) : SqlFact list =
         let allSymbols = store.GetAllSymbols() |> List.filter (fun s -> not s.IsExtern)
 

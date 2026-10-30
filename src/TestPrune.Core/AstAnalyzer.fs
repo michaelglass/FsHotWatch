@@ -491,8 +491,8 @@ let private MaxSymbolTraversalVisits = 32768
 [<Literal>]
 let private MaxSymbolTraversalRoots = 64
 
-exception private SymbolTraversalDepthExceeded of int
-exception private SymbolTraversalBudgetExceeded of int
+exception private SymbolTraversalDepthExceededException of int
+exception private SymbolTraversalBudgetExceededException of int
 
 type private SymbolTraversalBudget(maxVisits: int) =
     let mutable visits = 0
@@ -501,7 +501,7 @@ type private SymbolTraversalBudget(maxVisits: int) =
         visits <- visits + 1
 
         if visits > maxVisits then
-            raise (SymbolTraversalBudgetExceeded maxVisits)
+            raise (SymbolTraversalBudgetExceededException maxVisits)
 
     member _.Visits = visits
 
@@ -611,10 +611,13 @@ let private tryGenericEdgeSemanticKey (symbol: FSharpSymbol) =
             match declaringIdentity with
             | Some(declaringFullName, declaringCompiledName) when
                 mfv.GenericParameters.Count = 0
-                && not (String.IsNullOrEmpty mfv.FullName)
-                && not (String.IsNullOrEmpty mfv.CompiledName)
-                && not (String.IsNullOrEmpty mfv.LogicalName)
-                && not (String.IsNullOrEmpty declaration.FileName)
+                // Thunks keep the original short-circuit: a name is read only when every
+                // name before it was present.
+                && [ (fun () -> mfv.FullName)
+                     (fun () -> mfv.CompiledName)
+                     (fun () -> mfv.LogicalName)
+                     (fun () -> declaration.FileName) ]
+                   |> List.forall (fun name -> not (String.IsNullOrEmpty(name ())))
                 ->
                 Some
                     { WrapperType = symbol.GetType().FullName
@@ -638,9 +641,9 @@ let private protectSymbolTraversal (operation: unit -> Result<'Value, string>) :
     try
         operation ()
     with
-    | SymbolTraversalDepthExceeded limit ->
+    | SymbolTraversalDepthExceededException limit ->
         Error $"FCS symbol graph exceeded the safe traversal depth of %d{limit}; refusing incomplete analysis"
-    | SymbolTraversalBudgetExceeded limit ->
+    | SymbolTraversalBudgetExceededException limit ->
         Error
             $"FCS symbol graph exceeded the safe traversal work budget of %d{limit} nodes; refusing incomplete analysis"
 
@@ -675,7 +678,7 @@ let private boundedDepthFirstWithBudget
         | _ when not (visitedReferences.Add(box node)) -> ()
         | _ ->
             if depth >= maxDepth then
-                raise (SymbolTraversalDepthExceeded maxDepth)
+                raise (SymbolTraversalDepthExceededException maxDepth)
             else
                 let nextActiveNames =
                     match stableName with
@@ -695,15 +698,15 @@ let private boundedDepthFirstWithBudget
                             childCount <- childCount + 1
 
                             if childCount > MaxSymbolTraversalRoots then
-                                raise (SymbolTraversalBudgetExceeded MaxSymbolTraversalRoots)
+                                raise (SymbolTraversalBudgetExceededException MaxSymbolTraversalRoots)
 
                             budget.Consume()
                             visit (depth + 1) nextActiveNames childEnumerator.Current
                         else
                             hasMore <- false
                 with
-                | SymbolTraversalDepthExceeded _ -> reraise ()
-                | SymbolTraversalBudgetExceeded _ -> reraise ()
+                | SymbolTraversalDepthExceededException _ -> reraise ()
+                | SymbolTraversalBudgetExceededException _ -> reraise ()
                 | _ -> isComplete <- false
 
     try
@@ -714,7 +717,7 @@ let private boundedDepthFirstWithBudget
             rootCount <- rootCount + 1
 
             if rootCount > MaxSymbolTraversalRoots then
-                raise (SymbolTraversalBudgetExceeded MaxSymbolTraversalRoots)
+                raise (SymbolTraversalBudgetExceededException MaxSymbolTraversalRoots)
 
             budget.Consume()
             visit 0 Set.empty rootEnumerator.Current
@@ -722,8 +725,8 @@ let private boundedDepthFirstWithBudget
         { Value = results |> Seq.toList
           IsComplete = isComplete }
     with
-    | SymbolTraversalDepthExceeded _ -> reraise ()
-    | SymbolTraversalBudgetExceeded _ -> reraise ()
+    | SymbolTraversalDepthExceededException _ -> reraise ()
+    | SymbolTraversalBudgetExceededException _ -> reraise ()
     | _ -> { Value = []; IsComplete = false }
 
 let private boundedDepthFirst maxDepth tryStableName children roots =
@@ -768,8 +771,8 @@ let private extractGenericTypeArgsWithBudget
                         None)
               IsComplete = traversal.IsComplete && namesComplete }
     with
-    | SymbolTraversalDepthExceeded _ -> reraise ()
-    | SymbolTraversalBudgetExceeded _ -> reraise ()
+    | SymbolTraversalDepthExceededException _ -> reraise ()
+    | SymbolTraversalBudgetExceededException _ -> reraise ()
     | _ -> { Value = []; IsComplete = false }
 
 /// Extract generic type argument edges from a symbol use's full type.
@@ -782,8 +785,8 @@ let private tryGetGenericTypeArgEdgesWithBudget
         try
             extractGenericTypeArgsWithBudget budget mfv.FullType
         with
-        | SymbolTraversalDepthExceeded _ -> reraise ()
-        | SymbolTraversalBudgetExceeded _ -> reraise ()
+        | SymbolTraversalDepthExceededException _ -> reraise ()
+        | SymbolTraversalBudgetExceededException _ -> reraise ()
         | _ -> { Value = []; IsComplete = false }
     | _ -> { Value = []; IsComplete = true }
 
@@ -894,7 +897,7 @@ module internal TestHelpers =
                             computations <- computations + 1
 
                             if computations > maxComputations then
-                                raise (SymbolTraversalBudgetExceeded maxComputations)
+                                raise (SymbolTraversalBudgetExceededException maxComputations)
 
                             { Value = [ "Leaf" ]
                               IsComplete = true }))
@@ -1126,7 +1129,7 @@ let internal collectPropertyRanges (tree: ParsedInput) : (string * range) list =
         match memberDefn with
         | SynMemberDefn.Interface(members = Some members) -> List.iter walkMember members
         // INT-WILDCARD-001:ok — `propertyMemberRange` picks out the property forms.
-        | _ -> propertyMemberRange memberDefn |> Option.iter (fun entry -> results.Add entry)
+        | _ -> propertyMemberRange memberDefn |> Option.iter results.Add
 
     walkImplDecls tree (fun decl ->
         match decl with
@@ -2584,8 +2587,8 @@ let private extractResults
                                         | Some entity -> testClassForEntity fallbackClass entity
                                         | None -> fallbackClass
                                     with
-                                    | SymbolTraversalDepthExceeded _ -> reraise ()
-                                    | SymbolTraversalBudgetExceeded _ -> reraise ()
+                                    | SymbolTraversalDepthExceededException _ -> reraise ()
+                                    | SymbolTraversalBudgetExceededException _ -> reraise ()
                                     | _ -> fallbackClass
 
                                 testMethods <-
@@ -2595,8 +2598,8 @@ let private extractResults
                                       TestMethod = testMethod }
                                     :: testMethods
                             with
-                            | SymbolTraversalDepthExceeded _ -> reraise ()
-                            | SymbolTraversalBudgetExceeded _ -> reraise ()
+                            | SymbolTraversalDepthExceededException _ -> reraise ()
+                            | SymbolTraversalBudgetExceededException _ -> reraise ()
                             | _ -> ()
 
                             // Direct edges from the test method to every fixture its

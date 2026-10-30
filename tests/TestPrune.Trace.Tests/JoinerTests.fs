@@ -263,7 +263,7 @@ let ``the woven fixture joins to the real index`` () =
         // A StartupCode closure with no sequence points joins through its derived document.
         test <@ find "<StartupCode$FxLib>.$Pipelines+DoubleAll@12" "Invoke" = ToSymbol "FxLib.Pipeline.DoubleAll" @>
         // An F# exception is an indexed type.
-        test <@ find "FxLib.Overflowed" "" = ToSymbol "FxLib.Overflowed" @>
+        test <@ find "FxLib.OverflowedException" "" = ToSymbol "FxLib.OverflowedException" @>
         // Generic types carry their CLR arity (`Crate`1`); a union nested in a module is
         // `Generics+Lookup`1`, and its case classes are nested in it once more.
         test <@ find "FxLib.Generics+Lookup`1" "NewFound" = ToSymbol "FxLib.Generics.Lookup`1.Found" @>

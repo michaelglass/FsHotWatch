@@ -132,7 +132,7 @@ let private transfers =
 
 /// The line number a PDB gives a hidden sequence point.
 [<Literal>]
-let private hiddenLine = 0xFEEFEE
+let private HiddenLine = 0xFEEFEE
 
 type private Pass() =
     let cat = Catalogue()
@@ -336,7 +336,7 @@ type private Pass() =
             )
 
         let hiddenAt (i: Instruction) (document: Document) =
-            i.Offset, SequencePoint(i, document, StartLine = hiddenLine, EndLine = hiddenLine)
+            i.Offset, SequencePoint(i, document, StartLine = HiddenLine, EndLine = HiddenLine)
 
         let isBranch (i: Instruction) =
             i.OpCode.FlowControl = FlowControl.Cond_Branch

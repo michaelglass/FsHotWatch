@@ -5,6 +5,10 @@ open System.Collections.Generic
 open System.Diagnostics
 open System.IO
 
+// The shims are named `<Type>_<Method>` because the weaver rewrites `call Type::Method` into
+// `call <shim class>::Type_Method` by that name (see the summary below): the underscore is
+// the contract, not a style slip, so MemberNames is off for the shim members of this file.
+// fsharplint:disable MemberNames
 /// Call-site replacements for `Process.Start`. The child inherits the starting scope
 /// through `TESTPRUNE_TRACE_PARENT_SCOPE`, so a woven child records into the test that
 /// started it, and the start is noted on that scope with the child's pid. A child with

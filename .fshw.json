@@ -50,16 +50,6 @@
       "src/TestPrune.Analyzers/bin/Debug/net10.0/"
     ],
     "scope": {
-      "tools/fsharplint-shim/bin/Debug/net10.0/": {
-        "exclude": [
-          "src/TestPrune*/**",
-          "tests/TestPrune*/**",
-          "tests/TraceFixtures/**",
-          "examples/UsageExample/**",
-          "examples/SampleSolution/**",
-          "benchmarks/**"
-        ]
-      },
       "analyzers/FsHotWatch.Rules/bin/Debug/net10.0/": {
         "exclude": [
           "src/TestPrune*/**",

@@ -434,4 +434,4 @@ module ``selection is monotone in its seeds`` =
                             $"%A{part} selects %A{Set.difference partial whole} that its superset %A{batch} does not"
 
             // Not vacuous: some batch selected something.
-            test <@ subsets |> List.exists (fun s -> not (Set.isEmpty (database s))) @>)
+            test <@ subsets |> List.exists (database >> Set.isEmpty >> not) @>)

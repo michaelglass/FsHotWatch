@@ -10,6 +10,8 @@ open TestPrune.Domain
 /// that backlog is written. It never replies when the agent is wedged (a persist that never
 /// returns) or has stopped, and an unbounded wait there hangs the caller silently.
 [<Literal>]
+// Public API (a `[<Literal>]` consumers can match on): a rename is a breaking change.
+// fsharplint:disable-next-line LiteralNames
 let flushTimeoutMs = 120_000
 
 /// Outcome of waiting for an audit sink to process the events posted before a flush.

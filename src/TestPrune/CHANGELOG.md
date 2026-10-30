@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- chore: FSharpLint findings fixed now that this package is linted again (AUTOMATION-1409). No
+  behaviour or API change.
 - build: the package's source and project links point at github.com/michaelglass/FsHotWatch, where
   TestPrune now lives with its history (AUTOMATION-1367). No code change.
 

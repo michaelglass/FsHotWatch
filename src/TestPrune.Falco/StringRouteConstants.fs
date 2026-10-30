@@ -139,8 +139,7 @@ module StringRouteConstants =
     let buildConstantMapFrom (sources: ConstantSources) (affectedUrls: Set<string>) : Map<string, Set<string>> =
         sources.Files
         |> List.filter (fun (text, constants) ->
-            not constants.Value.IsEmpty
-            && affectedUrls |> Set.exists (fun u -> text.Contains u))
+            not constants.Value.IsEmpty && affectedUrls |> Set.exists text.Contains)
         |> List.collect (fun (_, constants) -> constants.Value)
         |> List.fold
             (fun acc (qualified, url) ->

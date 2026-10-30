@@ -27,7 +27,7 @@ module private RouteTable =
     /// either a non-event — the next call recreates the table, and the routes themselves
     /// are re-seeded every run.
     [<Literal>]
-    let ddl =
+    let Ddl =
         """
         CREATE TABLE IF NOT EXISTS route_handlers (
             url_pattern TEXT NOT NULL,
@@ -63,7 +63,7 @@ module private RouteTable =
         use conn = store.OpenConnection()
 
         use ddlCmd = conn.CreateCommand()
-        ddlCmd.CommandText <- ddl
+        ddlCmd.CommandText <- Ddl
         ddlCmd.ExecuteNonQuery() |> ignore
 
         body conn

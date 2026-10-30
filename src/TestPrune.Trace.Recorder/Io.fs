@@ -11,6 +11,10 @@ open System.Threading.Tasks
 open System.Xml
 open System.Xml.Linq
 
+// The shims are named `<Type>_<Method>` because the weaver rewrites `call Type::Method` into
+// `call <shim class>::Type_Method` by that name (see the summary below): the underscore is
+// the contract, not a style slip, so MemberNames is off for the shim members of this file.
+// fsharplint:disable MemberNames
 /// Call-site replacements for the BCL's file readers (XML loaders by path among them),
 /// existence probes, directory listings and metadata readers. Each shim notes (kind, absolute path) on the scope doing the I/O, then does
 /// exactly what the original does. The weaver rewrites `call File::ReadAllText(string)`

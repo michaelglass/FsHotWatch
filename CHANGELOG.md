@@ -74,6 +74,17 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### build: TestPrune's code is linted by FSharpLint again
+
+- Importing TestPrune (AUTOMATION-1367) scoped the FSharpLint shim off TestPrune's paths in
+  `.fshw.json`, and nothing else ran FSharpLint over them, so its projects went unlinted.
+  The shim now runs on every file and TestPrune lints under the repository's
+  `fsharplint.json`. `LintCoverageTests` fails when any project in `FsHotWatch.slnx` falls
+  outside the shim's scope or has no `fsharplint.json` above it (AUTOMATION-1409).
+- The findings that surfaced are fixed, except names that are public API (renaming them
+  would break consumers) and the recorder's `<Type>_<Method>` shims, whose underscores the
+  weaver matches by name; those carry a scoped `fsharplint:disable` with the reason.
+
 ### build: FSharp.Compiler.Service and FSharp.Core are pinned exactly
 
 - FCS is pinned at `[43.12.402]` and FSharp.Core at `[10.1.402]` in every project, instead

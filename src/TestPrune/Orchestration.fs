@@ -134,9 +134,35 @@ type ProjectResult =
       Outcome: ProjectOutcome
       Events: AnalysisEvent list }
 
-exception private ProjectAnalysisFailed of file: string * message: string
+exception private ProjectAnalysisFailedException of file: string * message: string
 
-exception private ProjectOptionsEmpty of message: string
+exception private ProjectOptionsEmptyException of message: string
+
+/// `indexProject`'s fold over one project's source files, in compile order. The lists
+/// are built newest first and reversed once the fold ends.
+type private FileFold =
+    {
+        NextIndex: int
+        AnalyzedCount: int
+        /// The compile-order index of the first file that was re-analyzed: every later
+        /// file is re-analyzed too, since its symbols may resolve against the changed one.
+        FirstChangedAt: int option
+        KeysOfAnalyzed: (string * string) list
+        SkippedCount: int
+        FileEvents: AnalysisEvent list
+        FileResults: AnalysisResult list
+    }
+
+/// The index command's fold over every project's result: what is persisted and reported.
+type private IndexTotals =
+    { AllResults: AnalysisResult list
+      AllFileKeys: (string * string) list
+      AllProjectKeys: (string * string) list
+      SymbolTotal: int
+      DepTotal: int
+      TestTotal: int
+      SkippedProjects: int
+      SkippedFileTotal: int }
 
 /// Reconcile a project's static `<Compile Include>` list with the source files of its
 /// LOADED project options — MSBuild's evaluated compile list, conditions applied.
@@ -227,109 +253,102 @@ let indexProject
 
             if filesToAnalyze.IsEmpty && compileFiles |> List.exists File.Exists then
                 raise (
-                    ProjectOptionsEmpty
+                    ProjectOptionsEmptyException
                         $"the loaded project lists none of its %d{compileFiles.Length} compile item(s) as a source file"
                 )
 
             let projSnapshot =
                 lazy (createProjectSnapshot projOptions |> Async.RunSynchronously)
 
+            let analyzeFile (sourceFile: string) =
+                try
+                    let source = File.ReadAllText(sourceFile)
+
+                    analyzeSourceWithSnapshot checker sourceFile source (projSnapshot.Force()) projName
+                    |> Async.RunSynchronously
+                with ex ->
+                    Error ex.Message
+
+            let cachedResult (relPath: string) : AnalysisResult =
+                { Symbols = store.GetSymbolsInFile(relPath)
+                  Dependencies = store.GetDependenciesFromFile(relPath)
+                  TestMethods = store.GetTestMethodsInFile(relPath)
+                  Attributes = []
+                  ParentLinks = store.GetParentLinksInFile(relPath)
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            let analyzedResult (acc: FileFold) (relPath: string) (fileKey: string) (result: AnalysisResult) =
+                let symbols = normalizeSymbolPaths repoRoot result.Symbols
+
+                if result.Diagnostics.DroppedEdges > 0 then
+                    eprintfn
+                        $"    %s{relPath}: %d{result.Diagnostics.DroppedEdges} dropped edges (findEnclosing returned None)"
+
+                { acc with
+                    NextIndex = acc.NextIndex + 1
+                    AnalyzedCount = acc.AnalyzedCount + 1
+                    FirstChangedAt = acc.FirstChangedAt |> Option.orElse (Some acc.NextIndex)
+                    KeysOfAnalyzed = (relPath, fileKey) :: acc.KeysOfAnalyzed
+                    FileEvents =
+                        FileAnalyzedEvent(
+                            relPath,
+                            symbols.Length,
+                            result.Dependencies.Length,
+                            result.TestMethods.Length
+                        )
+                        :: acc.FileEvents
+                    FileResults = { result with Symbols = symbols } :: acc.FileResults }
+
+            let step (acc: FileFold) (sourceFile: string) : FileFold =
+                if not (File.Exists(sourceFile)) then
+                    { acc with
+                        NextIndex = acc.NextIndex + 1 }
+                else
+                    let relPath = Path.GetRelativePath(repoRoot, sourceFile).Replace('\\', '/')
+
+                    let fileKey = computeFileKey sourceFile
+
+                    let forcedByCompilationOrder =
+                        match acc.FirstChangedAt with
+                        | Some firstIdx when acc.NextIndex > firstIdx -> true
+                        | _ -> false
+
+                    let cached =
+                        not forceFullReindex
+                        && not forcedByCompilationOrder
+                        && match store.GetFileKey(relPath) with
+                           | Some stored when stored = fileKey -> true
+                           | _ -> false
+
+                    if cached then
+                        { acc with
+                            NextIndex = acc.NextIndex + 1
+                            SkippedCount = acc.SkippedCount + 1
+                            FileEvents = FileCacheHitEvent(relPath, "file unchanged") :: acc.FileEvents
+                            FileResults = cachedResult relPath :: acc.FileResults }
+                    else
+                        match analyzeFile sourceFile with
+                        | Ok result -> analyzedResult acc relPath fileKey result
+                        | Error msg -> raise (ProjectAnalysisFailedException(relPath, msg))
+
             let finalAcc =
                 filesToAnalyze
                 |> List.fold
-                    (fun
-                        (idx, analyzedFiles, firstChangedIndex: int option, fileKeys, skippedFiles, events, results)
-                        sourceFile ->
-                        if not (File.Exists(sourceFile)) then
-                            (idx + 1, analyzedFiles, firstChangedIndex, fileKeys, skippedFiles, events, results)
-                        else
-                            let relPath = Path.GetRelativePath(repoRoot, sourceFile).Replace('\\', '/')
+                    step
+                    { NextIndex = 0
+                      AnalyzedCount = 0
+                      FirstChangedAt = None
+                      KeysOfAnalyzed = []
+                      SkippedCount = 0
+                      FileEvents = []
+                      FileResults = [] }
 
-                            let fileKey = computeFileKey sourceFile
+            let analyzedFiles = finalAcc.AnalyzedCount
+            let localFileKeys = finalAcc.KeysOfAnalyzed
+            let localSkippedFiles = finalAcc.SkippedCount
+            let localEvents = finalAcc.FileEvents
 
-                            let forcedByCompilationOrder =
-                                match firstChangedIndex with
-                                | Some firstIdx when idx > firstIdx -> true
-                                | _ -> false
-
-                            let cached =
-                                not forceFullReindex
-                                && not forcedByCompilationOrder
-                                && match store.GetFileKey(relPath) with
-                                   | Some stored when stored = fileKey -> true
-                                   | _ -> false
-
-                            if cached then
-                                let r: AnalysisResult =
-                                    { Symbols = store.GetSymbolsInFile(relPath)
-                                      Dependencies = store.GetDependenciesFromFile(relPath)
-                                      TestMethods = store.GetTestMethodsInFile(relPath)
-                                      Attributes = []
-                                      ParentLinks = store.GetParentLinksInFile(relPath)
-                                      Diagnostics = AnalysisDiagnostics.Zero }
-
-                                (idx + 1,
-                                 analyzedFiles,
-                                 firstChangedIndex,
-                                 fileKeys,
-                                 skippedFiles + 1,
-                                 FileCacheHitEvent(relPath, "file unchanged") :: events,
-                                 r :: results)
-                            else
-                                let analysis =
-                                    try
-                                        let source = File.ReadAllText(sourceFile)
-
-                                        analyzeSourceWithSnapshot
-                                            checker
-                                            sourceFile
-                                            source
-                                            (projSnapshot.Force())
-                                            projName
-                                        |> Async.RunSynchronously
-                                    with ex ->
-                                        Error ex.Message
-
-                                match analysis with
-                                | Ok result ->
-                                    let newFirstChanged =
-                                        if firstChangedIndex.IsNone then
-                                            Some idx
-                                        else
-                                            firstChangedIndex
-
-                                    let symbols = normalizeSymbolPaths repoRoot result.Symbols
-                                    let deps = result.Dependencies
-
-                                    let testMethods = result.TestMethods
-
-                                    if result.Diagnostics.DroppedEdges > 0 then
-                                        eprintfn
-                                            $"    %s{relPath}: %d{result.Diagnostics.DroppedEdges} dropped edges (findEnclosing returned None)"
-
-                                    let r: AnalysisResult =
-                                        { Symbols = symbols
-                                          Dependencies = deps
-                                          TestMethods = testMethods
-                                          Attributes = result.Attributes
-                                          ParentLinks = result.ParentLinks
-                                          Diagnostics = result.Diagnostics }
-
-                                    (idx + 1,
-                                     analyzedFiles + 1,
-                                     newFirstChanged,
-                                     (relPath, fileKey) :: fileKeys,
-                                     skippedFiles,
-                                     FileAnalyzedEvent(relPath, symbols.Length, deps.Length, testMethods.Length)
-                                     :: events,
-                                     r :: results)
-                                | Error msg -> raise (ProjectAnalysisFailed(relPath, msg)))
-                    (0, 0, None, [], 0, [], [])
-
-            let (_idx, analyzedFiles, _firstChangedIndex, localFileKeys, localSkippedFiles, localEvents, revResults) =
-                finalAcc
-
-            let results = revResults |> List.rev
+            let results = finalAcc.FileResults |> List.rev
 
             let symbolCount = results |> List.sumBy _.Symbols.Length
             let depCount = results |> List.sumBy _.Dependencies.Length
@@ -362,9 +381,9 @@ let indexProject
               Events = allEvents }
     with ex ->
         match ex with
-        | ProjectAnalysisFailed(file, message) ->
+        | ProjectAnalysisFailedException(file, message) ->
             eprintfn $"  Error analyzing %s{file} (project %s{projName}): %s{message}"
-        | ProjectOptionsEmpty message -> eprintfn $"  Error loading %s{projName}: %s{message}"
+        | ProjectOptionsEmptyException message -> eprintfn $"  Error loading %s{projName}: %s{message}"
         | _ -> eprintfn $"  Error processing %s{projName}: %s{ex.Message}"
 
         { ProjectName = projName
@@ -473,30 +492,45 @@ let internal runOwnedIndexWith
                 | Cached _
                 | Indexed _ -> false)
 
-        let allResults, allFileKeys, allProjectKeys, totalSymbols, totalDeps, totalTests, skippedProjects, skippedFiles =
+        let totals =
             allProjectResults
             |> List.fold
-                (fun (results, fileKeys, projKeys, syms, deps, tests, skippedProj, skippedF) r ->
+                (fun (acc: IndexTotals) r ->
                     match r.Outcome with
                     | Indexed d ->
-                        let results =
+                        { AllResults =
                             match d.Outcome with
-                            | Analyzed(perFile, _) -> List.rev perFile @ results
-                            | AllFilesCached -> results
+                            | Analyzed(perFile, _) -> List.rev perFile @ acc.AllResults
+                            | AllFilesCached -> acc.AllResults
+                          AllFileKeys = d.FileKeys @ acc.AllFileKeys
+                          AllProjectKeys = d.ProjectKey :: acc.AllProjectKeys
+                          SymbolTotal = acc.SymbolTotal + d.SymbolCount
+                          DepTotal = acc.DepTotal + d.DepCount
+                          TestTotal = acc.TestTotal + d.TestCount
+                          SkippedProjects = acc.SkippedProjects
+                          SkippedFileTotal = acc.SkippedFileTotal + d.SkippedFiles }
+                    | Cached _ ->
+                        { acc with
+                            SkippedProjects = acc.SkippedProjects + 1 }
+                    | Failed -> acc)
+                { AllResults = []
+                  AllFileKeys = []
+                  AllProjectKeys = []
+                  SymbolTotal = 0
+                  DepTotal = 0
+                  TestTotal = 0
+                  SkippedProjects = 0
+                  SkippedFileTotal = 0 }
 
-                        (results,
-                         d.FileKeys @ fileKeys,
-                         d.ProjectKey :: projKeys,
-                         syms + d.SymbolCount,
-                         deps + d.DepCount,
-                         tests + d.TestCount,
-                         skippedProj,
-                         skippedF + d.SkippedFiles)
-                    | Cached _ -> (results, fileKeys, projKeys, syms, deps, tests, skippedProj + 1, skippedF)
-                    | Failed -> (results, fileKeys, projKeys, syms, deps, tests, skippedProj, skippedF))
-                ([], [], [], 0, 0, 0, 0, 0)
+        let allFileKeys = totals.AllFileKeys
+        let allProjectKeys = totals.AllProjectKeys
+        let totalSymbols = totals.SymbolTotal
+        let totalDeps = totals.DepTotal
+        let totalTests = totals.TestTotal
+        let skippedProjects = totals.SkippedProjects
+        let skippedFiles = totals.SkippedFileTotal
 
-        let allResults = allResults |> List.rev
+        let allResults = totals.AllResults |> List.rev
 
         if not allResults.IsEmpty then
             sink.RebuildProjects

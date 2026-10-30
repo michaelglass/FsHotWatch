@@ -202,23 +202,17 @@ let snapshotFromCobertura repoRoot testProject baselineTree observedAt xml : Pro
 
                             let canonicalPath = reportedPath |> Option.bind (canonicalizePath repoRoot)
 
+                            // `canonicalPath` is `Some` only when the line's class reports a
+                            // filename, so it stands for that check too.
                             let parsed =
-                                match line.Ancestors(xn "class") |> Seq.tryHead with
-                                | None -> None
-                                | Some cls ->
-                                    match
-                                        attributeValue "filename" cls,
-                                        attributeValue "number" line,
-                                        attributeValue "hits" line
-                                    with
-                                    | Some _, Some number, Some hits ->
-                                        match canonicalPath, tryInt number, tryInt hits with
-                                        | Some canonical, Some lineNumber, Some hitCount when
-                                            lineNumber > 0 && hitCount >= 0
-                                            ->
-                                            Some(canonical, hitCount)
-                                        | _ -> None
-                                    | _ -> None
+                                match
+                                    canonicalPath,
+                                    attributeValue "number" line |> Option.bind tryInt,
+                                    attributeValue "hits" line |> Option.bind tryInt
+                                with
+                                | Some canonical, Some lineNumber, Some hitCount when lineNumber > 0 && hitCount >= 0 ->
+                                    Some(canonical, hitCount)
+                                | _ -> None
 
                             match parsed with
                             | Some(file, hits) ->

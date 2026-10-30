@@ -72,12 +72,15 @@ type StoredTrace =
       Symbols: Set<string * string>
       Inputs: Set<string * string * string> }
 
+// Public API: consumers catch `TraceSchemaNewerThanConsumer` by name, so a rename breaks them.
+// fsharplint:disable ExceptionNames
 /// Raised by `Store.Open` when the file's trace schema is newer than this TestPrune.Trace
 /// supports. The file is left exactly as it was found.
 exception TraceSchemaNewerThanConsumer of path: string * found: int * supported: int with
     override this.Message =
         $"%s{this.path} was written by trace schema v%d{this.found}; this TestPrune.Trace supports v%d{this.supported}. "
         + "Upgrade TestPrune.Trace; the file was left untouched."
+// fsharplint:enable ExceptionNames
 
 /// Forward-only. Append a new (version, DDL) pair for every change; never edit or remove a
 /// published entry. The file is never deleted by code.

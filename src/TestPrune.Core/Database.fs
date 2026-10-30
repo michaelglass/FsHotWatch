@@ -665,9 +665,13 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
 
     /// Create a Database instance, initializing the schema if needed. The walk follows
     /// every edge (`WalkPolicy.FollowAll`).
+    // Public API: consumers call `Database.create`, and renaming it breaks every one of them.
+    // fsharplint:disable-next-line MemberNames
     static member create(dbPath: string) = Database(dbPath)
 
     /// Create a Database instance whose affected-test walk follows `policy`.
+    // Public API: consumers call `Database.create`, and renaming it breaks every one of them.
+    // fsharplint:disable-next-line MemberNames
     static member create(dbPath: string, policy: Domain.WalkPolicy) = Database(dbPath, policy)
 
     /// The policy `QueryAffectedTests` walks under.

@@ -356,7 +356,7 @@ type ``faithful FsHot FCS capture``() =
                 test
                     <@
                         checkFileSymbols
-                        |> Array.map (fun symbol -> Runtime.CompilerServices.RuntimeHelpers.GetHashCode symbol)
+                        |> Array.map Runtime.CompilerServices.RuntimeHelpers.GetHashCode
                         |> Array.distinct
                         |> Array.length = 32
                     @>
