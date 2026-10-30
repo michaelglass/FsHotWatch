@@ -1115,6 +1115,20 @@ module internal AnalysisFileEvidence =
           ModelGeneration = result.ModelGeneration
           Refusals = List.distinct refusals }
 
+    /// The outcomes produced under `modelGeneration`. Retiring a replaced model's analysis
+    /// keeps these: a replayed `FileChecked` records its outcome for the current model
+    /// without passing through the fold that retires, so the current model's outcomes can
+    /// already be present when the retirement runs, and nothing re-analyses them after it.
+    let forModel
+        (modelGeneration: int64 option)
+        (outcomes: Map<AbsFilePath, AnalysisFileEvidence>)
+        : Map<AbsFilePath, AnalysisFileEvidence> =
+        match modelGeneration with
+        | Some _ ->
+            outcomes
+            |> Map.filter (fun _ outcome -> outcome.ModelGeneration = modelGeneration)
+        | None -> Map.empty
+
     /// The outcomes a seal carries into its own model: every retained file whose outcome
     /// was produced under the model the seal names as unchanged is re-stamped with the
     /// seal's model. An outcome from any other model is left as it is, and stays a refusal.

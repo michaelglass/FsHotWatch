@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: a project-model change no longer drops the analysis already recorded for the new
+  model (AUTOMATION-1415). A `FileChecked` replayed from the task cache records its outcome
+  for the current model without passing through `Update`, so it did not retire the previous
+  model's pending analysis. The next live result did, and cleared every recorded outcome,
+  the replayed ones included. Nothing re-analysed those files, so the seal refused them
+  with "no completed analysis for the current model" after a scan that reported every file
+  checked, and `check` ended NEVER FINISHED. The retirement now keeps the outcomes recorded
+  for the current model, and its log line counts them.
+
 - build: package versions come from Directory.Packages.props (Central Package Management, now
   repo-wide; AUTOMATION-1367). A packed FSharp.Core (and, where referenced, FSharp.Compiler.Service)
   dependency is a floor at the same exact pin (>= 10.1.402, >= 43.12.402) rather than an `[x]` range,

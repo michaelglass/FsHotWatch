@@ -337,6 +337,89 @@ let ``a replayed FileChecked records the cached run's outcome only for the curre
         Assert.NotEmpty(replay None (Ok [])))
 
 [<Fact(Timeout = RealCheckTestCapMs)>]
+let ``retiring an old model's pending analysis keeps the outcomes already replayed for the new one`` () =
+    // A replay skips `Update`, so it records its outcome for the current model without
+    // retiring the analysis the previous model left pending. The next live fold retires
+    // that analysis, and must not take the replayed current-model outcomes with it: no
+    // later check re-analyses them, and the seal refused them as never analysed.
+    withCheckedSource (fun root result ->
+        let handler = analysisHandler root "retire-replayed"
+        let replayedFile = AbsFilePath.create (Path.Combine(root, "Replayed.fs"))
+        let members = Set.ofList [ result.File; replayedFile ]
+
+        let ctxAt generation =
+            let ctx = analysisContext root generation
+
+            { ctx with
+                ProjectGraph =
+                    { ctx.ProjectGraph with
+                        ObserveCheckableFiles = fun () -> Some(generation, members) } }
+
+        let fold generation state event =
+            handler.Update (ctxAt generation) state event
+            |> fun work -> Async.RunSynchronously(work, timeout = RealCheckWaitMs)
+
+        let atModel generation (checkResult: FileCheckResult) =
+            { checkResult with
+                ModelGeneration = Some generation }
+
+        // Model 1 leaves an analysis pending.
+        let pending = fold 1L handler.Init (FileChecked result)
+        Assert.False(pending.PendingAnalysis.IsEmpty)
+
+        // Model 2 is published, and a cache hit replays another file's analysis for it.
+        let replayed =
+            (pending :> IFileReplayState<TestPruneState>).Replayed
+                Set.empty
+                (Some 2L)
+                { atModel 2L result with
+                    File = replayedFile }
+                (Ok [])
+
+        // The next live result under model 2 retires model 1's pending analysis, and the
+        // cohort seals.
+        let live = fold 2L replayed (FileChecked(atModel 2L result))
+
+        let sealedState =
+            fold
+                2L
+                live
+                (BatchChecked
+                    { fakeBatchChecked [ AbsFilePath.value result.File ] with
+                        ModelGeneration = Some 2L })
+
+        // Positive control: the live file was analysed under model 2 and is not refused.
+        let seal = Option.get sealedState.CohortSeal
+        Assert.Equal(2L, seal.Generation)
+
+        Assert.DoesNotContain(
+            seal.FailureReasons,
+            fun reason -> reason.StartsWith(AbsFilePath.value result.File + ":")
+        )
+
+        // The replayed file's model-2 outcome survived the retirement.
+        Assert.Empty seal.FailureReasons
+
+        // What a retirement keeps is only the current model's outcomes; under no model,
+        // none.
+        let outcomes =
+            Map.ofList
+                [ result.File, AnalysisFileEvidence.fromResult Set.empty (atModel 1L result) (Ok())
+                  replayedFile,
+                  AnalysisFileEvidence.fromResult
+                      Set.empty
+                      { atModel 2L result with
+                          File = replayedFile }
+                      (Ok()) ]
+
+        Assert.Equal<Set<AbsFilePath>>(
+            Set.singleton replayedFile,
+            AnalysisFileEvidence.forModel (Some 2L) outcomes |> Map.keys |> Set.ofSeq
+        )
+
+        Assert.True((AnalysisFileEvidence.forModel None outcomes).IsEmpty))
+
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``completed analysis distinguishes compiler warnings from missing or failed checking`` () =
     withCheckedText "module Lib\nlet choose value = match value with | true -> 1\n" (fun _ result ->
         // Positive control: this source really does produce an incomplete-match WARNING.

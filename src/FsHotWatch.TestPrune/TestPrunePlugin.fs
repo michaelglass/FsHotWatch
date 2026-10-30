@@ -11518,9 +11518,16 @@ let internal createWithEvidenceAndQueries
                         // model's symbol index. Their changed symbols stay owed, and the
                         // index can no longer vouch for what covers them, so every runnable
                         // project owes a run.
+                        // Outcomes already recorded for the current model stay: a replayed
+                        // `FileChecked` records one without passing through this fold, and
+                        // dropping it here left the seal refusing a file no later check
+                        // re-analysed (AUTOMATION-1415).
+                        let currentOutcomes =
+                            AnalysisFileEvidence.forModel modelGeneration state.AnalysisFiles
+
                         Logging.info
                             "test-prune"
-                            $"project model changed (%A{state.AnalysisModelGeneration} -> %A{modelGeneration}); retiring %d{state.PendingAnalysis.Count} project(s) of pending analysis"
+                            $"project model changed (%A{state.AnalysisModelGeneration} -> %A{modelGeneration}); retiring %d{state.PendingAnalysis.Count} project(s) of pending analysis, keeping %d{currentOutcomes.Count} file outcome(s) already recorded for the current model"
 
                         // The retired analyses never reached the index. Where it does not
                         // already hold the same analysis, it cannot vouch for the file
@@ -11537,7 +11544,7 @@ let internal createWithEvidenceAndQueries
                             PendingIdentities = Map.empty
                             Unindexed = Set.union state.Unindexed retired
                             AnalysisModelGeneration = modelGeneration
-                            AnalysisFiles = Map.empty
+                            AnalysisFiles = currentOutcomes
                             CohortSeal = None
                             AnalysisReceipt = None
                             PendingForceRunProjects = Set.union state.PendingForceRunProjects runnableProjects }
