@@ -1,8 +1,10 @@
 <Project>
     <PropertyGroup>
-        <!-- Scoped to the TestPrune projects until CPM is adopted repo-wide
-             (Directory.Build.props: IsTestPruneProject). -->
-        <ManagePackageVersionsCentrally>$(IsTestPruneProject)</ManagePackageVersionsCentrally>
+        <!-- One pin source for the whole repository (AUTOMATION-1367). A project opts out only by
+             setting this false in its own body, which evaluates after this file: the restore-only
+             tools/fsharplint-shim does, so transitive pinning cannot rewrite the analyzer bin it
+             materializes. -->
+        <ManagePackageVersionsCentrally Condition="'$(ManagePackageVersionsCentrally)' == ''">true</ManagePackageVersionsCentrally>
         <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
         <CentralPackageFloatingVersionsEnabled>true</CentralPackageFloatingVersionsEnabled>
     </PropertyGroup>
@@ -48,5 +50,30 @@
         <PackageVersion Include="Unquote" Version="7.0.1" />
         <PackageVersion Include="xunit.v3" Version="4.0.0" />
         <PackageVersion Include="xunit.v3.mtp-v2" Version="4.0.0" />
+
+        <!-- The FsHotWatch engine, plugins, tests and tools (inline versions until AUTOMATION-1367). -->
+        <PackageVersion Include="CommandTree" Version="0.13.0" />
+        <PackageVersion Include="CoverageRatchet.Core" Version="0.1.0-alpha.13" />
+        <PackageVersion Include="FSharp.Data.Adaptive" Version="1.2.26" />
+        <!-- FsHotWatch.Lint only (unused by every consumer; retired with it). The gate's own
+             FSharpLint analyzer is tools/fsharplint-shim, which pins its version outside CPM. -->
+        <PackageVersion Include="FSharpLintAnalyzerShim" Version="0.5.0-alpha.1" />
+        <PackageVersion Include="FsCheck" Version="3.3.2" />
+        <PackageVersion Include="G-Research.FSharp.Analyzers" Version="0.25.0" />
+        <PackageVersion Include="Ignore" Version="0.2.1" />
+        <PackageVersion Include="MessagePack" Version="2.5.303" />
+        <PackageVersion Include="Microsoft.Diagnostics.NETCore.Client" Version="0.2.607501" />
+        <PackageVersion Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.1.21" />
+        <PackageVersion Include="Microsoft.Testing.Extensions.HangDump" Version="2.3.3" />
+        <PackageVersion Include="StreamJsonRpc" Version="2.25.29" />
+        <!-- Transitive security pins (CentralPackageTransitivePinningEnabled applies them wherever
+             the packages arrive, which is via FCS / FSharpLint).
+             System.Security.Cryptography.Xml 9.0.0 had GHSA-w3x6-4m5h-cxqf / GHSA-37gx-xxp4-5rgx;
+             10.0.9 then GHSA-8q5v-6pqq-x66h / GHSA-23rf-6693-g89p / -cvvh / -g8r8 / -mmjf (patched
+             in 10.0.10); 10.0.11 and its System.Security.Cryptography.Pkcs then
+             GHSA-7hqp-7c5m-4vq6 / -c399-9853-6jmj / -r955-8q5j-3h83 (Xml) and
+             GHSA-2fmv-rv2c-59x7 / -846f-f764-76mx (Pkcs), all patched in 10.0.13. -->
+        <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
+        <PackageVersion Include="System.Security.Cryptography.Xml" Version="10.0.13" />
     </ItemGroup>
 </Project>

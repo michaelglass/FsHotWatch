@@ -49,8 +49,8 @@ mise run tp-bench-raw        # benchmarks without profiling (JSON metrics)
 
 - F# formatted with Fantomas, 4-space indentation
 - VCS: jj (Jujutsu), not git
-- Package versions for the TestPrune projects come from `Directory.Packages.props` (Central
-  Package Management, transitive pinning on). FSharp.Core and FCS are EXACT pins, never floats:
+- Package versions for every project come from `Directory.Packages.props` (Central Package
+  Management, transitive pinning on). FSharp.Core and FCS are EXACT pins, never floats:
   a packed nuspec floor is what restore resolved, so a float leaks the newest release into
   consumers' floors (AUTOMATION-1358). `mise run package-floors` checks real pack output, and
   `mise run ci` and CI's lint step run it.

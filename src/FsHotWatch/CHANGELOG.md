@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- build: package versions come from Directory.Packages.props (Central Package Management, now
+  repo-wide; AUTOMATION-1367). A packed FSharp.Core (and, where referenced, FSharp.Compiler.Service)
+  dependency is a floor at the same exact pin (>= 10.1.402, >= 43.12.402) rather than an `[x]` range,
+  as TestPrune's packages already declare it.
+
 - feat: `OutcomeStore.readAll root` reads every record in a store directory, oldest first,
   for analysis (AUTOMATION-1368). Unlike a lookup it quarantines nothing: a file a lookup
   would move aside is counted in `Scan.Unreadable` and left where it is.

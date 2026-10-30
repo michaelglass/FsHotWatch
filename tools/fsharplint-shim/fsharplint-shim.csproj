@@ -26,9 +26,16 @@
          reason), and a restore that silently swaps in another version is a different
          analyzer wearing the same path. Fail the build by name instead. -->
     <WarningsAsErrors>$(WarningsAsErrors);NU1603</WarningsAsErrors>
+    <!-- Outside Central Package Management: transitive pinning would rewrite the FCS and
+         FSharp.Core this restore materializes into the analyzer bin (the shim declares FCS
+         43.12.400), changing the analyzer without changing its pin. -->
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="FSharpLintAnalyzerShim" Version="0.6.0-alpha.1" />
+    <!-- The security pins Directory.Packages.props applies to every CPM project (see there). -->
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.13" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
   </ItemGroup>
 </Project>

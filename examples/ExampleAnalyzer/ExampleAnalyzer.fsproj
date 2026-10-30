@@ -10,8 +10,8 @@
     <Compile Include="WildcardAnalyzer.fs" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Update="FSharp.Core" Version="[10.1.402]" />
-    <PackageReference Include="FSharp.Analyzers.SDK" Version="0.39.2" />
-    <PackageReference Include="FSharp.Compiler.Service" Version="43.12.400" />
+    <PackageReference Include="FSharp.Core" />
+    <PackageReference Include="FSharp.Analyzers.SDK" />
+    <PackageReference Include="FSharp.Compiler.Service" />
   </ItemGroup>
 </Project>

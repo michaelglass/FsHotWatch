@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- build: package versions come from Directory.Packages.props (Central Package Management, now
+  repo-wide; AUTOMATION-1367). A packed FSharp.Core (and, where referenced, FSharp.Compiler.Service)
+  dependency is a floor at the same exact pin (>= 10.1.402, >= 43.12.402) rather than an `[x]` range,
+  as TestPrune's packages already declare it.
+
 - build: TestPrune.Core and TestPrune.Trace are ProjectReferences to their source in this repository
   (AUTOMATION-1367: TestPrune moved here with its history), not PackageReferences to released
   versions. Packed, they are still package dependencies at the referenced projects' versions

@@ -8,6 +8,10 @@
   keeps its cache keys. A scope for an unconfigured path, or one that is not exactly one non-empty
   `include`/`exclude` list, is a config error (AUTOMATION-1367: one repository, two products' analyzer
   sets).
+- build: package versions come from Directory.Packages.props (Central Package Management, now
+  repo-wide; AUTOMATION-1367). A packed FSharp.Core (and, where referenced, FSharp.Compiler.Service)
+  dependency is a floor at the same exact pin (>= 10.1.402, >= 43.12.402) rather than an `[x]` range,
+  as TestPrune's packages already declare it.
 - build: TestPrune.Core, TestPrune.Falco, TestPrune.Sql and TestPrune.SqlHydra are ProjectReferences to
   their source in this repository (AUTOMATION-1367), not PackageReferences to released versions. The
   bundled TestPrune.Sql and TestPrune.SqlHydra move to their current sources, 0.3.2 and 0.2.3 (were

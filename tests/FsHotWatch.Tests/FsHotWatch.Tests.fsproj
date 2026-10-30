@@ -345,15 +345,18 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Update="FSharp.Core" Version="[10.1.402]" />
-    <PackageReference Include="xunit.v3" Version="4.0.0" />
-    <PackageReference Include="xunit.v3.mtp-v2" Version="4.0.0" />
-    <PackageReference Include="Unquote" Version="7.0.1" />
-    <PackageReference Include="FsCheck" Version="3.3.2" />
-    <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.9.0" />
+    <PackageReference Include="FSharp.Core" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.v3.mtp-v2" />
+    <PackageReference Include="Unquote" />
+    <PackageReference Include="FsCheck" />
+    <!-- The collector version is part of what the floors measure (branch totals move between
+         collector versions), and coverage-ratchet-FsHotWatch.json was measured with 18.9.0;
+         TestPrune's floors with the central 18.10.0. Move this one with a re-baseline. -->
+    <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" VersionOverride="18.9.0" />
     <!-- Hang dumps for the gate run (the hangdump flag in .fshw.json); inactive without the flag.
          Kept at the Microsoft.Testing.Platform version xunit.v3.mtp-v2 resolves. -->
-    <PackageReference Include="Microsoft.Testing.Extensions.HangDump" Version="2.3.3" />
-    <PackageReference Include="G-Research.FSharp.Analyzers" Version="0.25.0" />
+    <PackageReference Include="Microsoft.Testing.Extensions.HangDump" />
+    <PackageReference Include="G-Research.FSharp.Analyzers" />
   </ItemGroup>
 </Project>

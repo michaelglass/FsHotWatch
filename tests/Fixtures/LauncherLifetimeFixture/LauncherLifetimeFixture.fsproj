@@ -17,6 +17,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Update="FSharp.Core" Version="[10.1.402]" />
+    <PackageReference Include="FSharp.Core" />
   </ItemGroup>
 </Project>

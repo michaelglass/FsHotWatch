@@ -10,7 +10,7 @@
     <Compile Include="PluginExample.fs" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Update="FSharp.Core" Version="[10.1.402]" />
+    <PackageReference Include="FSharp.Core" />
     <ProjectReference Include="../../src/FsHotWatch/FsHotWatch.fsproj" />
   </ItemGroup>
 </Project>

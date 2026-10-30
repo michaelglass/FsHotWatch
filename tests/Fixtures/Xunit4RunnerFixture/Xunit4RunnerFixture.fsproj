@@ -12,7 +12,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="xunit.v3" Version="4.0.0" />
-    <PackageReference Include="xunit.v3.mtp-v2" Version="4.0.0" />
+    <!-- Explicit: under Central Package Management the F# SDK adds no implicit FSharp.Core,
+         and this host has no project reference to bring one. -->
+    <PackageReference Include="FSharp.Core" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.v3.mtp-v2" />
   </ItemGroup>
 </Project>

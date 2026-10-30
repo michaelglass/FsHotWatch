@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- build: package versions come from Directory.Packages.props (Central Package Management, now
+  repo-wide; AUTOMATION-1367). A packed FSharp.Core (and, where referenced, FSharp.Compiler.Service)
+  dependency is a floor at the same exact pin (>= 10.1.402, >= 43.12.402) rather than an `[x]` range,
+  as TestPrune's packages already declare it.
+
 ## 0.7.0-alpha.38 - 2026-10-30
 
 - feat: the lint state is `ISkipsOutOfRepoFiles`. A replayed check of a NuGet `_content` source

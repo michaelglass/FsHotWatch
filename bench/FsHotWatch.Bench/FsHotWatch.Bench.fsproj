@@ -43,11 +43,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Update="FSharp.Core" Version="[10.1.402]" />
+    <PackageReference Include="FSharp.Core" />
     <!-- The heap walk is our own EventPipe session rather than `dotnet-gcdump report`:
          that report's per-type byte column is not a per-type total (measured: 9,397
          byte[] of 124 B each reported as 24 B), so it cannot carry a size histogram. -->
-    <PackageReference Include="Microsoft.Diagnostics.NETCore.Client" Version="0.2.607501" />
-    <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.1.21" />
+    <PackageReference Include="Microsoft.Diagnostics.NETCore.Client" />
+    <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" />
   </ItemGroup>
 </Project>
