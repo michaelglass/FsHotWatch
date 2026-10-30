@@ -74,6 +74,17 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core: a new daemon no longer restores projects whose deps were only touched
+
+- The deps gate's fresh baseline is now kept in `.fshw/deps-baseline.json`, so a new
+  daemon process recognises a content-identical rewrite of a restore input (a merge
+  rewriting `Directory.Build.props` byte for byte) and skips the restore. Each baseline
+  vouches only for the `project.assets.json` it was recorded with, compared by content.
+- The dep signature now covers the project's transitive `ProjectReference` closure, so a
+  referenced project's package-graph change re-restores the projects that reference it.
+- Each stale reading logs which inputs were written after the assets, and whether the
+  baseline suppressed the restore. See ADR-060.
+
 ### core, coverage: a faulted exclusive run can fold, so work retained behind it still runs
 
 - `PluginWork.onFailure (fun ex -> msg)` declares what a `RunExclusive` run folds as when
