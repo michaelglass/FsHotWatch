@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- build: the package's source and project links point at github.com/michaelglass/FsHotWatch, where
+  TestPrune now lives with its history (AUTOMATION-1367). No code change.
+
 ## 13.5.2 - 2026-10-29
 
 - Finish: AUTOMATION-1362 step 8: a schema rebuild keeps the tables core did not create

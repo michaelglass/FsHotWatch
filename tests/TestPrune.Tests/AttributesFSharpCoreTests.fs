@@ -18,8 +18,8 @@ open Swensen.Unquote
 let private repoRoot () =
     let rec up (directory: DirectoryInfo) =
         if isNull (box directory) then
-            failwith "repo root not found: no TestPrune.slnx in any ancestor of the test binary"
-        elif File.Exists(Path.Combine(directory.FullName, "TestPrune.slnx")) then
+            failwith "repo root not found: no TestPrune.slnf in any ancestor of the test binary"
+        elif File.Exists(Path.Combine(directory.FullName, "TestPrune.slnf")) then
             directory.FullName
         else
             up directory.Parent

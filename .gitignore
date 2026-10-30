@@ -94,3 +94,15 @@ cache-events.log
 
 # ci-linux: logs, coverage and fshw test runs of the local Linux CI container (scripts/ci-linux.sh)
 .ci-linux/
+
+# TestPrune (imported from michaelglass/TestPrune, AUTOMATION-1367)
+*.trx
+.test-prune.index.lock
+.ionide/
+# Benchmark results
+benchmarks/results/
+# Scratch copies of fixture builds made by the weaver tests
+tests/TraceFixtures/bin-scratch/
+
+# TestPrune coverage reports (mise run tp-test)
+coverage-tp/

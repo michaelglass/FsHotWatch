@@ -4,12 +4,12 @@ module TestPrune.Trace.Tests.Fixtures
 open System
 open System.IO
 
-/// The repository root: the first ancestor of the test binary holding TestPrune.slnx.
+/// The repository root: the first ancestor of the test binary holding FsHotWatch.slnx.
 let repoRoot =
     let rec up (d: DirectoryInfo) =
         if isNull d then
-            failwith "TestPrune.slnx not found above the test binary"
-        elif File.Exists(Path.Combine(d.FullName, "TestPrune.slnx")) then
+            failwith "FsHotWatch.slnx not found above the test binary"
+        elif File.Exists(Path.Combine(d.FullName, "FsHotWatch.slnx")) then
             d.FullName
         else
             up d.Parent

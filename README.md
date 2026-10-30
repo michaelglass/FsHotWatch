@@ -249,6 +249,11 @@ FsHotWatch is split into small packages so you install only what you need:
 | [`FsHotWatch.FileCommand`](src/FsHotWatch.FileCommand/) | Plugin: runs custom commands when specific files change |
 | [`FsHotWatch.Coverage`](src/FsHotWatch.Coverage/) | Plugin: checks per-file line/branch coverage thresholds after each test run |
 
+The test-impact engine the `FsHotWatch.TestPrune` plugin runs on, [TestPrune](docs/testprune/README.md)
+(`TestPrune.Core`, `TestPrune.Falco`, `TestPrune.Sql`, `TestPrune.SqlHydra`, `TestPrune.Trace`, the
+`test-prune` CLI), lives in this repository too, with its history: it moved here from
+michaelglass/TestPrune on 2026-10-30. See [docs/testprune/DEVELOPMENT.md](docs/testprune/DEVELOPMENT.md).
+
 ## Configuration
 
 Run `fshw init` to scaffold a `.fshw.json` in your repo root, or write one by

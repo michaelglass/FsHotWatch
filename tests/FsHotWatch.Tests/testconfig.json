@@ -1,0 +1,24 @@
+{
+  "codeCoverage": {
+    "Configuration": {
+      "CodeCoverage": {
+        "ModulePaths": {
+          "Exclude": [
+            ".*Tests\\.dll$",
+            ".*ExampleAnalyzer\\.dll$",
+            ".*ConfigCacheAnalyzer\\.dll$",
+            ".*[/\\\\]xunit[^/\\\\]*\\.dll$",
+            ".*Unquote.*",
+            ".*[/\\\\]TestPrune\\.Core\\.dll$",
+            ".*[/\\\\]TestPrune\\.Falco\\.dll$",
+            ".*[/\\\\]TestPrune\\.Sql\\.dll$",
+            ".*[/\\\\]TestPrune\\.SqlHydra\\.dll$",
+            ".*[/\\\\]TestPrune\\.Trace\\.dll$",
+            ".*[/\\\\]TestPrune\\.Trace\\.Recorder\\.dll$",
+            ".*[/\\\\]CoverageRatchet\\.Core\\.dll$"
+          ]
+        }
+      }
+    }
+  }
+}

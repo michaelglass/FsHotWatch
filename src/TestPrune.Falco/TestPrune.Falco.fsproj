@@ -6,9 +6,9 @@
     <Authors>Michael Glass</Authors>
     <Description>Falco route-based integration test filtering extension for TestPrune</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+    <RepositoryUrl>https://github.com/michaelglass/FsHotWatch</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>
     <PackageTags>fsharp;testing;falco;routing;test-impact-analysis</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <Version>4.0.4</Version>

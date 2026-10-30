@@ -888,7 +888,8 @@ let ``nothing in the daemon reads symbol uses, so background resolutions stay of
 
             normalized.Contains "/src/"
             && not (normalized.Contains "/obj/")
-            && not (normalized.Contains "/bin/"))
+            && not (normalized.Contains "/bin/")
+            && not (isTestPruneSource normalized))
         |> Seq.toList
 
     test <@ not (List.isEmpty sources) @>

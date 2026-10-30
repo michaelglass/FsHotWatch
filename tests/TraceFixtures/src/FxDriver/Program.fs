@@ -93,7 +93,7 @@ let main _ =
     run "metaDirectory" (fun () -> box (InputReads.directoryWriteTime repoRoot))
 
     run "noted" (fun () ->
-        Scopes.NoteInput("read", System.IO.Path.Combine(repoRoot, "TestPrune.slnx"))
+        Scopes.NoteInput("read", System.IO.Path.Combine(repoRoot, "FsHotWatch.slnx"))
         box 0)
 
     0

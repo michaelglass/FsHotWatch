@@ -45,8 +45,8 @@ let ``SQL packages are enrolled in every release authority`` () =
 
     let sqlPackages =
         set
-            [ "TestPrune.Sql", "src/TestPrune.Sql/TestPrune.Sql.fsproj", "sql-v"
-              "TestPrune.SqlHydra", "src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj", "sqlhydra-v" ]
+            [ "TestPrune.Sql", "src/TestPrune.Sql/TestPrune.Sql.fsproj", "tp-sql-v"
+              "TestPrune.SqlHydra", "src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj", "tp-sqlhydra-v" ]
 
     test <@ Set.isSubset sqlPackages (configuredPackages root) @>
 
@@ -77,21 +77,13 @@ let ``SQL packages are enrolled in every release authority`` () =
         let laneName = tagPrefix.Replace("-v", "")
         let releaseJob = yamlJob releaseWorkflow $"release-{laneName}"
         let publishJob = yamlJob releaseWorkflow $"publish-{laneName}"
-        test <@ releaseWorkflow.Contains($"- '{tagPrefix}*'") @>
+        test <@ releaseWorkflow.Contains($"- \"{tagPrefix}*\"") @>
         test <@ releaseJob.Contains($"package-name: {packageName}") @>
         test <@ releaseJob.Contains($"tag-prefix: {tagPrefix}") @>
         test <@ releaseJob.Contains($"fsproj-path: {projectPath}") @>
         test <@ publishJob.Contains($"needs: release-{laneName}") @>
 
-    let releaseTask = read root "mise.toml"
-
-    // Dependency ordering is derived from the project graph and enforced by
-    // ReleaseOrchestrationTests; enrollment only owns presence in this test.
-    test <@ releaseTask.Contains("TestPrune.Core") @>
-    test <@ releaseTask.Contains("TestPrune.Sql") @>
-    test <@ releaseTask.Contains("TestPrune.SqlHydra") @>
-
-    let readme = read root "README.md"
+    let readme = read root "docs/testprune/README.md"
     test <@ readme.Contains("[`TestPrune.Sql`](https://www.nuget.org/packages/TestPrune.Sql)") @>
     test <@ readme.Contains("[`TestPrune.SqlHydra`](https://www.nuget.org/packages/TestPrune.SqlHydra)") @>
 
@@ -102,7 +94,7 @@ let ``trace packages release together under one tag in every release authority``
     let recorder = "src/TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj"
     let cli = "src/TestPrune.Trace.Cli/TestPrune.Trace.Cli.fsproj"
 
-    test <@ configuredPackages root |> Set.contains ("TestPrune.Trace", trace, "trace-v") @>
+    test <@ configuredPackages root |> Set.contains ("TestPrune.Trace", trace, "tp-trace-v") @>
 
     // The weaver emits calls to recorder methods by name: the recorder and the CLI share the
     // tooling's tag rather than releasing on their own.
@@ -123,16 +115,16 @@ let ``trace packages release together under one tag in every release authority``
         test <@ mise.Contains($"dotnet pack %s{projectPath} -c Release -o artifacts") @>
 
     let releaseWorkflow = read root ".github/workflows/release.yml"
-    let releaseJob = yamlJob releaseWorkflow "release-trace"
-    let publishJob = yamlJob releaseWorkflow "publish-trace"
-    test <@ releaseWorkflow.Contains("- 'trace-v*'") @>
+    let releaseJob = yamlJob releaseWorkflow "release-tp-trace"
+    let publishJob = yamlJob releaseWorkflow "publish-tp-trace"
+    test <@ releaseWorkflow.Contains("- \"tp-trace-v*\"") @>
     test <@ releaseJob.Contains("package-name: TestPrune.Trace") @>
-    test <@ releaseJob.Contains("tag-prefix: trace-v") @>
+    test <@ releaseJob.Contains("tag-prefix: tp-trace-v") @>
     test <@ releaseJob.Contains($"fsproj-path: %s{trace}") @>
     test <@ releaseJob.Contains($"extra-fsproj-paths: '%s{recorder},%s{cli}'") @>
-    test <@ publishJob.Contains("needs: release-trace") @>
+    test <@ publishJob.Contains("needs: release-tp-trace") @>
 
-    let readme = read root "README.md"
+    let readme = read root "docs/testprune/README.md"
 
     for packageId in [ "TestPrune.Trace"; "TestPrune.Trace.Recorder"; "TestPrune.Trace.Cli" ] do
         test <@ readme.Contains($"[`%s{packageId}`](https://www.nuget.org/packages/%s{packageId})") @>

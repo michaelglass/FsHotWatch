@@ -35,6 +35,7 @@ let private sourceFiles root =
     |> Seq.filter (fun path ->
         let segments = path.Split('/')
         not (Array.contains "obj" segments || Array.contains "bin" segments))
+    |> Seq.filter (not << FsHotWatch.Tests.TestHelpers.isTestPruneSource)
     |> Seq.sort
     |> Seq.toList
 

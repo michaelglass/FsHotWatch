@@ -82,7 +82,7 @@ let ``a read of a path's metadata is recorded as a metadata read`` (scopeKey: st
 
 [<Fact(Timeout = 180000)>]
 let ``an input noted through Scopes.NoteInput reaches the dump under its test only`` () =
-    let noted = FileRead, Path.Combine(Fixtures.repoRoot, "TestPrune.slnx")
+    let noted = FileRead, Path.Combine(Fixtures.repoRoot, "FsHotWatch.slnx")
     test <@ recorded "T:noted" |> List.contains noted @>
 
     let elsewhere =

@@ -8,6 +8,18 @@
     <NoWarn>$(NoWarn);NU1608</NoWarn>
   </PropertyGroup>
 
+  <!-- The TestPrune projects, imported from michaelglass/TestPrune with their history
+       (AUTOMATION-1367). They already use Central Package Management (Directory.Packages.props);
+       the FsHotWatch projects still carry their versions inline. `IsTestPruneProject` scopes
+       CPM, and the inline-versioned references below, to the side that expects them, so the
+       import changes no resolved version on either side. Adopting CPM repo-wide removes the
+       split. -->
+  <PropertyGroup>
+    <_RepoRelativeProjectDir>$([MSBuild]::MakeRelative('$(MSBuildThisFileDirectory)', '$(MSBuildProjectDirectory)').Replace('\', '/'))/</_RepoRelativeProjectDir>
+    <IsTestPruneProject Condition="'$(IsTestPruneProject)' == '' and ($(MSBuildProjectName.StartsWith('TestPrune')) or $(_RepoRelativeProjectDir.StartsWith('tests/TestPrune.')) or $(_RepoRelativeProjectDir.StartsWith('tests/TraceFixtures/')) or $(_RepoRelativeProjectDir.StartsWith('examples/SampleSolution/')) or $(_RepoRelativeProjectDir.StartsWith('examples/UsageExample/')) or $(_RepoRelativeProjectDir.StartsWith('benchmarks/')))">true</IsTestPruneProject>
+    <IsTestPruneProject Condition="'$(IsTestPruneProject)' == ''">false</IsTestPruneProject>
+  </PropertyGroup>
+
   <!-- Pin transitive System.Security.Cryptography.Xml to a patched version.
        9.0.0 had GHSA-w3x6-4m5h-cxqf / GHSA-37gx-xxp4-5rgx; then 10.0.9 itself
        became affected by GHSA-8q5v-6pqq-x66h / GHSA-23rf-6693-g89p / -cvvh /
@@ -17,7 +29,7 @@
        affected by GHSA-7hqp-7c5m-4vq6 / -c399-9853-6jmj / -r955-8q5j-3h83 (Xml)
        and GHSA-2fmv-rv2c-59x7 / -846f-f764-76mx (Pkcs), all patched in 10.0.13,
        so Pkcs is pinned beside it. -->
-  <ItemGroup>
+  <ItemGroup Condition="'$(IsTestPruneProject)' != 'true'">
     <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.13" />
     <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
   </ItemGroup>
@@ -27,8 +39,12 @@
        tree it was built from. Applied repo-wide so every packable project is
        ref-stamped (satisfies fsprojlint's "local packs are ref-stamped"
        check). PrivateAssets="all" — build/test-time only, never flows to
-       consumers and inert during ordinary build/test. -->
-  <ItemGroup>
+       consumers and inert during ordinary build/test. Versionless on the CPM side,
+       where Directory.Packages.props supplies the same version. -->
+  <ItemGroup Condition="'$(IsTestPruneProject)' != 'true'">
     <PackageReference Include="RefStamp" Version="0.1.0-alpha.4" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(IsTestPruneProject)' == 'true'">
+    <PackageReference Include="RefStamp" PrivateAssets="all" />
   </ItemGroup>
 </Project>

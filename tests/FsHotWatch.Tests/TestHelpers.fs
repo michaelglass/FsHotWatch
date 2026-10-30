@@ -40,6 +40,14 @@ let filesUnder (excluded: Set<string>) (pattern: string) (root: string) : string
 /// `filesUnder` for a tree the test built itself, where nothing is excluded.
 let allFilesUnder (pattern: string) (root: string) : string list = filesUnder Set.empty pattern root
 
+/// Whether a path belongs to the TestPrune projects, which share `src/` with the engine since
+/// AUTOMATION-1367 (`src/TestPrune`, `src/TestPrune.*`). They are a separate product with their own
+/// coverage floors (coverage-ratchet-TestPrune*.json) and architecture, so the engine's source
+/// guards (its seams, its floors-completeness check) do not walk them.
+let isTestPruneSource (path: string) =
+    let normalized = path.Replace('\\', '/')
+    normalized.StartsWith("src/TestPrune") || normalized.Contains "/src/TestPrune"
+
 /// The project-model generation fixture results are captured against.
 let fixtureModelGeneration = 1L
 

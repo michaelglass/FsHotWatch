@@ -24,7 +24,7 @@ run = "dotnet build src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj"
 depends = ["restore", "build-analyzers"]
 
 [tasks.build-analyzers]
-description = "Materialize EVERY analyzer path in .fshw.json analyzers.paths (house rules + the FSharpLint shim)"
+description = "Materialize EVERY analyzer path in .fshw.json analyzers.paths (house rules, the FSharpLint shim, TestPrune.Analyzers)"
 # One entry per `.fshw.json` `analyzers.paths` element, in the same order. The daemon
 # loads analyzers at startup and REFUSES to start when a configured path yields zero
 # (DaemonConfig.analyzerPathFailures) — an unloaded analyzer and a clean one are
@@ -39,6 +39,7 @@ description = "Materialize EVERY analyzer path in .fshw.json analyzers.paths (ho
 run = [
   "dotnet build tools/fsharplint-shim/fsharplint-shim.csproj",
   "dotnet build analyzers/FsHotWatch.Rules/FsHotWatch.Rules.fsproj",
+  "dotnet build src/TestPrune.Analyzers/TestPrune.Analyzers.fsproj",
 ]
 depends = ["restore"]
 
@@ -134,9 +135,11 @@ rm -rf coverage-direct
 dotnet test --project tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj \
   --coverage \
   --coverage-output-format cobertura \
-  --coverage-output "$PWD/coverage-direct/coverage.cobertura.xml" \
-  --coverage-settings "$PWD/coverage.settings"
+  --coverage-output "$PWD/coverage-direct/coverage.cobertura.xml"
 """
+# No `--coverage-settings`: the module filters are tests/FsHotWatch.Tests/testconfig.json, which
+# MTP reads next to the test app, so this task, the daemon and CI's reusable workflow all
+# measure the same modules (MTP refuses a run given both a testconfig.json and a settings file).
 # depends on `compile`, not just `restore`: `mise run ci` fans out to
 # {compile, lint-project, coverage-check→test-direct} in PARALLEL, and both
 # `compile` and this task drive MSBuild over the same output directories. They
@@ -305,7 +308,7 @@ description = "Run the full-suite confirm (single pass, no daemon), then the int
 # below: `depends` is a mise concept and remote CI does not run mise — it runs this
 # string. Hung off `depends` alone the guard fired only when a human ran `mise run ci`,
 # which is not the path a package reaches NuGet by.
-run = "dotnet fsi scripts/check-msbuild-deps.fsx && dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once && dotnet test --project tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj --no-build"
+run = "dotnet fsi scripts/check-msbuild-deps.fsx && dotnet fsi scripts/check-package-floors.fsx -- pack && dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once && dotnet test --project tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj --no-build"
 # `sync-docs-check`: the examples are compiled (they are members of FsHotWatch.slnx),
 # and the README/docs code blocks are SOURCED from them via syncdocs `src=` regions.
 # Compiling the example proves the code is real; only this check proves the block a
@@ -314,7 +317,7 @@ run = "dotnet fsi scripts/check-msbuild-deps.fsx && dotnet run --project src/FsH
 # which is the very thing this repo refuses to ship.
 # `check-msbuild-deps` is NOT listed here — it is in the `run` command above, so
 # that CI runs it too. `compile` stays, because the check reads a BUILT deps.json.
-depends = ["compile", "lint-project", "coverage-check", "sync-docs-check"]
+depends = ["compile", "lint-project", "coverage-check", "tp-coverage-check", "tp-example-build", "sync-docs-check"]
 
 [tasks.ci-linux]
 description = "Run GitHub Actions' CI jobs (build, integration, lint-project) in a local Linux container. Required before every push to main."
@@ -352,6 +355,15 @@ dotnet pack src/FsHotWatch.Lint/FsHotWatch.Lint.fsproj -c Release -o artifacts
 dotnet pack src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj -c Release -o artifacts
 dotnet pack src/FsHotWatch.Build/FsHotWatch.Build.fsproj -c Release -o artifacts
 dotnet pack src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Core/TestPrune.Core.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune/TestPrune.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Falco/TestPrune.Falco.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Analyzers/TestPrune.Analyzers.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Sql/TestPrune.Sql.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Trace/TestPrune.Trace.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Trace.Cli/TestPrune.Trace.Cli.fsproj -c Release -o artifacts
 """
 # The packages this produces are what `release.yml` pushes to NuGet, so the
 # app-local MSBuild assemblies are checked BEFORE anything is packed.
@@ -369,3 +381,111 @@ depends = ["restore", "tool-restore"]
 description = "Watch and serve documentation locally"
 run = "dotnet fsdocs watch"
 depends = ["restore", "tool-restore"]
+
+# === TestPrune (imported from michaelglass/TestPrune, AUTOMATION-1367) ===
+# TestPrune's own tasks, prefixed `tp-`. Its tests are ALSO in `.fshw.json` `tests.projects`,
+# so `confirm` (built from this source) gates them; these tasks add what the gate does not:
+# TestPrune's per-file coverage floors (coverage-ratchet-TestPrune*.json) and the sample
+# solution. Reports go to coverage-tp/<project>/, a directory nothing else writes, for the
+# reason `test-direct` uses coverage-direct/.
+
+[tasks.tp-test]
+description = "Run the TestPrune test projects with coverage (one cobertura per project in coverage-tp/<project>/)"
+# A test project with its own testconfig.json carries its coverage settings there; MTP
+# reads it next to the test app. `--no-build`: `compile` built the whole solution, and two
+# MSBuilds over the same outputs race (see `test-direct`).
+run = """
+set -e
+rm -rf coverage-tp
+for proj in tests/TestPrune.Tests/TestPrune.Tests.fsproj tests/TestPrune.Trace.Tests/TestPrune.Trace.Tests.fsproj; do
+  project_name=$(basename "$(dirname "$proj")" | sed 's/\\.Tests$//')
+  echo "Testing $proj (coverage -> coverage-tp/$project_name/)"
+  dotnet test --project "$proj" --no-build \
+    --coverage \
+    --coverage-output-format cobertura \
+    --coverage-output "$PWD/coverage-tp/$project_name/coverage.cobertura.xml"
+done
+"""
+# After FsHotWatch's own coverage run, never beside it: both are full test hosts, and
+# sharing the box makes load-sensitive tests a function of load.
+depends = ["compile", "coverage-check"]
+
+[tasks.tp-coverage-check]
+description = "Check TestPrune's per-file coverage floors"
+run = """
+set -e
+for config in coverage-ratchet-TestPrune.json coverage-ratchet-TestPrune.Trace.json; do
+  project=$(echo "$config" | sed 's/coverage-ratchet-\\(.*\\)\\.json/\\1/')
+  echo "Checking $project..."
+  dotnet tool run coverageratchet check "$config" --search-dir "coverage-tp/$project"
+done
+"""
+depends = ["tp-test"]
+
+[tasks.tp-coverage-ratchet]
+description = "Tighten TestPrune's per-file coverage floors to current values. EXPLICIT — never a gate dependency."
+run = """
+set -e
+for config in coverage-ratchet-TestPrune.json coverage-ratchet-TestPrune.Trace.json; do
+  project=$(echo "$config" | sed 's/coverage-ratchet-\\(.*\\)\\.json/\\1/')
+  echo "Ratcheting $project..."
+  dotnet tool run coverageratchet ratchet "$config" --search-dir "coverage-tp/$project" || [ $? -eq 1 ]
+done
+"""
+depends = ["tp-test"]
+
+[tasks.tp-example]
+description = "Run test-prune against the example solution"
+run = "dotnet run --project src/TestPrune -- --repo examples/SampleSolution index"
+depends = ["compile"]
+
+[tasks.tp-example-build]
+description = "Build TestPrune's example solution (it has its own global.json; CI's example step builds it too)"
+run = "dotnet build examples/SampleSolution --warnaserror"
+depends = ["compile"]
+
+[tasks.tp-dead-code]
+description = "Find unreachable production code (TestPrune's dead-code verb, run on this repository)"
+run = "dotnet run --project src/TestPrune -- dead-code"
+depends = ["compile"]
+
+[tasks.tp-dead-code-tests]
+description = "Find unreachable test code (dead test helpers)"
+run = "dotnet run --project src/TestPrune -- dead-code --include-tests"
+depends = ["compile"]
+
+[tasks.tp-dead-code-example]
+description = "Find dead code in the example solution (library + consumer)"
+run = """
+dotnet run --project src/TestPrune -- --repo examples/SampleSolution index
+dotnet run --project src/TestPrune -- --repo examples/SampleSolution dead-code --entry "SampleWeb.Handlers.*"
+"""
+depends = ["tp-example-build"]
+
+[tasks.tp-bench]
+description = "Run TestPrune's benchmarks with dotnet-trace profiling (produces a speedscope flame graph)"
+run = """
+mkdir -p benchmarks/results
+dotnet-trace collect \
+  --output benchmarks/results/trace \
+  -- dotnet run --project benchmarks/TestPrune.Benchmarks -c Release \
+  || true
+dotnet-trace convert benchmarks/results/trace \
+  --format speedscope \
+  --output benchmarks/results/trace
+"""
+depends = ["restore"]
+
+[tasks.tp-bench-raw]
+description = "Run TestPrune's benchmarks without profiling (JSON metrics only)"
+run = "dotnet run --project benchmarks/TestPrune.Benchmarks -c Release"
+depends = ["restore"]
+
+[tasks.package-floors]
+description = "Pack every released project and fail if a packed FSharp.Core / FCS floor floats or exceeds its pin"
+# A nuspec floor is what restore resolved at pack time; a floated FSharp.Core shipped
+# TestPrune.Trace 0.7.5 with FSharp.Core >= 10.1.403 and broke consumers pinned at 10.1.402
+# (AUTOMATION-1358). Packs --no-build, so `compile` must run first. `ci`'s command and CI's
+# lint step run the same check.
+run = "dotnet fsi scripts/check-package-floors.fsx -- pack"
+depends = ["compile"]

@@ -251,7 +251,7 @@ let ``the file census names the reading tests, those that break outside the repo
     =
     // "d reads a module value" reads mise.toml in a type initializer it found by walking up
     // from the binary: outside the repository that walk fails, and so does the test. "c reads
-    // a repo file" reads global.json, and "c loads a repo xml file" loads TestPrune.slnx, at
+    // a repo file" reads global.json, and "c loads a repo xml file" loads FsHotWatch.slnx, at
     // an absolute path (the recorder's repository root): from outside they still reach the
     // repository and pass. All three traces hold the read.
     // The test project's own module value reads LICENSE at startup; the test assembly is

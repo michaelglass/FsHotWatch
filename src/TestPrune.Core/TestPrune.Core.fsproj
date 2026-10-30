@@ -7,9 +7,9 @@
         <Authors>Michael Glass</Authors>
         <Description>F# test impact analysis — AST-based dependency graph, symbol diffing, and test selection</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
-        <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+        <RepositoryUrl>https://github.com/michaelglass/FsHotWatch</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
-        <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
+        <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>
         <PackageTags>fsharp;testing;test-impact-analysis;ast;dependency-graph;symbol-diff</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <Version>13.5.2</Version>

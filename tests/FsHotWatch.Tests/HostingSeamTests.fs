@@ -37,7 +37,10 @@ let private modeBranch =
 let private strayBranches (root: string) =
     FsHotWatch.Tests.TestHelpers.filesUnder FsHotWatch.SafeWalk.SourceExcludedDirs "*.fs" (Path.Combine(root, "src"))
     |> Seq.map (fun path -> Path.GetRelativePath(root, path).Replace('\\', '/'), path)
-    |> Seq.filter (fun (relative, _) -> relative <> seam && not (relative.Contains "/obj/"))
+    |> Seq.filter (fun (relative, _) ->
+        relative <> seam
+        && not (relative.Contains "/obj/")
+        && not (FsHotWatch.Tests.TestHelpers.isTestPruneSource relative))
     |> Seq.collect (fun (relative, path) ->
         File.ReadAllLines path
         |> Seq.mapi (fun i line -> i + 1, line)
@@ -110,7 +113,9 @@ let private clearsCheckerCaches =
 let private matchesIn (root: string) (pattern: Regex) =
     FsHotWatch.Tests.TestHelpers.filesUnder FsHotWatch.SafeWalk.SourceExcludedDirs "*.fs" (Path.Combine(root, "src"))
     |> Seq.map (fun path -> Path.GetRelativePath(root, path).Replace('\\', '/'), path)
-    |> Seq.filter (fun (relative, _) -> not (relative.Contains "/obj/"))
+    |> Seq.filter (fun (relative, _) ->
+        not (relative.Contains "/obj/")
+        && not (FsHotWatch.Tests.TestHelpers.isTestPruneSource relative))
     |> Seq.collect (fun (relative, path) ->
         let lines = File.ReadAllLines path
 

@@ -231,7 +231,7 @@ let ``a repository file read is an input; an untraced child makes the trace inco
         <@
             xml.Complete
             && xml.Inputs
-               |> Set.exists (fun (k, key, _) -> k = "read" && key = "TestPrune.slnx")
+               |> Set.exists (fun (k, key, _) -> k = "read" && key = "FsHotWatch.slnx")
         @>
 
     let child = traceOf "c starts a child process"

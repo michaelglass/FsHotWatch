@@ -1,0 +1,24 @@
+{
+  "solution": {
+    "path": "FsHotWatch.slnx",
+    "projects": [
+      "src/TestPrune.Analyzers/TestPrune.Analyzers.fsproj",
+      "src/TestPrune.Attributes/TestPrune.Attributes.fsproj",
+      "src/TestPrune.Core/TestPrune.Core.fsproj",
+      "src/TestPrune.Falco/TestPrune.Falco.fsproj",
+      "src/TestPrune.Sql/TestPrune.Sql.fsproj",
+      "src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj",
+      "src/TestPrune.Trace.Cli/TestPrune.Trace.Cli.fsproj",
+      "src/TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj",
+      "src/TestPrune.Trace/TestPrune.Trace.fsproj",
+      "src/TestPrune/TestPrune.fsproj",
+      "tests/TestPrune.Tests/TestPrune.Tests.fsproj",
+      "tests/TestPrune.Trace.Tests/TestPrune.Trace.Tests.fsproj",
+      "tests/TraceFixtures/src/FxLib/FxLib.fsproj",
+      "tests/TraceFixtures/src/FxDriver/FxDriver.fsproj",
+      "tests/TraceFixtures/tests/FxTests/FxTests.fsproj",
+      "benchmarks/TestPrune.Benchmarks/TestPrune.Benchmarks.fsproj",
+      "examples/UsageExample/UsageExample.fsproj"
+    ]
+  }
+}

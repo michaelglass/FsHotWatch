@@ -118,6 +118,20 @@ let ``packed floors at or below the pin pass the check`` () =
         test <@ stdout.Contains "TestPrune.Trace.Recorder.1.0.0: FSharp.Core >= 8.0.403" @>)
 
 [<Fact>]
+let ``an exact one-version range is read as its floor`` () =
+    // FsHotWatch's packages pin with `[x]` (the shape NuGet packs an exact PackageReference
+    // range as), which the check must read rather than reject as unreadable.
+    scratch (fun temp packages ->
+        let props = writeProps temp "10.1.402"
+
+        writePackage packages "FsHotWatch" [ "FSharp.Core", "[10.1.402]"; "FSharp.Compiler.Service", "[43.12.402]" ]
+
+        let exitCode, stdout, stderr = runCheck props packages
+
+        test <@ (exitCode, stderr) = (0, "") @>
+        test <@ stdout.Contains "FsHotWatch.1.0.0: FSharp.Core >= 10.1.402" @>)
+
+[<Fact>]
 let ``a floated FSharp.Core pin fails the check`` () =
     scratch (fun temp packages ->
         let props = writeProps temp "10.1.*"
@@ -147,13 +161,18 @@ let ``the package floor check runs in mise ci and GitHub CI`` () =
         File.ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml"))
 
     let command = "dotnet fsi scripts/check-package-floors.fsx -- pack"
-    let miseRunsCheck = mise.Contains command
     let workflowRunsCheck = workflow.Contains command
 
-    let ciDependsOnCheck =
+    // `mise run ci`'s command is CI's lint step plus the integration suite (CiParityTests), so the
+    // check rides in that command rather than in `depends`.
+    let ciTask =
         mise.Split('\n')
         |> Array.skipWhile (fun line -> line.Trim() <> "[tasks.ci]")
-        |> Array.tryFind (fun line -> line.TrimStart().StartsWith "depends")
-        |> Option.exists (fun line -> line.Contains "\"package-floors\"")
+        |> Array.skip 1
+        |> Array.takeWhile (fun line -> not (line.StartsWith "[tasks."))
 
-    test <@ (miseRunsCheck, workflowRunsCheck, ciDependsOnCheck) = (true, true, true) @>
+    let ciRunsCheck =
+        ciTask
+        |> Array.exists (fun line -> line.TrimStart().StartsWith "run" && line.Contains command)
+
+    test <@ (ciRunsCheck, workflowRunsCheck) = (true, true) @>

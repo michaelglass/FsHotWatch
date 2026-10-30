@@ -16,22 +16,26 @@
         "why": "The per-file coverage floors. Lower one and a verdict earned under the higher floor must stop applying; hashing it is the only thing that makes that true."
       },
       {
-        "path": "coverage.settings",
-        "why": "The coverage collector's include/exclude filters. Widen an exclusion and files stop being measured at all, which moves every floor beneath it without touching the floors file."
-      },
-      {
         "path": "fsharplint.json",
         "why": "The lint rules the lint plugin enforces. Disabling one changes what the check concludes about an unchanged tree."
       },
       {
         "path": "tools/fsharplint-shim",
         "why": "The restore-only project that materializes the FSharpLint analyzer the check loads. Move its pin and a different set of findings is produced from the same source."
+      },
+      {
+        "path": "coverage-ratchet-TestPrune.json",
+        "why": "TestPrune's per-file coverage floors (TestPrune.Tests). Lower one and a verdict earned under the higher floor must stop applying; hashing it is the only thing that makes that true."
+      },
+      {
+        "path": "coverage-ratchet-TestPrune.Trace.json",
+        "why": "TestPrune.Trace's per-file coverage floors (TestPrune.Trace.Tests), for the same reason as the other floors files."
       }
     ],
     "notInputs": [
       {
         "path": "CHANGELOG.md",
-        "reason": "Release prose. No plugin reads it, so it cannot change what a check concludes — and re-earning a full unfiltered verdict for a paragraph about work that was already gated buys nothing. Stated here rather than merely absent, so the exclusion is reviewable instead of invisible. This declaration RECORDS that decision; it does not perform it. `notInputs` is parsed and validated but read by neither TreeHash nor Discovery, so nothing here subtracts a file from the hash \u2014 deliberately, since a config able to do that would be a supported way to weaken the gate. What actually keeps this file out is that the walk covers src/ and tests/ only, and the repo root is not in it. NOTE the per-package CHANGELOGs under src/ ARE hashed: they are inside the discovery roots, and carving holes in that walk is a bigger hazard than the re-gate."
+        "reason": "Release prose. No plugin reads it, so it cannot change what a check concludes — and re-earning a full unfiltered verdict for a paragraph about work that was already gated buys nothing. Stated here rather than merely absent, so the exclusion is reviewable instead of invisible. This declaration RECORDS that decision; it does not perform it. `notInputs` is parsed and validated but read by neither TreeHash nor Discovery, so nothing here subtracts a file from the hash — deliberately, since a config able to do that would be a supported way to weaken the gate. What actually keeps this file out is that the walk covers src/ and tests/ only, and the repo root is not in it. NOTE the per-package CHANGELOGs under src/ ARE hashed: they are inside the discovery roots, and carving holes in that walk is a bigger hazard than the re-gate."
       },
       {
         "path": "semantic-tagger.json",
@@ -42,12 +46,47 @@
   "analyzers": {
     "paths": [
       "tools/fsharplint-shim/bin/Debug/net10.0/",
-      "analyzers/FsHotWatch.Rules/bin/Debug/net10.0/"
-    ]
+      "analyzers/FsHotWatch.Rules/bin/Debug/net10.0/",
+      "src/TestPrune.Analyzers/bin/Debug/net10.0/"
+    ],
+    "scope": {
+      "tools/fsharplint-shim/bin/Debug/net10.0/": {
+        "exclude": [
+          "src/TestPrune*/**",
+          "tests/TestPrune*/**",
+          "tests/TraceFixtures/**",
+          "examples/UsageExample/**",
+          "examples/SampleSolution/**",
+          "benchmarks/**"
+        ]
+      },
+      "analyzers/FsHotWatch.Rules/bin/Debug/net10.0/": {
+        "exclude": [
+          "src/TestPrune*/**",
+          "tests/TestPrune*/**",
+          "tests/TraceFixtures/**",
+          "examples/UsageExample/**",
+          "examples/SampleSolution/**",
+          "benchmarks/**"
+        ]
+      },
+      "src/TestPrune.Analyzers/bin/Debug/net10.0/": {
+        "include": [
+          "src/TestPrune*/**",
+          "tests/TestPrune*/**",
+          "tests/TraceFixtures/**",
+          "examples/UsageExample/**",
+          "examples/SampleSolution/**",
+          "benchmarks/**"
+        ]
+      }
+    }
   },
   "coverage": {
     "configPath": "coverage-ratchet-FsHotWatch.json",
-    "reports": ["coverage/FsHotWatch.Tests/coverage.baseline.cobertura.xml"]
+    "reports": [
+      "coverage/FsHotWatch.Tests/coverage.baseline.cobertura.xml"
+    ]
   },
   "tests": {
     "beforeRun": "dotnet build",
@@ -60,8 +99,9 @@
         "classJoin": " ",
         "group": "default",
         "coverage": {
-          "argsTemplate": "--coverage --coverage-output-format cobertura --coverage-output \"{output}\" --coverage-settings \"{repoRoot}/coverage.settings\""
-        }
+          "argsTemplate": "--coverage --coverage-output-format cobertura --coverage-output \"{output}\""
+        },
+        "traces": false
       },
       {
         "project": "FsHotWatch.Bench.Tests",
@@ -70,6 +110,25 @@
         "filterTemplate": "--filter-class {classes}",
         "classJoin": " ",
         "group": "default",
+        "coverage": false,
+        "traces": false
+      },
+      {
+        "project": "TestPrune.Tests",
+        "command": "dotnet",
+        "args": "run --project tests/TestPrune.Tests --no-build --",
+        "filterTemplate": "--filter-class {classes}",
+        "classJoin": " ",
+        "group": "default",
+        "coverage": false
+      },
+      {
+        "project": "TestPrune.Trace.Tests",
+        "command": "dotnet",
+        "args": "run --project tests/TestPrune.Trace.Tests --no-build --",
+        "filterTemplate": "--filter-class {classes}",
+        "classJoin": " ",
+        "group": "trace",
         "coverage": false
       }
     ],
@@ -81,7 +140,24 @@
       {
         "project": "tests/Fixtures/Xunit4RunnerFixture",
         "reason": "A one-test xUnit v4 runner FIXTURE, not a suite. FsHotWatch.Tests builds it through a project reference and drives it through the real xUnit v4 runner and CTRF harness (TestPruneRunnerFamilyTests), so its runner behaviour is verified by the configured suite. Declared here because daemon discovery indexes its test methods: without a reasoned exclusion, any change to its own symbols would stay owed to a project the gate never runs."
+      },
+      {
+        "project": "tests/TraceFixtures/tests/FxTests",
+        "reason": "fixture, not a suite: TestPrune.Trace.Tests builds it and runs it woven to check per-test attribution"
       }
-    ]
-  }
+    ],
+    "traces": {
+      "record": "full-runs",
+      "fingerprintInputs": [
+        "global.json",
+        "Directory.Packages.props"
+      ]
+    }
+  },
+  "exclude": [
+    ".workspaces/",
+    "artifacts/",
+    "output/",
+    "examples/SampleSolution/"
+  ]
 }

@@ -55,12 +55,12 @@ let pinnedVersions (propsPath: string) =
             | Some parsed -> id, Ok(version, parsed)
             | None -> id, Error $"%s{id} pin '%s{version}' is not a version")
 
-/// The lower bound of a nuspec version range: "1.2.3", "[1.2.3, )", "[1.2.3, 1.2.3]".
+/// The lower bound of a nuspec version range: "1.2.3", "[1.2.3, )", "[1.2.3, 1.2.3]", "[1.2.3]".
 let floorOf (range: string) =
     let trimmed = range.Trim()
 
     if trimmed.StartsWith "[" || trimmed.StartsWith "(" then
-        trimmed.Substring(1).Split(',').[0].Trim()
+        trimmed.Substring(1).Split(',').[0].Trim().TrimEnd(']', ')').Trim()
     else
         trimmed
 

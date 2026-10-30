@@ -19,7 +19,7 @@
 # `uses:` an action other than checkout/setup-dotnet/cache, a multi-line `run: |` — is a
 # hard error naming it, never a silently skipped step.
 #
-# FsHotWatch and TestPrune carry byte-identical copies of scripts/ci-linux/.
+# TestPrune, which carried a byte-identical copy, now lives in this repository (AUTOMATION-1367).
 set -euo pipefail
 
 BUILD_WORKFLOW='michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-build.yml@main'

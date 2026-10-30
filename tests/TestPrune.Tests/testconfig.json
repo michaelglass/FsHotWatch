@@ -1,0 +1,11 @@
+{
+  "codeCoverage": {
+    "Configuration": {
+      "CodeCoverage": {
+        "ModulePaths": {
+          "Exclude": [ ".*Falco\\.UnionRoutes\\.dll$" ]
+        }
+      }
+    }
+  }
+}

@@ -24,7 +24,9 @@ let private fsharpCoreVersion = "10.1.402"
 let private pinnedPackages =
     Map [ "FSharp.Compiler.Service", fcsVersion; "FSharp.Core", fsharpCoreVersion ]
 
-/// Every `PackageReference` to a pinned package, as (project, package, Version attribute).
+/// Every `PackageReference` to a pinned package, as (project, package, Version attribute,
+/// VersionOverride attribute). A reference with neither takes its version from
+/// Directory.Packages.props (Central Package Management).
 let private pinnedReferences (root: string) (dir: string) =
     FsHotWatch.Tests.TestHelpers.filesUnder FsHotWatch.SafeWalk.SourceExcludedDirs "*.fsproj" (Path.Combine(root, dir))
     |> List.toArray
@@ -36,25 +38,53 @@ let private pinnedReferences (root: string) (dir: string) =
 
             match attr "Include" |> Option.orElse (attr "Update") with
             | Some package when pinnedPackages.ContainsKey package ->
-                Some(Path.GetRelativePath(root, path), package, attr "Version" |> Option.defaultValue "")
+                Some(
+                    Path.GetRelativePath(root, path).Replace('\\', '/'),
+                    package,
+                    attr "Version" |> Option.defaultValue "",
+                    attr "VersionOverride"
+                )
             | _ -> None)
         |> Seq.toArray)
+
+/// Directory.Packages.props: package -> central `PackageVersion`.
+let private centralPins (root: string) =
+    XDocument.Load(Path.Combine(root, "Directory.Packages.props")).Descendants(XName.Get "PackageVersion")
+    |> Seq.map (fun element ->
+        element.Attribute(XName.Get "Include").Value, element.Attribute(XName.Get "Version").Value)
+    |> Map.ofSeq
+
+/// TestPrune's boundary assemblies, whose FSharp.Core floor is deliberately LOW (a
+/// `VersionOverride`): the trace recorder is injected into other projects' test hosts, and the
+/// marker attributes are referenced from any F# project, so neither may raise its host's
+/// FSharp.Core. They ship no FCS and host no analyzer, which is what this pin protects.
+let private lowFloorBoundaries =
+    set
+        [ "src/TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj"
+          "src/TestPrune.Attributes/TestPrune.Attributes.fsproj" ]
 
 [<Fact>]
 let ``every shipped project pins FCS and FSharp.Core exactly`` () =
     let root = repoRoot ()
     let references = pinnedReferences root "src"
+    let central = centralPins root
     // FsHotWatch itself and the analyzer host plugin both name FCS directly.
     let fcsProjects =
         references
-        |> Array.filter (fun (_, package, _) -> package = "FSharp.Compiler.Service")
+        |> Array.filter (fun (_, package, _, _) -> package = "FSharp.Compiler.Service")
         |> Array.length
 
     test <@ fcsProjects >= 2 @>
 
+    // An inline version is an exact range; a central one is the exact version itself
+    // (scripts/check-package-floors.fsx refuses a range there).
     let wrong =
         references
-        |> Array.filter (fun (_, package, version) -> version <> $"[%s{pinnedPackages[package]}]")
+        |> Array.filter (fun (project, package, version, versionOverride) ->
+            match version, versionOverride with
+            | "", Some _ -> not (package = "FSharp.Core" && lowFloorBoundaries.Contains project)
+            | "", None -> Map.tryFind package central <> Some pinnedPackages[package]
+            | inline', _ -> inline' <> $"[%s{pinnedPackages[package]}]")
 
     test <@ Array.isEmpty wrong @>
 
@@ -66,7 +96,8 @@ let ``no project in the repository floats FCS or FSharp.Core`` () =
         [| "src"; "tests"; "bench"; "examples"; "analyzers" |]
         |> Array.filter (fun dir -> Directory.Exists(Path.Combine(root, dir)))
         |> Array.collect (pinnedReferences root)
-        |> Array.filter (fun (_, _, version) -> version.Contains "*")
+        |> Array.filter (fun (_, _, version, versionOverride) ->
+            version.Contains "*" || (versionOverride |> Option.exists _.Contains("*")))
 
     test <@ Array.isEmpty floating @>
 

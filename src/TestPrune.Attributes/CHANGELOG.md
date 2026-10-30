@@ -1,6 +1,8 @@
 # Changelog — TestPrune.Attributes
 
 ## [Unreleased]
+- build: the package's source link points at github.com/michaelglass/FsHotWatch, where TestPrune
+  now lives with its history (AUTOMATION-1367).
 - feat: `[<DispatchedAs(channel, name)>]` and `[<DispatchTemplate(channel, template)>]`,
   the two declarations `TestPrune.NamedDispatch` reads.
 - feat: initial release. Four consumer-side marker attributes, three of which

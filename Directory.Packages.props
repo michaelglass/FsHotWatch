@@ -1,6 +1,8 @@
 <Project>
     <PropertyGroup>
-        <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+        <!-- Scoped to the TestPrune projects until CPM is adopted repo-wide
+             (Directory.Build.props: IsTestPruneProject). -->
+        <ManagePackageVersionsCentrally>$(IsTestPruneProject)</ManagePackageVersionsCentrally>
         <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
         <CentralPackageFloatingVersionsEnabled>true</CentralPackageFloatingVersionsEnabled>
     </PropertyGroup>

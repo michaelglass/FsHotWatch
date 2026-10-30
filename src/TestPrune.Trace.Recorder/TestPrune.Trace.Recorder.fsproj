@@ -7,9 +7,9 @@
         <Authors>Michael Glass</Authors>
         <Description>Runtime recorder loaded into a woven test process: attributes probe hits to the current xUnit v3 test.</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
-        <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+        <RepositoryUrl>https://github.com/michaelglass/FsHotWatch</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
-        <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
+        <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>
         <PackageTags>fsharp;testing;test-impact-analysis;tracing</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <Optimize>true</Optimize>

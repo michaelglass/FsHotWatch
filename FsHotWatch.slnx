@@ -24,4 +24,31 @@
     <Project Path="bench/FsHotWatch.Bench/FsHotWatch.Bench.fsproj" />
     <Project Path="bench/FsHotWatch.Bench.Tests/FsHotWatch.Bench.Tests.fsproj" />
   </Folder>
+  <!-- TestPrune (imported from michaelglass/TestPrune, AUTOMATION-1367). TestPrune.slnf
+       filters this solution down to these projects. -->
+  <Folder Name="/testprune/">
+    <Project Path="src/TestPrune.Analyzers/TestPrune.Analyzers.fsproj" />
+    <Project Path="src/TestPrune.Attributes/TestPrune.Attributes.fsproj" />
+    <Project Path="src/TestPrune.Core/TestPrune.Core.fsproj" />
+    <Project Path="src/TestPrune.Falco/TestPrune.Falco.fsproj" />
+    <Project Path="src/TestPrune.Sql/TestPrune.Sql.fsproj" />
+    <Project Path="src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj" />
+    <Project Path="src/TestPrune.Trace.Cli/TestPrune.Trace.Cli.fsproj" />
+    <Project Path="src/TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj" />
+    <Project Path="src/TestPrune.Trace/TestPrune.Trace.fsproj" />
+    <Project Path="src/TestPrune/TestPrune.fsproj" />
+    <Project Path="tests/TestPrune.Tests/TestPrune.Tests.fsproj" />
+    <Project Path="tests/TestPrune.Trace.Tests/TestPrune.Trace.Tests.fsproj" />
+  </Folder>
+  <Folder Name="/testprune/TraceFixtures/">
+    <Project Path="tests/TraceFixtures/src/FxLib/FxLib.fsproj" />
+    <Project Path="tests/TraceFixtures/src/FxDriver/FxDriver.fsproj" />
+    <Project Path="tests/TraceFixtures/tests/FxTests/FxTests.fsproj" />
+  </Folder>
+  <Folder Name="/testprune/benchmarks/">
+    <Project Path="benchmarks/TestPrune.Benchmarks/TestPrune.Benchmarks.fsproj" />
+  </Folder>
+  <Folder Name="/testprune/examples/">
+    <Project Path="examples/UsageExample/UsageExample.fsproj" />
+  </Folder>
 </Solution>

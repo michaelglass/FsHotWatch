@@ -167,9 +167,20 @@ let ``every coverageratchet task reads only the report test-direct writes`` () =
 
     let required = $"--search-dir %s{reportDir.Value}"
 
+    // TestPrune's tasks (tp-*, AUTOMATION-1367) grade TestPrune's floors against the reports
+    // `tp-test` writes into coverage-tp/<project>/, a directory nothing else writes.
+    let tpRequired = "--search-dir \"coverage-tp/$project\""
+
+    test <@ (commandLines mise "tp-test").Contains "--coverage-output \"$PWD/coverage-tp/$project_name/" @>
+
     let unscoped =
         invocations
-        |> List.filter (fun (_, line) -> not (Regex.IsMatch(line, Regex.Escape required + @"(\s|""|'|$)")))
+        |> List.filter (fun (task, line) ->
+            not (Regex.IsMatch(line, Regex.Escape required + @"(\s|""|'|$)"))
+            && not (
+                task.StartsWith("tp-", System.StringComparison.Ordinal)
+                && line.Contains tpRequired
+            ))
 
     test <@ List.isEmpty unscoped @>
 

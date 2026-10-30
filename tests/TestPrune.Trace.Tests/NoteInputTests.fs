@@ -22,7 +22,7 @@ let ``a noted input lands in the noting test's scope and not a concurrent siblin
     let state = RecorderState(8, None, null)
     state.RepoRoot <- Fixtures.repoRoot
     let a = Path.Combine(Fixtures.repoRoot, "global.json")
-    let b = Path.Combine(Fixtures.repoRoot, "TestPrune.slnx")
+    let b = Path.Combine(Fixtures.repoRoot, "FsHotWatch.slnx")
     let saved = Runtime.state
     Runtime.state <- state
 

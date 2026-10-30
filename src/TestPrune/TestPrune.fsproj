@@ -11,9 +11,9 @@
         <Authors>Michael Glass</Authors>
         <Description>CLI for TestPrune — only run the tests affected by your change</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
-        <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+        <RepositoryUrl>https://github.com/michaelglass/FsHotWatch</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
-        <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
+        <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>
         <PackageTags>fsharp;testing;test-impact-analysis;cli;dotnet-tool</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <TreatWarningsAsErrors>true</TreatWarningsAsErrors>

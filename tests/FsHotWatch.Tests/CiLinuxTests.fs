@@ -4,7 +4,7 @@
 /// scripts/ci-linux/steps.sh derives the plan from `.github/workflows/ci.yml` instead of
 /// restating it. These tests read the plan it writes (`--plan`, which needs neither Docker
 /// nor dotnet) and pin it to the workflow file: the build job's Lint step is the workflow's
-/// `lint-cmd`, its test step carries `test-extra-args`, the local `integration` job's commands
+/// `lint-cmd`, its test step measures coverage per project, the local `integration` job's commands
 /// are its `run:` lines, and a workflow shape it does not model is refused, not skipped.
 module FsHotWatch.Tests.CiLinuxTests
 
@@ -68,24 +68,34 @@ let ``the build job's Lint step is the workflow's lint-cmd, verbatim`` () =
     test <@ snd lint = quotedInput "lint-cmd" @>
 
 [<Fact>]
-let ``the build job tests every project with the workflow's test-extra-args and coverage`` () =
+let ``the build job tests every project with coverage, and no shared coverage settings`` () =
     let _, command =
         repoPlan () |> List.find (fun (name, _) -> name = "build / Test with coverage")
-
-    let extra = quotedInput "test-extra-args"
 
     let testLines =
         command.Split('\n') |> Array.filter (fun l -> l.Contains "dotnet test")
 
     test <@ testLines.Length = 2 @>
 
-    test
-        <@
-            testLines
-            |> Array.forall (fun l -> l.TrimEnd().EndsWith(extra, StringComparison.Ordinal))
-        @>
+    // The test projects need different module filters (FsHotWatch.Tests excludes the TestPrune
+    // assemblies TestPrune.Tests measures), so each carries its own testconfig.json and the
+    // workflow hands them none: one `--coverage-settings` would apply to every project.
+    test <@ testLines |> Array.forall (fun l -> not (l.Contains "--coverage-settings")) @>
+
+    test <@ not (Regex.IsMatch(File.ReadAllText(ciYml ()), @"^\s*test-extra-args:", RegexOptions.Multiline)) @>
 
     test <@ command.Contains "--coverage-output-format cobertura" @>
+
+[<Fact>]
+let ``every test project the build job measures carries its own coverage filters`` () =
+    let testsDir = Path.Combine(repoRoot (), "tests")
+
+    let missing =
+        FsHotWatch.Tests.TestHelpers.filesUnder FsHotWatch.SafeWalk.SourceExcludedDirs "*.Tests.fsproj" testsDir
+        |> List.filter (fun proj -> not (File.Exists(Path.Combine(Path.GetDirectoryName proj, "testconfig.json"))))
+        |> List.map (fun proj -> Path.GetRelativePath(testsDir, proj))
+
+    test <@ List.isEmpty missing @>
 
 [<Fact>]
 let ``the build job checks the coverage floors, format and docs as the reusable workflow does`` () =

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- build: the package's source and project links point at github.com/michaelglass/FsHotWatch, where
+  TestPrune now lives with its history (AUTOMATION-1367). No code change.
+
 ## 0.7.7 - 2026-10-29
 
 - chore: rebuild to bundle updated dependencies

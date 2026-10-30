@@ -7,9 +7,9 @@
         <Authors>Michael Glass</Authors>
         <Description>SQL table/column coupling attributes for TestPrune test impact analysis</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
-        <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+        <RepositoryUrl>https://github.com/michaelglass/FsHotWatch</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
-        <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
+        <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>
         <PackageTags>fsharp;testing;sql;database;test-impact-analysis</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <Version>0.3.2</Version>

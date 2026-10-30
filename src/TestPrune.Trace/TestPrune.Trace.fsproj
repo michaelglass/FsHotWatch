@@ -8,9 +8,9 @@
         <Authors>Michael Glass</Authors>
         <Description>Recorded per-test dependencies for TestPrune: IL weaver, shadow bin, trace store and symbol joiner.</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
-        <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+        <RepositoryUrl>https://github.com/michaelglass/FsHotWatch</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
-        <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
+        <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>
         <PackageTags>fsharp;testing;test-impact-analysis;tracing;il-weaving</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <TreatWarningsAsErrors>true</TreatWarningsAsErrors>

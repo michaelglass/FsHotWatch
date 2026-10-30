@@ -136,7 +136,7 @@ let ``every file shim notes its input and does what the original does`` () =
     let root = Fixtures.repoRoot
     let file = Path.Combine(root, "global.json")
     let text = File.ReadAllText file
-    let solution = Path.Combine(root, "TestPrune.slnx")
+    let solution = Path.Combine(root, "FsHotWatch.slnx")
     let size = FileInfo(file).Length
     let state = recorderWithRoot root
     state.EnterScope "T:io"

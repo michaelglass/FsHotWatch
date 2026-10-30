@@ -50,7 +50,7 @@ let ``Core 8 schema release is tagger-ready with library and CLI enrolled togeth
         |> Seq.find (fun package -> package.GetProperty("name").GetString() = "TestPrune.Core")
 
     let tagPrefix = core.GetProperty("tagPrefix").GetString()
-    test <@ tagPrefix = "core-v" @>
+    test <@ tagPrefix = "tp-core-v" @>
 
     let sharedProjects =
         core.GetProperty("fsProjsSharingSameTag").EnumerateArray()
@@ -60,7 +60,7 @@ let ``Core 8 schema release is tagger-ready with library and CLI enrolled togeth
     test <@ sharedProjects = set [ "src/TestPrune/TestPrune.fsproj" ] @>
 
     let workflow = read root ".github/workflows/release.yml"
-    test <@ workflow.Contains("- 'core-v*'") @>
+    test <@ workflow.Contains("- \"tp-core-v*\"") @>
     test <@ workflow.Contains("extra-fsproj-paths: 'src/TestPrune/TestPrune.fsproj'") @>
 
     let unreleased = coreChangelog.Split("## 7.0.1", StringSplitOptions.None)[0]

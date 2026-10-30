@@ -12,6 +12,13 @@ on:
       - "build-v*"
       - "filecommand-v*"
       - "coverage-v*"
+      # TestPrune (imported from michaelglass/TestPrune, AUTOMATION-1367; prefixes renamed tp-*)
+      - "tp-core-v*"
+      - "tp-falco-v*"
+      - "tp-analyzers-v*"
+      - "tp-sql-v*"
+      - "tp-sqlhydra-v*"
+      - "tp-trace-v*"
 
 permissions:
   contents: write
@@ -273,6 +280,177 @@ jobs:
   publish-coverage:
     if: startsWith(github.ref, 'refs/tags/coverage-v')
     needs: release-coverage
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: nuget-packages
+          path: ./artifacts
+      - uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  # --- TestPrune (tp-*: the TestPrune packages, released from here since AUTOMATION-1367) ---
+
+  release-tp-core:
+    if: startsWith(github.ref, 'refs/tags/tp-core-v')
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-release.yml@main
+    with:
+      package-name: TestPrune
+      tag-prefix: tp-core-v
+      fsproj-path: src/TestPrune.Core/TestPrune.Core.fsproj
+      extra-fsproj-paths: 'src/TestPrune/TestPrune.fsproj'
+    permissions:
+      contents: write
+
+  publish-tp-core:
+    if: startsWith(github.ref, 'refs/tags/tp-core-v')
+    needs: release-tp-core
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: nuget-packages
+          path: ./artifacts
+      - uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  release-tp-analyzers:
+    if: startsWith(github.ref, 'refs/tags/tp-analyzers-v')
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-release.yml@main
+    with:
+      package-name: TestPrune.Analyzers
+      tag-prefix: tp-analyzers-v
+      fsproj-path: src/TestPrune.Analyzers/TestPrune.Analyzers.fsproj
+      # Pack the analyzer with a full build, matching fsharp-analyzers /
+      # FSharpLintAnalyzerShim.
+      no-build-pack: false
+    permissions:
+      contents: write
+
+  publish-tp-analyzers:
+    if: startsWith(github.ref, 'refs/tags/tp-analyzers-v')
+    needs: release-tp-analyzers
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: nuget-packages
+          path: ./artifacts
+      - uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  release-tp-falco:
+    if: startsWith(github.ref, 'refs/tags/tp-falco-v')
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-release.yml@main
+    with:
+      package-name: TestPrune.Falco
+      tag-prefix: tp-falco-v
+      fsproj-path: src/TestPrune.Falco/TestPrune.Falco.fsproj
+    permissions:
+      contents: write
+
+  publish-tp-falco:
+    if: startsWith(github.ref, 'refs/tags/tp-falco-v')
+    needs: release-tp-falco
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: nuget-packages
+          path: ./artifacts
+      - uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  release-tp-sql:
+    if: startsWith(github.ref, 'refs/tags/tp-sql-v')
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-release.yml@main
+    with:
+      package-name: TestPrune.Sql
+      tag-prefix: tp-sql-v
+      fsproj-path: src/TestPrune.Sql/TestPrune.Sql.fsproj
+    permissions:
+      contents: write
+
+  publish-tp-sql:
+    if: startsWith(github.ref, 'refs/tags/tp-sql-v')
+    needs: release-tp-sql
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: nuget-packages
+          path: ./artifacts
+      - uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  release-tp-sqlhydra:
+    if: startsWith(github.ref, 'refs/tags/tp-sqlhydra-v')
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-release.yml@main
+    with:
+      package-name: TestPrune.SqlHydra
+      tag-prefix: tp-sqlhydra-v
+      fsproj-path: src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj
+    permissions:
+      contents: write
+
+  publish-tp-sqlhydra:
+    if: startsWith(github.ref, 'refs/tags/tp-sqlhydra-v')
+    needs: release-tp-sqlhydra
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: nuget-packages
+          path: ./artifacts
+      - uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  # One tag for the recorder, the weaver/tooling and the measurement CLI: the weaver
+  # emits calls to recorder methods by name, so the three must never ship apart.
+  release-tp-trace:
+    if: startsWith(github.ref, 'refs/tags/tp-trace-v')
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-release.yml@main
+    with:
+      package-name: TestPrune.Trace
+      tag-prefix: tp-trace-v
+      fsproj-path: src/TestPrune.Trace/TestPrune.Trace.fsproj
+      extra-fsproj-paths: 'src/TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj,src/TestPrune.Trace.Cli/TestPrune.Trace.Cli.fsproj'
+    permissions:
+      contents: write
+
+  publish-tp-trace:
+    if: startsWith(github.ref, 'refs/tags/tp-trace-v')
+    needs: release-tp-trace
     runs-on: ubuntu-latest
     permissions:
       id-token: write

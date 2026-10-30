@@ -25,12 +25,14 @@ jobs:
       # macOS on one band keeps both platforms' floors measuring the same thing.
       # Move both together, and re-measure the floors when you do.
       dotnet-version: '10.0.4xx'
-      fantomas-paths: 'src/ tests/'
-      # Apply our coverage exclusions on CI too — without this, the reusable
-      # workflow's `dotnet test --coverage` ignores coverage.settings and the
-      # sibling TestPrune.Core sources leak into the cobertura XML at 0%.
-      # Relative path — the workflow's `dotnet test` runs from the repo root.
-      test-extra-args: '--coverage-settings coverage.settings'
+      fantomas-paths: 'src/ tests/ examples/'
+      # No `test-extra-args`: each test project carries its coverage filters in its own
+      # testconfig.json (MTP reads it next to the test app), because the projects need
+      # DIFFERENT filters — FsHotWatch.Tests excludes the TestPrune assemblies it loads, while
+      # TestPrune.Tests measures exactly those — and one `--coverage-settings` would apply to
+      # all of them (MTP also refuses a run given both). The workflow's test step runs every
+      # tests/**/*.Tests.fsproj and checks every coverage-ratchet-*.json: FsHotWatch,
+      # TestPrune and TestPrune.Trace.
       # `confirm --run-once` runs the FULL suite and confirms `check` told the truth,
       # and that is what CI runs — not `check` itself.
       #
@@ -53,7 +55,9 @@ jobs:
       # is the only path that needs no daemon.
       #
       # NOTE ON "FULL SUITE": it means every test project `.fshw.json` knows about,
-      # which today is FsHotWatch.Tests alone. FsHotWatch.IntegrationTests is in the
+      # which today is FsHotWatch.Tests, FsHotWatch.Bench.Tests, TestPrune.Tests and
+      # TestPrune.Trace.Tests: TestPrune is gated by fshw built from this source, not by a
+      # released pin (AUTOMATION-1367). FsHotWatch.IntegrationTests is in the
       # solution and is DECLARED OUT of that scope — `.fshw.json`'s `tests.excluded`
       # carries the project and the reason, the config load prints it, and the verdict
       # records it under `scope.excluded`. Since an unlisted test project became a config error, the
@@ -84,7 +88,7 @@ jobs:
       # `FsHotWatch.Cli.deps.json` it reads. This is also what puts the guard on the
       # PUBLISH path: the tagger requires a green run of this workflow before it will
       # cut the tag that `release.yml` publishes from.
-      lint-cmd: 'dotnet fsi scripts/check-msbuild-deps.fsx && dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once'
+      lint-cmd: 'dotnet fsi scripts/check-msbuild-deps.fsx && dotnet fsi scripts/check-package-floors.fsx -- pack && dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once'
 
   # The end-to-end suite `.fshw.json` keeps out of the daemon's test slot (see its
   # `tests.excluded` reason). Its own job rather than a step of `build`: it runs in
