@@ -1935,3 +1935,44 @@ let ``a host session reports whether this command attached it`` () =
     test <@ (link true false).Ensure() = EnsureOutcome.Reused @>
     test <@ (link false true).Ensure() = EnsureOutcome.Failed @>
     test <@ (link true false).ForceRestart() = EnsureOutcome.Reused @>
+
+// --- forceScanAndWait waits for the scan it forced ---
+
+[<Fact(Timeout = 15000)>]
+let ``forceScanAndWait waits past the generation its Scan reply names, not for any scan`` () =
+    // `Scan` answers `scan started:<generation before the request>`. Waiting with -1
+    // is satisfied by ANY completed scan, so on a warm daemon it returned before the
+    // forced scan had run, and a caller reading the scan generation right after saw
+    // the old one (DaemonTests' "check forces a from-disk scan" failed that way under
+    // full-suite load).
+    let waitedFor = ref None
+
+    let ipc =
+        { fakeIpc () with
+            Scan = fun _ _ -> async { return "scan started:7" }
+            WaitForScan =
+                fun _ generation ->
+                    async {
+                        waitedFor.Value <- Some generation
+                        return "idle"
+                    } }
+
+    forceScanAndWait ipc "pipe" None |> ignore
+    test <@ waitedFor.Value = Some 7L @>
+
+[<Fact(Timeout = 15000)>]
+let ``forceScanAndWait falls back to the next completed scan when the reply names no generation`` () =
+    let waitedFor = ref None
+
+    let ipc =
+        { fakeIpc () with
+            Scan = fun _ _ -> async { return "scan started" }
+            WaitForScan =
+                fun _ generation ->
+                    async {
+                        waitedFor.Value <- Some generation
+                        return "idle"
+                    } }
+
+    forceScanAndWait ipc "pipe" None |> ignore
+    test <@ waitedFor.Value = Some -1L @>

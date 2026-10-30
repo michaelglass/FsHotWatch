@@ -1266,9 +1266,22 @@ let internal forceFullSuiteRun (ipc: IpcOps) (pipeName: string) : unit =
 /// `invocation` is the run whose claim holds the scan: the test runs it sets off are
 /// cancelled once that run has gone and nothing else wants them.
 let internal forceScanAndWait (ipc: IpcOps) (pipeName: string) (invocation: string option) : string =
-    ipc.Scan pipeName invocation |> Async.RunSynchronously |> ignore
-    // No client timeout by design: `-1L` is a scan generation, and the daemon's RPC seam deadline bounds this wait.
-    ipc.WaitForScan pipeName -1L |> Async.RunSynchronously
+    let reply = ipc.Scan pipeName invocation |> Async.RunSynchronously
+
+    // `Scan` answers `scan started:<generation before the request>`. Waiting past THAT
+    // generation is waiting for the forced scan; `-1L` is satisfied by any completed scan,
+    // so on a warm daemon it returned before the forced scan ran. `-1L` stays the
+    // fallback for a reply that names no generation.
+    let afterGeneration =
+        match reply.Split(':') with
+        | [| _; generation |] ->
+            match Int64.TryParse generation with
+            | true, parsed -> parsed
+            | _ -> -1L
+        | _ -> -1L
+
+    // No client timeout by design: the daemon's RPC seam deadline bounds this wait.
+    ipc.WaitForScan pipeName afterGeneration |> Async.RunSynchronously
 
 let private ensureAndQueryErrors
     (mode: ProgressRenderer.RenderMode)
