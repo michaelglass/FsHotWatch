@@ -1058,6 +1058,105 @@ let ``check forces a from-disk scan: forceScanAndWait advances the scan generati
             with :? AggregateException ->
                 ())
 
+[<Fact(Timeout = 90000)>]
+let ``an edit no watcher reported reaches the build subscribers before check settles`` () =
+    // AUTOMATION-675: a live daemon missed a source write, and the check that followed
+    // read as "nothing to do". This daemon has NO watcher (OneShot), so every edit below
+    // is one the watcher missed. `check`'s daemon sequence — the forced scan, then the
+    // verdict settle — must still hand the edited bytes to the plugins that build, before
+    // the settle returns.
+    withTempDir "missed-edit" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Missed.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let sourcePath = Path.Combine(srcDir, "Missed.fs")
+        File.WriteAllText(sourcePath, "module Missed\nlet value = 1\n")
+        let objDir = Path.Combine(srcDir, "obj")
+        Directory.CreateDirectory(objDir) |> ignore
+        File.WriteAllText(Path.Combine(objDir, "project.assets.json"), "{}")
+
+        let loader =
+            CountingWorkspaceLoader(
+                [ { minimalLoadedProject projectPath with
+                      SourceFiles = [ sourcePath ] } ]
+            )
+
+        let checker = sharedChecker.Value
+
+        let fcsOptions =
+            let options, _ =
+                checker.GetProjectOptionsFromScript(
+                    sourcePath,
+                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
+                )
+                |> Async.RunSynchronously
+
+            { options with
+                ProjectFileName = projectPath
+                SourceFiles = [| sourcePath |] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                tmpDir
+                { oneShotDaemonOptions with
+                    RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun projects -> projects |> List.map (fun _ -> fcsOptions))
+                (fun _ _ _ _ _ -> failwith "this daemon must see no file events")
+
+        // What a build subscriber read of the source each time it was told the source
+        // changed.
+        let seen = System.Collections.Concurrent.ConcurrentQueue<string>()
+        let real = FsHotWatch.CommandPreprocessor.realPathOf
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "build-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | FileChanged(SourceChanged files) when
+                            files |> List.exists (fun f -> real f = real sourcePath)
+                            ->
+                            seen.Enqueue(File.ReadAllText sourcePath)
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        let cts = new CancellationTokenSource()
+        let pipeName = $"fshw-{Guid.NewGuid():N}"
+        let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
+        daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+
+        try
+            test <@ daemon.StartupScanSettled.Wait(HangWait) @>
+            test <@ seen |> Seq.exists (fun text -> text.Contains "value = 1") @>
+
+            File.WriteAllText(sourcePath, "module Missed\nlet value = 2\n")
+
+            let ipc = FsHotWatch.Cli.Program.defaultIpcOps
+
+            FsHotWatch.Cli.Program.forceScanAndWait ipc pipeName None |> ignore
+            ipc.WaitForComplete pipeName -1 |> Async.RunSynchronously |> ignore
+
+            test <@ seen |> Seq.exists (fun text -> text.Contains "value = 2") @>
+        finally
+            cts.Cancel()
+
+            try
+                task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+            with :? AggregateException ->
+                ())
+
 [<Fact(Timeout = 15000)>]
 let ``daemon RegisterProject stores options in pipeline`` () =
     withTempDir "daemon" (fun tmpDir ->
