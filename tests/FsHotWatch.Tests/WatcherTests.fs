@@ -721,6 +721,67 @@ let ``macOS non-refusal native fault falls back at once without spending the bud
         test <@ pollingCreated () = 1 @>
         test <@ watcher.Mode = WatcherMode.ContentPolling "callback pin failed" @>)
 
+
+[<Fact(Timeout = 15000)>]
+let ``default native start retry budget outlasts the observed 50 to 71 s refusal windows`` () =
+    // The two real refusal episodes cleared 50 s and 71 s after the first refusal; a
+    // 1.3 s budget rescued neither. The default budget must outlast the longer one,
+    // stay bounded (about 90 s, then fail closed), and start small so a brief refusal
+    // costs a brief wait.
+    let waits = FileWatcher.NativeStartRetry.defaults.BackoffMs
+    test <@ List.sum waits >= 71_000 @>
+    test <@ List.sum waits <= 90_000 @>
+    test <@ List.head waits = 100 @>
+    // Exponential, never shrinking: each wait at least the one before it.
+    test <@ waits |> List.pairwise |> List.forall (fun (a, b) -> b >= a) @>
+
+[<Fact(Timeout = 15000)>]
+let ``macOS native refusal that clears after 60 s of fake time starts natively on a retry and logs every attempt`` () =
+    withTempDir "watcher-native-60s" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let mutable nowMs = 0
+        let mutable attempts = 0
+
+        let native _dirs _exclusions _onFile _onCoalesced _latency : IDisposable =
+            attempts <- attempts + 1
+
+            if nowMs < 60_000 then
+                raise (FsHotWatch.MacFsEvents.StartFailedException())
+            else
+                inert "native"
+
+        let retry: FileWatcher.NativeStartRetry =
+            { FileWatcher.NativeStartRetry.defaults with
+                Sleep = fun ms -> nowMs <- nowMs + ms }
+
+        let polling, pollingCreated = countingPolling ()
+        let lines = ResizeArray<string>()
+
+        use _sink =
+            FsHotWatch.Logging.installSink
+                { Write = lines.Add
+                  Level = FsHotWatch.Logging.LogLevel.Info
+                  File = None }
+
+        use watcher =
+            FileWatcher.createWithFactories tmpDir ignore [] 0.05 retry native polling
+
+        test <@ watcher.Mode = WatcherMode.NativeEvents @>
+        test <@ pollingCreated () = 0 @>
+        test <@ nowMs >= 60_000 @>
+        test <@ attempts > 1 @>
+        // One line per refused attempt, then one naming the attempt that started.
+        let refusedLines =
+            lines |> Seq.filter (fun l -> l.Contains "native FSEvents setup refused")
+
+        test <@ Seq.length refusedLines = attempts - 1 @>
+
+        test
+            <@
+                lines
+                |> Seq.exists (fun l -> l.Contains $"native FSEvents stream started on attempt %d{attempts}")
+            @>)
+
 [<Fact(Timeout = 15000)>]
 let ``macOS healthy native start pays no retry delay`` () =
     withTempDir "watcher-native-healthy" (fun tmpDir ->

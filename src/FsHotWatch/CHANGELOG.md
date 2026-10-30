@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: the native FSEvents start-retry budget is sized from the refusals actually seen
+  (AUTOMATION-1109). macOS refused the stream for 50 s and 71 s in the two real episodes,
+  and the old 100/300/900 ms budget (1.3 s) rescued neither. `NativeStartRetry.defaults` now
+  waits exponentially from 100 ms, each wait capped at 15 s, at most 90 s in total (85.5 s
+  over 12 retries), then fails closed as before. Each refused attempt logs `attempt n of N`
+  with the backoff spent so far, and a start that succeeds on a retry logs the attempt it
+  started on. A healthy start still pays no delay.
+
 - build: package versions come from Directory.Packages.props (Central Package Management, now
   repo-wide; AUTOMATION-1367). A packed FSharp.Core (and, where referenced, FSharp.Compiler.Service)
   dependency is a floor at the same exact pin (>= 10.1.402, >= 43.12.402) rather than an `[x]` range,
