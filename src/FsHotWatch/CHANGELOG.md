@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.98 - 2026-10-30
+
 - feat: `OptionsRecords`, persisted project options (ADR-059 §18, AUTOMATION-1372). With
   `DaemonOptions.OptionsRecords` on, the daemon's MSBuild loader files each evaluation in the
   one outcome store, as two records beside the `check` records:

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.98 - 2026-10-30
+
 - build: TestPrune.Core 13.5.2 and TestPrune.Trace 0.7.7 (were 13.5.1 and 0.7.6). A schema rebuild
   of test-impact.db now keeps the tables TestPrune.Core did not create (AUTOMATION-1362 step 8).
   Both declare FSharp.Core >= 10.1.402. FsHotWatch.TestPrune and FsHotWatch.Cli pin Core together.

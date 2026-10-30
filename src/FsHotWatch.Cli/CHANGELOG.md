@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.131 - 2026-10-30
+
 - build: TestPrune.Core 13.5.2 and TestPrune.Falco 4.0.4 (were 13.5.1 and 4.0.2), in lockstep with
   FsHotWatch.TestPrune. A schema rebuild of test-impact.db now keeps the tables TestPrune.Core did
   not create, such as Falco's route tables (AUTOMATION-1362 step 8). Both declare FSharp.Core >= 10.1.402.

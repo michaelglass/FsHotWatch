@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.38 - 2026-10-30
+
 - feat: the lint state is `ISkipsOutOfRepoFiles`. A replayed check of a NuGet `_content` source
   is answered without a live check (ADR-059 §17 step 3); the plugin never lints one.
 
