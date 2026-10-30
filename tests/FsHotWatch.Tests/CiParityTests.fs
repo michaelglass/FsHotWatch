@@ -98,3 +98,31 @@ let ``the integration suite is declared out of the daemon's test slot, with a re
             reason
             |> Option.exists (fun r -> r.Contains "`mise run ci`" && r.Contains "`integration` job")
         @>
+
+/// The `tests.beforeRun` steps of this repository's `.fshw.json`, as written.
+let private testBeforeRunSteps (tests: JsonElement) =
+    match tests.TryGetProperty "beforeRun" with
+    | true, step when step.ValueKind = JsonValueKind.String -> [ step.GetString() ]
+    | true, steps when steps.ValueKind = JsonValueKind.Array ->
+        steps.EnumerateArray() |> Seq.map (fun step -> step.GetString()) |> Seq.toList
+    | _ -> []
+
+[<Fact>]
+let ``a test run does not repeat the build the build plugin ran before it`` () =
+    // A test run starts on the build plugin's BuildSucceeded, so the tree it tests was
+    // built by `build.command` already. A `tests.beforeRun` step that runs the same
+    // command again re-evaluates every project of the solution before each run: 3.4 to
+    // 6.9 s on every one-file edit, measured on this repository (AUTOMATION-943).
+    use config =
+        JsonDocument.Parse(File.ReadAllText(Path.Combine(repoRoot (), ".fshw.json")))
+
+    let build = config.RootElement.GetProperty("build")
+
+    let buildLine =
+        $"""%s{build.GetProperty("command").GetString()} %s{build.GetProperty("args").GetString()}"""
+
+    let repeated =
+        testBeforeRunSteps (config.RootElement.GetProperty("tests"))
+        |> List.filter (fun step -> step.Trim() = buildLine.Trim())
+
+    test <@ List.isEmpty repeated @>
