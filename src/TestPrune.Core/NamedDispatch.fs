@@ -129,6 +129,12 @@ let templateRegex (template: string) : Result<Regex, string> =
 /// binding or type containing the line wins; it is resolved to the stored symbol of the
 /// same short name whose identifier lies inside that range. `None` when the file does
 /// not parse.
+///
+/// The parse tree names a binding by its identifier text (`idText`), which is already the
+/// form `canonicalShortName` reduces a stored name to. Reducing it again is wrong for a
+/// backticked name ending in a parenthesis (``` ``purges (NEWS-645)`` ```): the reduction
+/// keeps only the last parenthesised group, `NEWS-645`, so no member matched and the match
+/// fell to the enclosing class. Either form is accepted.
 let private enclosingSymbols
     (checker: FSharpChecker)
     (path: string)
@@ -158,12 +164,12 @@ let private enclosingSymbols
             |> List.filter (fun (_, r: range) -> r.StartLine <= line && line <= r.EndLine)
             |> List.sortBy (fun (_, r) -> r.EndLine - r.StartLine, r.StartLine)
             |> List.tryPick (fun (name, r) ->
-                let lastSegment = canonicalShortName name
+                let names = set [ name; canonicalShortName name ]
 
                 match
                     fileSymbols
                     |> List.filter (fun s ->
-                        canonicalShortName s.FullName = lastSegment
+                        names.Contains(canonicalShortName s.FullName)
                         && r.StartLine <= s.LineStart
                         && s.LineStart <= r.EndLine)
                 with

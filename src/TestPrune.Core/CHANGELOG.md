@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a named-dispatch edge starts at the test member that dispatches, also when the
+  member's backticked name ends in a parenthesis (``` ``runs the job (NEWS-645)`` ```).
+  The parse tree's name was reduced as if it were a stored full name, which kept only the
+  last parenthesised group, so no member matched and the edge started at the enclosing
+  class, from which the impact walk reaches no test.
 - build: the package's source and project links point at github.com/michaelglass/FsHotWatch, where
   TestPrune now lives with its history (AUTOMATION-1367). No code change.
 
