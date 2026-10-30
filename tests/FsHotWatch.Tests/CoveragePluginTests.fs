@@ -1066,6 +1066,79 @@ let ``the trigger retained behind a finished check is run by that check's result
             | CovPlugin.CheckDone(Judgement.Judged(Judgement.NotGatedFiltered count), _) -> test <@ count = 1 @>
             | other -> Assert.Fail $"expected the retained Partial trigger's verdict, got {other}")
 
+
+[<Fact(Timeout = 15000)>]
+let ``a check whose work throws still folds, and its fold runs the trigger retained behind it`` () =
+    // AUTOMATION-1078. A check that FAULTS (here: a report that is not XML) used to fold
+    // nothing, so a trigger refused while it held the key waited for an unrelated later
+    // test run. Its declared failure fold is a red verdict that drains `Owed` like any
+    // other result.
+    withTempDir "coverage-faulted-check-drains" (fun dir ->
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(configPath, defaultThresholdsJson)
+        File.WriteAllText(Path.Combine(dir, "coverage.cobertura.xml"), "<coverage><not-closed>")
+
+        let handler = CovPlugin.create configPath dir
+        let mutable launched: (string * Async<CovPlugin.CoverageMsg>) list = []
+
+        let capturing =
+            stubCoverageCtx (fun key work ->
+                launched <- launched @ [ key, work ]
+                PF.Claimed)
+
+        // The full-suite run's check is launched...
+        let checking =
+            handler.Update capturing handler.Init (runCompleted RunScope.FullSuite)
+            |> Async.RunSynchronously
+
+        // ...and a newer run's trigger is refused while it holds the key.
+        let retained =
+            handler.Update (stubCoverageCtx (fun _ _ -> PF.SlotBusy)) checking (runCompleted RunScope.Partial)
+            |> Async.RunSynchronously
+
+        test <@ retained.Owed |> Option.map fst = Some RunScope.Partial @>
+
+        let faultedWork = launched |> List.exactlyOne |> snd
+
+        let failure =
+            try
+                faultedWork |> Async.RunSynchronously |> ignore
+                None
+            with ex ->
+                Some ex
+
+        // Positive control: the fixture really does fault the check's work.
+        test <@ failure.IsSome @>
+
+        match PF.PluginWork.failureFoldOf faultedWork with
+        | None -> Assert.Fail "a coverage check must declare the fold its failure delivers"
+        | Some failureFold ->
+            let statuses = ResizeArray<PluginStatus>()
+
+            let folding =
+                { capturing with
+                    ReportStatus = statuses.Add }
+
+            let drained =
+                handler.Update folding retained (Custom(failureFold failure.Value))
+                |> Async.RunSynchronously
+
+            // The fault is a red verdict, never a pass...
+            test <@ drained.LastCheckPassed = Some false @>
+
+            test
+                <@
+                    statuses
+                    |> Seq.exists (fun s ->
+                        match s with
+                        | Failed _ -> true
+                        | _ -> false)
+                @>
+
+            // ...and the retained trigger started from this fold, with no further event.
+            test <@ drained.Owed = None @>
+            test <@ launched.Length = 2 @>
+            test <@ fst launched[1] = "coverage-check" @>)
 // ---------------------------------------------------------------------------
 // Named reports, count floors and freshness: what a run's coverage is judged as.
 // A check over named reports judges exactly what `coverageratchet check` judges on the

@@ -74,6 +74,16 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core, coverage: a faulted exclusive run can fold, so work retained behind it still runs
+
+- `PluginWork.onFailure (fun ex -> msg)` declares what a `RunExclusive` run folds as when
+  its work throws. The message folds like a result and holds the key until it commits, so
+  a plugin's retained work (a trigger refused with `SlotBusy`) drains on failure as well
+  as success. `RunExclusiveShared` already did this through its failure mapper.
+- coverage: a check that throws (a report that is not Cobertura, for example) now reports
+  an unreadable, red verdict and runs the trigger retained behind it. It used to fold
+  nothing, so that trigger waited for an unrelated later test run.
+
 ### cli: the stale-daemon kill no longer SIGKILLs a recycled pid
 
 - Before replacing a daemon that does not answer, the CLI killed whatever process held

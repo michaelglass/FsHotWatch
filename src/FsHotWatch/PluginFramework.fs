@@ -195,6 +195,26 @@ module PluginWork =
         | true, fold -> Some(unbox<unit -> 'Msg> fold)
         | _ -> None
 
+    let private failureFolds =
+        System.Runtime.CompilerServices.ConditionalWeakTable<obj, obj>()
+
+    /// Declare the fold a `RunExclusive` run delivers in place of its result when `work`
+    /// throws: the plugin's own message for "this run failed", built from the failure.
+    /// It folds exactly like a result, holding the key until its `Update` commits, so
+    /// whatever the plugin retained behind the run (a trigger refused while the key was
+    /// held) is drained on failure as well as on success. The plugin's fold owns the
+    /// verdict, as `RunExclusiveShared`'s failure mapper does. Undeclared, a faulted run
+    /// folds nothing: the framework reports it failed and frees the key.
+    let onFailure (fold: exn -> 'Msg) (work: Async<'Msg>) : Async<'Msg> =
+        failureFolds.AddOrUpdate(work, box fold)
+        work
+
+    /// The fold declared with `onFailure` for `work`.
+    let failureFoldOf (work: Async<'Msg>) : (exn -> 'Msg) option =
+        match failureFolds.TryGetValue work with
+        | true, fold -> Some(unbox<exn -> 'Msg> fold)
+        | _ -> None
+
     let private resultFirstRuns =
         System.Runtime.CompilerServices.ConditionalWeakTable<obj, obj>()
 
@@ -958,18 +978,37 @@ let internal registerHandlerForOwner
     /// keeps the key until the result's `Update` commits. Shared-resource classification
     /// and release happen first, while the run still holds its key; either failing turns
     /// the run into a failure, so no success is folded.
+    ///
+    /// A plain run whose work failed folds the plugin's declared `failureFold`
+    /// (`PluginWork.onFailure`) in place of a result, so the plugin's retained work drains
+    /// on failure too. Without one, or when building it fails, the run fails and folds
+    /// nothing.
     let finishRun
         (key: string)
         (identity: PluginWorkOwner.WorkId)
         (leases: PluginWorkOwner.ConsumerLeases)
         (sharedRun: SharedRunLease<'Msg> option)
+        (failureFold: (exn -> 'Msg) option)
         (startedAt: DateTime)
         (resultFirst: bool)
         (outcome: Result<'Msg, exn>)
         =
         let completion =
             match sharedRun with
-            | None -> outcome
+            | None ->
+                match outcome, failureFold with
+                | Result.Error failure, Some fold ->
+                    error pluginName $"RunExclusive '%s{key}' work failed; folding its failure: %s{failure.ToString()}"
+
+                    try
+                        Result.Ok(fold failure)
+                    with foldFailure ->
+                        error
+                            pluginName
+                            $"RunExclusive '%s{key}' failure fold could not be built: %s{foldFailure.ToString()}"
+
+                        outcome
+                | _ -> outcome
             | Some lease ->
                 // The guard has already turned a failure of the work itself into the
                 // plugin's failure message. What still fails here is the run's retirement:
@@ -1116,7 +1155,10 @@ let internal registerHandlerForOwner
         (resultFirst: bool)
         (work: Async<'Msg>)
         =
-        let finishRun = finishRun key identity leases sharedRun startedAt resultFirst
+        // A shared run hands in its own guarded work, which declares nothing: its failure
+        // already folds through the lease's `Recover`.
+        let finishRun =
+            finishRun key identity leases sharedRun (PluginWork.failureFoldOf work) startedAt resultFirst
 
         async {
             match abandoned with
