@@ -24,6 +24,7 @@
     <Compile Include="ConfigOverrideTests.fs" />
     <Compile Include="HashCostTests.fs" />
     <Compile Include="KeyCostTests.fs" />
+    <Compile Include="TwoSessionHarnessTests.fs" />
   </ItemGroup>
 
   <ItemGroup>
