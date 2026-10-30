@@ -313,6 +313,34 @@ module ``named dispatch edges`` =
         // Recall: the dispatching test is selected past the composition-root registry.
         test <@ selected = set [ "ClassTests.JobTests.``schedules purge (NEWS-645)``" ] @>
 
+    /// A dispatch in a class binding outside every member runs when the class is built or
+    /// a member reads it. The class symbol alone reaches no test, because a test method does
+    /// not depend on its own class, so the type's members carry the edge with it.
+    [<Fact>]
+    let ``a dispatch in a class binding couples the class and its members`` () =
+        let edges, selected =
+            classFixture (
+                jobTests (
+                    "    let purgeUrl = \"/admin/jobs/schedule/Purge\"\n\n"
+                    + "    [<Fact>]\n"
+                    + "    member _.``schedules purge``() = purgeUrl.Length |> ignore\n\n"
+                    + "    [<Fact>]\n"
+                    + "    member _.``renders the jobs page``() = ()\n"
+                )
+            )
+
+        test <@ edges |> Set.contains ("ClassTests.JobTests", "App.runPurge") @>
+
+        test
+            <@
+                edges
+                |> Set.contains ("ClassTests.JobTests.``schedules purge``", "App.runPurge")
+            @>
+
+        test <@ edges |> Set.forall (fun (_, handler) -> handler = "App.runPurge") @>
+        // Recall: the test reading the binding is selected; its class sibling may be too.
+        test <@ selected |> Set.contains "ClassTests.JobTests.``schedules purge``" @>
+
 module ``dispatch templates`` =
 
     [<Fact>]

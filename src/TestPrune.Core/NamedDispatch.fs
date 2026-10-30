@@ -135,6 +135,12 @@ let templateRegex (template: string) : Result<Regex, string> =
 /// backticked name ending in a parenthesis (``` ``purges (NEWS-645)`` ```): the reduction
 /// keeps only the last parenthesised group, `NEWS-645`, so no member matched and the match
 /// fell to the enclosing class. Either form is accepted.
+///
+/// A TYPE found this way (the match sits in a class `let` or constructor, outside every
+/// member) brings its members with it. The type symbol alone reaches no test: a test
+/// method does not depend on its own class, and the impact walk expands a type to its
+/// members only at a changed seed, never along an edge. The binding runs when the class
+/// is built or a member reads it, so every member is a dispatcher.
 let private enclosingSymbols
     (checker: FSharpChecker)
     (path: string)
@@ -174,7 +180,16 @@ let private enclosingSymbols
                         && s.LineStart <= r.EndLine)
                 with
                 | [] -> None
-                | found -> Some found)
+                | found ->
+                    found
+                    |> List.collect (fun s ->
+                        match s.Kind with
+                        | Type ->
+                            s
+                            :: (fileSymbols |> List.filter (fun m -> m.FullName.StartsWith(s.FullName + ".")))
+                        | _ -> [ s ])
+                    |> List.distinct
+                    |> Some)
             |> Option.defaultValue [])
 
 /// All named-dispatch edges the store's tree implies: the extension's complete edge set,

@@ -7,6 +7,9 @@
   The parse tree's name was reduced as if it were a stored full name, which kept only the
   last parenthesised group, so no member matched and the edge started at the enclosing
   class, from which the impact walk reaches no test.
+- fix: a dispatch literal in a class binding outside every member (a class `let` or the
+  constructor) couples the class's members as well as the class. The class symbol alone
+  reached no test: a test method does not depend on its own class.
 - build: the package's source and project links point at github.com/michaelglass/FsHotWatch, where
   TestPrune now lives with its history (AUTOMATION-1367). No code change.
 
