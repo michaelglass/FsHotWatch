@@ -1,0 +1,3059 @@
+module TestPrune.Tests.DatabaseTests
+
+open System
+open System.IO
+open Xunit
+open Swensen.Unquote
+open Microsoft.Data.Sqlite
+open TestPrune.AstAnalyzer
+open TestPrune.Database
+open TestPrune.Tests.TestHelpers
+
+let private openRawConnection (dbPath: string) =
+    let conn = new SqliteConnection($"Data Source=%s{dbPath}")
+    conn.Open()
+    conn
+
+module ``Create initializes schema`` =
+
+    [<Fact>]
+    let ``create db and query without error`` () =
+        withDb (fun db ->
+            let symbols = db.GetSymbolsInFile "nonexistent.fs"
+            test <@ symbols |> List.isEmpty @>
+
+            let names = db.GetAllSymbolNames()
+            test <@ names = Set.empty @>
+
+            let affected = db.QueryAffectedTests []
+            test <@ affected |> List.isEmpty @>)
+
+module ``Store and retrieve symbols`` =
+
+    [<Fact>]
+    let ``insert via RebuildProjects and query back via GetSymbolsInFile`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "MyModule.myFunc"
+                        Kind = Function
+                        SourceFile = "src/MyModule.fs"
+                        LineStart = 5
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "MyModule.MyType"
+                        Kind = Type
+                        SourceFile = "src/MyModule.fs"
+                        LineStart = 12
+                        LineEnd = 20
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let symbols = db.GetSymbolsInFile "src/MyModule.fs"
+            test <@ symbols.Length = 2 @>
+            test <@ symbols[0].FullName = "MyModule.myFunc" @>
+            test <@ symbols[0].Kind = Function @>
+            test <@ symbols[0].LineStart = 5 @>
+            test <@ symbols[1].FullName = "MyModule.MyType" @>
+            test <@ symbols[1].Kind = Type @>)
+
+module ``Transitive dependency query`` =
+
+    [<Fact>]
+    let ``testA depends on funcB depends on TypeC — changing TypeC returns testA`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Domain.TypeC"
+                        Kind = Type
+                        SourceFile = "src/Domain.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.funcB"
+                        Kind = Calls
+                        Source = "core" }
+                      { FromSymbol = "Lib.funcB"
+                        ToSymbol = "Domain.TypeC"
+                        Kind = UsesType
+                        Source = "core" } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.testA"
+                        TestProject = "MyTests"
+                        TestClass = "Tests"
+                        TestMethod = "testA" } ]
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let affected = db.QueryAffectedTests [ "Domain.TypeC" ]
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "testA" @>
+            test <@ affected[0].TestClass = "Tests" @>
+            test <@ affected[0].TestProject = "MyTests" @>)
+
+module ``Direct dependency`` =
+
+    [<Fact>]
+    let ``testA depends on funcB — changing funcB returns testA`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.funcB"
+                        Kind = Calls
+                        Source = "core" } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.testA"
+                        TestProject = "MyTests"
+                        TestClass = "Tests"
+                        TestMethod = "testA" } ]
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let affected = db.QueryAffectedTests [ "Lib.funcB" ]
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "testA" @>)
+
+module ``No dependency`` =
+
+    [<Fact>]
+    let ``change symbol that no test depends on returns empty`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Other.unrelated"
+                        Kind = Function
+                        SourceFile = "src/Other.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.funcB"
+                        Kind = Calls
+                        Source = "core" } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.testA"
+                        TestProject = "MyTests"
+                        TestClass = "Tests"
+                        TestMethod = "testA" } ]
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let affected = db.QueryAffectedTests [ "Other.unrelated" ]
+            test <@ affected |> List.isEmpty @>)
+
+module ``Test edits its own body`` =
+
+    // ROOT CAUSE of FsHotWatch ISSUE B: editing a test's OWN symbol must
+    // re-select it. The changed test is the seed, with no incoming edges, so
+    // the SQLite `transitive_deps` CTE (which seeded only dependents) omitted
+    // it — diverging from the in-memory store, which includes its seeds. The
+    // InMemoryStoreTests twin runs `standardGraph` through the same assertion.
+    [<Fact>]
+    let ``changing a test method's own symbol selects that test`` () =
+        withDb (fun db ->
+            db.RebuildProjects([ standardGraph ])
+
+            // The CHANGED symbol is the test method itself, not anything it
+            // depends on; it must still be selected for re-run.
+            let affected = db.QueryAffectedTests [ "Tests.testA" ]
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "testA" @>)
+
+    // A member-bodied test whose class is a Type: editing the member must
+    // select the test even though nothing depends on the member. (Exercises the
+    // aggregate-type lift path AND the seed-inclusion fix together.)
+    [<Fact>]
+    let ``changing a member test on a Type class selects that test`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.AdminDashboardTests"
+                        Kind = Type
+                        SourceFile = "tests/AdminDashboardTests.fs"
+                        LineStart = 1
+                        LineEnd = 20
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Tests.AdminDashboardTests.renders"
+                        Kind = Function
+                        SourceFile = "tests/AdminDashboardTests.fs"
+                        LineStart = 3
+                        LineEnd = 8
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.dashboard"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.AdminDashboardTests.renders"
+                        ToSymbol = "Lib.dashboard"
+                        Kind = Calls
+                        Source = "core" } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.AdminDashboardTests.renders"
+                        TestProject = "AdminTests"
+                        TestClass = "AdminDashboardTests"
+                        TestMethod = "renders" } ]
+                  Attributes = []
+                  ParentLinks =
+                    [ { Child = "Tests.AdminDashboardTests.renders"
+                        Parent = "Tests.AdminDashboardTests" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let affected = db.QueryAffectedTests [ "Tests.AdminDashboardTests.renders" ]
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "renders" @>)
+
+module ``RebuildProjects replaces old data`` =
+
+    [<Fact>]
+    let ``rebuild twice only latest data present`` () =
+        withDb (fun db ->
+            let result1 =
+                { Symbols =
+                    [ { FullName = "Mod.oldFunc"
+                        Kind = Function
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result1 ])
+
+            let result2 =
+                { Symbols =
+                    [ { FullName = "Mod.newFunc"
+                        Kind = Function
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result2 ])
+
+            let symbols = db.GetSymbolsInFile "src/Mod.fs"
+            test <@ symbols.Length = 1 @>
+            test <@ symbols[0].FullName = "Mod.newFunc" @>
+
+            let allNames = db.GetAllSymbolNames()
+            test <@ allNames |> Set.contains "Mod.oldFunc" |> not @>
+            test <@ allNames |> Set.contains "Mod.newFunc" @>)
+
+module ``Cross-project dependencies`` =
+
+    [<Fact>]
+    let ``cross-project dep edges survive regardless of list order`` () =
+        withDb (fun db ->
+            // Project A defines the symbol
+            let projectA =
+                { Symbols =
+                    [ { FullName = "LibModule.helper"
+                        Kind = Function
+                        SourceFile = "src/Lib/Helper.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            // Project B has a test that depends on A's symbol
+            let projectB =
+                { Symbols =
+                    [ { FullName = "Tests.MyTests.test1"
+                        Kind = Function
+                        SourceFile = "tests/MyTests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.MyTests.test1"
+                        ToSymbol = "LibModule.helper"
+                        Kind = Calls
+                        Source = "core" } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.MyTests.test1"
+                        TestProject = "ProjectB"
+                        TestClass = "Tests.MyTests"
+                        TestMethod = "test1" } ]
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            // Pass B before A: a dependent indexed ahead of its dependency must not
+            // lose the edge.
+            db.RebuildProjects([ projectB; projectA ])
+
+            let affected = db.QueryAffectedTests [ "LibModule.helper" ]
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "test1" @>)
+
+module ``Cross-project transitive chain`` =
+
+    [<Fact>]
+    let ``change in project A reaches test in project C through handler in project B`` () =
+        withDb (fun db ->
+            let projectA =
+                AnalysisResult.Create(
+                    [ { FullName = "Database.UserQueries.getUserById"
+                        Kind = Function
+                        SourceFile = "src/Database/UserQueries.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ],
+                    [],
+                    []
+                )
+
+            let projectB =
+                AnalysisResult.Create(
+                    [ { FullName = "Web.Handlers.User.dashboard"
+                        Kind = Function
+                        SourceFile = "src/Web/Handlers/User.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false } ],
+                    [ { FromSymbol = "Web.Handlers.User.dashboard"
+                        ToSymbol = "Database.UserQueries.getUserById"
+                        Kind = Calls
+                        Source = "core" } ],
+                    []
+                )
+
+            let projectC =
+                AnalysisResult.Create(
+                    [ { FullName = "Tests.UserTests.test dashboard"
+                        Kind = Function
+                        SourceFile = "tests/UserTests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ],
+                    [ { FromSymbol = "Tests.UserTests.test dashboard"
+                        ToSymbol = "Web.Handlers.User.dashboard"
+                        Kind = Calls
+                        Source = "core" } ],
+                    [ { SymbolFullName = "Tests.UserTests.test dashboard"
+                        TestProject = "Tests"
+                        TestClass = "Tests.UserTests"
+                        TestMethod = "test dashboard" } ]
+                )
+
+            db.RebuildProjects([ projectA; projectB; projectC ])
+
+            let affected = db.QueryAffectedTests [ "Database.UserQueries.getUserById" ]
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "test dashboard" @>)
+
+    [<Fact>]
+    let ``change in project A reaches tests in both direct and transitive projects`` () =
+        withDb (fun db ->
+            let projectA =
+                AnalysisResult.Create(
+                    [ { FullName = "Lib.helper"
+                        Kind = Function
+                        SourceFile = "src/Lib/Helper.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ],
+                    [],
+                    []
+                )
+
+            let projectB =
+                AnalysisResult.Create(
+                    [ { FullName = "Web.Middleware.auth"
+                        Kind = Function
+                        SourceFile = "src/Web/Middleware.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false } ],
+                    [ { FromSymbol = "Web.Middleware.auth"
+                        ToSymbol = "Lib.helper"
+                        Kind = Calls
+                        Source = "core" } ],
+                    []
+                )
+
+            let unitTests =
+                AnalysisResult.Create(
+                    [ { FullName = "UnitTests.test helper"
+                        Kind = Function
+                        SourceFile = "tests/UnitTests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ],
+                    [ { FromSymbol = "UnitTests.test helper"
+                        ToSymbol = "Lib.helper"
+                        Kind = Calls
+                        Source = "core" } ],
+                    [ { SymbolFullName = "UnitTests.test helper"
+                        TestProject = "UnitTests"
+                        TestClass = "UnitTests"
+                        TestMethod = "test helper" } ]
+                )
+
+            let integrationTests =
+                AnalysisResult.Create(
+                    [ { FullName = "IntegTests.test auth flow"
+                        Kind = Function
+                        SourceFile = "tests/IntegTests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ],
+                    [ { FromSymbol = "IntegTests.test auth flow"
+                        ToSymbol = "Web.Middleware.auth"
+                        Kind = Calls
+                        Source = "core" } ],
+                    [ { SymbolFullName = "IntegTests.test auth flow"
+                        TestProject = "IntegTests"
+                        TestClass = "IntegTests"
+                        TestMethod = "test auth flow" } ]
+                )
+
+            db.RebuildProjects([ projectA; projectB; unitTests; integrationTests ])
+
+            let affected = db.QueryAffectedTests [ "Lib.helper" ]
+            let methods = affected |> List.map (fun t -> t.TestMethod) |> Set.ofList
+            test <@ affected.Length = 2 @>
+            test <@ methods = set [ "test helper"; "test auth flow" ] @>)
+
+module ``Multiple tests depending on same symbol`` =
+
+    [<Fact>]
+    let ``returns all tests`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.test1"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Tests.test2"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 5
+                        LineEnd = 7
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.sharedFunc"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.test1"
+                        ToSymbol = "Lib.sharedFunc"
+                        Kind = Calls
+                        Source = "core" }
+                      { FromSymbol = "Tests.test2"
+                        ToSymbol = "Lib.sharedFunc"
+                        Kind = Calls
+                        Source = "core" } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.test1"
+                        TestProject = "MyTests"
+                        TestClass = "Tests"
+                        TestMethod = "test1" }
+                      { SymbolFullName = "Tests.test2"
+                        TestProject = "MyTests"
+                        TestClass = "Tests"
+                        TestMethod = "test2" } ]
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let affected = db.QueryAffectedTests [ "Lib.sharedFunc" ]
+            test <@ affected.Length = 2 @>
+
+            let methods = affected |> List.map (fun t -> t.TestMethod) |> Set.ofList
+            test <@ methods = set [ "test1"; "test2" ] @>)
+
+module ``GetAllSymbolNames`` =
+
+    [<Fact>]
+    let ``returns the full set of names`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "A.one"
+                        Kind = Function
+                        SourceFile = "src/A.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "B.two"
+                        Kind = Type
+                        SourceFile = "src/B.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "C.three"
+                        Kind = Value
+                        SourceFile = "src/C.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let names = db.GetAllSymbolNames()
+            test <@ names = set [ "A.one"; "B.two"; "C.three" ] @>)
+
+module ``RebuildProjects with cache keys`` =
+
+    [<Fact>]
+    let ``RebuildProjects stores fileKeys and projectKeys atomically`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Mod.func"
+                        Kind = Function
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects(
+                [ result ],
+                fileKeys = [ ("src/Mod.fs", "file-key-abc") ],
+                projectKeys = [ ("MyProject", "proj-key-123") ]
+            )
+
+            test <@ db.GetFileKey "src/Mod.fs" = Some "file-key-abc" @>
+            test <@ db.GetProjectKey "MyProject" = Some "proj-key-123" @>)
+
+    [<Fact>]
+    let ``RebuildProjects without optional keys does not clear existing keys`` () =
+        withDb (fun db ->
+            // Seed existing keys via RebuildProjects
+            let seedResult =
+                { Symbols =
+                    [ { FullName = "Existing.func"
+                        Kind = Function
+                        SourceFile = "src/Existing.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects(
+                [ seedResult ],
+                fileKeys = [ ("src/Existing.fs", "existing-key") ],
+                projectKeys = [ ("ExistingProj", "existing-proj-key") ]
+            )
+
+            // Now rebuild with a different project, no optional keys
+            let result =
+                { Symbols =
+                    [ { FullName = "New.func"
+                        Kind = Function
+                        SourceFile = "src/New.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            // Pre-existing keys should still be there
+            test <@ db.GetFileKey "src/Existing.fs" = Some "existing-key" @>
+            test <@ db.GetProjectKey "ExistingProj" = Some "existing-proj-key" @>)
+
+module ``Empty database queries`` =
+
+    [<Fact>]
+    let ``GetAllSymbols returns empty on fresh database`` () =
+        withDb (fun db ->
+            let symbols = db.GetAllSymbols()
+            test <@ symbols |> List.isEmpty @>)
+
+    [<Fact>]
+    let ``GetTestMethodSymbolNames returns empty on fresh database`` () =
+        withDb (fun db ->
+            let names = db.GetTestMethodSymbolNames()
+            test <@ names = Set.empty @>)
+
+    [<Fact>]
+    let ``GetReachableSymbols with non-empty roots on empty database returns empty`` () =
+        withDb (fun db ->
+            let reachable = db.GetReachableSymbols([ "nonexistent" ])
+            test <@ reachable = Set.empty @>)
+
+module ``stringToSymbolKind fallback`` =
+
+    [<Fact>]
+    let ``unknown kind string falls back to Value`` () =
+        withDbPath (fun path db ->
+            // Insert a symbol row with an unknown kind string directly via raw SQL
+            use conn = openRawConnection path
+
+            use cmd = conn.CreateCommand()
+
+            cmd.CommandText <-
+                """
+                INSERT INTO symbols (full_name, kind) VALUES ('Foo.bar', 'UnknownKind');
+                INSERT INTO symbol_occurrences (symbol_id, source_file, line_start, line_end, indexed_at)
+                SELECT id, 'src/Foo.fs', 1, 5, '2024-01-01T00:00:00Z' FROM symbols WHERE full_name = 'Foo.bar'
+                """
+
+            cmd.ExecuteNonQuery() |> ignore
+
+            let symbols = db.GetSymbolsInFile("src/Foo.fs")
+            test <@ symbols.Length = 1 @>
+            test <@ symbols[0].Kind = Value @>)
+
+module ``stringToDepKind fallback`` =
+
+    [<Fact>]
+    let ``unknown dep kind string falls back to References`` () =
+        withDbPath (fun path db ->
+            // Seed two symbols so we can insert a dependency between them
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.testA"
+                        TestProject = "MyTests"
+                        TestClass = "Tests"
+                        TestMethod = "testA" } ]
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            // Insert a dependency with an unknown dep_kind directly via raw SQL
+            use conn = openRawConnection path
+
+            use cmd = conn.CreateCommand()
+
+            cmd.CommandText <-
+                """
+                INSERT OR IGNORE INTO source_files (path) VALUES ('tests/Tests.fs');
+                INSERT INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source_file_id)
+                SELECT f.id, t.id, 'unknown_dep_kind', (SELECT id FROM source_files WHERE path = 'tests/Tests.fs')
+                FROM symbols f, symbols t
+                WHERE f.full_name = 'Tests.testA' AND t.full_name = 'Lib.funcB'
+                """
+
+            cmd.ExecuteNonQuery() |> ignore
+
+            // QueryAffectedTests traverses dependencies; the unknown kind should fall back to
+            // References, meaning testA is still returned as affected by funcB
+            let affected = db.QueryAffectedTests([ "Lib.funcB" ])
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "testA" @>)
+
+module ``Project key storage`` =
+
+    [<Fact>]
+    let ``GetProjectKey returns None when no hash stored`` () =
+        withDb (fun db ->
+            let hash = db.GetProjectKey "MyProject"
+            test <@ hash = None @>)
+
+module ``symbolKindToString and round-trip`` =
+
+    [<Fact>]
+    let ``Property kind round-trips through database`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Mod.MyProp"
+                        Kind = Property
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let symbols = db.GetSymbolsInFile "src/Mod.fs"
+            test <@ symbols.Length = 1 @>
+            test <@ symbols[0].Kind = Property @>
+            test <@ symbols[0].FullName = "Mod.MyProp" @>)
+
+    [<Fact>]
+    let ``DuCase kind round-trips through database`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Mod.MyDU.CaseA"
+                        Kind = DuCase
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let symbols = db.GetSymbolsInFile "src/Mod.fs"
+            test <@ symbols.Length = 1 @>
+            test <@ symbols[0].Kind = DuCase @>)
+
+    [<Fact>]
+    let ``Module kind round-trips through database`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Mod"
+                        Kind = Module
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let symbols = db.GetSymbolsInFile "src/Mod.fs"
+            test <@ symbols.Length = 1 @>
+            test <@ symbols[0].Kind = Module @>)
+
+module ``depKindToString and round-trip`` =
+
+    [<Fact>]
+    let ``UsesType dep kind round-trips through database`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.MyType"
+                        Kind = Type
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.MyType"
+                        Kind = UsesType
+                        Source = "core" } ]
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let deps = db.GetDependenciesFromFile "tests/Tests.fs"
+            test <@ deps.Length = 1 @>
+            test <@ deps[0].Kind = UsesType @>)
+
+    [<Fact>]
+    let ``PatternMatches dep kind round-trips through database`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.Case1"
+                        Kind = DuCase
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.Case1"
+                        Kind = PatternMatches
+                        Source = "core" } ]
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let deps = db.GetDependenciesFromFile "tests/Tests.fs"
+            test <@ deps.Length = 1 @>
+            test <@ deps[0].Kind = PatternMatches @>)
+
+    [<Fact>]
+    let ``References dep kind round-trips through database`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.someVal"
+                        Kind = Value
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.someVal"
+                        Kind = References
+                        Source = "core" } ]
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let deps = db.GetDependenciesFromFile "tests/Tests.fs"
+            test <@ deps.Length = 1 @>
+            test <@ deps[0].Kind = References @>)
+
+    [<Fact>]
+    let ``SharedState dep kind round-trips through database`` () =
+        withDb (fun db ->
+            let result =
+                AnalysisResult.Create(
+                    [ { FullName = "Writer.save"
+                        Kind = Function
+                        SourceFile = "src/Writer.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "aaa"
+                        IsExtern = false }
+                      { FullName = "Reader.load"
+                        Kind = Function
+                        SourceFile = "src/Reader.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "bbb"
+                        IsExtern = false } ],
+                    [ { FromSymbol = "Writer.save"
+                        ToSymbol = "Reader.load"
+                        Kind = SharedState
+                        Source = "sql" } ],
+                    []
+                )
+
+            db.RebuildProjects([ result ])
+            let deps = db.GetDependenciesFromFile("src/Writer.fs")
+            test <@ deps.Length = 1 @>
+            test <@ deps[0].Kind = SharedState @>
+            test <@ deps[0].Source = "sql" @>)
+
+module ``GetDependenciesFromFile`` =
+
+    [<Fact>]
+    let ``returns dependencies originating from the given file`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.funcB"
+                        Kind = Calls
+                        Source = "core" } ]
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let deps = db.GetDependenciesFromFile "tests/Tests.fs"
+            test <@ deps.Length = 1 @>
+            test <@ deps[0].FromSymbol = "Tests.testA" @>
+            test <@ deps[0].ToSymbol = "Lib.funcB" @>
+            test <@ deps[0].Kind = Calls @>)
+
+    [<Fact>]
+    let ``returns empty for file with no outgoing dependencies`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let deps = db.GetDependenciesFromFile "src/Lib.fs"
+            test <@ deps |> List.isEmpty @>)
+
+module ``Edge ownership is stored as a file id`` =
+
+    let private sym name file =
+        { FullName = name
+          Kind = Function
+          SourceFile = file
+          LineStart = 1
+          LineEnd = 5
+          ContentHash = ""
+          IsExtern = false }
+
+    let private edge from target =
+        { FromSymbol = from
+          ToSymbol = target
+          Kind = Calls
+          Source = "core" }
+
+    let private testMethod name cls =
+        { SymbolFullName = name
+          TestProject = "Tests"
+          TestClass = cls
+          TestMethod = name.Substring(name.LastIndexOf '.' + 1) }
+
+    let private fileResult symbols deps tests =
+        AnalysisResult.Create(symbols, deps, tests)
+
+    let private scalarRows (path: string) (sql: string) =
+        use conn = openRawConnection path
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- sql
+        use reader = cmd.ExecuteReader()
+
+        [ while reader.Read() do
+              yield List.init reader.FieldCount (fun i -> string (reader.GetValue i)) ]
+
+    [<Fact>]
+    let ``a stored edge carries an integer file id that resolves to its owner path`` () =
+        withDbPath (fun path db ->
+            db.RebuildProjects(
+                [ fileResult [ sym "Tests.testA" "tests/Tests.fs" ] [ edge "Tests.testA" "Lib.funcB" ] []
+                  fileResult [ sym "Lib.funcB" "src/Lib.fs" ] [ edge "Lib.funcB" "Lib.funcC" ] []
+                  fileResult [ sym "Lib.funcC" "src/Lib2.fs" ] [] [] ]
+            )
+
+            let rows =
+                scalarRows
+                    path
+                    """
+                    SELECT typeof(d.source_file_id), f.path
+                    FROM dependencies d
+                    JOIN source_files f ON f.id = d.source_file_id
+                    ORDER BY f.path
+                    """
+
+            test <@ rows = [ [ "integer"; "src/Lib.fs" ]; [ "integer"; "tests/Tests.fs" ] ] @>)
+
+    [<Fact>]
+    let ``the edge table, its key and its by-file index hold no path text`` () =
+        withDbPath (fun path _ ->
+            let columns =
+                scalarRows path "SELECT name FROM pragma_table_info('dependencies') ORDER BY cid"
+                |> List.map List.head
+
+            test <@ columns = [ "from_symbol_id"; "to_symbol_id"; "dep_kind"; "source"; "source_file_id" ] @>
+
+            let byFile =
+                scalarRows path "SELECT name FROM pragma_index_info('idx_deps_by_file')"
+                |> List.map List.head
+
+            test <@ byFile = [ "source_file_id" ] @>
+
+            let primaryKey =
+                scalarRows path "SELECT name FROM pragma_table_info('dependencies') WHERE pk > 0 ORDER BY pk"
+                |> List.map List.head
+
+            test <@ primaryKey = [ "from_symbol_id"; "to_symbol_id"; "dep_kind"; "source_file_id" ] @>)
+
+    [<Fact>]
+    let ``a path is stored once however many edges it owns and however often it is re-indexed`` () =
+        withDbPath (fun path db ->
+            let lib =
+                fileResult
+                    [ sym "Lib.a" "src/Lib.fs"; sym "Lib.b" "src/Lib.fs"; sym "Lib.c" "src/Lib.fs" ]
+                    [ edge "Lib.a" "Lib.b"; edge "Lib.a" "Lib.c"; edge "Lib.b" "Lib.c" ]
+                    []
+
+            db.RebuildProjects([ lib ])
+            db.RebuildProjects([ lib ])
+            db.ReplaceExtensionEdges("ext", [ edge "Lib.c" "Lib.a" ])
+            db.ReplaceExtensionEdges("ext", [ edge "Lib.c" "Lib.b" ])
+
+            let paths = scalarRows path "SELECT path FROM source_files ORDER BY path"
+            test <@ paths = [ [ extensionEdgeOwner "ext" ]; [ "src/Lib.fs" ] ] @>)
+
+    /// Pins the selection a multi-file graph produces through a full index, an
+    /// incremental re-index of one file and an extension refresh. It held before edge
+    /// ownership moved to a file id and must hold, unchanged, after it.
+    [<Fact>]
+    let ``selection and per-file edges are unchanged through incremental re-indexing`` () =
+        withDb (fun db ->
+            let tests =
+                fileResult
+                    [ sym "Tests.T.testA" "tests/T.fs"; sym "Tests.T.testB" "tests/T.fs" ]
+                    [ edge "Tests.T.testA" "Lib.L.f"; edge "Tests.T.testB" "Lib.M.g" ]
+                    [ testMethod "Tests.T.testA" "T"; testMethod "Tests.T.testB" "T" ]
+
+            let otherTests =
+                fileResult
+                    [ sym "Tests.U.testC" "tests/U.fs" ]
+                    [ edge "Tests.U.testC" "Lib.L.h" ]
+                    [ testMethod "Tests.U.testC" "U" ]
+
+            let libV1 =
+                fileResult
+                    [ sym "Lib.L.f" "src/L.fs"; sym "Lib.L.h" "src/L.fs" ]
+                    [ edge "Lib.L.f" "Lib.M.g"; edge "Lib.L.h" "Lib.M.k" ]
+                    []
+
+            let m = fileResult [ sym "Lib.M.g" "src/M.fs"; sym "Lib.M.k" "src/M.fs" ] [] []
+
+            db.RebuildProjects([ tests; otherTests; libV1; m ])
+
+            let selected seeds =
+                db.QueryAffectedTests seeds |> List.map (fun t -> t.SymbolFullName) |> List.sort
+
+            test <@ selected [ "Lib.M.g" ] = [ "Tests.T.testA"; "Tests.T.testB" ] @>
+            test <@ selected [ "Lib.M.k" ] = [ "Tests.U.testC" ] @>
+
+            // Re-index only src/L.fs: `h` now calls `g` instead of `k`. Edges owned by
+            // the test files survive; L.fs's old edges are replaced.
+            let libV2 =
+                fileResult
+                    [ sym "Lib.L.f" "src/L.fs"; sym "Lib.L.h" "src/L.fs" ]
+                    [ edge "Lib.L.f" "Lib.M.g"; edge "Lib.L.h" "Lib.M.g" ]
+                    []
+
+            db.RebuildProjects([ libV2 ])
+
+            test <@ selected [ "Lib.M.g" ] = [ "Tests.T.testA"; "Tests.T.testB"; "Tests.U.testC" ] @>
+            test <@ selected [ "Lib.M.k" ] |> List.isEmpty @>
+
+            let libEdges =
+                db.GetDependenciesFromFile "src/L.fs"
+                |> List.map (fun d -> d.FromSymbol, d.ToSymbol)
+                |> List.sort
+
+            test <@ libEdges = [ "Lib.L.f", "Lib.M.g"; "Lib.L.h", "Lib.M.g" ] @>
+            test <@ db.GetDependenciesFromFile "tests/U.fs" |> List.map (fun d -> d.ToSymbol) = [ "Lib.L.h" ] @>
+
+            // An extension edge is owned by its extension, not by any file.
+            db.ReplaceExtensionEdges("ext", [ edge "Tests.T.testA" "Lib.M.k" ])
+            test <@ selected [ "Lib.M.k" ] = [ "Tests.T.testA" ] @>
+            db.ReplaceExtensionEdges("ext", [])
+            test <@ selected [ "Lib.M.k" ] |> List.isEmpty @>
+            test <@ db.GetDependenciesFromFile "src/L.fs" |> List.length = 2 @>)
+
+module ``GetTestMethodsInFile`` =
+
+    [<Fact>]
+    let ``returns test methods defined in the given file`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.testA"
+                        TestProject = "MyTests"
+                        TestClass = "Tests"
+                        TestMethod = "testA" } ]
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let tests = db.GetTestMethodsInFile "tests/Tests.fs"
+            test <@ tests.Length = 1 @>
+            test <@ tests[0].TestMethod = "testA" @>
+            test <@ tests[0].TestClass = "Tests" @>
+            test <@ tests[0].TestProject = "MyTests" @>)
+
+    [<Fact>]
+    let ``returns empty for non-test file`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let tests = db.GetTestMethodsInFile "src/Lib.fs"
+            test <@ tests |> List.isEmpty @>)
+
+module ``Cross-project extern symbol dependencies`` =
+
+    [<Fact>]
+    let ``QueryAffectedTests traverses through extern symbols`` () =
+        withDb (fun db ->
+            let testProjectResult =
+                { Symbols =
+                    [ { FullName = "Tests.testConstructsType"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "abc"
+                        IsExtern = false }
+                      { FullName = "Lib.MyType"
+                        Kind = ExternRef
+                        SourceFile = ExternSourceFile
+                        LineStart = 0
+                        LineEnd = 0
+                        ContentHash = ""
+                        IsExtern = true } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testConstructsType"
+                        ToSymbol = "Lib.MyType"
+                        Kind = UsesType
+                        Source = "core" } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.testConstructsType"
+                        TestProject = "TestProject"
+                        TestClass = "Tests"
+                        TestMethod = "testConstructsType" } ]
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ testProjectResult ])
+
+            let affected = db.QueryAffectedTests [ "Lib.MyType" ]
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "testConstructsType" @>)
+
+    [<Fact>]
+    let ``extern symbol does not overwrite real symbol when both are in same RebuildProjects call`` () =
+        withDb (fun db ->
+            // Library defines the real symbol
+            let libResult =
+                { Symbols =
+                    [ { FullName = "Lib.MyType"
+                        Kind = Type
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = "real-hash"
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            // Test project produces an extern stub for the same symbol
+            let testResult =
+                { Symbols =
+                    [ { FullName = "Tests.myTest"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "test-hash"
+                        IsExtern = false }
+                      { FullName = "Lib.MyType"
+                        Kind = ExternRef
+                        SourceFile = ExternSourceFile
+                        LineStart = 0
+                        LineEnd = 0
+                        ContentHash = ""
+                        IsExtern = true } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.myTest"
+                        ToSymbol = "Lib.MyType"
+                        Kind = UsesType
+                        Source = "core" } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.myTest"
+                        TestProject = "TestProject"
+                        TestClass = "Tests"
+                        TestMethod = "myTest" } ]
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            // Both results in same call — real symbol should win
+            db.RebuildProjects([ libResult; testResult ])
+
+            // The real symbol should be preserved (not overwritten by extern stub)
+            let storedSymbols = db.GetSymbolsInFile "src/Lib.fs"
+            let myType = storedSymbols |> List.tryFind (fun s -> s.FullName = "Lib.MyType")
+            test <@ myType.IsSome @>
+            test <@ myType.Value.ContentHash = "real-hash" @>
+            test <@ not myType.Value.IsExtern @>
+
+            // The dependency edge should still resolve
+            let affected = db.QueryAffectedTests [ "Lib.MyType" ]
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "myTest" @>)
+
+    [<Fact>]
+    let ``re-indexing test project does not destroy real symbol from library project`` () =
+        withDb (fun db ->
+            // First: index library project
+            let libResult =
+                { Symbols =
+                    [ { FullName = "Lib.MyType"
+                        Kind = Type
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = "real-hash"
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ libResult ])
+
+            // Second: re-index test project (separate call, as happens in incremental indexing)
+            let testResult =
+                { Symbols =
+                    [ { FullName = "Tests.myTest"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "test-hash"
+                        IsExtern = false }
+                      { FullName = "Lib.MyType"
+                        Kind = ExternRef
+                        SourceFile = ExternSourceFile
+                        LineStart = 0
+                        LineEnd = 0
+                        ContentHash = ""
+                        IsExtern = true } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.myTest"
+                        ToSymbol = "Lib.MyType"
+                        Kind = UsesType
+                        Source = "core" } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.myTest"
+                        TestProject = "TestProject"
+                        TestClass = "Tests"
+                        TestMethod = "myTest" } ]
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ testResult ])
+
+            // Real symbol from library should still be intact
+            let storedSymbols = db.GetSymbolsInFile "src/Lib.fs"
+            let myType = storedSymbols |> List.tryFind (fun s -> s.FullName = "Lib.MyType")
+            test <@ myType.IsSome @>
+            test <@ myType.Value.ContentHash = "real-hash" @>
+
+            // Edge should resolve through the real symbol
+            let affected = db.QueryAffectedTests [ "Lib.MyType" ]
+            test <@ affected.Length = 1 @>)
+
+    // Re-indexing a library file must not cascade-delete the test→library edge, which a
+    // `DELETE FROM symbols WHERE source_file IN (...)` plus `ON DELETE CASCADE` on
+    // `dependencies.to_symbol_id` would do, leaving QueryAffectedTests at zero. Hence
+    // UPSERT (preserving row id on conflict) plus targeted orphan cleanup.
+    [<Fact>]
+    let ``re-indexing library file preserves incoming edges from non-re-indexed tests`` () =
+        withDb (fun db ->
+            // First pass: index both library and tests together with the full dep edge.
+            let lib =
+                { Symbols =
+                    [ { FullName = "Lib.MyType"
+                        Kind = Type
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = "v1"
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            let tests =
+                { Symbols =
+                    [ { FullName = "Tests.myTest"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "t1"
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.myTest"
+                        ToSymbol = "Lib.MyType"
+                        Kind = UsesType
+                        Source = "core" } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.myTest"
+                        TestProject = "TestProject"
+                        TestClass = "Tests"
+                        TestMethod = "myTest" } ]
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ lib; tests ])
+
+            // Sanity: the edge resolves before re-indexing.
+            let beforeAffected = db.QueryAffectedTests [ "Lib.MyType" ]
+            test <@ beforeAffected.Length = 1 @>
+
+            // Now re-index ONLY the library file (content changed). This is the
+            // incremental path: the test file is not re-analyzed.
+            let libV2 =
+                { lib with
+                    Symbols =
+                        [ { lib.Symbols[0] with
+                              ContentHash = "v2"
+                              LineEnd = 11 } ] }
+
+            db.RebuildProjects([ libV2 ])
+
+            // The test's incoming edge to Lib.MyType must still resolve.
+            let afterAffected = db.QueryAffectedTests [ "Lib.MyType" ]
+            test <@ afterAffected.Length = 1 @>
+            test <@ afterAffected[0].TestMethod = "myTest" @>)
+
+module ``Unknown enum deduplication`` =
+
+    [<Fact>]
+    let ``reading same unknown SymbolKind twice only warns once`` () =
+        withDbPath (fun path db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "A.func1"
+                        Kind = Function
+                        SourceFile = "src/A.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "A.func2"
+                        Kind = Function
+                        SourceFile = "src/A.fs"
+                        LineStart = 7
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            // Overwrite both symbols to have the same unknown kind
+            use conn = openRawConnection path
+            use cmd = conn.CreateCommand()
+
+            cmd.CommandText <-
+                "UPDATE symbols SET kind = 'FutureKind' WHERE id IN (SELECT symbol_id FROM symbol_occurrences WHERE source_file = 'src/A.fs')"
+
+            cmd.ExecuteNonQuery() |> ignore
+
+            // Read twice — both should deserialize without error
+            let symbols = db.GetSymbolsInFile "src/A.fs"
+            test <@ symbols.Length = 2 @>
+            test <@ symbols |> List.forall (fun s -> s.Kind = Value) @>)
+
+    [<Fact>]
+    let ``reading same unknown DependencyKind twice only warns once`` () =
+        withDbPath (fun path db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.funcB"
+                        Kind = Calls
+                        Source = "core" } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.testA"
+                        TestProject = "MyTests"
+                        TestClass = "Tests"
+                        TestMethod = "testA" } ]
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            // Overwrite to unknown dep kind, then duplicate the edge
+            use conn = openRawConnection path
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "UPDATE dependencies SET dep_kind = 'future_dep_kind'"
+            cmd.ExecuteNonQuery() |> ignore
+
+            // Insert a second edge with the same unknown kind
+            use cmd2 = conn.CreateCommand()
+
+            cmd2.CommandText <-
+                """
+                INSERT OR IGNORE INTO source_files (path) VALUES ('src/Lib.fs');
+                INSERT INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source_file_id)
+                SELECT f.id, t.id, 'future_dep_kind', (SELECT id FROM source_files WHERE path = 'src/Lib.fs')
+                FROM symbols f, symbols t
+                WHERE f.full_name = 'Lib.funcB' AND t.full_name = 'Tests.testA'
+                """
+
+            cmd2.ExecuteNonQuery() |> ignore
+
+            // Reading edges should deserialize both without error (dedup warning)
+            let affected = db.QueryAffectedTests([ "Lib.funcB" ])
+            test <@ affected.Length = 1 @>)
+
+module ``RebuildProjects edge cases`` =
+
+    [<Fact>]
+    let ``RebuildProjects with only extern symbols skips delete`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Ext.SomeType"
+                        Kind = ExternRef
+                        SourceFile = ExternSourceFile
+                        LineStart = 0
+                        LineEnd = 0
+                        ContentHash = ""
+                        IsExtern = true } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            // Should not throw even though no real source files to delete
+            db.RebuildProjects([ result ])
+
+            let allNames = db.GetAllSymbolNames()
+            test <@ allNames |> Set.contains "Ext.SomeType" @>)
+
+    [<Fact>]
+    let ``RebuildProjects with empty file keys does not error`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Mod.func"
+                        Kind = Function
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            // Pass Some [] for both keys
+            db.RebuildProjects([ result ], fileKeys = [], projectKeys = [])
+
+            let symbols = db.GetSymbolsInFile "src/Mod.fs"
+            test <@ symbols.Length = 1 @>)
+
+module ``GetFileKey`` =
+
+    [<Fact>]
+    let ``GetFileKey returns None when file not indexed`` () =
+        withDb (fun db ->
+            let key = db.GetFileKey "src/NonExistent.fs"
+            test <@ key = None @>)
+
+    [<Fact>]
+    let ``GetFileKey returns Some when file was indexed with key`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Mod.func"
+                        Kind = Function
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ], fileKeys = [ "src/Mod.fs", "abc123" ])
+
+            let key = db.GetFileKey "src/Mod.fs"
+            test <@ key = Some "abc123" @>)
+
+module ``openConnection error handling`` =
+
+    [<Fact>]
+    let ``creating database with nonexistent directory path fails gracefully`` () =
+        let dbPath = "/nonexistent/dir/that/does/not/exist/test.db"
+        Assert.ThrowsAny<exn>(fun () -> Database.create dbPath |> ignore)
+
+    [<Fact>]
+    let ``creating database with directory as path fails gracefully`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+
+        Directory.CreateDirectory(tmpDir) |> ignore
+
+        try
+            // SQLite may or may not fail when given a directory path;
+            // the point is that it should not hang or corrupt state
+            try
+                let _db = Database.create tmpDir
+                // If it doesn't throw, that's also acceptable
+                ()
+            with _ ->
+                ()
+        finally
+            try
+                Directory.Delete(tmpDir, true)
+            with _ ->
+                ()
+
+module ``GetTestMethodsInFile empty result`` =
+
+    [<Fact>]
+    let ``GetTestMethodsInFile returns empty for nonexistent file`` () =
+        withDb (fun db ->
+            let tests = db.GetTestMethodsInFile "nonexistent/file.fs"
+            test <@ tests |> List.isEmpty @>)
+
+module ``GetDependenciesFromFile empty result`` =
+
+    [<Fact>]
+    let ``GetDependenciesFromFile returns empty for nonexistent file`` () =
+        withDb (fun db ->
+            let deps = db.GetDependenciesFromFile "nonexistent/file.fs"
+            test <@ deps |> List.isEmpty @>)
+
+module ``GetIncomingEdgesBatch`` =
+
+    [<Fact>]
+    let ``GetIncomingEdgesBatch with empty input returns empty map`` () =
+        withDb (fun db -> test <@ db.GetIncomingEdgesBatch([]) = Map.empty @>)
+
+    [<Fact>]
+    let ``GetIncomingEdgesBatch returns incoming edges for populated database`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.funcB"
+                        Kind = Calls
+                        Source = "core" } ]
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let edges = db.GetIncomingEdgesBatch([ "Lib.funcB" ])
+            test <@ edges |> Map.containsKey "Lib.funcB" @>
+            test <@ edges["Lib.funcB"] = [ "Tests.testA" ] @>)
+
+    [<Fact>]
+    let ``GetIncomingEdgesBatch returns empty for symbols with no incoming edges`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let edges = db.GetIncomingEdgesBatch([ "Lib.funcB" ])
+            test <@ edges = Map.empty @>)
+
+module ``Analysis events`` =
+
+    [<Fact>]
+    let ``InsertEvent and GetEvents round-trip`` () =
+        withDb (fun db ->
+            db.InsertEvent("run1", "2024-01-01T00:00:00Z", "start", "data1")
+            db.InsertEvent("run1", "2024-01-01T00:01:00Z", "end", "data2")
+            db.InsertEvent("run2", "2024-01-01T00:02:00Z", "start", "data3")
+
+            let events = db.GetEvents("run1")
+            test <@ events.Length = 2 @>
+            let (ts, evType, evData) = events[0]
+            test <@ ts = "2024-01-01T00:00:00Z" @>
+            test <@ evType = "start" @>
+            test <@ evData = "data1" @>)
+
+    [<Fact>]
+    let ``GetEvents returns empty for unknown run ID`` () =
+        withDb (fun db ->
+            let events = db.GetEvents("nonexistent-run")
+            test <@ events |> List.isEmpty @>)
+
+    [<Fact>]
+    let ``ClearEvents removes events for given run ID only`` () =
+        withDb (fun db ->
+            db.InsertEvent("run1", "2024-01-01T00:00:00Z", "start", "data1")
+            db.InsertEvent("run2", "2024-01-01T00:01:00Z", "start", "data2")
+
+            db.ClearEvents("run1")
+
+            let run1Events = db.GetEvents("run1")
+            let run2Events = db.GetEvents("run2")
+            test <@ run1Events |> List.isEmpty @>
+            test <@ run2Events.Length = 1 @>)
+
+module ``GetReachableSymbols`` =
+
+    [<Fact>]
+    let ``GetReachableSymbols with empty roots returns empty`` () =
+        withDb (fun db ->
+            let reachable = db.GetReachableSymbols([])
+            test <@ reachable = Set.empty @>)
+
+    [<Fact>]
+    let ``GetReachableSymbols returns transitively reachable symbols`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Domain.TypeC"
+                        Kind = Type
+                        SourceFile = "src/Domain.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.funcB"
+                        Kind = Calls
+                        Source = "core" }
+                      { FromSymbol = "Lib.funcB"
+                        ToSymbol = "Domain.TypeC"
+                        Kind = UsesType
+                        Source = "core" } ]
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let reachable = db.GetReachableSymbols([ "Tests.testA" ])
+            test <@ reachable |> Set.contains "Tests.testA" @>
+            test <@ reachable |> Set.contains "Lib.funcB" @>
+            test <@ reachable |> Set.contains "Domain.TypeC" @>)
+
+module ``ExternRef kind round-trips through database`` =
+
+    [<Fact>]
+    let ``ExternRef kind round-trips through database`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Ext.SomeType"
+                        Kind = ExternRef
+                        SourceFile = ExternSourceFile
+                        LineStart = 0
+                        LineEnd = 0
+                        ContentHash = ""
+                        IsExtern = true } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let allSymbols = db.GetAllSymbols()
+
+            let externSym = allSymbols |> List.tryFind (fun s -> s.FullName = "Ext.SomeType")
+
+            test <@ externSym.IsSome @>
+            test <@ externSym.Value.Kind = ExternRef @>
+            test <@ externSym.Value.IsExtern @>)
+
+module ``GetTestMethodSymbolNames with data`` =
+
+    [<Fact>]
+    let ``GetTestMethodSymbolNames returns test symbol names`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.testA"
+                        TestProject = "MyTests"
+                        TestClass = "Tests"
+                        TestMethod = "testA" } ]
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let names = db.GetTestMethodSymbolNames()
+            test <@ names |> Set.contains "Tests.testA" @>)
+
+module ``Schema version migration`` =
+
+    let private setUserVersion (dbPath: string) (version: int) =
+        use conn = openRawConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- $"PRAGMA user_version = %d{version};"
+        cmd.ExecuteNonQuery() |> ignore
+
+    let private getUserVersion (dbPath: string) =
+        use conn = openRawConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- "PRAGMA user_version;"
+        cmd.ExecuteScalar() :?> int64 |> int
+
+    [<Fact>]
+    let ``recreates database when schema version is older than SchemaVersion`` () =
+        // Older stamps (e.g. v3) are incompatible — columns we now expect
+        // may not exist. Recreation is correct.
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+            let symbols = db.GetSymbolsInFile "src/Lib.fs"
+            test <@ symbols.Length = 1 @>
+
+            // Stamp an OLDER version. Any version < current SchemaVersion
+            // works as long as it's not 0 (which has its own case).
+            setUserVersion path 1
+
+            let db2 = Database.create path
+            let symbols2 = db2.GetSymbolsInFile "src/Lib.fs"
+            test <@ symbols2 |> List.isEmpty @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``an index built before inline members were indexed is rebuilt on open`` () =
+        // Schema 18 indexes carry no TestPrune.Inline attributes, and a file that is not
+        // re-indexed would never gain them. Reusing one would hide inline members from
+        // everything that reads the attribute index.
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+            setUserVersion path 18
+
+            let reopened = Database.create path
+            test <@ reopened.WasRecreated @>
+            test <@ reopened.GetSymbolsInFile "src/Lib.fs" |> List.isEmpty @>
+            test <@ getUserVersion path = SchemaVersion @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``WasRecreated reports fresh create and schema-bump recreate, not a compatible reopen`` () =
+        // Consumers with a sibling cache (e.g. FsHotWatch's FCS check cache) invalidate it
+        // when WasRecreated is true — a recreated DB has lost the symbols the cache assumes
+        // are still indexed.
+        let path = tempDbPath ()
+
+        try
+            // First-ever create (no file existed) → fresh.
+            let db = Database.create path
+            test <@ db.WasRecreated @>
+            db.RebuildProjects([ standardGraph ])
+
+            // Re-open at the current, compatible version → NOT recreated; symbols survive.
+            let db2 = Database.create path
+            test <@ not db2.WasRecreated @>
+            test <@ (db2.GetSymbolsInFile "src/Lib.fs").Length = 1 @>
+
+            // Stamp an incompatible older version → next open delete+recreates → fresh again.
+            setUserVersion path 1
+            let db3 = Database.create path
+            test <@ db3.WasRecreated @>
+            test <@ db3.GetSymbolsInFile "src/Lib.fs" |> List.isEmpty @>
+        finally
+            cleanupDb path
+
+    let private rowsOf (dbPath: string) (sql: string) =
+        use conn = openRawConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- sql
+        use reader = cmd.ExecuteReader()
+        let rows = ResizeArray<string>()
+
+        while reader.Read() do
+            rows.Add(reader.GetString 0)
+
+        List.ofSeq rows
+
+    let private tableExists (dbPath: string) (name: string) =
+        rowsOf dbPath $"SELECT name FROM sqlite_master WHERE type = 'table' AND name = '%s{name}'"
+        |> List.isEmpty
+        |> not
+
+    let private executeRaw (dbPath: string) (sql: string) =
+        use conn = openRawConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- sql
+        cmd.ExecuteNonQuery() |> ignore
+
+    // ADR-059 §5 (AUTOMATION-1362 step 8). Core owns its own tables, not the file: a
+    // schema rebuild drops and recreates the tables core's DDL creates and keeps every
+    // other table, rows included. FsHotWatch keeps state in the same file, and a bump
+    // that deleted it forced cold work it could not re-derive cheaply.
+    [<Fact>]
+    let ``a schema rebuild keeps a table core did not create, with its rows`` () =
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+
+            executeRaw
+                path
+                "CREATE TABLE host_state (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+                 INSERT INTO host_state (k, v) VALUES ('a', '1'), ('b', '2');"
+
+            setUserVersion path 1
+
+            let rebuilt = Database.create path
+            test <@ rebuilt.WasRecreated @>
+            test <@ rebuilt.GetSymbolsInFile "src/Lib.fs" |> List.isEmpty @>
+            test <@ getUserVersion path = SchemaVersion @>
+            test <@ rowsOf path "SELECT k || '=' || v FROM host_state ORDER BY k" = [ "a=1"; "b=2" ] @>
+
+            // The rebuilt core tables are fully usable at the current schema.
+            rebuilt.RebuildProjects([ standardGraph ])
+            test <@ (rebuilt.GetSymbolsInFile "src/Lib.fs").Length = 1 @>
+            test <@ not (Database.create path).WasRecreated @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``a pre-versioning database keeps its non-core tables when its core tables are rebuilt`` () =
+        // `user_version = 0` with tables reads as a pre-versioning index (or a file a plugin
+        // seeded through `Ports.pluginStoreAt` before core ever opened it). Only the tables
+        // core creates are rebuilt.
+        let path = tempDbPath ()
+
+        try
+            executeRaw
+                path
+                "CREATE TABLE symbols (id INTEGER PRIMARY KEY, legacy TEXT);
+                 INSERT INTO symbols (legacy) VALUES ('old');
+                 CREATE TABLE host_state (k TEXT PRIMARY KEY);
+                 INSERT INTO host_state (k) VALUES ('kept');"
+
+            let db = Database.create path
+            test <@ db.WasRecreated @>
+            test <@ getUserVersion path = SchemaVersion @>
+            test <@ rowsOf path "SELECT k FROM host_state" = [ "kept" ] @>
+
+            test
+                <@
+                    not (
+                        rowsOf path "SELECT name FROM pragma_table_info('symbols')"
+                        |> List.contains "legacy"
+                    )
+                @>
+
+            db.RebuildProjects([ standardGraph ])
+            test <@ (db.GetSymbolsInFile "src/Lib.fs").Length = 1 @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``a schema rebuild cascades into a kept table only the rows that pointed at core rows`` () =
+        // A plugin table may key its rows on core ids (FsHotWatch's project ratchet coverage
+        // references `symbol_occurrences(id) ON DELETE CASCADE`). The rebuild renumbers every
+        // core id, so a kept row still naming an old id would silently attach to whichever
+        // new row reuses it. The plugin's declared FK action runs instead: the dependent
+        // rows go, the table and its unrelated rows stay.
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+
+            executeRaw
+                path
+                "CREATE TABLE host_coverage (
+                     occurrence_id INTEGER NOT NULL REFERENCES symbol_occurrences(id) ON DELETE CASCADE,
+                     hits INTEGER NOT NULL);
+                 INSERT INTO host_coverage (occurrence_id, hits) SELECT id, 7 FROM symbol_occurrences;
+                 CREATE TABLE host_meta (k TEXT PRIMARY KEY);
+                 INSERT INTO host_meta (k) VALUES ('settled');"
+
+            test <@ rowsOf path "SELECT CAST(COUNT(*) AS TEXT) FROM host_coverage" <> [ "0" ] @>
+
+            setUserVersion path 1
+
+            let rebuilt = Database.create path
+            test <@ rebuilt.WasRecreated @>
+            test <@ tableExists path "host_coverage" @>
+            test <@ rowsOf path "SELECT CAST(COUNT(*) AS TEXT) FROM host_coverage" = [ "0" ] @>
+            test <@ rowsOf path "SELECT k FROM host_meta" = [ "settled" ] @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``a kept table whose foreign key forbids the rebuild falls back to recreating the file`` () =
+        // A NO ACTION foreign key from a non-core table to a core row makes the in-place
+        // drop fail. The rebuild is one transaction, so nothing is half-dropped: it rolls
+        // back, and the open falls back to deleting the file, as every rebuild once did.
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+
+            executeRaw
+                path
+                "CREATE TABLE host_pin (symbol_id INTEGER NOT NULL REFERENCES symbols(id));
+                 INSERT INTO host_pin (symbol_id) SELECT id FROM symbols;"
+
+            setUserVersion path 1
+
+            let rebuilt = Database.create path
+            test <@ rebuilt.WasRecreated @>
+            test <@ getUserVersion path = SchemaVersion @>
+            test <@ not (tableExists path "host_pin") @>
+            rebuilt.RebuildProjects([ standardGraph ])
+            test <@ (rebuilt.GetSymbolsInFile "src/Lib.fs").Length = 1 @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``refuses a database stamped newer than SchemaVersion and leaves it untouched`` () =
+        // A newer TestPrune.Core stamped v999 on this file. This version's DDL was written
+        // against an older schema, so running it here can only fail on a column the newer
+        // schema moved, or silently pass and leave two versions writing one file. Refuse
+        // before any DDL runs, and change nothing: not the rows, not the version marker a
+        // newer process relies on to detect older clients.
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+
+            let symbolRows () =
+                use conn = openRawConnection path
+                use count = conn.CreateCommand()
+                count.CommandText <- "SELECT COUNT(*) FROM symbols"
+                count.ExecuteScalar() :?> int64
+
+            let indexed = symbolRows ()
+            test <@ indexed > 0L @>
+
+            setUserVersion path 999
+
+            let ex =
+                Assert.Throws<SchemaNewerThanConsumerException>(fun () -> Database.create path |> ignore)
+
+            test <@ ex.dbPath = path @>
+            test <@ ex.foundVersion = 999 @>
+            test <@ ex.supportedVersion = SchemaVersion @>
+            test <@ getUserVersion path = 999 @>
+            test <@ symbolRows () = indexed @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``initializes an existing empty file in place`` () =
+        // A zero-byte file at the path reads `user_version = 0` with no tables: not a
+        // pre-versioning database to recreate, just an index that has not been created
+        // yet. It is initialized where it is, not deleted first.
+        let path = tempDbPath ()
+
+        try
+            File.WriteAllBytes(path, [||])
+            let db = Database.create path
+            test <@ not db.WasRecreated @>
+            test <@ getUserVersion path = SchemaVersion @>
+            test <@ db.GetAllSymbolNames() |> Set.isEmpty @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``sets schema version on new database`` () =
+        let path = tempDbPath ()
+
+        try
+            let _db = Database.create path
+            let version = getUserVersion path
+            test <@ version = SchemaVersion @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``fresh database remains fail-closed until its first completed index`` () =
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            test <@ db.IsIndexIncomplete() @>
+
+            let token = db.MarkIndexIncomplete()
+            test <@ db.CompleteIndex token @>
+            test <@ not (db.IsIndexIncomplete()) @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``older concurrent index cannot complete a newer attempt`` () =
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            let older = db.MarkIndexIncomplete()
+            let newer = db.MarkIndexIncomplete()
+
+            test <@ not (db.CompleteIndex older) @>
+            test <@ db.IsIndexIncomplete() @>
+            test <@ db.CompleteIndex newer @>
+            test <@ not (db.IsIndexIncomplete()) @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``preserves database when schema version matches`` () =
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+            let symbols = db.GetSymbolsInFile "src/Lib.fs"
+            test <@ symbols.Length = 1 @>
+
+            let db2 = Database.create path
+            let symbols2 = db2.GetSymbolsInFile "src/Lib.fs"
+            test <@ symbols2.Length = 1 @>
+        finally
+            cleanupDb path
+
+    /// Seeds a legacy-schema DB at `path` with the three-table skeleton.
+    /// `extraSymbolsColumns` appends columns to `symbols` (for fixtures that
+    /// carry post-v2 additions like `content_hash`, `is_extern`).
+    /// `stampedVersion` optionally writes `user_version`; omit to leave the
+    /// DB unstamped, modelling a pre-versioning install.
+    let private seedLegacySchema (path: string) (extraSymbolsColumns: string list) (stampedVersion: int option) =
+        let symbolsExtras =
+            extraSymbolsColumns
+            |> List.map (fun c -> $"                        {c},\n")
+            |> String.concat ""
+
+        let stamp =
+            match stampedVersion with
+            | Some v -> $"PRAGMA user_version = %d{v};"
+            | None -> ""
+
+        use conn = openRawConnection path
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            $"""
+            CREATE TABLE symbols (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                full_name TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                line_start INTEGER NOT NULL,
+                line_end INTEGER NOT NULL,
+%s{symbolsExtras}                indexed_at TEXT NOT NULL
+            );
+            CREATE TABLE dependencies (
+                from_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+                to_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+                dep_kind TEXT NOT NULL,
+                PRIMARY KEY (from_symbol_id, to_symbol_id, dep_kind)
+            );
+            CREATE TABLE test_methods (
+                symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+                test_project TEXT NOT NULL,
+                test_class TEXT NOT NULL,
+                test_method TEXT NOT NULL
+            );
+            %s{stamp}
+            """
+
+        cmd.ExecuteNonQuery() |> ignore
+
+    // A pre-versioning DB reads `user_version = 0`, which is indistinguishable from a
+    // fresh DB without also checking for existing tables; see `hasUserTables`.
+    [<Fact>]
+    let ``recreates database with user_version=0 and legacy tables`` () =
+        let path = tempDbPath ()
+
+        try
+            seedLegacySchema path [] None
+            test <@ getUserVersion path = 0 @>
+
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+
+            let symbols = db.GetSymbolsInFile "src/Lib.fs"
+            test <@ symbols.Length = 1 @>
+            test <@ getUserVersion path = SchemaVersion @>
+        finally
+            cleanupDb path
+
+    // Regression: 2.0.0 stamped v3 without `dependencies.source`; version check
+    // alone passed and the first INSERT crashed. Must recreate on open.
+    [<Fact>]
+    let ``recreates database stamped v3 with pre-3.0.0 schema missing source column`` () =
+        let path = tempDbPath ()
+
+        try
+            seedLegacySchema
+                path
+                [ "content_hash TEXT NOT NULL DEFAULT ''"
+                  "is_extern INTEGER NOT NULL DEFAULT 0" ]
+                (Some 3)
+
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+
+            let symbols = db.GetSymbolsInFile "src/Lib.fs"
+            test <@ symbols.Length = 1 @>
+        finally
+            cleanupDb path
+
+module ``Dependency source attribution`` =
+
+    [<Fact>]
+    let ``dependency source is stored and retrieved`` () =
+        withDb (fun db ->
+            let result =
+                AnalysisResult.Create(
+                    [ { FullName = "A.func"
+                        Kind = Function
+                        SourceFile = "src/A.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "abc"
+                        IsExtern = false }
+                      { FullName = "B.func"
+                        Kind = Function
+                        SourceFile = "src/B.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "def"
+                        IsExtern = false } ],
+                    [ { FromSymbol = "A.func"
+                        ToSymbol = "B.func"
+                        Kind = Calls
+                        Source = "core" } ],
+                    []
+                )
+
+            db.RebuildProjects([ result ])
+            let deps = db.GetDependenciesFromFile("src/A.fs")
+            test <@ deps.Length = 1 @>
+            test <@ deps[0].Source = "core" @>)
+
+    [<Fact>]
+    let ``multiple sources coexist in dependency graph`` () =
+        withDb (fun db ->
+            let result =
+                AnalysisResult.Create(
+                    [ { FullName = "A.func"
+                        Kind = Function
+                        SourceFile = "src/A.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "abc"
+                        IsExtern = false }
+                      { FullName = "B.func"
+                        Kind = Function
+                        SourceFile = "src/B.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "def"
+                        IsExtern = false }
+                      { FullName = "C.func"
+                        Kind = Function
+                        SourceFile = "src/C.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "ghi"
+                        IsExtern = false } ],
+                    [ { FromSymbol = "A.func"
+                        ToSymbol = "B.func"
+                        Kind = Calls
+                        Source = "core" }
+                      { FromSymbol = "A.func"
+                        ToSymbol = "C.func"
+                        Kind = SharedState
+                        Source = "sql" } ],
+                    []
+                )
+
+            db.RebuildProjects([ result ])
+            let deps = db.GetDependenciesFromFile("src/A.fs")
+            test <@ deps.Length = 2 @>
+            let sources = deps |> List.map (fun d -> d.Source) |> Set.ofList
+            test <@ sources = set [ "core"; "sql" ] @>)
+
+module ``Symbol attribute storage`` =
+
+    [<Fact>]
+    let ``attributes are stored and retrieved`` () =
+        withDb (fun db ->
+            let result =
+                { AnalysisResult.Create(
+                      [ { FullName = "Queries.getArticle"
+                          Kind = Function
+                          SourceFile = "src/Queries.fs"
+                          LineStart = 1
+                          LineEnd = 5
+                          ContentHash = "abc"
+                          IsExtern = false } ],
+                      [],
+                      []
+                  ) with
+                    Attributes =
+                        [ { SymbolFullName = "Queries.getArticle"
+                            AttributeName = "ReadsFromAttribute"
+                            ArgsJson = "[\"articles\", \"status\"]" } ] }
+
+            db.RebuildProjects([ result ])
+            let store = TestPrune.Ports.toSymbolStore db
+            let attrs = store.GetAttributesForSymbol "Queries.getArticle"
+            test <@ attrs.Length = 1 @>
+            test <@ fst attrs[0] = "ReadsFromAttribute" @>
+            test <@ snd attrs[0] = "[\"articles\", \"status\"]" @>)
+
+    [<Fact>]
+    let ``multiple attributes on same symbol`` () =
+        withDb (fun db ->
+            let result =
+                { AnalysisResult.Create(
+                      [ { FullName = "Queries.upsert"
+                          Kind = Function
+                          SourceFile = "src/Queries.fs"
+                          LineStart = 1
+                          LineEnd = 5
+                          ContentHash = "abc"
+                          IsExtern = false } ],
+                      [],
+                      []
+                  ) with
+                    Attributes =
+                        [ { SymbolFullName = "Queries.upsert"
+                            AttributeName = "ReadsFromAttribute"
+                            ArgsJson = "[\"articles\"]" }
+                          { SymbolFullName = "Queries.upsert"
+                            AttributeName = "WritesToAttribute"
+                            ArgsJson = "[\"articles\"]" } ] }
+
+            db.RebuildProjects([ result ])
+            let store = TestPrune.Ports.toSymbolStore db
+            let attrs = store.GetAttributesForSymbol "Queries.upsert"
+            test <@ attrs.Length = 2 @>)
+
+    [<Fact>]
+    let ``symbol with no attributes returns empty`` () =
+        withDb (fun db ->
+            db.RebuildProjects([ standardGraph ])
+            let store = TestPrune.Ports.toSymbolStore db
+            let attrs = store.GetAttributesForSymbol "Lib.funcB"
+            test <@ attrs.IsEmpty @>)
+
+module ``Edge source provenance`` =
+
+    [<Fact>]
+    let ``returns distinct sources in transitive path`` () =
+        withDb (fun db ->
+            let result =
+                AnalysisResult.Create(
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "t1"
+                        IsExtern = false }
+                      { FullName = "Service.process"
+                        Kind = Function
+                        SourceFile = "src/Service.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "s1"
+                        IsExtern = false }
+                      { FullName = "Queries.readItems"
+                        Kind = Function
+                        SourceFile = "src/Queries.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "q1"
+                        IsExtern = false }
+                      { FullName = "Jobs.writeItems"
+                        Kind = Function
+                        SourceFile = "src/Jobs.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "j1"
+                        IsExtern = false } ],
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Service.process"
+                        Kind = Calls
+                        Source = "core" }
+                      { FromSymbol = "Service.process"
+                        ToSymbol = "Queries.readItems"
+                        Kind = Calls
+                        Source = "core" }
+                      { FromSymbol = "Queries.readItems"
+                        ToSymbol = "Jobs.writeItems"
+                        Kind = SharedState
+                        Source = "sql" } ],
+                    [ { SymbolFullName = "Tests.testA"
+                        TestProject = "MyTests"
+                        TestClass = "Tests"
+                        TestMethod = "testA" } ]
+                )
+
+            db.RebuildProjects([ result ])
+            let sources = db.QueryEdgeSourcesForTest([ "Jobs.writeItems" ])
+            test <@ sources |> Set.ofList = set [ "core"; "sql" ] @>)
+
+    [<Fact>]
+    let ``returns only core for pure AST path`` () =
+        withDb (fun db ->
+            db.RebuildProjects([ standardGraph ])
+            let sources = db.QueryEdgeSourcesForTest([ "Domain.TypeC" ])
+            test <@ sources = [ "core" ] @>)
+
+module ``Schema v5: ParentLinks integration`` =
+
+    // Regression: the FsHotWatch daemon crashed with SQLite Error 1:
+    // 'no such column: parent_symbol_id' after running RebuildProjects
+    // multiple times with real analyzer output. Individual RebuildProjects
+    // calls with ParentLinks must succeed, and repeated calls on the same
+    // Database instance must not corrupt or lose the parent_symbol_id column.
+
+    [<Fact>]
+    let ``RebuildProjects with non-empty ParentLinks succeeds on a fresh DB`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "M.Foo"
+                        Kind = Type
+                        SourceFile = "Foo.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "M.Foo.bar"
+                        Kind = Function
+                        SourceFile = "Foo.fs"
+                        LineStart = 4
+                        LineEnd = 6
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks =
+                    [ { Child = "M.Foo.bar"
+                        Parent = "M.Foo" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+            let parents = db.GetParentLinksInFile "Foo.fs"
+            test <@ parents |> List.exists (fun p -> p.Child = "M.Foo.bar" && p.Parent = "M.Foo") @>)
+
+    [<Fact>]
+    let ``multiple RebuildProjects calls with ParentLinks preserve the parent_symbol_id column`` () =
+        withDb (fun db ->
+            // Mimic the daemon pattern: several per-file analyses flushed
+            // in one RebuildProjects batch, then another batch, repeat.
+            let mkResult file parent child =
+                { Symbols =
+                    [ { FullName = parent
+                        Kind = Type
+                        SourceFile = file
+                        LineStart = 1
+                        LineEnd = 20
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = child
+                        Kind = Function
+                        SourceFile = file
+                        LineStart = 2
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = [ { Child = child; Parent = parent } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            for i in 1..5 do
+                let file = sprintf "F%d.fs" i
+                let parent = sprintf "M.T%d" i
+                let child = sprintf "M.T%d.m%d" i i
+                db.RebuildProjects([ mkResult file parent child ])
+
+            // All 5 parent links should be readable.
+            for i in 1..5 do
+                let links = db.GetParentLinksInFile(sprintf "F%d.fs" i)
+                test <@ links.Length = 1 @>)
+
+    [<Fact>]
+    let ``reopening the DB file preserves the parent_symbol_id column`` () =
+        withDbPath (fun path db1 ->
+            let result =
+                { Symbols =
+                    [ { FullName = "M.T"
+                        Kind = Type
+                        SourceFile = "T.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db1.RebuildProjects([ result ])
+
+            // Second Database instance on the same file — what happens to
+            // stale WAL / shm journals? This is what fshotwatch daemon does on
+            // restart.
+            let db2 = Database.create path
+
+            let resultWithLinks =
+                { result with
+                    Symbols =
+                        result.Symbols
+                        @ [ { FullName = "M.T.m"
+                              Kind = Function
+                              SourceFile = "T.fs"
+                              LineStart = 2
+                              LineEnd = 4
+                              ContentHash = ""
+                              IsExtern = false } ]
+                    ParentLinks = [ { Child = "M.T.m"; Parent = "M.T" } ] }
+
+            db2.RebuildProjects([ resultWithLinks ])
+
+            let parents = db2.GetParentLinksInFile "T.fs"
+            test <@ parents |> List.exists (fun p -> p.Child = "M.T.m") @>)
+
+module ``Cache file cleanup`` =
+
+    /// `File.Delete dbPath` alone leaves stale `-wal` / `-shm` sidecars behind. SQLite
+    /// in WAL mode ties sidecars to the main DB file, so the next connection opening a
+    /// fresh empty DB alongside stale sidecars produces a 0-byte main DB with no tables,
+    /// and every subsequent INSERT hits "no such column". Hence the reusable helper.
+
+    [<Fact>]
+    let ``deleteCacheFiles removes main DB plus -wal and -shm sidecars`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-delete-{Guid.NewGuid():N}")
+
+        Directory.CreateDirectory(tmpDir) |> ignore
+        let dbPath = Path.Combine(tmpDir, "x.db")
+        let wal = dbPath + "-wal"
+        let shm = dbPath + "-shm"
+
+        File.WriteAllText(dbPath, "main")
+        File.WriteAllText(wal, "wal-entries")
+        File.WriteAllText(shm, "shm-header")
+
+        try
+            deleteCacheFiles dbPath
+
+            test <@ not (File.Exists dbPath) @>
+            test <@ not (File.Exists wal) @>
+            test <@ not (File.Exists shm) @>
+        finally
+            if Directory.Exists tmpDir then
+                Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``deleteCacheFiles is idempotent when main DB does not exist`` () =
+        // If the consumer has already deleted the main file (e.g. a
+        // partial recovery attempt), deleteCacheFiles must still clean up
+        // any leftover sidecars without throwing.
+        let tmpDir =
+            Path.Combine(Path.GetTempPath(), $"tp-delete-sidecars-{Guid.NewGuid():N}")
+
+        Directory.CreateDirectory(tmpDir) |> ignore
+        let dbPath = Path.Combine(tmpDir, "x.db")
+        let wal = dbPath + "-wal"
+
+        File.WriteAllText(wal, "stale")
+
+        try
+            deleteCacheFiles dbPath
+            test <@ not (File.Exists wal) @>
+        finally
+            if Directory.Exists tmpDir then
+                Directory.Delete(tmpDir, true)
+
+module ``Schema forward compatibility`` =
+
+    /// A NEWER TestPrune.Core writes a DB stamped above this version's `SchemaVersion`.
+    /// An OLDER consumer opening the same path must neither delete it (a consumer's
+    /// build tool pinned behind a daemon would wipe the daemon's index before every
+    /// run) nor run its own DDL against it: `CREATE ... IF NOT EXISTS` is only a no-op
+    /// while the newer schema is a superset of the older one, and a schema that MOVES a
+    /// column (v14 took `symbols.source_file` into `symbol_occurrences`) makes the older
+    /// version's `CREATE INDEX ... ON symbols (source_file)` fail with "no such column".
+    ///
+    /// Policy: version > SchemaVersion -> refuse with `SchemaNewerThanConsumerException`
+    /// before any DDL, naming both versions, and leave the file byte-for-byte alone.
+
+    let private withFutureDb (setup: string) (f: string -> unit) =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-fwd-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+        let dbPath = Path.Combine(tmpDir, "future.db")
+
+        use conn = new SqliteConnection($"Data Source=%s{dbPath}")
+        conn.Open()
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- setup
+        cmd.ExecuteNonQuery() |> ignore
+        conn.Close()
+        SqliteConnection.ClearPool(conn)
+
+        try
+            f dbPath
+        finally
+            if Directory.Exists tmpDir then
+                Directory.Delete(tmpDir, true)
+
+    let private tableExists (dbPath: string) (table: string) =
+        use conn = openRawConnection dbPath
+        use q = conn.CreateCommand()
+        q.CommandText <- "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $name"
+        q.Parameters.AddWithValue("$name", table) |> ignore
+        q.ExecuteScalar() :?> int64 = 1L
+
+    [<Fact>]
+    let ``opening a DB stamped at a future version fails before any core DDL runs`` () =
+        withFutureDb """
+            CREATE TABLE sentinel (id INTEGER PRIMARY KEY, note TEXT);
+            INSERT INTO sentinel(note) VALUES ('do-not-delete');
+            PRAGMA user_version = 99;
+            """ (fun dbPath ->
+            let ex =
+                Assert.Throws<SchemaNewerThanConsumerException>(fun () -> Database.create dbPath |> ignore)
+
+            test <@ ex.foundVersion = 99 @>
+            test <@ ex.supportedVersion = SchemaVersion @>
+            test <@ ex.Message.Contains "schema v99" @>
+            test <@ ex.Message.Contains $"schema v%d{SchemaVersion}" @>
+            test <@ ex.Message.Contains "TestPrune.Core" @>
+
+            // No DDL ran: none of this version's tables appeared next to the sentinel.
+            test <@ not (tableExists dbPath "symbols") @>
+
+            use conn = openRawConnection dbPath
+            use q = conn.CreateCommand()
+            q.CommandText <- "SELECT note FROM sentinel WHERE id = 1"
+            test <@ q.ExecuteScalar() :?> string = "do-not-delete" @>
+
+            use v = conn.CreateCommand()
+            v.CommandText <- "PRAGMA user_version;"
+            test <@ v.ExecuteScalar() :?> int64 = 99L @>)
+
+    [<Fact>]
+    let ``a future schema that moved a column this version indexes is refused, not crashed`` () =
+        // The observed failure: a consumer on schema v13 opened a v14 index, whose
+        // `symbols` no longer has `source_file`, and died inside its own DDL with
+        // `SQLite Error 1: no such column: source_file`. The version check must fire
+        // first, so the consumer sees which version to upgrade to instead of a SQL error.
+        withFutureDb $"""
+            CREATE TABLE symbols (id INTEGER PRIMARY KEY, full_name TEXT NOT NULL UNIQUE, kind TEXT NOT NULL);
+            PRAGMA user_version = %d{SchemaVersion + 1};
+            """ (fun dbPath ->
+            let ex = Assert.ThrowsAny<exn>(fun () -> Database.create dbPath |> ignore)
+            test <@ (ex :? SchemaNewerThanConsumerException) @>
+            test <@ not (ex :? SqliteException) @>)
+
+/// `symbols.full_name` is UNIQUE with `ON CONFLICT DO UPDATE`, so two different things
+/// sharing a name silently become ONE row. An unqualified name is never one real thing:
+/// it is whatever every file in the repo happened to call `name`, merged. One such row
+/// was measured with 413 dependents, selecting 2,837 tests per run.
+module ``Unqualified symbol names are rejected`` =
+
+    let private symbol name kind =
+        { FullName = name
+          Kind = kind
+          SourceFile = "src/Thing.fs"
+          LineStart = 1
+          LineEnd = 2
+          ContentHash = "h"
+          IsExtern = false }
+
+    let private resultWith syms =
+        { Symbols = syms
+          Dependencies = []
+          TestMethods = []
+          Attributes = []
+          ParentLinks = []
+          Diagnostics = AnalysisDiagnostics.Zero }
+
+    /// The hub-forming kinds. `ExternRef` is listed deliberately: every one of the 750
+    /// unqualified rows measured in TestPrune's own index was an `ExternRef` synthesized
+    /// by the extern-symbol pass, so a constraint scoped to `Function`/`Value` would
+    /// have missed the actual hubs entirely.
+    [<Theory>]
+    [<InlineData "Function">]
+    [<InlineData "Value">]
+    [<InlineData "Type">]
+    [<InlineData "DuCase">]
+    [<InlineData "Property">]
+    [<InlineData "ExternRef">]
+    let ``inserting an unqualified name raises, naming the symbol`` (kindName: string) =
+        let kind =
+            match kindName with
+            | "Function" -> Function
+            | "Value" -> Value
+            | "Type" -> Type
+            | "DuCase" -> DuCase
+            | "Property" -> Property
+            | "ExternRef" -> ExternRef
+            | other -> failwith $"unhandled kind %s{other}"
+
+        withDb (fun db ->
+            let ex =
+                Assert.ThrowsAny<exn>(fun () -> db.RebuildProjects([ resultWith [ symbol "name" kind ] ]))
+
+            // The constraint names itself but not the row that broke it, and an indexing
+            // run that aborts without saying WHICH symbol is unactionable.
+            Assert.Contains("name", ex.Message, StringComparison.Ordinal)
+            Assert.Contains("symbols_full_name_is_qualified", ex.Message, StringComparison.Ordinal)
+            // And it says what the reader can do: whose bug it is, where to report it, and
+            // that the safe fallback is the full suite.
+            Assert.Contains("src/Thing.fs", ex.Message, StringComparison.Ordinal)
+            Assert.Contains("TestPrune analyzer bug", ex.Message, StringComparison.Ordinal)
+            Assert.Contains("github.com/michaelglass/TestPrune/issues", ex.Message, StringComparison.Ordinal)
+            Assert.Contains("run the full test suite", ex.Message, StringComparison.Ordinal))
+
+    /// The one legitimate unqualified category, and the reason the constraint is scoped
+    /// rather than absolute: a top-level single-segment module has no qualifier to have.
+    /// FCS reports `module Alpha` as `FullName = "Alpha"`, so an unconditional constraint
+    /// would hard-fail indexing on any project containing one.
+    [<Fact>]
+    let ``a top-level single-segment module is allowed to be unqualified`` () =
+        withDb (fun db ->
+            db.RebuildProjects([ resultWith [ symbol "Alpha" Module ] ])
+
+            let stored = db.GetSymbolsInFile "src/Thing.fs"
+            test <@ stored |> List.map (fun s -> s.FullName) = [ "Alpha" ] @>)
+
+    [<Fact>]
+    let ``qualified names of every kind are unaffected`` () =
+        withDb (fun db ->
+            let syms =
+                [ symbol "M.f" Function
+                  symbol "M.v" Value
+                  symbol "M.T" Type
+                  symbol "M.T.C" DuCase
+                  symbol "M.T.P" Property
+                  symbol "M.Inner" Module
+                  { symbol "Other.g" ExternRef with
+                      SourceFile = ExternSourceFile
+                      IsExtern = true } ]
+
+            db.RebuildProjects([ resultWith syms ])
+
+            test <@ (db.GetAllSymbolNames()).Count = 7 @>)
+
+/// The runtime-coverage writers take a sequence of files; an empty one is a run that
+/// executed nothing, and each writer has one meaning for it.
+module ``Runtime coverage with empty inputs`` =
+
+    [<Fact>]
+    let ``RecordCoverageBatch with no rows ingests and skips nothing`` () =
+        withDb (fun db -> test <@ db.RecordCoverageBatch [] = (0, 0) @>)
+
+    [<Fact>]
+    let ``ReplaceRuntimeCoverage with no files clears the project and records the run`` () =
+        withDb (fun db ->
+            db.ReplaceRuntimeCoverage("A.Tests", "run-1", [ "src/Lib.fs" ])
+            test <@ db.GetRuntimeCoverageProjects [ "src/Lib.fs" ] = [ "A.Tests" ] @>
+
+            db.ReplaceRuntimeCoverage("A.Tests", "run-2", Seq.empty)
+            test <@ List.isEmpty (db.GetRuntimeCoverageProjects [ "src/Lib.fs" ]) @>
+            test <@ db.GetRuntimeCoverageBaselines() = [ "A.Tests", "run-2" ] @>)
+
+    [<Fact>]
+    let ``MergeRuntimeCoverage with no files keeps what the project already covers`` () =
+        withDb (fun db ->
+            db.ReplaceRuntimeCoverage("A.Tests", "run-1", [ "src/Lib.fs" ])
+            db.MergeRuntimeCoverage("A.Tests", Seq.empty)
+            test <@ db.GetRuntimeCoverageProjects [ "src/Lib.fs" ] = [ "A.Tests" ] @>)
+
+/// `GetProjectKey` answers two reserved names besides project names, so a caller holding
+/// only the project-key lookup can ask about the index as a whole: whether the last
+/// attempt left it incomplete, and which completed attempt produced it.
+module ``GetProjectKey reserved lookup keys`` =
+
+    [<Fact>]
+    let ``incomplete-index key is set until an attempt completes, then absent`` () =
+        withDb (fun db ->
+            test <@ db.GetProjectKey IndexIncompleteLookupKey = Some IndexIncompleteValue @>
+
+            let token = db.MarkIndexIncomplete()
+            test <@ db.GetProjectKey IndexIncompleteLookupKey = Some IndexIncompleteValue @>
+
+            test <@ db.CompleteIndex token @>
+            test <@ db.GetProjectKey IndexIncompleteLookupKey = None @>)
+
+    [<Fact>]
+    let ``generation key is the token of the attempt that completed the index`` () =
+        withDb (fun db ->
+            test <@ db.GetProjectKey IndexGenerationLookupKey = None @>
+
+            let token = db.MarkIndexIncomplete()
+            test <@ db.GetProjectKey IndexGenerationLookupKey = None @>
+
+            test <@ db.CompleteIndex token @>
+            test <@ db.GetProjectKey IndexGenerationLookupKey = Some token @>)
+
+/// SQLite fails a statement with `SQLITE_BUSY` once another connection has held the lock for
+/// the connection's busy timeout. That bound is set explicitly and named (`BusyTimeout`), and a
+/// write that runs out of it says so, naming the database and the bound, instead of SQLite's
+/// bare "database is locked".
+module ``Busy timeout`` =
+
+    let private oneFile =
+        { Symbols =
+            [ { FullName = "Lib.value"
+                Kind = Value
+                SourceFile = "src/Lib.fs"
+                LineStart = 1
+                LineEnd = 1
+                ContentHash = "h"
+                IsExtern = false } ]
+          Dependencies = []
+          TestMethods = []
+          Attributes = []
+          ParentLinks = []
+          Diagnostics = AnalysisDiagnostics.Zero }
+
+    [<Fact>]
+    let ``every connection the database opens carries the named busy timeout`` () =
+        withDbPath (fun path db ->
+            test <@ BusyTimeout = TimeSpan.FromSeconds 30.0 @>
+
+            use conn = db.OpenConnection()
+            test <@ conn.DefaultTimeout = int BusyTimeout.TotalSeconds @>
+
+            use plugin = openPluginConnection path
+            test <@ plugin.DefaultTimeout = int BusyTimeout.TotalSeconds @>
+
+            // Set on the connection, not in its string: the pool key callers clear is unchanged.
+            test <@ conn.ConnectionString = $"Data Source=%s{path}" @>)
+
+    [<Fact>]
+    let ``a write blocked by another connection's BEGIN IMMEDIATE fails at the bound, naming it`` () =
+        withDbPath (fun path _ ->
+            let bound = TimeSpan.FromSeconds 1.0
+            let db = Database(path, TestPrune.Domain.WalkPolicy.FollowAll, bound)
+
+            use holder = openRawConnection path
+            let hold = holder.BeginTransaction(deferred = false)
+
+            let clock = Diagnostics.Stopwatch.StartNew()
+
+            let refused =
+                Assert.Throws<DatabaseBusyException>(fun () -> db.RebuildProjects [ oneFile ])
+
+            clock.Stop()
+
+            // It waited out the bound, and gave up long before the 30s library default.
+            test <@ clock.Elapsed >= bound @>
+            test <@ clock.Elapsed < TimeSpan.FromSeconds 20.0 @>
+
+            test <@ refused.DbPath = path @>
+            test <@ refused.BusyTimeout = bound @>
+            test <@ refused.Message.Contains path @>
+            test <@ refused.Message.Contains "1s busy timeout" @>
+
+            // Still the SQLite busy error, so a caller matching on the code keeps matching.
+            test <@ refused.SqliteErrorCode = 5 @>
+            test <@ refused.Message.Contains "database is locked" @>
+
+            // Positive control: the lock was the only obstacle. Released, the same write lands.
+            hold.Rollback()
+            hold.Dispose()
+            db.RebuildProjects [ oneFile ]
+            test <@ (db.GetSymbolsInFile "src/Lib.fs").Length = 1 @>)

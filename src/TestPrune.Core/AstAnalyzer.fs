@@ -1,0 +1,3092 @@
+module TestPrune.AstAnalyzer
+
+open System
+open System.IO
+open System.Threading.Tasks
+open System.Diagnostics
+open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.CodeAnalysis.ProjectSnapshot
+open FSharp.Compiler.Diagnostics
+open FSharp.Compiler.Symbols
+open FSharp.Compiler.Syntax
+open FSharp.Compiler.Text
+
+#nowarn "57" // Experimental snapshot API
+
+open System.Threading
+
+/// Serializes concurrent GetProjectOptionsFromScript calls.
+/// FCS has internal state corruption when script options are loaded concurrently.
+let private scriptSemaphore = new SemaphoreSlim(1, 1)
+
+/// Discriminated union for kinds of F# symbols (function, type, DU case, etc.).
+type SymbolKind =
+    | Function
+    | Type
+    | DuCase
+    | Module
+    | Value
+    | Property
+    | ExternRef
+
+/// A symbol's fully-qualified name, kind, source file, and line span.
+type SymbolInfo =
+    { FullName: string
+      Kind: SymbolKind
+      SourceFile: string
+      LineStart: int
+      LineEnd: int
+      ContentHash: string
+      IsExtern: bool }
+
+/// A containment relationship from a member symbol (`Child`) to the Type that declares it.
+/// Only emitted when the declaring entity is a type-with-state (class, record, DU, struct,
+/// interface) — NOT a module. Powers aggregate-type invalidation: when any member of a
+/// type is modified, consumers that touched any part of the type are re-selected.
+type SymbolParentLink = { Child: string; Parent: string }
+
+[<Literal>]
+let ExternSourceFile = "_extern"
+
+/// The synthetic attribute the analyser records on every `inline` member. `inline` is a
+/// keyword, not an attribute, so FCS reports no attribute for it; recording it here lets
+/// consumers of the attribute index (trace selection) see which members are inlined at
+/// their call sites and so leave no trace of their own.
+[<Literal>]
+let InlineAttributeName = "TestPrune.Inline"
+
+/// Prefix for synthetic symbols that bridge xUnit `[<Collection("name")>]` test classes
+/// to `[<CollectionDefinition("name")>]` declarations in potentially different files.
+/// The full name is `<prefix><name>`; used as both the `FromSymbol` of the test→synth
+/// edge and the `ToSymbol` resolved to the collection definition's fixture.
+[<Literal>]
+let SyntheticCollectionPrefix = "TestPrune.__Collection__."
+
+/// Prefix for the synthetic join node used when a test and a production symbol contain
+/// the same prose-shaped string literal. The literal itself is never persisted.
+[<Literal>]
+let internal SyntheticLiteralPrefix = "TestPrune.__Literal__."
+
+[<Literal>]
+let private MinSharedLiteralLength = 24
+
+[<Literal>]
+let private MinSharedLiteralWords = 4
+
+// xUnit marker names matched by DisplayName (which strips the namespace).
+[<Literal>]
+let private IClassFixtureName = "IClassFixture"
+
+[<Literal>]
+let private ICollectionFixtureName = "ICollectionFixture"
+
+[<Literal>]
+let private CollectionAttributeName = "CollectionAttribute"
+
+[<Literal>]
+let private CollectionDefinitionAttributeName = "CollectionDefinitionAttribute"
+
+/// The kind of edge in a dependency graph (calls, uses type, pattern match, etc.).
+type DependencyKind =
+    | Calls
+    | UsesType
+    | PatternMatches
+    | References
+    | SharedState
+    /// A test asserts prose produced by another symbol without naming that symbol.
+    | SharedLiteral
+
+/// A directed dependency from one symbol to another, with its kind.
+type Dependency =
+    { FromSymbol: string
+      ToSymbol: string
+      Kind: DependencyKind
+      Source: string }
+
+/// Describes a test method's fully-qualified name, project, class, and method name.
+type TestMethodInfo =
+    { SymbolFullName: string
+      TestProject: string
+      TestClass: string
+      TestMethod: string }
+
+/// Normalize symbol source paths from absolute to repo-relative.
+let normalizeSymbolPaths (repoRoot: string) (symbols: SymbolInfo list) =
+    symbols
+    |> List.map (fun s ->
+        { s with
+            SourceFile =
+                if s.SourceFile = ExternSourceFile then
+                    ExternSourceFile
+                else
+                    System.IO.Path.GetRelativePath(repoRoot, s.SourceFile) })
+
+/// Counters for how many symbols/edges the analysis dropped, for diagnosing
+/// missing dependency edges.
+type AnalysisDiagnostics =
+    {
+        /// Symbol uses where findEnclosing returned None (edge dropped)
+        DroppedEdges: int
+        /// Definitions that were classified but filtered out by isTrackedSymbol
+        FilteredSymbols: int
+        /// Total definitions before filtering
+        TotalDefinitions: int
+    }
+
+    static member Zero =
+        { DroppedEdges = 0
+          FilteredSymbols = 0
+          TotalDefinitions = 0 }
+
+/// A custom attribute on a symbol, with its name and JSON-encoded constructor arguments.
+type SymbolAttribute =
+    { SymbolFullName: string
+      AttributeName: string
+      ArgsJson: string }
+
+/// Combined output of analyzing one source file. `ParentLinks` carries the
+/// member → declaring-type containment edges that power aggregate-type
+/// invalidation; `Attributes` includes both member-level and entity-level
+/// custom attributes found in the file.
+type AnalysisResult =
+    { Symbols: SymbolInfo list
+      Dependencies: Dependency list
+      TestMethods: TestMethodInfo list
+      Attributes: SymbolAttribute list
+      ParentLinks: SymbolParentLink list
+      Diagnostics: AnalysisDiagnostics }
+
+    /// Create an AnalysisResult with default (zero) diagnostics.
+    static member Create(symbols, dependencies, testMethods) =
+        { Symbols = symbols
+          Dependencies = dependencies
+          TestMethods = testMethods
+          Attributes = []
+          ParentLinks = []
+          Diagnostics = AnalysisDiagnostics.Zero }
+
+/// The source file that contributed each per-file fact (dependency edge, test method,
+/// attribute) in `result`, looked up by the symbol the fact is anchored to.
+///
+/// One symbol can have several source occurrences — a `.fsi` declaration and its
+/// `.fs` implementation — so a fact cannot be owned by "the symbol's file". It is owned
+/// by the file whose analysis produced it: the anchor's occurrence in this result, or,
+/// for an anchor declared elsewhere (a synthetic node, a cross-file target), the
+/// result's single source file. Re-indexing a file replaces exactly the facts it owns.
+/// Both stores use this one rule, so they cannot disagree about ownership.
+///
+/// An `AnalysisResult` therefore describes ONE source file. A result that declares the
+/// same name in two files (a project's results merged into one, holding a signature and
+/// its implementation) cannot say which file owns that name's facts, and crediting them
+/// to either silently loses them on that file's next re-index. That input is rejected.
+let internal factOwner (result: AnalysisResult) : string -> string =
+    let occurrences =
+        result.Symbols
+        |> List.filter (fun symbol -> not symbol.IsExtern && symbol.SourceFile <> ExternSourceFile)
+
+    let ambiguous =
+        occurrences
+        |> List.groupBy _.FullName
+        |> List.choose (fun (name, declared) ->
+            match declared |> List.map _.SourceFile |> List.distinct with
+            | [ _ ] -> None
+            | files ->
+                let fileList = String.concat ", " files
+                Some $"%s{name} (%s{fileList})")
+
+    if not (List.isEmpty ambiguous) then
+        let names = String.concat "; " ambiguous
+
+        invalidArg
+            (nameof result)
+            $"An AnalysisResult must describe one source file, but this one declares the same name in several files, so the owner of its facts is ambiguous: %s{names}. Pass one AnalysisResult per source file instead of merging them."
+
+    let fileByName =
+        occurrences
+        |> List.map (fun symbol -> symbol.FullName, symbol.SourceFile)
+        |> Map.ofList
+
+    let fallback =
+        match occurrences |> List.map _.SourceFile |> List.distinct with
+        | [ file ] -> file
+        | _ -> ExternSourceFile
+
+    fun anchor -> fileByName |> Map.tryFind anchor |> Option.defaultValue fallback
+
+/// The symbol a dependency edge is anchored to for ownership. A shared-literal bridge
+/// runs literal-node -> producer, and the synthetic literal node belongs to no file, so
+/// the producer (the TO side) is the anchor; every other edge is anchored at its source.
+let internal dependencyAnchor (edge: Dependency) =
+    match edge.Kind with
+    | SharedLiteral -> edge.ToSymbol
+    | _ -> edge.FromSymbol
+
+/// Defensive accessor for fallible FCS symbol-name reads.
+///
+/// FCS name accessors are NOT total: for un-nameable symbols — an anonymous-record
+/// projection `{| Year = d.Year |}`, or a generic arg over one —
+/// `FSharpEntity.get_TryFullName()` THROWS rather than returning None, and the type
+/// thrown is environment-dependent (`NullReferenceException` in compiled projects,
+/// `InvalidOperationException` under script checking). Hence the catch-all: one
+/// un-nameable symbol would otherwise abort the whole impact pass.
+///
+/// Skip rather than fall back to another identifier. `CompiledName`/`LogicalName`
+/// yield synthesized names (`<>f__AnonymousType...`) that vary by compilation order,
+/// so persisting one churns the `symbols.full_name UNIQUE` key into phantom diffs;
+/// a structural key has no declaration symbol to diff against, so its edge points at
+/// a node nothing else references. Both are worse than one dropped edge.
+///
+/// The side-effecting walk regions guard the same reads with local
+/// `try … with _ -> ()` for the same reason.
+let internal tryName (access: unit -> string) : string option =
+    try
+        Some(access ())
+    with _ ->
+        None
+
+/// The qualifier every symbol rooted in a type of the GLOBAL namespace is indexed under:
+/// `namespace global` + `type StartupHook` is stored as `<global>.StartupHook`, its
+/// members as `<global>.StartupHook.Initialize`.
+///
+/// FCS names such a type by its bare identifier (`StartupHook`), and a bare non-module
+/// name is exactly what `symbols_full_name_is_qualified` rejects — rightly, because a bare
+/// name is how unrelated things merge into one repo-wide hub. But .NET REQUIRES some types
+/// to live there (a `DOTNET_STARTUP_HOOKS` hook is a global `StartupHook` class), so the
+/// analyzer must name them rather than drop them.
+///
+/// Why not F#'s own `global.StartupHook`: `global` is a keyword, but ``` ``global`` ``` is
+/// a legal namespace name, compiled to the CLR namespace `global`, whose types FCS
+/// reports as `global.StartupHook` — a DIFFERENT type that would share the row. C#
+/// allows the same with `namespace @global`. Angle brackets follow the CLR's convention
+/// for names no source language can speak (the global pseudo-type is `<Module>`, F#'s
+/// startup code `<StartupCode$…>`): C# cannot declare the identifier `<global>` at all,
+/// and F# only as a deliberately perverse backticked namespace.
+///
+/// Modules are NOT qualified: `Module` is the one kind the constraint exempts, and a
+/// global-namespace module is the same CLR entity as a top-level `module X`, which has
+/// always been indexed as bare `X`.
+[<Literal>]
+let GlobalNamespaceQualifier = "<global>"
+
+/// Whether `entity`, which FCS names `fullName`, is a type directly in the global
+/// namespace. A dot-free name is the evidence: every namespaced or module-nested entity
+/// carries its qualifier in `FullName`, and F# cannot nest a type inside a type. (A CLR
+/// type nested in a global-namespace type is named `Outer.Inner` — already qualified.)
+///
+/// Deliberately does NOT walk `DeclaringEntity`: for a namespaced type FCS resolves the
+/// namespace on every call, and walking it per symbol use took the captured large-file
+/// replay (`FsHotCaptureReplayTests`) from under its 512 MB allocation budget to 5.8 GB.
+let private isGlobalNamespaceType (entity: FSharpEntity) (fullName: string) : bool =
+    not (fullName.Contains '.')
+    && not entity.IsNamespace
+    && not entity.IsFSharpModule
+
+/// The indexed name of an entity: FCS `FullName`, qualified by
+/// `GlobalNamespaceQualifier` for a global-namespace type. Throws where `FullName` throws.
+let internal entityName (entity: FSharpEntity) : string =
+    let fullName = entity.FullName
+
+    if isGlobalNamespaceType entity fullName then
+        GlobalNamespaceQualifier + "." + fullName
+    else
+        fullName
+
+/// Qualify a member's `name` when its declaring entity is a global-namespace type, so it
+/// stays under that type's indexed name.
+let private withGlobalQualifier (declaring: FSharpEntity option) (name: string) : string =
+    match declaring with
+    | Some entity ->
+        match tryName (fun () -> entity.FullName) with
+        | Some owner when isGlobalNamespaceType entity owner -> GlobalNamespaceQualifier + "." + name
+        | _ -> name
+    | None -> name
+
+let private tryClassifyEntity (entity: FSharpEntity) : (SymbolKind * string) option =
+    try
+        let fullName = entityName entity
+
+        // Every entity flavor is listed explicitly, with `else None` for the rest, rather
+        // than a `Some(Type, fullName)` catch-all. Namespaces in particular are not
+        // trackable per-file dependencies — no single file owns one, and consumers reach
+        // types *through* a namespace rather than depending on it — so classifying one as
+        // Type collides with `symbols.full_name UNIQUE` (UPSERT attributes the row to
+        // whichever file last extracted it) and yields a phantom "+1 added" diff on every
+        // other file in the namespace. The same applies to any kind FCS adds later.
+        if entity.IsNamespace then
+            None
+        elif entity.IsFSharpModule then
+            Some(Module, fullName)
+        elif entity.IsFSharpUnion then
+            Some(Type, fullName)
+        elif entity.IsFSharpRecord then
+            Some(Type, fullName)
+        elif entity.IsFSharpExceptionDeclaration then
+            // `exception Boom of int`: FCS reports both its declaration and every
+            // `raise (Boom 1)` / `| Boom c ->` use as this entity. Unclassified, it had no
+            // symbol, so a change to its fields selected none of the code that raises or
+            // matches it.
+            Some(Type, fullName)
+        elif entity.IsEnum then
+            Some(Type, fullName)
+        elif entity.IsFSharpAbbreviation then
+            Some(Type, fullName)
+        elif entity.IsClass then
+            Some(Type, fullName)
+        elif entity.IsInterface then
+            Some(Type, fullName)
+        elif entity.IsValueType then
+            // Covers F# structs and CLR value types.
+            Some(Type, fullName)
+        elif entity.IsDelegate then
+            Some(Type, fullName)
+        elif entity.IsArrayType then
+            Some(Type, fullName)
+        elif entity.IsByRef then
+            Some(Type, fullName)
+        elif entity.IsMeasure then
+            Some(Type, fullName)
+        else
+            // Unrecognized FCS entity kind. None keeps it out of the symbol graph rather
+            // than labelling it `Type` and risking a UNIQUE collision; the caller logs it.
+            None
+    with _ ->
+        // `entity.FullName` throws (not just IOE) on un-nameable symbols — see `tryName`.
+        None
+
+/// Recover a qualified name for an `FSharpMemberOrFunctionOrValue` whose `FullName` FCS
+/// reports UNQUALIFIED.
+///
+/// The case that matters is a COMPUTATION-EXPRESSION CUSTOM OPERATION. At a USE site
+/// (`select { for u in users do where (u.id = x) }`) FCS reports the operation KEYWORD as
+/// the symbol's `FullName` — `where` — while `LogicalName`/`CompiledName` hold the member
+/// (`Where`) and `DeclaringEntity` holds the builder. Verified against FCS 43.12.204:
+///
+///     full=where logical=Where compiled=Where isMVM=true isMember=true
+///     declaring=M.QBuilder apparent=M.QBuilder
+///
+/// Taking `FullName` at face value is what built the hubs this module warns about below.
+/// Measured in a ~9,300-test consumer repo indexed under the v9 schema, every one of these
+/// was a query-DSL keyword: `where` had 451 direct dependents reaching 1,828 test methods,
+/// `select` 337/1,826, `entity` 1,735, `set` 1,474, `take` 943 — nine such nodes.
+///
+/// `DeclaringEntity.FullName + "." + LogicalName` is exactly the name the DEFINITION side
+/// records for that member (`M.QBuilder.Where`), so the edge lands on the real member and
+/// a change to the builder selects its consumers, instead of both vanishing into a node
+/// named after a keyword.
+///
+/// A member of a global-namespace type is also qualified by `GlobalNamespaceQualifier`,
+/// so it stays under its type's indexed name.
+let private qualifyThroughDeclaringEntity (mfv: FSharpMemberOrFunctionOrValue) (reported: string) : string =
+    if reported.Contains '.' then
+        withGlobalQualifier mfv.DeclaringEntity reported
+    else
+        let declaringName =
+            mfv.DeclaringEntity
+            |> Option.bind (fun entity -> tryName (fun () -> entityName entity))
+
+        match declaringName, tryName (fun () -> mfv.LogicalName) with
+        | Some owner, Some logical -> owner + "." + logical
+        | _ -> reported
+
+/// The indexed name of a member, function or value — the name its DEFINITION is stored
+/// under. Throws where `FullName` throws.
+let internal memberName (mfv: FSharpMemberOrFunctionOrValue) : string =
+    qualifyThroughDeclaringEntity mfv mfv.FullName
+
+let private tryClassifyMemberOrFunction (mfv: FSharpMemberOrFunctionOrValue) : (SymbolKind * string) option =
+    try
+        let fullName = memberName mfv
+
+        // Locals and parameters must never become symbols. FCS reports `FullName` for a
+        // parameter or a local `let` as the BARE identifier (`name`, `question`, `kind`),
+        // and `symbols.full_name` is UNIQUE — so one such row is a single repo-wide node
+        // that every unresolved reference to that identifier, in any file, unifies onto.
+        // Measured in a ~620-test-class consumer repo: seven such junk nodes (`name`,
+        // `kind`, `source`, `status`, `question`, `tryStr`, `call`) selected ~3,000 tests
+        // per run. It is also self-sustaining — a junk seed that never verifies stays in
+        // `pending-verification.json` and re-seeds every subsequent run.
+        //
+        // `IsModuleValueOrMember` is the exact discriminator, verified empirically against
+        // FCS 43.12.204: TRUE for every module-level binding — including `private`,
+        // nested-module, `inline`, `mutable` and active-pattern ones — and for every type
+        // member; FALSE for every parameter and local `let`. `IsMember` is NOT usable
+        // here: it is false for plain module-level functions.
+        if not mfv.IsModuleValueOrMember then
+            None
+        elif not (fullName.Contains '.') then
+            // Nothing reaching here can legitimately be unqualified: a module value or a
+            // member always has a declaring module or type, so either FCS's `FullName`
+            // carries it or `qualifyThroughDeclaringEntity` just put it back. A name that
+            // survives both is one we cannot identify — indexing it would build exactly
+            // the repo-wide hub `symbols_full_name_is_qualified` exists to reject, so it
+            // is dropped here instead, at the point where the symbol is named.
+            //
+            // Dropping rather than raising matches `tryClassifyActivePatternCase`, which
+            // has held the same line since the active-pattern fix: an unidentifiable
+            // symbol contributes no edge, where a merged one contributes a wrong one.
+            None
+        elif mfv.IsProperty || mfv.IsPropertyGetterMethod || mfv.IsPropertySetterMethod then
+            Some(Property, fullName)
+        elif mfv.IsUnionCaseTester then
+            // These are the auto-generated Is* properties on DU cases — skip them
+            None
+        elif
+            mfv.FullType.IsFunctionType
+            || mfv.IsFunction
+            || mfv.CurriedParameterGroups.Count > 0
+        then
+            Some(Function, fullName)
+        else
+            Some(Value, fullName)
+    with _ ->
+        None
+
+/// A union case is named under its union's indexed name: `M.Lookup`1.Found` for a case
+/// of `type Lookup<'value>`. FCS's `FSharpUnionCase.FullName` renders a generic union in
+/// display form instead (`M.Lookup<_>.Found`), a name nothing else uses: the union's own
+/// symbol, its members and the CLR type a runtime trace records are all `M.Lookup`1`.
+let private tryClassifyUnionCase (uc: FSharpUnionCase) : (SymbolKind * string) option =
+    try
+        Some(DuCase, entityName uc.DeclaringEntity + "." + uc.Name)
+    with _ ->
+        None
+
+/// A USE of an active pattern is reported as an `FSharpActivePatternCase` whose
+/// `FullName` is `<group>.<case>` — `M.(|Even|Odd|).Even` — but the thing that is
+/// declared, hashed and diffed is the GROUP function `M.(|Even|Odd|)`, so the edge has
+/// to point there. Stripping the `.<Name>` suffix is what recovers it.
+///
+/// The suffix test doubles as the safety gate: FCS reports each case's DEFINITION with
+/// a BARE `FullName` (just `Even`), which fails the test and yields None. That is the
+/// wanted outcome — `symbols.full_name` is UNIQUE, so an unqualified row becomes a
+/// repo-wide hub that every same-named thing merges onto.
+let private tryClassifyActivePatternCase (apc: FSharpActivePatternCase) : (SymbolKind * string) option =
+    try
+        let fullName = apc.FullName
+        let suffix = "." + apc.Name
+
+        if fullName.EndsWith(suffix, StringComparison.Ordinal) then
+            let group = fullName.Substring(0, fullName.Length - suffix.Length)
+
+            if group.Contains '.' then Some(Function, group) else None
+        else
+            None
+    with _ ->
+        None
+
+let private classifySymbol (symbol: FSharpSymbol) : (SymbolKind * string) option =
+    match symbol with
+    | :? FSharpEntity as entity -> tryClassifyEntity entity
+    | :? FSharpMemberOrFunctionOrValue as mfv -> tryClassifyMemberOrFunction mfv
+    | :? FSharpUnionCase as uc -> tryClassifyUnionCase uc
+    | :? FSharpActivePatternCase as apc -> tryClassifyActivePatternCase apc
+    | _ -> None
+
+[<Literal>]
+let private MaxSymbolTraversalDepth = 32
+
+[<Literal>]
+let private MaxSymbolTraversalVisits = 32768
+
+[<Literal>]
+let private MaxSymbolTraversalRoots = 64
+
+exception private SymbolTraversalDepthExceeded of int
+exception private SymbolTraversalBudgetExceeded of int
+
+type private SymbolTraversalBudget(maxVisits: int) =
+    let mutable visits = 0
+
+    member _.Consume() =
+        visits <- visits + 1
+
+        if visits > maxVisits then
+            raise (SymbolTraversalBudgetExceeded maxVisits)
+
+    member _.Visits = visits
+
+type private TraversalResult<'Value> = { Value: 'Value; IsComplete: bool }
+
+let private diagnosticsEnabled () =
+    Environment.GetEnvironmentVariable("TESTPRUNE_ANALYSIS_DIAGNOSTICS") = "1"
+
+let private diagnosticFrame sourceFile stage (elapsedMs: int64) visits referenceHits semanticHits misses =
+    if diagnosticsEnabled () then
+        eprintfn
+            "[TESTPRUNE-DIAG-v1] file=%A stage=%s elapsedMs=%d visits=%d refHits=%d semanticHits=%d misses=%d"
+            sourceFile
+            stage
+            elapsedMs
+            visits
+            referenceHits
+            semanticHits
+            misses
+
+let private diagnosticResources sourceFile stage =
+    if diagnosticsEnabled () then
+        eprintfn
+            "[TESTPRUNE-DIAG-v1-RESOURCE] file=%A stage=%s allocated=%d heap=%d gc0=%d gc1=%d gc2=%d"
+            sourceFile
+            stage
+            (GC.GetTotalAllocatedBytes(false))
+            (GC.GetTotalMemory(false))
+            (GC.CollectionCount 0)
+            (GC.CollectionCount 1)
+            (GC.CollectionCount 2)
+
+let private cacheCompletedTraversal
+    (cache: System.Collections.Generic.Dictionary<'Key, 'Value>)
+    key
+    (traversal: TraversalResult<'Value>)
+    =
+    if traversal.IsComplete then
+        cache[key] <- traversal.Value
+
+let private resolveCachedTraversal
+    enableMemoization
+    (referenceCache: System.Collections.Generic.Dictionary<'ReferenceKey, 'Value>)
+    (semanticCache: System.Collections.Generic.Dictionary<'SemanticKey, 'Value>)
+    (referenceKey: 'ReferenceKey)
+    (semanticKey: 'SemanticKey option)
+    (compute: unit -> TraversalResult<'Value>)
+    =
+    match
+        if enableMemoization then
+            referenceCache.TryGetValue(referenceKey)
+        else
+            false, Unchecked.defaultof<_>
+    with
+    | true, cached -> cached
+    | false, _ ->
+        let semanticCached =
+            match enableMemoization, semanticKey with
+            | true, Some key ->
+                match semanticCache.TryGetValue(key) with
+                | true, cached -> Some cached
+                | false, _ -> None
+            | _ -> None
+
+        match semanticCached with
+        | Some cached ->
+            referenceCache[referenceKey] <- cached
+            cached
+        | None ->
+            let traversal = compute ()
+
+            if enableMemoization then
+                cacheCompletedTraversal referenceCache referenceKey traversal
+
+                match semanticKey with
+                | Some key -> cacheCompletedTraversal semanticCache key traversal
+                | None -> ()
+
+            traversal.Value
+
+[<StructuralEquality; StructuralComparison>]
+type private GenericEdgeCacheKey =
+    { WrapperType: string
+      AssemblyIdentity: string
+      DeclaringEntityFullName: string option
+      DeclaringEntityCompiledName: string option
+      MemberFullName: string
+      MemberCompiledName: string
+      MemberLogicalName: string
+      DeclarationFile: string
+      StartLine: int
+      StartColumn: int
+      EndLine: int
+      EndColumn: int }
+
+let private tryGenericEdgeSemanticKey (symbol: FSharpSymbol) =
+    try
+        match symbol, symbol.DeclarationLocation with
+        | (:? FSharpMemberOrFunctionOrValue as mfv), Some declaration ->
+            let declaringIdentity =
+                match mfv.DeclaringEntity with
+                | Some entity when entity.GenericParameters.Count = 0 ->
+                    Some(Some entity.FullName, Some entity.CompiledName)
+                | Some _ -> None
+                | None -> Some(None, None)
+
+            match declaringIdentity with
+            | Some(declaringFullName, declaringCompiledName) when
+                mfv.GenericParameters.Count = 0
+                && not (String.IsNullOrEmpty mfv.FullName)
+                && not (String.IsNullOrEmpty mfv.CompiledName)
+                && not (String.IsNullOrEmpty mfv.LogicalName)
+                && not (String.IsNullOrEmpty declaration.FileName)
+                ->
+                Some
+                    { WrapperType = symbol.GetType().FullName
+                      AssemblyIdentity = mfv.Assembly.QualifiedName
+                      DeclaringEntityFullName = declaringFullName
+                      DeclaringEntityCompiledName = declaringCompiledName
+                      MemberFullName = mfv.FullName
+                      MemberCompiledName = mfv.CompiledName
+                      MemberLogicalName = mfv.LogicalName
+                      DeclarationFile = declaration.FileName
+                      StartLine = declaration.StartLine
+                      StartColumn = declaration.StartColumn
+                      EndLine = declaration.EndLine
+                      EndColumn = declaration.EndColumn }
+            | _ -> None
+        | _ -> None
+    with _ ->
+        None
+
+let private protectSymbolTraversal (operation: unit -> Result<'Value, string>) : Result<'Value, string> =
+    try
+        operation ()
+    with
+    | SymbolTraversalDepthExceeded limit ->
+        Error $"FCS symbol graph exceeded the safe traversal depth of %d{limit}; refusing incomplete analysis"
+    | SymbolTraversalBudgetExceeded limit ->
+        Error
+            $"FCS symbol graph exceeded the safe traversal work budget of %d{limit} nodes; refusing incomplete analysis"
+
+/// Traverse an FCS graph defensively. FCS normally returns a finite DAG, but compiler
+/// hosts can expose recursive graphs and can recreate wrappers on each property read.
+/// Reference identity prevents repeated DAG expansion, the active logical-name path
+/// catches recreated cycles without suppressing equal siblings, and the depth limit is
+/// the final guard for endlessly novel wrappers.
+let private boundedDepthFirstWithBudget
+    (maxDepth: int)
+    (budget: SymbolTraversalBudget)
+    (tryStableName: 'Node -> string option)
+    (children: 'Node -> 'Node seq)
+    (roots: 'Node seq)
+    : TraversalResult<'Node list> =
+    let visitedReferences =
+        System.Collections.Generic.HashSet<obj>(System.Collections.Generic.ReferenceEqualityComparer.Instance)
+
+    let results = ResizeArray<'Node>()
+    let mutable isComplete = true
+
+    let rec visit depth activeNames node =
+
+        let stableName =
+            try
+                tryStableName node
+            with _ ->
+                None
+
+        match stableName with
+        | Some name when Set.contains name activeNames -> ()
+        | _ when not (visitedReferences.Add(box node)) -> ()
+        | _ ->
+            if depth >= maxDepth then
+                raise (SymbolTraversalDepthExceeded maxDepth)
+            else
+                let nextActiveNames =
+                    match stableName with
+                    | Some name -> Set.add name activeNames
+                    | None -> activeNames
+
+                results.Add(node)
+
+                try
+                    use childEnumerator = (children node).GetEnumerator()
+
+                    let mutable hasMore = true
+                    let mutable childCount = 0
+
+                    while hasMore do
+                        if childEnumerator.MoveNext() then
+                            childCount <- childCount + 1
+
+                            if childCount > MaxSymbolTraversalRoots then
+                                raise (SymbolTraversalBudgetExceeded MaxSymbolTraversalRoots)
+
+                            budget.Consume()
+                            visit (depth + 1) nextActiveNames childEnumerator.Current
+                        else
+                            hasMore <- false
+                with
+                | SymbolTraversalDepthExceeded _ -> reraise ()
+                | SymbolTraversalBudgetExceeded _ -> reraise ()
+                | _ -> isComplete <- false
+
+    try
+        use rootEnumerator = roots.GetEnumerator()
+        let mutable rootCount = 0
+
+        while rootEnumerator.MoveNext() do
+            rootCount <- rootCount + 1
+
+            if rootCount > MaxSymbolTraversalRoots then
+                raise (SymbolTraversalBudgetExceeded MaxSymbolTraversalRoots)
+
+            budget.Consume()
+            visit 0 Set.empty rootEnumerator.Current
+
+        { Value = results |> Seq.toList
+          IsComplete = isComplete }
+    with
+    | SymbolTraversalDepthExceeded _ -> reraise ()
+    | SymbolTraversalBudgetExceeded _ -> reraise ()
+    | _ -> { Value = []; IsComplete = false }
+
+let private boundedDepthFirst maxDepth tryStableName children roots =
+    (boundedDepthFirstWithBudget maxDepth (SymbolTraversalBudget MaxSymbolTraversalVisits) tryStableName children roots)
+        .Value
+
+let private tryGetUnionParentType (symbol: FSharpSymbol) : string option =
+    match symbol with
+    // `TypeDefinition.FullName` can throw on un-nameable parent types — see `tryName`.
+    | :? FSharpUnionCase as uc -> tryName (fun () -> entityName uc.ReturnType.TypeDefinition)
+    | _ -> None
+
+/// Recursively extract all concrete type argument entity full names from a type.
+let private extractGenericTypeArgsWithBudget
+    (budget: SymbolTraversalBudget)
+    (fsharpType: FSharpType)
+    : TraversalResult<string list> =
+    try
+        if fsharpType.IsGenericParameter then
+            { Value = []; IsComplete = true }
+        else
+            let traversal =
+                boundedDepthFirstWithBudget
+                    MaxSymbolTraversalDepth
+                    budget
+                    (fun _ -> None)
+                    (fun (t: FSharpType) -> t.GenericArguments)
+                    fsharpType.GenericArguments
+
+            let mutable namesComplete = true
+
+            { Value =
+                traversal.Value
+                |> List.choose (fun t ->
+                    try
+                        if t.HasTypeDefinition && not t.TypeDefinition.IsFSharpModule then
+                            Some(entityName t.TypeDefinition)
+                        else
+                            None
+                    with _ ->
+                        namesComplete <- false
+                        None)
+              IsComplete = traversal.IsComplete && namesComplete }
+    with
+    | SymbolTraversalDepthExceeded _ -> reraise ()
+    | SymbolTraversalBudgetExceeded _ -> reraise ()
+    | _ -> { Value = []; IsComplete = false }
+
+/// Extract generic type argument edges from a symbol use's full type.
+let private tryGetGenericTypeArgEdgesWithBudget
+    (budget: SymbolTraversalBudget)
+    (symbol: FSharpSymbol)
+    : TraversalResult<string list> =
+    match symbol with
+    | :? FSharpMemberOrFunctionOrValue as mfv ->
+        try
+            extractGenericTypeArgsWithBudget budget mfv.FullType
+        with
+        | SymbolTraversalDepthExceeded _ -> reraise ()
+        | SymbolTraversalBudgetExceeded _ -> reraise ()
+        | _ -> { Value = []; IsComplete = false }
+    | _ -> { Value = []; IsComplete = true }
+
+let private createGenericEdgeResolver (budget: SymbolTraversalBudget) enableMemoization recordStats =
+    let referenceCache =
+        System.Collections.Generic.Dictionary<obj, string list>(
+            System.Collections.Generic.ReferenceEqualityComparer.Instance
+        )
+
+    let semanticCache =
+        System.Collections.Generic.Dictionary<GenericEdgeCacheKey, string list>()
+
+    let mutable referenceHits, semanticHits, misses = 0, 0, 0
+
+    let resolve (symbol: FSharpSymbol) =
+        let referenceKey = box symbol
+        let semanticKey = tryGenericEdgeSemanticKey symbol
+
+        if recordStats then
+            if enableMemoization && referenceCache.ContainsKey referenceKey then
+                referenceHits <- referenceHits + 1
+            elif enableMemoization && Option.exists semanticCache.ContainsKey semanticKey then
+                semanticHits <- semanticHits + 1
+            else
+                misses <- misses + 1
+
+        resolveCachedTraversal enableMemoization referenceCache semanticCache referenceKey semanticKey (fun () ->
+            tryGetGenericTypeArgEdgesWithBudget budget symbol)
+
+    resolve, (fun () -> referenceHits, semanticHits, misses)
+
+[<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
+module internal TestHelpers =
+    let testClassifySymbol = classifySymbol
+    let testTryClassifyEntity = tryClassifyEntity
+    let testTryClassifyMemberOrFunction = tryClassifyMemberOrFunction
+    let testTryClassifyUnionCase = tryClassifyUnionCase
+    let testTryClassifyActivePatternCase = tryClassifyActivePatternCase
+    let testTryName = tryName
+    let testBoundedDepthFirst = boundedDepthFirst
+
+    let testBoundedDepthFirstWithSharedBudget maxDepth maxVisits tryStableName children rootGroups =
+        let budget = SymbolTraversalBudget maxVisits
+
+        rootGroups
+        |> List.collect (fun roots -> (boundedDepthFirstWithBudget maxDepth budget tryStableName children roots).Value)
+
+    let testProtectSymbolTraversal = protectSymbolTraversal
+
+    let testTryGetGenericTypeArgEdgesWithBudget maxVisits symbol =
+        (tryGetGenericTypeArgEdgesWithBudget (SymbolTraversalBudget maxVisits) symbol).Value
+
+    let testTryGetGenericTypeArgEdgesWithSharedBudget maxVisits symbols =
+        protectSymbolTraversal (fun () ->
+            let budget = SymbolTraversalBudget maxVisits
+
+            symbols
+            |> List.collect (fun symbol -> (tryGetGenericTypeArgEdgesWithBudget budget symbol).Value)
+            |> Ok)
+
+    let testIsGenericEdgeSemanticKeyEligible symbol =
+        tryGenericEdgeSemanticKey symbol |> Option.isSome
+
+    let testGenericEdgeSemanticKeyDistinctCount symbols =
+        symbols |> Seq.choose tryGenericEdgeSemanticKey |> Seq.distinct |> Seq.length
+
+    let testBoundedDepthFirstCompletion maxDepth maxVisits tryStableName children roots =
+        let result =
+            boundedDepthFirstWithBudget maxDepth (SymbolTraversalBudget maxVisits) tryStableName children roots
+
+        result.Value, result.IsComplete
+
+    let testCompletedTraversalCacheRetry () =
+        let cache = System.Collections.Generic.Dictionary<string, string>()
+
+        cacheCompletedTraversal
+            cache
+            "symbol"
+            { Value = "partial"
+              IsComplete = false }
+
+        let afterDegraded = cache.TryGetValue("symbol")
+
+        cacheCompletedTraversal
+            cache
+            "symbol"
+            { Value = "complete"
+              IsComplete = true }
+
+        afterDegraded, cache.TryGetValue("symbol")
+
+    let testSemanticTraversalMemo enableMemoization maxComputations semanticKeys =
+        protectSymbolTraversal (fun () ->
+            let references = System.Collections.Generic.Dictionary<int, string list>()
+            let semantics = System.Collections.Generic.Dictionary<string, string list>()
+            let mutable computations = 0
+
+            let results =
+                semanticKeys
+                |> List.mapi (fun referenceKey semanticKey ->
+                    resolveCachedTraversal
+                        enableMemoization
+                        references
+                        semantics
+                        referenceKey
+                        (Some semanticKey)
+                        (fun () ->
+                            computations <- computations + 1
+
+                            if computations > maxComputations then
+                                raise (SymbolTraversalBudgetExceeded maxComputations)
+
+                            { Value = [ "Leaf" ]
+                              IsComplete = true }))
+
+            Ok(results, computations))
+
+/// When a record field is used, extract the containing record type's full name.
+let private tryGetRecordTypeFromField (symbol: FSharpSymbol) : string option =
+    let ofEntity (entity: FSharpEntity option) =
+        match entity with
+        | Some entity when entity.IsFSharpRecord -> Some(entityName entity)
+        | _ -> None
+
+    match symbol with
+    | :? FSharpMemberOrFunctionOrValue as mfv ->
+        try
+            ofEntity mfv.DeclaringEntity
+        with _ ->
+            None
+    | :? FSharpField as f ->
+        try
+            ofEntity f.DeclaringEntity
+        with _ ->
+            None
+    | _ -> None
+
+let private classifyDependency (symbol: FSharpSymbol) : DependencyKind =
+    match symbol with
+    | :? FSharpEntity -> UsesType
+    | :? FSharpUnionCase -> PatternMatches
+    // An active-pattern case only ever appears in pattern position, so it is the same
+    // relationship a DU case use describes — not the `References` catch-all.
+    | :? FSharpActivePatternCase -> PatternMatches
+    | :? FSharpMemberOrFunctionOrValue -> Calls
+    | _ -> References
+
+let private knownTestAttributes =
+    set
+        [
+          // xUnit
+          "FactAttribute"
+          "TheoryAttribute"
+          "Fact"
+          "Theory"
+          // NUnit
+          "TestAttribute"
+          "TestCaseAttribute"
+          "TestCaseSourceAttribute"
+          "Test"
+          "TestCase"
+          "TestCaseSource"
+          // MSTest
+          "TestMethodAttribute"
+          "DataTestMethodAttribute"
+          "TestMethod"
+          "DataTestMethod" ]
+
+let private hasAttribute (predicate: string -> bool) (mfv: FSharpMemberOrFunctionOrValue) : bool =
+    try
+        mfv.Attributes
+        |> Seq.exists (fun attr -> predicate attr.AttributeType.DisplayName)
+    with _ ->
+        false
+
+let private isTestAttribute =
+    hasAttribute (fun name -> knownTestAttributes |> Set.contains name)
+
+let private isDllImport =
+    hasAttribute (fun name -> name = "DllImportAttribute" || name = "DllImport")
+
+let private extractTestClass (fullName: string) : string * string =
+    match fullName.LastIndexOf('.') with
+    | -1 -> ("", fullName)
+    | idx -> (fullName.Substring(0, idx), fullName.Substring(idx + 1))
+
+/// Build the CLR-style class name from an entity chain.
+/// F# compiles types inside modules as CLR nested types (Module+Type).
+/// FCS FullName uses '.' throughout, but xUnit v3 --filter-class needs '+'.
+let private buildClrClassName (budget: SymbolTraversalBudget) (entity: FSharpEntity) : TraversalResult<string> =
+    let tryEntityName (e: FSharpEntity) =
+        try
+            Some e.FullName
+        with _ ->
+            None
+
+    let declaringModule (e: FSharpEntity) =
+        match e.DeclaringEntity with
+        | Some parent when parent.IsFSharpModule -> Seq.singleton parent
+        | _ -> Seq.empty
+
+    let path =
+        boundedDepthFirstWithBudget MaxSymbolTraversalDepth budget tryEntityName declaringModule [ entity ]
+
+    let className =
+        match List.rev path.Value with
+        | [] ->
+            try
+                entity.FullName
+            with _ ->
+                entity.CompiledName
+        | outermost :: nested ->
+            let outerName =
+                try
+                    outermost.FullName
+                with _ ->
+                    outermost.CompiledName
+
+            outerName
+            :: (nested
+                |> List.map (fun item ->
+                    try
+                        item.CompiledName
+                    with _ ->
+                        item.DisplayName))
+            |> String.concat "+"
+
+    { Value = className
+      IsComplete = path.IsComplete }
+
+/// Extract the binding name from a SynPat head pattern.
+let private extractBindingName (pat: SynPat) : string option =
+    match pat with
+    | SynPat.LongIdent(longDotId = synLongIdent) ->
+        let ids = synLongIdent.LongIdent
+        Some(ids |> List.map (fun id -> id.idText) |> String.concat ".")
+    | SynPat.Named(ident = SynIdent(id, _)) -> Some id.idText
+    | _ -> None // INT-WILDCARD-001:ok — SynPat has many cases; we only extract names from LongIdent/Named
+
+/// Walk all module declarations in an impl file, recursing into nested modules.
+let private walkImplDecls (tree: ParsedInput) (visitDecl: SynModuleDecl -> unit) =
+    let rec walk (decl: SynModuleDecl) =
+        visitDecl decl
+
+        match decl with
+        | SynModuleDecl.NestedModule(decls = decls) ->
+            for d in decls do
+                walk d
+        | _ -> () // INT-WILDCARD-001:ok — SynModuleDecl has many cases; we only recurse into NestedModule
+
+    match tree with
+    | ParsedInput.ImplFile(ParsedImplFileInput(contents = modules)) ->
+        for SynModuleOrNamespace(decls = decls) in modules do
+            for d in decls do
+                walk d
+    | ParsedInput.SigFile _ -> ()
+
+/// An exception declaration's name: `exception Boom of int` declares `Boom`.
+let private exceptionName (SynExceptionDefn(exnRepr = SynExceptionDefnRepr(caseName = caseName))) =
+    let (SynUnionCase(ident = SynIdent(id, _))) = caseName
+    id.idText
+
+/// The attributes written on an exception declaration (`[<Serializable>] exception …`).
+let private exceptionAttributes (SynExceptionDefn(exnRepr = SynExceptionDefnRepr(attributes = attributes))) = attributes
+
+/// Extract a binding's name and compute its full range (from attributes through body end).
+/// Shared by module-level and type member range collection.
+let private addBindingRange
+    (extractName: SynPat -> string option)
+    (results: ResizeArray<string * range>)
+    (binding: SynBinding)
+    =
+    match binding with
+    | SynBinding(attributes = attributes; headPat = headPat; expr = bodyExpr; range = bindingRange) ->
+        match extractName headPat with
+        | Some n ->
+            // The binding's `range` only covers the pattern (e.g. `let main args =`).
+            // We need a range that spans from the binding start to the end of the body
+            // so that nested local `let` bindings are contained within their parent.
+            // Also include preceding attributes so that attribute changes affect the hash.
+            let rangeStart =
+                match attributes with
+                | first :: _ -> first.Range.Start
+                | [] -> bindingRange.Start
+
+            let fullRange = Range.mkRange bindingRange.FileName rangeStart bodyExpr.Range.End
+            results.Add(n, fullRange)
+        | None -> ()
+
+/// Extract the member method name from a SynPat head pattern.
+/// Member patterns include the self identifier (e.g. `_.methodName` or `this.methodName`),
+/// so we take only the last identifier component.
+let private extractMemberName (pat: SynPat) : string option =
+    extractBindingName pat
+    |> Option.map (fun n ->
+        let i = n.LastIndexOf('.')
+        if i >= 0 then n.[i + 1 ..] else n)
+
+let private rangeWithAttributes (attributes: SynAttributes) (r: range) =
+    attributes
+    |> List.fold (fun acc (list: SynAttributeList) -> Range.unionRanges acc list.Range) r
+
+/// The name and full span of a property declared with accessors (`member _.P with get
+/// () = … and set v = …`, a `SynMemberDefn.GetSetMember`) or as an auto-property
+/// (`member val P = … with get, set`, a `SynMemberDefn.AutoProperty`). Neither is a
+/// `SynMemberDefn.Member`, so without this a property's hash fell back to the line
+/// naming it, and an edit to an accessor body or initializer on any later line changed
+/// no stored hash: the property was indexed and edged but could never be selected.
+let private propertyMemberRange (memberDefn: SynMemberDefn) : (string * range) option =
+    match memberDefn with
+    | SynMemberDefn.GetSetMember(memberDefnForGet = getter; memberDefnForSet = setter; range = memberRange) ->
+        let accessors = List.choose id [ getter; setter ]
+
+        let name =
+            accessors
+            |> List.tryPick (fun (SynBinding(headPat = headPat)) -> extractMemberName headPat)
+
+        let attributes =
+            accessors
+            |> List.collect (fun (SynBinding(attributes = attributes)) -> attributes)
+
+        // Union in each accessor's body as well, in case the member's own range ever
+        // stops short of the last one.
+        let fullRange =
+            accessors
+            |> List.fold (fun acc (SynBinding(expr = body)) -> Range.unionRanges acc body.Range) memberRange
+
+        name |> Option.map (fun n -> n, rangeWithAttributes attributes fullRange)
+    | SynMemberDefn.AutoProperty(attributes = attributes; ident = id; synExpr = initializer; range = memberRange) ->
+        Some(id.idText, rangeWithAttributes attributes (Range.unionRanges memberRange initializer.Range))
+    | _ -> None // INT-WILDCARD-001:ok — only the two property forms above are handled here
+
+/// Walk the parsed AST to collect each accessor property and auto-property with its full
+/// range (see `propertyMemberRange`). Used to hash a property over its whole text and to
+/// cut it out of its type's header; it is NOT an enclosing range for edge attribution.
+let internal collectPropertyRanges (tree: ParsedInput) : (string * range) list =
+    let results = ResizeArray()
+
+    let rec walkMember (memberDefn: SynMemberDefn) =
+        match memberDefn with
+        | SynMemberDefn.Interface(members = Some members) -> List.iter walkMember members
+        // INT-WILDCARD-001:ok — `propertyMemberRange` picks out the property forms.
+        | _ -> propertyMemberRange memberDefn |> Option.iter (fun entry -> results.Add entry)
+
+    walkImplDecls tree (fun decl ->
+        match decl with
+        | SynModuleDecl.Types(typeDefns = typeDefns) ->
+            for SynTypeDefn(typeRepr = typeRepr; members = extraMembers) in typeDefns do
+                List.iter walkMember extraMembers
+
+                match typeRepr with
+                | SynTypeDefnRepr.ObjectModel(members = members) -> List.iter walkMember members
+                | _ -> () // INT-WILDCARD-001:ok — records and unions declare properties only in `with` members
+        | SynModuleDecl.Exception(exnDefn = SynExceptionDefn(members = members)) -> List.iter walkMember members
+        | _ -> ()) // INT-WILDCARD-001:ok — only types and exceptions declare properties
+
+    results |> Seq.toList
+
+/// Walk the parsed AST to collect module-level binding names and their full ranges.
+/// Each binding's range covers from the `let` keyword to the end of its body,
+/// which correctly encompasses nested local bindings.
+let collectModuleBindingRanges (tree: ParsedInput) : (string * range) list =
+    let results = ResizeArray()
+
+    walkImplDecls tree (fun decl ->
+        match decl with
+        | SynModuleDecl.Let(bindings = bindings) ->
+            for binding in bindings do
+                addBindingRange extractBindingName results binding
+        | _ -> ())
+
+    results |> Seq.toList
+
+/// Walk the parsed AST to collect type member binding names and their full ranges.
+/// This enables `findEnclosing` to attribute symbol uses inside type members
+/// (e.g. class-based xUnit test methods) to the correct enclosing member.
+let collectTypeMemberRanges (tree: ParsedInput) : (string * range) list =
+    let results = ResizeArray()
+
+    let rec walkMember (memberDefn: SynMemberDefn) =
+        match memberDefn with
+        | SynMemberDefn.Member(memberDefn = binding) -> addBindingRange extractMemberName results binding
+
+        // `interface I with member _.Do x = ...` nests its members in their own
+        // list rather than as `Member`s. Without this recursion `Do` gets no
+        // AST-side name, the short-name lookup against FCS's `M.Thing.Do`
+        // misses, and the implementation drops out of the graph with no
+        // diagnostic — a silent under-selection.
+        | SynMemberDefn.Interface(members = Some members) ->
+            for m in members do
+                walkMember m
+
+        // Same for `abstract member Do: int -> int`. A slot implemented in the
+        // same file gets its name from the implementation by luck; an interface
+        // declared on its own has no other name-bearing syntax, so without this
+        // every consumer's edge points at a hash-less `ExternRef` that no edit
+        // can change.
+        | SynMemberDefn.AbstractSlot(slotSig = SynValSig(ident = SynIdent(id, _)); range = slotRange) ->
+            results.Add(id.idText, slotRange)
+
+        // INT-WILDCARD-001:ok — class `let`/`static let` bindings, `val` fields, implicit
+        // constructors and nested types deliberately do NOT contribute names: a class
+        // `let` is not a member, a `val` field is an `FSharpField` (never a symbol), a
+        // constructor is reported against its type, and F# rejects nested types. Each
+        // stays in its declaring type's header hash; `BindingFormAuditTests` pins every
+        // one of these exclusions together with the compensating hash change.
+        //
+        // Accessor properties and auto-properties are hashed over their whole text by
+        // `collectPropertyRanges`, but are deliberately NOT enclosing ranges here. An
+        // auto-property's initializer runs when the type is CONSTRUCTED, so a use inside
+        // it must stay attributed to the type (whose constructors' callers depend on it),
+        // not to a property nobody may ever read.
+        | _ -> ()
+
+    walkImplDecls tree (fun decl ->
+        match decl with
+        | SynModuleDecl.Types(typeDefns = typeDefns) ->
+            for SynTypeDefn(typeRepr = typeRepr; members = extraMembers) in typeDefns do
+                for m in extraMembers do
+                    walkMember m
+
+                match typeRepr with
+                | SynTypeDefnRepr.ObjectModel(members = members) ->
+                    for m in members do
+                        walkMember m
+                | _ -> ()
+        | SynModuleDecl.Exception(exnDefn = SynExceptionDefn(members = members)) ->
+            for m in members do
+                walkMember m
+        | _ -> ())
+
+    results |> Seq.toList
+
+/// Walk the parsed AST to collect type definition names and their full ranges.
+/// Each type's range covers from the `type` keyword through all cases/fields/members.
+let collectTypeDefnRanges (tree: ParsedInput) : (string * range) list =
+    let results = ResizeArray()
+
+    walkImplDecls tree (fun decl ->
+        match decl with
+        | SynModuleDecl.Types(typeDefns = typeDefns) ->
+            for SynTypeDefn(typeInfo = SynComponentInfo(longId = ids); range = fullRange) in typeDefns do
+                let name = ids |> List.map (fun id -> id.idText) |> String.concat "."
+                results.Add(name, fullRange)
+        | SynModuleDecl.Exception(exnDefn = exceptionDefinition; range = fullRange) ->
+            results.Add(exceptionName exceptionDefinition, fullRange)
+        | _ -> ())
+
+    results |> Seq.toList
+
+/// A span of a type definition that one of the type's own symbols hashes: a union case
+/// or a member. `Name` is the short name that symbol is looked up by.
+type internal TypeChild =
+    { Name: string
+      Range: range
+      IsCase: bool }
+
+/// A type definition as its header hash sees it: the whole definition, and the child
+/// spans that may be cut out of it because another symbol hashes them.
+type internal TypeDefnShape =
+    {
+        Name: string
+        Range: range
+        /// A struct union lays every case's fields out in one value, so its payloads are
+        /// part of the type's layout and stay in its header.
+        IsStruct: bool
+        Children: TypeChild list
+    }
+
+let private isStructAttribute (attributes: SynAttributes) =
+    attributes
+    |> List.exists (fun list ->
+        list.Attributes
+        |> List.exists (fun a ->
+            match List.tryLast a.TypeName.LongIdent with
+            | Some id -> id.idText = "Struct" || id.idText = "StructAttribute"
+            | None -> false))
+
+/// Walk the parsed AST to collect each type definition with its union cases and members.
+let internal collectTypeDefnShapes (tree: ParsedInput) : TypeDefnShape list =
+    let results = ResizeArray()
+
+    let rec walkMember (children: ResizeArray<TypeChild>) (memberDefn: SynMemberDefn) =
+        match memberDefn with
+        | SynMemberDefn.Member(
+            memberDefn = SynBinding(attributes = bindingAttributes; headPat = headPat); range = memberRange) ->
+            match extractMemberName headPat with
+            | Some n ->
+                children.Add
+                    { Name = n
+                      Range = rangeWithAttributes bindingAttributes memberRange
+                      IsCase = false }
+            | None -> ()
+        | SynMemberDefn.Interface(members = Some members) ->
+            for m in members do
+                walkMember children m
+        // A property's own symbol hashes its whole text (`propertyMemberRange`), so it is
+        // a child like a method: an accessor or initializer edit changes the property,
+        // and the walk lifts a changed member to this type for the type's consumers.
+        | SynMemberDefn.GetSetMember _
+        | SynMemberDefn.AutoProperty _ ->
+            propertyMemberRange memberDefn
+            |> Option.iter (fun (n, r) -> children.Add { Name = n; Range = r; IsCase = false })
+        // INT-WILDCARD-001:ok — every other member form (implicit constructor,
+        // `let`/`do` bindings, `inherit`, `val` fields, abstract slots, nested types)
+        // has no symbol hashing its whole text, so it stays in the type's header.
+        | _ -> ()
+
+    let sortedChildren (children: ResizeArray<TypeChild>) =
+        children
+        |> Seq.sortBy (fun c -> c.Range.StartLine, c.Range.StartColumn)
+        |> Seq.toList
+
+    walkImplDecls tree (fun decl ->
+        match decl with
+        | SynModuleDecl.Types(typeDefns = typeDefns) ->
+            for SynTypeDefn(
+                typeInfo = SynComponentInfo(attributes = attributes; longId = ids)
+                typeRepr = typeRepr
+                members = extraMembers
+                range = fullRange) in typeDefns do
+                let children = ResizeArray<TypeChild>()
+                let walkMember = walkMember children
+
+                match typeRepr with
+                | SynTypeDefnRepr.Simple(SynTypeDefnSimpleRepr.Union(unionCases = cases), _) ->
+                    for SynUnionCase(attributes = caseAttributes; ident = SynIdent(id, _); range = caseRange) in cases do
+                        children.Add
+                            { Name = id.idText
+                              Range = rangeWithAttributes caseAttributes caseRange
+                              IsCase = true }
+                | SynTypeDefnRepr.ObjectModel(members = members) ->
+                    for m in members do
+                        walkMember m
+                | _ -> () // INT-WILDCARD-001:ok — records, enums and abbreviations are all header
+
+                for m in extraMembers do
+                    walkMember m
+
+                results.Add
+                    { Name = ids |> List.map (fun id -> id.idText) |> String.concat "."
+                      Range = rangeWithAttributes attributes fullRange
+                      IsStruct = isStructAttribute attributes
+                      Children = sortedChildren children }
+        // An exception's header is its name and fields, like a record's; its members are
+        // children, cut out when their own symbols hash them.
+        | SynModuleDecl.Exception(
+            exnDefn = SynExceptionDefn(members = members) as exceptionDefinition; range = fullRange) ->
+            let children = ResizeArray<TypeChild>()
+
+            for m in members do
+                walkMember children m
+
+            results.Add
+                { Name = exceptionName exceptionDefinition
+                  Range = rangeWithAttributes (exceptionAttributes exceptionDefinition) fullRange
+                  IsStruct = false
+                  Children = sortedChildren children }
+        | _ -> ())
+
+    results |> Seq.toList
+
+/// Signature syntax has declarations rather than implementation bindings. Its full
+/// ranges include multiline types and constraints, which FCS identifier ranges omit.
+let private collectSignatureRanges (tree: ParsedInput) =
+    match tree with
+    | ParsedInput.ImplFile _ -> [], []
+    | ParsedInput.SigFile _ ->
+        ParsedInput.fold
+            (fun (bindings, types) _ node ->
+                match node with
+                | SyntaxNode.SynValSig(SynValSig(ident = SynIdent(id, _); range = declarationRange)) ->
+                    (id.idText, declarationRange) :: bindings, types
+                | SyntaxNode.SynTypeDefnSig(SynTypeDefnSig(
+                    typeInfo = SynComponentInfo(longId = ids); range = declarationRange)) ->
+                    bindings, (ids |> List.map _.idText |> String.concat ".", declarationRange) :: types
+                | SyntaxNode.SynModuleSigDecl(SynModuleSigDecl.Exception(
+                    exnSig = SynExceptionSig(exnRepr = SynExceptionDefnRepr(caseName = caseName))
+                    range = declarationRange)) ->
+                    let (SynUnionCase(ident = SynIdent(id, _))) = caseName
+                    bindings, (id.idText, declarationRange) :: types
+                | _ -> bindings, types)
+            ([], [])
+            tree
+
+/// Split off the last dot-delimited segment of a fully-qualified name — but WITHOUT
+/// splitting inside a parenthesised operator/active-pattern name or a backticked
+/// identifier, either of which may contain dots of its own.
+///
+/// A plain `LastIndexOf('.')` returns `)` for `M.(+.)` and ``ctor`` `` for
+/// ``M.T.``.ctor`` ``. Neither is any real binding's name, so lookups keyed on it never
+/// hit — which is how this class of bug stays silent.
+let private lastNameSegment (n: string) : string =
+    if n.EndsWith(")", StringComparison.Ordinal) then
+        // Operator and active-pattern names contain no parentheses of their own
+        // (`(` and `)` are not F# operator characters), so the last `(` opens the
+        // final segment.
+        match n.LastIndexOf('(') with
+        | -1 -> n
+        | i -> n.[i..]
+    elif n.Length > 4 && n.EndsWith("``", StringComparison.Ordinal) then
+        match n.LastIndexOf("``", n.Length - 3, StringComparison.Ordinal) with
+        | -1 -> n
+        | i -> n.[i..]
+    else
+        match n.LastIndexOf('.') with
+        | -1 -> n
+        | i -> n.[i + 1 ..]
+
+/// A name without its trailing CLR generic arity: ``Lookup`1`` → `Lookup`.
+let private withoutArity (name: string) : string =
+    match name.LastIndexOf '`' with
+    | i when i > 0 && i < name.Length - 1 && Seq.forall Char.IsDigit name.[i + 1 ..] -> name.[.. i - 1]
+    | _ -> name
+
+/// Reduce the name FCS reports (`FullName`) to the name the AST collector records
+/// (`Ident.idText`), so the two can be matched.
+///
+/// They are two different renderings of the same binding. FCS reports the DISPLAY
+/// form; `idText` carries the COMPILED form:
+///
+/// | source                | FCS `FullName`         | `idText`             |
+/// |-----------------------|------------------------|----------------------|
+/// | `let (+.) a b`        | `M.(+.)`               | `op_PlusDot`         |
+/// | `let (\|Even\|Odd\|) n` | `M.(\|Even\|Odd\|)`  | `\|Even\|Odd\|`      |
+/// | ``let ``a b`` x``     | ``M.``a b`` ``         | `a b`                |
+/// | `type Lookup<'value>` | ``M.Lookup`1``         | `Lookup`             |
+///
+/// A symbol is only tracked when the two agree, so any mismatch is a binding silently
+/// dropped from the graph: a change to it selects no tests, and a green run that
+/// skipped the relevant test looks exactly like one that ran it.
+///
+/// Normalise on the FCS side, and only here — the AST collector stays a plain `idText`
+/// reader with nothing to keep in sync, and there is one notion of a symbol's name.
+///
+/// The operator/active-pattern split is F#'s own, not a heuristic: `(|||)` is a
+/// bitwise-or OPERATOR whose display name has the same outer shape as an active
+/// pattern, and only `PrettyNaming` tells them apart correctly.
+///
+/// A generic type's `FullName` carries the CLR arity suffix (`` `1 ``), which no F#
+/// identifier can end in unless backticked, so it is stripped from unbackticked names only.
+let canonicalShortName (n: string) : string =
+    let segment = lastNameSegment n
+
+    let unbackticked =
+        if
+            segment.Length > 4
+            && segment.StartsWith("``", StringComparison.Ordinal)
+            && segment.EndsWith("``", StringComparison.Ordinal)
+        then
+            segment.[2 .. segment.Length - 3]
+        else
+            withoutArity segment
+
+    if
+        unbackticked.Length > 2
+        && unbackticked.StartsWith("(", StringComparison.Ordinal)
+        && unbackticked.EndsWith(")", StringComparison.Ordinal)
+    then
+        // `( * )` and friends carry padding to avoid opening a comment.
+        let inner = unbackticked.[1 .. unbackticked.Length - 2].Trim()
+
+        if PrettyNaming.IsActivePatternName inner then
+            inner
+        elif PrettyNaming.IsOperatorDisplayName inner then
+            PrettyNaming.CompileOpName inner
+        else
+            inner
+    else
+        unbackticked
+
+/// Compiled regex for collapsing whitespace runs — cached to avoid per-call recompilation.
+let private whitespaceRun =
+    System.Text.RegularExpressions.Regex(@"\s{2,}", System.Text.RegularExpressions.RegexOptions.Compiled)
+
+/// Strip F# // and (* *) comments from a flat source string.
+/// Preserves newlines so callers can split by line. String literals are left intact.
+let private stripComments (flat: string) : string =
+    let result = System.Text.StringBuilder(flat.Length)
+    let mutable depth = 0 // nesting depth for (* *) block comments
+    let mutable inLineComment = false
+    let mutable inString = false
+    let mutable inVerbatimString = false // @"..."
+    let mutable inTripleString = false // """..."""
+    let mutable i = 0
+
+    while i < flat.Length do
+        let c = flat[i]
+        let next = if i + 1 < flat.Length then flat[i + 1] else '\000'
+        let next2 = if i + 2 < flat.Length then flat[i + 2] else '\000'
+
+        if inLineComment then
+            if c = '\n' then
+                result.Append('\n') |> ignore
+                inLineComment <- false
+        elif depth > 0 then
+            // Inside block comment — preserve newlines for line-number stability
+            if c = '(' && next = '*' then
+                depth <- depth + 1
+                i <- i + 1
+            elif c = '*' && next = ')' then
+                depth <- depth - 1
+                i <- i + 1
+            elif c = '\n' then
+                result.Append('\n') |> ignore
+        elif inTripleString then
+            // Inside """...""": everything is literal (no escapes, no comments) until
+            // the closing triple quote. Emit all three closing quotes together so a
+            // single trailing `"` inside the content can't be mistaken for the close.
+            if c = '"' && next = '"' && next2 = '"' then
+                result.Append("\"\"\"") |> ignore
+                inTripleString <- false
+                i <- i + 2
+            else
+                result.Append(c) |> ignore
+        elif inVerbatimString then
+            result.Append(c) |> ignore
+
+            if c = '"' then
+                if next = '"' then
+                    result.Append(next) |> ignore
+                    i <- i + 1
+                else
+                    inVerbatimString <- false
+        elif inString then
+            result.Append(c) |> ignore
+
+            if c = '\\' && next <> '\000' then
+                result.Append(next) |> ignore
+                i <- i + 1
+            elif c = '"' then
+                inString <- false
+        elif c = '/' && next = '/' then
+            inLineComment <- true
+            i <- i + 1
+        elif c = '(' && next = '*' then
+            depth <- depth + 1
+            i <- i + 1
+        elif c = '@' && next = '"' then
+            inVerbatimString <- true
+            result.Append(c) |> ignore
+            result.Append(next) |> ignore
+            i <- i + 1
+        elif c = '"' && next = '"' && next2 = '"' then
+            // Triple-quoted string opener. Checked before the single `"` branch.
+            inTripleString <- true
+            result.Append("\"\"\"") |> ignore
+            i <- i + 2
+        elif c = '"' then
+            inString <- true
+            result.Append(c) |> ignore
+        else
+            result.Append(c) |> ignore
+
+        i <- i + 1
+
+    result.ToString()
+
+/// Hash a piece of source text, stripping comments and normalizing whitespace so
+/// that comment-only changes and layout-only changes (e.g. reformatting to add a
+/// comment block) don't affect the hash.
+let private hashText (flat: string) : string =
+    let stripped = stripComments flat
+    // Join non-empty trimmed lines with a single space, then collapse internal
+    // whitespace sequences. This makes `let f x = x + 1` hash identically to
+    //   let f x =
+    //       x + 1
+    // so that reformatting to add a comment does not trigger a change.
+    let tokens =
+        stripped.Split('\n')
+        |> Array.map _.Trim()
+        |> Array.filter (fun l -> l.Length > 0)
+
+    let joined = String.concat " " tokens
+    let content = whitespaceRun.Replace(joined, " ")
+
+    let bytes =
+        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content))
+
+    System.Convert.ToHexStringLower(bytes)
+
+/// Hash the source lines between startLine and endLine (1-based, inclusive) under
+/// `hashText`'s normalisation.
+let private hashSourceLines (lines: string array) (startLine: int) (endLine: int) : string =
+    let start = max 0 (startLine - 1)
+    let end' = min lines.Length endLine
+    hashText (lines[start .. end' - 1] |> String.concat "\n")
+
+/// The source text a symbol's content hash covers.
+type private HashedSpan =
+    /// Whole lines, inclusive and 1-based.
+    | Lines of startLine: int * endLine: int
+    /// Exactly the range, column-precise.
+    | Exact of range
+
+/// Maps an FCS position (1-based line, 0-based column) to an index into the source.
+type private SourceIndex(source: string) =
+    let lineStarts =
+        let starts = ResizeArray [ 0 ]
+
+        source
+        |> Seq.iteri (fun i c ->
+            if c = '\n' then
+                starts.Add(i + 1))
+
+        starts.ToArray()
+
+    member _.Offset(p: pos) =
+        let line = p.Line - 1
+
+        if line < 0 then 0
+        elif line >= lineStarts.Length then source.Length
+        else min source.Length (lineStarts[line] + p.Column)
+
+    member _.Slice(startOffset: int, endOffset: int) =
+        source.Substring(startOffset, max 0 (endOffset - startOffset))
+
+    member this.Text(r: range) =
+        this.Slice(this.Offset r.Start, this.Offset r.End)
+
+/// Hash of exactly the text `r` covers, column-precise — so that two union cases sharing
+/// one line (`type T = A of int | B of string`) hash apart.
+let private hashRange (index: SourceIndex) (r: range) : string = hashText (index.Text r)
+
+/// A type's HEADER hash: its whole definition with each of `punched` — the union cases
+/// and members whose own symbols hash that text — replaced by the child's name.
+///
+/// What stays is exactly what no other symbol hashes: the name, type parameters,
+/// attributes, the kind of representation, base types and interfaces, record fields
+/// (their types are the layout), a struct union's payloads, a class's constructor and
+/// `let`/`do` bindings, and the order of every case and member name. Adding, removing or
+/// reordering a case or member therefore changes the header; editing a case's payload or
+/// a member's body changes only that case or member.
+let private hashTypeHeader (index: SourceIndex) (shape: TypeDefnShape) (punched: TypeChild list) : string =
+    let text = System.Text.StringBuilder()
+    let finish = index.Offset shape.Range.End
+    let mutable cursor = index.Offset shape.Range.Start
+
+    for child in punched do
+        let s = index.Offset child.Range.Start
+        let e = index.Offset child.Range.End
+
+        if s >= cursor && e <= finish then
+            text.Append(index.Slice(cursor, s)).Append(' ').Append(child.Name).Append(' ')
+            |> ignore
+
+            cursor <- e
+
+    text.Append(index.Slice(cursor, finish)) |> ignore
+    hashText (text.ToString())
+
+let private isSharedLiteral (text: string) =
+    text.Length >= MinSharedLiteralLength
+    && text.Split([| ' '; '\t'; '\r'; '\n' |], StringSplitOptions.RemoveEmptyEntries).Length
+       >= MinSharedLiteralWords
+
+let private sharedLiteralNodeName (text: string) =
+    let bytes =
+        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text))
+
+    SyntheticLiteralPrefix + System.Convert.ToHexStringLower(bytes)
+
+/// Collect decoded ordinary string constants from the parsed tree.
+///
+/// This deliberately reads `SynConst.String`: FCS has already decoded escapes and all
+/// supported ordinary/verbatim/triple-quoted spellings to their runtime value, so two
+/// source spellings of the same message share one node. Interpolated strings are a
+/// different AST case and are skipped as a whole; their static fragments are not values
+/// that a test can assert independently of the fills.
+let internal collectSharedLiterals (tree: ParsedInput) : (string * range) list =
+    let found = ResizeArray<string * range>()
+
+    let add text expressionRange =
+        if isSharedLiteral text then
+            found.Add(text, expressionRange)
+
+    // FCS's full-tree fold intentionally treats attribute applications as leaves and
+    // skips exception declarations. Supplement those exact branches with a typed
+    // expression walk rather than falling back to object reflection.
+    let rec walkSupplementaryExpression expression =
+        match expression with
+        | SynExpr.Const(SynConst.String(text = text), expressionRange) -> add text expressionRange
+        | SynExpr.Const _
+        | SynExpr.Typar _
+        | SynExpr.Ident _
+        | SynExpr.LongIdent _
+        | SynExpr.Null _
+        | SynExpr.ImplicitZero _
+        | SynExpr.ArbitraryAfterError _ -> ()
+        | SynExpr.InterpolatedString _ -> ()
+        | SynExpr.Quote(operator = operator; quotedExpr = quotedExpression) ->
+            walkSupplementaryExpression operator
+            walkSupplementaryExpression quotedExpression
+        | SynExpr.Paren(expr = nested)
+        | SynExpr.Typed(expr = nested)
+        | SynExpr.TypeApp(expr = nested)
+        | SynExpr.ArrayOrListComputed(expr = nested)
+        | SynExpr.ComputationExpr(expr = nested)
+        | SynExpr.LongIdentSet(expr = nested)
+        | SynExpr.Do(expr = nested)
+        | SynExpr.DoBang(expr = nested)
+        | SynExpr.Assert(expr = nested)
+        | SynExpr.Fixed(expr = nested)
+        | SynExpr.DebugPoint(innerExpr = nested)
+        | SynExpr.AddressOf(expr = nested)
+        | SynExpr.TraitCall(argExpr = nested)
+        | SynExpr.Lazy(expr = nested)
+        | SynExpr.InferredUpcast(expr = nested)
+        | SynExpr.InferredDowncast(expr = nested)
+        | SynExpr.YieldOrReturn(expr = nested)
+        | SynExpr.YieldOrReturnFrom(expr = nested)
+        | SynExpr.FromParseError(expr = nested)
+        | SynExpr.DiscardAfterMissingQualificationAfterDot(expr = nested)
+        | SynExpr.IndexFromEnd(expr = nested)
+        | SynExpr.DotGet(expr = nested)
+        | SynExpr.DotLambda(expr = nested)
+        | SynExpr.New(expr = nested)
+        | SynExpr.TypeTest(expr = nested)
+        | SynExpr.Upcast(expr = nested)
+        | SynExpr.Downcast(expr = nested)
+        | SynExpr.LibraryOnlyUnionCaseFieldGet(expr = nested) -> walkSupplementaryExpression nested
+        | SynExpr.Tuple(exprs = expressions)
+        | SynExpr.ArrayOrList(exprs = expressions) -> List.iter walkSupplementaryExpression expressions
+        | SynExpr.App(funcExpr = functionExpression; argExpr = argumentExpression)
+        | SynExpr.Sequential(expr1 = functionExpression; expr2 = argumentExpression)
+        | SynExpr.Set(targetExpr = functionExpression; rhsExpr = argumentExpression)
+        | SynExpr.DotSet(targetExpr = functionExpression; rhsExpr = argumentExpression)
+        | SynExpr.TryFinally(tryExpr = functionExpression; finallyExpr = argumentExpression)
+        | SynExpr.While(whileExpr = functionExpression; doExpr = argumentExpression)
+        | SynExpr.WhileBang(whileExpr = functionExpression; doExpr = argumentExpression)
+        | SynExpr.DotIndexedGet(objectExpr = functionExpression; indexArgs = argumentExpression)
+        | SynExpr.JoinIn(lhsExpr = functionExpression; rhsExpr = argumentExpression)
+        | SynExpr.NamedIndexedPropertySet(expr1 = functionExpression; expr2 = argumentExpression) ->
+            walkSupplementaryExpression functionExpression
+            walkSupplementaryExpression argumentExpression
+        | SynExpr.Dynamic(funcExpr = functionExpression; argExpr = argumentExpression)
+        | SynExpr.LibraryOnlyStaticOptimization(expr = functionExpression; optimizedExpr = argumentExpression)
+        | SynExpr.LibraryOnlyUnionCaseFieldSet(expr = functionExpression; rhsExpr = argumentExpression) ->
+            walkSupplementaryExpression functionExpression
+            walkSupplementaryExpression argumentExpression
+        | SynExpr.SequentialOrImplicitYield(expr1 = first; expr2 = second; ifNotStmt = third) ->
+            walkSupplementaryExpression first
+            walkSupplementaryExpression second
+            walkSupplementaryExpression third
+        | SynExpr.For(identBody = first; toBody = second; doBody = third)
+        | SynExpr.DotIndexedSet(objectExpr = first; indexArgs = second; valueExpr = third)
+        | SynExpr.DotNamedIndexedPropertySet(targetExpr = first; argExpr = second; rhsExpr = third) ->
+            walkSupplementaryExpression first
+            walkSupplementaryExpression second
+            walkSupplementaryExpression third
+        | SynExpr.IfThenElse(ifExpr = condition; thenExpr = ifTrue; elseExpr = ifFalse) ->
+            walkSupplementaryExpression condition
+            walkSupplementaryExpression ifTrue
+            Option.iter walkSupplementaryExpression ifFalse
+        | SynExpr.IndexRange(expr1 = first; expr2 = second) ->
+            Option.iter walkSupplementaryExpression first
+            Option.iter walkSupplementaryExpression second
+        | SynExpr.Lambda(body = body) -> walkSupplementaryExpression body
+        | SynExpr.LetOrUse(letOrUse) ->
+            List.iter walkSupplementaryBinding letOrUse.Bindings
+            walkSupplementaryExpression letOrUse.Body
+        | SynExpr.Match(expr = input; clauses = clauses)
+        | SynExpr.MatchBang(expr = input; clauses = clauses)
+        | SynExpr.TryWith(tryExpr = input; withCases = clauses) ->
+            walkSupplementaryExpression input
+            List.iter walkSupplementaryClause clauses
+        | SynExpr.MatchLambda(matchClauses = clauses) -> List.iter walkSupplementaryClause clauses
+        | SynExpr.ForEach(enumExpr = input; bodyExpr = body) ->
+            walkSupplementaryExpression input
+            walkSupplementaryExpression body
+        | SynExpr.AnonRecd(copyInfo = copyInfo; recordFields = fields) ->
+            copyInfo |> Option.iter (fst >> walkSupplementaryExpression)
+
+            for _, _, fieldExpression in fields do
+                walkSupplementaryExpression fieldExpression
+        | SynExpr.Record(baseInfo = baseInfo; copyInfo = copyInfo; recordFields = fields) ->
+            baseInfo
+            |> Option.iter (fun (_, expression, _, _, _) -> walkSupplementaryExpression expression)
+
+            copyInfo |> Option.iter (fst >> walkSupplementaryExpression)
+
+            for SynExprRecordField(expr = fieldExpression) in fields do
+                Option.iter walkSupplementaryExpression fieldExpression
+        | SynExpr.ObjExpr(argOptions = baseCall; bindings = bindings; members = members; extraImpls = interfaces) ->
+            baseCall |> Option.iter (fst >> walkSupplementaryExpression)
+            List.iter walkSupplementaryBinding bindings
+            List.iter walkSupplementaryMember members
+
+            for SynInterfaceImpl(bindings = interfaceBindings; members = interfaceMembers) in interfaces do
+                List.iter walkSupplementaryBinding interfaceBindings
+                List.iter walkSupplementaryMember interfaceMembers
+        | SynExpr.LibraryOnlyILAssembly(args = arguments) -> List.iter walkSupplementaryExpression arguments
+
+    and walkSupplementaryClause (SynMatchClause(whenExpr = guard; resultExpr = body)) =
+        Option.iter walkSupplementaryExpression guard
+        walkSupplementaryExpression body
+
+    and walkSupplementaryBinding (SynBinding(attributes = attributes; expr = expression; returnInfo = returnInfo)) =
+        walkAttributeLists attributes
+
+        match returnInfo with
+        | Some(SynBindingReturnInfo(attributes = returnAttributes)) -> walkAttributeLists returnAttributes
+        | None -> ()
+
+        walkSupplementaryExpression expression
+
+    and walkSupplementaryMember memberDefinition =
+        let (SyntaxNode.Attributes attributes) = SyntaxNode.SynMemberDefn memberDefinition
+
+        walkAttributeLists attributes
+
+        match memberDefinition with
+        | SynMemberDefn.Member(memberDefn = binding) -> walkSupplementaryBinding binding
+        | SynMemberDefn.GetSetMember(memberDefnForGet = getter; memberDefnForSet = setter) ->
+            Option.iter walkSupplementaryBinding getter
+            Option.iter walkSupplementaryBinding setter
+        | SynMemberDefn.AutoProperty(synExpr = expression) -> walkSupplementaryExpression expression
+        | SynMemberDefn.LetBindings(bindings = bindings) -> List.iter walkSupplementaryBinding bindings
+        | SynMemberDefn.ImplicitInherit(inheritArgs = expression) -> walkSupplementaryExpression expression
+        | SynMemberDefn.Interface(members = Some members) -> List.iter walkSupplementaryMember members
+        | SynMemberDefn.ValField(fieldInfo = SynField(attributes = fieldAttributes)) ->
+            walkAttributeLists fieldAttributes
+        | SynMemberDefn.NestedType(typeDefn = typeDefinition) -> walkSupplementaryTypeDefinition typeDefinition
+        | SynMemberDefn.Open _
+        | SynMemberDefn.ImplicitCtor _
+        | SynMemberDefn.AbstractSlot _
+        | SynMemberDefn.Interface(members = None)
+        | SynMemberDefn.Inherit _ -> ()
+
+    and walkAttributeLists (attributeLists: SynAttributes) =
+        for attributeList in attributeLists do
+            for attribute in attributeList.Attributes do
+                walkSupplementaryExpression attribute.ArgExpr
+
+    and walkSupplementaryTypeDefinition
+        (SynTypeDefn(
+            typeInfo = SynComponentInfo(attributes = attributes)
+            typeRepr = representation
+            members = members
+            implicitConstructor = implicitConstructor) as typeDefinition)
+        =
+        let (SyntaxNode.Attributes nodeAttributes) = SyntaxNode.SynTypeDefn typeDefinition
+
+        walkAttributeLists nodeAttributes
+        walkAttributeLists attributes
+
+        match representation with
+        | SynTypeDefnRepr.ObjectModel(members = representationMembers) ->
+            List.iter walkSupplementaryMember representationMembers
+        | SynTypeDefnRepr.Simple(simpleRepr = simpleRepresentation) ->
+            match simpleRepresentation with
+            | SynTypeDefnSimpleRepr.Record(recordFields = fields) ->
+                for SynField(attributes = fieldAttributes) in fields do
+                    walkAttributeLists fieldAttributes
+            | SynTypeDefnSimpleRepr.Union(unionCases = cases) -> List.iter walkUnionCaseAttributes cases
+            | SynTypeDefnSimpleRepr.Enum(cases = cases) ->
+                for SynEnumCase(attributes = caseAttributes; valueExpr = valueExpression) in cases do
+                    walkAttributeLists caseAttributes
+                    walkSupplementaryExpression valueExpression
+            | SynTypeDefnSimpleRepr.Exception exceptionRepresentation ->
+                walkExceptionRepresentation exceptionRepresentation
+            | SynTypeDefnSimpleRepr.General(fields = fields) ->
+                for SynField(attributes = fieldAttributes) in fields do
+                    walkAttributeLists fieldAttributes
+            | SynTypeDefnSimpleRepr.TypeAbbrev _
+            | SynTypeDefnSimpleRepr.LibraryOnlyILAssembly _
+            | SynTypeDefnSimpleRepr.None _ -> ()
+        | SynTypeDefnRepr.Exception exceptionRepresentation -> walkExceptionRepresentation exceptionRepresentation
+
+        List.iter walkSupplementaryMember members
+        Option.iter walkSupplementaryMember implicitConstructor
+
+    and walkUnionCaseAttributes (SynUnionCase(attributes = attributes; caseType = caseType)) =
+        walkAttributeLists attributes
+
+        match caseType with
+        | SynUnionCaseKind.Fields fields ->
+            for SynField(attributes = fieldAttributes) in fields do
+                walkAttributeLists fieldAttributes
+        | _ -> ()
+
+    and walkExceptionRepresentation (SynExceptionDefnRepr(attributes = attributes; caseName = caseName)) =
+        walkAttributeLists attributes
+        walkUnionCaseAttributes caseName
+
+    and walkExceptionDefinition (SynExceptionDefn(exnRepr = representation; members = members)) =
+        walkExceptionRepresentation representation
+
+        for memberDefinition in members do
+            walkSupplementaryMember memberDefinition
+
+    let isInsideInterpolation path =
+        path
+        |> List.exists (function
+            | SyntaxNode.SynExpr(SynExpr.InterpolatedString _) -> true
+            | _ -> false)
+
+    ParsedInput.fold
+        (fun () path node ->
+            match node with
+            | SyntaxNode.SynExpr(SynExpr.Const(SynConst.String(text = text), expressionRange)) when
+                not (isInsideInterpolation path)
+                ->
+                add text expressionRange
+            | _ -> ()
+
+            let (SyntaxNode.Attributes attributeLists) = node
+            walkAttributeLists attributeLists
+
+            match node with
+            | SyntaxNode.SynModule(SynModuleDecl.NestedModule(moduleInfo = SynComponentInfo(attributes = attributes))) ->
+                walkAttributeLists attributes
+            | SyntaxNode.SynModule(SynModuleDecl.Exception(exnDefn = exceptionDefinition)) ->
+                walkExceptionDefinition exceptionDefinition
+            | SyntaxNode.SynTypeDefn(SynTypeDefn(typeRepr = SynTypeDefnRepr.Simple(simpleRepr = simpleRepr))) ->
+                match simpleRepr with
+                | SynTypeDefnSimpleRepr.Record(recordFields = fields) ->
+                    for SynField(attributes = fieldAttributes) in fields do
+                        walkAttributeLists fieldAttributes
+                | SynTypeDefnSimpleRepr.Union(unionCases = cases) -> List.iter walkUnionCaseAttributes cases
+                | SynTypeDefnSimpleRepr.Enum(cases = cases) ->
+                    for SynEnumCase(attributes = caseAttributes) in cases do
+                        walkAttributeLists caseAttributes
+                | _ -> ()
+            | SyntaxNode.SynTypeDefn(SynTypeDefn(typeRepr = SynTypeDefnRepr.Exception exceptionRepresentation)) ->
+                let (SynExceptionDefnRepr(attributes = attributes; caseName = caseName)) =
+                    exceptionRepresentation
+
+                walkAttributeLists attributes
+                walkUnionCaseAttributes caseName
+            | _ -> ())
+        ()
+        tree
+    |> ignore
+
+    found |> Seq.distinct |> Seq.toList
+
+/// The parse diagnostics that actually make an AST unusable: Error severity, and
+/// nothing else.
+///
+/// Do NOT gate on `FSharpParseFileResults.ParseHadErrors`: its meaning varies by
+/// compiler backend. Under the TransparentCompiler
+/// (`FSharpChecker.Create(useTransparentCompiler = true)`, which is how FsHotWatch's
+/// daemon builds its checker) FCS reports `ParseHadErrors = true` for a file whose ONLY
+/// parse diagnostic is INFORMATIONAL — e.g. FS3520 "XML comment is not placed on a
+/// valid language element" — where the legacy compiler reports `false`. Such a file
+/// compiles cleanly, its ParseTree is complete and every symbol in it is extractable,
+/// so refusing it drops the whole file from the symbol graph and an edit to it selects
+/// NO tests: under-selection, the one failure mode a test-impact tool must not have
+/// (see `EdgeEmission`).
+///
+/// A real syntax error still yields Error-severity diagnostics and is still refused;
+/// callers must treat a refusal as owed work (over-select), never as "nothing to do".
+let internal parseErrorDiagnostics (parseResults: FSharpParseFileResults) : FSharpDiagnostic array =
+    parseResults.Diagnostics
+    |> Array.filter (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
+
+/// Extract analysis results from parse and type-check results.
+let private extractResults
+    (maxTraversalVisits: int)
+    (enableMemoization: bool)
+    (recordTraversalVisits: int -> unit)
+    (sourceFileName: string)
+    (source: string)
+    (parseResults: FSharpParseFileResults)
+    (checkAnswer: FSharpCheckFileAnswer)
+    (projectName: string)
+    : Result<AnalysisResult, string> =
+    let parseErrors = parseErrorDiagnostics parseResults
+
+    if parseErrors.Length > 0 then
+        let errors = parseErrors |> Array.map (fun d -> d.Message) |> String.concat "; "
+
+        Error $"Parse errors: %s{errors}"
+    else
+        match checkAnswer with
+        | FSharpCheckFileAnswer.Aborted -> Error "Type checking aborted"
+        | FSharpCheckFileAnswer.Succeeded checkResults ->
+            let analysisClock = Stopwatch.StartNew()
+            do diagnosticFrame sourceFileName "begin" 0L 0 0 0 0
+            // One budget covers every defensive FCS graph traversal in this file. A
+            // per-symbol budget still permits thousands of bounded expansions to add up
+            // to runaway work on large source files.
+            let symbolTraversalBudget = SymbolTraversalBudget maxTraversalVisits
+            let allUses = checkResults.GetAllUsesOfAllSymbolsInFile() |> Seq.toList
+            let allUsesElapsed = analysisClock.ElapsedMilliseconds
+            diagnosticFrame sourceFileName "all-uses" allUsesElapsed 0 0 0 0
+            let sourceLines = source.Split('\n')
+
+            let genericEdgesForSymbol, genericCacheStats =
+                createGenericEdgeResolver symbolTraversalBudget enableMemoization (diagnosticsEnabled ())
+
+            let trace stage =
+                let referenceHits, semanticHits, misses = genericCacheStats ()
+                let elapsed = analysisClock.ElapsedMilliseconds
+
+                diagnosticFrame
+                    sourceFileName
+                    stage
+                    elapsed
+                    symbolTraversalBudget.Visits
+                    referenceHits
+                    semanticHits
+                    misses
+
+                diagnosticResources sourceFileName stage
+
+            let signatureBindingRanges, signatureTypeRanges =
+                collectSignatureRanges parseResults.ParseTree
+
+            let moduleBindingRanges =
+                collectModuleBindingRanges parseResults.ParseTree @ signatureBindingRanges
+
+            let typeMemberRanges = collectTypeMemberRanges parseResults.ParseTree
+
+            let typeDefnRanges =
+                collectTypeDefnRanges parseResults.ParseTree @ signatureTypeRanges
+
+            // Type definition ranges are deliberately NOT merged in here: they would shadow
+            // binding names (e.g. `type Config` vs `let config`) in the maps built below.
+            let memberBindingRanges = moduleBindingRanges @ typeMemberRanges
+
+            // Keyed by simple (unqualified) name for O(log M) lookup rather than an O(M)
+            // scan per symbol. Each name maps to a LIST because one short name can occur
+            // more than once in a file (`let f` in two sibling nested modules); `Map.ofList`
+            // would be last-write-wins and silently sever the earlier binding's edges.
+            // Callers disambiguate by which range contains the use in question.
+            let groupRangesByName (ranges: (string * 'Span) list) : Map<string, 'Span list> =
+                ranges
+                |> List.groupBy fst
+                |> List.map (fun (n, rs) -> n, List.map snd rs)
+                |> Map.ofList
+
+            let allBindingRangeMap = groupRangesByName memberBindingRanges
+            let typeDefnRangeMap = groupRangesByName typeDefnRanges
+
+            // Accessor properties and auto-properties, for hashing only: see
+            // `collectPropertyRanges` for why they are not enclosing ranges.
+            let propertyRangeMap =
+                groupRangesByName (collectPropertyRanges parseResults.ParseTree)
+
+            // From the candidate ranges sharing a short name, pick the narrowest one that
+            // contains the given use range, falling back to the first candidate for the
+            // rare case where the FCS use range sits just outside every AST binding range.
+            let pickRangeFor (useRange: range) (candidates: range list) : range option =
+                let containing =
+                    candidates
+                    |> List.filter (fun r -> useRange.StartLine >= r.StartLine && useRange.EndLine <= r.EndLine)
+
+                match containing with
+                | [] -> List.tryHead candidates
+                | _ -> containing |> List.minBy (fun r -> r.EndLine - r.StartLine) |> Some
+
+            let typeShapes = collectTypeDefnShapes parseResults.ParseTree
+            let sourceIndex = SourceIndex source
+
+            let unionCaseRangeMap =
+                typeShapes
+                |> List.collect (fun shape ->
+                    shape.Children |> List.filter _.IsCase |> List.map (fun c -> c.Name, c.Range))
+                |> groupRangesByName
+
+            let isTrackedSymbol (symbolInfo: SymbolInfo) =
+                match symbolInfo.Kind with
+                | Type
+                | Module
+                | DuCase
+                // A property is kept even when no syntax range names it: dropping it would
+                // sever every consumer edge, while keeping it costs at worst a hash that
+                // covers only its identifier's line. `spanOf` gives every property form
+                // the audit knows its whole text (`BindingFormAuditTests`).
+                | Property -> true
+                | Function
+                | Value ->
+                    // Defence in depth behind `tryClassifyMemberOrFunction`'s
+                    // `IsModuleValueOrMember` gate, which is the real discriminator. The
+                    // short-name test alone is not enough: a parameter or local whose name
+                    // collides with a module-level binding in the same file (`let private
+                    // kebab (name: string)` in a file that also binds `name`) passes it and
+                    // is persisted under the bare name `name` — a repo-wide hub, because
+                    // `symbols.full_name` is UNIQUE. A module-level binding or type member
+                    // is ALWAYS dot-qualified (`M.f`, `M.T.Member`), so an unqualified
+                    // Function/Value is by definition a local.
+                    symbolInfo.FullName.Contains('.')
+                    && allBindingRangeMap |> Map.containsKey (canonicalShortName symbolInfo.FullName)
+                | ExternRef -> false
+
+            // The text each definition's hash covers. Prefer the AST range over FCS's
+            // `u.Range` (the identifier alone): a binding's includes its attributes and
+            // body, a union case's its attributes and payload. A Type's hash is refined
+            // to its header below, once every other symbol's span is known.
+            let spanOf (kind: SymbolKind) (fullName: string) (u: FSharpSymbolUse) : HashedSpan =
+                let sn = canonicalShortName fullName
+                let lines (r: range) = Lines(r.StartLine, r.EndLine)
+                let fallback = lines u.Range
+
+                let pickFrom map =
+                    map |> Map.tryFind sn |> Option.bind (pickRangeFor u.Range)
+
+                match kind with
+                | Type -> pickFrom typeDefnRangeMap |> Option.map lines |> Option.defaultValue fallback
+                | Function
+                | Value -> pickFrom allBindingRangeMap |> Option.map lines |> Option.defaultValue fallback
+                | Property ->
+                    // `member _.P = …` is a binding; `with get`/`and set` and `member val`
+                    // are not, so both maps are candidates. Without the second, those two
+                    // forms hashed only the line naming the property.
+                    let candidates =
+                        [ allBindingRangeMap; propertyRangeMap ]
+                        |> List.collect (Map.tryFind sn >> Option.defaultValue [])
+
+                    pickRangeFor u.Range candidates
+                    |> Option.map lines
+                    |> Option.defaultValue fallback
+                | DuCase -> pickFrom unionCaseRangeMap |> Option.map Exact |> Option.defaultValue fallback
+                | Module
+                | ExternRef -> fallback
+
+            let hashSpan span =
+                match span with
+                | Lines(startLine, endLine) -> hashSourceLines sourceLines startLine endLine
+                | Exact r -> hashRange sourceIndex r
+
+            let spannedDefinitions =
+                allUses
+                |> List.choose (fun u ->
+                    if u.IsFromDefinition then
+                        classifySymbol u.Symbol
+                        |> Option.map (fun (kind, fullName) ->
+                            let isExtern =
+                                match u.Symbol with
+                                | :? FSharpMemberOrFunctionOrValue as mfv -> isDllImport mfv
+                                | _ -> false
+
+                            let span = spanOf kind fullName u
+
+                            { FullName = fullName
+                              Kind = kind
+                              SourceFile = sourceFileName
+                              LineStart = u.Range.StartLine
+                              LineEnd = u.Range.EndLine
+                              ContentHash = hashSpan span
+                              IsExtern = isExtern },
+                            u,
+                            span)
+                    else
+                        None)
+
+            // Union cases and members whose text some tracked symbol's own hash covers;
+            // only these are cut out of their type's header. Anything else stays in it,
+            // so no text of a type is ever hashed by nobody.
+            let hashedApart =
+                spannedDefinitions
+                |> List.choose (fun (si, _, span) ->
+                    if si.Kind <> Type && isTrackedSymbol si then
+                        Some(canonicalShortName si.FullName, span)
+                    else
+                        None)
+                |> groupRangesByName
+
+            let isHashedApart (child: TypeChild) =
+                hashedApart
+                |> Map.tryFind child.Name
+                |> Option.defaultValue []
+                |> List.exists (fun span ->
+                    match span with
+                    | Lines(startLine, endLine) -> startLine <= child.Range.StartLine && child.Range.EndLine <= endLine
+                    | Exact r -> Range.rangeContainsRange r child.Range)
+
+            let headerHash (fullName: string) (u: FSharpSymbolUse) : string option =
+                let sn = canonicalShortName fullName
+
+                typeShapes
+                |> List.filter (fun shape ->
+                    shape.Name = sn
+                    && shape.Range.StartLine <= u.Range.StartLine
+                    && u.Range.EndLine <= shape.Range.EndLine)
+                |> List.sortBy (fun shape -> shape.Range.EndLine - shape.Range.StartLine)
+                |> List.tryHead
+                |> Option.map (fun shape ->
+                    shape.Children
+                    |> List.filter (fun c -> (not c.IsCase || not shape.IsStruct) && isHashedApart c)
+                    |> hashTypeHeader sourceIndex shape)
+
+            let definitions =
+                spannedDefinitions
+                |> List.map (fun (si, u, _) ->
+                    match si.Kind with
+                    | Type ->
+                        match headerHash si.FullName u with
+                        | Some h -> { si with ContentHash = h }, u
+                        | None -> si, u
+                    | _ -> si, u)
+
+            let symbols =
+                definitions
+                |> List.choose (fun (symbolInfo, _) -> if isTrackedSymbol symbolInfo then Some symbolInfo else None)
+
+            trace "symbols"
+
+            // All ranges for findEnclosing: member bindings + type definitions.
+            // Type definition ranges enable edge attribution for interface implementation
+            // references (e.g. `interface IFoo with`) which sit at the type level,
+            // outside any member body.
+            let allEnclosingRanges = (memberBindingRanges @ typeDefnRanges) |> Array.ofList
+
+            // Covers binding ranges and type definition ranges so findEnclosing can resolve
+            // both member-level and type-level enclosures. Values are LISTS for the same
+            // reason as `groupRangesByName`: collapsing colliding short names to a single
+            // entry loses or mis-attributes the earlier definition's edges. findEnclosing
+            // disambiguates by the definition's own line range.
+            let definitionsByName =
+                definitions
+                |> List.choose (fun (si, _) ->
+                    let sn = canonicalShortName si.FullName
+
+                    if
+                        allBindingRangeMap |> Map.containsKey sn
+                        || typeDefnRangeMap |> Map.containsKey sn
+                    then
+                        Some(sn, si)
+                    else
+                        None)
+                |> List.groupBy fst
+                |> List.map (fun (n, sis) -> n, List.map snd sis)
+                |> Map.ofList
+
+            // Resolve a (name, enclosing binding range) pair to the SymbolInfo whose own
+            // definition range sits inside that binding range.
+            let resolveEnclosing (name: string) (bindingRange: range) : SymbolInfo option =
+                match definitionsByName |> Map.tryFind name with
+                | None -> None
+                | Some [ single ] -> Some single
+                | Some candidates ->
+                    let contained =
+                        candidates
+                        |> List.filter (fun si ->
+                            si.LineStart >= bindingRange.StartLine && si.LineEnd <= bindingRange.EndLine)
+
+                    match contained with
+                    | [ exactlyOne ] -> Some exactlyOne
+                    | first :: _ -> Some first
+                    | [] -> List.tryHead candidates
+
+            let findEnclosing (useRange: range) =
+                let mutable best: (string * range) voption = ValueNone
+
+                for i in 0 .. allEnclosingRanges.Length - 1 do
+                    let name, bindingRange = allEnclosingRanges[i]
+
+                    if
+                        useRange.StartLine >= bindingRange.StartLine
+                        && useRange.EndLine <= bindingRange.EndLine
+                    then
+                        match best with
+                        | ValueNone -> best <- ValueSome(name, bindingRange)
+                        | ValueSome(_, bestRange) ->
+                            let span = bindingRange.EndLine - bindingRange.StartLine
+                            let bestSpan = bestRange.EndLine - bestRange.StartLine
+
+                            if span < bestSpan then
+                                best <- ValueSome(name, bindingRange)
+
+                best
+                |> function
+                    | ValueSome(name, bindingRange) -> resolveEnclosing name bindingRange
+                    | ValueNone -> None
+
+            let mutable droppedEdgeCount = 0
+
+            // What FCS said each edge TARGET is, recorded where the target was classified.
+            // The extern placeholder pass below needs this: `Module` is the one kind the
+            // `symbols_full_name_is_qualified` CHECK lets through unqualified, so choosing
+            // it must be evidence, never a guess from the shape of the string.
+            let classifiedTargetKinds =
+                System.Collections.Generic.Dictionary<string, SymbolKind>()
+
+            let dependencies =
+                allUses
+                |> List.collect (fun u ->
+                    if u.IsFromDefinition then
+                        []
+                    else
+                        // `FSharpField` uses (record construction `{ Name = "Alice" }`) are
+                        // not covered by classifySymbol.
+                        let fieldRecordEdge =
+                            match u.Symbol with
+                            | :? FSharpField ->
+                                match tryGetRecordTypeFromField u.Symbol with
+                                | Some recName ->
+                                    match findEnclosing u.Range with
+                                    | Some enclosingSi when enclosingSi.FullName <> recName ->
+                                        [ { FromSymbol = enclosingSi.FullName
+                                            ToSymbol = recName
+                                            Kind = UsesType
+                                            Source = "core" } ]
+                                    | _ -> []
+                                | None -> []
+                            | _ -> []
+
+                        match classifySymbol u.Symbol with
+                        | None -> fieldRecordEdge
+                        | Some(usedKind, usedFullName) ->
+                            classifiedTargetKinds[usedFullName] <- usedKind
+
+                            match findEnclosing u.Range with
+                            | None ->
+                                droppedEdgeCount <- droppedEdgeCount + 1
+                                fieldRecordEdge
+                            | Some enclosingSi ->
+                                if enclosingSi.FullName = usedFullName then
+                                    fieldRecordEdge
+                                else
+                                    let primary =
+                                        { FromSymbol = enclosingSi.FullName
+                                          ToSymbol = usedFullName
+                                          Kind = classifyDependency u.Symbol
+                                          Source = "core" }
+
+                                    let parentEdge =
+                                        tryGetUnionParentType u.Symbol
+                                        |> Option.bind (fun parentName ->
+                                            if parentName = enclosingSi.FullName || parentName = usedFullName then
+                                                None
+                                            else
+                                                Some
+                                                    { FromSymbol = enclosingSi.FullName
+                                                      ToSymbol = parentName
+                                                      Kind = UsesType
+                                                      Source = "core" })
+
+                                    let genericArgEdges =
+                                        genericEdgesForSymbol u.Symbol
+                                        |> List.choose (fun argName ->
+                                            if argName = enclosingSi.FullName || argName = usedFullName then
+                                                None
+                                            else
+                                                Some
+                                                    { FromSymbol = enclosingSi.FullName
+                                                      ToSymbol = argName
+                                                      Kind = UsesType
+                                                      Source = "core" })
+
+                                    let recordTypeEdge =
+                                        tryGetRecordTypeFromField u.Symbol
+                                        |> Option.bind (fun recName ->
+                                            if recName = enclosingSi.FullName || recName = usedFullName then
+                                                None
+                                            else
+                                                Some
+                                                    { FromSymbol = enclosingSi.FullName
+                                                      ToSymbol = recName
+                                                      Kind = UsesType
+                                                      Source = "core" })
+
+                                    primary :: (parentEdge |> Option.toList)
+                                    @ genericArgEdges
+                                    @ (recordTypeEdge |> Option.toList))
+                |> Seq.distinct
+                |> Seq.toList
+
+            trace "dependencies"
+
+            // Resolve a type to its declaring-entity full name, or None for generic
+            // parameters / types without a type definition.
+            let tryFullName (t: FSharpType) : string option =
+                try
+                    if t.HasTypeDefinition && not t.IsGenericParameter then
+                        Some(entityName t.TypeDefinition)
+                    else
+                        None
+                with _ ->
+                    None
+
+            // The JSON-ish payload stored in `symbol_attributes.args_json`, e.g. `["name", 42]`.
+            let serializeAttributeArgs (attr: FSharpAttribute) : string =
+                let inner =
+                    try
+                        attr.ConstructorArguments
+                        |> Seq.map (fun (_ty, value) ->
+                            match value with
+                            | :? string as s -> $"\"%s{s}\""
+                            | v -> string v)
+                        |> String.concat ", "
+                    with _ ->
+                        ""
+
+                $"[%s{inner}]"
+
+            let firstStringArg (attr: FSharpAttribute) : string option =
+                try
+                    attr.ConstructorArguments
+                    |> Seq.tryHead
+                    |> Option.bind (fun (_, value) ->
+                        match value with
+                        | :? string as s -> Some s
+                        | _ -> None)
+                with _ ->
+                    None
+
+            // Pull T out of an `IClassFixture<T>` or `ICollectionFixture<T>` interface
+            // declaration. Used both for direct fixture edges on test methods and for
+            // resolving `[<CollectionDefinition>]` classes to their fixture.
+            let fixtureInterfaceArg (acceptName: string -> bool) (iface: FSharpType) : string option =
+                try
+                    if
+                        iface.HasTypeDefinition
+                        && iface.GenericArguments.Count = 1
+                        && acceptName iface.TypeDefinition.DisplayName
+                    then
+                        tryFullName iface.GenericArguments[0]
+                    else
+                        None
+                with _ ->
+                    None
+
+            // Fixture types that should be linked directly to each test method on the
+            // class: primary-ctor parameter types + IClassFixture<T>/ICollectionFixture<T>
+            // interface args. Memoized per entity so a class with N test methods walks
+            // its members/interfaces once instead of N times.
+            let fixtureCache = System.Collections.Generic.Dictionary<string, string list>()
+
+            let collectFixtureTypes (entity: FSharpEntity) : string list =
+                let key =
+                    try
+                        entity.FullName
+                    with _ ->
+                        ""
+
+                match fixtureCache.TryGetValue(key) with
+                | true, cached -> cached
+                | false, _ ->
+                    let fromCtorParams =
+                        try
+                            entity.MembersFunctionsAndValues
+                            |> Seq.filter (fun m ->
+                                try
+                                    m.IsConstructor
+                                with _ ->
+                                    false)
+                            |> Seq.collect (fun m ->
+                                try
+                                    m.CurriedParameterGroups
+                                    |> Seq.concat
+                                    |> Seq.choose (fun p -> tryFullName p.Type)
+                                with _ ->
+                                    Seq.empty)
+                            |> Seq.toList
+                        with _ ->
+                            []
+
+                    let fromInterfaces =
+                        try
+                            entity.DeclaredInterfaces
+                            |> Seq.choose (
+                                fixtureInterfaceArg (fun n -> n = IClassFixtureName || n = ICollectionFixtureName)
+                            )
+                            |> Seq.toList
+                        with _ ->
+                            []
+
+                    let result = fromCtorParams @ fromInterfaces |> List.distinct
+                    fixtureCache[key] <- result
+                    result
+
+            // Resolve the single ICollectionFixture<T> arg of a [<CollectionDefinition>]
+            // class to T's full name.
+            let collectionFixtureFromInterfaces (entity: FSharpEntity) : string option =
+                try
+                    entity.DeclaredInterfaces
+                    |> Seq.tryPick (fixtureInterfaceArg (fun n -> n = ICollectionFixtureName))
+                with _ ->
+                    None
+
+            // Pre-pass over entity definitions: capture entity-level attributes (the
+            // MFV-only loop below misses them) and catalog xUnit collection fixtures so
+            // the MFV pass can link test methods to them.
+            //
+            // A synthetic symbol `<SyntheticCollectionPrefix><name>` bridges each
+            // `[<Collection(name)>]` test class to the matching `[<CollectionDefinition(name)>]`
+            // declaration (potentially in a different file). Test methods get edges to the
+            // synth; the synth gets an edge to the fixture T. Cross-file resolution
+            // happens through the existing extern/full_name pipeline.
+            let mutable collectionDefinitions: Map<string, string * string> = Map.empty
+            let mutable collectionMemberships: Map<string, string list> = Map.empty
+            let mutable entityAttributes: SymbolAttribute list = []
+
+            for u in allUses do
+                if u.IsFromDefinition then
+                    match u.Symbol with
+                    | :? FSharpEntity as entity ->
+                        try
+                            let entityFullName = entityName entity
+
+                            for attr in entity.Attributes do
+                                try
+                                    let attrName = attr.AttributeType.DisplayName
+
+                                    entityAttributes <-
+                                        { SymbolFullName = entityFullName
+                                          AttributeName = attrName
+                                          ArgsJson = serializeAttributeArgs attr }
+                                        :: entityAttributes
+
+                                    if attrName = CollectionDefinitionAttributeName then
+                                        match firstStringArg attr with
+                                        | Some name ->
+                                            match collectionFixtureFromInterfaces entity with
+                                            | Some fixtureFullName ->
+                                                let synthName = SyntheticCollectionPrefix + name
+
+                                                collectionDefinitions <-
+                                                    collectionDefinitions |> Map.add name (synthName, fixtureFullName)
+                                            | None -> ()
+                                        | None -> ()
+                                    elif attrName = CollectionAttributeName then
+                                        match firstStringArg attr with
+                                        | Some name ->
+                                            let existing =
+                                                collectionMemberships
+                                                |> Map.tryFind entityFullName
+                                                |> Option.defaultValue []
+
+                                            collectionMemberships <-
+                                                collectionMemberships |> Map.add entityFullName (name :: existing)
+                                        | None -> ()
+                                with _ ->
+                                    ()
+                        with _ ->
+                            ()
+                    | _ -> ()
+
+            let mutable testMethods = []
+            let mutable attributes = []
+            let mutable parentLinks = []
+            let mutable fixtureEdges = []
+            let testClassCache = System.Collections.Generic.Dictionary<string, string>()
+
+            let testClassForEntity fallbackClass (entity: FSharpEntity) =
+                let key =
+                    try
+                        entity.FullName
+                    with _ ->
+                        ""
+
+                if String.IsNullOrEmpty key || not enableMemoization then
+                    (buildClrClassName symbolTraversalBudget entity).Value
+                else
+                    match testClassCache.TryGetValue(key) with
+                    | true, cached -> cached
+                    | false, _ ->
+                        let traversal = buildClrClassName symbolTraversalBudget entity
+
+                        let resolved =
+                            if String.IsNullOrEmpty traversal.Value then
+                                fallbackClass
+                            else
+                                traversal.Value
+
+                        cacheCompletedTraversal
+                            testClassCache
+                            key
+                            { Value = resolved
+                              IsComplete = traversal.IsComplete }
+
+                        resolved
+
+            for u in allUses do
+                if u.IsFromDefinition then
+                    match u.Symbol with
+                    | :? FSharpMemberOrFunctionOrValue as mfv ->
+                        // Containment link for aggregate-type invalidation. Emitted only
+                        // for members of non-module Types; module bindings must not
+                        // participate (editing one module function would otherwise fan
+                        // out to consumers of sibling functions).
+                        //
+                        // Dedup is downstream: InMemoryStore uses a Map, the Database
+                        // UPDATE is idempotent for repeated (child, parent) pairs.
+                        try
+                            match mfv.DeclaringEntity with
+                            | Some entity when not entity.IsFSharpModule ->
+                                parentLinks <-
+                                    { Child = memberName mfv
+                                      Parent = entityName entity }
+                                    :: parentLinks
+                            | _ -> ()
+                        with _ ->
+                            ()
+
+                        if isTestAttribute mfv then
+                            // `mfv.FullName` can throw on un-nameable symbols — see `tryName`.
+                            try
+                                let fallbackClass, testMethod = extractTestClass mfv.FullName
+
+                                let testClass =
+                                    try
+                                        match mfv.DeclaringEntity with
+                                        | Some entity -> testClassForEntity fallbackClass entity
+                                        | None -> fallbackClass
+                                    with
+                                    | SymbolTraversalDepthExceeded _ -> reraise ()
+                                    | SymbolTraversalBudgetExceeded _ -> reraise ()
+                                    | _ -> fallbackClass
+
+                                testMethods <-
+                                    { SymbolFullName = memberName mfv
+                                      TestProject = projectName
+                                      TestClass = testClass
+                                      TestMethod = testMethod }
+                                    :: testMethods
+                            with
+                            | SymbolTraversalDepthExceeded _ -> reraise ()
+                            | SymbolTraversalBudgetExceeded _ -> reraise ()
+                            | _ -> ()
+
+                            // Direct edges from the test method to every fixture its
+                            // declaring class exposes (ctor-param types + IClassFixture /
+                            // ICollectionFixture interface args), plus to the synthetic
+                            // symbol for each [<Collection(n)>] membership. Covers tests
+                            // that never reference the fixture in their body — class-level
+                            // edges alone wouldn't chain back to the test method.
+                            try
+                                match mfv.DeclaringEntity with
+                                | Some entity when not entity.IsFSharpModule ->
+                                    for fixtureFullName in collectFixtureTypes entity do
+                                        if fixtureFullName <> memberName mfv then
+                                            fixtureEdges <-
+                                                { FromSymbol = memberName mfv
+                                                  ToSymbol = fixtureFullName
+                                                  Kind = UsesType
+                                                  Source = "core" }
+                                                :: fixtureEdges
+
+                                    match collectionMemberships |> Map.tryFind (entityName entity) with
+                                    | Some names ->
+                                        for name in names do
+                                            fixtureEdges <-
+                                                { FromSymbol = memberName mfv
+                                                  ToSymbol = SyntheticCollectionPrefix + name
+                                                  Kind = UsesType
+                                                  Source = "core" }
+                                                :: fixtureEdges
+                                    | None -> ()
+                                | _ -> ()
+                            with _ ->
+                                ()
+
+                        try
+                            for attr in mfv.Attributes do
+                                try
+                                    attributes <-
+                                        { SymbolFullName = memberName mfv
+                                          AttributeName = attr.AttributeType.DisplayName
+                                          ArgsJson = serializeAttributeArgs attr }
+                                        :: attributes
+                                with _ ->
+                                    ()
+
+                            if mfv.InlineAnnotation = FSharpInlineAnnotation.AlwaysInline then
+                                attributes <-
+                                    { SymbolFullName = memberName mfv
+                                      AttributeName = InlineAttributeName
+                                      ArgsJson = "[]" }
+                                    :: attributes
+                        with _ ->
+                            ()
+                    | _ -> ()
+
+            let testMethods = List.rev testMethods
+            let attributes = (List.rev attributes) @ (List.rev entityAttributes)
+            let parentLinks = List.rev parentLinks
+            let fixtureEdges = List.rev fixtureEdges |> List.distinct
+
+            trace "tests-attributes"
+
+            // One synthetic symbol per [<CollectionDefinition(name)>] in this file, plus
+            // synthetic → fixture so the recursive walk reaches T → synth → testMethod.
+            let collectionSynthSymbols, collectionSynthEdges =
+                let mutable syms = []
+                let mutable edges = []
+
+                for KeyValue(_, (synthFullName, fixtureFullName)) in collectionDefinitions do
+                    syms <-
+                        { FullName = synthFullName
+                          Kind = Type
+                          SourceFile = sourceFileName
+                          LineStart = 0
+                          LineEnd = 0
+                          ContentHash = ""
+                          IsExtern = false }
+                        :: syms
+
+                    edges <-
+                        { FromSymbol = synthFullName
+                          ToSymbol = fixtureFullName
+                          Kind = UsesType
+                          Source = "core" }
+                        :: edges
+
+                syms, edges
+
+            // A test and the production symbol that emits the same message normally name
+            // none of each other. Join them through a synthetic node: test -> literal ->
+            // producer in the dependency graph, which the existing reverse selection walk
+            // follows from a changed producer back to the test.
+            let literalSynthSymbols, literalSynthEdges =
+                let testSymbolNames = testMethods |> List.map _.SymbolFullName |> Set.ofList
+                let trackedSymbolNames = symbols |> List.map _.FullName |> Set.ofList
+                let mutable nodes = Map.empty
+                let mutable edges = []
+
+                for text, literalRange in collectSharedLiterals parseResults.ParseTree do
+                    match findEnclosing literalRange with
+                    | Some enclosing when trackedSymbolNames.Contains enclosing.FullName ->
+                        let nodeName = sharedLiteralNodeName text
+
+                        nodes <-
+                            nodes
+                            |> Map.add
+                                nodeName
+                                { FullName = nodeName
+                                  Kind = ExternRef
+                                  SourceFile = ExternSourceFile
+                                  LineStart = 0
+                                  LineEnd = 0
+                                  ContentHash = ""
+                                  IsExtern = true }
+
+                        let edge =
+                            if testSymbolNames.Contains enclosing.FullName then
+                                { FromSymbol = enclosing.FullName
+                                  ToSymbol = nodeName
+                                  Kind = SharedLiteral
+                                  Source = "core" }
+                            else
+                                { FromSymbol = nodeName
+                                  ToSymbol = enclosing.FullName
+                                  Kind = SharedLiteral
+                                  Source = "core" }
+
+                        edges <- edge :: edges
+                    | _ -> ()
+
+                nodes |> Map.values |> List.ofSeq, edges |> List.distinct
+
+            trace "shared-literals"
+
+            // Merge fixture edges, collection synth edges and literal bridge edges with
+            // the primary dependency list.
+            // Downstream consumers (DB INSERT OR IGNORE, InMemoryStore's Map.ofList) dedupe.
+            let dependencies =
+                dependencies @ fixtureEdges @ collectionSynthEdges @ literalSynthEdges
+
+            let symbols = symbols @ collectionSynthSymbols @ literalSynthSymbols
+
+            // A signature (`.fsi`) declaration and its implementation share one FCS
+            // identity, so both files report the same canonical names. Each file's
+            // symbols are that name's source OCCURRENCE in that file — the stores keep
+            // them side by side (see `Database.RebuildProjects`), never as two nodes.
+            let declaredKinds =
+                symbols |> List.map (fun symbol -> symbol.FullName, symbol.Kind) |> Map.ofList
+
+            // Collect extern symbols: ToSymbol names in dependencies that aren't
+            // defined in this file. These are cross-assembly references that need
+            // to exist in the symbols table for dependency edges to resolve.
+            let localSymbolNames = symbols |> List.map (fun s -> s.FullName) |> Set.ofList
+
+            let externSymbols =
+                let seen = System.Collections.Generic.HashSet<string>()
+
+                dependencies
+                |> List.map _.ToSymbol
+                |> List.choose (fun name ->
+
+                    if seen.Add(name) && not (Set.contains name localSymbolNames) then
+                        // `symbols` carries `CHECK (kind = 'Module' OR full_name LIKE '%.%')`
+                        // to keep out unqualified rows, which under a UNIQUE `full_name`
+                        // become repo-wide hubs. `Module` is therefore the schema's one
+                        // escape from that CHECK, and a placeholder may only take it on
+                        // EVIDENCE — FCS classified this very name as a module while
+                        // analysing this file. A top-level single-segment module (`module
+                        // Alpha`, whose FCS `FullName` is just `Alpha`) referenced from a
+                        // file indexed ahead of its own is the case that needs it.
+                        //
+                        // Deriving the label from the shape of the string instead — "no dot,
+                        // therefore a module" — is what let the CHECK ship inert: it relabels
+                        // every unqualified name a module, so no input can fail it, and the
+                        // hub reforms under a kind the constraint exempts. An unqualified
+                        // target with no module evidence stays `ExternRef` and is REJECTED
+                        // by the constraint, which names the symbol and its file. That is
+                        // the intended outcome: such a name is not identifiable, and a loud
+                        // failure naming it is what the silent merge cost hours of.
+                        let kind =
+                            if name.Contains '.' then
+                                ExternRef
+                            else
+                                match classifiedTargetKinds.TryGetValue name with
+                                | _ when declaredKinds |> Map.tryFind name = Some Module -> Module
+                                | true, Module -> Module
+                                | _ -> ExternRef
+
+                        Some
+                            { FullName = name
+                              Kind = kind
+                              SourceFile = ExternSourceFile
+                              LineStart = 0
+                              LineEnd = 0
+                              ContentHash = ""
+                              IsExtern = true }
+                    else
+                        None)
+
+            let allSymbols = symbols @ externSymbols
+
+            trace "extern-symbols"
+
+            // Counted from `allUses`, not from the `isTrackedSymbol` filter: locals and
+            // parameters are rejected earlier, by `tryClassifyMemberOrFunction`'s
+            // `IsModuleValueOrMember` gate, so they never reach `definitions`. Deriving the
+            // count downstream would report zero instead of how much of the file was
+            // discarded as local.
+            let localDefinitionCount =
+                allUses
+                |> List.sumBy (fun u ->
+                    if not u.IsFromDefinition then
+                        0
+                    else
+                        match u.Symbol with
+                        | :? FSharpMemberOrFunctionOrValue as mfv ->
+                            try
+                                if mfv.IsModuleValueOrMember then 0 else 1
+                            with _ ->
+                                0
+                        | _ -> 0)
+
+            trace "local-definitions"
+
+            let filteredSymbolCount =
+                localDefinitionCount + (definitions.Length - symbols.Length)
+
+            let result =
+                { Symbols = allSymbols
+                  Dependencies = dependencies
+                  TestMethods = testMethods
+                  Attributes = attributes
+                  ParentLinks = parentLinks
+                  Diagnostics =
+                    { DroppedEdges = droppedEdgeCount
+                      FilteredSymbols = filteredSymbolCount
+                      TotalDefinitions = definitions.Length + localDefinitionCount } }
+
+            let referenceHits, semanticHits, misses = genericCacheStats ()
+            let completeElapsed = analysisClock.ElapsedMilliseconds
+
+            diagnosticFrame
+                sourceFileName
+                "complete"
+                completeElapsed
+                symbolTraversalBudget.Visits
+                referenceHits
+                semanticHits
+                misses
+
+            recordTraversalVisits symbolTraversalBudget.Visits
+            Ok result
+
+/// Analyze a source file from parse and type-check results already produced by FCS.
+/// This path performs no parsing or checking and is intended for hosts that receive
+/// successful results from an existing compiler-service pipeline.
+/// The file name, source text, parse results, and check results must all describe the
+/// same file version; FCS results do not expose enough identity to validate a mismatch.
+let analyzeSourceFromResults
+    (sourceFileName: string)
+    (source: string)
+    (parseResults: FSharpParseFileResults)
+    (checkResults: FSharpCheckFileResults)
+    (projectName: string)
+    =
+    protectSymbolTraversal (fun () ->
+        extractResults
+            MaxSymbolTraversalVisits
+            true
+            ignore
+            sourceFileName
+            source
+            parseResults
+            (FSharpCheckFileAnswer.Succeeded checkResults)
+            projectName)
+
+/// Parse and analyze a single F# source string using project options.
+let analyzeSource
+    (checker: FSharpChecker)
+    (sourceFileName: string)
+    (source: string)
+    (projectOptions: FSharpProjectOptions)
+    (projectName: string)
+    =
+    async {
+        let sourceText = SourceText.ofString source
+
+        let! parseResults, checkAnswer =
+            checker.ParseAndCheckFileInProject(sourceFileName, 0, sourceText, projectOptions)
+
+        return
+            protectSymbolTraversal (fun () ->
+                extractResults
+                    MaxSymbolTraversalVisits
+                    true
+                    ignore
+                    sourceFileName
+                    source
+                    parseResults
+                    checkAnswer
+                    projectName)
+    }
+
+/// Parse and analyze a single F# source file using a project snapshot.
+/// FCS internally caches results for files with unchanged version strings.
+let analyzeSourceWithSnapshot
+    (checker: FSharpChecker)
+    (sourceFileName: string)
+    (source: string)
+    (projectSnapshot: FSharpProjectSnapshot)
+    (projectName: string)
+    =
+    async {
+        let! parseResults, checkAnswer = checker.ParseAndCheckFileInProject(sourceFileName, projectSnapshot)
+
+        return
+            protectSymbolTraversal (fun () ->
+                extractResults
+                    MaxSymbolTraversalVisits
+                    true
+                    ignore
+                    sourceFileName
+                    source
+                    parseResults
+                    checkAnswer
+                    projectName)
+    }
+
+[<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
+module internal AnalysisTestHelpers =
+    let analyzeSourceFromResultsWithPolicy
+        maxVisits
+        enableMemoization
+        sourceFileName
+        source
+        parseResults
+        checkResults
+        projectName
+        =
+        let mutable chargedVisits = -1
+
+        let result =
+            protectSymbolTraversal (fun () ->
+                extractResults
+                    maxVisits
+                    enableMemoization
+                    (fun visits -> chargedVisits <- visits)
+                    sourceFileName
+                    source
+                    parseResults
+                    (FSharpCheckFileAnswer.Succeeded checkResults)
+                    projectName)
+
+        result, chargedVisits
+
+/// Create a project snapshot from project options, using file modification times as version keys.
+/// FCS uses version strings to skip re-checking files that haven't changed.
+let createProjectSnapshot (projectOptions: FSharpProjectOptions) =
+    let getFileSnapshot (_opts: FSharpProjectOptions) (fileName: string) =
+        async {
+            let version =
+                if File.Exists(fileName) then
+                    File.GetLastWriteTimeUtc(fileName).Ticks |> string
+                else
+                    "0"
+
+            let getSource () =
+                task {
+                    let text =
+                        if File.Exists(fileName) then
+                            File.ReadAllText(fileName)
+                        else
+                            ""
+
+                    return SourceTextNew.ofString text
+                }
+
+            return FSharpFileSnapshot.Create(fileName, version, getSource)
+        }
+
+    FSharpProjectSnapshot.FromOptions(projectOptions, getFileSnapshot)
+
+/// Detect 'open' statements in source code to find cross-file dependencies.
+let private detectOpenedModules (source: string) : string list =
+    source.Split('\n')
+    |> Array.map (fun line ->
+        let trimmed = line.Trim()
+
+        if trimmed.StartsWith("open ") then
+            trimmed.Substring(5).Trim()
+        else
+            "")
+    |> Array.filter (fun s -> not (String.IsNullOrEmpty(s)))
+    |> Array.toList
+
+/// Find script files in the same directory that match opened modules.
+/// Returns both actual files on disk and hypothetical files that match the module names.
+let private findRelatedScriptFiles (currentFile: string) (openedModules: string list) : string list =
+    if List.isEmpty openedModules then
+        []
+    else
+        let dirPath = Path.GetDirectoryName(currentFile)
+
+        try
+            let availableFiles =
+                if Directory.Exists(dirPath) then
+                    Directory.GetFiles(dirPath, "*.fsx")
+                    |> Array.filter (fun f -> f <> currentFile)
+                    |> Array.toList
+                else
+                    []
+
+            let foundFiles =
+                availableFiles
+                |> List.filter (fun f ->
+                    let fileName = Path.GetFileNameWithoutExtension(f)
+                    openedModules |> List.exists (fun m -> m = fileName))
+
+            // Paths for opened modules whose files don't exist on disk — sources analyzed
+            // in memory.
+            let hypotheticalFiles =
+                openedModules
+                |> List.map (fun m -> Path.Combine(dirPath, m + ".fsx"))
+                |> List.filter (fun f -> f <> currentFile && not (List.contains f foundFiles))
+
+            foundFiles @ hypotheticalFiles |> List.distinct
+        with ex ->
+            eprintfn $"  Warning: findRelatedScriptFiles failed: %s{ex.Message}"
+            []
+
+/// FCS GetProjectOptionsFromScript can return paths relative to the script location
+/// rather than the process cwd. Normalise them so FCS can load assemblies regardless
+/// of where the CLI was invoked.
+let internal resolveToAbsolute (basePath: string) (path: string) =
+    if String.IsNullOrEmpty(path) || Path.IsPathRooted(path) then
+        path
+    else
+        Path.GetFullPath(Path.Combine(basePath, path))
+
+/// -r: entries in OtherOptions are DLL reference paths that may be relative.
+/// Other entries (e.g. --noframework) are compiler flags, not paths — leave them untouched.
+let private resolveReferenceOptions (baseDir: string) (opts: string array) =
+    opts
+    |> Array.map (fun opt ->
+        if opt.StartsWith("-r:", StringComparison.Ordinal) then
+            let path = opt[3..]
+            let resolved = resolveToAbsolute baseDir path
+
+            if Object.ReferenceEquals(resolved, path) then
+                opt
+            else
+                "-r:" + resolved
+        else
+            opt)
+
+/// Convenience: create project options from a script source string.
+/// Detects 'open' statements and includes related script files in the SourceFiles array.
+let getScriptOptions (checker: FSharpChecker) (sourceFileName: string) (source: string) =
+    async {
+        let sourceText = SourceText.ofString source
+
+        let! ct = Async.CancellationToken
+        do! scriptSemaphore.WaitAsync(ct) |> Async.AwaitTask
+
+        let! projOptions, _diagnostics =
+            try
+                checker.GetProjectOptionsFromScript(sourceFileName, sourceText, assumeDotNetFramework = false)
+            finally
+                scriptSemaphore.Release() |> ignore
+
+        let openedModules = detectOpenedModules source
+        let relatedFiles = findRelatedScriptFiles sourceFileName openedModules
+
+        let enhancedSourceFiles =
+            if List.isEmpty relatedFiles then
+                projOptions.SourceFiles
+            else
+                (relatedFiles |> List.toArray)
+                |> Array.append projOptions.SourceFiles
+                |> Array.distinct
+
+        let baseDir =
+            match Path.GetDirectoryName(sourceFileName) with
+            | null -> Directory.GetCurrentDirectory()
+            | dir -> dir
+
+        let enhancedOptions =
+            { projOptions with
+                SourceFiles = enhancedSourceFiles |> Array.map (resolveToAbsolute baseDir)
+                OtherOptions = projOptions.OtherOptions |> resolveReferenceOptions baseDir }
+
+        return enhancedOptions
+    }

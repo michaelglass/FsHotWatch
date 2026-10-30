@@ -1,0 +1,438 @@
+/// Entry point of the `test-prune-traces` tool.
+module TestPrune.Trace.Cli.Program
+
+open System
+open System.Globalization
+open System.IO
+open System.Text.Json
+open System.Text.Json.Serialization
+open Microsoft.Data.Sqlite
+open TestPrune.Trace
+
+/// The usage line printed for an unknown or missing verb.
+let usage =
+    "usage: test-prune-traces census|audit|overhead|file-census|recall [options]"
+
+/// The usage of the census verb.
+let censusUsage =
+    "usage: test-prune-traces census [--db <path>] [--run <runId>] [--json]\n"
+    + "  exit 0 when every project meets the phase-1 bars, 1 otherwise, 2 on a usage error or an unreadable database"
+
+/// What a verb printed and its exit code.
+type Outcome =
+    { Exit: int
+      Stdout: string
+      Stderr: string }
+
+let private fail code (message: string) =
+    { Exit = code
+      Stdout = ""
+      Stderr = message + "\n" }
+
+/// fshw's trace database when it exists under `cwd`, else the CLI's.
+let private defaultDb (cwd: string) =
+    let fshw = Path.Combine(cwd, ".fshw", "test-traces.db")
+
+    if File.Exists fshw then
+        fshw
+    else
+        Path.Combine(cwd, ".test-prune-traces.db")
+
+type private CensusArgs =
+    { Db: string option
+      Run: string option
+      Json: bool }
+
+let rec private parseCensus (acc: CensusArgs) (args: string list) : Result<CensusArgs, string> =
+    match args with
+    | [] -> Ok acc
+    | "--db" :: v :: rest when not (v.StartsWith "--") -> parseCensus { acc with Db = Some v } rest
+    | "--run" :: v :: rest when not (v.StartsWith "--") -> parseCensus { acc with Run = Some v } rest
+    | "--json" :: rest -> parseCensus { acc with Json = true } rest
+    | ("--db" | "--run") as flag :: _ -> Error $"%s{flag} needs a value"
+    | other :: _ -> Error $"unknown argument %s{other}"
+
+let private census (cwd: string) (args: string list) : Outcome =
+    match parseCensus { Db = None; Run = None; Json = false } args with
+    | Error why -> fail 2 $"%s{why}\n%s{censusUsage}"
+    | Ok a ->
+        let db = a.Db |> Option.defaultWith (fun () -> defaultDb cwd)
+
+        try
+            match Census.latest db a.Run with
+            | [] ->
+                let which = a.Run |> Option.map (sprintf "run %s") |> Option.defaultValue "any run"
+
+                fail 1 $"no trace run (%s{which}) in %s{db}: nothing to measure"
+            | cs ->
+                let bars = Census.defaultBars
+
+                { Exit = if cs |> List.exists (Census.fails bars) then 1 else 0
+                  Stdout =
+                    if a.Json then
+                        JsonSerializer.Serialize(cs |> List.map (Census.report bars)) + "\n"
+                    else
+                        Census.render cs
+                  Stderr = "" }
+        with e ->
+            match e with
+            | :? FileNotFoundException
+            | TraceStore.TraceSchemaNewerThanConsumer _
+            | :? SqliteException -> fail 2 e.Message
+            // Unexpected content (a stats_json this version cannot read): keep the whole trace.
+            | _ -> fail 2 $"%s{db}: %O{e}"
+
+/// The usage of the recall verb.
+let recallUsage =
+    "usage: test-prune-traces recall --index <test-prune index db> --test-scoped <source>[,<source>...]\n"
+    + "  [--db <trace db>] [--run <runId>] [--jobs 4] [--limit 50] [--json]\n"
+    + "  checks every complete trace against the index under WalkPolicy.FollowAll and under a policy\n"
+    + "  that does not follow the --test-scoped edge sources (sql,sql-hydra is SqlCoupling.reachabilityGated)\n"
+    + "  exit 0 when the narrower policy adds no miss, 1 when it does, 2 on a usage error,\n"
+    + "  an unreadable database or nothing to check"
+
+type private RecallArgs =
+    { Index: string option
+      TestScoped: string list
+      Db: string option
+      Run: string option
+      Jobs: int
+      Limit: int
+      Json: bool }
+
+let private positive (flag: string) (set: int -> RecallArgs -> RecallArgs) (v: string) (a: RecallArgs) =
+    match Int32.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture) with
+    | true, n when n > 0 -> Ok(set n a)
+    | _ -> Error $"%s{flag} needs a positive whole number, got %s{v}"
+
+/// Every valued flag of the recall verb and how it sets its argument.
+let private recallSetters: Map<string, string -> RecallArgs -> Result<RecallArgs, string>> =
+    Map
+        [ "--index", (fun v a -> Ok { a with Index = Some v })
+          "--db", (fun v a -> Ok { a with Db = Some v })
+          "--run", (fun v a -> Ok { a with Run = Some v })
+          "--test-scoped",
+          (fun v a ->
+              Ok
+                  { a with
+                      TestScoped =
+                          v.Split(',', StringSplitOptions.RemoveEmptyEntries ||| StringSplitOptions.TrimEntries)
+                          |> List.ofArray })
+          "--jobs", positive "--jobs" (fun n a -> { a with Jobs = n })
+          "--limit", positive "--limit" (fun n a -> { a with Limit = n }) ]
+
+let rec private parseRecall (acc: RecallArgs) (args: string list) : Result<RecallArgs, string> =
+    match args with
+    | [] -> Ok acc
+    | "--json" :: rest -> parseRecall { acc with Json = true } rest
+    | flag :: v :: rest when recallSetters.ContainsKey flag && not (v.StartsWith "--") ->
+        recallSetters.[flag] v acc |> Result.bind (fun a -> parseRecall a rest)
+    | flag :: _ when recallSetters.ContainsKey flag -> Error $"%s{flag} needs a value"
+    | other :: _ -> Error $"unknown argument %s{other}"
+
+/// Why the index at `path` cannot be read as it is, if it cannot: missing, or written by
+/// another schema. Probed read-only, because opening an older index through
+/// `Database.create` would recreate it empty.
+let private unreadableIndex (path: string) : string option =
+    if not (File.Exists path) then
+        Some $"no index at %s{path}"
+    else
+        // Disposed in `finally`, not by `use`: a `use` adds a null check on a value that is
+        // never null, a branch no input can take.
+        let conn = new SqliteConnection($"Data Source=%s{path};Mode=ReadOnly")
+
+        try
+            conn.Open()
+            let cmd = conn.CreateCommand()
+            cmd.CommandText <- "PRAGMA user_version"
+            let found = cmd.ExecuteScalar() :?> int64 |> int
+            cmd.Dispose()
+
+            if found = TestPrune.Database.SchemaVersion then
+                None
+            else
+                Some
+                    $"%s{path} has index schema v%d{found}; this test-prune-traces reads v%d{TestPrune.Database.SchemaVersion}. Re-index with a matching TestPrune."
+        finally
+            SqliteConnection.ClearPool conn
+            conn.Dispose()
+
+let private recall (cwd: string) (args: string list) : Outcome =
+    let defaults =
+        { Index = None
+          TestScoped = []
+          Db = None
+          Run = None
+          Jobs = 4
+          Limit = 50
+          Json = false }
+
+    let parsed =
+        parseRecall defaults args
+        |> Result.bind (fun a ->
+            match a.Index, a.TestScoped with
+            | Some index, (_ :: _ as sources) -> Ok(a, Path.GetFullPath(index, cwd), Set.ofList sources)
+            | _ -> Error "--index and --test-scoped are required")
+
+    match parsed with
+    | Error why -> fail 2 $"%s{why}\n%s{recallUsage}"
+    | Ok(a, index, sources) ->
+        let db =
+            a.Db
+            |> Option.map (fun d -> Path.GetFullPath(d, cwd))
+            |> Option.defaultWith (fun () -> defaultDb cwd)
+
+        match unreadableIndex index with
+        | Some why -> fail 2 why
+        | None when not (File.Exists db) -> fail 2 $"no trace database at %s{db}"
+        | None ->
+            try
+                let store = TraceStore.Store.Open db
+
+                let traces =
+                    try
+                        Recall.tracesIn store a.Run
+                    finally
+                        (store :> IDisposable).Dispose()
+
+                let storeOf policy =
+                    TestPrune.Ports.toSymbolStore (TestPrune.Database.Database.create (index, policy))
+
+                let report =
+                    Recall.check
+                        a.Jobs
+                        (storeOf TestPrune.Domain.WalkPolicy.FollowAll)
+                        (storeOf { TestScopedSources = sources })
+                        traces
+
+                { Exit =
+                    if report.Pairs = 0 then 2
+                    elif Recall.passes report then 0
+                    else 1
+                  Stdout =
+                    if a.Json then
+                        JsonSerializer.Serialize(Recall.toJson report) + "\n"
+                    else
+                        Recall.render a.Limit report
+                  Stderr = "" }
+            // A trace store of a newer schema, a file that is not a database, an index
+            // that fails mid-query: nothing was measured, whichever it was.
+            with e ->
+                fail 2 $"recall measured nothing: %s{e.Message}"
+
+/// The process-driving measurements the verbs run (substituted in tests).
+type Measures =
+    { Audit: TraceSession.PrepareRequest -> string list -> float -> int -> TimeSpan -> Result<Audit.AuditReport, string>
+      Overhead: TraceSession.PrepareRequest -> string list -> int -> TimeSpan -> Result<Overhead.OverheadReport, string>
+      FileCensus: TraceSession.PrepareRequest -> string list -> TimeSpan -> Result<FileCensus.FileCensusReport, string> }
+
+/// The real measurements.
+let measures =
+    { Audit = Audit.run
+      Overhead = Overhead.run
+      FileCensus = FileCensus.run }
+
+let private measureTail =
+    "  [--repo <root>] [--weave-tests sites|full] [--timeout-min 30] [--keep <dir>] [--json] [-- <app args>]\n"
+    + "  --keep runs in <dir> and leaves its dumps and CTRF reports there instead of deleting them\n"
+    + "  exit 0 when the project meets the bar, 1 when it does not, 2 on a usage error or a project that cannot be measured"
+
+/// The usage of the audit verb.
+let auditUsage =
+    "usage: test-prune-traces audit --project-dir <dir> --assembly <name> [--sample 0.01] [--seed 1]\n"
+    + measureTail
+
+/// The usage of the overhead verb.
+let overheadUsage =
+    "usage: test-prune-traces overhead --project-dir <dir> --assembly <name> [--reps 3]\n"
+    + measureTail
+
+/// The usage of the file-census verb.
+let fileCensusUsage =
+    "usage: test-prune-traces file-census --project-dir <dir> --assembly <name>\n"
+    + measureTail
+
+type private MeasureArgs =
+    { ProjectDir: string option
+      Assembly: string option
+      Repo: string option
+      WeaveTests: Model.WeaveMode
+      Sample: float
+      Seed: int
+      Reps: int
+      TimeoutMin: float
+      Keep: string option
+      Json: bool
+      AppArgs: string list }
+
+let private number (flag: string) (v: string) (set: float -> MeasureArgs) =
+    match Double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture) with
+    | true, n -> Ok(set n)
+    | _ -> Error $"%s{flag} needs a number, got %s{v}"
+
+let private whole (flag: string) (v: string) (set: int -> MeasureArgs) =
+    match Int32.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture) with
+    | true, n -> Ok(set n)
+    | _ -> Error $"%s{flag} needs a whole number, got %s{v}"
+
+/// How the test assembly is woven: its sites only (the default), or fully, as every other
+/// repository assembly is.
+let private weaveMode (v: string) (a: MeasureArgs) =
+    match v with
+    | "sites" -> Ok { a with WeaveTests = Model.SitesOnly }
+    | "full" -> Ok { a with WeaveTests = Model.Full }
+    | _ -> Error $"--weave-tests needs sites or full, got %s{v}"
+
+/// Every valued flag of the measurement verbs and how it sets its argument.
+let private setters: Map<string, string -> MeasureArgs -> Result<MeasureArgs, string>> =
+    Map
+        [ "--project-dir", (fun v a -> Ok { a with ProjectDir = Some v })
+          "--assembly", (fun v a -> Ok { a with Assembly = Some v })
+          "--repo", (fun v a -> Ok { a with Repo = Some v })
+          "--weave-tests", weaveMode
+          "--sample", (fun v a -> number "--sample" v (fun n -> { a with Sample = n }))
+          "--seed", (fun v a -> whole "--seed" v (fun n -> { a with Seed = n }))
+          "--reps", (fun v a -> whole "--reps" v (fun n -> { a with Reps = n }))
+          "--timeout-min", (fun v a -> number "--timeout-min" v (fun n -> { a with TimeoutMin = n }))
+          "--keep", (fun v a -> Ok { a with Keep = Some v }) ]
+
+let private common =
+    [ "--project-dir"
+      "--assembly"
+      "--repo"
+      "--weave-tests"
+      "--timeout-min"
+      "--keep" ]
+
+let rec private parseMeasure (flags: Set<string>) (acc: MeasureArgs) (args: string list) =
+    match args with
+    | [] -> Ok acc
+    | "--" :: rest -> Ok { acc with AppArgs = rest }
+    | "--json" :: rest -> parseMeasure flags { acc with Json = true } rest
+    | flag :: v :: rest when flags.Contains flag && not (v.StartsWith "--") ->
+        setters.[flag] v acc |> Result.bind (fun a -> parseMeasure flags a rest)
+    | flag :: _ when flags.Contains flag -> Error $"%s{flag} needs a value"
+    | other :: _ -> Error $"unknown argument %s{other}"
+
+let private jsonOptions =
+    JsonSerializerOptions(NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals)
+
+/// Parse a measurement verb's arguments, run it in a scratch run directory, and print
+/// its report (or JSON) with the verdict as the exit code.
+let private measure
+    (cwd: string)
+    (verbUsage: string)
+    (flags: string list)
+    (args: string list)
+    (go: TraceSession.PrepareRequest -> MeasureArgs -> Result<'report, string>)
+    (passes: 'report -> bool)
+    (render: 'report -> string)
+    : Outcome =
+    let defaults =
+        { ProjectDir = None
+          Assembly = None
+          Repo = None
+          WeaveTests = Model.SitesOnly
+          Sample = 0.01
+          Seed = 1
+          Reps = 3
+          TimeoutMin = 30.0
+          Keep = None
+          Json = false
+          AppArgs = [] }
+
+    let parsed =
+        parseMeasure (Set.ofList (common @ flags)) defaults args
+        |> Result.bind (fun a ->
+            match a.ProjectDir, a.Assembly with
+            | Some dir, Some name -> Ok(a, dir, name)
+            | _ -> Error "--project-dir and --assembly are required")
+
+    match parsed with
+    | Error why -> fail 2 $"%s{why}\n%s{verbUsage}"
+    | Ok(a, dir, name) ->
+        let runDir =
+            match a.Keep with
+            | Some dir -> Directory.CreateDirectory(Path.GetFullPath(dir, cwd)).FullName
+            | None -> Directory.CreateTempSubdirectory("test-prune-traces-").FullName
+
+        let kept =
+            match a.Keep with
+            | Some _ -> $"kept the run directory %s{runDir}\n"
+            | None -> ""
+
+        let timeout = TimeSpan.FromMinutes a.TimeoutMin
+
+        let req: TraceSession.PrepareRequest =
+            { RepoRoot = Path.GetFullPath(defaultArg a.Repo ".", cwd)
+              ProjectDir = Path.GetFullPath(dir, cwd)
+              AssemblyName = name
+              TestProject = name
+              WeaveTests = a.WeaveTests
+              RunDir = runDir
+              VerifyTimeout = timeout }
+
+        try
+            let outcome =
+                match go req a with
+                | Error why -> fail 2 why
+                | Ok report ->
+                    { Exit = if passes report then 0 else 1
+                      Stdout =
+                        if a.Json then
+                            JsonSerializer.Serialize(report, jsonOptions) + "\n"
+                        else
+                            render report
+                      Stderr = "" }
+
+            { outcome with
+                Stderr = outcome.Stderr + kept }
+        finally
+            if a.Keep.IsNone then
+                Directory.Delete(runDir, true)
+
+/// Runs a verb against `cwd` with the given measurements, returning its output rather
+/// than printing it.
+let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
+    match args with
+    | "census" :: rest -> census cwd rest
+    | "recall" :: rest -> recall cwd rest
+    | "audit" :: rest ->
+        measure
+            cwd
+            auditUsage
+            [ "--sample"; "--seed" ]
+            rest
+            (fun req a -> m.Audit req a.AppArgs a.Sample a.Seed (TimeSpan.FromMinutes a.TimeoutMin))
+            Audit.passes
+            Audit.render
+    | "overhead" :: rest ->
+        measure
+            cwd
+            overheadUsage
+            [ "--reps" ]
+            rest
+            (fun req a -> m.Overhead req a.AppArgs a.Reps (TimeSpan.FromMinutes a.TimeoutMin))
+            Overhead.passes
+            Overhead.render
+    | "file-census" :: rest ->
+        measure
+            cwd
+            fileCensusUsage
+            []
+            rest
+            (fun req a -> m.FileCensus req a.AppArgs (TimeSpan.FromMinutes a.TimeoutMin))
+            FileCensus.passes
+            FileCensus.render
+    | _ -> fail 2 usage
+
+/// Runs a verb against `cwd`, returning its output rather than printing it.
+let run (cwd: string) (args: string list) : Outcome = runWith measures cwd args
+
+/// Dispatches a verb; prints the usage and returns 2 for an unknown one.
+[<EntryPoint>]
+let main (argv: string array) =
+    let o = run Environment.CurrentDirectory (List.ofArray argv)
+    Console.Out.Write o.Stdout
+    Console.Error.Write o.Stderr
+    o.Exit

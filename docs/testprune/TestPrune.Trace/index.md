@@ -1,0 +1,371 @@
+<!-- sync:testprune-trace-readme -->
+# TestPrune.Trace
+
+Records which code each test actually executed, so that test selection can later be
+checked against what really ran rather than only against the static dependency graph.
+
+> **Status: early alpha, record only.** Traces are recorded and stored; nothing in
+> TestPrune selects tests from them yet. Behavior and APIs shift between versions.
+
+Three packages release together under one `trace-v` tag:
+
+| Package | What it is |
+|---------|------------|
+| [`TestPrune.Trace`](https://www.nuget.org/packages/TestPrune.Trace) | The library a test runner hosts: weaver, shadow bin, ingestion, trace store, measurements |
+| [`TestPrune.Trace.Recorder`](https://www.nuget.org/packages/TestPrune.Trace.Recorder) | The recorder loaded into the traced test process. You never reference it: the weaver adds it to the traced copy of your app |
+| [`TestPrune.Trace.Cli`](https://www.nuget.org/packages/TestPrune.Trace.Cli) | The `test-prune-traces` tool: census, isolation audit, CPU overhead, file census and recall |
+
+```bash
+dotnet add package TestPrune.Trace
+dotnet tool install TestPrune.Trace.Cli
+```
+
+For a Debug build of a test project, TestPrune.Trace:
+
+1. writes a woven copy of the build output to `bin/Traced/<tfm>/`, beside `bin/Debug/<tfm>/`.
+   Every unchanged file is a hardlink. Each assembly built from your repository gets probes
+   on method entry, union-case and type use, and static constructors, plus redirected file
+   reads and process starts. A small recorder assembly is added to the app;
+2. JIT-verifies every woven method in the test app's own runtime before the copy is used;
+3. after the run, reads the dump each process wrote at exit and joins its probe ids to
+   TestPrune's symbols at their current content hashes. It then stores one trace per test
+   in a separate SQLite file: the symbols the test executed, the repository files it read,
+   and the fixture scopes it inherited.
+
+A type initializer (a module's `let` values, a `static let`) runs once per process, in
+whichever test touches the type first. What it runs and reads is recorded under that
+type's own static-init scope. Every test that runs code of the type, or code in the source
+file its initializer is in, inherits that scope, and so do the initializers it touches in
+turn. An initializer the recorder cannot tie to a type is inherited by every test, and so
+is one in an assembly woven without method probes (the test project, by default): nothing
+records which of its types a test touched. A test project's module value that reads a file
+therefore puts that file in every test's trace, and `file-census` lists the tests that do not
+use it as reading the repository while passing outside it.
+
+A trace is either complete or stored with the reasons it is not. Examples: the test did
+not pass, a source file changed since the build, or the test started a child process that
+recorded nothing. Nothing is silently partial.
+
+## Hosting a traced run
+
+A test runner needs only `TraceSession` (and `Ctrf` to read outcomes), all under
+`open TestPrune.Trace`:
+
+<!-- sync:trace-hosting:start src=tests/TestPrune.Trace.Tests/ReadmeSnippets.fs -->
+```fsharp
+match
+    TraceSession.prepareProject
+        { RepoRoot = repoRoot
+          ProjectDir = projectDir // holds bin/Debug/<tfm>/
+          AssemblyName = "MyTests"
+          TestProject = "MyTests"
+          WeaveTests = Model.SitesOnly // or Model.Full
+          RunDir = runDir // dumps go to <RunDir>/traces/<TestProject>/
+          VerifyTimeout = TimeSpan.FromMinutes 2.0 }
+with
+| Error reason ->
+    // The project cannot be traced: record why, then run it untraced, as usual.
+    TraceSession.recordRefusal store runId "MyTests" TraceStore.FullRun treeHash reason
+| Ok launch ->
+    // Run launch.Apphost with launch.Env added to the environment, plus your own
+    // arguments, and ask for a CTRF report. runTests returns the report's path.
+    let ctrfPath = runTests launch
+    let outcomes = Ctrf.parse (File.ReadAllText ctrfPath)
+
+    match
+        TraceSession.ingestProject
+            store
+            repoRoot
+            launch
+            { RunId = runId
+              Kind = TraceStore.FullRun
+              LaunchTreeHash = treeHash
+              CurrentTreeHash = treeHashNow ()
+              Outcomes = outcomes
+              Symbols = symbolStore
+              FingerprintFiles = []
+              FingerprintEnv = [] }
+    with
+    | Ok summary -> printfn $"traced %d{summary.Traced} of %d{summary.Executed}, %d{summary.Complete} complete"
+    | Error reason -> eprintfn $"traces not stored: %s{reason}" // the run's verdict is unaffected
+```
+<!-- sync:trace-hosting:end -->
+
+`store` is `TraceStore.Store.Open path`. `prepareProject` and `ingestProject` never throw.
+A trace failure never changes a test run's verdict.
+
+A host that owns its child processes, or cancels runs, calls
+`TraceSession.prepareProjectWith launcher ct request` instead. `launcher` (a
+`Launch.Launcher`) starts the JIT-verification child, so the host can admit it into its own
+process scope and end it with that scope; `Launch.direct` is the default. `ct` is checked
+between assemblies while weaving and abandons the verification launch; once it is cancelled,
+`prepareProjectWith` raises `OperationCanceledException` instead of returning a refusal, and
+the next prepare of the project starts over rather than reusing what the cancelled one left.
+
+`launch.Env` holds exactly `TESTPRUNE_TRACE_OUT` (the dump directory, created empty),
+`TESTPRUNE_TRACE_IDS` (the probe id count), `TESTPRUNE_TRACE_REPO_ROOT` (file inputs outside
+it are ignored) and `DOTNET_ROOT`.
+
+## The scope contract, for tests that call an in-process server
+
+The recorder attributes each probe hit to the current xUnit v3 test through
+`TestContext.Current`. Code that runs on a server's own threads, such as a request handler
+in an in-process web host, is not inside any test's async flow, so its hits are attributed
+to no test. A server shared by many tests should tell the recorder whose request it is
+serving. The recorder exposes four static methods on `TestPrune.Trace.Recorder.Scopes`:
+
+| Method | Does |
+|---|---|
+| `Enter(key: string)` | Overrides the scope of the current async flow with `key`. |
+| `Exit()` | Ends that override. |
+| `CurrentKey() : string` | The current scope key (`T:<test id>` inside a test), or `null` when the recorder is inactive. |
+| `LinkCurrentTo(scopeKey: string)` | Makes the current scope inherit everything recorded under `scopeKey`. |
+
+Bind them by reflection, so your code needs no package reference and does nothing in an
+untraced process:
+
+<!-- sync:trace-scope:start src=tests/TestPrune.Trace.Tests/ReadmeSnippets.fs -->
+```fsharp
+/// Binds TestPrune.Trace.Recorder.Scopes when the process is traced; every call is a no-op otherwise.
+module TraceScope =
+    let private scopes =
+        Type.GetType("TestPrune.Trace.Recorder.Scopes, TestPrune.Trace.Recorder", false)
+
+    let private methodOf (name: string) =
+        if isNull scopes then null else scopes.GetMethod name
+
+    let private enterMethod = methodOf "Enter"
+    let private exitMethod = methodOf "Exit"
+    let private currentKeyMethod = methodOf "CurrentKey"
+    let private linkMethod = methodOf "LinkCurrentTo"
+    let private noteInputMethod = methodOf "NoteInput"
+
+    let enter (key: string) =
+        if not (isNull enterMethod) then
+            enterMethod.Invoke(null, [| box key |]) |> ignore
+
+    let exit () =
+        if not (isNull exitMethod) then
+            exitMethod.Invoke(null, [||]) |> ignore
+
+    let currentKey () : string =
+        if isNull currentKeyMethod then
+            null
+        else
+            currentKeyMethod.Invoke(null, [||]) :?> string
+
+    let linkCurrentTo (key: string) =
+        if not (isNull linkMethod) then
+            linkMethod.Invoke(null, [| box key |]) |> ignore
+
+    /// Notes a file the code running now read where the weaver cannot see it.
+    /// `kind` is "read", "exists", "list" or "list-deep".
+    let noteInput (kind: string) (path: string) =
+        if not (isNull noteInputMethod) then
+            noteInputMethod.Invoke(null, [| box kind; box path |]) |> ignore
+```
+<!-- sync:trace-scope:end -->
+
+The header convention:
+
+- the test's HTTP client sends `X-Test-Trace-Scope: <TraceScope.currentKey ()>`;
+- the server's middleware calls `TraceScope.enter` with the header value when it starts
+  with `T:`, and otherwise `TraceScope.enter ("P:" + poolName)`, so work done for no
+  particular test is recorded as the pool's. It calls `TraceScope.exit ()` when the
+  request ends.
+
+## Measuring traces: `test-prune-traces`
+
+Four verbs measure a project against the phase-1 bars; a fifth, `recall`, checks impact
+selection against the traces. Each prints a report (or JSON with
+`--json`) and exits **0** when the bar is met, **1** when it is not, and **2** on a usage
+error or when it cannot measure at all (no database, a project that cannot be prepared, a
+run that wrote no CTRF report).
+
+| Verb | Measures | Bar |
+|---|---|---|
+| `census [--db <path>] [--run <runId>] [--json]` | Each project's newest run in the trace store: traced / executed tests, unattributed (ambient) hits, tests per incomplete reason, pool scopes | traced ≥ 0.99; ambient < 0.1 % of hits, or every ambient symbol listed for review |
+| `audit … [--sample 0.01] [--seed 1]` | Runs the project once in parallel, then a seeded sample of its tests one at a time, and compares each test's own probe ids, and the ids of every scope it holds or inherits | no id attributed in parallel that the test never hits alone; every type initializer the test runs alone but not in parallel is one it inherits in parallel |
+| `overhead … [--reps 3]` | Interleaved untraced and traced launches, median CPU (user + system) of each | traced median ≤ 1.15 × untraced median, and every launch exits the same way |
+| `file-census …` | Tests whose trace holds a repository file input vs tests that depend on the repository: they fail when the woven build output runs outside it, or still read a file inside it from there | the two sets differ by ≤ 5 % of their union |
+
+`census` reads `.fshw/test-traces.db` when it exists, else `.test-prune-traces.db`. A
+missing database is refused (exit 2), never created. With no run to measure it exits 1.
+It reports each project's newest run whatever its status, never an older run that
+recorded: a `REFUSED` project (it ran untraced) is listed with its reason and does not
+fail the census; a `FAILED` one (the recorder produced nothing usable) does.
+
+### Recall: does selection select every test a trace shows running a symbol?
+
+```text
+test-prune-traces recall --index <test-prune index db> --test-scoped <source>[,<source>...]
+                         [--db <trace db>] [--run <runId>] [--jobs 4] [--limit 50] [--json]
+```
+
+For every complete trace of a test T, and every symbol X the trace executed that the index
+holds at the same content hash, T must be in `QueryAffectedTests [X]`. A pair where it is
+not is a miss: a change to X would leave a test that runs X unselected. `recall` checks
+every pair twice over one index: under `WalkPolicy.FollowAll`, and under a policy that does
+not follow the edge sources named by `--test-scoped` (`sql,sql-hydra` is
+`SqlCoupling.reachabilityGated`). It exits **0** when the narrower policy adds no miss
+(every pair it misses, the follow-all walk misses too), **1** when it adds one, and **2**
+on a usage error, a missing or unreadable database, an index of another schema (probed
+read-only, never recreated), or nothing to check. The report lists each added miss, up to
+`--limit` misses per policy, and what was skipped: incomplete traces, traced tests the index
+has no test method for, pairs whose symbol changed since the trace was recorded, and
+executed symbols the index does not know. Each executed symbol is one walk per policy,
+`--jobs` at a time.
+
+The traces are each project's current traces under the fingerprint of its newest recorded
+run (`--run` picks a run); a refused or failed run, or one that saw the tree move, is passed
+over. Record them with a full traced run of the same tree the
+index was built from.
+
+The three process-driving verbs (`audit`, `overhead`, `file-census`) take the same
+options:
+
+```text
+--project-dir <dir>   the test project's directory (holds bin/Debug/<tfm>/); required
+--assembly <name>     the test app's assembly name; required
+--repo <root>         the repository root (default: the current directory)
+--weave-tests sites   how the test assembly is woven: `sites` (entry probes on its test
+                      methods only, site probes everywhere) or `full` (entry probes on every
+                      method, as in every other repository assembly)
+--timeout-min 30      how long one launch may run before its process tree is killed
+--keep <dir>          run in <dir> and leave its dumps and CTRF reports there (file-census
+                      also copies the outside run's to file-census/outside/) instead of
+                      deleting the scratch run directory
+--json                print the report as JSON
+-- <app args>         everything after -- is passed to every launch of the test app
+```
+
+Build the project in Debug first. Each verb prepares its own woven copy and works in a
+scratch run directory that it deletes afterwards.
+
+What to know before trusting a number:
+
+- **`audit` adds `--filter-display-name <name>`** to each isolated launch. Microsoft Testing
+  Platform refuses to mix filter kinds, so a filter of your own after `--` conflicts with
+  it. The name is escaped, so a theory row whose name holds `*`, parentheses or quotes is
+  selected alone. A sampled test the isolated launch does not select is an audit `ERROR`
+  (`could not isolate <test>: the filter selected nothing`), never compared with nothing.
+- **`audit` samples only tests that recorded a test scope** in the parallel run. A test
+  that hit no probe is not sampled, so it cannot fail the audit; `census` is where an
+  untraced test shows up.
+- **Ids missing in parallel are expected for once-per-process code**: static constructors,
+  closure singletons and memoised values that another test ran first. The audit lists them
+  by kind and never fails on them; only extra ids fail it.
+- **Untraced child processes are the most common incomplete reason** on real suites.
+  A test that starts `dotnet`, `sh`, `git` or any process that is not a woven .NET app
+  gets `child-process-untraced:<file>`: its trace cannot include what that process read or
+  ran. That is the sound answer, not a defect.
+- **`overhead` reads `getrusage(RUSAGE_CHILDREN)`**, so it runs on macOS and Linux only,
+  not on Windows. The counter covers every child process the tool has reaped, so run
+  nothing else from the same shell meanwhile. Grandchildren a test starts count on both
+  sides. The reported peak RSS is a running maximum over every launch so far, an upper
+  bound on each launch's own peak.
+- **`file-census` copies the woven build output outside the repository and runs it
+  there, traced against the same repository root.** A test that reads a repository file at
+  an absolute path (`__SOURCE_DIRECTORY__`, an environment variable) still passes there;
+  the census counts the read it records from outside as a dependency on the repository. It
+  needs a suite that completes in that copy and writes its CTRF report. A test that ends
+  the process (`Environment.Exit`) or crashes the runner outside the repository makes the
+  verb exit 2 with the tail of the run's output.
+
+### Measured on TestPrune's own suite
+
+TestPrune's suite on macOS arm64, when the verbs landed:
+
+| Measurement | Result | Bar |
+|---|---|---|
+| CPU overhead (median traced / untraced) | 1.039 | ≤ 1.15 |
+| Isolation audit, extra ids in parallel | 0 | 0 |
+| Isolation audit, ids missing in parallel | static constructors only | explained |
+| Incomplete, by untraced child | `dotnet` 9, `sleep` 5, `sh` 2, `chmod` 1 | reported |
+| File census | 0.062 | ≤ 0.05 |
+
+The file census was measured on a filtered subset, before the `test-prune` CLI stopped
+ending its process on a "not in a repository" error. A full-suite measurement is part of
+the phase-1 done-bar.
+
+## Coverage
+
+The recorder assembly is copied into the traced app without its PDB. MS CodeCoverage skips
+modules that have no symbols, so the recorder does not appear in your coverage report. If
+it ever does, exclude it in your coverage settings with a `<ModulePath>` entry matching
+`TestPrune\.Trace\.Recorder\.dll`.
+
+## What is refused, and what is not recorded
+
+A refused project runs untraced, exactly as it would without TestPrune.Trace.
+
+- **Release builds are refused.** A Release build inlines small functions across
+  assemblies, so their entry probes would never fire and a trace would silently miss code.
+  Build the traced run in Debug.
+- **Nothing to weave is refused at prepare time.** That happens when no assembly in the
+  build output has a portable PDB naming a source file under the repository root, most
+  often because `ContinuousIntegrationBuild`, `DeterministicSourcePaths` or a `PathMap`
+  rewrote the PDB paths to `/_/`.
+- **An app that ships its own recorder build is refused.** When the app's deps.json
+  references `TestPrune.Trace.Recorder` as a project, or its build output holds a recorder
+  assembly that differs from the weaver's, tracing would swap in a different recorder than
+  the one the app was built and tested with. An app that references the same recorder
+  package the weaver bundles is traced.
+- **A test app without FSharp.Core fails verification.** The recorder is written in F# and
+  loads FSharp.Core 8.0 or later from the app, so a C#-only test app cannot load it. The
+  verification error says so.
+- **`[<Literal>]` values and `inline` functions are not recorded.** The compiler copies
+  them into their callers, so there is no call to probe.
+- **A process that is killed leaves no dump**, so its tests keep no trace. The recorder
+  writes each process's dump when the process exits normally.
+
+### Reads that are not recorded
+
+File inputs are recorded by rewriting call sites in the woven assemblies: `File` reads,
+`File.OpenHandle` (and so `RandomAccess`, which reads only through a handle) and `Exists`,
+`Directory` and `DirectoryInfo` listings in every overload (`EnumerationOptions` included)
+and `Exists`, `FileStream`, `StreamReader` and `FileInfo.Open` opened by path in every
+overload, XML loaded by path (`XDocument.Load`, `XElement.Load`, `XmlReader.Create`,
+`XmlDocument.Load`), and metadata: the `File` and `Directory` time getters,
+`File.GetAttributes`, `File.GetUnixFileMode`, the `FileSystemInfo` time, `Attributes` and
+`UnixFileMode` getters, and `FileInfo.Length` and `IsReadOnly`. A test that depends on a file only through anything else has no input
+for it, and a change to that file does not invalidate its trace:
+
+- **Reads inside an assembly that is not woven.** Only repository assemblies with a
+  portable PDB are woven. A NuGet or framework library that opens a file itself (a
+  configuration builder reading `appsettings.json`, MSBuild or a project loader, a JSON
+  reader handed a path) is invisible. A stream the woven code opens and hands to such a
+  library is recorded.
+- **A change to a file's times alone.** A metadata read is recorded as a `meta` input,
+  hashed over the file's content (a directory's own entries) and its permissions (Unix
+  mode, or the read-only and hidden attributes on Windows), never its times: a checkout
+  does not preserve them, so a hash over them would invalidate every trace in every fresh
+  clone. A touch leaves the trace valid; a test that asserts on a repository file's
+  absolute time is not reproducible across clones anyway. The other side of the same
+  choice: an edit to the file's content invalidates a test that read only its time or
+  length. That over-approximates, and is sound.
+
+**Noting a read yourself.** Where a library reads files the weaver cannot see, wrap the
+boundary and note what it reads with `Scopes.NoteInput(kind, path)` (`noteInput` in the
+binding above). The note lands on the scope a woven read would use: the test running now,
+a static initializer, or ambient. `kind` is `read` (the file's content), `exists`, `list`
+(the directory's own entries), `list-deep` (every entry of its tree) or `meta` (its times,
+attributes, mode or length); a path outside the
+repository root notes nothing, and untraced the call does nothing. Two boundaries that
+cover common cases:
+
+- **The F# compiler service** reads sources and project files through
+  `FSharp.Compiler.IO.FileSystemAutoOpens.FileSystem`. Install an `IFileSystem` that notes
+  `read` in `OpenFileForReadShim` (and `exists` in `FileExistsShim`), then delegates to the
+  default one.
+- **ASP.NET static files** are served through an `IFileProvider`. Give the static-file
+  middleware a provider that notes `read` for each `GetFileInfo` it resolves to a physical
+  path, then delegates.
+
+The decisions behind these, and the options measured and deferred, are in the repository's
+decision records:
+[exit-time dump](https://github.com/michaelglass/TestPrune/blob/main/docs/adr/0005-recorded-traces-exit-dump.md),
+[separate trace store](https://github.com/michaelglass/TestPrune/blob/main/docs/adr/0006-trace-store-separate-file.md),
+[packaging and release tag](https://github.com/michaelglass/TestPrune/blob/main/docs/adr/0007-trace-packaging-and-release-tag.md),
+[deferred and rejected options](https://github.com/michaelglass/TestPrune/blob/main/docs/adr/0008-trace-deferred-options.md).
+<!-- sync:testprune-trace-readme:end -->

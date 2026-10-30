@@ -1,0 +1,263 @@
+module TestPrune.InMemoryStore
+
+open TestPrune.AstAnalyzer
+open TestPrune.Ports
+
+/// Create an in-memory SymbolStore from a list of AnalysisResults, ONE PER SOURCE FILE
+/// (see `Database.RebuildProjects`). A result declaring the same name in two files is
+/// rejected with an `ArgumentException`, exactly as SQLite rejects it. `QueryAffectedTests`
+/// walks under `policy`, as `Database.create(path, policy)` does.
+let fromAnalysisResultsWith (policy: Domain.WalkPolicy) (results: AnalysisResult list) : SymbolStore =
+    // A symbol is ONE node with one source occurrence per file that declares it (a
+    // `.fsi` declaration and its `.fs` implementation). Match SQLite's rules: a real
+    // occurrence is kept per (name, file), the last one winning if a caller supplies
+    // several; an extern placeholder exists only for a name with no real occurrence.
+    let occurrences =
+        results
+        |> List.collect (fun r -> r.Symbols)
+        |> List.filter (fun symbol -> not symbol.IsExtern)
+        |> List.groupBy (fun symbol -> symbol.FullName, symbol.SourceFile)
+        |> List.map (fun (_, duplicates) -> List.last duplicates)
+
+    let occurrenceNames = occurrences |> List.map _.FullName |> Set.ofList
+
+    let externs =
+        results
+        |> List.collect (fun r -> r.Symbols)
+        |> List.filter (fun symbol -> symbol.IsExtern && not (occurrenceNames.Contains symbol.FullName))
+        |> List.groupBy _.FullName
+        |> List.map (fun (_, duplicates) -> List.last duplicates)
+
+    let allSymbols = occurrences @ externs
+
+    // Every per-file fact is owned by the file whose analysis produced it
+    // (`AstAnalyzer.factOwner`), exactly as `Database.RebuildProjects` records it.
+    let ownedDeps =
+        results
+        |> List.collect (fun r ->
+            let owner = factOwner r
+            r.Dependencies |> List.map (fun d -> owner (dependencyAnchor d), d))
+
+    let ownedTests =
+        results
+        |> List.collect (fun r ->
+            let owner = factOwner r
+            r.TestMethods |> List.map (fun t -> owner t.SymbolFullName, t))
+
+    let allDeps = ownedDeps |> List.map snd
+    let allTests = ownedTests |> List.map snd
+    let allAttrs = results |> List.collect (fun r -> r.Attributes)
+    let allParentLinks = results |> List.collect (fun r -> r.ParentLinks)
+
+    let kindBySymbol =
+        allSymbols |> List.map (fun s -> s.FullName, s.Kind) |> Map.ofList
+
+    let parentByChild =
+        allParentLinks |> List.map (fun l -> l.Child, l.Parent) |> Map.ofList
+
+    let childrenByParent =
+        allParentLinks
+        |> List.groupBy (fun l -> l.Parent)
+        |> Map.ofList
+        |> Map.map (fun _ links -> links |> List.map (fun l -> l.Child) |> Set.ofList)
+
+    let attrsBySymbol =
+        allAttrs |> List.groupBy (fun a -> a.SymbolFullName) |> Map.ofList
+
+    let symbolsByFile =
+        occurrences |> List.groupBy (fun s -> s.SourceFile) |> Map.ofList
+
+    let depsByFile =
+        ownedDeps
+        |> List.groupBy fst
+        |> Map.ofList
+        |> Map.map (fun _ owned -> owned |> List.map snd)
+
+    let testsByFile =
+        ownedTests
+        |> List.groupBy fst
+        |> Map.ofList
+        |> Map.map (fun _ owned -> owned |> List.map snd)
+
+    // Containment is a property of the symbol, so it is reported for every file with an
+    // occurrence of the child — as SQLite's `GetParentLinksInFile` joins it.
+    let parentLinksByFile =
+        symbolsByFile
+        |> Map.map (fun _ symbols ->
+            symbols
+            |> List.choose (fun symbol ->
+                parentByChild
+                |> Map.tryFind symbol.FullName
+                |> Option.map (fun parent ->
+                    { Child = symbol.FullName
+                      Parent = parent })))
+
+    let forwardEdges = // from -> [to]
+        allDeps
+        |> List.groupBy (fun d -> d.FromSymbol)
+        |> Map.ofList
+        |> Map.map (fun _ deps -> deps |> List.map (fun d -> d.ToSymbol) |> Set.ofList)
+
+    let reverseEdges = // to -> [from] (for QueryAffectedTests: who depends on this?)
+        allDeps
+        |> List.groupBy (fun d -> d.ToSymbol)
+        |> Map.ofList
+        |> Map.map (fun _ deps -> deps |> List.map (fun d -> d.FromSymbol) |> Set.ofList)
+
+    // The reverse edges the affected-test walk follows under `policy`.
+    let walkedReverseEdges =
+        allDeps
+        |> List.filter (fun d -> policy.Follows d.Source)
+        |> List.groupBy (fun d -> d.ToSymbol)
+        |> Map.ofList
+        |> Map.map (fun _ deps -> deps |> List.map (fun d -> d.FromSymbol) |> Set.ofList)
+
+    let testMethodNames = allTests |> List.map (fun t -> t.SymbolFullName) |> Set.ofList
+    let allSymbolNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
+
+    /// Transitive closure over `edges`, stopping at `barriers`.
+    ///
+    /// A barrier node is VISITED (it is genuinely affected) but not EXPANDED: the
+    /// walk does not continue to whatever depends on it. Mirrors the barriered walk in
+    /// `SeedCoverage.affectedTests`, which `Database.QueryAffectedTests` runs, and the two
+    /// traversals must agree — `CompositionRootSelectionTests` and `SeedCoverageTests`
+    /// hold them to it, asserting both stores return the same rows. The randomised
+    /// soundness harness drives THIS walk only, so it cannot catch a divergence on its
+    /// own.
+    let transitiveClosureWithBarriers
+        (edges: Map<string, Set<string>>)
+        (barriers: Set<string>)
+        (seeds: string list)
+        : Set<string> =
+        let rec walk visited frontier =
+            match frontier with
+            | [] -> visited
+            | node :: rest ->
+                if Set.contains node visited then
+                    walk visited rest
+                else
+                    let visited = Set.add node visited
+
+                    let neighbors =
+                        if Set.contains node barriers then
+                            Set.empty
+                        else
+                            edges |> Map.tryFind node |> Option.defaultValue Set.empty
+
+                    let newFrontier = Set.toList (neighbors - visited) @ rest
+                    walk visited newFrontier
+
+        walk Set.empty seeds
+
+    let transitiveClosure (edges: Map<string, Set<string>>) (seeds: string list) : Set<string> =
+        transitiveClosureWithBarriers edges Set.empty seeds
+
+    /// Symbols carrying the `[<TestPrune.CompositionRoot>]` marker. Computed once;
+    /// the per-query part is only subtracting that query's seeds.
+    let compositionRoots =
+        attrsBySymbol
+        |> Map.toList
+        |> List.filter (fun (_, attrs) ->
+            attrs |> List.exists (fun a -> Domain.CompositionRoot.isMarker a.AttributeName))
+        |> List.map fst
+        |> Set.ofList
+
+    // Mirrors the aggregate-type expansion in Database.QueryAffectedTests — see the
+    // CTE there for the two-phase lift/expand rationale.
+    let expandChanged (changedNames: string list) : string list =
+        let isType name =
+            kindBySymbol |> Map.tryFind name = Some Type
+
+        let liftedParents =
+            changedNames
+            |> List.choose (fun name ->
+                match parentByChild |> Map.tryFind name with
+                | Some parent when isType parent -> Some parent
+                | _ -> None)
+
+        let afterLift = changedNames @ liftedParents |> List.distinct
+
+        let expandedChildren =
+            afterLift
+            |> List.collect (fun name ->
+                if isType name then
+                    childrenByParent
+                    |> Map.tryFind name
+                    |> Option.defaultValue Set.empty
+                    |> Set.toList
+                else
+                    [])
+
+        afterLift @ expandedChildren |> List.distinct
+
+    { GetSymbolsInFile = fun file -> symbolsByFile |> Map.tryFind file |> Option.defaultValue []
+      GetDependenciesFromFile = fun file -> depsByFile |> Map.tryFind file |> Option.defaultValue []
+      GetParentLinksInFile = fun file -> parentLinksByFile |> Map.tryFind file |> Option.defaultValue []
+      GetTestMethodsInFile = fun file -> testsByFile |> Map.tryFind file |> Option.defaultValue []
+      GetFileKey = fun _ -> None
+      GetProjectKey = fun _ -> None
+      QueryAffectedTests =
+        fun changedNames ->
+            let testsIn (affected: Set<string>) =
+                allTests |> List.filter (fun t -> Set.contains t.SymbolFullName affected)
+
+            if Set.isEmpty compositionRoots then
+                testsIn (transitiveClosure walkedReverseEdges (expandChanged changedNames))
+            else
+                // The fail-safe is judged per changed symbol, and the batch selects the
+                // union — `Domain.CompositionRoot.emptiedProjects` says why. Stated
+                // literally here, one walk pair per symbol; `Database` reaches the same
+                // rows from one loaded region.
+                let selectOne (changed: string) =
+                    let seeds = expandChanged [ changed ]
+
+                    // A composition root that CHANGED is an ordinary seed — the walk runs
+                    // past it in full, because rewired composition is exactly what
+                    // host-booting tests verify. Only a root REACHED from something it
+                    // aggregates stops the walk. Subtracting the seeds is that asymmetry.
+                    let barriers = Set.difference compositionRoots (Set.ofList seeds)
+
+                    let barriered =
+                        testsIn (transitiveClosureWithBarriers walkedReverseEdges barriers seeds)
+
+                    let unbarriered = testsIn (transitiveClosure walkedReverseEdges seeds)
+
+                    Domain.CompositionRoot.restoreEmptiedProjects _.TestProject barriered unbarriered
+
+                changedNames |> List.collect selectOne |> List.distinct
+      GetRuntimeCoverageProjects = fun _ -> []
+      GetTestMethodsInProjects =
+        fun projects ->
+            let projects = Set.ofList projects
+
+            allTests
+            |> List.filter (fun testMethod -> Set.contains testMethod.TestProject projects)
+      GetAllSymbols = fun () -> allSymbols
+      GetAllSymbolNames = fun () -> allSymbolNames
+      GetReachableSymbols =
+        fun entryPoints ->
+            // Forward reachability, unlike QueryAffectedTests' reverse walk.
+            transitiveClosure forwardEdges entryPoints
+      GetTestMethodSymbolNames = fun () -> testMethodNames
+      GetIncomingEdgesBatch =
+        fun symbolNames ->
+            symbolNames
+            |> List.choose (fun name ->
+                reverseEdges
+                |> Map.tryFind name
+                |> Option.map (fun froms -> name, Set.toList froms))
+            |> Map.ofList
+      GetAttributesForSymbol =
+        fun symbolName ->
+            attrsBySymbol
+            |> Map.tryFind symbolName
+            |> Option.defaultValue []
+            |> List.map (fun a -> a.AttributeName, a.ArgsJson)
+      GetAllAttributes =
+        fun () ->
+            attrsBySymbol
+            |> Map.map (fun _ attrs -> attrs |> List.map (fun a -> a.AttributeName, a.ArgsJson)) }
+
+/// `fromAnalysisResultsWith WalkPolicy.FollowAll`: the walk follows every edge.
+let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
+    fromAnalysisResultsWith Domain.WalkPolicy.FollowAll results

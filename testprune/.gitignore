@@ -1,0 +1,79 @@
+# Claude
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# Build results
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+[Ll]ogs/
+
+# .NET
+*.user
+*.rsuser
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+.nuget-api-key
+
+# Visual Studio
+.vs/
+*.vsconfig
+
+# JetBrains Rider
+.idea/
+*.sln.iml
+
+# VS Code
+.vscode/
+
+# Test results
+TestResults/
+*.trx
+
+# Coverage
+coverage/
+*.coverage
+*.coveragexml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Mise
+.mise.local.toml
+
+# Generated docs
+output/
+.fsdocs/
+
+# Temp
+tmp/
+
+# TestPrune
+.test-prune.db*
+.test-prune.index.lock
+TODO.md
+.ionide/
+.fake
+
+# FsHotWatch daemon state (impact DB, check cache, test history).
+# `.fshw.json` (the committed gate config) is deliberately NOT matched by this.
+.fshw/
+
+# Benchmark results
+benchmarks/results/
+
+# jj parallel workspaces
+.workspaces/
+
+# Scratch copies of fixture builds made by the weaver tests
+tests/TraceFixtures/bin-scratch/

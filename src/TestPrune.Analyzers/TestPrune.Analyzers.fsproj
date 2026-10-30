@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <!-- NU1608: FSharp.Analyzers.SDK 0.39.2 declares a pin on FCS 43.12.400, but this
+             analyzer must compile against the EXACT FCS the pinned fshw host ships
+             (Directory.Packages.props), because the host supplies FCS at
+             load time. The skew is ABI-compatible for the syntax-tree surface we use, so the
+             pinned-constraint warning is expected here. -->
+        <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
+        <PackageId>TestPrune.Analyzers</PackageId>
+        <Authors>Michael Glass</Authors>
+        <Description>Opt-in FSharp.Analyzers.SDK analyzer that flags anonymous-record usage invisible to TestPrune impact analysis</Description>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <Version>0.1.0-alpha.6</Version>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+        <!-- FSharp.Analyzers.SDK packaging convention: ship the analyzer DLL (+ its
+             non-framework deps) under analyzers/dotnet/fs/ instead of lib/, and mark
+             the package a development dependency so its assembly never flows as a
+             runtime reference into consumers. -->
+        <DevelopmentDependency>true</DevelopmentDependency>
+        <IncludeBuildOutput>false</IncludeBuildOutput>
+        <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+        <!-- Add the analyzer DLL to the package via pack's TFM-specific content
+             collection (does NOT re-invoke Build), matching fsharp-analyzers. -->
+        <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);_AddAnalyzersToOutput</TargetsForTfmSpecificContentInPackage>
+        <!-- snupkg symbol packages aren't meaningful for an analyzers/-only package. -->
+        <IncludeSymbols>false</IncludeSymbols>
+        <NoWarn>$(NoWarn);NU5128</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="AnonymousRecordAnalyzer.fs" />
+    </ItemGroup>
+
+    <!-- Standalone analyzer: no TestPrune.Core dependency. -->
+    <ItemGroup>
+        <PackageReference Include="FSharp.Analyzers.SDK" />
+        <PackageReference Include="FSharp.Compiler.Service" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+    </ItemGroup>
+
+    <!-- Place the analyzer assembly under analyzers/dotnet/fs/ in the nupkg so analyzer
+         hosts (FsHotWatch AnalyzersPlugin / Ionide / fsharp-analyzers) discover it.
+         FSharp.Core, FSharp.Compiler.Service and FSharp.Analyzers.SDK are provided by
+         the host, so only this project's own output assembly is packed. Hooked via
+         TargetsForTfmSpecificContentInPackage (above) so pack collects the built
+         output without re-invoking Build — mirrors fsharp-analyzers. -->
+    <Target Name="_AddAnalyzersToOutput">
+        <ItemGroup>
+            <TfmSpecificPackageFile Include="$(OutputPath)/$(AssemblyName).dll"
+                                    PackagePath="analyzers/dotnet/fs" />
+        </ItemGroup>
+    </Target>
+
+</Project>

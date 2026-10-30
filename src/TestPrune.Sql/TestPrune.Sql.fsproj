@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
+        <PackageId>TestPrune.Sql</PackageId>
+        <Authors>Michael Glass</Authors>
+        <Description>SQL table/column coupling attributes for TestPrune test impact analysis</Description>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
+        <PackageTags>fsharp;testing;sql;database;test-impact-analysis</PackageTags>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <Version>0.3.2</Version>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <None Include="README.md" Pack="true" PackagePath="\" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="Attributes.fs" />
+        <Compile Include="SqlCoupling.fs" />
+        <Compile Include="SqlExtension.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../TestPrune.Core/TestPrune.Core.fsproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- Explicit, so the packed FSharp.Core floor is the central pin (see Directory.Packages.props). -->
+        <PackageReference Include="FSharp.Core" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+    </ItemGroup>
+
+</Project>

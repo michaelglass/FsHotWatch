@@ -1,0 +1,11 @@
+{
+  "codeCoverage": {
+    "Configuration": {
+      "CodeCoverage": {
+        "ModulePaths": {
+          "Include": [ ".*[\\\\/]TestPrune\\.Trace(\\.[A-Za-z]+)?\\.dll$" ]
+        }
+      }
+    }
+  }
+}

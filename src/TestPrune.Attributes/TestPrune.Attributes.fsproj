@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFrameworks>netstandard2.0;net10.0</TargetFrameworks>
+        <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
+        <PackageId>TestPrune.Attributes</PackageId>
+        <Authors>Michael Glass</Authors>
+        <Description>Consumer-side marker attributes for TestPrune. Let tests and production symbols declare cross-cutting dependencies the static graph can't infer (reflection, DI registration by type, plug-ins), and mark an application composition root whose edges should not propagate relevance through it. TestPrune matches these by type name, so declaring your own equivalents works just as well as referencing this package.</Description>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <Version>0.1.0</Version>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="Attributes.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- Central Package Management makes the F# SDK set DisableImplicitFSharpCoreReference,
+             so without this the project restores NO FSharp.Core: design-time builds hand FCS no
+             FSharp.Core reference (FCS then substitutes its host's, giving false errors), and the
+             packed nuspec declares no FSharp.Core dependency although the assembly needs one.
+             Floors are LOW on purpose — a PackageReference version is a minimum, and a marker
+             package must never raise its consumer's FSharp.Core. -->
+        <PackageReference Include="FSharp.Core" VersionOverride="6.0.7" Condition="'$(TargetFramework)' == 'netstandard2.0'" />
+        <PackageReference Include="FSharp.Core" VersionOverride="10.1.201" Condition="'$(TargetFramework)' == 'net10.0'" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+    </ItemGroup>
+
+</Project>

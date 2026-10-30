@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
+        <PackageId>TestPrune.Trace.Recorder</PackageId>
+        <Version>0.7.7</Version>
+        <Authors>Michael Glass</Authors>
+        <Description>Runtime recorder loaded into a woven test process: attributes probe hits to the current xUnit v3 test.</Description>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
+        <PackageTags>fsharp;testing;test-impact-analysis;tracing</PackageTags>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <Optimize>true</Optimize>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+        <!-- Loaded INTO a consumer's test process: never raise its FSharp.Core floor. -->
+        <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
+        <NoWarn>$(NoWarn);NU1605;NU1608</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+            <_Parameter1>TestPrune.Trace.Tests</_Parameter1>
+        </AssemblyAttribute>
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- The three trace packages share one README. -->
+        <None Include="../TestPrune.Trace/README.md" Pack="true" PackagePath="\" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="Contract.fs" />
+        <Compile Include="Scope.fs" />
+        <Compile Include="ContextSource.fs" />
+        <Compile Include="RecorderState.fs" />
+        <Compile Include="DumpWriter.fs" />
+        <Compile Include="Probes.fs" />
+        <Compile Include="Io.fs" />
+        <Compile Include="Scopes.fs" />
+        <Compile Include="ProcessShims.fs" />
+        <Compile Include="JitVerify.fs" />
+        <!-- Last: the runtime requires the startup hook type in no namespace. -->
+        <Compile Include="StartupHook.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="FSharp.Core" VersionOverride="8.0.403" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+    </ItemGroup>
+
+</Project>

@@ -1,0 +1,182 @@
+/// These tests swap the process-wide recorder, so they run in the non-parallel counters collection.
+[<Xunit.Collection("recorder-counters")>]
+module TestPrune.Trace.Tests.RuntimeTests
+
+open System
+open System.IO
+open Xunit
+open Swensen.Unquote
+open TestPrune.Trace.Recorder
+open TestPrune.Trace
+
+/// Run `f` with `state` installed as the process's recorder, then restore the untraced default.
+let private withRecorder (state: RecorderState) (f: unit -> unit) =
+    let saved = Runtime.state
+    Runtime.state <- state
+
+    try
+        f ()
+    finally
+        Runtime.state <- saved
+
+let private idsOf (state: RecorderState) key =
+    state.Scopes
+    |> Seq.find (fun s -> s.Key = key)
+    |> (fun s -> s.Ids() |> Set.ofArray)
+
+[<Fact>]
+let ``probes record through the installed recorder`` () =
+    let state = RecorderState(64, None, null)
+
+    withRecorder state (fun () ->
+        Scopes.Enter "T:x"
+        Probes.Hit 1
+        Probes.HitIfNotNull(box "x", 2)
+        Probes.HitIfNotNull(null, 3)
+        Probes.HitIfTrue(true, 4)
+        Probes.HitIfTrue(false, 5)
+        Probes.HitTag(2, 10)
+        Probes.EnterStatic()
+        Probes.Hit 6
+        Probes.ExitStatic()
+        test <@ Scopes.CurrentKey() = "T:x" @>
+        Scopes.LinkCurrentTo "P:pool"
+        Scopes.Exit()
+        test <@ isNull (Scopes.CurrentKey()) @>
+        Scopes.LinkCurrentTo "P:ignored")
+
+    test <@ idsOf state "T:x" = set [ 1; 2; 4; 12 ] @>
+    test <@ idsOf state "S:static-init" = set [ 6 ] @>
+    test <@ (state.Scopes |> Seq.find (fun s -> s.Key = "T:x")).Links.Keys |> List.ofSeq = [ "P:pool" ] @>
+
+/// A type whose initializer calls the probes the weaver wraps an initializer in.
+type private Initialized() =
+    static let value =
+        Probes.EnterStatic()
+        Probes.Hit 3
+        Probes.ExitStatic()
+        1
+
+    static member Value = value
+
+[<Fact>]
+let ``a type initializer's probes record into the scope named after the initializing type`` () =
+    let state = RecorderState(8, None, null)
+    withRecorder state (fun () -> test <@ Initialized.Value = 1 @>)
+
+    let key =
+        state.Scopes
+        |> Seq.map (fun s -> s.Key)
+        |> Seq.find (fun k -> k.StartsWith "S:")
+
+    // F# runs a class's `static let` in its file's startup class initializer, the innermost
+    // static constructor on the stack.
+    test <@ key = "S:<StartupCode$TestPrune-Trace-Tests>.$TestPrune.Trace.Tests.RuntimeTests" @>
+    test <@ idsOf state key = set [ 3 ] @>
+
+/// A generic type initializes per instantiation, in its own static constructor.
+type private InitializedGeneric<'T>() =
+    static let value =
+        Probes.EnterStatic()
+        Probes.Hit 4
+        Probes.ExitStatic()
+        1
+
+    static member Value = value
+
+[<Fact>]
+let ``a generic type's initializer is named after its generic definition`` () =
+    let state = RecorderState(8, None, null)
+    withRecorder state (fun () -> test <@ InitializedGeneric<int>.Value = 1 @>)
+    let key = "S:" + typedefof<InitializedGeneric<_>>.FullName
+    test <@ idsOf state key = set [ 4 ] @>
+
+[<Fact>]
+let ``no static constructor on the stack names no type`` () =
+    test <@ isNull (Probes.InitializingType(System.Diagnostics.StackTrace(false).GetFrames())) @>
+
+[<Fact>]
+let ``probes and scopes are inert with no recorder`` () =
+    withRecorder null (fun () ->
+        Probes.Hit 1
+        Probes.EnterStatic()
+        Probes.ExitStatic()
+        Scopes.Enter "T:x"
+        Scopes.LinkCurrentTo "P:pool"
+        test <@ isNull (Scopes.CurrentKey()) @>
+        Scopes.Exit())
+
+let private env (pairs: (string * string) list) =
+    let m = Map.ofList pairs
+    fun (name: string) -> m |> Map.tryFind name |> Option.toObj
+
+[<Fact>]
+let ``with no output directory nothing is installed`` () =
+    let mutable registered = 0
+    let register (_: EventHandler) = registered <- registered + 1
+    test <@ isNull (Runtime.install (env []) register) @>
+    test <@ isNull (Runtime.install (env [ Contract.OutEnv, "" ]) register) @>
+    test <@ registered = 0 @>
+
+[<Fact>]
+let ``an output directory installs a recorder that dumps at exit`` () =
+    let out = Path.Combine(Directory.CreateTempSubdirectory().FullName, "out")
+    let mutable handler: EventHandler = null
+
+    let state =
+        Runtime.install
+            (env
+                [ Contract.OutEnv, out
+                  Contract.IdsEnv, "12"
+                  Contract.ParentScopeEnv, "T:parent"
+                  Contract.RepoRootEnv, "/repo" ])
+            (fun h -> handler <- h)
+
+    test <@ (state.IdCount, state.ParentScope, state.RepoRoot) = (12, "T:parent", "/repo") @>
+    state.Hit 3
+    handler.Invoke(null, EventArgs.Empty)
+
+    let dump =
+        DumpReader.readFile (DumpWriter.pathIn out) |> Result.defaultWith failwith
+
+    test <@ dump.IdCount = 12 && dump.ParentScope = Some "T:parent" @>
+    // The installed recorder binds the real xUnit context, so the hit belongs to this very test.
+    let mine =
+        dump.Scopes
+        |> List.find (fun s -> s.Test |> Option.exists (fun t -> t.Method.StartsWith "an output directory"))
+
+    test <@ mine.Ids = [| 3 |] @>
+    test <@ mine.Parents = [ "C:TestPrune.Trace.Tests.RuntimeTests"; "L:recorder-counters"; "A:assembly" ] @>
+
+[<Fact>]
+let ``a dump that cannot be written is reported on one line and never throws`` () =
+    let blocker = Path.GetTempFileName()
+    let err = new StringWriter()
+
+    try
+        // A directory cannot be created under a file.
+        let handler =
+            Runtime.exitDump (Path.Combine(blocker, "out")) (RecorderState(4, None, null)) err
+
+        handler.Invoke(null, EventArgs.Empty)
+
+        let lines = err.ToString().TrimEnd().Split '\n'
+        test <@ lines.Length = 1 @>
+        // The exception type is the platform's (DirectoryNotFoundException on macOS).
+        test <@ lines.[0].StartsWith "testprune-trace: dump write failed: System.IO." @>
+        test <@ lines.[0].Contains blocker @>
+    finally
+        File.Delete blocker
+
+[<Fact>]
+let ``a missing or bad id count falls back to a generous default`` () =
+    let out = Directory.CreateTempSubdirectory().FullName
+    let ignoreExit (_: EventHandler) = ()
+
+    for ids in [ None; Some "x"; Some "0" ] do
+        let vars =
+            (Contract.OutEnv, out)
+            :: (ids |> Option.map (fun v -> Contract.IdsEnv, v) |> Option.toList)
+
+        let state = Runtime.install (env vars) ignoreExit
+        test <@ state.IdCount = (1 <<< 20) && isNull state.ParentScope @>

@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
+        <PackageId>TestPrune.SqlHydra</PackageId>
+        <Authors>Michael Glass</Authors>
+        <Description>SqlHydra integration for TestPrune — automatic SQL coupling detection from typed queries</Description>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
+        <PackageTags>fsharp;testing;sqlhydra;database;test-impact-analysis</PackageTags>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <Version>0.2.3</Version>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <None Include="README.md" Pack="true" PackagePath="\" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="SqlHydraAnalyzer.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../TestPrune.Core/TestPrune.Core.fsproj" />
+        <ProjectReference Include="../TestPrune.Sql/TestPrune.Sql.fsproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- Explicit, so the packed FSharp.Core floor is the central pin (see Directory.Packages.props). -->
+        <PackageReference Include="FSharp.Core" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+    </ItemGroup>
+
+</Project>

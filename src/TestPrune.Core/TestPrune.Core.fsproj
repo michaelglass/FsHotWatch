@@ -1,0 +1,65 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
+        <PackageId>TestPrune.Core</PackageId>
+        <Authors>Michael Glass</Authors>
+        <Description>F# test impact analysis — AST-based dependency graph, symbol diffing, and test selection</Description>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
+        <PackageTags>fsharp;testing;test-impact-analysis;ast;dependency-graph;symbol-diff</PackageTags>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <Version>13.5.2</Version>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <None Include="../../README.md" Pack="true" PackagePath="\" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+            <_Parameter1>TestPrune.Tests</_Parameter1>
+        </AssemblyAttribute>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+            <_Parameter1>TestPrune</_Parameter1>
+        </AssemblyAttribute>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="SafeWalk.fs" />
+        <Compile Include="Domain.fs" />
+        <Compile Include="AstAnalyzer.fs" />
+        <Compile Include="SeedCoverage.fs" />
+        <Compile Include="ProjectFanout.fs" />
+        <Compile Include="Database.fs" />
+        <Compile Include="Coverage.fs" />
+        <Compile Include="CoverageImpact.fs" />
+        <Compile Include="Ports.fs" />
+        <Compile Include="InMemoryStore.fs" />
+        <Compile Include="DiffParser.fs" />
+        <Compile Include="SymbolDiff.fs" />
+        <Compile Include="ImpactAnalysis.fs" />
+        <Compile Include="DeadCode.fs" />
+        <Compile Include="EdgeEmission.fs" />
+        <Compile Include="Extensions.fs" />
+        <Compile Include="NamedDispatch.fs" />
+        <Compile Include="AuditSink.fs" />
+        <Compile Include="TestRunner.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="FSharp.Compiler.Service" />
+        <PackageReference Include="Microsoft.Data.Sqlite" />
+        <!-- Explicit, so the packed FSharp.Core floor is the central pin (see Directory.Packages.props). -->
+        <PackageReference Include="FSharp.Core" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+    </ItemGroup>
+
+</Project>

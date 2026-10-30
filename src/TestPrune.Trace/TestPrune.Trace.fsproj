@@ -1,0 +1,73 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
+        <PackageId>TestPrune.Trace</PackageId>
+        <Version>0.7.7</Version>
+        <Authors>Michael Glass</Authors>
+        <Description>Recorded per-test dependencies for TestPrune: IL weaver, shadow bin, trace store and symbol joiner.</Description>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
+        <PackageTags>fsharp;testing;test-impact-analysis;tracing;il-weaving</PackageTags>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+            <_Parameter1>TestPrune.Trace.Tests</_Parameter1>
+        </AssemblyAttribute>
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="README.md" Pack="true" PackagePath="\" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="Model.fs" />
+        <Compile Include="DumpReader.fs" />
+        <Compile Include="RunScopes.fs" />
+        <Compile Include="TraceStore.fs" />
+        <Compile Include="Fingerprint.fs" />
+        <Compile Include="Manifest.fs" />
+        <Compile Include="PdbCheck.fs" />
+        <Compile Include="Launch.fs" />
+        <Compile Include="Ctrf.fs" />
+        <Compile Include="ClosureDocuments.fs" />
+        <Compile Include="Weaver.fs" />
+        <Compile Include="SiteProbes.fs" />
+        <Compile Include="Redirects.fs" />
+        <Compile Include="Joiner.fs" />
+        <Compile Include="HardLink.fs" />
+        <Compile Include="DepsJson.fs" />
+        <Compile Include="ShadowBin.fs" />
+        <Compile Include="TraceIngest.fs" />
+        <Compile Include="TraceSession.fs" />
+        <Compile Include="Census.fs" />
+        <Compile Include="Recall.fs" />
+        <Compile Include="Rusage.fs" />
+        <Compile Include="Audit.fs" />
+        <Compile Include="Overhead.fs" />
+        <Compile Include="FileCensus.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../TestPrune.Core/TestPrune.Core.fsproj" />
+        <ProjectReference Include="../TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Mono.Cecil" />
+        <PackageReference Include="Microsoft.Data.Sqlite" />
+        <!-- Explicit, so the packed FSharp.Core floor is the central pin (see Directory.Packages.props). -->
+        <PackageReference Include="FSharp.Core" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+    </ItemGroup>
+
+</Project>

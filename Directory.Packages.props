@@ -1,0 +1,50 @@
+<Project>
+    <PropertyGroup>
+        <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+        <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+        <CentralPackageFloatingVersionsEnabled>true</CentralPackageFloatingVersionsEnabled>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageVersion Include="FSharp.Analyzers.SDK" Version="0.39.2" />
+        <!-- FSharp.Core is EXACT, never floated, and equal to the FSharp.Core the pinned FCS
+             below requires (43.12.402 declares FSharp.Core [10.1.402]). A packed nuspec's
+             floor is the version restore RESOLVED at pack time, so a float makes the floor
+             whatever nuget.org had newest that day: TestPrune.Trace 0.7.5 was packed the day
+             10.1.403 shipped, declared FSharp.Core >= 10.1.403, and every consumer pinned at
+             [10.1.402] (FsHotWatch, and everything on it) failed restore with NU1605
+             (AUTOMATION-1358). Raise it only together with FCS. Every packable project that
+             compiles against FSharp.Core references it explicitly, so the floor is declared
+             rather than inherited. scripts/check-package-floors.fsx (`mise run
+             package-floors`, also in CI) fails when this floats or a packed floor exceeds it. -->
+        <PackageVersion Include="FSharp.Core" Version="10.1.402" />
+        <!-- FCS is EXACT, never floated: the fshw host supplies FCS to
+             TestPrune.Analyzers at load time, and FCS's assembly version carries the patch
+             (43.12.402.0), so an analyzer built against any other patch fails to load in the
+             gate. Keep this equal to the FSharp.Compiler.Service in the pinned fshotwatch.cli's
+             deps.json (.config/dotnet-tools.json) and move the two together;
+             ToolchainPinTests fails when they diverge. -->
+        <PackageVersion Include="FSharp.Compiler.Service" Version="43.12.402" />
+        <PackageVersion Include="Ionide.ProjInfo" Version="0.74.2" />
+        <PackageVersion Include="Ionide.ProjInfo.FCS" Version="0.74.2" />
+        <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.11" />
+        <!-- Transitive pin: the SQLitePCLRaw bundle pulls native lib.e_sqlite3 2.1.11,
+             flagged High by GHSA-2m69-gcr7-jv3q. The native binary re-versions onto SQLite's
+             own line (3.53.3) independently of the 2.1.x managed core/provider/bundle, and
+             carries no managed dependencies, so pinning it forward fixes the advisory cleanly.
+             CentralPackageTransitivePinningEnabled makes this PackageVersion a real dependency
+             of the published TestPrune.Core, so consumers inherit the floor and do not need a
+             pin of their own — FsHotWatch carried duplicates of this one until 2026-08-11. -->
+        <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
+        <PackageVersion Include="Mono.Cecil" Version="0.11.6" />
+        <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.400" />
+        <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.10.0" />
+        <!-- RefStamp: inert build-time guard that stamps a ref onto local packs so
+             fsprojlint's "local packs are ref-stamped" check is satisfied. PrivateAssets=all
+             keeps it out of published package dependencies. -->
+        <PackageVersion Include="RefStamp" Version="0.1.0-alpha.4" />
+        <PackageVersion Include="Unquote" Version="7.0.1" />
+        <PackageVersion Include="xunit.v3" Version="4.0.0" />
+        <PackageVersion Include="xunit.v3.mtp-v2" Version="4.0.0" />
+    </ItemGroup>
+</Project>

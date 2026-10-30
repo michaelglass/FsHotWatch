@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
+    <PackageId>TestPrune.Falco</PackageId>
+    <Authors>Michael Glass</Authors>
+    <Description>Falco route-based integration test filtering extension for TestPrune</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
+    <PackageTags>fsharp;testing;falco;routing;test-impact-analysis</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <Version>4.0.4</Version>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="RouteStore.fs" />
+    <Compile Include="UnionRouteLinks.fs" />
+    <Compile Include="StringRouteConstants.fs" />
+    <Compile Include="FalcoRouteAnalysis.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../TestPrune.Core/TestPrune.Core.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Falco owns its route table inside TestPrune's cache DB (via Ports.PluginStore),
+         so it talks to SQLite directly rather than through a core route API. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <!-- UnionRouteLinks parses the route DU's `[<Route(Path=...)>]` attributes with the
+         untyped syntax tree to derive case→URL links. Core already depends on FCS; this is
+         an explicit direct reference for the types UnionRouteLinks names. -->
+    <PackageReference Include="FSharp.Compiler.Service" />
+    <!-- Explicit, so the packed FSharp.Core floor is the central pin (see Directory.Packages.props). -->
+    <PackageReference Include="FSharp.Core" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+  </ItemGroup>
+</Project>

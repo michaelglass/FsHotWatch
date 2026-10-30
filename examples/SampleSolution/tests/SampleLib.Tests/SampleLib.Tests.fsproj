@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <OutputType>Exe</OutputType>
+        <NoWarn>$(NoWarn);NU1608;NETSDK1188</NoWarn>
+        <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+        <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+        <IsPackable>false</IsPackable>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="MathTests.fs" />
+        <Compile Include="StringUtilsTests.fs" />
+        <Compile Include="QueryTests.fs" />
+        <Compile Include="FixtureAndFileDepTests.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../../src/SampleLib/SampleLib.fsproj" />
+        <ProjectReference Include="../../../../src/TestPrune.Attributes/TestPrune.Attributes.fsproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="data/golden.json" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="xunit.v3" />
+        <PackageReference Include="xunit.v3.mtp-v2" />
+    </ItemGroup>
+
+</Project>

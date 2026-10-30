@@ -1,0 +1,123 @@
+{
+  "overrides": {
+    "AnonymousRecordAnalyzer.fs": {
+      "line": 69.1,
+      "branch": 62.0,
+      "reason": "BRANCH FLOOR TRACKS LINUX (2026-08-13): CI instruments 179 branches here where the last green run instrumented 84 — same code, same tests, line coverage byte-identical at 69.7%. The denominator moved under us, so 59/84 (70.2%) became 120/179 (67.0%) and the old 70.0 floor failed. Set below the Linux value with headroom; line coverage, which did not drift, remains the real guard.Original rationale: opt-in anon-record analyzer: the AST walk has one arm per SynExpr/SynType/SynPat case so it descends through arbitrary nesting; tests cover the realistic constructs that can host an anonymous record, but many rarely-load-bearing descent arms (e.g. DotIndexedSet, ObjExpr, AddressOf, Upcast/Downcast, MeasurePower, Or-types) cannot reproducibly host one to be exercised. Pinned at the honest achieved floor rather than excluded."
+    },
+    "AstAnalyzer.fs": {
+      "line": 87.5,
+      "branch": 70,
+      "reason": "loosened: v5 aggregate-type invalidation (containment links) + Layer 2a.1 fixture-edge emission (ctor-params + IClassFixture interface detection); defensive try/with paths around FCS metadata access are not reproducibly hit from tests; impossible-states cleanup added explicit FSharpEntity branches (IsArrayType / IsByRef / final else-None) that F# source cannot synthesize an FSharpEntity for"
+    },
+    "Attributes.fs": {
+      "line": 0,
+      "branch": 100,
+      "reason": "loosened: marker attributes \u2014 no runtime logic to cover"
+    },
+    "Coverage.fs": {
+      "line": 98,
+      "branch": 83,
+      "reason": "Cobertura parse/ingest/emit for TestPrune-native coverage. The only uncovered branch is the defensive isNull-root guard after XDocument.Parse, which always yields a root (or throws) for the well-formed reports MS emits, so it cannot be reproducibly exercised. (Batch-ingest refactor moved the Some/None attribution branches into Database.RecordCoverageBatch, lowering this file's total branch count.) Pinned at the honest achieved floor rather than excluded."
+    },
+    "CoverageImpact.fs": [
+      {
+        "line": 92,
+        "branch": 73,
+        "reason": "Phase-1 runtime-coverage domain slice. Tests exercise AST union, all runtime matches, trailing-baseline freshness, future-clock recovery, every unhealthy-report widening case, opaque construction, symmetric path normalization, traversal/invalid/foreign path rejection, and diagnostic attribution. Remaining branches are platform-exclusive native Windows drive/UNC handling versus Unix foreign-root rejection, defensive Path API exception arms that cannot all be induced portably, and structurally impossible XML states after XDocument.Parse/Descendants. Pinned at the measured macOS 92.1% line / 73.1% branch rounded down only to the tool's one-decimal deterministic floor; persistence and live-selector wiring remain follow-up work."
+      },
+      {
+        "line": 92,
+        "branch": 69,
+        "platform": "macos",
+        "reason": "SDK 10.0.400 compiler instrumentation rebaseline (2026-09-11): identical source, tests, all resolved package identities (including FSharp.Core 10.1.401, FCS 43.12.401 and collector 18.10.0), coverage settings and 905-test corpus reproduce SDK 10.0.301 at 38/52 branches (73.0769%) versus SDK 10.0.400 at 73/105 (69.5238%). All 203 source-line hit counts are identical, 187 covered. The existing untested ProjectSelectionReason.describe now contributes 11 reported branches; it is not generated impossible code. Scoped coverageratchet 0.15.0-alpha.12 loosen derives integer branch floor 69 and retains line 92. No extra margin; other-platform and platform-less fallback floors are unchanged."
+      },
+      {
+        "line": 92,
+        "branch": 69,
+        "platform": "linux",
+        "reason": "Measured Ubuntu 24.04.5 / SDK 10.0.401 coverage from CI run 34593007698 at exact commit e4660d43efd2c08d995c625726583380acd997f2: 73/105 branches (69.5238%), 904 tests passed and one explicit optional-sibling skip. All 332 source lines in the HTML report match that commit's CoverageImpact.fs exactly. Imported only this file from the actual Linux coverage-thresholds artifact 10260656875 using pinned CoverageRatchet 0.15.0-alpha.12 parseCiThresholds/mergeFromCi; the workflow's check-json artifact supplies line 92 and branch 69. No macOS-value inference or extra margin; existing macOS and platform-less fallback entries remain unchanged."
+      }
+    ],
+    "Database.fs": {
+      "line": 98,
+      "branch": 70,
+      "reason": "loosened: UPSERT-based RebuildProjects + timestamp orphan cleanup added branches; conditional extern UPSERT path not hit by existing fixtures"
+    },
+    "DeadCode.fs": {
+      "line": 100,
+      "branch": 91.66666666666666,
+      "reason": "loosened automatically"
+    },
+    "FalcoRouteAnalysis.fs": {
+      "line": 74.2,
+      "branch": 28.5,
+      "reason": "loosened: edge-injection refactor changed coverage profile, handler\u2192test symbol resolution branches"
+    },
+    "ImpactAnalysis.fs": {
+      "line": 99,
+      "branch": 85,
+      "reason": "loosened: added DependsOnFile/DependsOnGlob attribute seeding (JSON parsing + glob-to-regex + path normalization); one defensive catch arm for malformed JSON is hard to reach through the test harness"
+    },
+    "InMemoryStore.fs": {
+      "line": 95,
+      "branch": 88,
+      "reason": "loosened: attribute store branches added for SQL extension support"
+    },
+    "Orchestration.fs": {
+      "line": 97,
+      "branch": 90,
+      "reason": "BRANCH FLOOR TRACKS LINUX (2026-08-13): CI instruments 130 branches here where the last green run instrumented 98 — same code, same tests, line coverage byte-identical at 97.4%. 94/98 (95.9%) became 122/130 (93.8%) and the old 95 floor failed. Set below the Linux value with headroom; line coverage, which did not drift, remains the real guard.Original rationale: loosened: ProjectOutcome DU fold refactoring added uncovered branches. Branch floor 96 -> 95 (2026-07-13): deleting the now-dead isOutputPath post-filter (SafeWalk prunes bin/obj during traversal, so it could never fire) removed 2 branches from the DENOMINATOR, 100 -> 98. Identical tests over identical live code now read 95.9% instead of 96.0% — an artefact of removing dead code, not a testing regression. The 4 uncovered branches are pre-existing and elsewhere in the file; findProjectFiles itself is covered both ways (ProgramTests.fs)."
+    },
+    "SafeWalk.fs": {
+      "line": 100,
+      "branch": 85,
+      "reason": "actual achieved, no margin: 100% line, 17/20 branches. Every real path is exercised (symlink self-loop, symlink non-traversal, bin/obj pruning, depth cap, unreadable dir, missing root — SafeWalkTests). The 3 uncovered branches are compiler-generated state-machine arms of the seq{} computation expression, not reachable code paths."
+    },
+    "Program.fs": {
+      "line": 49,
+      "branch": 26,
+      "reason": "loosened automatically"
+    },
+    "ProjectLoader.fs": {
+      "line": 55.26315789473685,
+      "branch": 0,
+      "reason": "loosened automatically"
+    },
+    "RouteStore.fs": {
+      "line": 100,
+      "branch": 65,
+      "reason": "TestPrune.Falco's plugin-owned route table. Every line is covered, including the transaction-rollback arm. The 7 uncovered branches are all compiler-generated `use`-scope disposal null-checks (`if disposable <> null then Dispose()`) on connections, commands, readers and the transaction — SqliteConnection.CreateCommand/ExecuteReader/OpenConnection never return null, so the null arm cannot be reproducibly hit. Same structural reason Database.fs carries a 70% branch floor. Pinned at the honest achieved floor rather than excluded."
+    },
+    "SqlCoupling.fs": {
+      "line": 100,
+      "branch": 83.3,
+      "reason": "loosened: wildcard column matching branches"
+    },
+    "SqlExtension.fs": {
+      "line": 90.9,
+      "branch": 61.1,
+      "reason": "loosened: attribute parsing error paths"
+    },
+    "SqlHydraAnalyzer.fs": {
+      "line": 98.3,
+      "branch": 65,
+      "reason": "loosened: table reference parsing edge cases"
+    },
+    "StringRouteConstants.fs": {
+      "line": 87,
+      "branch": 25,
+      "reason": "BRANCH FLOOR TRACKS LINUX (2026-08-13): CI instruments 128 branches here where the last green run instrumented 22 — same code, same tests, line coverage byte-identical at 88.2%. 16/22 (72.7%) became 36/128 (28.1%). This is the largest denominator jump in the repo and the resulting percentage says almost nothing about test quality; line coverage, which did not drift, is the real guard here. Set below the Linux value with headroom.Original rationale: string-route brief: named-URL-constant (`let settingsUrl = \"/settings\"`) resolution. Like the repo's other FCS untyped-AST walks, it has defensive arms (SynPat.Attrib/Typed pattern shapes, non-ImplFile/script inputs, parse failures, the namespace-level `let` fallback) that F# test source cannot reproducibly synthesise. The realistic constructs (module-qualified + nested-module + typed + parenthesised constants, non-URL rejection, affected-url pre-filter, qualified/bare/ambiguous reference regexes) are covered. Pinned at the honest achieved floor rather than excluded."
+    },
+    "UnionRouteLinks.fs": {
+      "line": 82,
+      "branch": 50,
+      "reason": "BRANCH FLOOR TRACKS LINUX (2026-08-13): CI instruments 126 branches here where the last green run instrumented 68 — same code, same tests, line coverage byte-identical at 84.3%. 42/68 (61.8%) became 71/126 (56.3%) and the old 60 floor failed. Set below the Linux value with headroom; line coverage, which did not drift, remains the real guard.Original rationale: Falco.UnionRoutes case->URL derivation. Like the other FCS untyped-AST walks in this repo, it has one arm per syntax shape plus defensive try/with around range extraction and parsing (multi-line attribute ranges, non-ImplFile/script inputs, un-nameable long-idents, FullType union cases, parenthesised field types, parse/read failures) that F# test source cannot reproducibly synthesise. The realistic route-DU constructs (explicit paths, empty-segment/kebab conventions, param inference, nesting, cycles, multi-parent leaves, nested modules) are covered. Pinned at the honest achieved floor rather than excluded."
+    },
+    "TestRunner.fs": {
+      "line": 96,
+      "branch": 91,
+      "reason": "loosened automatically"
+    }
+  }
+}

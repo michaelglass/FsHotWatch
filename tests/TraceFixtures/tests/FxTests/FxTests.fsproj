@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <OutputType>Exe</OutputType>
+        <NoWarn>$(NoWarn);NU1605;NU1608</NoWarn>
+        <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+        <IsPackable>false</IsPackable>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="SuiteFiles.fs" />
+        <Compile Include="SuiteRoot.fs" />
+        <Compile Include="AttributionTests.fs" />
+        <Compile Include="RootedA.fs" />
+        <Compile Include="RootedB.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../../src/FxLib/FxLib.fsproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="xunit.v3.mtp-v2" />
+        <!-- Coverage of the woven app must keep the branch points of the untraced one. -->
+        <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" />
+        <!-- Central package management turns off the SDK's implicit FSharp.Core reference; without
+             this the app lists FSharp.Core in its deps.json but ships no FSharp.Core.dll and cannot start. -->
+        <PackageReference Include="FSharp.Core" />
+    </ItemGroup>
+
+</Project>

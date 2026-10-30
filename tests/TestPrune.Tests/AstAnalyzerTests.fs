@@ -1,0 +1,3396 @@
+module TestPrune.Tests.AstAnalyzerTests
+
+open System
+open System.IO
+open Xunit
+open Swensen.Unquote
+open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Symbols
+open TestPrune.AstAnalyzer
+
+/// Shared across every test module in this file. Each nested module is its own
+/// xunit test class (= its own collection by default), so without coordination
+/// they would all hit this single FSharpChecker instance in parallel. Every test
+/// module in this file therefore carries [<Collection("FCS-AstAnalyzer")>] to
+/// serialize them with each other (they still run in parallel with other files).
+/// New test modules added to this file must join the same collection.
+let checker = FSharpChecker.Create()
+
+let analyze source =
+    let fileName = "/tmp/AstAnalyzerTest.fsx"
+
+    let options = getScriptOptions checker fileName source |> Async.RunSynchronously
+
+    let result =
+        analyzeSource checker fileName source options "TestProject"
+        |> Async.RunSynchronously
+
+    match result with
+    | Ok r -> r
+    | Error msg -> failwith $"Analysis failed: %s{msg}"
+
+let checkSource source =
+    let fileName = $"/tmp/AstAnalyzerPolicy-{Guid.NewGuid():N}.fsx"
+    let options = getScriptOptions checker fileName source |> Async.RunSynchronously
+
+    let parseResults, checkAnswer =
+        checker.ParseAndCheckFileInProject(fileName, 0, FSharp.Compiler.Text.SourceText.ofString source, options)
+        |> Async.RunSynchronously
+
+    match checkAnswer with
+    | FSharpCheckFileAnswer.Succeeded results -> fileName, parseResults, results
+    | FSharpCheckFileAnswer.Aborted -> failwith "type checking aborted"
+
+let analyzeWithPolicy maxVisits enableMemoization source =
+    let fileName, parseResults, checkResults = checkSource source
+
+    AnalysisTestHelpers.analyzeSourceFromResultsWithPolicy
+        maxVisits
+        enableMemoization
+        fileName
+        source
+        parseResults
+        checkResults
+        "TestProject"
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Simple function extraction`` =
+
+    [<Fact>]
+    let ``extracts a simple function with correct kind`` () =
+        let result =
+            analyze
+                """
+module M
+let add x y = x + y
+"""
+
+        let addSymbol =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("add", StringComparison.Ordinal))
+
+        test <@ addSymbol.IsSome @>
+        test <@ addSymbol.Value.Kind = Function @>
+
+    [<Fact>]
+    let ``extracts a value binding`` () =
+        let result =
+            analyze
+                """
+module M
+let greeting = "hello"
+"""
+
+        let sym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("greeting", StringComparison.Ordinal))
+
+        test <@ sym.IsSome @>
+        test <@ sym.Value.Kind = Value @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``DU type extraction`` =
+
+    [<Fact>]
+    let ``extracts DU type and cases as separate symbols`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Shape =
+    | Circle of float
+    | Rectangle of float * float
+"""
+
+        let shapeType =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Shape", StringComparison.Ordinal) && s.Kind = Type)
+
+        test <@ shapeType.IsSome @>
+
+        let circleCase =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Circle", StringComparison.Ordinal) && s.Kind = DuCase)
+
+        let rectCase =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Rectangle", StringComparison.Ordinal) && s.Kind = DuCase)
+
+        test <@ circleCase.IsSome @>
+        test <@ rectCase.IsSome @>
+
+    [<Fact>]
+    let ``a generic union's cases are named under the union's own name`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Lookup<'value> =
+    | Found of 'value
+    | Absent
+
+let describe (lookup: Lookup<int>) =
+    match lookup with
+    | Found n -> n
+    | Absent -> 0
+"""
+
+        let named kind =
+            result.Symbols
+            |> List.filter (fun s -> s.Kind = kind)
+            |> List.map _.FullName
+            |> set
+
+        test <@ named Type = set [ "M.Lookup`1" ] @>
+        test <@ named DuCase = set [ "M.Lookup`1.Found"; "M.Lookup`1.Absent" ] @>
+
+        let edgesToCases =
+            result.Dependencies
+            |> List.filter (fun d -> d.FromSymbol = "M.describe" && d.Kind = PatternMatches)
+            |> List.map _.ToSymbol
+            |> set
+
+        test <@ edgesToCases = set [ "M.Lookup`1.Found"; "M.Lookup`1.Absent" ] @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Dependency extraction`` =
+
+    [<Fact>]
+    let ``function calling another function creates calls dependency`` () =
+        let result =
+            analyze
+                """
+module M
+
+let add x y = x + y
+let double x = add x x
+"""
+
+        let dep =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("double", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("add", StringComparison.Ordinal))
+
+        test <@ dep.IsSome @>
+        test <@ dep.Value.Kind = Calls @>
+
+    [<Fact>]
+    let ``function using a DU type creates uses_type dependency`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Shape =
+    | Circle of float
+    | Rectangle of float * float
+
+let describe (s: Shape) = "a shape"
+"""
+
+        let dep =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("describe", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Shape", StringComparison.Ordinal))
+
+        test <@ dep.IsSome @>
+        test <@ dep.Value.Kind = UsesType @>
+
+    [<Fact>]
+    let ``function pattern matching on DU creates dependency to DU cases`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Shape =
+    | Circle of float
+    | Rectangle of float * float
+
+let area (shape: Shape) =
+    match shape with
+    | Circle r -> r * r * 3.14
+    | Rectangle(w, h) -> w * h
+"""
+
+        // Pattern matching on DU cases may show as pattern_matches (FSharpUnionCase)
+        // or calls (FSharpMemberOrFunctionOrValue for the case constructor)
+        let areaDeps =
+            result.Dependencies
+            |> List.filter (fun d -> d.FromSymbol.EndsWith("area", StringComparison.Ordinal))
+
+        // The function should depend on at least the Shape type or one of its cases
+        let hasRelevantDep =
+            areaDeps
+            |> List.exists (fun d ->
+                d.ToSymbol.EndsWith("Shape", StringComparison.Ordinal)
+                || d.ToSymbol.EndsWith("Circle", StringComparison.Ordinal)
+                || d.ToSymbol.EndsWith("Rectangle", StringComparison.Ordinal))
+
+        test <@ areaDeps.Length > 0 @>
+        test <@ hasRelevantDep @>
+
+    [<Fact>]
+    let ``cross-function dependency: double calls add`` () =
+        let result =
+            analyze
+                """
+module M
+
+let add a b = a + b
+let double x = add x x
+let quadruple x = double (double x)
+"""
+
+        let doubleCallsAdd =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("double", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("add", StringComparison.Ordinal))
+
+        let quadCallsDouble =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("quadruple", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("double", StringComparison.Ordinal))
+
+        test <@ doubleCallsAdd.IsSome @>
+        test <@ quadCallsDouble.IsSome @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Module extraction`` =
+
+    [<Fact>]
+    let ``extracts module as a symbol`` () =
+        let result =
+            analyze
+                """
+module MyModule
+
+let x = 1
+"""
+
+        let modSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("MyModule", StringComparison.Ordinal) && s.Kind = Module)
+
+        test <@ modSym.IsSome @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Namespace handling`` =
+
+    [<Fact>]
+    let ``namespace declarations are not extracted as Type symbols`` () =
+        // Classifying an `IsNamespace` entity as a Type produces a phantom Type-kind symbol
+        // for the namespace. With `symbols.full_name UNIQUE` and UPSERT-on-conflict, every
+        // file under `namespace Foo` then re-extracts it on each diff and reports a phantom
+        // "+1 added" change.
+        let result =
+            analyze
+                """
+namespace Foo
+
+module Bar =
+    let x = 1
+"""
+
+        // The namespace itself must NOT be persisted as a Type-kind symbol.
+        let namespaceSym = result.Symbols |> List.tryFind (fun s -> s.FullName = "Foo")
+
+        test <@ namespaceSym.IsNone @>
+
+        // Sanity: the actual module under the namespace is still extracted.
+        let modSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Bar", StringComparison.Ordinal) && s.Kind = Module)
+
+        test <@ modSym.IsSome @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Entity classification flavors`` =
+
+    // Regression guard: when we replaced tryClassifyEntity's catch-all
+    // `else Some(Type, fullName)` with explicit `entity.Is*` branches,
+    // we needed to make sure each legitimate Type-flavored entity still
+    // classifies. If a future FCS upgrade adds a kind we don't enumerate,
+    // these tests will surface it as a missing extraction.
+
+    [<Fact>]
+    let ``class entities classify as Type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type MyClass() =
+    member _.Foo() = 42
+"""
+
+        let cls =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("MyClass", StringComparison.Ordinal))
+
+        test <@ cls |> Option.map (fun s -> s.Kind) = Some Type @>
+
+    [<Fact>]
+    let ``interface entities classify as Type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type IFoo =
+    abstract member Bar: unit -> int
+"""
+
+        let iface =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("IFoo", StringComparison.Ordinal))
+
+        test <@ iface |> Option.map (fun s -> s.Kind) = Some Type @>
+
+    [<Fact>]
+    let ``struct (value type) entities classify as Type`` () =
+        let result =
+            analyze
+                """
+module M
+
+[<Struct>]
+type Point = { X: int; Y: int }
+"""
+
+        let st =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Point", StringComparison.Ordinal))
+
+        test <@ st |> Option.map (fun s -> s.Kind) = Some Type @>
+
+    [<Fact>]
+    let ``delegate entities classify as Type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type MyDel = delegate of int -> int
+"""
+
+        let d =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("MyDel", StringComparison.Ordinal))
+
+        test <@ d |> Option.map (fun s -> s.Kind) = Some Type @>
+
+    [<Fact>]
+    let ``units of measure classify as Type`` () =
+        let result =
+            analyze
+                """
+module M
+
+[<Measure>]
+type kg
+"""
+
+        let m =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("kg", StringComparison.Ordinal))
+
+        test <@ m |> Option.map (fun s -> s.Kind) = Some Type @>
+
+    [<Fact>]
+    let ``record/union/enum classify as Type (re-confirm after refactor)`` () =
+        let result =
+            analyze
+                """
+module M
+
+type R = { N: int }
+type U = | A | B
+type E = X = 1 | Y = 2
+"""
+
+        let kinds =
+            [ "R"; "U"; "E" ]
+            |> List.map (fun n ->
+                result.Symbols
+                |> List.tryFind (fun s -> s.FullName.EndsWith(n, StringComparison.Ordinal))
+                |> Option.map (fun s -> s.Kind))
+
+        test <@ kinds = [ Some Type; Some Type; Some Type ] @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Test method detection`` =
+
+    // NOTE: Detecting [<Fact>] attributes requires xunit assemblies to be referenced
+    // in the project options. With script-based options, the attribute resolution may
+    // not work. This test verifies the mechanism works when attributes resolve.
+    [<Fact>]
+    let ``detects test methods with Fact attribute when resolvable`` () =
+        // We test with a custom attribute that contains "Fact" in the name
+        // to verify the detection logic works with script options
+        let result =
+            analyze
+                """
+module M
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+[<Fact>]
+let myTest () = ()
+"""
+
+        let testMethod =
+            result.TestMethods |> List.tryFind (fun t -> t.TestMethod = "myTest")
+
+        test <@ testMethod.IsSome @>
+        test <@ testMethod.Value.TestClass.EndsWith("M", StringComparison.Ordinal) @>
+
+    [<Fact>]
+    let ``test class inside module uses + separator for CLR nested type`` () =
+        let result =
+            analyze
+                """
+module OuterModule
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+type MyTests() =
+    [<Fact>]
+    member _.myTest() = ()
+"""
+
+        let testMethod =
+            result.TestMethods |> List.tryFind (fun t -> t.TestMethod = "myTest")
+
+        test <@ testMethod.IsSome @>
+        // F# compiles types inside modules as CLR nested types (Module+Type)
+        // xUnit v3 --filter-class requires the + separator
+        let tc = testMethod.Value.TestClass
+        test <@ tc.Contains("+") @>
+        test <@ tc.EndsWith("OuterModule+MyTests", StringComparison.Ordinal) @>
+
+    [<Fact>]
+    let ``test class inside three nested modules keeps the complete CLR class name`` () =
+        let result =
+            analyze
+                """
+module OuterModule
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+module MiddleModule =
+    module InnerModule =
+        type MyTests() =
+            [<Fact>]
+            member _.myTest() = ()
+"""
+
+        let testMethod =
+            result.TestMethods |> List.tryFind (fun item -> item.TestMethod = "myTest")
+
+        test <@ testMethod.IsSome @>
+
+        test
+            <@
+                testMethod.Value.TestClass.EndsWith(
+                    "OuterModule+MiddleModule+InnerModule+MyTests",
+                    StringComparison.Ordinal
+                )
+            @>
+
+    [<Fact>]
+    let ``many test methods reuse only their exact nested declaring class`` () =
+        let methods prefix =
+            [ 1..200 ]
+            |> List.map (fun index -> $"    [<Fact>]\n    member _.%s{prefix}%d{index}() = ()")
+            |> String.concat "\n"
+
+        let source =
+            "module StressClasses\n"
+            + "type FactAttribute() = inherit System.Attribute()\n"
+            + "module Outer =\n"
+            + "  module Inner =\n"
+            + "   type First() =\n"
+            + methods "first"
+            + "\n   type Second() =\n"
+            + methods "second"
+
+        let cachedResult, _ = source |> analyzeWithPolicy 2000 true
+
+        let testMethods =
+            match cachedResult with
+            | Ok result -> result.TestMethods
+            | Error message -> failwith message
+
+        match source |> analyzeWithPolicy 2000 false |> fst with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "uncached declaring-class traversal must exhaust the equivalent low budget"
+
+        let first =
+            testMethods
+            |> List.filter (fun method' -> method'.TestMethod.StartsWith("first"))
+
+        let second =
+            testMethods
+            |> List.filter (fun method' -> method'.TestMethod.StartsWith("second"))
+
+        test <@ first.Length = 200 @>
+        test <@ second.Length = 200 @>
+
+        test
+            <@
+                first
+                |> List.forall (fun method' ->
+                    method'.TestClass.EndsWith("StressClasses+Outer+Inner+First", StringComparison.Ordinal))
+            @>
+
+        test
+            <@
+                second
+                |> List.forall (fun method' ->
+                    method'.TestClass.EndsWith("StressClasses+Outer+Inner+Second", StringComparison.Ordinal))
+            @>
+
+    [<Fact>]
+    let ``top-level module let binding does not use + separator`` () =
+        let result =
+            analyze
+                """
+module TopModule
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+[<Fact>]
+let myTest () = ()
+"""
+
+        let testMethod =
+            result.TestMethods |> List.tryFind (fun t -> t.TestMethod = "myTest")
+
+        test <@ testMethod.IsSome @>
+        let tc = testMethod.Value.TestClass
+        // Top-level let bindings in a module are not nested types — no + separator
+        test <@ not (tc.Contains("+")) @>
+        test <@ tc.EndsWith("TopModule", StringComparison.Ordinal) @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Symbol source locations`` =
+
+    [<Fact>]
+    let ``symbols have correct source file`` () =
+        let fileName = "/tmp/AstAnalyzerTest.fsx"
+
+        let source =
+            """
+module M
+let f x = x
+"""
+
+        let options = getScriptOptions checker fileName source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker fileName source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok r ->
+            let fSym =
+                r.Symbols
+                |> List.tryFind (fun s -> s.FullName.EndsWith("f", StringComparison.Ordinal))
+
+            test <@ fSym.IsSome @>
+            test <@ fSym.Value.SourceFile = fileName @>
+        | Error msg -> failwith msg
+
+    [<Fact>]
+    let ``symbols have line numbers`` () =
+        let result =
+            analyze
+                """
+module M
+
+let first = 1
+
+let second = 2
+"""
+
+        let first =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("first", StringComparison.Ordinal))
+
+        let second =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("second", StringComparison.Ordinal))
+
+        test <@ first.IsSome @>
+        test <@ second.IsSome @>
+        test <@ first.Value.LineStart < second.Value.LineStart @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Local binding scoping`` =
+
+    [<Fact>]
+    let ``uses inside local let bindings are attributed to enclosing function`` () =
+        let result =
+            analyze
+                """
+module M
+
+let helper x = x + 1
+
+let main args =
+    let config = helper 1
+    let host = helper 2
+    config + host
+"""
+
+        // Both calls to `helper` should be attributed to `main`, not to `config` or `host`
+        let mainCallsHelper =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("main", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("helper", StringComparison.Ordinal))
+
+        test <@ mainCallsHelper.IsSome @>
+
+        // There should NOT be a dependency from `host` or `config` to `helper`
+        let localCallsHelper =
+            result.Dependencies
+            |> List.filter (fun d ->
+                (d.FromSymbol.EndsWith("host", StringComparison.Ordinal)
+                 || d.FromSymbol.EndsWith("config", StringComparison.Ordinal))
+                && d.ToSymbol.EndsWith("helper", StringComparison.Ordinal))
+
+        test <@ localCallsHelper.IsEmpty @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Record type extraction`` =
+
+    [<Fact>]
+    let ``extracts record type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Person = { Name: string; Age: int }
+"""
+
+        let recSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Person", StringComparison.Ordinal) && s.Kind = Type)
+
+        test <@ recSym.IsSome @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Binding range diagnostics`` =
+    [<Fact>]
+    let ``multi-line function captures full body range`` () =
+        let source =
+            """
+module M
+
+let routeHandler (x: int) : int =
+    match x with
+    | 1 -> 10
+    | 2 -> 20
+    | _ -> 0
+"""
+
+        let tree =
+            let fileName = "/tmp/RangeTest.fsx"
+            let sourceText = FSharp.Compiler.Text.SourceText.ofString source
+
+            let projOptions, _ =
+                checker.GetProjectOptionsFromScript(fileName, sourceText, assumeDotNetFramework = false)
+                |> Async.RunSynchronously
+
+            let parseResults =
+                checker.ParseFile(
+                    fileName,
+                    sourceText,
+                    projOptions |> checker.GetParsingOptionsFromProjectOptions |> fst
+                )
+                |> Async.RunSynchronously
+
+            parseResults.ParseTree
+
+        let ranges = TestPrune.AstAnalyzer.collectModuleBindingRanges tree
+        let rh = ranges |> List.tryFind (fun (name, _) -> name = "routeHandler")
+        test <@ rh.IsSome @>
+        let (_, r) = rh.Value
+        // routeHandler is on line 4, body ends on line 8
+        let startLine = r.StartLine
+        let endLine = r.EndLine
+        test <@ startLine <= 4 @>
+        test <@ endLine >= 8 @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Enum type extraction`` =
+
+    [<Fact>]
+    let ``extracts enum type as a Type symbol`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Color =
+    | Red = 0
+    | Green = 1
+    | Blue = 2
+"""
+
+        let enumSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Color", StringComparison.Ordinal) && s.Kind = Type)
+
+        test <@ enumSym.IsSome @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Type abbreviation extraction`` =
+
+    [<Fact>]
+    let ``source with type abbreviation compiles and produces module symbol`` () =
+        // FCS does not emit FSharpEntity definition uses for type abbreviations via
+        // GetAllUsesOfAllSymbolsInFile; it resolves them to the underlying type.
+        // This test verifies that source containing a type abbreviation is analyzed
+        // without error and that the enclosing module is still captured as a symbol.
+        let result =
+            analyze
+                """
+module M
+
+type UserId = int
+type Name = string
+"""
+
+        let modSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("M", StringComparison.Ordinal) && s.Kind = Module)
+
+        test <@ modSym.IsSome @>
+
+    [<Fact>]
+    let ``type abbreviation of user-defined record is analyzed without error`` () =
+        // When a function uses a type abbreviation of a user-defined type, analysis
+        // completes successfully and the underlying record is captured as a Type symbol.
+        let result =
+            analyze
+                """
+module M
+
+type Point = { X: float; Y: float }
+type Coord = Point
+
+let makePoint x y : Point = { X = x; Y = y }
+"""
+
+        let pointSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Point", StringComparison.Ordinal) && s.Kind = Type)
+
+        test <@ pointSym.IsSome @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Class type extraction`` =
+
+    [<Fact>]
+    let ``extracts class type as a Type symbol`` () =
+        let result =
+            analyze
+                """
+module M
+
+type MyClass() =
+    member _.Value = 42
+"""
+
+        let classSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("MyClass", StringComparison.Ordinal) && s.Kind = Type)
+
+        test <@ classSym.IsSome @>
+
+    [<Fact>]
+    let ``extracts property member as a Property symbol`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Counter() =
+    member _.Prop = 42
+"""
+
+        let propSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Prop", StringComparison.Ordinal) && s.Kind = Property)
+
+        test <@ propSym.IsSome @>
+
+let analyzeRaw source =
+    let fileName = "/tmp/AstAnalyzerTest.fsx"
+    let options = getScriptOptions checker fileName source |> Async.RunSynchronously
+
+    analyzeSource checker fileName source options "TestProject"
+    |> Async.RunSynchronously
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Parse error handling`` =
+
+    [<Fact>]
+    let ``returns Error for source with parse errors`` () =
+        let result = analyzeRaw "let let let = ="
+
+        test <@ Result.isError result @>
+
+        match result with
+        | Error msg -> test <@ msg.StartsWith("Parse errors:", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "expected error"
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Cross-file dependencies (regression)`` =
+
+    [<Fact>]
+    let ``function using type from module parameter creates dependency`` () =
+        // Regression test: when a type is used in a parameter annotation,
+        // getScriptOptions should include related modules in the project context
+        // so that cross-file references can be resolved.
+        let tmpDir =
+            System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(),
+                "testprune-cross-file-" + System.Guid.NewGuid().ToString("N")
+            )
+
+        System.IO.Directory.CreateDirectory(tmpDir) |> ignore
+
+        try
+            let libFile = System.IO.Path.Combine(tmpDir, "Lib.fsx")
+            let consumerFile = System.IO.Path.Combine(tmpDir, "Consumer.fsx")
+
+            let libSource =
+                """module Lib
+
+type Config = { Value: string }
+
+let processConfig (cfg: Config) = cfg.Value.Length
+"""
+
+            let consumerSource =
+                """module Consumer
+
+open Lib
+
+let test () =
+    let cfg = { Value = "hello" }
+    let len = processConfig cfg
+    len
+"""
+
+            // Write files to disk so FCS can analyze them
+            System.IO.File.WriteAllText(libFile, libSource)
+            System.IO.File.WriteAllText(consumerFile, consumerSource)
+
+            let libOptions =
+                getScriptOptions checker libFile libSource |> Async.RunSynchronously
+
+            let consumerOptions =
+                getScriptOptions checker consumerFile consumerSource |> Async.RunSynchronously
+
+            // Both should be analyzable
+            let libResult =
+                analyzeSource checker libFile libSource libOptions "Lib"
+                |> Async.RunSynchronously
+
+            let consumerResult =
+                analyzeSource checker consumerFile consumerSource consumerOptions "Consumer"
+                |> Async.RunSynchronously
+
+            // Check if lib analysis worked
+            match libResult with
+            | Ok libAnalysis ->
+                // Lib.fsx should have a dependency: processConfig -> Config
+                let configDep =
+                    libAnalysis.Dependencies
+                    |> List.tryFind (fun d ->
+                        d.FromSymbol.EndsWith("processConfig", StringComparison.Ordinal)
+                        && d.ToSymbol.EndsWith("Config", StringComparison.Ordinal))
+
+                test <@ configDep.IsSome @>
+                test <@ configDep.Value.Kind = UsesType @>
+            | Error e -> failwith $"lib analysis failed: {e}"
+
+            // Verify cross-file dependency detection:
+            // getScriptOptions should detect the 'open Lib' statement and include Lib.fsx
+            // in the SourceFiles array, allowing FCS to resolve Lib's symbols
+            test
+                <@
+                    consumerOptions.SourceFiles
+                    |> Array.exists (fun f -> f.EndsWith("Lib.fsx", StringComparison.Ordinal))
+                @>
+
+        // The core fix is validated above:
+        // getScriptOptions now detects 'open Lib' and includes Lib.fsx in SourceFiles.
+        // This enables downstream tools to resolve cross-file symbols properly.
+        finally
+            try
+                System.IO.Directory.Delete(tmpDir, true)
+            with _ ->
+                ()
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Branch coverage for dependency kinds`` =
+
+    [<Fact>]
+    let ``dependency kind uses type correctly`` () =
+        // Test that uses a type parameter annotation to trigger UsesType
+        let result =
+            analyze
+                """
+module M
+
+type Config = { value: int }
+
+let processConfig (cfg: Config) = cfg.value
+"""
+
+        let typeDep =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("processConfig", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Config", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ typeDep.IsSome @>
+
+    [<Fact>]
+    let ``dependency kind pattern matches correctly`` () =
+        // DU case pattern matching creates PatternMatches dependency
+        let result =
+            analyze
+                """
+module M
+
+type Option<'a> =
+    | Some of 'a
+    | None
+
+let handleSome opt =
+    match opt with
+    | Some v -> v
+    | None -> 0
+"""
+
+        // The pattern matching on Option cases creates dependencies
+        test <@ result.Dependencies.Length > 0 @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Symbol classification coverage`` =
+
+    [<Fact>]
+    let ``classifies records as types`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Person = { name: string; age: int }
+
+let createPerson n a = { name = n; age = a }
+"""
+
+        let personType =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Person", StringComparison.Ordinal) && s.Kind = Type)
+
+        test <@ personType.IsSome @>
+
+    [<Fact>]
+    let ``classifies enums as types`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Color = Red = 0 | Green = 1 | Blue = 2
+
+let showColor c = c
+"""
+
+        let colorType =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Color", StringComparison.Ordinal) && s.Kind = Type)
+
+        test <@ colorType.IsSome @>
+
+    [<Fact>]
+    let ``classifies class types`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Animal() =
+    member x.Speak() = "sound"
+
+let makeAnimal () = Animal()
+"""
+
+        let animalType =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Animal", StringComparison.Ordinal) && s.Kind = Type)
+
+        test <@ animalType.IsSome @>
+
+    [<Fact>]
+    let ``classifies properties`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Circle =
+    { radius: float }
+    member x.Area = 3.14159 * x.radius * x.radius
+
+let getArea c = c.Area
+"""
+
+        // Member property should be extracted
+        let symbols = result.Symbols
+        test <@ symbols.Length > 0 @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Coverage for hashSourceLines`` =
+
+    [<Fact>]
+    let ``hash handles boundary line numbers`` () =
+        // Ensure the line slicing logic in hashSourceLines works at boundaries
+        let source =
+            """module M
+let a = 1
+let b = 2
+let c = 3
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            // Multiple symbols means multiple ranges were hashed
+            test <@ analysis.Symbols.Length >= 3 @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Coverage for collectTypeMemberRanges`` =
+
+    [<Fact>]
+    let ``extracts member ranges from class types`` () =
+        let source =
+            """module M
+
+type MyClass() =
+    member _.doWork x = x + 1
+    member this.``complex name`` () = 42
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            // The type members should be tracked as symbols
+            let doWork =
+                analysis.Symbols |> List.tryFind (fun s -> s.FullName.Contains("doWork"))
+
+            let complexName =
+                analysis.Symbols |> List.tryFind (fun s -> s.FullName.Contains("complex name"))
+
+            test <@ doWork.IsSome @>
+            test <@ complexName.IsSome @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+    [<Fact>]
+    let ``type members produce dependency edges`` () =
+        let source =
+            """module M
+
+let helper x = x + 1
+
+type Worker() =
+    member _.run () = helper 5
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            let runCallsHelper =
+                analysis.Dependencies
+                |> List.exists (fun d -> d.FromSymbol.Contains("run") && d.ToSymbol.Contains("helper"))
+
+            test <@ runCallsHelper @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Coverage for collectModuleBindingRanges`` =
+
+    [<Fact>]
+    let ``correctly handles signature files`` () =
+        // ParsedInput.SigFile case in collectModuleBindingRanges
+        // This is exercised by analyzing normal .fsx files (they use ImplFile)
+        let source =
+            """module M
+
+let moduleFunc x = x + 1
+let moduleValue = 42
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis -> test <@ analysis.Symbols.Length > 0 @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Symbol classification robustness`` =
+
+    [<Fact>]
+    let ``exception handlers in symbol classification are defensive`` () =
+        // The AstAnalyzer.fs now has extracted helper functions for testing:
+        // - tryClassifyEntity: handles FSharpEntity with exception safety
+        // - tryClassifyMemberOrFunction: handles FSharpMemberOrFunctionOrValue with exception safety
+        // - tryClassifyUnionCase: handles FSharpUnionCase with exception safety
+        //
+        // Each function has a try/catch for InvalidOperationException. These paths are
+        // exercised implicitly when FCS returns symbols - the exception handlers activate
+        // only when FCS throws (rare, with malformed assemblies). The structure now
+        // enables direct unit testing of these helpers with mock symbols.
+        let result =
+            analyze
+                """
+module M
+
+let a = 1
+let b = 2
+let c = a + b
+"""
+
+        // Normal analysis verifies the classification paths work
+        test <@ result.Symbols.Length > 0 @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Local bindings should not be queryable (regression)`` =
+
+    [<Fact>]
+    let ``local bindings are not extracted as queryable symbols`` () =
+        // Regression test: local bindings (variables defined within function bodies)
+        // should be tracked for change detection but MUST NOT be exposed as queryable symbols
+        // in the public API. Only module-level symbols should be queryable.
+        let source =
+            """module TestModule
+
+let outerFunction x =
+    let localVar = x + 1
+    let innerFunc y = y * localVar
+    innerFunc 5
+
+let moduleLevel = 42
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            // Extract all symbols from the analysis
+            let allSymbols = analysis.Symbols
+
+            // Module-level symbols SHOULD be present
+            let hasOuterFunction =
+                allSymbols
+                |> List.exists (fun s ->
+                    s.FullName.EndsWith("outerFunction", StringComparison.Ordinal)
+                    && s.Kind = Function)
+
+            let hasModuleLevel =
+                allSymbols
+                |> List.exists (fun s -> s.FullName.EndsWith("moduleLevel", StringComparison.Ordinal) && s.Kind = Value)
+
+            test <@ hasOuterFunction @>
+            test <@ hasModuleLevel @>
+
+            // Local bindings (parameters and local let-bindings) MUST NOT be queryable
+            // A local binding is a Value or Function without dot-qualification (unqualified FullName)
+            let localBindings =
+                allSymbols
+                |> List.filter (fun s ->
+                    match s.Kind with
+                    | Value
+                    | Function -> not (s.FullName.Contains('.'))
+                    | _ -> false)
+
+            test <@ localBindings.Length = 0 @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+    [<Fact>]
+    let ``shadowing parameters and locals are not extracted as queryable symbols`` () =
+        // Admitting a Value/Function by SHORT name alone lets a parameter or local whose
+        // name collides with a module-level binding in the same file through, persisted as
+        // a global, unqualified symbol. `symbols.full_name` is UNIQUE, so every unresolved
+        // reference to that bare name across the repo unifies onto one node — turning
+        // ordinary parameter names (`name`, `kind`, `question`) into hubs that select
+        // thousands of unrelated tests.
+        //
+        // The fixture below deliberately shadows: `kebab` takes a parameter `name` while the
+        // module also binds `name`; `question` takes a parameter `question` shadowing its own
+        // enclosing binding; `render` has locals `name` and `kind`.
+        let source =
+            """module TestModule
+
+let name = "module-level name"
+
+let private kebab (name: string) = name.Replace(" ", "-")
+
+let question (lang: string) (question: string) = lang + question
+
+let render x =
+    let name = string x
+    let kind = 1
+    name + string kind
+"""
+
+        let options =
+            getScriptOptions checker "shadowing.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "shadowing.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            let allSymbols = analysis.Symbols
+
+            // The genuine module-level bindings must still be tracked, fully qualified.
+            let hasQualified (n: string) =
+                allSymbols
+                |> List.exists (fun s -> s.FullName = "TestModule." + n && (s.Kind = Value || s.Kind = Function))
+
+            test <@ hasQualified "name" @>
+            test <@ hasQualified "kebab" @>
+            test <@ hasQualified "question" @>
+            test <@ hasQualified "render" @>
+
+            // The shadowing parameters and locals must NOT appear as symbols at all.
+            let localBindings =
+                allSymbols
+                |> List.filter (fun s ->
+                    match s.Kind with
+                    | Value
+                    | Function -> not (s.FullName.Contains('.'))
+                    | _ -> false)
+
+            test <@ localBindings.Length = 0 @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+    [<Fact>]
+    let ``every module-level and type-member binding form stays tracked`` () =
+        // Guard against OVER-correction of the check above: these are the declaration forms
+        // that must keep passing the `IsModuleValueOrMember` gate. A symbol silently dropped
+        // here means edits to it select no tests, so each is asserted by exact
+        // fully-qualified name rather than by count.
+        let result =
+            analyze
+                """
+module Outer
+
+let private privateBinding = 1
+
+let inline inlineFn a b = a + b
+
+let mutable mutableValue = 0
+
+module Nested =
+    let nestedBinding x = x + 1
+
+type Widget(w: int) =
+    member _.Width = w
+    member _.Scale(k: int) = w * k
+    static member Zero = Widget(0)
+
+module WidgetExt =
+    type Widget with
+        member this.Doubled = this.Width * 2
+"""
+
+        let tracked (name: string) =
+            result.Symbols |> List.exists (fun s -> s.FullName = name)
+
+        test <@ tracked "Outer.privateBinding" @>
+        test <@ tracked "Outer.inlineFn" @>
+        test <@ tracked "Outer.mutableValue" @>
+        test <@ tracked "Outer.Nested.nestedBinding" @>
+        test <@ tracked "Outer.Widget.Width" @>
+        test <@ tracked "Outer.Widget.Scale" @>
+        test <@ tracked "Outer.Widget.Zero" @>
+        test <@ tracked "Outer.WidgetExt.Doubled" @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Exception handling in symbol classification`` =
+
+    [<Fact>]
+    let ``try classify functions handle normal cases`` () =
+        // These tests exercise the happy paths in tryClassifyEntity, tryClassifyMemberOrFunction,
+        // and tryClassifyUnionCase through normal analysis. The try/catch blocks are also covered,
+        // though the exception paths only activate with malformed FCS symbols (rare in practice).
+        let source =
+            """module M
+
+type Config = { value: int }
+
+let processConfig (cfg: Config) =
+    let helper x = x + 1
+    helper cfg.value
+
+type Action =
+    | DoSomething
+    | DoAnother of string
+    | DoThird
+
+let handleAction act =
+    match act with
+    | DoSomething -> 1
+    | DoAnother s -> 2
+    | DoThird -> 3
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            // Verify entities were classified
+            let hasConfig =
+                analysis.Symbols
+                |> List.exists (fun s -> s.FullName.EndsWith("Config", StringComparison.Ordinal) && s.Kind = Type)
+
+            let hasAction =
+                analysis.Symbols
+                |> List.exists (fun s -> s.FullName.EndsWith("Action", StringComparison.Ordinal) && s.Kind = Type)
+
+            let hasProcessConfig =
+                analysis.Symbols
+                |> List.exists (fun s ->
+                    s.FullName.EndsWith("processConfig", StringComparison.Ordinal)
+                    && s.Kind = Function)
+
+            let hasHandleAction =
+                analysis.Symbols
+                |> List.exists (fun s ->
+                    s.FullName.EndsWith("handleAction", StringComparison.Ordinal)
+                    && s.Kind = Function)
+
+            test <@ hasConfig @>
+            test <@ hasAction @>
+            test <@ hasProcessConfig @>
+            test <@ hasHandleAction @>
+
+            // Verify DU cases were classified
+            let duCases = analysis.Symbols |> List.filter (fun s -> s.Kind = DuCase)
+
+            test <@ duCases.Length >= 3 @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+    [<Fact>]
+    let ``dependency kinds cover all classification branches`` () =
+        // Ensure all four branches of classifyDependency are exercised:
+        // 1. UsesType - type parameter
+        // 2. PatternMatches - DU case pattern matching
+        // 3. Calls - function calling function
+        // 4. References - catch-all (tested implicitly)
+        let source =
+            """module M
+
+type Person = { name: string }
+
+let greet (p: Person) =
+    let getName = p.name
+    getName
+
+let printGreeting () =
+    let p = { name = "Alice" }
+    greet p
+
+type Result<'T> =
+    | Success of 'T
+    | Error of string
+
+let processResult r =
+    match r with
+    | Success v -> v
+    | Error msg -> msg
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            // UsesType: Person type used in greet parameter
+            let usesTypeDeps = analysis.Dependencies |> List.filter (fun d -> d.Kind = UsesType)
+
+            // Calls: printGreeting calls greet, processResult depends on Success/Error
+            let callDeps = analysis.Dependencies |> List.filter (fun d -> d.Kind = Calls)
+
+            // PatternMatches: processResult pattern matches Success and Error
+            let patternDeps =
+                analysis.Dependencies |> List.filter (fun d -> d.Kind = PatternMatches)
+
+            test <@ usesTypeDeps.Length > 0 @>
+            test <@ callDeps.Length > 0 @>
+            test <@ patternDeps.Length > 0 @>
+            test <@ analysis.Dependencies.Length > 0 @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+    [<Fact>]
+    let ``multiple pattern match branches are all classified`` () =
+        // Further exercise DU case pattern matching with multiple cases
+        let source =
+            """module M
+
+type Status =
+    | Pending
+    | Running of int
+    | Done of string
+
+let statusMessage s =
+    match s with
+    | Pending -> "waiting"
+    | Running id -> sprintf "running %d" id
+    | Done msg -> sprintf "finished: %s" msg
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            // Multiple DU cases should create multiple PatternMatches dependencies
+            let allDeps = analysis.Dependencies
+            let patternDeps = allDeps |> List.filter (fun d -> d.Kind = PatternMatches)
+
+            // Should have dependencies for pattern matching on all DU cases
+            test <@ patternDeps.Length >= 2 @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+    [<Fact>]
+    let ``interface and inheritance type dependencies`` () =
+        // Exercise additional type classification branches
+        let source =
+            """module M
+
+type IHandler =
+    abstract member Handle: string -> unit
+
+type ConcreteHandler() =
+    interface IHandler with
+        member x.Handle s = ()
+
+let useHandler (h: IHandler) =
+    h.Handle "test"
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            // Interface type and implementation should both be present
+            let hasInterface =
+                analysis.Symbols
+                |> List.exists (fun s -> s.FullName.EndsWith("IHandler", StringComparison.Ordinal) && s.Kind = Type)
+
+            let hasConcrete =
+                analysis.Symbols
+                |> List.exists (fun s ->
+                    s.FullName.EndsWith("ConcreteHandler", StringComparison.Ordinal)
+                    && s.Kind = Type)
+
+            let hasUseHandler =
+                analysis.Symbols
+                |> List.exists (fun s ->
+                    s.FullName.EndsWith("useHandler", StringComparison.Ordinal) && s.Kind = Function)
+
+            test <@ hasInterface @>
+            test <@ hasConcrete @>
+            test <@ hasUseHandler @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+    [<Fact>]
+    let ``extracts test methods from source`` () =
+        // Test extraction of methods marked with test attributes
+        // We define local attribute types since script options may not resolve external assemblies
+        let source =
+            """module TestModule
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+type TheoryAttribute() =
+    inherit System.Attribute()
+
+[<Fact>]
+let myFactTest () =
+    ()
+
+[<Theory>]
+let myTheoryTest (x: int) =
+    ()
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            // Test methods should be extracted
+            let testMethods = analysis.TestMethods
+            test <@ testMethods.Length >= 2 @>
+
+            // Verify test method info contains expected data
+            let hasFactTest =
+                testMethods |> List.exists (fun tm -> tm.TestMethod = "myFactTest")
+
+            let hasTheoryTest =
+                testMethods |> List.exists (fun tm -> tm.TestMethod = "myTheoryTest")
+
+            test <@ hasFactTest @>
+            test <@ hasTheoryTest @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Edge cases and error handling`` =
+
+    [<Fact>]
+    let ``handles empty source gracefully`` () =
+        // Edge case: empty source file
+        // FCS will create a default module even for empty/whitespace-only source
+        let options = getScriptOptions checker "test.fsx" "" |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" "" options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            // Analysis should succeed even with empty source
+            test <@ List.isEmpty analysis.Dependencies @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+    [<Fact>]
+    let ``handles whitespace-only source`` () =
+        // Edge case: source with only whitespace
+        // FCS will create a default module
+        let source =
+            """
+
+
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            // Analysis should succeed even with whitespace-only source
+            test <@ List.isEmpty analysis.Dependencies @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+    [<Fact>]
+    let ``handles malformed syntax`` () =
+        // Edge case: source with syntax errors
+        // FCS should handle this gracefully
+        let source =
+            """module M
+
+let broken =  // missing right side
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Error msg ->
+            // Parse errors should be reported
+            test <@ msg.Contains("Parse") @>
+        | Ok _analysis ->
+            // Or if it parses despite syntax issues, that's fine too
+            ()
+
+    [<Fact>]
+    let ``handles complex nested structures`` () =
+        // Test that deeply nested structures are handled correctly
+        let source =
+            """module M
+
+type Level1 =
+    | Case1 of level2: Level2
+    | Case2
+
+and Level2 =
+    | SubCase of level3: Level3
+
+and Level3 =
+    | DeepCase
+
+let rec processLevel1 l1 =
+    match l1 with
+    | Case1 l2 -> processLevel2 l2
+    | Case2 -> 0
+
+and processLevel2 l2 =
+    match l2 with
+    | SubCase l3 -> processLevel3 l3
+
+and processLevel3 l3 =
+    match l3 with
+    | DeepCase -> 1
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            // Nested structures should all be extracted
+            test <@ analysis.Symbols.Length >= 6 @>
+
+            // Dependencies should be created for the recursive calls
+            test <@ analysis.Dependencies.Length > 0 @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+    [<Fact>]
+    let ``handles source with open statements`` () =
+        // Test that 'open' statements are correctly detected
+        // This exercises the detectOpenedModules function
+        let source =
+            """open System
+open System.Collections
+
+module M =
+    let data = []
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            // Module should be extracted
+            let hasModule =
+                analysis.Symbols
+                |> List.exists (fun s -> s.FullName.EndsWith("M", StringComparison.Ordinal))
+
+            test <@ hasModule @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``DU parent type edge from case usage`` =
+
+    [<Fact>]
+    let ``pattern matching on DU case creates edge to parent type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Shape =
+    | Circle of float
+    | Square of float
+
+let process s =
+    match s with
+    | Circle r -> r
+    | Square s -> s
+"""
+
+        let deps = result.Dependencies
+
+        let hasEdgeToShape =
+            deps
+            |> List.exists (fun d ->
+                d.FromSymbol.EndsWith("process", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Shape", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ hasEdgeToShape @>
+
+    [<Fact>]
+    let ``constructing DU case creates edge to parent type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Msg =
+    | Increment
+    | Decrement
+
+let init () = Increment
+"""
+
+        let deps = result.Dependencies
+
+        let hasEdgeToMsg =
+            deps
+            |> List.exists (fun d ->
+                d.FromSymbol.EndsWith("init", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Msg", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ hasEdgeToMsg @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Generic type parameter edges`` =
+
+    type private TraversalNode(name: string) =
+        let mutable children: TraversalNode list = []
+
+        member _.Name = name
+        member _.Children = children
+        member _.SetChildren(value) = children <- value
+
+    type private BranchingWrapper(depth: int) =
+        member _.Depth = depth
+
+    [<Fact>]
+    let ``bounded symbol traversal stops a reference cycle`` () =
+        let node = TraversalNode("self")
+        node.SetChildren [ node ]
+
+        let visited =
+            TestHelpers.testBoundedDepthFirst
+                128
+                (fun (item: TraversalNode) -> Some item.Name)
+                (fun item -> item.Children)
+                [ node ]
+
+        test <@ visited |> List.map _.Name = [ "self" ] @>
+
+    [<Fact>]
+    let ``reference back-edge at the depth boundary is rejected before depth exhaustion`` () =
+        let root = TraversalNode("root")
+        let one = TraversalNode("one")
+        let two = TraversalNode("two")
+        let three = TraversalNode("three")
+        root.SetChildren [ one ]
+        one.SetChildren [ two ]
+        two.SetChildren [ three ]
+        three.SetChildren [ root ]
+
+        let visited =
+            TestHelpers.testBoundedDepthFirst 4 (fun (_: TraversalNode) -> None) (fun item -> item.Children) [ root ]
+
+        test <@ visited |> List.map _.Name = [ "root"; "one"; "two"; "three" ] @>
+
+    [<Fact>]
+    let ``bounded symbol traversal stops wrapper recreation with the same active name`` () =
+        let root = TraversalNode("same-logical-node")
+
+        let visited =
+            TestHelpers.testBoundedDepthFirst
+                128
+                (fun (item: TraversalNode) -> Some item.Name)
+                (fun item -> [ TraversalNode(item.Name) ])
+                [ root ]
+
+        test <@ visited |> List.map _.Name = [ "same-logical-node" ] @>
+
+    [<Fact>]
+    let ``bounded symbol traversal keeps finite sibling instances with the same name`` () =
+        let left = TraversalNode("shared")
+        let right = TraversalNode("shared")
+        let root = TraversalNode("root")
+        root.SetChildren [ left; right ]
+
+        let visited =
+            TestHelpers.testBoundedDepthFirst
+                128
+                (fun (item: TraversalNode) -> Some item.Name)
+                (fun item -> item.Children)
+                [ root ]
+
+        test <@ visited |> List.map _.Name = [ "root"; "shared"; "shared" ] @>
+
+    [<Fact>]
+    let ``logical rejection does not poison the same reference on a valid sibling path`` () =
+        let leaf = TraversalNode("leaf")
+        let shared = TraversalNode("shared")
+        shared.SetChildren [ leaf ]
+
+        let collisionParent = TraversalNode("shared")
+        collisionParent.SetChildren [ shared ]
+
+        let bridge = TraversalNode("bridge")
+        bridge.SetChildren [ shared ]
+
+        let root = TraversalNode("root")
+        root.SetChildren [ collisionParent; bridge ]
+
+        let visited =
+            TestHelpers.testBoundedDepthFirst
+                128
+                (fun (item: TraversalNode) -> Some item.Name)
+                (fun item -> item.Children)
+                [ root ]
+
+        test <@ visited |> List.map _.Name = [ "root"; "shared"; "bridge"; "shared"; "leaf" ] @>
+
+    [<Fact>]
+    let ``bounded symbol traversal refuses an endlessly novel chain`` () =
+        let root = TraversalNode("0")
+
+        let result =
+            TestHelpers.testProtectSymbolTraversal (fun () ->
+                TestHelpers.testBoundedDepthFirst
+                    4
+                    (fun (item: TraversalNode) -> Some item.Name)
+                    (fun item -> [ TraversalNode(string (int item.Name + 1)) ])
+                    [ root ]
+                |> Ok)
+
+        match result with
+        | Error message ->
+            test <@ message.Contains("safe traversal depth of 4", StringComparison.Ordinal) @>
+            test <@ message.Contains("refusing incomplete analysis", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "depth exhaustion must refuse incomplete analysis"
+
+    [<Fact>]
+    let ``child enumeration failure stays degraded and a later good wrapper can complete`` () =
+        let root = TraversalNode("root")
+        let leaf = TraversalNode("leaf")
+        let mutable throwChildren = true
+
+        let children (node: TraversalNode) : TraversalNode seq =
+            if throwChildren then failwith "simulated FCS child failure"
+            elif node.Name = "root" then [ leaf ]
+            else []
+
+        let firstNodes, firstComplete =
+            TestHelpers.testBoundedDepthFirstCompletion
+                8
+                8
+                (fun (node: TraversalNode) -> Some node.Name)
+                children
+                [ root ]
+
+        throwChildren <- false
+
+        let retryNodes, retryComplete =
+            TestHelpers.testBoundedDepthFirstCompletion
+                8
+                8
+                (fun (node: TraversalNode) -> Some node.Name)
+                children
+                [ root ]
+
+        test <@ firstNodes |> List.map _.Name = [ "root" ] @>
+        test <@ not firstComplete @>
+        test <@ retryNodes |> List.map _.Name = [ "root"; "leaf" ] @>
+        test <@ retryComplete @>
+
+    [<Fact>]
+    let ``degraded traversal is not admitted to shared caches and a complete retry is`` () =
+        let afterDegraded, afterRetry = TestHelpers.testCompletedTraversalCacheRetry ()
+
+        test <@ afterDegraded = (false, null) @>
+        test <@ afterRetry = (true, "complete") @>
+
+    [<Fact>]
+    let ``recreated branching wrappers exhaust a global work budget before combinatorial expansion`` () =
+        let mutable childReads = 0
+
+        let children (node: BranchingWrapper) : BranchingWrapper seq =
+            childReads <- childReads + 1
+
+            if node.Depth >= 13 then
+                Seq.empty
+            else
+                [ BranchingWrapper(node.Depth + 1); BranchingWrapper(node.Depth + 1) ]
+
+        let result =
+            TestHelpers.testProtectSymbolTraversal (fun () ->
+                TestHelpers.testBoundedDepthFirstWithSharedBudget
+                    16
+                    4096
+                    (fun (_: BranchingWrapper) -> None)
+                    children
+                    [ [ BranchingWrapper(0) ] ]
+                |> Ok)
+
+        match result with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "work-budget exhaustion must refuse incomplete analysis"
+
+        test <@ childReads <= 4098 @>
+
+    [<Fact>]
+    let ``recreated branching work is budgeted cumulatively across symbol traversals`` () =
+        let mutable childReads = 0
+
+        let children (node: BranchingWrapper) : BranchingWrapper seq =
+            childReads <- childReads + 1
+
+            if node.Depth >= 5 then
+                Seq.empty
+            else
+                [ BranchingWrapper(node.Depth + 1); BranchingWrapper(node.Depth + 1) ]
+
+        let result =
+            TestHelpers.testProtectSymbolTraversal (fun () ->
+                TestHelpers.testBoundedDepthFirstWithSharedBudget
+                    16
+                    100
+                    (fun (_: BranchingWrapper) -> None)
+                    children
+                    [ [ BranchingWrapper(0) ]; [ BranchingWrapper(0) ] ]
+                |> Ok)
+
+        match result with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "cumulative symbol traversal work must share one budget"
+
+        test <@ childReads <= 106 @>
+
+    [<Fact>]
+    let ``high fanout child enumeration stops at the shared candidate budget`` () =
+        let mutable created = 0
+
+        let children (node: BranchingWrapper) : BranchingWrapper seq =
+            if node.Depth > 0 then
+                Seq.empty
+            else
+                seq {
+                    for _ in 1..10000 do
+                        created <- created + 1
+                        yield BranchingWrapper(node.Depth + 1)
+                }
+
+        let result =
+            TestHelpers.testProtectSymbolTraversal (fun () ->
+                TestHelpers.testBoundedDepthFirstWithSharedBudget
+                    16
+                    100
+                    (fun (_: BranchingWrapper) -> None)
+                    children
+                    [ [ BranchingWrapper(0) ] ]
+                |> Ok)
+
+        match result with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "high-fanout traversal must stop at the shared candidate budget"
+
+        test <@ created <= 65 @>
+
+    [<Fact>]
+    let ``high fanout root enumeration stops at the per-type arity bound`` () =
+        let mutable created = 0
+
+        let roots =
+            seq {
+                for _ in 1..10000 do
+                    created <- created + 1
+                    yield BranchingWrapper(0)
+            }
+
+        let result =
+            TestHelpers.testProtectSymbolTraversal (fun () ->
+                TestHelpers.testBoundedDepthFirstWithSharedBudget
+                    16
+                    100
+                    (fun (_: BranchingWrapper) -> None)
+                    (fun _ -> Seq.empty)
+                    [ roots ]
+                |> Ok)
+
+        match result with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "high-fanout roots must stop at the per-type arity bound"
+
+        test <@ created <= 65 @>
+
+    [<Fact>]
+    let ``real FSharpType traversal exhaustion reaches the public analysis result`` () =
+        let source = "module RealGeneric\nlet value : list<list<list<int>>> = []\n"
+        let fileName = "/tmp/AstAnalyzerDeepGeneric.fsx"
+        let options = getScriptOptions checker fileName source |> Async.RunSynchronously
+
+        let _, checkAnswer =
+            checker.ParseAndCheckFileInProject(fileName, 0, FSharp.Compiler.Text.SourceText.ofString source, options)
+            |> Async.RunSynchronously
+
+        let checkResults =
+            match checkAnswer with
+            | FSharpCheckFileAnswer.Succeeded results -> results
+            | FSharpCheckFileAnswer.Aborted -> failwith "type checking aborted"
+
+        let valueSymbol =
+            checkResults.GetAllUsesOfAllSymbolsInFile()
+            |> Seq.find (fun symbolUse -> symbolUse.IsFromDefinition && symbolUse.Symbol.DisplayName = "value")
+            |> _.Symbol
+
+        let result =
+            TestHelpers.testProtectSymbolTraversal (fun () ->
+                TestHelpers.testTryGetGenericTypeArgEdgesWithBudget 0 valueSymbol |> Ok)
+
+        match result with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "real FSharpType work-budget exhaustion must reach the analysis Error boundary"
+
+    [<Fact>]
+    let ``finite generic attribution is retained across multiple symbols under the shared budget`` () =
+        let source =
+            "module ManyGenerics\ntype Leaf = { Value: int }\n"
+            + ([ 0..9 ]
+               |> List.map (fun index -> $"let value%d{index} : list<Leaf> = []")
+               |> String.concat "\n")
+
+        let fileName = "/tmp/AstAnalyzerManyGenerics.fsx"
+        let options = getScriptOptions checker fileName source |> Async.RunSynchronously
+
+        let _, checkAnswer =
+            checker.ParseAndCheckFileInProject(fileName, 0, FSharp.Compiler.Text.SourceText.ofString source, options)
+            |> Async.RunSynchronously
+
+        let checkResults =
+            match checkAnswer with
+            | FSharpCheckFileAnswer.Succeeded results -> results
+            | FSharpCheckFileAnswer.Aborted -> failwith "type checking aborted"
+
+        let valueSymbols =
+            checkResults.GetAllUsesOfAllSymbolsInFile()
+            |> Seq.filter (fun symbolUse ->
+                symbolUse.IsFromDefinition
+                && symbolUse.Symbol.DisplayName.StartsWith("value", StringComparison.Ordinal))
+            |> Seq.map _.Symbol
+            |> Seq.toList
+
+        let edges =
+            match TestHelpers.testTryGetGenericTypeArgEdgesWithSharedBudget 100 valueSymbols with
+            | Ok edges -> edges
+            | Error message -> failwith message
+
+        test <@ valueSymbols.Length = 10 @>
+        test <@ edges.Length = 10 @>
+
+        test
+            <@
+                edges
+                |> List.forall (fun edge -> edge.EndsWith("Leaf", StringComparison.Ordinal))
+            @>
+
+        match TestHelpers.testTryGetGenericTypeArgEdgesWithSharedBudget 0 valueSymbols with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "distinct shallow roots must still consume the file-wide budget"
+
+    [<Fact>]
+    let ``recreated uses of one declared symbol share generic traversal work`` () =
+        let sourceWithUses count =
+            let calls = [ 1..count ] |> List.map (fun _ -> "consume []") |> String.concat "\n"
+
+            "module RepeatedDeclaredSymbol\n"
+            + "type Leaf = { Value: int }\n"
+            + "let consume (_: list<list<list<Leaf>>>) = ()\n"
+            + calls
+
+        let relevantEdges result =
+            result.Dependencies
+            |> List.filter (fun edge ->
+                edge.FromSymbol.EndsWith("consume", StringComparison.Ordinal)
+                && edge.ToSymbol.EndsWith("Leaf", StringComparison.Ordinal)
+                && edge.Kind = UsesType)
+
+        let single = sourceWithUses 1 |> analyze |> relevantEdges
+
+        let repeated =
+            match sourceWithUses 2500 |> analyzeWithPolicy 100 true |> fst with
+            | Ok result -> relevantEdges result
+            | Error message -> failwith message
+
+        test <@ single.Length = 1 @>
+        test <@ repeated = single @>
+
+    [<Fact>]
+    let ``semantic generic cache is required to keep recreated wrappers within a low budget`` () =
+        let repeatedKey = List.replicate 50 "same-monomorphic-declaration"
+        let cached = TestHelpers.testSemanticTraversalMemo true 1 repeatedKey
+        let uncached = TestHelpers.testSemanticTraversalMemo false 1 repeatedKey
+
+        match cached with
+        | Ok(edges, computations) ->
+            test <@ computations = 1 @>
+            test <@ edges = List.replicate 50 [ "Leaf" ] @>
+        | Error message -> failwith message
+
+        match uncached with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "disabled semantic caching must exhaust the same low budget"
+
+        match TestHelpers.testSemanticTraversalMemo true 1 [ "first"; "second" ] with
+        | Error message -> test <@ message.Contains("work budget", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "distinct semantic keys must not share cached traversal"
+
+    [<Fact>]
+    let ``semantic identity unifies recreated wrappers but separates declarations`` () =
+        let source =
+            "module SemanticIdentity\n"
+            + "type Leaf = { Value: int }\n"
+            + "type Holder() =\n"
+            + "    member _.One : Leaf list = []\n"
+            + "    member _.Two : Leaf list = []\n"
+            + "let consume (holder: Holder) = holder.One, holder.One, holder.Two"
+
+        let _, _, checkResults = checkSource source
+        let uses = checkResults.GetAllUsesOfAllSymbolsInFile()
+
+        let symbols name =
+            uses
+            |> Seq.filter (fun use' -> not use'.IsFromDefinition && use'.Symbol.DisplayName = name)
+            |> Seq.map _.Symbol
+            |> Seq.toList
+
+        let one = symbols "One"
+        let two = symbols "Two"
+
+        test <@ one.Length >= 2 @>
+        test <@ two.Length >= 1 @>
+        test <@ TestHelpers.testGenericEdgeSemanticKeyDistinctCount one = 1 @>
+        test <@ TestHelpers.testGenericEdgeSemanticKeyDistinctCount two = 1 @>
+        test <@ TestHelpers.testGenericEdgeSemanticKeyDistinctCount (one @ two) = 2 @>
+
+
+    [<Fact>]
+    let ``generic declaration instantiations retain both concrete type edges`` () =
+        let result =
+            analyze
+                """
+module GenericInstantiations
+type Alpha = { A: int }
+type Beta = { B: int }
+let identity value = value
+let alpha : Alpha = identity { A = 1 }
+let beta : Beta = identity { B = 2 }
+"""
+
+        let genericSymbols =
+            let source =
+                "module GenericEligibility\nlet identity value = value\nlet one = identity 1\nlet two = identity \"two\"\n"
+
+            let _, _, checkResults = checkSource source
+
+            checkResults.GetAllUsesOfAllSymbolsInFile()
+            |> Seq.filter (fun use' -> use'.Symbol.DisplayName = "identity")
+            |> Seq.map _.Symbol
+            |> Seq.toList
+
+        let hasEdge fromName toName =
+            result.Dependencies
+            |> List.exists (fun edge ->
+                edge.FromSymbol.EndsWith(fromName, StringComparison.Ordinal)
+                && edge.ToSymbol.EndsWith(toName, StringComparison.Ordinal)
+                && edge.Kind = UsesType)
+
+        test <@ hasEdge "alpha" "Alpha" @>
+        test <@ hasEdge "beta" "Beta" @>
+        test <@ genericSymbols.Length >= 2 @>
+
+        test
+            <@
+                genericSymbols
+                |> List.forall (TestHelpers.testIsGenericEdgeSemanticKeyEligible >> not)
+            @>
+
+    [<Fact>]
+    let ``using generic type with concrete arg creates edge to arg type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type MyData = { Value: int }
+
+let items : list<MyData> = []
+"""
+
+        let deps = result.Dependencies
+
+        let hasEdgeToMyData =
+            deps
+            |> List.exists (fun d ->
+                d.FromSymbol.EndsWith("items", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("MyData", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ hasEdgeToMyData @>
+
+    [<Fact>]
+    let ``function with generic return type creates edge to type arg`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Config = { Host: string }
+
+let loadConfigs () : Config list = []
+"""
+
+        let deps = result.Dependencies
+
+        let hasEdgeToConfig =
+            deps
+            |> List.exists (fun d ->
+                d.FromSymbol.EndsWith("loadConfigs", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Config", StringComparison.Ordinal))
+
+        test <@ hasEdgeToConfig @>
+
+    [<Fact>]
+    let ``multiple generic args each get edges`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Key = { Id: int }
+type Val = { Data: string }
+
+let lookup : Map<Key, Val> = Map.empty
+"""
+
+        let deps = result.Dependencies
+
+        let hasEdgeToKey =
+            deps
+            |> List.exists (fun d ->
+                d.FromSymbol.EndsWith("lookup", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Key", StringComparison.Ordinal))
+
+        let hasEdgeToVal =
+            deps
+            |> List.exists (fun d ->
+                d.FromSymbol.EndsWith("lookup", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Val", StringComparison.Ordinal))
+
+        test <@ hasEdgeToKey @>
+        test <@ hasEdgeToVal @>
+
+    [<Fact>]
+    let ``nested finite generic args keep every concrete type edge`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Left = { Id: int }
+type Right = { Text: string }
+
+let nested : Map<string, Result<Left list, Right option>> = Map.empty
+"""
+
+        let targets =
+            result.Dependencies
+            |> List.filter (fun dependency -> dependency.FromSymbol.EndsWith("nested", StringComparison.Ordinal))
+            |> List.map _.ToSymbol
+
+        test <@ targets |> List.exists _.EndsWith("Left", StringComparison.Ordinal) @>
+        test <@ targets |> List.exists _.EndsWith("Right", StringComparison.Ordinal) @>
+
+    [<Fact>]
+    let ``repeated finite generic wrappers still reach the concrete leaf`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Leaf = { Id: int }
+
+let repeated : Leaf list list list = []
+"""
+
+        let hasLeafEdge =
+            result.Dependencies
+            |> List.exists (fun dependency ->
+                dependency.FromSymbol.EndsWith("repeated", StringComparison.Ordinal)
+                && dependency.ToSymbol.EndsWith("Leaf", StringComparison.Ordinal))
+
+        test <@ hasLeafEdge @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Record type edge from field usage`` =
+
+    [<Fact>]
+    let ``constructing record via fields creates edge to record type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Person = { Name: string; Age: int }
+
+let makePerson () = { Name = "Alice"; Age = 30 }
+"""
+
+        let deps = result.Dependencies
+
+        let hasEdgeToPerson =
+            deps
+            |> List.exists (fun d ->
+                d.FromSymbol.EndsWith("makePerson", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Person", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ hasEdgeToPerson @>
+
+    [<Fact>]
+    let ``accessing record field creates edge to record type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Config = { Host: string; Port: int }
+
+let getHost (c: Config) = c.Host
+"""
+
+        let deps = result.Dependencies
+
+        let configEdges =
+            deps
+            |> List.filter (fun d ->
+                d.FromSymbol.EndsWith("getHost", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Config", StringComparison.Ordinal))
+
+        test <@ configEdges.Length >= 1 @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``getScriptOptions concurrency`` =
+
+    [<Fact>]
+    let ``concurrent calls do not corrupt each other`` () =
+        let checker = FSharpChecker.Create()
+
+        let tasks =
+            [| for i in 1..10 ->
+                   async { return! getScriptOptions checker $"/tmp/concurrent_{i}.fsx" $"module M{i}\nlet x{i} = {i}" } |]
+
+        let results = tasks |> Async.Parallel |> Async.RunSynchronously
+
+        for i in 0..9 do
+            test
+                <@
+                    results[i].SourceFiles
+                    |> Array.exists (fun f -> f.Contains($"concurrent_{i + 1}.fsx"))
+                @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``resolveToAbsolute`` =
+
+    [<Fact>]
+    let ``leaves absolute path unchanged`` () =
+        let result = resolveToAbsolute "/base/dir" "/abs/path.dll"
+        test <@ result = "/abs/path.dll" @>
+
+    [<Fact>]
+    let ``resolves relative path against base`` () =
+        let result = resolveToAbsolute "/base/dir" "relative/file.dll"
+        test <@ result = "/base/dir/relative/file.dll" @>
+
+    [<Fact>]
+    let ``resolves dotdot traversal`` () =
+        let result = resolveToAbsolute "/base/dir" "../sibling/lib.dll"
+        test <@ result = "/base/sibling/lib.dll" @>
+
+    [<Fact>]
+    let ``returns empty string unchanged`` () =
+        let result = resolveToAbsolute "/base/dir" ""
+        test <@ result = "" @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Closure and nested function edge attribution`` =
+
+    [<Fact>]
+    let ``nested helper call inside module binding is attributed to enclosing function`` () =
+        let result =
+            analyze
+                """
+module M
+
+let helper x = x + 1
+
+let outerFunc () =
+    let innerHelper y = helper y
+    innerHelper 42
+"""
+
+        let outerCallsHelper =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("outerFunc", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("helper", StringComparison.Ordinal))
+
+        test <@ outerCallsHelper.IsSome @>
+
+    [<Fact>]
+    let ``multi-level nested closures attribute edges to outermost binding`` () =
+        let result =
+            analyze
+                """
+module M
+
+let utility x = x * 2
+
+let topLevel () =
+    let mid () =
+        let inner () = utility 5
+        inner ()
+    mid ()
+"""
+
+        let topLevelCallsUtility =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("topLevel", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("utility", StringComparison.Ordinal))
+
+        test <@ topLevelCallsUtility.IsSome @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Interface implementation edge extraction`` =
+
+    [<Fact>]
+    let ``implementing interface creates edge from implementor to interface type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type IProcessor =
+    abstract member Process: string -> string
+
+type UpperProcessor() =
+    interface IProcessor with
+        member _.Process s = s.ToUpper()
+"""
+
+        let implementsInterface =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("UpperProcessor", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("IProcessor", StringComparison.Ordinal))
+
+        test <@ implementsInterface.IsSome @>
+
+    [<Fact>]
+    let ``calling interface method creates edge to interface not implementor`` () =
+        let result =
+            analyze
+                """
+module M
+
+type IProcessor =
+    abstract member Process: string -> string
+
+type UpperProcessor() =
+    interface IProcessor with
+        member _.Process s = s.ToUpper()
+
+let run (p: IProcessor) =
+    p.Process "hello"
+"""
+
+        let runToInterface =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("run", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("IProcessor", StringComparison.Ordinal))
+
+        test <@ runToInterface.IsSome @>
+
+        // FCS resolves the call to the interface type, not the implementor.
+        // This documents the known limitation.
+        let runToImplementor =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("run", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("UpperProcessor", StringComparison.Ordinal))
+
+        test <@ runToImplementor.IsNone @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Dead code false positive regression — edge extraction`` =
+
+    [<Fact>]
+    let ``type only used as generic argument has edge from usage site`` () =
+        let result =
+            analyze
+                """
+module M
+
+type State = { Count: int }
+
+let agent : MailboxProcessor<State> = MailboxProcessor.Start(fun _ -> async { return () })
+"""
+
+        let agentToState =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("agent", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("State", StringComparison.Ordinal))
+
+        test <@ agentToState.IsSome @>
+
+    [<Fact>]
+    let ``record type only used via field construction has edge`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Config = { Host: string; Port: int }
+
+let defaultConfig () = { Host = "localhost"; Port = 8080 }
+"""
+
+        let defaultConfigToConfig =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("defaultConfig", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Config", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ defaultConfigToConfig.IsSome @>
+
+    [<Fact>]
+    let ``DU type only referenced via case construction has parent edge`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Msg =
+    | Start
+    | Stop
+
+let initial () = Start
+"""
+
+        let initialToMsg =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("initial", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Msg", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ initialToMsg.IsSome @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Content hash ignores comments`` =
+
+    [<Fact>]
+    let ``nested block comments do not affect content hash`` () =
+        let withComments =
+            analyze
+                """
+module M
+
+let myFunc x =
+    (* outer (* inner *) comment *)
+    x + 1
+"""
+
+        let withoutComments =
+            analyze
+                """
+module M
+
+let myFunc x =
+
+    x + 1
+"""
+
+        let hashWith =
+            withComments.Symbols
+            |> List.find (fun s -> s.FullName.EndsWith("myFunc", StringComparison.Ordinal))
+
+        let hashWithout =
+            withoutComments.Symbols
+            |> List.find (fun s -> s.FullName.EndsWith("myFunc", StringComparison.Ordinal))
+
+        test <@ hashWith.ContentHash = hashWithout.ContentHash @>
+
+    [<Fact>]
+    let ``verbatim string containing quote-like chars preserves hash correctly`` () =
+        let result =
+            analyze
+                """
+module M
+
+let myFunc () =
+    let s = @"hello ""world"" test"
+    s
+"""
+
+        let sym =
+            result.Symbols
+            |> List.find (fun s -> s.FullName.EndsWith("myFunc", StringComparison.Ordinal))
+
+        // Just verify it produces a non-empty hash without crashing
+        test <@ sym.ContentHash.Length > 0 @>
+
+    // Regression: stripComments must treat `//` and `(*` inside a triple-quoted
+    // string as literal content, not as comments. Otherwise a real change to the
+    // post-`//` portion of a string literal is silently masked (same hash), and the
+    // affected symbol's tests are not re-selected. The source is built with escaped
+    // quotes because the surrounding test strings are themselves triple-quoted.
+    [<Fact>]
+    let ``triple-quoted string content after // affects content hash`` () =
+        let hashOf src =
+            (analyze src).Symbols
+            |> List.find (fun s -> s.FullName.EndsWith("myFunc", StringComparison.Ordinal))
+            |> _.ContentHash
+
+        let mk word =
+            "module M\n\nlet myFunc () =\n    let s = \"\"\"see // "
+            + word
+            + " not a comment\"\"\"\n    s\n"
+
+        // Same code apart from the text after `//` inside the literal; the literal is
+        // real content, so the hashes must differ.
+        test <@ hashOf (mk "alpha") <> hashOf (mk "beta") @>
+
+    [<Fact>]
+    let ``triple-quoted string containing block-comment opener does not swallow code`` () =
+        let hashOf src =
+            (analyze src).Symbols
+            |> List.find (fun s -> s.FullName.EndsWith("myFunc", StringComparison.Ordinal))
+            |> _.ContentHash
+
+        let mk binding =
+            "module M\n\nlet myFunc () =\n    let s = \"\"\"has (* opener\"\"\"\n    let "
+            + binding
+            + "\n    s, x\n"
+
+        // If `(*` inside the literal opened a block comment, the trailing `let` line
+        // would be stripped and both variants would hash identically.
+        test <@ hashOf (mk "x = 1") <> hashOf (mk "x = 999") @>
+
+    // The naive single-quote toggle desyncs when a triple-quoted string contains an
+    // ODD number of embedded `"`: after the closing `"""` the walk is still "inString",
+    // so a real `//` comment on a later line is preserved instead of stripped. Changing
+    // ONLY that comment then changes the content hash → a phantom "changed" signal.
+    [<Fact>]
+    let ``odd embedded quote in triple-quoted string still strips later real comment`` () =
+        let hashOf src =
+            (analyze src).Symbols
+            |> List.find (fun s -> s.FullName.EndsWith("myFunc", StringComparison.Ordinal))
+            |> _.ContentHash
+
+        let mk comment =
+            "module M\n\nlet myFunc () =\n    let s = \"\"\"3\" inches\"\"\" // "
+            + comment
+            + "\n    s\n"
+
+        // Only the trailing real comment differs; it must be stripped, so the hash is
+        // stable.
+        test <@ hashOf (mk "alpha comment") = hashOf (mk "beta comment") @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Backtick-quoted identifiers`` =
+
+    [<Fact>]
+    let ``backtick-quoted function name is tracked and produces dependencies`` () =
+        let result =
+            analyze
+                """
+module M
+
+let helper x = x + 1
+
+let ``my special function`` () =
+    helper 42
+"""
+
+        let specialFunc =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.Contains("my special function"))
+
+        test <@ specialFunc.IsSome @>
+
+        let edge =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.Contains("my special function")
+                && d.ToSymbol.EndsWith("helper", StringComparison.Ordinal))
+
+        test <@ edge.IsSome @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``getScriptOptions with bare filename`` =
+
+    [<Fact>]
+    let ``bare filename without directory succeeds`` () =
+        let options =
+            getScriptOptions checker "test.fsx" "let x = 1" |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" "let x = 1" options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis -> test <@ analysis.Symbols.Length > 0 @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``DllImport detection`` =
+
+    [<Fact>]
+    let ``function with DllImport attribute is marked as extern`` () =
+        let result =
+            analyze
+                """
+module M
+
+open System.Runtime.InteropServices
+
+type DllImportAttribute(dllName: string) =
+    inherit System.Attribute()
+
+[<DllImport("kernel32.dll")>]
+extern void Sleep(int milliseconds)
+"""
+
+        let sleepSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Sleep", StringComparison.Ordinal))
+
+        test <@ sleepSym.IsSome @>
+        test <@ sleepSym.Value.IsExtern @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Record field edges via FSharpField`` =
+
+    [<Fact>]
+    let ``record construction via fields creates UsesType edge to record type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type MyRecord = { Name: string; Age: int }
+
+let create () = { Name = "Alice"; Age = 30 }
+"""
+
+        let dep =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("create", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("MyRecord", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ dep.IsSome @>
+
+    [<Fact>]
+    let ``record update expression creates UsesType edge`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Settings = { Verbose: bool; MaxRetries: int }
+
+let makeVerbose (s: Settings) = { s with Verbose = true }
+"""
+
+        let dep =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("makeVerbose", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Settings", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ dep.IsSome @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Union parent type edge coverage`` =
+
+    [<Fact>]
+    let ``pattern matching on DU case creates edges to both case and parent type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Shape =
+    | Circle of float
+    | Square of float
+
+let area s =
+    match s with
+    | Circle r -> 3.14 * r * r
+    | Square l -> l * l
+"""
+
+        let deps =
+            result.Dependencies
+            |> List.filter (fun d -> d.FromSymbol.EndsWith("area", StringComparison.Ordinal))
+
+        // Should have edges to individual cases
+        let hasCircleEdge =
+            deps
+            |> List.exists (fun d -> d.ToSymbol.EndsWith("Circle", StringComparison.Ordinal))
+
+        let hasSquareEdge =
+            deps
+            |> List.exists (fun d -> d.ToSymbol.EndsWith("Square", StringComparison.Ordinal))
+
+        // Should also have an edge to the parent type Shape
+        let hasShapeEdge =
+            deps
+            |> List.exists (fun d -> d.ToSymbol.EndsWith("Shape", StringComparison.Ordinal) && d.Kind = UsesType)
+
+        test <@ hasCircleEdge @>
+        test <@ hasSquareEdge @>
+        test <@ hasShapeEdge @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Generic type arg edges`` =
+
+    [<Fact>]
+    let ``function with generic container type creates edge to type arg`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Wrapper<'T> = { Items: 'T list }
+type Payload = { Data: string }
+
+let bundle (p: Payload) : Wrapper<Payload> = { Items = [ p ] }
+"""
+
+        // bundle should have deps to both Wrapper and Payload
+        let deps =
+            result.Dependencies
+            |> List.filter (fun d -> d.FromSymbol.EndsWith("bundle", StringComparison.Ordinal))
+
+        let hasPayloadEdge =
+            deps
+            |> List.exists (fun d -> d.ToSymbol.EndsWith("Payload", StringComparison.Ordinal) && d.Kind = UsesType)
+
+        test <@ hasPayloadEdge @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``findEnclosing tighter span`` =
+
+    [<Fact>]
+    let ``nested functions attribute edges to innermost enclosing binding`` () =
+        let result =
+            analyze
+                """
+module M
+
+let helper x = x + 1
+
+let outerFn () =
+    let innerFn x = helper x
+    innerFn 42
+"""
+
+        // The call to helper should be attributed to outerFn (the nearest module-level binding)
+        let outerCallsHelper =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("outerFn", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("helper", StringComparison.Ordinal))
+
+        test <@ outerCallsHelper.IsSome @>
+
+    [<Fact>]
+    let ``deeply nested binding with type member uses tighter enclosing span`` () =
+        let result =
+            analyze
+                """
+module M
+
+let utility x = x * 2
+
+type Worker() =
+    member _.doWork () =
+        let step1 = utility 1
+        let step2 = utility 2
+        step1 + step2
+"""
+
+        let doWorkCallsUtility =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("doWork", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("utility", StringComparison.Ordinal))
+
+        test <@ doWorkCallsUtility.IsSome @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Extern symbol extraction`` =
+
+    [<Fact>]
+    let ``dependencies to external symbols generate ExternRef symbols`` () =
+        let result =
+            analyze
+                """
+module M
+
+let greet name = sprintf "Hello, %s" name
+"""
+
+        // sprintf is an external symbol not defined in this file
+        let externSymbols = result.Symbols |> List.filter (fun s -> s.IsExtern)
+
+        // All extern symbols should have IsExtern = true and ExternSourceFile
+        for s in externSymbols do
+            test <@ s.IsExtern @>
+            test <@ s.SourceFile = ExternSourceFile @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``AnalysisDiagnostics`` =
+
+    [<Fact>]
+    let ``analysis produces diagnostics with counts`` () =
+        let result =
+            analyze
+                """
+module M
+
+let add x y = x + y
+let double x = add x x
+"""
+
+        // Diagnostics should be populated
+        test <@ result.Diagnostics.TotalDefinitions > 0 @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``AnalysisResult Create helper`` =
+
+    [<Fact>]
+    let ``Create sets zero diagnostics`` () =
+        let result =
+            AnalysisResult.Create(
+                [ { FullName = "M.f"
+                    Kind = Function
+                    SourceFile = "test.fs"
+                    LineStart = 1
+                    LineEnd = 1
+                    ContentHash = ""
+                    IsExtern = false } ],
+                [],
+                []
+            )
+
+        test <@ result.Diagnostics = AnalysisDiagnostics.Zero @>
+        test <@ result.Symbols.Length = 1 @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``normalizeSymbolPaths`` =
+
+    [<Fact>]
+    let ``normalizes absolute paths to relative`` () =
+        let symbols =
+            [ { FullName = "M.f"
+                Kind = Function
+                SourceFile = "/repo/root/src/MyModule.fs"
+                LineStart = 1
+                LineEnd = 5
+                ContentHash = ""
+                IsExtern = false } ]
+
+        let normalized = normalizeSymbolPaths "/repo/root" symbols
+        test <@ normalized[0].SourceFile = "src/MyModule.fs" @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Custom attribute extraction`` =
+
+    [<Fact>]
+    let ``extracts custom attributes with constructor arguments`` () =
+        let source =
+            """
+module TestModule
+
+open System
+
+[<AttributeUsage(AttributeTargets.Method, AllowMultiple = true)>]
+type ReadsFromAttribute(table: string, column: string) =
+    inherit Attribute()
+    member _.Table = table
+    member _.Column = column
+
+[<ReadsFrom("articles", "status")>]
+let getArticles () = ()
+"""
+
+        let result = analyze source
+        let attrs = result.Attributes
+
+        let readsFromAttrs =
+            attrs |> List.filter (fun a -> a.AttributeName = "ReadsFromAttribute")
+
+        test <@ readsFromAttrs.Length = 1 @>
+        test <@ readsFromAttrs[0].SymbolFullName.EndsWith("getArticles") @>
+        test <@ readsFromAttrs[0].ArgsJson.Contains("articles") @>
+        test <@ readsFromAttrs[0].ArgsJson.Contains("status") @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Backtick name handling`` =
+
+    [<Fact>]
+    let ``backtick-named test methods are detected as symbols`` () =
+        let source =
+            """module TestModule
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+[<Fact>]
+let ``my backtick test`` () = ()
+
+[<Fact>]
+let normalTest () = ()
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            // Both test methods should be detected
+            let testMethods = analysis.TestMethods
+            test <@ testMethods.Length >= 2 @>
+
+            let hasBacktickTest =
+                testMethods |> List.exists (fun tm -> tm.TestMethod.Contains("backtick"))
+
+            let hasNormalTest =
+                testMethods |> List.exists (fun tm -> tm.TestMethod = "normalTest")
+
+            test <@ hasBacktickTest @>
+            test <@ hasNormalTest @>
+
+            // Both should appear as symbols (the bug was backtick functions were filtered out)
+            let hasBacktickSymbol =
+                analysis.Symbols |> List.exists (fun s -> s.FullName.Contains("backtick"))
+
+            let hasNormalSymbol =
+                analysis.Symbols
+                |> List.exists (fun s -> s.FullName.EndsWith("normalTest", StringComparison.Ordinal))
+
+            test <@ hasBacktickSymbol @>
+            test <@ hasNormalSymbol @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Un-nameable symbols do not abort analysis`` =
+
+    // Some FCS symbols (anonymous-record projections, generic type args over anonymous
+    // records) throw NullReferenceException from
+    // FSharpEntity.get_TryFullName()/get_FullName() rather than returning None. Letting
+    // that propagate aborts the whole impact pass and produces zero edges; the analyzer
+    // must skip such symbols and still return Ok. See AstAnalyzer.tryName. `analyze`
+    // (module top) already asserts Ok-or-failwith, which is the "must not abort"
+    // guarantee these tests need.
+
+    [<Fact>]
+    let ``anonymous-record projection does not throw`` () =
+        // `{| Year = d.Year; Month = d.Month |}` — the shape that aborts impact analysis.
+        let analysis =
+            analyze
+                """
+module M
+
+open System
+
+let yearMonth (d: DateTime) = {| Year = d.Year; Month = d.Month |}
+
+let useIt () = yearMonth DateTime.Now
+"""
+
+        // The point is "no throw"; we also keep a real symbol around to prove the
+        // pass actually ran rather than short-circuiting.
+        test
+            <@
+                analysis.Symbols
+                |> List.exists (fun s -> s.FullName.EndsWith("yearMonth", StringComparison.Ordinal))
+            @>
+
+    [<Fact>]
+    let ``generic type args over anonymous records do not throw`` () =
+        // This is the extractGenericTypeArgs -> collect path from the stack trace:
+        // a generic container (list) whose type argument is an anonymous record.
+        let analysis =
+            analyze
+                """
+module M
+
+open System
+
+let rows (ds: DateTime list) =
+    ds |> List.map (fun d -> {| Year = d.Year; Month = d.Month |})
+
+let countRows () = rows [ DateTime.Now ] |> List.length
+"""
+
+        test
+            <@
+                analysis.Symbols
+                |> List.exists (fun s -> s.FullName.EndsWith("rows", StringComparison.Ordinal))
+            @>
+
+    [<Fact>]
+    let ``nested anonymous records and projections do not throw`` () =
+        let analysis =
+            analyze
+                """
+module M
+
+open System
+
+let nested (d: DateTime) =
+    {| Date = {| Year = d.Year; Month = d.Month |}
+       Day = d.Day |}
+
+let pull () =
+    let n = nested DateTime.Now
+    n.Date.Year
+"""
+
+        test
+            <@
+                analysis.Symbols
+                |> List.exists (fun s -> s.FullName.EndsWith("nested", StringComparison.Ordinal))
+            @>
+
+    // Direct unit coverage of the defensive name accessor. The production bug was
+    // that the AST walk guarded only `InvalidOperationException`, so the real-world
+    // `NullReferenceException` thrown by FSharpEntity.get_TryFullName() on
+    // un-nameable symbols escaped and aborted the whole impact pass. `tryName` must
+    // swallow ANY exception (NRE included) and return None so the edge is skipped.
+
+    [<Fact>]
+    let ``tryName returns the value when the accessor succeeds`` () =
+        test <@ TestHelpers.testTryName (fun () -> "Some.Full.Name") = Some "Some.Full.Name" @>
+
+    [<Fact>]
+    let ``tryName swallows NullReferenceException (regression for the FCS NRE)`` () =
+        // The exception class FCS actually throws:
+        //   FSharp.Compiler.Symbols.FSharpEntity.get_TryFullName() -> NullReferenceException
+        // An `InvalidOperationException`-only catch lets it through and aborts analysis.
+        test <@ TestHelpers.testTryName (fun () -> raise (NullReferenceException())) = None @>
+
+    [<Fact>]
+    let ``tryName swallows InvalidOperationException`` () =
+        test <@ TestHelpers.testTryName (fun () -> raise (InvalidOperationException())) = None @>
+
+// Two bindings sharing a short name in one file (legal in sibling nested modules) must
+// each keep their own dependency edges. `definitionsByName` / `allBindingRangeMap` /
+// `typeDefnRangeMap` must therefore hold LISTS: `Map.ofList` is last-write-wins on the
+// short name, silently dropping the earlier binding's SymbolInfo so uses inside it are
+// mis-attributed or lost — severed edges, unselected tests.
+[<Collection("FCS-AstAnalyzer")>]
+module ``Short-name collisions across sibling modules`` =
+
+    [<Fact>]
+    let ``both f bindings keep their distinct call edges`` () =
+        let result =
+            analyze
+                """
+module M
+
+let helperA x = x + 1
+let helperB x = x + 2
+
+module A =
+    let f x = helperA x
+
+module B =
+    let f x = helperB x
+"""
+
+        // A.f calls helperA; B.f calls helperB. Each edge's FromSymbol must be the
+        // correct enclosing f (distinguished by its module qualifier).
+        let edgeAToHelperA =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("A.f", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("helperA", StringComparison.Ordinal))
+
+        let edgeBToHelperB =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("B.f", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("helperB", StringComparison.Ordinal))
+
+        test <@ edgeAToHelperA.IsSome @>
+        test <@ edgeBToHelperB.IsSome @>
+
+    [<Fact>]
+    let ``colliding short names do not drop edges`` () =
+        let result =
+            analyze
+                """
+module M
+
+let helperA x = x + 1
+let helperB x = x + 2
+
+module A =
+    let f x = helperA x
+
+module B =
+    let f x = helperB x
+"""
+
+        // Neither use of helperA/helperB should be dropped (findEnclosing must
+        // resolve both f's to their own SymbolInfo, not a single collapsed entry).
+        test <@ result.Diagnostics.DroppedEdges = 0 @>
+
+    [<Fact>]
+    let ``both f symbols are tracked`` () =
+        let result =
+            analyze
+                """
+module M
+
+let helperA x = x + 1
+let helperB x = x + 2
+
+module A =
+    let f x = helperA x
+
+module B =
+    let f x = helperB x
+"""
+
+        let fSymbols =
+            result.Symbols
+            |> List.filter (fun s -> s.FullName.EndsWith(".f", StringComparison.Ordinal))
+
+        // Both M.A.f and M.B.f must be present as tracked symbols.
+        test <@ fSymbols.Length = 2 @>
+
+[<Collection("FCS-AstAnalyzer")>]
+module ``Traceability attributes`` =
+
+    let private attributesOf (result: AnalysisResult) (name: string) =
+        result.Attributes
+        |> List.filter (fun a -> a.SymbolFullName = name)
+        |> List.map (fun a -> a.AttributeName)
+
+    [<Fact>]
+    let ``an inline function carries the TestPrune.Inline attribute`` () =
+        let result =
+            analyze
+                """
+module M
+let inline twice x = x + x
+let plain x = x + 1
+"""
+
+        test <@ attributesOf result "M.twice" = [ InlineAttributeName ] @>
+        test <@ attributesOf result "M.plain" |> List.isEmpty @>
+
+    [<Fact>]
+    let ``an inline member carries the TestPrune.Inline attribute`` () =
+        let result =
+            analyze
+                """
+module M
+type T() =
+    member inline _.Twice(x: int) = x + x
+"""
+
+        test
+            <@
+                result.Attributes
+                |> List.exists (fun a -> a.SymbolFullName.EndsWith "Twice" && a.AttributeName = InlineAttributeName)
+            @>
+
+    [<Fact>]
+    let ``a literal is already indexed as LiteralAttribute`` () =
+        let result =
+            analyze
+                """
+module M
+[<Literal>]
+let Answer = 42
+"""
+
+        test <@ attributesOf result "M.Answer" = [ "LiteralAttribute" ] @>

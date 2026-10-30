@@ -1,0 +1,145 @@
+module TestPrune.DeadCode
+
+open System
+open TestPrune.AstAnalyzer
+open TestPrune.Domain
+
+/// Result of dead code analysis containing total, reachable, and unreachable symbol counts.
+type DeadCodeResult =
+    { TotalSymbols: int
+      ReachableSymbols: int
+      UnreachableSymbols: SymbolInfo list }
+
+type UnreachabilityReason =
+    | NoIncomingEdges
+    | DisconnectedFromEntryPoints of incomingFrom: string list
+
+type UnreachableSymbolInfo =
+    { Symbol: SymbolInfo
+      Reason: UnreachabilityReason }
+
+type VerboseDeadCodeResult =
+    { Base: DeadCodeResult
+      UnreachableSymbols: UnreachableSymbolInfo list }
+
+/// Check whether a symbol name matches a wildcard pattern.
+/// Supports * at start, end, or both (e.g., "*.main", "Prog.*", "*Route*").
+let private matchesPattern (pattern: string) (name: string) =
+    let startsWithStar = pattern.StartsWith("*", StringComparison.Ordinal)
+    let endsWithStar = pattern.EndsWith("*", StringComparison.Ordinal)
+
+    match startsWithStar, endsWithStar with
+    | true, true ->
+        let inner = pattern.Trim('*')
+        name.Contains(inner, StringComparison.Ordinal)
+    | true, false ->
+        let suffix = pattern.TrimStart('*')
+        name.EndsWith(suffix, StringComparison.Ordinal)
+    | false, true ->
+        let prefix = pattern.TrimEnd('*')
+        name.StartsWith(prefix, StringComparison.Ordinal)
+    | false, false -> name = pattern
+
+/// Match entry point patterns against all symbol names and return the matching names.
+let findEntryPoints (allNames: Set<string>) (entryPointPatterns: string list) : string list =
+    allNames
+    |> Set.filter (fun name -> entryPointPatterns |> List.exists (fun pat -> matchesPattern pat name))
+    |> Set.toList
+
+/// Find symbols that are not reachable from the given entry point patterns.
+let findDeadCode
+    (allSymbols: SymbolInfo list)
+    (reachable: Set<string>)
+    (testMethodNames: Set<string>)
+    (includeTests: bool)
+    : DeadCodeResult * AnalysisEvent list =
+    let allNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
+
+    let unreachableNames = allNames - reachable
+
+    // Excluded because they are not independently dead: test methods are themselves
+    // entry points, modules are containers, a DU case belongs to its parent type, and
+    // an extern is defined outside F#. Test sources are excluded wholesale unless
+    // `includeTests` asks for them.
+    //
+    // A symbol declared in a signature file has two source occurrences. Only the
+    // implementation is code to delete, so one occurrence per name is reported, and a
+    // `.fsi` occurrence only when the name has no other.
+    let isSignatureOccurrence (s: SymbolInfo) =
+        s.SourceFile.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)
+
+    let unreachableSymbols =
+        allSymbols
+        |> List.groupBy _.FullName
+        |> List.map (fun (_, occurrences) ->
+            occurrences
+            |> List.tryFind (isSignatureOccurrence >> not)
+            |> Option.defaultValue occurrences.Head)
+        |> List.filter (fun s ->
+            unreachableNames |> Set.contains s.FullName
+            && not (testMethodNames |> Set.contains s.FullName)
+            && s.Kind <> Module
+            && s.Kind <> DuCase
+            && (includeTests
+                || not (s.SourceFile.StartsWith("tests/", StringComparison.Ordinal)))
+            && not s.IsExtern)
+
+    // A name without a dot is a local binding or parameter: not independently
+    // actionable, and neither is a symbol nested inside another symbol's line range.
+    let isLocal (s: SymbolInfo) = not (s.FullName.Contains('.'))
+
+    let symbolsByFile = allSymbols |> List.groupBy (fun s -> s.SourceFile) |> Map.ofList
+
+    let isContainedByAnother (s: SymbolInfo) =
+        symbolsByFile
+        |> Map.tryFind s.SourceFile
+        |> Option.defaultValue []
+        |> List.exists (fun parent ->
+            parent.Kind <> Module
+            && parent.Kind <> DuCase
+            && parent.LineStart <= s.LineStart
+            && parent.LineEnd >= s.LineEnd
+            && (parent.LineStart <> s.LineStart || parent.LineEnd <> s.LineEnd))
+
+    let shallowest =
+        unreachableSymbols
+        |> List.filter (fun s -> not (isLocal s) && not (isContainedByAnother s))
+
+    let result: DeadCodeResult =
+        { TotalSymbols = allNames.Count
+          ReachableSymbols = reachable.Count
+          UnreachableSymbols = shallowest }
+
+    let events = [ DeadCodeFoundEvent(shallowest |> List.map (fun s -> s.FullName)) ]
+
+    result, events
+
+/// Find dead code with verbose reasons for why each symbol is unreachable.
+let findDeadCodeVerbose
+    (allSymbols: SymbolInfo list)
+    (reachable: Set<string>)
+    (testMethodNames: Set<string>)
+    (includeTests: bool)
+    (getIncomingEdgesBatch: string list -> Map<string, string list>)
+    : VerboseDeadCodeResult * AnalysisEvent list =
+    let result, events = findDeadCode allSymbols reachable testMethodNames includeTests
+
+    let unreachableNames = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
+    let incomingEdgesMap = getIncomingEdgesBatch unreachableNames
+
+    let verboseUnreachable =
+        result.UnreachableSymbols
+        |> List.map (fun s ->
+            let incoming = incomingEdgesMap |> Map.tryFind s.FullName |> Option.defaultValue []
+
+            let reason =
+                if List.isEmpty incoming then
+                    NoIncomingEdges
+                else
+                    DisconnectedFromEntryPoints incoming
+
+            { Symbol = s; Reason = reason })
+
+    { Base = result
+      UnreachableSymbols = verboseUnreachable },
+    events

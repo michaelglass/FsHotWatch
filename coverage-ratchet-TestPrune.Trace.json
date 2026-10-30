@@ -1,0 +1,97 @@
+{
+  "overrides": {
+    "Launch.fs": [
+      {
+        "line": 100.0,
+        "branch": 83.3,
+        "platform": "linux",
+        "reason": "Linux floor from before the restructure (the string-pattern null arm and the `use` disposal null check, both since removed). macOS now measures 100/100 after this file was restructured to drop compiler-generated branches no input can take. Linux (CI's newer SDK emits different sequence points and branch attributions) has not been re-measured since, so its last measured floor stays until CI measures it; ratchet it then."
+      }
+    ],
+    "Manifest.fs": [
+      {
+        "line": 100.0,
+        "branch": 71.4,
+        "platform": "linux",
+        "reason": "Linux floor from before the restructure (FSharp.Core's inlined Array.map null checks, since replaced by Seq.map). macOS now measures 100/100 after this file was restructured to drop compiler-generated branches no input can take. Linux (CI's newer SDK emits different sequence points and branch attributions) has not been re-measured since, so its last measured floor stays until CI measures it; ratchet it then."
+      }
+    ],
+    "PdbCheck.fs": [
+      {
+        "line": 100.0,
+        "branch": 87.5,
+        "platform": "linux",
+        "reason": "Linux floor from before the restructure (the `use` disposal null checks, since replaced by `using`). macOS now measures 100/100 after this file was restructured to drop compiler-generated branches no input can take. Linux (CI's newer SDK emits different sequence points and branch attributions) has not been re-measured since, so its last measured floor stays until CI measures it; ratchet it then."
+      }
+    ],
+    "SiteProbes.fs": [
+      {
+        "line": 100.0,
+        "branch": 100.0,
+        "reason": "Linux measured in docker mcr.microsoft.com/dotnet/sdk:10.0.401 with CI's build and coverage commands (non-root, full TestPrune.Trace.Tests, 312 passed), 2026-09-27: line 100 percent (273/273), branch 100 percent (120/120), up from CI run 36343728500's 99.3 percent and 119/120. The range-closing hidden point's arm needs a prefix whose last branch has no point after it, which neither SDK emits for the fixture; SiteProbeShapeTests removes that point after adding the 10.0.3xx hidden point, so the weave closes the range on every SDK.",
+        "platform": "linux"
+      }
+    ],
+    "Program.fs": [
+      {
+        "line": 100.0,
+        "branch": 92.0,
+        "reason": "Linux floor: CI's .NET SDK 10.0.401 attributes more branches here than macOS; lines are 100% on both platforms and macOS measures 100/100. Measured 34/36 (94.4%) in CI run 36235253604; floor ~2-3pp under it.",
+        "platform": "linux"
+      }
+    ],
+    "TraceIngest.fs": [
+      {
+        "line": 100.0,
+        "branch": 96.0,
+        "reason": "Linux floor: CI's .NET SDK 10.0.401 attributes more branches here than macOS; lines are 100% on both platforms and macOS measures 100/100. Measured 62/63 (98.4%) in CI run 36235253604; floor ~2-3pp under it.",
+        "platform": "linux"
+      }
+    ],
+    "TraceSession.fs": [
+      {
+        "line": 100.0,
+        "branch": 80.0,
+        "reason": "Linux floor: CI's .NET SDK 10.0.401 attributes more branches here than macOS; lines are 100% on both platforms and macOS measures 100/100. Measured 5/6 (83.3%) in CI run 36235253604; floor ~2-3pp under it.",
+        "platform": "linux"
+      }
+    ],
+    "Weaver.fs": [
+      {
+        "line": 97.0,
+        "branch": 83.3,
+        "reason": "Linux floor, measured line=97.1% branch=83.3% (85/102 branches) with the .NET SDK 10.0.401 CI uses, before the restructure that removed the missing-SequencePoint-constructor guard, the empty-hash arm and the inlined Seq.sumBy/list-comprehension branches, and before tests covered the PdbCorrupt refusal, the unresolvable-attribute fallback, generated-type detection and the null- and moved-root-scope halves. macOS now measures 100/100 after this file was restructured to drop compiler-generated branches no input can take. Linux (CI's newer SDK emits different sequence points and branch attributions) has not been re-measured since, so its last measured floor stays until CI measures it; ratchet it then.",
+        "platform": "linux"
+      }
+    ],
+    "ContextSource.fs": [
+      {
+        "line": 100.0,
+        "branch": 100.0,
+        "reason": "Fully covered by the recorder's context-source tests.",
+        "platform": "macos"
+      },
+      {
+        "line": 60.4,
+        "branch": 31.8,
+        "reason": "GitHub ubuntu runner only: measured line=60.4% branch=31.8% (7/22) deterministically, while the same commit measures 100/100 on macOS and in the mcr.microsoft.com/dotnet/sdk:10.0.401 container running CI's exact step order (8/8 repeats, byte-identical recorder DLLs). The runner's per-line data is inconsistent with a single execution (a guarded line is hit while its guard shows 0; closures show 0 while their callers are hit), so the recorder module's counters look merged or overwritten on that runner. Root cause under investigation; this floor is removed once found.",
+        "platform": "linux"
+      }
+    ],
+    "HardLink.fs": {
+      "line": 96.6,
+      "branch": 75.0,
+      "reason": "Hardlink mirror. Uncovered: the Windows CreateHardLinkW lambda (never runs off Windows; the copy fallback is tested through mirrorWith) and the compiler-generated enumerator-disposal halves of the two `for ... in` loops over sets."
+    },
+    "ShadowBin.fs": {
+      "line": 100.0,
+      "branch": 79.6,
+      "reason": "Shadow bin. Every refusal, the cache hit/miss/corrupt paths, eviction and the weave-set filter are tested. The uncovered branch halves are compiler-generated: enumerator-disposal checks of `for ... in` loops and comprehensions, `use` disposal null checks in the PDB probe, and closure null checks."
+    },
+    "JitVerify.fs": {
+      "line": 100.0,
+      "branch": 90.0,
+      "reason": "JIT verification. Prepared, invalid, generic, abstract, unloadable and malformed lines are all tested. The uncovered halves are compiler-generated: the enumerator-disposal checks of two `for ... in` loops and the null arm of the string pattern."
+    }
+  }
+}

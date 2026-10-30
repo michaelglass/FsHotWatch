@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Coverage collection settings. TestPrune.Tests takes a TEST-ONLY cross-repo reference on
+  Falco.UnionRoutes for the ADR 0001 drift-alarm contract test, which would otherwise pull that
+  library's source files into the coverage report and the ratchet. Exclude the module so only
+  TestPrune's own production code is measured.
+-->
+<Configuration>
+  <CodeCoverage>
+    <ModulePaths>
+      <Exclude>
+        <ModulePath>.*Falco\.UnionRoutes\.dll$</ModulePath>
+      </Exclude>
+    </ModulePaths>
+  </CodeCoverage>
+</Configuration>

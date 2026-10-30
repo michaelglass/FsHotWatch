@@ -1,0 +1,251 @@
+[tools]
+dotnet = "10.0.400"
+
+[tasks.restore]
+description = "Restore dependencies"
+run = "dotnet restore"
+
+[tasks.tool-restore]
+description = "Restore local dotnet tools"
+run = "dotnet tool restore"
+
+[tasks.build]
+description = "Build the solution"
+run = "dotnet build"
+depends = ["restore"]
+
+[tasks.test]
+description = "Run tests with coverage"
+# One cobertura per test project, in coverage/<project without .Tests>/, the same layout
+# CI's reusable build workflow produces and the coverage-ratchet-<project>.json files check.
+# A test project with its own testconfig.json carries its coverage settings there (CI passes
+# no --coverage-settings); MTP refuses a run given both, so the shared file is skipped for it.
+run = """
+set -e
+for proj in $(find tests -name '*.Tests.fsproj' | sort); do
+  project_name=$(basename "$(dirname "$proj")" | sed 's/\\.Tests$//')
+  settings="--coverage-settings $PWD/coverage.settings.xml"
+  [ -f "$(dirname "$proj")/testconfig.json" ] && settings=""
+  echo "Testing $proj (coverage -> coverage/$project_name/)"
+  dotnet test --project "$proj" \
+    --coverage \
+    $settings \
+    --coverage-output-format cobertura \
+    --coverage-output "$PWD/coverage/$project_name/coverage.cobertura.xml"
+done
+"""
+depends = ["build"]
+
+[tasks.example]
+description = "Run test-prune against the example solution"
+run = "dotnet run --project src/TestPrune -- --repo examples/SampleSolution index"
+depends = ["build"]
+
+[tasks.example-build]
+description = "Build the example solution (for CI)"
+run = "dotnet build examples/SampleSolution --warnaserror"
+depends = ["build"]
+
+[tasks.format]
+description = "Format code with Fantomas"
+run = "dotnet fantomas src/ tests/ examples/"
+depends = ["tool-restore"]
+
+[tasks.format-check]
+description = "Check formatting without making changes"
+run = "dotnet fantomas src/ tests/ examples/ --check"
+depends = ["tool-restore"]
+
+[tasks.lint]
+description = "Run FSharpLint"
+run = "dotnet fsharplint lint TestPrune.slnx"
+depends = ["build", "tool-restore"]
+
+[tasks.coverage-check]
+description = "Check per-file coverage meets thresholds"
+run = """
+set -e
+for config in coverage-ratchet-*.json; do
+  project=$(echo "$config" | sed 's/coverage-ratchet-\\(.*\\)\\.json/\\1/')
+  echo "Checking $project..."
+  (cd "coverage/$project" && dotnet tool run coverageratchet check "../../$config")
+done
+"""
+depends = ["test"]
+
+[tasks.coverage-ratchet]
+description = "Tighten per-file coverage thresholds to current values"
+run = """
+set -e
+for config in coverage-ratchet-*.json; do
+  project=$(echo "$config" | sed 's/coverage-ratchet-\\(.*\\)\\.json/\\1/')
+  echo "Ratcheting $project..."
+  (cd "coverage/$project" && dotnet tool run coverageratchet ratchet "../../$config")
+done
+"""
+depends = ["test"]
+
+[tasks.dead-code]
+description = "Find unreachable production code"
+run = "dotnet run --project src/TestPrune -- dead-code"
+depends = ["build"]
+
+[tasks.dead-code-tests]
+description = "Find unreachable test code (dead test helpers)"
+run = "dotnet run --project src/TestPrune -- dead-code --include-tests"
+depends = ["build"]
+
+[tasks.dead-code-example]
+description = "Find dead code in example solution (library + consumer)"
+run = """
+dotnet run --project src/TestPrune -- --repo examples/SampleSolution index
+dotnet run --project src/TestPrune -- --repo examples/SampleSolution dead-code --entry "SampleWeb.Handlers.*"
+"""
+depends = ["build", "example-build"]
+
+[tasks.lint-project]
+description = "Lint fsproj files"
+run = "dotnet tool run fsprojlint"
+depends = ["tool-restore"]
+
+[tasks.sync-docs]
+description = "Sync README.md content to docs/index.md"
+run = "dotnet tool run syncdocs sync"
+
+[tasks.sync-docs-check]
+description = "Check if docs/index.md is in sync with README.md"
+run = "dotnet tool run syncdocs check"
+
+[tasks.docs]
+description = "Generate API documentation"
+run = "dotnet fsdocs build --output output/docs --clean --parameters root /TestPrune/"
+depends = ["build", "tool-restore"]
+
+[tasks.docs-watch]
+description = "Watch and serve documentation locally"
+run = "dotnet fsdocs watch"
+depends = ["build", "tool-restore"]
+
+[tasks.gate]
+description = "Run the fshw gate (build, TestPrune's own analyzers, format, impact-selected tests) in one pass"
+# `depends = ["build"]` is load-bearing, not tidiness: the gate loads TestPrune.Analyzers
+# from its BUILD OUTPUT (see .fshw.json analyzers.paths). On a cold tree that directory
+# does not exist yet. fshw fails loud in that case (config error, exit 2) rather than
+# analyzing zero rules and reporting a cheerful green — but the gate is only USEFUL if the
+# analyzer is there, so build it first. TestPrune dogfooding its own impact selection is
+# the point of the tool.
+run = "dotnet fshw check --run-once"
+depends = ["build", "tool-restore"]
+
+[tasks.check]
+description = "Run all checks with auto-fix (format, sync-docs, then the fshw gate)"
+# The gate runs as this task's own `run`, so it lands AFTER the auto-fix deps rather than
+# racing them — otherwise the gate's format check could read a file `format` has not
+# rewritten yet.
+run = "mise run gate"
+depends = ["format", "sync-docs", "lint", "lint-project", "coverage-check", "docs", "example-build"]
+
+[tasks.ci]
+description = "Run all CI checks (no auto-fix)"
+# Same shape as `check`: the gate is this task's `run`, so it lands after the dependency
+# fan-out (which includes the full `coverage-check` test pass) instead of racing it for cores.
+# `format-check` is dropped from the deps: `.fshw.json` sets `"format": true`, so the gate
+# already checks formatting — running Fantomas twice would be duplicate authority.
+# `lint` (FSharpLint) stays: `.fshw.json` sets `"lint": false`, so the gate does NOT lint.
+#
+# `confirm`, NOT the impact-filtered `check` that `gate` runs. Impact filtering is a
+# latency optimization for the inner loop, not the basis for a merge decision: when a
+# commit changes no F# source (a dep bump, a doc edit) the filter selects nothing, and
+# fshw >= 0.14 correctly refuses to call a run that verified NOTHING a pass (exit 3).
+# `confirm` runs the full suite unfiltered and will not replay a cached verdict.
+# This MUST stay identical to `lint-cmd` in .github/workflows/ci.yml — a local `ci` that
+# runs a different command from real CI can go green on work CI will reject.
+# `build` is load-bearing in the deps for the same reason it is on `gate`: fshw loads
+# TestPrune.Analyzers from its BUILD OUTPUT (.fshw.json analyzers.paths).
+run = "dotnet fshw confirm --run-once"
+depends = ["build", "tool-restore", "lint", "lint-project", "coverage-check", "sync-docs-check", "docs", "example-build", "package-floors"]
+
+[tasks.package-floors]
+description = "Pack every released project and fail if a packed FSharp.Core / FCS floor floats or exceeds its pin"
+# A nuspec floor is what restore resolved at pack time; a floated FSharp.Core shipped
+# TestPrune.Trace 0.7.5 with FSharp.Core >= 10.1.403 and broke consumers pinned at 10.1.402
+# (AUTOMATION-1358). Packs --no-build, so `build` must run first. Also in ci.yml lint-cmd.
+run = "dotnet fsi scripts/check-package-floors.fsx -- pack"
+depends = ["build"]
+
+[tasks.pack]
+description = "Create NuGet packages"
+run = """
+dotnet pack src/TestPrune.Core/TestPrune.Core.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Falco/TestPrune.Falco.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Sql/TestPrune.Sql.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune/TestPrune.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Trace/TestPrune.Trace.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Trace.Cli/TestPrune.Trace.Cli.fsproj -c Release -o artifacts
+"""
+depends = ["build"]
+
+[tasks.bench]
+description = "Run benchmarks with dotnet-trace profiling (produces speedscope flame graph)"
+run = """
+mkdir -p benchmarks/results
+dotnet-trace collect \
+  --output benchmarks/results/trace \
+  -- dotnet run --project benchmarks/TestPrune.Benchmarks -c Release \
+  || true
+dotnet-trace convert benchmarks/results/trace \
+  --format speedscope \
+  --output benchmarks/results/trace
+"""
+depends = ["build"]
+
+[tasks.bench-raw]
+description = "Run benchmarks without profiling (JSON metrics only)"
+run = "dotnet run --project benchmarks/TestPrune.Benchmarks -c Release"
+depends = ["build"]
+
+[tasks.release]
+description = "Release semantic-DAG levels with exact publication barriers"
+# These levels come from the ProjectReference DAG in semantic-tagger.json. The
+# tagger's own publication poll is best-effort, so every artifact from one level
+# must be exactly restorable from nuget.org before the next level may be tagged.
+run = """
+dotnet tool run fssemantictagger release --only TestPrune.Analyzers,TestPrune.Core
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Analyzers src/TestPrune.Analyzers/TestPrune.Analyzers.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Core src/TestPrune.Core/TestPrune.Core.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune src/TestPrune/TestPrune.fsproj
+dotnet tool run fssemantictagger release --only TestPrune.Falco,TestPrune.Sql,TestPrune.Trace
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Falco src/TestPrune.Falco/TestPrune.Falco.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Sql src/TestPrune.Sql/TestPrune.Sql.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Trace src/TestPrune.Trace/TestPrune.Trace.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Trace.Recorder src/TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Trace.Cli src/TestPrune.Trace.Cli/TestPrune.Trace.Cli.fsproj
+dotnet tool run fssemantictagger release --only TestPrune.SqlHydra
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.SqlHydra src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj
+"""
+depends = ["ci"]
+
+[tasks.release-dry-run]
+description = "Preview a release without mutating (no tag, no publish)"
+run = "dotnet tool run fssemantictagger release --dry-run"
+depends = ["build"]
+
+[tasks.release-alpha]
+description = "Release alpha semantic-DAG levels with exact publication barriers"
+run = """
+dotnet tool run fssemantictagger alpha --only TestPrune.Analyzers,TestPrune.Core
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Analyzers src/TestPrune.Analyzers/TestPrune.Analyzers.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Core src/TestPrune.Core/TestPrune.Core.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune src/TestPrune/TestPrune.fsproj
+dotnet tool run fssemantictagger alpha --only TestPrune.Falco,TestPrune.Sql,TestPrune.Trace
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Falco src/TestPrune.Falco/TestPrune.Falco.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Sql src/TestPrune.Sql/TestPrune.Sql.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Trace src/TestPrune.Trace/TestPrune.Trace.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Trace.Recorder src/TestPrune.Trace.Recorder/TestPrune.Trace.Recorder.fsproj
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.Trace.Cli src/TestPrune.Trace.Cli/TestPrune.Trace.Cli.fsproj
+dotnet tool run fssemantictagger alpha --only TestPrune.SqlHydra
+dotnet fsi scripts/wait-for-nuget.fsx -- TestPrune.SqlHydra src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj
+"""
+depends = ["build"]

@@ -1,0 +1,377 @@
+# Integration guide
+
+The `test-prune` CLI is a reference implementation: it shows how the
+pieces fit, but it re-analyzes serially and isn't tuned for large
+codebases. For real workflows, embed
+[`TestPrune.Core`](https://www.nuget.org/packages/TestPrune.Core)
+directly in your build system or editor, where you can cache
+aggressively and parallelize across projects.
+
+```bash
+dotnet add package TestPrune.Core
+```
+
+Version 8 introduces schema 12. Consumers that share a TestPrune SQLite
+database must upgrade every process opening that file in lockstep; the first v8
+open rebuilds older indexes so project-attributed runtime coverage starts from a
+uniform graph. A producer may then call `ingestRuntimeCoverage` with the test
+project and full/partial run scope. Missing or stale baseline policy belongs to
+the runner, using `GetRuntimeCoverageAvailability` to widen safely.
+
+All the snippets below are drawn from how the CLI itself wires the
+library (see `src/TestPrune/Orchestration.fs`). FSharp.Compiler.Service
+type-checking is not instant, so plan on caching.
+
+## 1. Index your project
+
+First, build a dependency graph of your code. This parses every `.fs`
+file with FCS and stores the results in a local SQLite database:
+
+<!-- This block is sourced from a real, compiled example — see
+     examples/UsageExample/UsageExample.fs. Do not edit it here; edit the source
+     file and run `mise run sync-docs`. CI compiles the example and
+     `sync-docs-check` fails if this block drifts. -->
+<!-- sync:index:start src=examples/UsageExample/UsageExample.fs -->
+```fsharp
+open TestPrune.AstAnalyzer
+open TestPrune.Database
+
+let checker = FSharpChecker.Create()
+let db = Database.create ".test-prune.db"
+
+let fileName = "/abs/path/to/src/Lib.fs"
+let source = System.IO.File.ReadAllText fileName
+let projectName = "MyProject"
+
+let projOptions = getScriptOptions checker fileName source |> Async.RunSynchronously
+
+// Compiler hosts that already checked this exact file version can skip the
+// duplicate FCS work and run only TestPrune's extraction step.
+let analyzeExistingResults parseResults checkResults =
+    analyzeSourceFromResults fileName source parseResults checkResults projectName
+
+match
+    analyzeSource checker fileName source projOptions projectName
+    |> Async.RunSynchronously
+with
+| Ok result ->
+    let normalized =
+        { result with
+            Symbols = normalizeSymbolPaths repoRoot result.Symbols }
+
+    db.RebuildProjects([ normalized ])
+| Error msg -> eprintfn $"Failed: %s{msg}"
+```
+<!-- sync:index:end -->
+
+`analyzeSource` takes `checker source-file source project-options
+project-name` and returns `Result<AnalysisResult, string>`.
+If the host already has `FSharpParseFileResults` and successful
+`FSharpCheckFileResults`, call `analyzeSourceFromResults source-file source
+parse-results check-results project-name` instead. That path performs only
+TestPrune extraction and never re-enters the `FSharpChecker`. The file name,
+source text, parse results, and check results must come from the same file version;
+FCS does not expose enough identity for TestPrune to validate mismatched inputs,
+which could otherwise produce an unsound graph.
+`getScriptOptions` is a convenient way to get project options for a
+single file; in a real build you'll usually have full project options
+already. `normalizeSymbolPaths repoRoot` rewrites absolute source paths
+to repo-relative ones so the graph is stable across machines.
+
+## 2. Cache for speed
+
+Re-analysis is the expensive part, so skip it whenever you can.
+TestPrune supports two cache levels — project and file — both keyed on
+content hashes that you supply. Read them with `db.GetProjectKey` /
+`db.GetFileKey`, and write them in the same transaction as the symbols
+via `RebuildProjects`'s optional `fileKeys` / `projectKeys` arguments:
+
+<!-- sync:cache:start src=examples/UsageExample/UsageExample.fs -->
+```fsharp
+match db.GetProjectKey("MyProject") with
+| Some key when key = currentKey -> () // unchanged — skip the whole project
+| _ ->
+    // For files that haven't changed, reuse cached rows instead of re-analyzing:
+    match db.GetFileKey("src/Lib.fs") with
+    | Some key when key = currentFileKey ->
+        let symbols = db.GetSymbolsInFile("src/Lib.fs")
+        let deps = db.GetDependenciesFromFile("src/Lib.fs")
+        let tests = db.GetTestMethodsInFile("src/Lib.fs")
+        () // ... use cached data
+    | _ -> () // file changed — run analyzeSource as above
+
+    // Write symbols and both sets of cache keys atomically.
+    db.RebuildProjects(
+        [ combined ],
+        fileKeys = [ "src/Lib.fs", currentFileKey ],
+        projectKeys = [ "MyProject", currentKey ]
+    )
+```
+<!-- sync:cache:end -->
+
+Cache keys can be anything that changes when source files change. Good
+options:
+
+- **VCS tree/commit hash** (recommended) — a content-addressed hash
+  (e.g. from `jj` or `git`) that changes exactly when files change.
+  Fast and correct across branch switches.
+- **File metadata** — path + size + mtime. What the CLI uses by
+  default. Simple, but can be wrong after a checkout (mtime updates
+  even when content is identical).
+
+## 3. Find affected tests
+
+When you're ready to test, compare the current code against the index
+to find what changed, then ask which tests are affected. `selectTests`
+returns a `TestSelection * AnalysisEvent list` tuple (the events are an
+audit trail you can ignore):
+
+<!-- sync:select:start src=examples/UsageExample/UsageExample.fs -->
+```fsharp
+open TestPrune.Ports
+open TestPrune.ImpactAnalysis
+
+let store = toSymbolStore db
+
+let selection, _events = selectTests store changedFiles currentSymbolsByFile
+
+match selection with
+| RunSubset tests -> () // only these test methods need to run
+| RunAll reason -> () // can't analyze the change — run everything
+```
+<!-- sync:select:end -->
+
+`RunSubset` carries a list of specific test methods. `RunAll` is the
+safe fallback for `.fsproj` changes, brand-new files, or analysis
+failures — anything where TestPrune can't be sure what's affected. The
+`reason` says which.
+
+### Composition roots
+
+Everything above widens selection when in doubt. `[<TestPrune.CompositionRoot>]`
+is the one mechanism that narrows it, and it needs no API call — annotate the
+symbol in the indexed codebase and both stores honour it on the next
+`selectTests`/`QueryAffectedTests`.
+
+Use it on a symbol that names the whole application in order to wire it up (a
+route table, a DI registration block). Reached *through*, it stops the walk;
+*changed itself*, it propagates in full. A per-project fail-safe restores a test
+project's full selection if the barrier would have emptied it — note that the
+granularity of that guard is your test-project granularity, so a suite with a
+single test project effectively gets "never select nothing" rather than a
+per-project bound.
+
+The attribute is matched by type name (the namespace is ignored and your
+assemblies are never loaded), so declare it yourself:
+
+```fsharp
+type CompositionRootAttribute() =
+    inherit System.Attribute()
+```
+
+Read the safety note in the root [README](../README.md#composition-roots) first:
+this is the direction that can silently skip a failing test, and it is only sound
+while some other attribution still reaches the tests covering the change.
+
+## 4. (Bonus) Find dead code
+
+The same dependency graph can find code that's never reached from your
+entry points. Resolve entry-point patterns to symbol names, compute the
+reachable set, then call `findDeadCode`:
+
+<!-- sync:dead-code:start src=examples/UsageExample/UsageExample.fs -->
+```fsharp
+open TestPrune.DeadCode
+
+let store = toSymbolStore db
+let allSymbols = store.GetAllSymbols()
+let allNames = store.GetAllSymbolNames()
+
+let entryPatterns = [ "*.main"; "*.Program.*" ]
+let entryPoints = findEntryPoints allNames entryPatterns
+let reachable = store.GetReachableSymbols(entryPoints)
+let testMethodNames = store.GetTestMethodSymbolNames()
+
+// result.UnreachableSymbols — symbols nothing reaches from the entry points
+let result, _events = findDeadCode allSymbols reachable testMethodNames false
+```
+<!-- sync:dead-code:end -->
+
+The last argument is `includeTests`. By default (`false`) symbols in
+test files are excluded from the report; pass `true` to find dead code
+in your test suite too, e.g. unused test helpers. For per-symbol "why
+is this unreachable" detail, use `findDeadCodeVerbose`, which also takes
+a `getIncomingEdgesBatch` (available as `store.GetIncomingEdgesBatch`).
+
+## Extensions
+
+Some dependencies don't show up in code — like HTTP routes mapping to
+handler files. Extensions let you teach TestPrune about these by
+implementing `ITestPruneExtension` to inject extra dependency edges.
+`AnalyzeEdges` answers for the whole tree on every call, and the host
+stores each answer in place of that extension's previous edges
+(`refreshExtensionEdges`), so the stored edges never depend on which files
+changed or on what earlier builds wrote.
+
+Build those edges with `EdgeEmission.edgesTo`: emit an edge from each
+dependent to the *specific* symbol it depends on across the boundary,
+scoped precisely when the fact names a symbol and degraded to the whole
+file the fact points at when it doesn't. Both bugs TestPrune has shipped came from
+an extension hand-rolling this step — one over-selected (a cross-product
+of every test and every symbol in the file), one under-selected (a
+scoping filter that kept only the first match). Scoping to the direct
+symbol is safe because `QueryAffectedTests` walks the graph transitively
+in reverse, so an edge to a handler already selects that test when
+anything the handler calls changes:
+
+<!-- sync:extension:start src=examples/UsageExample/UsageExample.fs -->
+```fsharp
+open TestPrune.EdgeEmission
+open TestPrune.Extensions
+
+type ExampleExtension() =
+    interface ITestPruneExtension with
+        member _.Name = "example"
+
+        member _.AnalyzeEdges (symbolStore: SymbolStore) (repoRoot: string) : Dependency list =
+            // The out-of-band fact this extension knows and the AST cannot: the tests in
+            // `tests/ApiTests.fs` exercise the handler `Handlers.getUser` in
+            // `src/Handlers.fs`. Return the edges for the WHOLE tree on every call —
+            // the host replaces this extension's stored edges with the answer, so an
+            // edge left out is an edge deleted.
+            let dependents = symbolStore.GetSymbolsInFile "tests/ApiTests.fs"
+            let candidates = symbolStore.GetSymbolsInFile "src/Handlers.fs"
+
+            // `edgesTo` scopes the edge to the symbol the fact names. A fact that
+            // names none (`UnnamedSymbol`), or names one that no longer resolves,
+            // falls back to every symbol in the handler file — coarse, but never
+            // empty: a missing edge is a test that silently stops being re-run.
+            // Never hand-roll a cross-product of all tests x all symbols.
+            //
+            // The DIRECT symbol is enough. Core's `QueryAffectedTests` is a recursive
+            // TRANSITIVE reverse-walk of the graph, so `test -> getUser` already
+            // re-selects the test when anything getUser calls changes.
+            edgesTo "example" SharedState candidates (NamedSymbol "Handlers.getUser") dependents
+```
+<!-- sync:extension:end -->
+
+[`TestPrune.Falco`](https://www.nuget.org/packages/TestPrune.Falco) is
+an extension for Falco web apps that maps URL routes to integration
+tests.
+
+### Named dispatch
+
+`TestPrune.NamedDispatch.NamedDispatchExtension` (in TestPrune.Core) couples a
+test to a handler it reaches only through a string name: a job runner, a
+message topic, a command table. Declare both sides in the tree, by attribute
+name (from TestPrune.Attributes, or your own types of the same names):
+
+```fsharp
+[<DispatchedAs("job", "Purge")>]
+let runPurge () = ...
+
+[<CompositionRoot>]
+[<DispatchTemplate("job", "/admin/jobs/{action}/{name}")>]
+let run (name: string) = ...
+```
+
+Every template match in a test-bearing file whose `{name}` is registered on
+that channel yields a `SharedState` edge (source `named-dispatch`) from the
+symbol enclosing the match to the handler, so the walk reaches the test even
+when the registry is a composition root. Register it like any other extension:
+`refreshExtensionEdges db repoRoot [ NamedDispatchExtension() ]`.
+
+### SqlHydra table coupling
+
+`TestPrune.SqlHydra.SqlHydraExtension` derives table-level shared-state edges
+from an indexed SqlHydra query graph. Construct it with the fully qualified
+generated-module prefix and register it with the host that runs extensions:
+
+```fsharp
+open TestPrune.Extensions
+open TestPrune.SqlHydra
+
+let extension: ITestPruneExtension =
+    SqlHydraExtension("MyApp.Database.Generated") :> ITestPruneExtension
+```
+
+Registration is explicit: referencing the assembly does not make the extension
+run. The host calls `refreshExtensionEdges db repoRoot extensions` on every index
+build, after core symbols and dependencies have been written.
+The prefix must be a dot-separated qualified name with no empty segments;
+invalid input throws during extension construction rather than silently
+disabling SQL attribution.
+
+The extension recognizes a table only from a core `Calls` edge to a non-extern
+generated value whose name has exactly this shape:
+`<prefix>.<schema>.<table>`. This is the signal produced for SqlHydra's generated
+`let articles = table<articles>` value. Broad `UsesType` edges are deliberately
+ignored: real FCS graphs also emit them for the generated schema module and enum
+types, so treating them as tables couples unrelated queries through bogus
+resources such as `public` or `article_status`.
+
+The shared-state key retains both schema and table (`public.articles`), so equal
+table names in different schemas remain independent. Manual `TestPrune.Sql`
+facts intended to couple with generated facts must use that same
+schema-qualified table text. `select`, `selectTask`, and `selectAsync` calls
+owned by `SqlHydra.Query`'s select builders are reads; the corresponding
+SqlHydra insert, update, and delete builder calls are writes. A same-named call
+from another library is ignored. Attribution is table-level. A symbol that
+performs several access kinds or touches several tables produces their
+conservative product; that can select extra tests, but cannot discard a genuine
+reader/writer edge.
+
+### Extension-owned storage
+
+Most extensions derive their facts from the symbol graph and need no
+storage. An extension whose facts come from *outside* the AST — Falco's
+routes live in a route DU plus runtime wiring, so they're seeded by a
+separate build step — can own a table inside TestPrune's cache database
+via `Ports.toPluginStore db`, which hands it a connection. Core never
+learns what the table means.
+
+The contract runs both ways. Core owns its own tables, not the file: opening
+it as a `Database` checks the schema version and, on a file older than its
+own, drops and recreates core's tables in one transaction and keeps every
+other table with its rows. A row keyed on a core id should declare
+`ON DELETE CASCADE` (or `SET NULL`), because the rebuild renumbers core ids;
+a NO ACTION key makes the rebuild impossible, and core then deletes the file
+as a fallback. A file newer than its own it
+refuses to open (`SchemaNewerThanConsumerException`, naming the version to
+upgrade to) rather than run its DDL against a schema it does not know. So
+an extension owns its tables but must never assume they exist: issue
+`CREATE TABLE IF NOT EXISTS` before every read and write.
+
+A process that only touches its extension table — a route-seeding build
+step, say — has no stake in core's schema and should not inherit that
+check: `Ports.pluginStoreAt dbPath` opens the file with no version check
+and no core DDL, so it works on a database of any core schema version,
+including one written by a newer TestPrune.Core than the process links.
+
+## Dependency-change fanout
+
+When a project's *dependency fingerprint* changes — a NuGet /
+`PackageReference` bump, or a `ProjectReference`d project rebuilt
+against a changed dependency — every test in the projects that
+transitively reference it is selected, even though no source symbol
+changed (the `ProjectFanout` module). This catches behavior changes the
+symbol graph can't see.
+
+## Analyzer (opt-in)
+
+Anonymous records (`{| Year = d.Year |}` and the matching
+`{| Year: int |}` type annotations) have no stable cross-build name, so
+TestPrune's AST impact analysis **skips** them. A test or symbol
+coupled to a change *only* through an anonymous record is therefore
+invisible to impact selection.
+
+[`TestPrune.Analyzers`](https://www.nuget.org/packages/TestPrune.Analyzers)
+is an opt-in
+[FSharp.Analyzers.SDK](https://github.com/ionide/FSharp.Analyzers.SDK)
+analyzer that flags every anonymous-record occurrence (diagnostic
+`TP001`, `TestPrune.AnonymousRecord`, severity *Warning*) so
+precision-sensitive repos can steer that coupling to a tracked
+alternative — a named record, or an explicit
+`[<TestPrune.DependsOnFile>]` / `[<TestPrune.DependsOnGlob>]` edge.
+It's opt-in by construction: nothing changes unless you load the
+analyzer into your analyzer host (Ionide or `fsharp-analyzers`).

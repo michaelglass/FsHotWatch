@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <IsPackable>false</IsPackable>
+        <NoWarn>$(NoWarn);NU1605;NU1608</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="Types.fs" />
+        <Compile Include="Values.fs" />
+        <Compile Include="Logic.fs" />
+        <Compile Include="InputReads.fs" />
+        <Compile Include="Nested.fs" />
+        <Compile Include="Pipelines.fs" />
+        <Compile Include="Settings.fs" />
+        <Compile Include="Generics.fs" />
+    </ItemGroup>
+
+</Project>

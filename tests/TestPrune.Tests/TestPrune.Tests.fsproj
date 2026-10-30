@@ -1,0 +1,135 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <!-- NU1608: references TestPrune.Analyzers, which pulls FSharp.Analyzers.SDK 0.37.2
+         (pinned to FCS 43.12.201 / FSharp.Core 10.1.201) while this repo resolves
+         43.12.204 / 10.1.204. Same documented skew the analyzer project suppresses;
+         consuming projects must suppress it too (cf. fsharp-analyzers, FSharpLintAnalyzerShim). -->
+    <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!-- ADR 0001 drift alarm: OPTIONAL, never a build requirement.
+       The alarm's oracle is Falco.UnionRoutes' `Route.enumerate`, which is UNRELEASED — no
+       published Falco.UnionRoutes package contains it (0.3.3 is the latest and does not), so the
+       only way to reach it is a reference to a SIBLING CHECKOUT of that repo. Requiring that would
+       break the build for anyone who clones TestPrune on its own, which is exactly the audience
+       TestPrune.Falco is for. So the reference, and the two source files that name the library, are
+       gated on the sibling actually being there:
+         present -> the drift alarm compiles and runs (SyntheticRouteContractTests).
+         absent  -> those files are not compiled; everything else builds and passes, the build
+                    prints a loud notice (see the ReportFalcoUnionRoutesSkipped target below), and
+                    a Skip-marked xUnit test keeps the omission visible in the test report.
+       To verify the absent path on a machine that HAS the sibling, force the flag off:
+         FalcoUnionRoutesAvailable=false mise run ci
+         dotnet build -p:FalcoUnionRoutesAvailable=false -->
+  <PropertyGroup>
+    <FalcoUnionRoutesProject>$(MSBuildThisFileDirectory)../../../Falco.UnionRoutes/src/Falco.UnionRoutes/Falco.UnionRoutes.fsproj</FalcoUnionRoutesProject>
+    <FalcoUnionRoutesAvailable Condition="'$(FalcoUnionRoutesAvailable)' == '' AND Exists('$(FalcoUnionRoutesProject)')">true</FalcoUnionRoutesAvailable>
+    <FalcoUnionRoutesAvailable Condition="'$(FalcoUnionRoutesAvailable)' == ''">false</FalcoUnionRoutesAvailable>
+  </PropertyGroup>
+
+  <Target Name="ReportFalcoUnionRoutesSkipped" BeforeTargets="CoreCompile" Condition="'$(FalcoUnionRoutesAvailable)' != 'true'">
+    <Message Importance="high" Text="TestPrune.Tests: Falco.UnionRoutes not found at $(FalcoUnionRoutesProject) — the ADR 0001 drift-alarm contract test (SyntheticRouteContractTests.fs) is EXCLUDED from this build. The rest of the suite is unaffected. Clone https://github.com/michaelglass/Falco.UnionRoutes as a sibling directory to enable it." />
+  </Target>
+
+  <ItemGroup>
+    <Compile Include="TestHelpers.fs" />
+    <Compile Include="SafeWalkTests.fs" />
+    <Compile Include="DomainTests.fs" />
+    <Compile Include="FcsTests.fs" />
+    <Compile Include="AstAnalyzerTests.fs" />
+    <Compile Include="FsHotCaptureReplayTests.fs" />
+    <Compile Include="LiteralCouplingTests.fs" />
+    <Compile Include="BindingFormAuditTests.fs" />
+    <Compile Include="UnqualifiedNameAuditTests.fs" />
+    <Compile Include="ParseDiagnosticSeverityTests.fs" />
+    <Compile Include="DatabaseTests.fs" />
+    <Compile Include="SqliteVariableLimitTests.fs" />
+    <Compile Include="CoverageTests.fs" />
+    <Compile Include="CoreReleaseSemanticsTests.fs" />
+    <Compile Include="CoverageImpactTests.fs" />
+    <Compile Include="DiffParserTests.fs" />
+    <Compile Include="SymbolDiffTests.fs" />
+    <Compile Include="ImpactAnalysisTests.fs" />
+    <Compile Include="ProjectFanoutTests.fs" />
+    <Compile Include="DeadCodeTests.fs" />
+    <Compile Include="EdgeEmissionTests.fs" />
+    <Compile Include="AuditSinkTests.fs" />
+    <Compile Include="PortsTests.fs" />
+    <Compile Include="InMemoryStoreTests.fs" />
+    <Compile Include="CompositionRootSelectionTests.fs" />
+    <Compile Include="SeedCoverageTests.fs" />
+    <Compile Include="IntegrationTests.fs" />
+    <Compile Include="TypeHashSplitTests.fs" />
+    <Compile Include="ProgramTests.fs" />
+    <Compile Include="TestRunnerTests.fs" />
+    <Compile Include="ProjectLoaderTests.fs" />
+    <Compile Include="ExtensionEdgeRefreshTests.fs" />
+    <Compile Include="FalcoRouteExtensionTests.fs" />
+    <Compile Include="FalcoRouteEdgeDeterminismTests.fs" />
+    <Compile Include="SqlCouplingTests.fs" />
+    <Compile Include="SqlReachabilityGateTests.fs" />
+    <Compile Include="NamedDispatchTests.fs" />
+    <Compile Include="SqlHydraAnalyzerTests.fs" />
+    <Compile Include="ReleaseEnrollmentTests.fs" />
+    <Compile Include="ReleaseOrchestrationTests.fs" />
+    <Compile Include="NuGetPublicationBarrierTests.fs" />
+    <Compile Include="PackageFloorTests.fs" />
+    <Compile Include="ToolchainPinTests.fs" />
+    <Compile Include="AttributesFSharpCoreTests.fs" />
+    <Compile Include="AnonymousRecordAnalyzerTests.fs" />
+    <!-- Impact-selection soundness harness. -->
+    <Compile Include="SoundnessHarnessTests.fs" />
+    <Compile Include="SymbolOccurrenceStoreTests.fs" />
+    <Compile Include="SignatureOccurrenceTests.fs" />
+    <Compile Include="GlobalNamespaceTests.fs" />
+    <!-- ADR 0001 drift alarm: assert the AST case->URL composition matches Falco.UnionRoutes'
+         canonical Route.enumerate over the synthetic corpus. TEST-ONLY use of Falco.UnionRoutes;
+         the shipped TestPrune.Falco takes no dependency on it. Both files name the library, so both
+         are gated on the sibling checkout (see FalcoUnionRoutesAvailable above); the Skip-marked
+         stand-in compiles in their place so the test report says the alarm did not run. -->
+    <Compile Include="SyntheticRoutes.fs" Condition="'$(FalcoUnionRoutesAvailable)' == 'true'" />
+    <Compile Include="SyntheticRouteContractTests.fs" Condition="'$(FalcoUnionRoutesAvailable)' == 'true'" />
+    <Compile Include="SyntheticRouteContractSkipped.fs" Condition="'$(FalcoUnionRoutesAvailable)' != 'true'" />
+  </ItemGroup>
+
+  <!-- The synthetic DU's exact source, next to the test dll, so the AST resolver parses the same
+       text the reflection resolver compiles — zero drift between the two comparison inputs. -->
+  <ItemGroup Condition="'$(FalcoUnionRoutesAvailable)' == 'true'">
+    <None Include="SyntheticRoutes.fs" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- xUnit runner configuration -->
+  <ItemGroup>
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Fixtures/FcsTraversal/ReplayDependencies.fsproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <ProjectReference Include="../../src/TestPrune.Core/TestPrune.Core.fsproj" />
+    <ProjectReference Include="../../src/TestPrune/TestPrune.fsproj" />
+    <ProjectReference Include="../../src/TestPrune.Falco/TestPrune.Falco.fsproj" />
+    <ProjectReference Include="../../src/TestPrune.Sql/TestPrune.Sql.fsproj" />
+    <ProjectReference Include="../../src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj" />
+    <ProjectReference Include="../../src/TestPrune.Analyzers/TestPrune.Analyzers.fsproj" />
+    <!-- ADR 0001 drift alarm (TEST-ONLY, OPTIONAL): the contract test reflects the synthetic route
+         type via Falco.UnionRoutes' Route.enumerate to check the AST composition has not drifted.
+         Cross-repo reference to a sibling checkout (only place Route.enumerate exists — it is
+         unreleased), skipped entirely when that checkout is absent so a standalone clone builds.
+         Confined to the test project; the shipped TestPrune.Falco does NOT reference the library. -->
+    <ProjectReference Include="$(FalcoUnionRoutesProject)" Condition="'$(FalcoUnionRoutesAvailable)' == 'true'" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Unquote" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.v3.mtp-v2" />
+    <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" />
+  </ItemGroup>
+
+</Project>

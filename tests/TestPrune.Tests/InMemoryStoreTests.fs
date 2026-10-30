@@ -1,0 +1,404 @@
+module TestPrune.Tests.InMemoryStoreTests
+
+open Xunit
+open Swensen.Unquote
+open TestPrune.AstAnalyzer
+open TestPrune.InMemoryStore
+open TestPrune.Tests.TestHelpers
+
+module ``InMemoryStore basics`` =
+
+    [<Fact>]
+    let ``GetSymbolsInFile returns symbols for that file`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let symbols = store.GetSymbolsInFile "src/Lib.fs"
+        test <@ symbols.Length = 1 @>
+        test <@ symbols[0].FullName = "Lib.funcB" @>
+
+    [<Fact>]
+    let ``QueryAffectedTests finds direct dependent test`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let tests = store.QueryAffectedTests [ "Lib.funcB" ]
+        test <@ tests.Length = 1 @>
+        test <@ tests[0].TestMethod = "testA" @>
+
+    [<Fact>]
+    let ``QueryAffectedTests finds transitive dependent test`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let tests = store.QueryAffectedTests [ "Domain.TypeC" ]
+        test <@ tests.Length = 1 @>
+        test <@ tests[0].TestMethod = "testA" @>
+
+    [<Fact>]
+    let ``GetReachableSymbols follows forward edges`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let reachable = store.GetReachableSymbols [ "Tests.testA" ]
+        test <@ reachable.Contains "Lib.funcB" @>
+        test <@ reachable.Contains "Domain.TypeC" @>
+
+    [<Fact>]
+    let ``GetAllSymbols returns all symbols`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let all = store.GetAllSymbols()
+        test <@ all.Length = 4 @>
+
+    [<Fact>]
+    let ``QueryAffectedTests with unknown symbol returns empty`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let tests = store.QueryAffectedTests [ "NonExistent.func" ]
+        test <@ tests |> List.isEmpty @>
+
+    // Both stores must agree on seed inclusion; this is the case where SQLite
+    // historically diverged (FsHotWatch ISSUE B). See Database.fs transitive_deps CTE.
+    [<Fact>]
+    let ``QueryAffectedTests selects a test whose own symbol changed`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let tests = store.QueryAffectedTests [ "Tests.testA" ]
+        test <@ tests.Length = 1 @>
+        test <@ tests[0].TestMethod = "testA" @>
+
+    [<Fact>]
+    let ``GetSymbolsInFile returns empty for unknown file`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let symbols = store.GetSymbolsInFile "nonexistent.fs"
+        test <@ symbols |> List.isEmpty @>
+
+    [<Fact>]
+    let ``GetDependenciesFromFile returns deps for file with deps`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let deps = store.GetDependenciesFromFile "tests/Tests.fs"
+        test <@ deps.Length = 1 @>
+        test <@ deps[0].ToSymbol = "Lib.funcB" @>
+
+    [<Fact>]
+    let ``GetDependenciesFromFile returns empty for file with no deps`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let deps = store.GetDependenciesFromFile "nonexistent.fs"
+        test <@ deps |> List.isEmpty @>
+
+    [<Fact>]
+    let ``GetTestMethodsInFile returns tests for test file`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let tests = store.GetTestMethodsInFile "tests/Tests.fs"
+        test <@ tests.Length = 1 @>
+        test <@ tests[0].TestMethod = "testA" @>
+
+    [<Fact>]
+    let ``GetTestMethodsInFile returns empty for non-test file`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let tests = store.GetTestMethodsInFile "src/Lib.fs"
+        test <@ tests |> List.isEmpty @>
+
+    [<Fact>]
+    let ``GetAllSymbolNames returns all symbol names`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let names = store.GetAllSymbolNames()
+        test <@ names.Count = 4 @>
+        test <@ names.Contains "Lib.funcB" @>
+        test <@ names.Contains "Tests.testA" @>
+
+    [<Fact>]
+    let ``GetTestMethodSymbolNames returns test method names`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let testNames = store.GetTestMethodSymbolNames()
+        test <@ testNames.Count = 1 @>
+        test <@ testNames.Contains "Tests.testA" @>
+
+    [<Fact>]
+    let ``empty analysis results produce empty store`` () =
+        let store = fromAnalysisResults []
+        test <@ store.GetAllSymbols() |> List.isEmpty @>
+        test <@ store.GetAllSymbolNames().Count = 0 @>
+        test <@ store.GetTestMethodSymbolNames().Count = 0 @>
+        test <@ store.GetSymbolsInFile "any.fs" |> List.isEmpty @>
+        test <@ store.GetDependenciesFromFile "any.fs" |> List.isEmpty @>
+        test <@ store.GetTestMethodsInFile "any.fs" |> List.isEmpty @>
+        test <@ store.QueryAffectedTests [ "Any.symbol" ] |> List.isEmpty @>
+        test <@ store.GetReachableSymbols [] |> Set.isEmpty @>
+
+    [<Fact>]
+    let ``GetFileKey always returns None`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        test <@ store.GetFileKey "src/Lib.fs" = None @>
+        test <@ store.GetFileKey "nonexistent.fs" = None @>
+
+    [<Fact>]
+    let ``GetProjectKey always returns None`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        test <@ store.GetProjectKey "MyProject" = None @>
+        test <@ store.GetProjectKey "nonexistent" = None @>
+
+    [<Fact>]
+    let ``GetReachableSymbols with empty list returns empty`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        test <@ store.GetReachableSymbols [] |> Set.isEmpty @>
+
+    [<Fact>]
+    let ``transitive closure handles cycles without infinite loop`` () =
+        // Build a graph with a cycle: A -> B -> C -> A
+        let cycleGraph =
+            { Symbols =
+                [ { FullName = "Mod.A"
+                    Kind = Function
+                    SourceFile = "src/Mod.fs"
+                    LineStart = 1
+                    LineEnd = 3
+                    ContentHash = ""
+                    IsExtern = false }
+                  { FullName = "Mod.B"
+                    Kind = Function
+                    SourceFile = "src/Mod.fs"
+                    LineStart = 4
+                    LineEnd = 6
+                    ContentHash = ""
+                    IsExtern = false }
+                  { FullName = "Mod.C"
+                    Kind = Function
+                    SourceFile = "src/Mod.fs"
+                    LineStart = 7
+                    LineEnd = 9
+                    ContentHash = ""
+                    IsExtern = false } ]
+              Dependencies =
+                [ { FromSymbol = "Mod.A"
+                    ToSymbol = "Mod.B"
+                    Kind = Calls
+                    Source = "core" }
+                  { FromSymbol = "Mod.B"
+                    ToSymbol = "Mod.C"
+                    Kind = Calls
+                    Source = "core" }
+                  { FromSymbol = "Mod.C"
+                    ToSymbol = "Mod.A"
+                    Kind = Calls
+                    Source = "core" } ]
+              TestMethods = []
+              Attributes = []
+              ParentLinks = []
+              Diagnostics = AnalysisDiagnostics.Zero }
+
+        let store = fromAnalysisResults [ cycleGraph ]
+        // Forward reachability from A should reach all three
+        let reachable = store.GetReachableSymbols [ "Mod.A" ]
+        test <@ reachable.Contains "Mod.A" @>
+        test <@ reachable.Contains "Mod.B" @>
+        test <@ reachable.Contains "Mod.C" @>
+
+    [<Fact>]
+    let ``dependency anchored outside the result is owned by the result's only file`` () =
+        // A dependency whose FromSymbol is not declared in this result is still a fact
+        // this result's file contributed (`AstAnalyzer.factOwner`), so it is owned by
+        // — and re-indexed with — that file.
+        let graph =
+            { Symbols =
+                [ { FullName = "Mod.Target"
+                    Kind = Function
+                    SourceFile = "src/Mod.fs"
+                    LineStart = 1
+                    LineEnd = 3
+                    ContentHash = ""
+                    IsExtern = false } ]
+              Dependencies =
+                [ { FromSymbol = "Unknown.Source"
+                    ToSymbol = "Mod.Target"
+                    Kind = Calls
+                    Source = "core" } ]
+              TestMethods = []
+              Attributes = []
+              ParentLinks = []
+              Diagnostics = AnalysisDiagnostics.Zero }
+
+        let store = fromAnalysisResults [ graph ]
+        let owned = store.GetDependenciesFromFile "src/Mod.fs"
+        test <@ owned.Length = 1 @>
+        test <@ owned[0].FromSymbol = "Unknown.Source" @>
+        test <@ (store.GetDependenciesFromFile "").IsEmpty @>
+
+    [<Fact>]
+    let ``test method in a result with no source file is owned by the extern pseudo-file`` () =
+        let graph =
+            { Symbols = []
+              Dependencies = []
+              TestMethods =
+                [ { SymbolFullName = "Unknown.test1"
+                    TestProject = "Proj"
+                    TestClass = "Tests"
+                    TestMethod = "test1" } ]
+              Attributes = []
+              ParentLinks = []
+              Diagnostics = AnalysisDiagnostics.Zero }
+
+        let store = fromAnalysisResults [ graph ]
+        let unowned = store.GetTestMethodsInFile ExternSourceFile
+        test <@ unowned.Length = 1 @>
+        test <@ unowned[0].TestMethod = "test1" @>
+
+    [<Fact>]
+    let ``GetIncomingEdgesBatch returns incoming edges for known symbols`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        // funcB and TypeC have incoming edges; testA has none
+        let result = store.GetIncomingEdgesBatch [ "Lib.funcB"; "Domain.TypeC" ]
+        test <@ result.ContainsKey "Lib.funcB" @>
+        test <@ result["Lib.funcB"] |> List.contains "Tests.testA" @>
+        test <@ result.ContainsKey "Domain.TypeC" @>
+        test <@ result["Domain.TypeC"] |> List.contains "Lib.funcB" @>
+
+    [<Fact>]
+    let ``GetIncomingEdgesBatch skips symbols with no incoming edges`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        // testA is a root with no incoming edges — should be absent from result
+        let result = store.GetIncomingEdgesBatch [ "Tests.testA" ]
+        test <@ not (result.ContainsKey "Tests.testA") @>
+
+    [<Fact>]
+    let ``GetIncomingEdgesBatch with empty list returns empty map`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let result = store.GetIncomingEdgesBatch []
+        test <@ result.IsEmpty @>
+
+    [<Fact>]
+    let ``GetIncomingEdgesBatch with unknown symbol returns empty map`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let result = store.GetIncomingEdgesBatch [ "NonExistent.func" ]
+        test <@ result.IsEmpty @>
+
+module ``Aggregate-type invalidation`` =
+
+    // Graph:
+    //   TestFix (Type)     — fixture class with two members
+    //   ├── TestFix.alpha  — member touched by the test
+    //   └── TestFix.beta   — member NOT touched by the test
+    //
+    //   Harness (Type)     — test class
+    //   ├── Harness.testA  — accesses TestFix.alpha only (edge testA → alpha)
+    //
+    //   ModHelpers (Module) — non-type container; its members must NOT fan out
+    //   ├── ModHelpers.m1  — sibling of m2
+    //   └── ModHelpers.m2
+    //
+    //   Cons.uses_m1       — standalone function that calls ModHelpers.m1
+    let private fixtureGraph =
+        { Symbols =
+            [ { FullName = "TestFix"
+                Kind = Type
+                SourceFile = "src/Fix.fs"
+                LineStart = 1
+                LineEnd = 10
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "TestFix.alpha"
+                Kind = Function
+                SourceFile = "src/Fix.fs"
+                LineStart = 2
+                LineEnd = 3
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "TestFix.beta"
+                Kind = Function
+                SourceFile = "src/Fix.fs"
+                LineStart = 4
+                LineEnd = 5
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "Harness"
+                Kind = Type
+                SourceFile = "tests/Harness.fs"
+                LineStart = 1
+                LineEnd = 5
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "Harness.testA"
+                Kind = Function
+                SourceFile = "tests/Harness.fs"
+                LineStart = 2
+                LineEnd = 3
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "ModHelpers"
+                Kind = Module
+                SourceFile = "src/Helpers.fs"
+                LineStart = 1
+                LineEnd = 10
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "ModHelpers.m1"
+                Kind = Function
+                SourceFile = "src/Helpers.fs"
+                LineStart = 2
+                LineEnd = 3
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "ModHelpers.m2"
+                Kind = Function
+                SourceFile = "src/Helpers.fs"
+                LineStart = 4
+                LineEnd = 5
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "Cons.uses_m1"
+                Kind = Function
+                SourceFile = "src/Cons.fs"
+                LineStart = 1
+                LineEnd = 3
+                ContentHash = ""
+                IsExtern = false } ]
+          Dependencies =
+            [ { FromSymbol = "Harness.testA"
+                ToSymbol = "TestFix.alpha"
+                Kind = Calls
+                Source = "core" }
+              { FromSymbol = "Cons.uses_m1"
+                ToSymbol = "ModHelpers.m1"
+                Kind = Calls
+                Source = "core" } ]
+          TestMethods =
+            [ { SymbolFullName = "Harness.testA"
+                TestProject = "Tests"
+                TestClass = "Harness"
+                TestMethod = "testA" } ]
+          Attributes = []
+          ParentLinks =
+            [ { Child = "TestFix.alpha"
+                Parent = "TestFix" }
+              { Child = "TestFix.beta"
+                Parent = "TestFix" } ]
+          Diagnostics = AnalysisDiagnostics.Zero }
+
+    [<Fact>]
+    let ``editing an unreferenced fixture member still selects the dependent test`` () =
+        let store = fromAnalysisResults [ fixtureGraph ]
+        // testA touches alpha, not beta. Edit beta — expansion lifts to TestFix and
+        // then expands to alpha, so testA is reached via its edge to alpha.
+        let affected = store.QueryAffectedTests [ "TestFix.beta" ]
+        test <@ affected |> List.exists (fun t -> t.TestMethod = "testA") @>
+
+    [<Fact>]
+    let ``editing the type itself expands to cover all its members`` () =
+        let store = fromAnalysisResults [ fixtureGraph ]
+        // Simulate a type-body edit (e.g. new field). testA's direct edge is to alpha;
+        // expansion from TestFix → its members picks up alpha, so testA is selected.
+        let affected = store.QueryAffectedTests [ "TestFix" ]
+        test <@ affected |> List.exists (fun t -> t.TestMethod = "testA") @>
+
+    [<Fact>]
+    let ``module sibling edits do not fan out`` () =
+        // ModHelpers is a Module, so children m1/m2 don't have parent links.
+        // Editing m2 must not reach Cons.uses_m1 (which only calls m1).
+        let store = fromAnalysisResults [ fixtureGraph ]
+        let affected = store.QueryAffectedTests [ "ModHelpers.m2" ]
+        // Empty proves the expansion did not lift to ModHelpers, which would have pulled
+        // in m1 and then Cons.uses_m1.
+        test <@ affected |> List.isEmpty @>
+
+    [<Fact>]
+    let ``GetParentLinksInFile returns only this file's links`` () =
+        let store = fromAnalysisResults [ fixtureGraph ]
+        let fixLinks = store.GetParentLinksInFile "src/Fix.fs"
+        test <@ fixLinks.Length = 2 @>
+        test <@ fixLinks |> List.forall (fun l -> l.Parent = "TestFix") @>
+
+        let helperLinks = store.GetParentLinksInFile "src/Helpers.fs"
+        test <@ helperLinks |> List.isEmpty @>
+
+        let unknownLinks = store.GetParentLinksInFile "nowhere.fs"
+        test <@ unknownLinks |> List.isEmpty @>
