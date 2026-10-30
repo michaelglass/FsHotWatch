@@ -324,7 +324,7 @@ hand. Every field is optional — sensible defaults apply when omitted.
 | `cache` | `string \| bool \| object` | none | Check-result cache: `"none"`/`false`, `"memory"`/`true`, or `{ "maxEntries", "scope", "include", "exclude" }` (`scope`: `"all"` or `"default-workspace"`). The removed `"file"`/`"jj"` backends fail the load. Overridden per daemon by `FSHW_CHECK_CACHE`; see [Memory & tuning](docs/memory-and-tuning.md#one-workspaces-check-result-cache-fshw_check_cache). |
 | `tests` | `object` | — | Test runner config. See below. |
 | `coverage` | `object` | — | Coverage threshold checking. |
-| `analyzers` | `object` | — | F# Analyzers SDK integration. |
+| `analyzers` | `object` | — | F# Analyzers SDK integration: `paths` (analyzer bin directories), `failOnSeverity`, `bootstrapHints`, and `scope` — `{ "<path>": { "include": [globs] } }` or `{ "exclude": [globs] }` — which files one path's analyzers run on (gitignore-style globs, repository-relative; a path with no scope runs on every file). Use `scope` when one repository hosts code written to different analyzer sets. |
 | `fileCommands` | `array` | `[]` | Custom commands triggered by file patterns. |
 | `preprocessors` | `array` | `[]` | Commands that rewrite files in place **before** the build and the checks see them. See [Preprocessors](#preprocessors). |
 | `exclude` | `string[]` | `[]` | Gitignore-style globs (repo-root-relative) for paths to skip entirely — watching, building, checking. (`obj/` + `bin/` are always skipped, independent of this.) |

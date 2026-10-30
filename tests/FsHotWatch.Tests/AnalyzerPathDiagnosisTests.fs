@@ -43,7 +43,8 @@ let private analyzersConfig (paths: string list) (hints: (string * string) list)
             Some
                 {| Paths = paths
                    FailOnSeverity = DiagnosticSeverity.Hint
-                   BootstrapHints = Map.ofList hints |} }
+                   BootstrapHints = Map.ofList hints
+                   Scopes = Map.empty |} }
 
 /// Bytes that are a `.dll` by name and nothing by content — "not an analyzer".
 let private writeJunkDll (dir: string) (name: string) =
@@ -392,3 +393,74 @@ let ``a record that cannot be written, cleared or read never throws`` () =
         DaemonStartupFailure.clear root
         test <@ Directory.Exists inPlace @>
         test <@ DaemonStartupFailure.tryRead root = None @>)
+
+// `analyzers.scope`: one repository can host two products whose analyzer sets were written for
+// their own code (FsHotWatch and TestPrune, AUTOMATION-1367). A scope says which files one
+// configured path's analyzers run on.
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig reads analyzer scopes and defaults to none`` () =
+    let defaults = defaultTestConfig ()
+
+    let scoped =
+        parseConfig
+            """{"analyzers": {"paths": ["a/bin", "b/bin"], "scope": {"a/bin": {"include": ["src/A*/**"]}, "b/bin": {"exclude": ["src/A*/**", "tests/A*/**"]}}}}"""
+            defaults
+
+    let unscoped = parseConfig """{"analyzers": {"paths": ["a/bin"]}}""" defaults
+
+    test
+        <@
+            scoped.Analyzers.Value.Scopes = Map.ofList
+                [ "a/bin", FsHotWatch.Analyzers.AnalyzersPlugin.Include [ "src/A*/**" ]
+                  "b/bin", FsHotWatch.Analyzers.AnalyzersPlugin.Exclude [ "src/A*/**"; "tests/A*/**" ] ]
+        @>
+
+    test <@ unscoped.Analyzers.Value.Scopes = Map.empty @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig refuses a scope for an unconfigured path, or one that is not exactly include or exclude`` () =
+    let defaults = defaultTestConfig ()
+
+    let refused (json: string) =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore).Message
+
+    test
+        <@ (refused """{"analyzers": {"paths": ["a/bin"], "scope": {"b/bin": {"include": ["x"]}}}}""").Contains "b/bin" @>
+
+    test
+        <@
+            (refused """{"analyzers": {"paths": ["a/bin"], "scope": {"a/bin": {"include": ["x"], "exclude": ["y"]}}}}""")
+                .Contains
+                "a/bin"
+        @>
+
+    test <@ (refused """{"analyzers": {"paths": ["a/bin"], "scope": {"a/bin": {"only": ["x"]}}}}""").Contains "a/bin" @>
+
+    test
+        <@ (refused """{"analyzers": {"paths": ["a/bin"], "scope": {"a/bin": {"include": [1]}}}}""").Contains "a/bin" @>
+
+    test <@ (refused """{"analyzers": {"paths": ["a/bin"], "scope": {"a/bin": {"include": []}}}}""").Contains "a/bin" @>
+
+[<Fact>]
+let ``a scoped analyzer path runs only on the files its scope admits`` () =
+    let root = Path.Combine(Path.GetTempPath(), "scope-root")
+    let file (relative: string) = Path.Combine(root, relative)
+
+    let runsOn =
+        FsHotWatch.Analyzers.AnalyzersPlugin.runsOn
+            (Some root)
+            (Map.ofList
+                [ "/abs/a/bin", FsHotWatch.Analyzers.AnalyzersPlugin.Include [ "src/A*/**" ]
+                  "/abs/b/bin", FsHotWatch.Analyzers.AnalyzersPlugin.Exclude [ "src/A*/**" ] ])
+
+    // Include: only what a glob matches.
+    test <@ runsOn "/abs/a/bin" (file "src/A.Core/X.fs") @>
+    test <@ not (runsOn "/abs/a/bin" (file "src/B/Y.fs")) @>
+    // Exclude: everything a glob does not match.
+    test <@ not (runsOn "/abs/b/bin" (file "src/A.Core/X.fs")) @>
+    test <@ runsOn "/abs/b/bin" (file "src/B/Y.fs") @>
+    // No scope: every file, as before scopes existed.
+    test <@ runsOn "/abs/c/bin" (file "src/A.Core/X.fs") @>
+    // Outside the repository no include glob can match.
+    test <@ not (runsOn "/abs/a/bin" "/elsewhere/src/A.Core/X.fs") @>

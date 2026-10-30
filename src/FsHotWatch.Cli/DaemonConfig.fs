@@ -469,7 +469,9 @@ type DaemonConfiguration =
         Analyzers:
             {| Paths: string list
                FailOnSeverity: DiagnosticSeverity
-               BootstrapHints: Map<string, string> |} option
+               BootstrapHints: Map<string, string>
+               // `analyzers.scope`, keyed by the configured path.
+               Scopes: Map<string, FsHotWatch.Analyzers.AnalyzersPlugin.AnalyzerScope> |} option
         Tests:
             {| BeforeRun: string list option
                Extensions: TestExtensionConfig list
@@ -1171,13 +1173,64 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 | true, _ -> raise (ConfigErrorException "analyzers.bootstrapHints must be an object of path → command")
                 | _ -> Map.empty
 
+            // `scope`: { "<configured path>": { "include" | "exclude": [globs] } } — which
+            // files that path's analyzers run on. Exactly one key per path, a non-empty list of
+            // strings, and only for a path `paths` configures: anything else is refused, since
+            // a typo read as "no scope" would run a set on code it was never written for.
+            let scopes =
+                match v.TryGetProperty("scope") with
+                | true, scope when scope.ValueKind = JsonValueKind.Object ->
+                    scope.EnumerateObject()
+                    |> Seq.map (fun entry ->
+                        let refuse (why: string) =
+                            raise (ConfigErrorException $"analyzers.scope['%s{entry.Name}'] %s{why}")
+
+                        if not (List.contains entry.Name paths) then
+                            refuse "names a path that is not an analyzers.paths entry"
+
+                        let globsOf (list: JsonElement) =
+                            if list.ValueKind <> JsonValueKind.Array then
+                                refuse "must hold a list of glob strings"
+
+                            let globs =
+                                list.EnumerateArray()
+                                |> Seq.map (fun glob ->
+                                    if glob.ValueKind = JsonValueKind.String then
+                                        glob.GetString()
+                                    else
+                                        refuse "must hold a list of glob strings")
+                                |> Seq.toList
+
+                            if globs.IsEmpty then
+                                refuse "must name at least one glob"
+
+                            globs
+
+                        let keys =
+                            if entry.Value.ValueKind = JsonValueKind.Object then
+                                entry.Value.EnumerateObject() |> Seq.toList
+                            else
+                                []
+
+                        match keys with
+                        | [ only ] when only.Name = "include" ->
+                            entry.Name, FsHotWatch.Analyzers.AnalyzersPlugin.Include(globsOf only.Value)
+                        | [ only ] when only.Name = "exclude" ->
+                            entry.Name, FsHotWatch.Analyzers.AnalyzersPlugin.Exclude(globsOf only.Value)
+                        | _ -> refuse "must be an object with exactly one of \"include\" or \"exclude\"")
+                    |> Map.ofSeq
+                | true, scope when scope.ValueKind = JsonValueKind.Null -> Map.empty
+                | true, _ -> raise (ConfigErrorException "analyzers.scope must be an object of path → scope")
+                | _ -> Map.empty
+
             if paths.IsEmpty then
                 None
             else
                 Some
                     {| Paths = paths
                        FailOnSeverity = failOnSeverity
-                       BootstrapHints = bootstrapHints |}
+                       BootstrapHints = bootstrapHints
+                       Scopes = scopes |}
         | _ -> None
 
     let tests =
@@ -2592,10 +2645,17 @@ let registerPluginsIn
         // its per-path load result is known: that is what the fail-loud guard
         // inspects. The factory loads analyzers eagerly, so Init.LoadedByPath is
         // the real per-path result.
+        let scopeByAbsolutePath =
+            a.Scopes
+            |> Map.toList
+            |> List.map (fun (p, scope) -> toAbsolute p, scope)
+            |> Map.ofList
+
         let handler =
-            FsHotWatch.Analyzers.AnalyzersPlugin.create
+            FsHotWatch.Analyzers.AnalyzersPlugin.createScoped
                 outsideRepoScope
                 resolvedPaths
+                scopeByAbsolutePath
                 config.TimeoutSec
                 a.FailOnSeverity
 

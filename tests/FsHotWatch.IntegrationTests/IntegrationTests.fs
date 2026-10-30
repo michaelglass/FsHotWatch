@@ -219,7 +219,8 @@ let ``analyzers load guard fires per-path when one of several paths loads zero``
                     Some
                         {| Paths = [ goodPath; emptyPath; "no-such-analyzer-bin-dir" ]
                            FailOnSeverity = DiagnosticSeverity.Hint
-                           BootstrapHints = Map.empty |} }
+                           BootstrapHints = Map.empty
+                           Scopes = Map.empty |} }
 
         let ex =
             Assert.Throws<DaemonConfig.ConfigErrorException>(fun () ->

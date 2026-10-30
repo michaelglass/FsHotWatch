@@ -529,6 +529,41 @@ let private currentModelGeneration (ctx: PluginCtx<'Msg>) =
     | FsHotWatch.ProjectModel.Observation.Rediscovering _
     | FsHotWatch.ProjectModel.Observation.Unavailable _ -> None
 
+/// Which files one configured analyzer path runs on (`.fshw.json` `analyzers.scope`).
+/// Globs are gitignore-style and repository-relative. A repository that hosts two
+/// products whose analyzer sets were written for their own code scopes each set to it.
+type AnalyzerScope =
+    /// Only the files a glob matches.
+    | Include of globs: string list
+    /// Every file no glob matches.
+    | Exclude of globs: string list
+
+/// Whether the analyzers loaded from `path` run on `file` (both absolute). A path with no
+/// scope runs on every file; a file outside the repository matches no glob.
+let runsOn (repoRoot: string option) (scopes: Map<string, AnalyzerScope>) : string -> string -> bool =
+    let root =
+        repoRoot |> Option.defaultWith Directory.GetCurrentDirectory |> Path.GetFullPath
+
+    let matcher (globs: string list) =
+        let rules =
+            (Ignore.Ignore(), globs) ||> List.fold (fun rules glob -> rules.Add glob)
+
+        fun (file: string) ->
+            not (FsHotWatch.PathFilter.isOutsideRepo root file)
+            && rules.IsIgnored(Path.GetRelativePath(root, file).Replace('\\', '/'))
+
+    let predicates =
+        scopes
+        |> Map.map (fun _ scope ->
+            match scope with
+            | Include globs -> matcher globs
+            | Exclude globs -> matcher globs >> not)
+
+    fun path file ->
+        match Map.tryFind path predicates with
+        | Some admits -> admits file
+        | None -> true
+
 /// Runs the loaded analyzer set — one Client per configured path — over one file's
 /// context. Production uses the SDK's `RunAnalyzersSafely`, which hands a raising
 /// analyzer's exception back as that analyzer's result instead of throwing.
@@ -548,15 +583,17 @@ let internal runSafely: AnalyzerRunner =
 /// The handler, with two test seams: `slowHook` is invoked inside the
 /// timeout-guarded region before the analyzers run, and `runAnalyzersOver` stands in
 /// for the SDK's run so a test can supply analyzers without loading an assembly.
-let internal createWithSeams
+let internal createScopedWithSeams
     (repoRoot: string option)
     (analyzerPaths: string list)
+    (scopes: Map<string, AnalyzerScope>)
     (timeoutSec: int option)
     (failOnSeverity: DiagnosticSeverity)
     (slowHook: (unit -> unit) option)
     (runAnalyzersOver: AnalyzerRunner)
     : PluginHandler<AnalyzersState, AnalyzersMsg> =
     let concurrencyLimit = 4
+    let admits = runsOn repoRoot scopes
     let semaphore = new SemaphoreSlim(concurrencyLimit, concurrencyLimit)
     // Only one synchronous analyzer callback may be alive at a time. Normal
     // FileChecked delivery is serialized already; this fence matters after a
@@ -863,7 +900,12 @@ let internal createWithSeams
                                                         // Drive the run under the timeout's token so a stuck
                                                         // analyzer is actually cancelled on expiry rather than
                                                         // orphaned holding the semaphore slot.
-                                                        let activeClients = Volatile.Read(&loaded) |> List.map _.Client
+                                                        // A scoped path's analyzers run only on the files its
+                                                        // scope admits (`analyzers.scope`).
+                                                        let activeClients =
+                                                            Volatile.Read(&loaded)
+                                                            |> List.filter (fun path -> admits path.Path fileStr)
+                                                            |> List.map _.Client
 
                                                         // Checked under a virtual root, every range in
                                                         // the results names the file by its virtual
@@ -1110,13 +1152,28 @@ let internal createWithSeams
         // inside the repository (`analyzers/`, the usual layout) named absolutely made
         // the key workspace-specific for no analytical reason. The CONTENT of the
         // assemblies is what decides the verdict, and that is the next slot down.
+        // A scope decides which analyzers run on a file, so it is part of the set's
+        // identity; an unscoped config keys exactly as it did before scopes existed.
+        let scopeDescription =
+            scopes
+            |> Map.toList
+            |> List.map (fun (path, scope) ->
+                let kind, globs =
+                    match scope with
+                    | Include globs -> "include", globs
+                    | Exclude globs -> "exclude", globs
+
+                sprintf "%s=%s:%s" (FsHotWatch.CachePathIdentity.keyOf repoRoot path) kind (String.concat "," globs))
+            |> List.sort
+
         let analyzerPathsHash =
             FsHotWatch.CheckCache.sha256Hex (
                 String.concat
                     "|"
-                    (analyzerPaths
-                     |> List.map (FsHotWatch.CachePathIdentity.keyOf repoRoot)
-                     |> List.sort)
+                    ((analyzerPaths
+                      |> List.map (FsHotWatch.CachePathIdentity.keyOf repoRoot)
+                      |> List.sort)
+                     @ scopeDescription)
             )
 
         // The present config files of a file's chain, by repo-relative path and content —
@@ -1181,6 +1238,17 @@ let internal createWithSeams
             // alive until it returns.
             Volatile.Read(&loaded) |> List.iter AnalyzerLoad.unload) }
 
+/// `createScopedWithSeams` with no scope: every analyzer runs on every file.
+let internal createWithSeams
+    (repoRoot: string option)
+    (analyzerPaths: string list)
+    (timeoutSec: int option)
+    (failOnSeverity: DiagnosticSeverity)
+    (slowHook: (unit -> unit) option)
+    (runAnalyzersOver: AnalyzerRunner)
+    : PluginHandler<AnalyzersState, AnalyzersMsg> =
+    createScopedWithSeams repoRoot analyzerPaths Map.empty timeoutSec failOnSeverity slowHook runAnalyzersOver
+
 /// Creates a framework plugin handler that hosts F# analyzers in-process
 /// using the warm checker's results. Per-event work is bounded by
 /// `runWithCancellableTimeout`; on expiry the run is recorded as `TimedOut` and
@@ -1192,3 +1260,14 @@ let create
     (failOnSeverity: DiagnosticSeverity)
     : PluginHandler<AnalyzersState, AnalyzersMsg> =
     createWithSeams repoRoot analyzerPaths timeoutSec failOnSeverity None runSafely
+
+/// `create`, with `analyzers.scope`: each configured path's analyzers run only on the files
+/// its scope admits (keyed by the same, absolute, path).
+let createScoped
+    (repoRoot: string option)
+    (analyzerPaths: string list)
+    (scopes: Map<string, AnalyzerScope>)
+    (timeoutSec: int option)
+    (failOnSeverity: DiagnosticSeverity)
+    : PluginHandler<AnalyzersState, AnalyzersMsg> =
+    createScopedWithSeams repoRoot analyzerPaths scopes timeoutSec failOnSeverity None runSafely

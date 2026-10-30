@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: `analyzers.scope` in `.fshw.json` — `{ "<configured path>": { "include": [globs] } }` or
+  `{ "exclude": [globs] }` — runs one analyzer path only on the files its scope admits (gitignore-style,
+  repository-relative globs). A path with no scope runs on every file, as before, and an unscoped config
+  keeps its cache keys. A scope for an unconfigured path, or one that is not exactly one non-empty
+  `include`/`exclude` list, is a config error (AUTOMATION-1367: one repository, two products' analyzer
+  sets).
+
 ## 0.7.0-alpha.52 - 2026-10-30
 
 - feat: the analyzers state is `ISkipsOutOfRepoFiles`. A replayed check of a NuGet `_content`

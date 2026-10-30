@@ -987,7 +987,8 @@ let ``parseConfig analyzers with paths`` () =
             config.Analyzers = Some
                 {| Paths = [ "path1"; "path2" ]
                    FailOnSeverity = DiagnosticSeverity.Hint
-                   BootstrapHints = Map.empty |}
+                   BootstrapHints = Map.empty
+                   Scopes = Map.empty |}
         @>
 
 [<Fact(Timeout = 15000)>]
@@ -999,7 +1000,8 @@ let ``analyzers config defaults failOnSeverity to Hint`` () =
             config.Analyzers = Some
                 {| Paths = [ "p1" ]
                    FailOnSeverity = DiagnosticSeverity.Hint
-                   BootstrapHints = Map.empty |}
+                   BootstrapHints = Map.empty
+                   Scopes = Map.empty |}
         @>
 
 [<Fact(Timeout = 15000)>]
@@ -1012,7 +1014,8 @@ let ``analyzers config parses explicit failOnSeverity`` () =
             config.Analyzers = Some
                 {| Paths = [ "p1" ]
                    FailOnSeverity = DiagnosticSeverity.Warning
-                   BootstrapHints = Map.empty |}
+                   BootstrapHints = Map.empty
+                   Scopes = Map.empty |}
         @>
 
 [<Theory(Timeout = 15000)>]
@@ -1506,7 +1509,8 @@ let ``parseConfig with full configuration`` () =
             config.Analyzers = Some
                 {| Paths = [ "/analyzers" ]
                    FailOnSeverity = DiagnosticSeverity.Hint
-                   BootstrapHints = Map.empty |}
+                   BootstrapHints = Map.empty
+                   Scopes = Map.empty |}
         @>
 
     test <@ config.Tests.IsSome @>
@@ -2045,7 +2049,8 @@ let ``registerPlugins raises ConfigErrorException when configured analyzers load
                     Some
                         {| Paths = [ "no-such-analyzer-bin-dir" ]
                            FailOnSeverity = DiagnosticSeverity.Hint
-                           BootstrapHints = Map.empty |} }
+                           BootstrapHints = Map.empty
+                           Scopes = Map.empty |} }
 
         let ex =
             Assert.Throws<ConfigErrorException>(fun () -> registerPlugins daemon tmpDir config)
@@ -2136,7 +2141,8 @@ let ``countPlugins counts build lint analyzers tests and fileCommands`` () =
                 Some
                     {| Paths = [ "some/path" ]
                        FailOnSeverity = DiagnosticSeverity.Hint
-                       BootstrapHints = Map.empty |}
+                       BootstrapHints = Map.empty
+                       Scopes = Map.empty |}
             Tests =
                 Some
                     {| BeforeRun = None
