@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a client waits out a starting daemon's FSEvents start-retry budget (AUTOMATION-1414).
+  The daemon listens only once its watcher has started, and since AUTOMATION-1109 it retries a
+  refused FSEvents stream for up to 85.5 s, but a client waited 30 s: it exited 2 while the daemon
+  was still retrying, and the next client killed that daemon as stale and launched another, whose
+  budget started over. The launch wait, and the wait for a daemon found starting, are now that
+  budget plus 30 s (`DaemonStartupWaitSeconds`). Each still ends at once when the pipe listens or
+  the daemon records a refusal, and the wait for a daemon found starting when its process is gone.
+
 - fix: a client whose TMPDIR differs from the daemon's reaches the daemon (AUTOMATION-1106). On
   Unix .NET puts a named pipe's socket under the resolving process's `$TMPDIR`, so a client in an
   agent sandbox (`/tmp`) and a daemon started from a login shell (`/var/folders/…`) computed the

@@ -55,15 +55,28 @@ let ``PluginStatus constructors work`` () =
 
 // --- path/hash wrappers ---
 
-[<Fact(Timeout = 15000)>]
-let ``AbsFilePath round-trips and normalizes`` () =
-    let p = AbsFilePath.create "foo.fs"
-    test <@ System.IO.Path.IsPathRooted(AbsFilePath.value p) @>
+/// A relative path resolves against the PROCESS working directory, which an in-process
+/// evaluation in a parallel test moves (AUTOMATION-1411). So these run serialized, and
+/// read it only while no evaluation runs.
+[<Collection(LogGlobalCollectionName)>]
+type RelativePathResolution() =
+    [<Fact(Timeout = 15000)>]
+    member _.``AbsFilePath round-trips and normalizes``() =
+        let p = atSettledWorkingDirectory (fun () -> AbsFilePath.create "foo.fs")
+        test <@ System.IO.Path.IsPathRooted(AbsFilePath.value p) @>
 
-[<Fact(Timeout = 15000)>]
-let ``AbsProjectPath round-trips`` () =
-    let p = AbsProjectPath.create "x.fsproj"
-    test <@ AbsProjectPath.value p |> System.IO.Path.IsPathRooted @>
+    [<Fact(Timeout = 15000)>]
+    member _.``AbsProjectPath round-trips``() =
+        let p = atSettledWorkingDirectory (fun () -> AbsProjectPath.create "x.fsproj")
+        test <@ AbsProjectPath.value p |> System.IO.Path.IsPathRooted @>
+
+    [<Fact(Timeout = 15000)>]
+    member _.``absolute paths resolve a relative path against the process working directory``() =
+        atSettledWorkingDirectory (fun () ->
+            let cwd = Directory.GetCurrentDirectory()
+            test <@ AbsFilePath.value (AbsFilePath.create "Lib.fs") = Path.Combine(cwd, "Lib.fs") @>
+
+            test <@ AbsProjectPath.value (AbsProjectPath.create "Lib.fsproj") = Path.Combine(cwd, "Lib.fsproj") @>)
 
 [<Fact(Timeout = 15000)>]
 let ``ContentHash round-trips`` () =
@@ -409,12 +422,6 @@ let ``a rooted path resolves without asking for the working directory`` () =
     // Normalization still happens without the working directory.
     test <@ reader.Resolve(Path.Combine(root, "repo", "tests", "..", "src", "Lib.fs")) = file @>
     test <@ asked = 0 @>
-
-[<Fact(Timeout = 15000)>]
-let ``absolute paths resolve a relative path against the process working directory`` () =
-    let cwd = Directory.GetCurrentDirectory()
-    test <@ AbsFilePath.value (AbsFilePath.create "Lib.fs") = Path.Combine(cwd, "Lib.fs") @>
-    test <@ AbsProjectPath.value (AbsProjectPath.create "Lib.fsproj") = Path.Combine(cwd, "Lib.fsproj") @>
 
 [<Fact(Timeout = 15000)>]
 let ``a check's text names a placed reference by the worktree path it was given as`` () =

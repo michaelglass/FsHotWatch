@@ -155,6 +155,145 @@ let ``every source that redirects Console.Error joins the serialized collection`
     )
 
 // ---------------------------------------------------------------------------
+// A test that reads the process working directory runs serialized (AUTOMATION-1411).
+//
+// In-process MSBuild evaluation stands the PROCESS in the project it evaluates, and a
+// daemon in a parallel test evaluates whenever it discovers projects. A test running
+// beside it that reads the working directory, or resolves a relative path against it,
+// reads that test's scratch project instead of its own: EventTests did, once in 6,704 on
+// a Linux runner. The serialized collection runs alone, so a reader in it sees only what
+// it set itself.
+//
+// Scoped by declaration, not by file: the collection may sit on the module (above its
+// `module` line) or on a type, and a reader is serialized only inside one that carries it.
+// ---------------------------------------------------------------------------
+
+/// What reads the process working directory, spelled in halves so this guard is not
+/// itself a match: the runtime's own reads, the TestHelpers that stand in or move it,
+/// and a relative path literal resolved against it.
+let private workingDirectoryReads =
+    [ "Directory." + "GetCurrentDirectory"
+      "Environment." + "CurrentDirectory"
+      "process" + "WorkingDirectory"
+      "withProcess" + "WorkingDirectory"
+      "evaluateIn" + "ProjectDirectory"
+      "standLike" + "TheHostVerb"
+      "moveProcess" + "ToRefuge" ]
+
+let private relativePathResolution =
+    Text.RegularExpressions.Regex(
+        "(AbsFilePath|AbsProjectPath)\\.create\\s*\\(?\\s*[$@]*\"[^/{\"]|Path\\.GetFullPath\\s*\\(?\\s*[$@]*\"[^/{\"]"
+    )
+
+let private readsWorkingDirectory (line: string) =
+    let trimmed = line.TrimStart()
+
+    not (trimmed.StartsWith "//")
+    && (workingDirectoryReads |> List.exists line.Contains
+        || relativePathResolution.IsMatch line)
+
+/// The 1-based lines of `lines` that read the process working directory outside a
+/// declaration carrying `[<Collection(LogGlobalCollectionName)>]`.
+let private unserializedWorkingDirectoryReads (lines: string[]) : int list =
+    let serialized (attributeLine: string) =
+        attributeLine.StartsWith "[<"
+        && attributeLine.Contains("LogGlobal" + "CollectionName")
+
+    // The attribute lines directly above line `i`, skipping doc comments.
+    let attributesAbove (i: int) =
+        let rec walk j acc =
+            if j < 0 then
+                acc
+            else
+                let line = lines[j]
+
+                if line.StartsWith "[<" then walk (j - 1) (line :: acc)
+                elif line.StartsWith "///" then walk (j - 1) acc
+                else acc
+
+        walk (i - 1) []
+
+    let isDeclaration (line: string) =
+        line.StartsWith "let " || line.StartsWith "type " || line.StartsWith "module "
+
+    let moduleSerialized =
+        lines
+        |> Array.tryFindIndex (fun line -> line.StartsWith "module ")
+        |> Option.exists (fun i -> attributesAbove i |> List.exists serialized)
+
+    if moduleSerialized then
+        []
+    else
+        lines
+        |> Array.indexed
+        |> Array.filter (fun (_, line) -> readsWorkingDirectory line)
+        |> Array.choose (fun (i, _) ->
+            // The declaration this line belongs to: the nearest one at column 0 above it,
+            // or the line itself when it is one.
+            let owner = seq { i .. -1 .. 0 } |> Seq.tryFind (fun j -> isDeclaration lines[j])
+
+            match owner with
+            | Some j when lines[j].StartsWith "type " && attributesAbove j |> List.exists serialized -> None
+            | _ -> Some(i + 1))
+        |> List.ofArray
+
+[<Fact(Timeout = 20000)>]
+let ``the working-directory guard tells a serialized reader from one beside the parallel tests`` () =
+    // PositiveControl for the guard below: it flags a read in a plain test, or in a type
+    // without the collection, and passes one inside a type or module that has it.
+    let attribute = "[<Collection(" + "LogGlobal" + "CollectionName)>]"
+    let read = "    let cwd = Directory." + "GetCurrentDirectory()"
+    let relative = "    let p = AbsFilePath" + ".create \"Lib.fs\""
+    let rooted = "    let p = AbsFilePath" + ".create \"/repo/Lib.fs\""
+
+    let parallelModule =
+        [| "module M"
+           "[<Fact>]"
+           "let ``a`` () ="
+           read
+           "[<Collection(\"Other\")>]"
+           "type T() ="
+           relative
+           "let ``b`` () ="
+           rooted |]
+
+    let serializedType =
+        [| "module M"
+           attribute
+           "/// doc"
+           "type T() ="
+           "    member _.x() ="
+           read
+           relative |]
+
+    let serializedModule = [| attribute; "module M"; "let ``a`` () ="; read |]
+
+    test <@ unserializedWorkingDirectoryReads parallelModule = [ 4; 7 ] @>
+    test <@ List.isEmpty (unserializedWorkingDirectoryReads serializedType) @>
+    test <@ List.isEmpty (unserializedWorkingDirectoryReads serializedModule) @>
+
+[<Fact(Timeout = 20000)>]
+let ``every test that reads the process working directory runs in the serialized collection`` () =
+    // TestHelpers defines the readers (their callers are what is checked). The
+    // working-directory guard runs after every test, in every collection, and waits out
+    // any evaluation before it moves the process.
+    let allowed = set [ "TestHelpers.fs"; "ProcessWorkingDirectoryGuard.fs" ]
+
+    let offenders =
+        testProjectSources ()
+        |> Array.filter (fun (name, _) -> not (allowed.Contains name))
+        |> Array.choose (fun (name, lines) ->
+            match unserializedWorkingDirectoryReads lines with
+            | [] -> None
+            | found -> Some(name, found))
+        |> List.ofArray
+
+    Assert.True(
+        List.isEmpty offenders,
+        $"these sources read the process working directory beside the parallel tests (file, lines): %A{offenders}"
+    )
+
+// ---------------------------------------------------------------------------
 // A bounded wait must not report an expiry as a success.
 //
 // A caller that waits and then asserts something NEGATIVE ("no cache entry was written")

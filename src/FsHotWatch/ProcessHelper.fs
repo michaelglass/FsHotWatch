@@ -315,6 +315,44 @@ let internal pumpReachedEof (failure: exn option) : bool =
 /// waiting longer buys evidence nobody will read.
 let internal TeardownBudget = TimeSpan.FromSeconds 10.0
 
+/// A floor under the bounds an accounted teardown waits on the OS with: the process-table
+/// read that names the tree, the grace a stopped tree gets to exit, and the step a member
+/// left at the bottom of it gets to exit on its own (AUTOMATION-1414).
+///
+/// Production installs none. A test of a real teardown on a real OS installs a hang cap:
+/// each of these waits ends the moment its event happens (`ps` exits, the tree is gone),
+/// so a correct teardown is decided by the event and only a wedged one reaches the bound.
+/// Without it, a saturated box (load ~240) let `ps` miss the 10 s `TeardownBudget`, and the
+/// tests asserting what a teardown found read "tree termination UNKNOWN", or found a tree
+/// killed outright instead of stopped from the bottom up.
+///
+/// Scoped by an `AsyncLocal`, like `ProcessRegistry`, so it reaches the work started in
+/// the scope that installed it and no other.
+[<RequireQualifiedAccess>]
+module internal TeardownPatience =
+    let private floor = AsyncLocal<TimeSpan>()
+
+    /// `bound`, or the patience installed in this scope when that is longer.
+    let atLeast (bound: TimeSpan) : TimeSpan =
+        let patience = floor.Value
+        if patience > bound then patience else bound
+
+    /// A stop's `(grace, step)` under the installed patience: the step is at least the
+    /// patience, and the grace at least the patience plus however much the step grew, so
+    /// a member that reaches the bottom of the tree late still gets its whole step.
+    let stop (grace: TimeSpan) (step: TimeSpan) : TimeSpan * TimeSpan =
+        let step' = atLeast step
+        atLeast grace + (step' - step), step'
+
+    /// Give every teardown started in this scope at least `patience` per wait, until the
+    /// result is disposed.
+    let install (patience: TimeSpan) : IDisposable =
+        let previous = floor.Value
+        floor.Value <- patience
+
+        { new IDisposable with
+            member _.Dispose() = floor.Value <- previous }
+
 /// What the kill CALL did — the raw, unclassified fact, separated from what it MEANS
 /// so `classifyKill` can stay pure and total.
 [<RequireQualifiedAccess; NoComparison>]
@@ -1205,7 +1243,8 @@ let internal DeepestFirstStep = TimeSpan.FromSeconds 5.0
 let internal stopWith (stop: TreeStop option) : ProcessRow list -> TreeInterrupt option =
     match stop with
     | Some s ->
-        let attempts = interruptAttempts s.Grace
+        let grace, step = TeardownPatience.stop s.Grace DeepestFirstStep
+        let attempts = interruptAttempts grace
 
         match s.Order with
         | StopOrder.WholeTree ->
@@ -1218,7 +1257,7 @@ let internal stopWith (stop: TreeStop option) : ProcessRow list -> TreeInterrupt
                         s.Signal.Send
                         isProcessAlive
                         attempts
-                        (interruptAttempts DeepestFirstStep)
+                        (interruptAttempts step)
                         interruptPause
                         members
                 )
@@ -2258,7 +2297,7 @@ let internal runProcessCore
         if accounted then
             let t =
                 accountTeardownWith
-                    (fun () -> readProcessTableWithin TeardownBudget)
+                    (fun () -> readProcessTableWithin (TeardownPatience.atLeast TeardownBudget))
                     isProcessAlive
                     SettleAttempts
                     settlePause

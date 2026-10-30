@@ -1503,8 +1503,26 @@ let killStaleDaemonWith (fileOps: FileOps) (processOps: ProcessOps) (repoRoot: s
 let private killStaleDaemon (repoRoot: string) =
     killStaleDaemonWith defaultFileOps defaultProcessOps repoRoot
 
-/// Start a fresh daemon process (injectable for testing).
-let startFreshDaemonWith
+/// How long a client waits for a daemon it launched, or found starting, to listen.
+///
+/// A daemon listens only once its file watcher has started, and on macOS it retries a
+/// refused FSEvents stream for up to `NativeStartRetry.defaults` (85.5 s) before it
+/// fails closed (AUTOMATION-1109). A client that stopped waiting sooner exited 2 while
+/// that daemon was still retrying, and the next client killed it as stale and launched
+/// another, which started its budget over (AUTOMATION-1414). So the wait is that budget
+/// plus the 30 s an ordinary start was always given. Each wait ends at once on its event
+/// (the pipe listens or the daemon records a refusal; for a daemon found starting, also
+/// its process being gone), so only a daemon that is really still starting spends it.
+let internal DaemonStartupWaitSeconds =
+    30.0
+    + float (List.sum FsHotWatch.Watcher.FileWatcher.NativeStartRetry.defaults.BackoffMs)
+      / 1000.0
+
+/// `startFreshDaemonWith`, with the clock its wait reads and the pause between its
+/// probes injected.
+let internal startFreshDaemonOn
+    (now: unit -> DateTime)
+    (sleep: int -> unit)
     (fileOps: FileOps)
     (ipc: IpcOps)
     (repoRoot: string)
@@ -1536,7 +1554,7 @@ let startFreshDaemonWith
 
     let deadline =
         if launched then
-            DateTime.UtcNow.AddSeconds(startupTimeoutSeconds)
+            now().AddSeconds(startupTimeoutSeconds)
         else
             DateTime.MinValue
 
@@ -1545,12 +1563,33 @@ let startFreshDaemonWith
     // never come up, so the reason is printed now rather than after the timeout.
     let mutable refused = fileOps.FileExists startupFailure
 
-    while not isUp && not refused && DateTime.UtcNow < deadline do
-        Thread.Sleep(100)
+    while not isUp && not refused && now () < deadline do
+        sleep 100
         isUp <- ipc.IsRunning pipeName
         refused <- fileOps.FileExists startupFailure
 
     isUp
+
+/// Start a fresh daemon process (injectable for testing).
+let startFreshDaemonWith
+    (fileOps: FileOps)
+    (ipc: IpcOps)
+    (repoRoot: string)
+    (pipeName: string)
+    (extraArgs: string)
+    (logDirName: string)
+    (startupTimeoutSeconds: float)
+    : bool =
+    startFreshDaemonOn
+        (fun () -> DateTime.UtcNow)
+        Thread.Sleep
+        fileOps
+        ipc
+        repoRoot
+        pipeName
+        extraArgs
+        logDirName
+        startupTimeoutSeconds
 
 let private startFreshDaemon
     (ipc: IpcOps)
@@ -1605,8 +1644,11 @@ let internal tryInvalidateWithoutDaemon (repoRoot: string) : bool =
             ((CacheResidency.openPersistedStores repoRoot).Routed :> TaskCache.ITaskCache).Clear()
             true
 
-/// Make sure a daemon serves `repoRoot` (injectable file and process operations).
-let internal ensureDaemonWith
+/// `ensureDaemonWith`, with the clock its waits read and the pause between their probes
+/// injected.
+let internal ensureDaemonOn
+    (now: unit -> DateTime)
+    (sleep: int -> unit)
     (fileOps: FileOps)
     (processOps: ProcessOps)
     (ipc: IpcOps)
@@ -1652,14 +1694,14 @@ let internal ensureDaemonWith
                 with :? ArgumentException ->
                     false
 
-        let deadline = DateTime.UtcNow.AddSeconds startupTimeoutSeconds
+        let deadline = now().AddSeconds startupTimeoutSeconds
         let mutable isUp = false
 
         if starting && alive () then
             eprintfn "Waiting for the daemon that is starting..."
 
-            while not isUp && DateTime.UtcNow < deadline && alive () do
-                Thread.Sleep(100)
+            while not isUp && now () < deadline && alive () do
+                sleep 100
                 isUp <- ipc.IsRunning pipeName
 
         isUp
@@ -1667,7 +1709,7 @@ let internal ensureDaemonWith
     if not (ipc.IsRunning pipeName || awaitStartingDaemon ()) then
         killStaleDaemonWith fileOps processOps repoRoot
 
-        startFreshDaemonWith fileOps ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
+        startFreshDaemonOn now sleep fileOps ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
         |> EnsureOutcome.ofStart
     else
         let storedHash =
@@ -1695,8 +1737,31 @@ let internal ensureDaemonWith
 
             killStaleDaemonWith fileOps processOps repoRoot
 
-            startFreshDaemonWith fileOps ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
+            startFreshDaemonOn now sleep fileOps ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
             |> EnsureOutcome.ofStart
+
+/// Make sure a daemon serves `repoRoot` (injectable file and process operations).
+let internal ensureDaemonWith
+    (fileOps: FileOps)
+    (processOps: ProcessOps)
+    (ipc: IpcOps)
+    (repoRoot: string)
+    (pipeName: string)
+    (extraArgs: string)
+    (logDirName: string)
+    (startupTimeoutSeconds: float)
+    : EnsureOutcome =
+    ensureDaemonOn
+        (fun () -> DateTime.UtcNow)
+        Thread.Sleep
+        fileOps
+        processOps
+        ipc
+        repoRoot
+        pipeName
+        extraArgs
+        logDirName
+        startupTimeoutSeconds
 
 let private ensureDaemon ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds =
     ensureDaemonWith defaultFileOps defaultProcessOps ipc repoRoot pipeName extraArgs logDirName startupTimeoutSeconds
@@ -4864,7 +4929,7 @@ let private chooseLink
     (command: Command)
     : Result<DaemonLink * IpcOps, int> =
     let ownDaemon =
-        Ok(ownDaemonLink defaultIpcOps repoRoot pipeName opts config 30.0, defaultIpcOps)
+        Ok(ownDaemonLink defaultIpcOps repoRoot pipeName opts config DaemonStartupWaitSeconds, defaultIpcOps)
 
     let live =
         FsHotWatch.RepositoryHost.HostSessionRecord.tryReadLive FsHotWatch.RepositoryHost.processAlive repoRoot
@@ -5039,7 +5104,17 @@ let private runCli (args: string array) : int =
                 match chooseLink repoRoot pipeName opts config configSource command with
                 | Error exitCode -> exitCode
                 | Ok(link, ipc) ->
-                    executeCommandWith link loadedIdentity createDaemon ipc repoRoot pipeName command opts config 30.0
+                    executeCommandWith
+                        link
+                        loadedIdentity
+                        createDaemon
+                        ipc
+                        repoRoot
+                        pipeName
+                        command
+                        opts
+                        config
+                        DaemonStartupWaitSeconds
             // ROOT-level unknown command: the dynamic plugin-passthrough. Forward `rest`
             // verbatim; if the daemon doesn't recognize it, fail hard with the canonical
             // error + help, so garbage CLI input fails uniformly.
