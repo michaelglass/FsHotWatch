@@ -74,6 +74,15 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### cli: the stale-daemon kill no longer SIGKILLs a recycled pid
+
+- Before replacing a daemon that does not answer, the CLI killed whatever process held
+  the pid in `.fshw/daemon.pid`. If the daemon had died and the OS had handed that pid to
+  another program, that program was killed. It now signals only a process that started
+  no later than the pidfile was written (the daemon writes its pid after it starts). A
+  later start, or a start time it cannot read, leaves the process alone and says so; the
+  stale pidfile is still removed.
+
 ### build: FSharp.Compiler.Service and FSharp.Core are pinned exactly
 
 - FCS is pinned at `[43.12.402]` and FSharp.Core at `[10.1.402]` in every project, instead

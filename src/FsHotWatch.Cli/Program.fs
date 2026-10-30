@@ -694,11 +694,17 @@ let computePipeName (repoRoot: string) =
 
 /// Injectable file system operations for testability.
 type FileOps =
-    { FileExists: string -> bool
-      ReadAllText: string -> string
-      WriteAllText: string -> string -> unit
-      DeleteFile: string -> unit
-      CreateDirectory: string -> unit }
+    {
+        FileExists: string -> bool
+        ReadAllText: string -> string
+        WriteAllText: string -> string -> unit
+        DeleteFile: string -> unit
+        CreateDirectory: string -> unit
+        /// When `path` was last written (UTC). The stale-daemon kill reads it off
+        /// `.fshw/daemon.pid`: the daemon writes that file after it starts, so it bounds
+        /// the start time of the process that wrote it.
+        LastWriteTimeUtc: string -> DateTime
+    }
 
 /// Default file system operations.
 let defaultFileOps: FileOps =
@@ -706,19 +712,25 @@ let defaultFileOps: FileOps =
       ReadAllText = File.ReadAllText
       WriteAllText = fun path content -> File.WriteAllText(path, content)
       DeleteFile = File.Delete
-      CreateDirectory = fun path -> Directory.CreateDirectory(path) |> ignore }
+      CreateDirectory = fun path -> Directory.CreateDirectory(path) |> ignore
+      LastWriteTimeUtc = File.GetLastWriteTimeUtc }
 
 /// Injectable process operations for testability.
 type ProcessOps =
-    { GetProcessById: int -> System.Diagnostics.Process
-      KillProcess: System.Diagnostics.Process -> unit
-      WaitForExit: System.Diagnostics.Process -> int -> bool }
+    {
+        GetProcessById: int -> System.Diagnostics.Process
+        KillProcess: System.Diagnostics.Process -> unit
+        WaitForExit: System.Diagnostics.Process -> int -> bool
+        /// When the OS started `proc` (UTC). Raises when it cannot be read.
+        StartTimeUtc: System.Diagnostics.Process -> DateTime
+    }
 
 /// Default process operations.
 let defaultProcessOps: ProcessOps =
     { GetProcessById = System.Diagnostics.Process.GetProcessById
       KillProcess = fun proc -> proc.Kill()
-      WaitForExit = fun proc timeout -> proc.WaitForExit(timeout) }
+      WaitForExit = fun proc timeout -> proc.WaitForExit(timeout)
+      StartTimeUtc = fun proc -> proc.StartTime.ToUniversalTime() }
 
 /// The production daemon launch: background `exe toolPrefix extraArgs start` with its
 /// output appended to `logFile`, in a new session and process group of its own, so the
@@ -1427,7 +1439,24 @@ let restartReasonLine (action: RunningDaemonAction) : string option =
                (%s{recorded.Version}) — restarting it with this one..."
     | RestartConfigChanged -> Some "  Daemon config changed — restarting..."
 
+/// How far a process's reported start time may trail the write of the pidfile it
+/// names and still count as the process that wrote it. The daemon writes its pid only
+/// once its runtime is up, so the real gap is the other way round; this absorbs the OS's
+/// start-time arithmetic (Linux derives it from boot time and clock ticks), not a race.
+let internal PidfileStartSlack = TimeSpan.FromSeconds 1.0
+
+/// Whether the process holding a pidfile's pid now can be the one that wrote it: it
+/// started no later than the pidfile was written. A process that started afterwards
+/// was handed a recycled pid after the daemon that wrote the file was gone.
+let internal startedBeforePidfile (pidfileWritten: DateTime) (processStarted: DateTime) : bool =
+    processStarted <= pidfileWritten + PidfileStartSlack
+
 /// Kill a stale daemon process by PID file (injectable).
+///
+/// The pid is only a number the OS reuses: before signalling, the process holding it
+/// must have started before the pidfile was written. Anything else — a later start, or
+/// a start time that cannot be read — is left alone. SIGKILL to the wrong process cannot
+/// be undone.
 let killStaleDaemonWith (fileOps: FileOps) (processOps: ProcessOps) (repoRoot: string) =
     let pidPath = Path.Combine(repoRoot, ".fshw", "daemon.pid")
 
@@ -1437,9 +1466,19 @@ let killStaleDaemonWith (fileOps: FileOps) (processOps: ProcessOps) (repoRoot: s
 
             try
                 let proc = processOps.GetProcessById pid
-                eprintfn "  Killing stale daemon (PID %d)..." pid
-                processOps.KillProcess proc
-                processOps.WaitForExit proc 5000 |> ignore
+                let written = fileOps.LastWriteTimeUtc pidPath
+                let started = processOps.StartTimeUtc proc
+
+                if startedBeforePidfile written started then
+                    eprintfn "  Killing stale daemon (PID %d)..." pid
+                    processOps.KillProcess proc
+                    processOps.WaitForExit proc 5000 |> ignore
+                else
+                    eprintfn
+                        "  Not killing PID %d: it started at %s, after daemon.pid was written at %s, so the pid was recycled and is not the daemon."
+                        pid
+                        (started.ToString "O")
+                        (written.ToString "O")
             with ex ->
                 eprintfn "  Could not kill PID %d: %s" pid ex.Message
 
