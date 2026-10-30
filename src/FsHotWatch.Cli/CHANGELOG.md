@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a client whose TMPDIR differs from the daemon's reaches the daemon (AUTOMATION-1106). On
+  Unix .NET puts a named pipe's socket under the resolving process's `$TMPDIR`, so a client in an
+  agent sandbox (`/tmp`) and a daemon started from a login shell (`/var/folders/…`) computed the
+  same pipe name, looked in different places, and the client timed out with `Could not connect`
+  against a live daemon. The daemon now records the absolute socket path it listens on in
+  `.fshw/daemon.endpoint`, beside `daemon.pid` and removed with it; a client connects to that
+  path while `daemon.pid` names a live process, and otherwise resolves the pipe name as before.
+
 - feat: `analyzers.scope` in `.fshw.json` — `{ "<configured path>": { "include": [globs] } }` or
   `{ "exclude": [globs] }` — runs one analyzer path only on the files its scope admits (gitignore-style,
   repository-relative globs). A path with no scope runs on every file, as before, and an unscoped config

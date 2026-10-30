@@ -1424,6 +1424,53 @@ let ``executeCommand Start fails closed when the native FSEvents stream is refus
         test <@ not (File.Exists pidFile) @>
         test <@ daemonLockIsFree tmpDir @>)
 
+[<Fact(Timeout = 30000)>]
+let ``executeCommand Start records the socket it listens on and removes the record on the way out`` () =
+    // A client under a different TMPDIR resolves a different socket for the same pipe
+    // name; the record is what lets it reach this daemon anyway.
+    withTempDir "cli-start-endpoint" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "Stub.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let endpointFile = DaemonEndpoint.path tmpDir
+        let mutable recorded = None
+
+        let createDaemon (_root: string) : Daemon =
+            recorded <-
+                if File.Exists endpointFile then
+                    Some(File.ReadAllText(endpointFile).Trim())
+                else
+                    None
+
+            failwith "sentinel: leave Start before RunWithIpc"
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> false }
+
+        let outcome =
+            try
+                executeCommand
+                    ""
+                    createDaemon
+                    ipc
+                    tmpDir
+                    "fshw-test-pipe-endpoint"
+                    Start
+                    defaultGlobalOptions
+                    fakeConfig
+                    30.0
+                |> string
+            with ex ->
+                ex.Message
+
+        test <@ outcome = "sentinel: leave Start before RunWithIpc" @>
+
+        if not (OperatingSystem.IsWindows()) then
+            test <@ recorded = Some(DaemonEndpoint.socketPath "fshw-test-pipe-endpoint") @>
+
+        test <@ not (File.Exists endpointFile) @>)
+
 [<Fact(Timeout = 15000)>]
 let ``executeCommand returns 1 when IPC fails`` () =
     let ipc =
