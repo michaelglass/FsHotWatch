@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 13.5.2 - 2026-10-29
+
 - fix: a schema rebuild keeps the tables core did not create. Opening a file older than
   `SchemaVersion` (or an unversioned one with tables) used to delete the whole file, taking
   every plugin's and host's tables with it — FsHotWatch keeps state in the same file. It now
