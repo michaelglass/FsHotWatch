@@ -26,8 +26,10 @@ The verbs that matter:
 - **`confirm`** — run the FULL suite and confirm `check` told the truth. Same
   checks, but the tests run unfiltered, and a green is refused (exit 3) unless they
   actually did. This is what CI runs. On an unchanged tree it answers from the
-  evidence already earned; `confirm --fresh` launches a new full-suite run instead
-  (for timing or tracing a run — not needed for a verdict).
+  evidence already earned and RUNS NOTHING: the output says `reused` and names the run
+  that earned the green (in `-a` mode, the envelope's `reused: {runId, producedAt}`).
+  `confirm --fresh` launches a new full-suite run instead — use it when the gate must
+  report a green earned in this invocation (a deploy gate), or for timing or tracing a run.
 
 **Which verb gates a merge is YOUR project's policy, not fshw's.** The two verbs
 report different strengths of evidence and say honestly which one they produced;
