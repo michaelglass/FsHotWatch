@@ -262,6 +262,20 @@ type InsightsFlag =
     | [<CmdFlag(Description = "Report on this run (its id under .fshw/test-runs) instead of the newest", Short = "i")>] Run of
         string
 
+/// Flags for `fshw analytics`. See `OutcomeAnalytics`.
+[<RequireQualifiedAccess>]
+type AnalyticsFlag =
+    | [<CmdFlag(Description = "Print the report as one fshw-analytics-v1 JSON object")>] Json
+    | [<CmdFlag(Description = "Only records and shadow lines from the last N days (default: everything the store keeps)")>] Since of
+        int
+    | [<CmdFlag(Description = "Flaky and slow subjects listed (default 10)")>] Top of int
+    | [<CmdFlag(Description = "Read the outcome store from this directory instead of this repository's box-wide one")>] Store of
+        string
+    | [<CmdFlag(Description =
+                    "Read this shadow ledger (repeatable). Default: this checkout's, and that of every worktree the store names",
+                Name = "shadow-log",
+                Repeatable = true)>] ShadowLog of string
+
 /// `--repository`: act on the repository host and every worktree it serves.
 type RepositoryFlag =
     | [<CmdFlag(Description = "Act on the repository host and every worktree it serves, not only this worktree")>] Repository
@@ -338,6 +352,9 @@ type Command =
     | [<CmdExample("", "--runs-dir ../other/.fshw/test-runs", "--top 5");
         Cmd("Where the newest test run spent its wall clock: slowest classes, serial tail, budget headroom, regressions vs recent greens, load sensitivity (reads .fshw/test-runs; never contacts the daemon)")>] Insights of
         InsightsFlag list
+    | [<CmdExample("", "--json", "--since 7");
+        Cmd("Flaky, slow and trust analytics over the outcome store and the shadow ledger: input sets recorded both green and red, duration percentiles, reds later green on identical inputs, runs a lookup would have answered, shadow agreement by day (reads the store; never contacts the daemon)")>] Analytics of
+        AnalyticsFlag list
     | [<Cmd("Install fish completions")>] Completions
     | [<CmdArg("worktree root");
         Cmd("Run the repository host for the repository containing <root> (launched on demand when `repositoryHost` is enabled)")>] Host of
@@ -390,7 +407,8 @@ let internal agentGateFor (command: Command) : AgentGate =
     | Command.Rerun _
     | Command.Config _
     | Command.Coverage _
-    | Command.Insights _ -> AgentGate.OwnOutput
+    | Command.Insights _
+    | Command.Analytics _ -> AgentGate.OwnOutput
     | Command.Start
     | Command.Init
     // `findings` prints the answer a caller asked for, JSON with `--json`.
@@ -420,6 +438,7 @@ let internal commandToken (command: Command) : string =
     | Command.Coverage _ -> "coverage"
     | Command.DeadCode _ -> "dead-code"
     | Command.Insights _ -> "insights"
+    | Command.Analytics _ -> "analytics"
     | Command.Explain _ -> "explain"
     | Command.Completions -> "completions"
     | Command.Host _ -> "host"
@@ -466,6 +485,46 @@ let internal insightsSetup
         |> List.tryPick (function
             | InsightsFlag.Run id -> Some id
             | _ -> None) }
+
+/// What `fshw analytics` reads and how it reports.
+type internal AnalyticsSetup =
+    {
+        /// The outcome store: `--store`, else this repository's box-wide one.
+        StoreDir: string
+        /// `--shadow-log`s; `None` discovers them from the store (`shadowLogsFor`).
+        ShadowLogs: string list option
+        /// `--since N`: `now` minus N days.
+        Since: DateTimeOffset option
+        Top: int
+        Json: bool
+    }
+
+let internal analyticsSetup (now: DateTimeOffset) (repoRoot: string) (flags: AnalyticsFlag list) : AnalyticsSetup =
+    let logs =
+        flags
+        |> List.choose (function
+            | AnalyticsFlag.ShadowLog p -> Some(Path.GetFullPath p)
+            | _ -> None)
+
+    { StoreDir =
+        flags
+        |> List.tryPick (function
+            | AnalyticsFlag.Store d -> Some(Path.GetFullPath d)
+            | _ -> None)
+        |> Option.defaultWith (fun () -> FsHotWatch.OutcomeStore.directoryFor repoRoot)
+      ShadowLogs = if logs.IsEmpty then None else Some logs
+      Since =
+        flags
+        |> List.tryPick (function
+            | AnalyticsFlag.Since days -> Some(now.AddDays(-(float days)))
+            | _ -> None)
+      Top =
+        flags
+        |> List.tryPick (function
+            | AnalyticsFlag.Top n -> Some n
+            | _ -> None)
+        |> Option.defaultValue 10
+      Json = List.contains AnalyticsFlag.Json flags }
 
 let private isRunOnce = List.contains RunOnce
 
@@ -3548,6 +3607,7 @@ let private executeCommandRendered
         | Coverage _
         | DeadCode _
         | Insights _
+        | Analytics _
         | Explain _
         | Completions
         | Host _ -> false
@@ -4320,6 +4380,28 @@ let private executeCommandRendered
                 printfn "%s" (FsHotWatch.TestPrune.Insights.reportJson options runs)
             else
                 for line in FsHotWatch.TestPrune.Insights.report options runs do
+                    printfn "%s" line
+
+            0
+        | Analytics flags ->
+            // A pure read of the outcome store and the shadow ledgers: no daemon, no IPC,
+            // no run, and nothing quarantined.
+            let setup = analyticsSetup DateTimeOffset.UtcNow repoRoot flags
+            let scan = FsHotWatch.OutcomeStore.readAll setup.StoreDir
+
+            let logs =
+                setup.ShadowLogs
+                |> Option.defaultWith (fun () -> OutcomeAnalytics.shadowLogsFor repoRoot scan.Records)
+
+            let report =
+                OutcomeAnalytics.analyze setup.Since scan (OutcomeAnalytics.readShadowLogs logs)
+
+            if setup.Json then
+                printfn "%s" (OutcomeAnalytics.toJson report)
+            else
+                printfn "store: %s" setup.StoreDir
+
+                for line in OutcomeAnalytics.render setup.Top report do
                     printfn "%s" line
 
             0

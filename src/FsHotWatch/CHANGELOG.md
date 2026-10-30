@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `OutcomeStore.readAll root` reads every record in a store directory, oldest first,
+  for analysis (AUTOMATION-1368). Unlike a lookup it quarantines nothing: a file a lookup
+  would move aside is counted in `Scan.Unreadable` and left where it is.
+
 ## 0.10.0-alpha.98 - 2026-10-30
 
 - feat: `OptionsRecords`, persisted project options (ADR-059 §18, AUTOMATION-1372). With
