@@ -2105,3 +2105,37 @@ let ``a child never inherits the trace recorder's variables, and a caller's own 
             let overlaid = printed [ "TESTPRUNE_TRACE_OUT", "/inner/traces" ]
             Swensen.Unquote.Assertions.test <@ inherited = "||kept" @>
             Swensen.Unquote.Assertions.test <@ overlaid = "/inner/traces||kept" @>)
+
+// ---------------------------------------------------------------------------
+// Teardown patience (AUTOMATION-1414): a test of a real teardown on a saturated box waits
+// for the OS events the teardown waits for, not for the product's short bounds on them.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a teardown with no patience installed keeps the product's own bounds`` () =
+    let grace = TimeSpan.FromSeconds 15.0
+
+    Swensen.Unquote.Assertions.test <@ TeardownPatience.atLeast TeardownBudget = TeardownBudget @>
+    Swensen.Unquote.Assertions.test <@ TeardownPatience.stop grace DeepestFirstStep = (grace, DeepestFirstStep) @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a teardown under installed patience gives each OS wait at least that long, in work started in its scope`` () =
+    let patience = TimeSpan.FromSeconds 30.0
+    let grace = TimeSpan.FromSeconds 15.0
+    let longer = TimeSpan.FromSeconds 60.0
+
+    let read, readInWork, readLonger, stop =
+        using (TeardownPatience.install patience) (fun _ ->
+            TeardownPatience.atLeast TeardownBudget,
+            System.Threading.Tasks.Task.Run(fun () -> TeardownPatience.atLeast TeardownBudget).Result,
+            TeardownPatience.atLeast longer,
+            TeardownPatience.stop grace DeepestFirstStep)
+
+    Swensen.Unquote.Assertions.test <@ read = patience @>
+    Swensen.Unquote.Assertions.test <@ readInWork = patience @>
+    // A bound already past the patience is the product's.
+    Swensen.Unquote.Assertions.test <@ readLonger = longer @>
+    // The step is the patience; the grace grows by what the step grew (25 s), past 30 s.
+    Swensen.Unquote.Assertions.test <@ stop = (patience + (patience - DeepestFirstStep), patience) @>
+    // Gone once disposed.
+    Swensen.Unquote.Assertions.test <@ TeardownPatience.atLeast TeardownBudget = TeardownBudget @>

@@ -42,11 +42,22 @@ let private writeController (path: string) (started: string) (restored: string) 
 // on the kill order it exists to prove. TestPrune project timeouts cannot be armed on a
 // child's first write, so the timeout is 5 s: wide enough for a starved `sh` to reach its
 // `wait`, at a cost of 4 s per run. The wait and cap sit above it and the product's teardown.
-[<Fact(Timeout = RealCheckTestCapMs)>]
+//
+// Load (AUTOMATION-1414): failed again at load ~240 with no `restored` file. The teardown's
+// `ps` read missed the product's 10 s `TeardownBudget`, so there was no tree to stop from the
+// bottom up, and the tree was killed outright, controller and all. The claim is the order
+// the stop signals in, so the test waits for the events the teardown waits for (`ps` exits,
+// the host exits, the controller restores and exits) under `TeardownPatience` (`HangWait`):
+// only a wedged one reaches it. The wait sits above the patient teardown: 5 s timeout, 30 s
+// read, 55 s grace, 10 s kill.
+[<Fact(Timeout = 2 * RealCheckTestCapMs)>]
 [<WallClock("real host: a real sh controller and child, a real product timeout and a real tree kill; the claim is the order the real OS sees the signals in, so it runs on real time with a timeout sized for a starved shell")>]
 let ``a test host killed at its timeout is stopped from the bottom up, so its controller restores and a marker names the timeout``
     ()
     =
+    use _patience =
+        FsHotWatch.ProcessHelper.TeardownPatience.install (System.TimeSpan.FromMilliseconds(float HangWaitMs))
+
     withTempDir "tp-timeout-graceful" (fun tmpDir ->
         let controller = Path.Combine(tmpDir, "controller.sh")
         let started = Path.Combine(tmpDir, "started")
@@ -73,7 +84,7 @@ let ``a test host killed at its timeout is stopped from the bottom up, so its co
         host.RegisterHandler(create ":memory:" tmpDir (Some configs) None None None None [])
         host.EmitBuildCompleted(BuildSucceeded)
 
-        waitForTerminalStatus host "test-prune" (2 * HangWaitMs)
+        waitForTerminalStatus host "test-prune" (5_000 + 4 * HangWaitMs)
 
         test <@ File.Exists started @>
         test <@ File.Exists restored @>

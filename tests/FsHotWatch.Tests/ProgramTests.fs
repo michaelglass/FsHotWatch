@@ -461,6 +461,60 @@ let ``ensureDaemonWith kills a stale pidfile's process at once when no daemon ho
         // Nothing was starting, so nothing was waited for before the replacement launched.
         test <@ probesBeforeLaunch = 1 @>)
 
+// --- a daemon still inside its FSEvents start-retry budget (AUTOMATION-1414) ---
+//
+// A daemon listens only once its watcher has started, and on macOS it retries a refused
+// FSEvents stream for up to `NativeStartRetry.defaults` before it fails closed. A client
+// that gives up sooner exits 2 while that daemon is still retrying, and the next one
+// kills it as stale and launches another, whose budget starts over. Time is a fake clock
+// that each probe's pause advances, so the 85 s budget costs no real time.
+
+/// The daemon's whole start-retry budget: it listens on its last retry, just inside it.
+let private retryBudget =
+    TimeSpan.FromMilliseconds(float (List.sum FsHotWatch.Watcher.FileWatcher.NativeStartRetry.defaults.BackoffMs))
+
+/// A fake clock and the pause that advances it.
+let private fakeStartupClock () =
+    let now = ref (DateTime(2026, 10, 30, 0, 0, 0, DateTimeKind.Utc))
+    now, (fun () -> now.Value), (fun (ms: int) -> now.Value <- now.Value.AddMilliseconds(float ms))
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a client neither gives up on nor replaces a starting daemon still inside its FSEvents retry budget`` () =
+    withTempDir "prog-ensure-retrying" (fun tmpDir ->
+        use _lock = startingDaemonState tmpDir
+        let killed, processOps = recordingKills ()
+        let mutable launched = false
+        let clock, now, sleep = fakeStartupClock ()
+        let listensAt = clock.Value + retryBudget
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> now () >= listensAt
+                LaunchDaemon = fun _ _ _ -> launched <- true }
+
+        let outcome =
+            ensureDaemonOn now sleep defaultFileOps processOps ipc tmpDir "pipe" "" "logs" DaemonStartupWaitSeconds
+
+        test <@ not killed.Value @>
+        test <@ not launched @>
+        test <@ outcome = EnsureOutcome.Reused @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a client that launched a daemon waits out its FSEvents retry budget for the pipe`` () =
+    withTempDir "prog-launch-retrying" (fun tmpDir ->
+        let clock, now, sleep = fakeStartupClock ()
+        let listensAt = clock.Value + retryBudget
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> now () >= listensAt
+                LaunchDaemon = fun _ _ _ -> () }
+
+        let up =
+            startFreshDaemonOn now sleep defaultFileOps ipc tmpDir "pipe" "" "logs" DaemonStartupWaitSeconds
+
+        test <@ up @>)
+
 // --- startFreshDaemonWith ---
 
 [<Fact(Timeout = 15000)>]

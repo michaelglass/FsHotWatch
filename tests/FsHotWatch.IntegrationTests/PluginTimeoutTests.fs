@@ -82,19 +82,22 @@ let ``FileCommandPlugin honors timeoutSec and records TimedOut`` () =
 /// and — from re-reading the process table, not from the kill call returning — that
 /// none of them was left running.
 ///
-/// The tree is read by the product's teardown, with `TeardownBudget` (10 s) for `ps`: a
-/// trivial child that only a wedged box keeps past it. The wait sits above the product's
-/// whole teardown (1 s timeout, 10 s read, 10 s kill, ~2 s settle, 2 s drain), so the
-/// product reports first.
+/// The tree is read by the product's teardown. Its `ps` read waits for `ps` to exit, under
+/// `TeardownPatience` (`HangWait`) rather than the product's 10 s `TeardownBudget`: at load
+/// ~240 (AUTOMATION-1414) `ps` missed 10 s, and the report said "tree termination UNKNOWN".
+/// The claim is what the teardown found, so it waits for the event, and only a wedged `ps`
+/// reaches the bound. The wait sits above the whole teardown (1 s timeout, 30 s read, 10 s
+/// kill, ~2 s settle, 2 s drain), so the product reports first.
 ///
 /// Load (AUTOMATION-1364): failed once in a full run at load ~150 and passed alone; the failing
-/// assertion was not captured. The product decides every bound under the wait, so the wait and
-/// cap only end a hang: 45 s left ~20 s over the teardown for spawning `sh` at that load, now
-/// 2 x `HangWaitMs` over it. If `ps` misses the product's own 10 s `TeardownBudget`, the report
-/// says the tree is unknown and the tree assertions still fail: that bound is the product's.
+/// assertion was not captured. The wait and cap only end a hang: 2 x `HangWaitMs` over the
+/// teardown's product bounds.
 [<Fact(Timeout = RealCheckTestCapMs)>]
 [<WallClock("real host: a real sh tree overruns a real product timeout and the real process table is read; the claim is what the product reports about the real OS, so it runs on real time")>]
 let ``an overrunning build names its command, budget, tree and what the kill left`` () =
+    use _patience =
+        FsHotWatch.ProcessHelper.TeardownPatience.install (System.TimeSpan.FromMilliseconds(float HangWaitMs))
+
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
@@ -110,7 +113,7 @@ let ``an overrunning build names its command, budget, tree and what the kill lef
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    waitForTerminalStatus host "build" (25_000 + 2 * HangWaitMs)
+    waitForTerminalStatus host "build" (45_000 + 2 * HangWaitMs)
 
     let summary =
         match (List.last (host.GetHistory "build")).Outcome with

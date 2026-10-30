@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- test: `ProcessHelper.TeardownPatience` (internal) puts a floor under the waits of an accounted
+  teardown: its process-table read, its stop grace and its deepest-first step (AUTOMATION-1414).
+  Production installs none; a test of a real teardown installs a hang cap, so a `ps` slower than
+  the 10 s `TeardownBudget` on a saturated box no longer turns its claim into "tree termination
+  UNKNOWN".
+
 - fix: the native FSEvents start-retry budget is sized from the refusals actually seen
   (AUTOMATION-1109). macOS refused the stream for 50 s and 71 s in the two real episodes,
   and the old 100/300/900 ms budget (1.3 s) rescued neither. `NativeStartRetry.defaults` now
