@@ -1294,8 +1294,8 @@ let private daemonWithNativeStream
         let watcherFactory: Daemon.WatcherFactory =
             fun repoRoot onChange _isMacOS extras latency ->
                 let retry: FsHotWatch.Watcher.FileWatcher.NativeStartRetry =
-                    { BackoffMs = [ 100; 300; 900 ]
-                      Sleep = ignore }
+                    { FsHotWatch.Watcher.FileWatcher.NativeStartRetry.defaults with
+                        Sleep = ignore }
 
                 let watcher =
                     FsHotWatch.Watcher.FileWatcher.createWithNativeStream repoRoot onChange extras latency retry native
@@ -1364,8 +1364,11 @@ let ``executeCommand Start fails closed when the native FSEvents stream is refus
 
         // Non-zero, and the fail-closed code (2) rather than the generic 1.
         test <@ exitCode = 2 @>
-        // The budget was spent in full (one attempt per backoff entry, plus the first).
-        test <@ attempts.Value = 4 @>
+        // The DEFAULT budget was spent in full (one attempt per backoff entry, plus the first).
+        let budget = FsHotWatch.Watcher.FileWatcher.NativeStartRetry.defaults.BackoffMs
+        let expectedAttempts = budget.Length + 1
+        let expectedSpentMs = List.sum budget
+        test <@ attempts.Value = expectedAttempts @>
         // No watcher of any kind came out of construction — the polling fallback did NOT run.
         test <@ produced.Value = 0 @>
         // Every partial resource is gone.
@@ -1378,8 +1381,8 @@ let ``executeCommand Start fails closed when the native FSEvents stream is refus
             |> Array.filter (fun line -> line.StartsWith("fshw: daemon not started"))
 
         test <@ diagnosis.Length = 1 @>
-        test <@ diagnosis.[0].Contains("all 4 attempts") @>
-        test <@ diagnosis.[0].Contains("1300 ms") @>
+        test <@ diagnosis.[0].Contains($"all %d{expectedAttempts} attempts") @>
+        test <@ diagnosis.[0].Contains($"%d{expectedSpentMs} ms") @>
         test <@ diagnosis.[0].Contains("FSEventStreamStart returned false") @>
         test <@ diagnosis.[0].Contains("fshw start") @>
 
@@ -1423,6 +1426,53 @@ let ``executeCommand Start fails closed when the native FSEvents stream is refus
         test <@ secondModes |> Seq.toList = [ FsHotWatch.Watcher.WatcherMode.NativeEvents ] @>
         test <@ not (File.Exists pidFile) @>
         test <@ daemonLockIsFree tmpDir @>)
+
+[<Fact(Timeout = 30000)>]
+let ``executeCommand Start records the socket it listens on and removes the record on the way out`` () =
+    // A client under a different TMPDIR resolves a different socket for the same pipe
+    // name; the record is what lets it reach this daemon anyway.
+    withTempDir "cli-start-endpoint" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "Stub.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let endpointFile = DaemonEndpoint.path tmpDir
+        let mutable recorded = None
+
+        let createDaemon (_root: string) : Daemon =
+            recorded <-
+                if File.Exists endpointFile then
+                    Some(File.ReadAllText(endpointFile).Trim())
+                else
+                    None
+
+            failwith "sentinel: leave Start before RunWithIpc"
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> false }
+
+        let outcome =
+            try
+                executeCommand
+                    ""
+                    createDaemon
+                    ipc
+                    tmpDir
+                    "fshw-test-pipe-endpoint"
+                    Start
+                    defaultGlobalOptions
+                    fakeConfig
+                    30.0
+                |> string
+            with ex ->
+                ex.Message
+
+        test <@ outcome = "sentinel: leave Start before RunWithIpc" @>
+
+        if not (OperatingSystem.IsWindows()) then
+            test <@ recorded = Some(DaemonEndpoint.socketPath "fshw-test-pipe-endpoint") @>
+
+        test <@ not (File.Exists endpointFile) @>)
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand returns 1 when IPC fails`` () =

@@ -54,6 +54,7 @@
         <Compile Include="AnalyzerPathDiagnosis.fs" />
         <Compile Include="DaemonConfig.fs" />
         <Compile Include="DaemonStartupFailure.fs" />
+        <Compile Include="DaemonEndpoint.fs" />
         <Compile Include="ThreadSuspendInjection.fs" />
         <Compile Include="DetachedLaunch.fs" />
         <Compile Include="SpawnHelperMode.fs" />

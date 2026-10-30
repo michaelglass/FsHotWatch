@@ -50,28 +50,53 @@ let Schema = "fshw-verdict-v2"
 /// `Id` correlates the wrapper with the verdict publisher reached through either
 /// transport, so hook timings measured on the client can only ever be attached to
 /// the verdict THIS invocation produced — never to a concurrent invocation's.
-/// `OriginUtc` and `Clock` are captured together, before any hook runs: offsets on
-/// the timeline come from `Clock` (monotonic), while evidence that arrives stamped
-/// with wall-clock times (plugin runs, `tests.beforeRun` steps recorded inside the
-/// daemon) is placed relative to `OriginUtc` and REFUSED when it falls outside the
-/// invocation.
+/// `Origin` is read from `Clock` once, before any hook runs, and every offset on the
+/// timeline is WALL time from it: the clock the daemon stamps its plugin runs, phases and
+/// `tests.beforeRun` steps with. One domain, so a span and the observed window can be
+/// compared. They were not once: the window was a Stopwatch, which stops while macOS
+/// sleeps, so daemon work done after a resume fell past the window and was dropped with no
+/// reason given. A suspension inside the invocation is a stretch of wall time no work
+/// explains, and `Invocation.timingReasons` names it (the awake clock is read for that).
 type Invocation =
     { Id: string
-      OriginUtc: DateTime
-      Clock: Diagnostics.Stopwatch }
+      Clock: FsHotWatch.HostClock.Clock
+      Origin: FsHotWatch.HostClock.Reading }
+
+    /// The wall-clock instant every interval on this invocation's timeline is placed from.
+    member this.OriginUtc: DateTime = this.Origin.Wall
 
 module Invocation =
     /// Start an invocation under an explicit id. Tests use this to make correlation
     /// observable; production passes through `start`.
-    let startAs (id: string) : Invocation =
+    /// Start an invocation on an explicit clock. Tests inject a fake one to move wall and
+    /// awake time apart.
+    let startOn (clock: FsHotWatch.HostClock.Clock) (id: string) : Invocation =
         { Id = id
-          OriginUtc = DateTime.UtcNow
-          Clock = Diagnostics.Stopwatch.StartNew() }
+          Clock = clock
+          Origin = FsHotWatch.HostClock.read clock }
+
+    let startAs (id: string) : Invocation = startOn FsHotWatch.HostClock.system id
 
     let start () : Invocation = startAs (Guid.NewGuid().ToString("N"))
 
-    /// Wall time observed so far by the wrapping CLI, on the invocation's own clock.
-    let elapsedMs (invocation: Invocation) : int64 = invocation.Clock.ElapsedMilliseconds
+    /// Wall time observed so far by the wrapping CLI, from the invocation's origin: the
+    /// clock daemon-stamped intervals are placed on. Never negative (a wall clock stepped
+    /// back reads as zero).
+    let elapsedMs (invocation: Invocation) : int64 =
+        max 0L (int64 (invocation.Clock.WallNow() - invocation.Origin.Wall).TotalMilliseconds)
+
+    /// Why this invocation's timeline cannot be complete for reasons no span can show:
+    /// the host was suspended during it (at least `HostClock.SuspensionFloor`), so part
+    /// of the observed wall time is sleep. Empty when the host stayed awake. The text
+    /// carries only the suspension, so a re-read of the same suspension reads the same.
+    let timingReasons (invocation: Invocation) : string list =
+        let suspended =
+            FsHotWatch.HostClock.suspendedBetween invocation.Origin (FsHotWatch.HostClock.read invocation.Clock)
+
+        if suspended >= FsHotWatch.HostClock.SuspensionFloor then
+            [ $"host was suspended ~%d{int64 suspended.TotalSeconds}s during this invocation: that wall time is sleep, not work, and no span explains it" ]
+        else
+            []
 
 /// What one plugin contributed to the verdict. The SAME value drives the agent-mode
 /// status line (`ProgressRenderer`), so a plugin cannot report `ok` on one surface
@@ -2611,7 +2636,7 @@ let writeTerminal
     |> withAttribution
         { Hooks = hooks
           TimingSpans = spans
-          RefusedEvidence = [ reason ]
+          RefusedEvidence = reason :: Invocation.timingReasons invocation
           ObservedElapsedMs = Some(Invocation.elapsedMs invocation)
           InvocationId = Some invocation.Id }
     |> write repoRoot
@@ -2659,7 +2684,7 @@ let tryPublishTerminal
         terminalVerdict repoRoot excludePatterns command reason exitCode
         |> withAttribution
             { Attribution.none with
-                RefusedEvidence = [ reason ]
+                RefusedEvidence = reason :: Invocation.timingReasons invocation
                 ObservedElapsedMs = Some observed
                 InvocationId = Some invocation.Id }
         |> serialize
@@ -2687,6 +2712,7 @@ let tryPublishTerminal
                     root["exitCode"] <- JsonValue.Create exitCode
 
                     addReason root reason
+                    Invocation.timingReasons invocation |> List.iter (addReason root)
                     root["observedElapsedMs"] <- JsonValue.Create observed)
 
                 FsHwPaths.atomicWriteAllText verdictPath (root.ToJsonString(jsonOptions) + "\n")

@@ -563,9 +563,26 @@ module FileWatcher =
           Sleep: int -> unit }
 
     module internal NativeStartRetry =
-        /// Three retries, 1.3 s in total. A healthy start pays none of it.
+        /// Waits doubling from `firstMs`, each capped at `capMs`, for as long as their
+        /// total stays within `budgetMs`. Never shrinking: no short wait tacked on the end.
+        let exponential (firstMs: int) (capMs: int) (budgetMs: int) : int list =
+            let rec waits next spent =
+                let wait = min next capMs
+
+                if spent + wait > budgetMs then
+                    []
+                else
+                    wait :: waits (min (wait * 2) capMs) (spent + wait)
+
+            waits firstMs 0
+
+        /// Sized from the refusals actually observed: macOS refused the stream for 50 s
+        /// and 71 s, and a 1.3 s budget rescued neither. Exponential from 100 ms (a brief
+        /// refusal costs a brief wait), each wait capped at 15 s, at most 90 s in total
+        /// (85.5 s: 12 retries, 13 attempts), then the daemon fails closed. A healthy
+        /// start pays none of it.
         let defaults =
-            { BackoffMs = [ 100; 300; 900 ]
+            { BackoffMs = exponential 100 15_000 90_000
               Sleep = Thread.Sleep }
 
         /// One attempt, no waiting.
@@ -587,6 +604,9 @@ module FileWatcher =
     /// `MacFsEvents.NativeStreamRefusedException` is retried; any other exception is
     /// `Faulted` at once, and a refusal on the last attempt is `RefusedPastBudget`.
     let private startNativeWithRetry (retry: NativeStartRetry) (start: unit -> IDisposable) : NativeStartOutcome =
+        let budgetMs = List.sum retry.BackoffMs
+        let totalAttempts = retry.BackoffMs.Length + 1
+
         let rec attempt n spentMs backoff =
             let started =
                 try
@@ -603,10 +623,16 @@ module FileWatcher =
             | RefusedPastBudget refusal, delay :: rest ->
                 Logging.warn
                     "watcher"
-                    $"native FSEvents setup refused (attempt %d{n}: %s{refusal.LastRefusal}); retrying in %d{delay} ms"
+                    $"native FSEvents setup refused (attempt %d{n} of %d{totalAttempts}: %s{refusal.LastRefusal}); retrying in %d{delay} ms (%d{spentMs + delay} of %d{budgetMs} ms of backoff)"
 
                 retry.Sleep delay
                 attempt (n + 1) (spentMs + delay) rest
+            | Started _, _ when n > 1 ->
+                Logging.info
+                    "watcher"
+                    $"native FSEvents stream started on attempt %d{n} after %d{spentMs} ms of backoff"
+
+                started
             | outcome, _ -> outcome
 
         attempt 1 0 retry.BackoffMs

@@ -2528,7 +2528,9 @@ let internal makeRunHookRunner
                             else "fail" },
                         { Scope = scope
                           StartOffsetMs = startOffsetMs
-                          ElapsedMs = stopwatch.ElapsedMilliseconds
+                          // On the invocation's timeline, the same clock as its offset; the
+                          // hook record above keeps the step's own running time.
+                          ElapsedMs = max 0L (Verdict.Invocation.elapsedMs invocation - startOffsetMs)
                           Detail = Some cmd }
                     ))
 
@@ -2704,7 +2706,7 @@ let internal withRunHooksCommandUsingSignals
                         invocation.Id
                         hooks
                         spans
-                        []
+                        (Verdict.Invocation.timingReasons invocation)
                         (Some(Verdict.Invocation.elapsedMs invocation))
                 )
             then
@@ -3851,6 +3853,10 @@ let private executeCommandRendered
                         // not the nohup wrapper that launched us.
                         File.WriteAllText(pidFile, string Environment.ProcessId)
 
+                        // Where this daemon listens, as an absolute socket path: a client
+                        // whose TMPDIR differs would otherwise resolve a different socket.
+                        DaemonEndpoint.record repoRoot pipeName
+
                         // Record THIS binary's identity BEFORE the IPC pipe starts
                         // listening, so a CLI that observes a live pipe always finds the
                         // record. Any daemon that never wrote one reads as `NotRecorded`
@@ -3928,6 +3934,8 @@ let private executeCommandRendered
                                 DaemonStartupFailure.record repoRoot message
                                 2
                         finally
+                            DaemonEndpoint.clear repoRoot
+
                             if File.Exists pidFile then
                                 File.Delete pidFile)
         | Host root -> runHostVerb opts root
@@ -4979,7 +4987,10 @@ let private runCli (args: string array) : int =
                         exit 1
                         ""
 
-            let pipeName = computePipeName repoRoot
+            // The socket a running daemon recorded, when it has one: a daemon started
+            // under a different TMPDIR listens somewhere this process would not look.
+            let pipeName =
+                DaemonEndpoint.resolve FsHotWatch.RepositoryHost.processAlive repoRoot (computePipeName repoRoot)
 
             match dispatch with
             | RunCommand(globals, command) ->

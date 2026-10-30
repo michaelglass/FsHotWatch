@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- fix: a client whose TMPDIR differs from the daemon's reaches the daemon (AUTOMATION-1106). On
+  Unix .NET puts a named pipe's socket under the resolving process's `$TMPDIR`, so a client in an
+  agent sandbox (`/tmp`) and a daemon started from a login shell (`/var/folders/…`) computed the
+  same pipe name, looked in different places, and the client timed out with `Could not connect`
+  against a live daemon. The daemon now records the absolute socket path it listens on in
+  `.fshw/daemon.endpoint`, beside `daemon.pid` and removed with it; a client connects to that
+  path while `daemon.pid` names a live process, and otherwise resolves the pipe name as before.
+
+- fix: verdict timing attribution reads one clock (AUTOMATION-1092). Spans the daemon stamps
+  with the wall clock were placed against an observed window measured by a Stopwatch, which
+  stops while macOS sleeps, so daemon work done after a resume fell past the window and was
+  dropped with no reason recorded. `observedElapsedMs`, hook offsets and daemon spans are now
+  all wall time from the invocation's origin, read through `HostClock.Clock`; a suspension of
+  at least 5 s during the invocation adds a `timingIncompleteReasons` entry
+  (`host was suspended ~Ns during this invocation: …`). API: `Verdict.Invocation` holds
+  `Clock: HostClock.Clock` and `Origin: HostClock.Reading` (`OriginUtc` is now a member), and
+  `Invocation.startOn clock id` starts one on an injected clock.
+
 - feat: `analyzers.scope` in `.fshw.json` — `{ "<configured path>": { "include": [globs] } }` or
   `{ "exclude": [globs] }` — runs one analyzer path only on the files its scope admits (gitignore-style,
   repository-relative globs). A path with no scope runs on every file, as before, and an unscoped config
