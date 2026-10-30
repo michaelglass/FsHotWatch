@@ -88,7 +88,10 @@ let ``no more work runs at once than the capacity, across every lane`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a session with fifty queued jobs cannot keep another session's one job behind them`` () =
-    let scheduler = Scheduler 1
+    // A frozen clock, as in `waiting sessions are served in turn`: both lanes' slot-time stays
+    // equal, so turn order alone decides (ADR-051). On the real clock, a hand-over more than
+    // `FairnessQuantum` after B queued gave A a legitimate lead and B the first grant.
+    let scheduler = Scheduler(1, ignore, (fun () -> TimeSpan.Zero))
     let a = scheduler.Lane "A"
     let b = scheduler.Lane "B"
     let order = ConcurrentQueue<string>()
