@@ -218,6 +218,43 @@ let private chronological (records: (Record * 'a) list) =
     records
     |> List.sortBy (fun (r, _) -> r.RecordedAt, (if r.Outcome = Outcome.Fail then 1 else 0))
 
+/// Every record in a store directory, read without changing it.
+type Scan =
+    {
+        /// Every readable record of every key, oldest first.
+        Records: Record list
+        /// Files that are not a record of the key they are filed under.
+        Unreadable: int
+    }
+
+/// Read every record under `root` for analysis (AUTOMATION-1368). A pure read: unlike a
+/// lookup, it quarantines nothing, so a report never changes the store it reports on. A
+/// file that a lookup would quarantine is counted in `Unreadable` and left where it is.
+let readAll (root: string) : Scan =
+    let recordsDir = Path.Combine(root, "records")
+
+    let files =
+        if Directory.Exists recordsDir then
+            [ for shard in Directory.GetDirectories recordsDir do
+                  for dir in Directory.GetDirectories shard do
+                      for file in Directory.GetFiles(dir, "*.json") do
+                          yield ActionKey.Prefix + Path.GetFileName dir, file ]
+        else
+            []
+
+    let read =
+        files
+        |> List.map (fun (keyValue, file) ->
+            try
+                match decode (File.ReadAllText file) with
+                | Ok(record, outputs) when record.Key.Value = keyValue -> Some(record, outputs)
+                | _ -> None
+            with :? IOException ->
+                None)
+
+    { Records = read |> List.choose id |> chronological |> List.map fst
+      Unreadable = read |> List.filter Option.isNone |> List.length }
+
 type Store(settings: Settings) =
     let root = settings.Root
     let recordsDir = Path.Combine(root, "records")

@@ -3882,3 +3882,65 @@ let ``insights takes --json and --run, and aims the report at that run`` () =
 
     let _, unaimed = insightsSetup "/repo" fakeConfig []
     test <@ unaimed.Run = None @>
+
+// --- analytics (AUTOMATION-1368) ---
+
+[<Fact(Timeout = 15000)>]
+let ``parse analytics accepts its json, since, top, store and repeatable shadow-log flags`` () =
+    test
+        <@
+            CommandTree.parse
+                tree
+                [| "analytics"
+                   "--json"
+                   "--since"
+                   "7"
+                   "--top"
+                   "3"
+                   "--store"
+                   "/s"
+                   "--shadow-log"
+                   "/a.jsonl"
+                   "--shadow-log"
+                   "/b.jsonl" |] = Ok(
+                Analytics
+                    [ AnalyticsFlag.Json
+                      AnalyticsFlag.Since 7
+                      AnalyticsFlag.Top 3
+                      AnalyticsFlag.Store "/s"
+                      AnalyticsFlag.ShadowLog "/a.jsonl"
+                      AnalyticsFlag.ShadowLog "/b.jsonl" ]
+            )
+        @>
+
+    test <@ CommandTree.parse tree [| "analytics" |] = Ok(Analytics []) @>
+
+[<Fact(Timeout = 15000)>]
+let ``analytics is the verb's own output, spelled analytics`` () =
+    test <@ agentGateFor (Analytics []) = AgentGate.OwnOutput @>
+    test <@ commandToken (Analytics []) = "analytics" @>
+
+[<Fact(Timeout = 15000)>]
+let ``analytics reads this repository's box-wide store and discovers the shadow logs by default`` () =
+    let now = DateTimeOffset(2026, 10, 29, 12, 0, 0, TimeSpan.Zero)
+    let defaults = analyticsSetup now "/repo" []
+    test <@ defaults.StoreDir = FsHotWatch.OutcomeStore.directoryFor "/repo" @>
+    test <@ defaults.ShadowLogs = None && defaults.Since = None @>
+    test <@ defaults.Top = 10 && not defaults.Json @>
+
+    let chosen =
+        analyticsSetup
+            now
+            "/repo"
+            [ AnalyticsFlag.Store "elsewhere/store"
+              AnalyticsFlag.ShadowLog "a.jsonl"
+              AnalyticsFlag.ShadowLog "b.jsonl"
+              AnalyticsFlag.Since 7
+              AnalyticsFlag.Top 3
+              AnalyticsFlag.Json ]
+
+    test <@ chosen.StoreDir = Path.GetFullPath "elsewhere/store" @>
+    test <@ chosen.ShadowLogs = Some [ Path.GetFullPath "a.jsonl"; Path.GetFullPath "b.jsonl" ] @>
+    let weekAgo = now.AddDays -7.0
+    test <@ chosen.Since = Some weekAgo @>
+    test <@ chosen.Top = 3 && chosen.Json @>

@@ -220,3 +220,39 @@ let ``a record's outputs are read back as filed, and a record without outputs ha
         test <@ read without = Some None @>
         test <@ store.Lookup(withOutputs.Value) = Some(recordOf withOutputs Outcome.Pass t0) @>
         test <@ store.LookupWithOutputs "not a key" = None @>)
+
+// --- AUTOMATION-1368: the read-only scan analytics reads ---
+
+[<Fact>]
+let ``readAll returns every readable record of every key, oldest first, and moves nothing`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let a = keyFor "sha256:a"
+        let b = keyFor "sha256:b"
+        store.Record(recordOf a Outcome.Pass (t0.AddMinutes 2.0)) |> ignore
+        store.Record(recordOf b Outcome.Fail t0) |> ignore
+        store.Record(recordOf a Outcome.Fail (t0.AddMinutes 1.0)) |> ignore
+        let c = keyFor "sha256:c"
+        store.Record(recordOf c Outcome.Pass (t0.AddMinutes 3.0)) |> ignore
+        let tornFile = Directory.GetFiles(store.DirectoryOf c.Value) |> Array.exactlyOne
+
+        File.WriteAllText(tornFile, (File.ReadAllText tornFile).Substring(0, 40))
+
+        let scan = readAll dir
+
+        test
+            <@
+                scan.Records |> List.map (fun r -> r.Key.Value, r.Outcome) = [ b.Value, Outcome.Fail
+                                                                               a.Value, Outcome.Fail
+                                                                               a.Value, Outcome.Pass ]
+            @>
+
+        test <@ scan.Unreadable = 1 @>
+        // A read for analytics never quarantines: the torn file is still where it was.
+        test <@ File.Exists tornFile @>
+        test <@ not (Directory.Exists(Path.Combine(dir, "quarantine"))) @>)
+
+[<Fact>]
+let ``readAll of a directory that holds no store is empty`` () =
+    withTempDir "outcomes-none" (fun dir ->
+        let scan = readAll (Path.Combine(dir, "absent"))
+        test <@ List.isEmpty scan.Records && scan.Unreadable = 0 @>)

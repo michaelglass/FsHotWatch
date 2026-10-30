@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `OutcomeStore.readAll root` reads every record in a store directory, oldest first,
+  for analysis (AUTOMATION-1368). Unlike a lookup it quarantines nothing: a file a lookup
+  would move aside is counted in `Scan.Unreadable` and left where it is.
+
 - feat: a daemon with check records on logs, as it stops, how many checks it answered from
   records, how many it started in FCS and how many a plugin demanded
   (`check-records: this daemon: …`; ADR-059 §17 step 3). The restart test reads it: a

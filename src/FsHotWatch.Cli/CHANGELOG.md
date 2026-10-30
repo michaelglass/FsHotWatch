@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- feat: `fshw analytics` (AUTOMATION-1368): flaky, slow and trust analytics over the outcome
+  store and the shadow ledgers. A pure read, with no daemon, no run and nothing quarantined.
+  - **Flaky.** An action key (the same inputs) recorded both pass and fail, per subject, with
+    counts, distinct checkouts and when it was last seen.
+  - **Slow.** Nearest-rank p50/p90/max of the recorded `durationMs`, per subject.
+  - **Trust.** Reds later green on identical inputs; runs a lookup would have answered (a
+    record filed under a key that already held a pass); shadowed `fshw verdict` reads the
+    store satisfied; and the store and the shadow ledger by UTC day, with each disagreement
+    direction.
+  - What the store does not record is listed under "Not recorded", never shown as a zero.
+    Outcomes are per test project, not per test, and the runner's K_P records carry no
+    duration yet.
+  - Options: `--since <days>`, `--top <n>`, `--store <dir>`, `--shadow-log <file>`
+    (repeatable; by default this checkout's ledger and every worktree's the store names),
+    `--json` (`fshw-analytics-v1`). New module: `OutcomeAnalytics`.
+
 - feat: `"checkRecords": true` in `.fshw.json`, or `FSHW_CHECK_RECORDS=1` (`0` turns it off
   whatever the config says), files every completed check as a `check` record and answers
   later checks from the records, across daemon restarts (ADR-059 §17, AUTOMATION-1361). OFF

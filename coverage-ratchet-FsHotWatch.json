@@ -1585,6 +1585,11 @@
       "line": 98,
       "branch": 88,
       "reason": "new file (AUTOMATION-1362 step 3, ADR-059 §7: shadow mode). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-29 on macOS by a coverage run of LookupVerdictTests + ShadowVerdictTests + LookupParityCasesTests + IpcOutputTests + RunOnceOutputTests (a subset of the suite, so a lower bound): line 98.4% (187/190), branch 88.9% (80/90). Uncovered: the catch-all arm of observe (an unexpected exception) and edges of the scope and plugin-outcome matches. Platform-neutral."
+    },
+    "OutcomeAnalytics.fs": {
+      "line": 98,
+      "branch": 80,
+      "reason": "new file (AUTOMATION-1368: fshw analytics over the outcome store and the shadow ledger). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-30 on macOS by mise run ci (test-direct): line 98.8% (317/321), branch 80.2% (69/86). Uncovered: the unparsable-timestamp arm of parseShadowLine and edges of the render and JSON matches. Pure computation plus file reads; platform-neutral."
     }
   },
   "countFloors": {
