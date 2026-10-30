@@ -142,6 +142,14 @@ so it is answered from evidence already earned: a full-suite green in
 `.fshw/verdict.json` for this tree and this binary, or the warm daemon's full-suite
 receipt for this tree. Neither `fshw invalidate` nor `--no-cache` changes that.
 
+Answered from `.fshw/verdict.json`, a `confirm` runs nothing, and says so: the human output
+prints a `reused` line naming the run that earned the green and when, and in agent mode the
+envelope carries `"reused": {"runId": "…", "producedAt": "…"}` (`runId` is that verdict's
+own, `null` if it names none). The file itself is left byte-identical, still naming that run.
+Answered from the warm daemon's receipt, `confirm` publishes a new verdict whose `runId` names
+the earlier run. Either way, a gate that must report only a green earned in its own
+invocation, such as a deploy gate, runs `confirm --fresh`.
+
 When you need the **run** and not only its answer — timing it, tracing it, hunting a
 flake — use `--fresh`:
 

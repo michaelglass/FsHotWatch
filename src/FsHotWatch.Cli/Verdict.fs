@@ -3754,6 +3754,24 @@ let describeStillApplies (v: Verdict) (covered: TreeHash.Coverage) : string =
 
     $"the verdict from %s{earnedAt} still applies\n            (treeHash + producer match; %s{evidence}%s{baseline})%s{key}"
 
+/// The line that says `confirm`'s fast path RAN NOTHING, and how to make it run.
+///
+/// The fast path is deliberate (an unchanged tree is the same question about the same
+/// bytes), but a gate that reads only "✓ confirm" cannot tell a green earned now from
+/// one earned earlier (AUTOMATION-1355). So the reuse is named, with the run that
+/// earned the green — the verdict's own `runId`, not its baseline's — and the verb that
+/// forces a new run.
+let describeReuse (v: Verdict) : string =
+    let earned =
+        match v.RunId with
+        | Some id -> $"""run %s{id.ToString("N")}"""
+        | None -> "a verdict that names no run"
+
+    let at = v.ProducedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+
+    $"reused   this confirm ran no tests: its green is the one %s{earned} earned at %s{at}.\n"
+    + "             `fshw confirm --fresh` runs the full suite again."
+
 /// The machine-readable envelope `fshw verdict` prints on stdout.
 ///
 /// It carries `applies` — it never prints a bare verdict that a reader could

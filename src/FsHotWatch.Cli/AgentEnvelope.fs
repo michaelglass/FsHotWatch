@@ -26,6 +26,11 @@
 ///   lines           other verbs: their own output, cleaned, at most `MaxLines`
 ///   linesOmitted    lines past `MaxLines`
 ///   verdict         `.fshw/verdict.json` when the facts came from it
+///   reused          `check` / `confirm`: present when this invocation ran nothing and
+///                   answered from a verdict published BEFORE it started (`confirm` on an
+///                   unchanged tree, AUTOMATION-1355): `{runId, producedAt}` of the run
+///                   that earned it. `runId` is null when that verdict names no run.
+///                   `confirm --fresh` never reuses.
 ///   output          the transcript, `.fshw/agent-output.log`
 ///
 /// A bump of `Contract` is required for any change that removes a field or changes a
@@ -92,6 +97,11 @@ let private oneLine (text: string) : string =
     else
         flat.Substring(0, MaxReasonChars - 1) + "…"
 
+/// A verdict this invocation did not produce: the run that earned it, and when.
+type Reuse =
+    { RunId: Guid option
+      ProducedAt: DateTime }
+
 /// What a verdict says, reduced to what a decision needs.
 type Facts =
     {
@@ -103,6 +113,8 @@ type Facts =
         ReasonsOmitted: int
         /// Whether the facts were read from `.fshw/verdict.json`.
         FromVerdictFile: bool
+        /// Set when the verdict was published before this invocation began (`reusedBy`).
+        Reused: Reuse option
     }
 
 /// Where the facts of a verdict verb come from.
@@ -141,7 +153,8 @@ let ofVerdict (v: Verdict.Verdict) : Facts =
       Scope = Some v.Scope
       Reasons = outcomeReason @ failingPlugins @ causes
       ReasonsOmitted = max 0 (v.RedCauseCount - List.length v.RedCauses)
-      FromVerdictFile = true }
+      FromVerdictFile = true
+      Reused = None }
 
 /// The facts a verdict verb's envelope reports, or `None` when no verdict answers for
 /// this run (the envelope then reports the exit code's meaning).
@@ -152,7 +165,8 @@ let factsOf (evidence: Evidence) (exitCode: int) : Facts option =
               Scope = None
               Reasons = [ reason ]
               ReasonsOmitted = 0
-              FromVerdictFile = fromFile }
+              FromVerdictFile = fromFile
+              Reused = None }
 
     match evidence with
     | Evidence.ByVerdictVerb(Verdict.Report.Applies v) -> Some(ofVerdict v)
@@ -161,6 +175,25 @@ let factsOf (evidence: Evidence) (exitCode: int) : Facts option =
     | Evidence.ByVerdictVerb(Verdict.Report.NoVerdict reason) -> fromReport "no-verdict" reason false
     | Evidence.AfterRun(Verdict.Report.Applies v) when v.ExitCode = exitCode -> Some(ofVerdict v)
     | Evidence.AfterRun _ -> None
+
+/// Whether the verdict a `check` / `confirm` answered from was published BEFORE this
+/// invocation began at `invokedAt`: this invocation then ran nothing, and its green is
+/// one an earlier run earned. `confirm` does that on purpose on an unchanged tree (its
+/// fast path leaves `.fshw/verdict.json` byte-identical), and without this the envelope
+/// read exactly like a run that had just executed (AUTOMATION-1355).
+///
+/// Decided from the file's own `producedAt`, not from which code path ran, so ANY path
+/// that answers from an older verdict is reported, including one added later.
+let reusedBy (invokedAt: DateTime) (report: Verdict.Report) : Reuse option =
+    match report with
+    | Verdict.Report.Applies v when v.ProducedAt.ToUniversalTime() < invokedAt.ToUniversalTime() ->
+        Some
+            { RunId = v.RunId
+              ProducedAt = v.ProducedAt.ToUniversalTime() }
+    | Verdict.Report.Applies _
+    | Verdict.Report.Stale _
+    | Verdict.Report.InFlight _
+    | Verdict.Report.NoVerdict _ -> None
 
 /// The meaning of an exit code when no verdict of this run says more.
 let private exitOutcome (exitCode: int) : string =
@@ -262,6 +295,19 @@ let render (command: string) (exitCode: int) (shape: Shape) (transcript: string 
         match facts with
         | Some f when f.FromVerdictFile -> node["verdict"] <- JsonValue.Create Verdict.RelativePath
         | _ -> ()
+
+        match facts |> Option.bind _.Reused with
+        | Some r ->
+            let reused = JsonObject()
+
+            reused["runId"] <-
+                match r.RunId with
+                | Some id -> JsonValue.Create(id.ToString("N")) :> JsonNode
+                | None -> null
+
+            reused["producedAt"] <- JsonValue.Create(r.ProducedAt.ToString("o"))
+            node["reused"] <- reused
+        | None -> ()
     | Shape.OutputBacked ->
         node["outcome"] <- JsonValue.Create(if exitCode = 0 then "ok" else "fail")
         node["lines"] <- stringArray (List.truncate MaxLines lines)
