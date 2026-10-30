@@ -271,6 +271,76 @@ module ``named dispatch edges`` =
         test <@ edges |> List.map _.ToSymbol = [ "App.runPurge" ] @>
         test <@ edges[0].FromSymbol.Contains "schedules purge from the browser" @>
 
+    /// `ClassTests.fsx` holding `source`, analyzed beside the app; the edges the extension
+    /// derives, and the tests an edit to the handler's helper `mapRow` selects through the
+    /// production walk once they are stored.
+    let private classFixture (source: string) =
+        let root, app, _ = analyzeFixture literalPurgeUrl
+        let classTests = analyze root "ClassTests.fsx" "ClassTests" source
+
+        let edges =
+            edgesFor root (TestPrune.InMemoryStore.fromAnalysisResults [ app; classTests ])
+
+        let selected =
+            indexWithRefresh root "cache.db" [ app; classTests ] |> selectedByMapper
+
+        pairs edges, selected
+
+    let private jobTests (body: string) =
+        "module ClassTests\n\n"
+        + "type FactAttribute() =\n    inherit System.Attribute()\n\n"
+        + "type JobTests() =\n"
+        + body
+
+    /// A backticked test name ending in `)` — `(NEWS-645)` — was cut to its last
+    /// parenthesised group before matching the stored symbol, so no member matched and the
+    /// match fell to the enclosing class.
+    [<Fact>]
+    let ``a member whose backticked name ends in a parenthesis is the edge's source`` () =
+        let edges, selected =
+            classFixture (
+                jobTests (
+                    "    [<Fact>]\n"
+                    + "    member _.``schedules purge (NEWS-645)``() =\n"
+                    + "        \"/admin/jobs/schedule/Purge\".Length |> ignore\n\n"
+                    + "    [<Fact>]\n"
+                    + "    member _.``renders the jobs page``() =\n"
+                    + "        \"/admin/jobs\".Length |> ignore\n"
+                )
+            )
+
+        test <@ edges = set [ "ClassTests.JobTests.``schedules purge (NEWS-645)``", "App.runPurge" ] @>
+        // Recall: the dispatching test is selected past the composition-root registry.
+        test <@ selected = set [ "ClassTests.JobTests.``schedules purge (NEWS-645)``" ] @>
+
+    /// A dispatch in a class binding outside every member runs when the class is built or
+    /// a member reads it. The class symbol alone reaches no test, because a test method does
+    /// not depend on its own class, so the type's members carry the edge with it.
+    [<Fact>]
+    let ``a dispatch in a class binding couples the class and its members`` () =
+        let edges, selected =
+            classFixture (
+                jobTests (
+                    "    let purgeUrl = \"/admin/jobs/schedule/Purge\"\n\n"
+                    + "    [<Fact>]\n"
+                    + "    member _.``schedules purge``() = purgeUrl.Length |> ignore\n\n"
+                    + "    [<Fact>]\n"
+                    + "    member _.``renders the jobs page``() = ()\n"
+                )
+            )
+
+        test <@ edges |> Set.contains ("ClassTests.JobTests", "App.runPurge") @>
+
+        test
+            <@
+                edges
+                |> Set.contains ("ClassTests.JobTests.``schedules purge``", "App.runPurge")
+            @>
+
+        test <@ edges |> Set.forall (fun (_, handler) -> handler = "App.runPurge") @>
+        // Recall: the test reading the binding is selected; its class sibling may be too.
+        test <@ selected |> Set.contains "ClassTests.JobTests.``schedules purge``" @>
+
 module ``dispatch templates`` =
 
     [<Fact>]

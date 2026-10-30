@@ -129,6 +129,18 @@ let templateRegex (template: string) : Result<Regex, string> =
 /// binding or type containing the line wins; it is resolved to the stored symbol of the
 /// same short name whose identifier lies inside that range. `None` when the file does
 /// not parse.
+///
+/// The parse tree names a binding by its identifier text (`idText`), which is already the
+/// form `canonicalShortName` reduces a stored name to. Reducing it again is wrong for a
+/// backticked name ending in a parenthesis (``` ``purges (NEWS-645)`` ```): the reduction
+/// keeps only the last parenthesised group, `NEWS-645`, so no member matched and the match
+/// fell to the enclosing class. Either form is accepted.
+///
+/// A TYPE found this way (the match sits in a class `let` or constructor, outside every
+/// member) brings its members with it. The type symbol alone reaches no test: a test
+/// method does not depend on its own class, and the impact walk expands a type to its
+/// members only at a changed seed, never along an edge. The binding runs when the class
+/// is built or a member reads it, so every member is a dispatcher.
 let private enclosingSymbols
     (checker: FSharpChecker)
     (path: string)
@@ -158,17 +170,26 @@ let private enclosingSymbols
             |> List.filter (fun (_, r: range) -> r.StartLine <= line && line <= r.EndLine)
             |> List.sortBy (fun (_, r) -> r.EndLine - r.StartLine, r.StartLine)
             |> List.tryPick (fun (name, r) ->
-                let lastSegment = canonicalShortName name
+                let names = set [ name; canonicalShortName name ]
 
                 match
                     fileSymbols
                     |> List.filter (fun s ->
-                        canonicalShortName s.FullName = lastSegment
+                        names.Contains(canonicalShortName s.FullName)
                         && r.StartLine <= s.LineStart
                         && s.LineStart <= r.EndLine)
                 with
                 | [] -> None
-                | found -> Some found)
+                | found ->
+                    found
+                    |> List.collect (fun s ->
+                        match s.Kind with
+                        | Type ->
+                            s
+                            :: (fileSymbols |> List.filter (fun m -> m.FullName.StartsWith(s.FullName + ".")))
+                        | _ -> [ s ])
+                    |> List.distinct
+                    |> Some)
             |> Option.defaultValue [])
 
 /// All named-dispatch edges the store's tree implies: the extension's complete edge set,
