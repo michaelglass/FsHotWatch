@@ -317,6 +317,7 @@ let testVerdictPlugin: PluginHandler<unit, unit> =
 - `ctx.RunExclusive(key, work)` — run `work` under a single-flight slot, returning a `RunClaim`. The framework reports `Running` at the claim and posts `work`'s result back as a `Custom` message.
   The result must be handled: `SlotBusy` means the work was **not started**, so decide explicitly — skip it, or queue it. Dropping a refused claim is dropping work.
   Wrap `work` in `PluginWork.resultFirst` to let its result fold ahead of the dispatched events queued before it — see [Result ordering](#result-ordering).
+  If `work` throws, nothing is posted unless you declare what its failure folds as: `work |> PluginWork.onFailure (fun ex -> MyRunFailed ex.Message)`. That message folds like a result and holds the key until it commits, so whatever you retained behind the run (a trigger refused with `SlotBusy`) drains on failure too. Without it the framework reports the run `Failed` and frees the key, and retained work waits for some later event.
 
 **The warm compiler**
 - `ctx.Checker` — the shared, warm `FSharpChecker`. Reuse it for your own analysis instead of starting a new one.

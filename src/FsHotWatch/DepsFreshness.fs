@@ -120,12 +120,45 @@ let private tryMtime (path: string) : DateTime option =
     else
         None
 
+/// Which inputs make a project read `Stale`: no assets at all, or each dep file
+/// written after them. Pure, so the daemon log's wording is testable.
+let internal describeStaleness
+    (repoRoot: string)
+    (assetsMtime: DateTime option)
+    (depFileMtimes: (string * DateTime) list)
+    : string =
+    match assetsMtime with
+    | None -> "obj/project.assets.json is missing"
+    | Some assets ->
+        let stamp (at: DateTime) = at.ToString("O")
+
+        let newer =
+            depFileMtimes
+            |> List.filter (fun (_, written) -> written > assets)
+            |> List.map (fun (file, written) -> $"%s{Path.GetRelativePath(repoRoot, file)} (written %s{stamp written})")
+            |> String.concat ", "
+
+        $"written after obj/project.assets.json (%s{stamp assets}): %s{newer}"
+
 /// Disk-backed freshness probe for one project. Reads the assets mtime and the
-/// dep-file mtimes, then defers to the pure `compareFreshness`.
+/// dep-file mtimes, then defers to the pure `compareFreshness`. A `Stale` reading is
+/// logged with the inputs that caused it, so every restore it leads to (or that the
+/// content baseline suppresses) can be traced to the file that triggered it.
 let detectProjectFreshness (repoRoot: string) (fsprojPath: string) : Freshness =
     let assetsMtime = tryMtime (assetsPath fsprojPath)
-    let depMtimes = dependencyFiles fsprojPath repoRoot |> List.choose tryMtime
-    compareFreshness assetsMtime depMtimes
+
+    let depMtimes =
+        dependencyFiles fsprojPath repoRoot
+        |> List.choose (fun file -> tryMtime file |> Option.map (fun written -> file, written))
+
+    let freshness = compareFreshness assetsMtime (List.map snd depMtimes)
+
+    if freshness = Stale then
+        Logging.info
+            "deps"
+            $"%s{Path.GetFileName fsprojPath}: stale by mtime — %s{describeStaleness repoRoot assetsMtime depMtimes}"
+
+    freshness
 
 /// fsproj element local-names that DECLARE the dependency graph — a change to any can
 /// alter what `dotnet restore` produces in `project.assets.json`. `Import`/`Sdk` pull
@@ -172,50 +205,103 @@ let rec private canonicalizeElement (el: XElement) : string =
 
     $"%s{el.Name.LocalName}(%s{attrs}){{%s{children}}}[%s{ownText}]"
 
-/// The dep-relevant digest of a single `.fsproj`: the canonicalized dep-declaring
-/// elements (see `depRelevantElementNames`) plus the root `<Project Sdk="...">`
-/// attribute, sorted for order-independence. Source-item elements are NOT collected, so
-/// a compile-item-only edit yields the SAME digest. A parse/read failure folds a
+/// What the signature reads from one `.fsproj`'s text: its dep-relevant digest — the
+/// canonicalized dep-declaring elements (see `depRelevantElementNames`) plus the root
+/// `<Project Sdk="...">` attribute, sorted for order-independence — and the raw
+/// `Include` of each `ProjectReference`. Source-item elements are NOT collected, so a
+/// compile-item-only edit yields the SAME digest. A parse failure folds a
 /// content-derived sentinel (never throws) so a later fix still moves the digest
 /// forward. Conditional references (inside `<Choose>`/`<When>` or with a `Condition=`
 /// attribute) ARE captured, condition text and all.
-let private depRelevantFsprojDigest (fsprojPath: string) : string =
-    // Read once and parse from the string so the malformed-parse fallback can reuse
-    // the same content for its sentinel hash instead of re-reading.
+let private projectFileFactsOf (content: string) : string * string list =
+    try
+        let root = (XDocument.Parse content).Root
+
+        let sdkAttr =
+            match root.Attribute(XName.Get "Sdk") with
+            | null -> []
+            | a -> [ $"Project@Sdk=%s{a.Value}" ]
+
+        let elems =
+            root.Descendants()
+            |> Seq.filter (fun el -> depRelevantElementNames.Contains el.Name.LocalName)
+            |> Seq.map canonicalizeElement
+            |> Seq.sort
+            |> List.ofSeq
+
+        let references =
+            root.Descendants()
+            |> Seq.filter (fun el -> el.Name.LocalName = "ProjectReference")
+            |> Seq.choose (fun el ->
+                match el.Attribute(XName.Get "Include") with
+                | null -> None
+                | a -> Some a.Value)
+            |> List.ofSeq
+
+        String.concat "\n" (sdkAttr @ elems), references
+    with _ ->
+        // Malformed but readable: key the sentinel on the content bytes so an
+        // unparseable→parseable transition (a content change) still moves the
+        // signature. Matches the never-throw contract.
+        $"fsproj-unparseable@%s{FsHotWatch.CheckCache.sha256Hex content}", []
+
+/// `projectFileFactsOf`, memoized by the CONTENT hash of the file: the signature now
+/// reads a project's whole reference closure on every evaluation, and re-parsing
+/// unchanged project files each time is the cost the memo removes. Keyed by content,
+/// never by mtime (ADR-008), so a preserved-mtime rewrite still misses.
+let private projectFileFacts = ConcurrentDictionary<string, string * string list>()
+
+/// The bound on `projectFileFacts`: each distinct project-file text adds an entry, so a
+/// daemon that outlives many edits starts the memo over rather than grow without end.
+let private projectFileFactsLimit = 4096
+
+let private readProjectFileFacts (fsprojPath: string) : string * string list =
     match
         (try
             Some(File.ReadAllText fsprojPath)
          with _ ->
              None)
     with
-    | None -> "fsproj-unparseable@unreadable"
+    | None -> "fsproj-unparseable@unreadable", []
     | Some content ->
-        try
-            let root = (XDocument.Parse content).Root
+        if projectFileFacts.Count > projectFileFactsLimit then
+            projectFileFacts.Clear()
 
-            let sdkAttr =
-                match root.Attribute(XName.Get "Sdk") with
-                | null -> []
-                | a -> [ $"Project@Sdk=%s{a.Value}" ]
+        projectFileFacts.GetOrAdd(FsHotWatch.CheckCache.sha256Hex content, (fun _ -> projectFileFactsOf content))
 
-            let elems =
-                root.Descendants()
-                |> Seq.filter (fun el -> depRelevantElementNames.Contains el.Name.LocalName)
-                |> Seq.map canonicalizeElement
-                |> Seq.sort
-                |> List.ofSeq
+/// A `ProjectReference` include as an absolute path, or `None` for one that names an
+/// MSBuild property: those are not expanded here, and their raw text is already part
+/// of the referencing project's digest.
+let private resolveReference (projectDir: string) (reference: string) : string option =
+    if reference.Contains "$(" then
+        None
+    else
+        Some(Path.GetFullPath(Path.Combine(projectDir, reference.Replace('\\', Path.DirectorySeparatorChar))))
 
-            String.concat "\n" (sdkAttr @ elems)
-        with _ ->
-            // Malformed but readable: key the sentinel on the content bytes so an
-            // unparseable→parseable transition (a content change) still moves the
-            // signature. Matches the never-throw contract.
-            $"fsproj-unparseable@%s{FsHotWatch.CheckCache.sha256Hex content}"
+/// The transitive `ProjectReference` closure of `fsprojPath`, excluding itself, sorted.
+/// A project's restored assets record its whole closure, so a referenced project's
+/// package graph is one of its restore inputs (ADR-017's follow-up finding). A
+/// reference to a file that does not exist is kept: creating it is a change.
+let internal projectReferenceClosure (fsprojPath: string) : string list =
+    let self = Path.GetFullPath fsprojPath
+
+    let rec walk (visited: Set<string>) (pending: string list) =
+        match pending with
+        | [] -> visited
+        | project :: rest when visited.Contains project -> walk visited rest
+        | project :: rest ->
+            let _, references = readProjectFileFacts project
+            let directory = Path.GetDirectoryName project
+
+            walk (visited.Add project) (rest @ (references |> List.choose (resolveReference directory)))
+
+    walk Set.empty [ self ] |> Set.remove self |> Set.toList
 
 /// Content signature over ONLY a project's dependency-declaring inputs: the
-/// fsproj's dep-relevant element subset (`depRelevantFsprojDigest`) plus the full
-/// on-disk bytes of every ancestor dep file (`Directory.Packages.props`,
-/// `Directory.Build.props`, `paket.lock`, `paket.dependencies`). Two roles:
+/// dep-relevant digest of the fsproj AND of every project in its `ProjectReference`
+/// closure (`projectReferenceClosure`), plus the full on-disk bytes of every ancestor
+/// dep file of any of them (`Directory.Packages.props`, `Directory.Build.props`,
+/// `paket.lock`, `paket.dependencies`). Two roles:
 ///
 ///   1. Debounce + drift baseline — an unchanged dep state keeps the same signature
 ///      (no re-restore loop), any package-graph change moves it forward and re-arms
@@ -226,12 +312,23 @@ let private depRelevantFsprojDigest (fsprojPath: string) : string =
 ///      compile-item-only fsproj edit (which bumps the mtime → the probe reads
 ///      Stale) leaves the signature unchanged.
 ///
+/// The closure is what makes the baseline safe to persist across daemons (ADR-040): a
+/// referenced project gaining a reference changes this project's restore, and before
+/// the closure was hashed only an accidental restore caught it.
+///
 /// See docs/adr-008-mtime-is-not-a-content-oracle.md.
 let internal depRelevantSignature (repoRoot: string) (fsprojPath: string) : string =
-    let fsprojPart = depRelevantFsprojDigest fsprojPath
+    let fsprojPart, _ = readProjectFileFacts fsprojPath
+    let closure = projectReferenceClosure fsprojPath
+
+    let referenceParts =
+        closure
+        |> List.map (fun reference -> $"ref:%s{reference}:%s{fst (readProjectFileFacts reference)}")
 
     let ancestorParts =
-        ancestorDepFiles fsprojPath repoRoot
+        fsprojPath :: closure
+        |> List.collect (fun project -> ancestorDepFiles project repoRoot)
+        |> List.distinct
         |> List.sort
         |> List.map (fun path ->
             let hash =
@@ -244,14 +341,152 @@ let internal depRelevantSignature (repoRoot: string) (fsprojPath: string) : stri
 
             $"%s{path}@%s{hash}")
 
-    FsHotWatch.CheckCache.sha256Hex (String.concat "\n" ($"fsproj:%s{fsprojPart}" :: ancestorParts))
+    FsHotWatch.CheckCache.sha256Hex (String.concat "\n" (($"fsproj:%s{fsprojPart}" :: referenceParts) @ ancestorParts))
+
+/// One project's entry in a `FreshBaselineFile`: the signature it was fresh at, and the
+/// restore output that baseline vouches for — a content hash of `project.assets.json`,
+/// with the length and write time it had, which only decide whether to hash it again.
+type private BaselineEntry =
+    { Signature: string
+      Assets: string
+      AssetsLength: int64
+      AssetsWritten: int64 }
+
+/// The fresh baseline, kept on disk so a NEW daemon process has one (AUTOMATION-1096,
+/// ADR-040). Without it every daemon started with none, and the first mtime-stale
+/// reading of each project after a content-identical touch (a merge rewriting
+/// `Directory.Build.props` byte for byte) restored, once per project per process.
+///
+/// An entry vouches for the assets it was recorded with, never for assets in general:
+/// it matches only while `project.assets.json` still hashes to what it held then. Deps
+/// that went to another state and were restored with no daemon watching, then came
+/// back, leave assets the baseline never saw, and those are restored.
+///
+/// An unreadable file is no baseline; a write that fails leaves the old one. Either way
+/// the cost is a restore, never a skipped one.
+type FreshBaselineFile(path: string) =
+    let gate = Threading.Lock()
+
+    let load () =
+        let entries = Collections.Generic.Dictionary<string, BaselineEntry>()
+
+        try
+            if File.Exists path then
+                let root = Text.Json.Nodes.JsonNode.Parse(File.ReadAllText path).AsObject()
+
+                if root["schema"].GetValue<int>() = 1 then
+                    for project in root["projects"].AsObject() do
+                        let entry = project.Value.AsObject()
+
+                        entries[project.Key] <-
+                            { Signature = entry["signature"].GetValue<string>()
+                              Assets = entry["assets"].GetValue<string>()
+                              AssetsLength = entry["assetsLength"].GetValue<int64>()
+                              AssetsWritten = entry["assetsWritten"].GetValue<int64>() }
+        with failure ->
+            Logging.warn "deps" $"ignoring an unreadable deps baseline %s{path}: %s{failure.Message}"
+            entries.Clear()
+
+        entries
+
+    let entries = load ()
+
+    let save () =
+        let projects = Text.Json.Nodes.JsonObject()
+
+        for KeyValue(project, entry) in entries do
+            let node = Text.Json.Nodes.JsonObject()
+            node["signature"] <- Text.Json.Nodes.JsonValue.Create entry.Signature
+            node["assets"] <- Text.Json.Nodes.JsonValue.Create entry.Assets
+            node["assetsLength"] <- Text.Json.Nodes.JsonValue.Create entry.AssetsLength
+            node["assetsWritten"] <- Text.Json.Nodes.JsonValue.Create entry.AssetsWritten
+            projects[project] <- node
+
+        let root = Text.Json.Nodes.JsonObject()
+        root["schema"] <- Text.Json.Nodes.JsonValue.Create 1
+        root["projects"] <- projects
+
+        try
+            FsHwPaths.atomicWriteAllText path (root.ToJsonString())
+        with failure ->
+            Logging.warn "deps" $"could not save the deps baseline %s{path}: %s{failure.Message}"
+
+    let assetsStamp (proj: string) =
+        let assets = FileInfo(assetsPath proj)
+
+        if assets.Exists then
+            Some(assets.Length, assets.LastWriteTimeUtc.Ticks)
+        else
+            None
+
+    let assetsHash (proj: string) =
+        try
+            Some(FsHotWatch.CheckCache.sha256Hex (File.ReadAllText(assetsPath proj)))
+        with _ ->
+            None
+
+    /// Where the baseline lives.
+    member _.Path = path
+
+    /// Record that `proj` is fresh at `signature`, with the assets now on disk. Hashes
+    /// and writes only when the signature or the assets' length or write time moved.
+    member _.Record(proj: string, signature: string) =
+        Locking.locked gate (fun () ->
+            match assetsStamp proj with
+            | None -> ()
+            | Some(length, written) ->
+                match entries.TryGetValue proj with
+                | true, entry when
+                    entry.Signature = signature
+                    && entry.AssetsLength = length
+                    && entry.AssetsWritten = written
+                    ->
+                    ()
+                | _ ->
+                    match assetsHash proj with
+                    | None -> ()
+                    | Some hash ->
+                        entries[proj] <-
+                            { Signature = signature
+                              Assets = hash
+                              AssetsLength = length
+                              AssetsWritten = written }
+
+                        save ())
+
+    /// Whether `proj` was recorded fresh at `signature` with the very assets on disk now,
+    /// compared by content.
+    member this.Vouches(proj: string, signature: string) : bool =
+        match this.Recorded proj with
+        | Some entry when entry.Signature = signature -> assetsHash proj = Some entry.Assets
+        | _ -> false
+
+    /// Whether `proj` was recorded fresh at a signature other than `signature`, with the
+    /// very assets on disk now: its restore inputs moved, and nothing has restored it
+    /// since. Assets that changed mean something did, and the move is already paid for.
+    member this.DriftedFrom(proj: string, signature: string) : bool =
+        match this.Recorded proj with
+        | Some entry when entry.Signature <> signature -> assetsHash proj = Some entry.Assets
+        | _ -> false
+
+    member private _.Recorded(proj: string) : BaselineEntry option =
+        Locking.locked gate (fun () ->
+            match entries.TryGetValue proj with
+            | true, entry -> Some entry
+            | _ -> None)
 
 /// Debounce tracker: remembers, per project, the last stale signature recovery
 /// was attempted for. Thread-safe; shared across scan cycles by the daemon.
-type RecoveryTracker() =
+///
+/// With a `FreshBaselineFile`, the fresh baseline also outlives the process: a first
+/// sighting consults it, and every recorded baseline is written to it.
+type RecoveryTracker(durable: FreshBaselineFile option) =
     let attempted = ConcurrentDictionary<string, string>()
     let freshSignatures = ConcurrentDictionary<string, string>()
     let gates = ConcurrentDictionary<string, obj>()
+
+    /// A tracker whose baseline lives only as long as it does.
+    new() = RecoveryTracker(None)
 
     /// True when a restore should be attempted for this (project, signature) —
     /// i.e. we have not already attempted recovery for this exact stale state.
@@ -264,13 +499,18 @@ type RecoveryTracker() =
     member _.MarkAttempted(proj: string, sig_: string) = attempted[proj] <- sig_
 
     /// True when the dep-content signature differs from the last one this project
-    /// was observed Fresh / recovered at. A first sighting is NOT drift (nothing to
-    /// compare against yet). This is the escape hatch for the mtime probe, which a
-    /// preserved-mtime dep rewrite can fool into reporting Fresh.
+    /// was observed Fresh / recovered at. This is the escape hatch for the mtime probe,
+    /// which a preserved-mtime dep rewrite — or a change in a referenced project, whose
+    /// files the probe does not read — leaves reporting Fresh. A first sighting is drift
+    /// only when the durable baseline says so (`FreshBaselineFile.DriftedFrom`); with
+    /// none, there is nothing to compare against.
     member _.HasContentDrifted(proj: string, sig_: string) : bool =
         match freshSignatures.TryGetValue proj with
         | true, prev -> prev <> sig_
-        | false, _ -> false
+        | false, _ ->
+            match durable with
+            | Some baseline -> baseline.DriftedFrom(proj, sig_)
+            | None -> false
 
     /// Inverse of `HasContentDrifted`: the signature EQUALS the last fresh/recovered
     /// baseline (a first sighting is not a match). Used to suppress a phantom `Stale`
@@ -281,14 +521,24 @@ type RecoveryTracker() =
     /// signature comes from `obj/`, so a match says the inputs are unchanged and says
     /// nothing at all about whether the assets file still exists. Callers must check
     /// presence themselves — see `evaluateProject`.
+    ///
+    /// A first sighting asks the durable baseline, which vouches only for the assets it
+    /// was recorded with (`FreshBaselineFile.Vouches`).
     member _.MatchesFreshBaseline(proj: string, sig_: string) : bool =
         match freshSignatures.TryGetValue proj with
         | true, prev -> prev = sig_
-        | false, _ -> false
+        | false, _ ->
+            match durable with
+            | Some baseline when baseline.Vouches(proj, sig_) ->
+                freshSignatures[proj] <- sig_
+                true
+            | _ -> false
 
     /// Record the dep-content signature a project was last observed fresh at, so
     /// a later preserved-mtime content change is detectable as drift.
-    member _.RecordFreshSignature(proj: string, sig_: string) = freshSignatures[proj] <- sig_
+    member _.RecordFreshSignature(proj: string, sig_: string) =
+        freshSignatures[proj] <- sig_
+        durable |> Option.iter (fun baseline -> baseline.Record(proj, sig_))
 
     /// Forget any recorded attempt for a project (e.g. after it recovered) so a
     /// future regression is treated freshly. The fresh-content baseline is kept
@@ -309,6 +559,15 @@ type RecoveryTracker() =
     /// (median 1.1s) and none had one before. The projects were restoring, not
     /// unrestorable.
     member _.AttemptGate(proj: string) : obj = gates.GetOrAdd(proj, (fun _ -> obj ()))
+
+/// Where a repository's durable deps baseline lives.
+let baselinePath (repoRoot: string) =
+    Path.Combine(FsHwPaths.root repoRoot, "deps-baseline.json")
+
+/// The tracker a daemon gates `repoRoot` with: its fresh baseline is shared with every
+/// other daemon process that serves the same repository, one after another.
+let trackerFor (repoRoot: string) =
+    RecoveryTracker(Some(FreshBaselineFile(baselinePath repoRoot)))
 
 /// Injected restore runner: given a project directory, runs the restore and
 /// returns the outcome. Production shells `dotnet restore` (+ paket / tool
@@ -436,6 +695,7 @@ let evaluateProject
     | Fresh when tracker.HasContentDrifted(proj, sig_) ->
         // mtime says fresh, but dep content changed under a preserved mtime —
         // re-restore against the real current deps.
+        Logging.info "deps" $"%s{Path.GetFileName proj}: dep content changed under a fresh mtime — restoring"
         handleStale sig_
     | Fresh ->
         // Genuinely healthy: forget any prior attempt so a future regression
@@ -456,10 +716,13 @@ let evaluateProject
         // disk at all. FCS would then type-check against an empty reference set and
         // produce exactly the phantom "namespace/type not found" storm this module
         // exists to prevent.
+        Logging.info "deps" $"%s{Path.GetFileName proj}: dep content matches its fresh baseline — no restore"
         tracker.Clear proj
         tracker.RecordFreshSignature(proj, sig_)
         Proceed
-    | Stale -> handleStale sig_
+    | Stale ->
+        Logging.info "deps" $"%s{Path.GetFileName proj}: no fresh baseline vouches for its dep content — recovering"
+        handleStale sig_
 
 /// Ask `gate` about each of `projects` before a discovery loads their model; the answers
 /// other than `Proceed`, for the caller to log and pass to `withPreflight`.

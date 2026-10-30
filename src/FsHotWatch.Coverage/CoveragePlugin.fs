@@ -111,7 +111,20 @@ let private startCheck
     (scope: RunScope)
     (runStartedAt: System.DateTime)
     : (RunScope * System.DateTime) option =
-    match ctx.RunExclusive "coverage-check" (checkWork configPath reports scope runStartedAt) with
+    let launchedAt = System.DateTime.UtcNow
+
+    // A check that throws (a report that is not Cobertura, a floor file that cannot be
+    // loaded) still folds: as an unreadable verdict, which is red, and which drains a
+    // trigger retained behind it exactly as any other verdict does.
+    let work =
+        checkWork configPath reports scope runStartedAt
+        |> PluginWork.onFailure (fun failure ->
+            CheckDone(
+                Judged(Unreadable $"the coverage check faulted: %s{failure.GetType().Name}: %s{failure.Message}"),
+                System.DateTime.UtcNow - launchedAt
+            ))
+
+    match ctx.RunExclusive "coverage-check" work with
     | Claimed -> None
     | SlotBusy ->
         ctx.Log "coverage-check slot held — keeping this trigger for the holder's result fold to run"

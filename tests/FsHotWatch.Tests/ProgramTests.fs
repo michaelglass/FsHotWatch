@@ -150,14 +150,17 @@ let ``killStaleDaemonWith reads pid and kills process`` () =
         { defaultFileOps with
             FileExists = fun path -> path.EndsWith("daemon.pid")
             ReadAllText = fun _ -> "12345\n"
-            DeleteFile = fun path -> deletedPath <- path }
+            DeleteFile = fun path -> deletedPath <- path
+            // Written a minute after the process started: the daemon that wrote it.
+            LastWriteTimeUtc = fun _ -> DateTime.UnixEpoch.AddMinutes 1.0 }
 
     let fakeProc = Unchecked.defaultof<System.Diagnostics.Process>
 
     let processOps =
         { GetProcessById = fun pid -> if pid = 12345 then fakeProc else failwith "wrong pid"
           KillProcess = fun _ -> killCalled <- true
-          WaitForExit = fun _ _ -> true }
+          WaitForExit = fun _ _ -> true
+          StartTimeUtc = fun _ -> DateTime.UnixEpoch }
 
     killStaleDaemonWith fileOps processOps "/tmp/repo"
     test <@ killCalled @>
@@ -176,7 +179,8 @@ let ``killStaleDaemonWith handles process not found gracefully`` () =
     let processOps =
         { GetProcessById = fun _ -> raise (ArgumentException("No process with that ID"))
           KillProcess = fun _ -> failwith "should not be called"
-          WaitForExit = fun _ _ -> true }
+          WaitForExit = fun _ _ -> true
+          StartTimeUtc = fun _ -> DateTime.UnixEpoch }
 
     killStaleDaemonWith fileOps processOps "/tmp/repo"
     test <@ deletedPath.EndsWith("daemon.pid") @>
@@ -191,10 +195,71 @@ let ``killStaleDaemonWith handles invalid pid file gracefully`` () =
     let processOps =
         { GetProcessById = fun _ -> failwith "should not be called"
           KillProcess = fun _ -> ()
-          WaitForExit = fun _ _ -> true }
+          WaitForExit = fun _ _ -> true
+          StartTimeUtc = fun _ -> DateTime.UnixEpoch }
 
     killStaleDaemonWith fileOps processOps "/tmp/repo"
 
+
+/// A pidfile written at `written`, naming pid 12345, whose process started at `started`
+/// (or whose start time cannot be read). Answers whether the kill reached it and what
+/// was deleted.
+let private killAgainstPidfile (written: DateTime) (started: unit -> DateTime) =
+    let mutable killCalled = false
+    let mutable deletedPath = ""
+
+    let fileOps =
+        { defaultFileOps with
+            FileExists = fun path -> path.EndsWith("daemon.pid")
+            ReadAllText = fun _ -> "12345"
+            DeleteFile = fun path -> deletedPath <- path
+            LastWriteTimeUtc = fun _ -> written }
+
+    let processOps =
+        { GetProcessById = fun _ -> Unchecked.defaultof<System.Diagnostics.Process>
+          KillProcess = fun _ -> killCalled <- true
+          WaitForExit = fun _ _ -> true
+          StartTimeUtc = fun _ -> started () }
+
+    let stderr, () =
+        captureStderr (fun () -> killStaleDaemonWith fileOps processOps "/tmp/repo")
+
+    killCalled, deletedPath, stderr
+
+[<Fact(Timeout = 15000)>]
+let ``killStaleDaemonWith leaves alone a recycled pid whose process started after the pidfile was written`` () =
+    // The daemon writes its own pid once it is running, so the process that wrote the
+    // pidfile started BEFORE it was written. One that started an hour later is some
+    // other program the OS handed the same pid after the daemon died.
+    let written = DateTime(2026, 10, 30, 12, 0, 0, DateTimeKind.Utc)
+
+    let killed, deleted, stderr =
+        killAgainstPidfile written (fun () -> written.AddHours 1.0)
+
+    test <@ not killed @>
+    test <@ stderr.Contains "12345" @>
+    test <@ stderr.Contains "recycled" @>
+    // The pidfile names a daemon that is gone either way: it is still cleaned up.
+    test <@ deleted.EndsWith("daemon.pid") @>
+
+[<Fact(Timeout = 15000)>]
+let ``killStaleDaemonWith kills the daemon that wrote the pidfile`` () =
+    // Positive control on the same fixture: the daemon started, then wrote its pid.
+    let written = DateTime(2026, 10, 30, 12, 0, 0, DateTimeKind.Utc)
+
+    let killed, _, _ = killAgainstPidfile written (fun () -> written.AddSeconds -3.0)
+
+    test <@ killed @>
+
+[<Fact(Timeout = 15000)>]
+let ``killStaleDaemonWith never signals a process whose start time it cannot read`` () =
+    let written = DateTime(2026, 10, 30, 12, 0, 0, DateTimeKind.Utc)
+
+    let killed, deleted, _ =
+        killAgainstPidfile written (fun () -> raise (InvalidOperationException "process has exited"))
+
+    test <@ not killed @>
+    test <@ deleted.EndsWith("daemon.pid") @>
 // --- startFreshDaemonWith tests ---
 
 [<Fact(Timeout = 15000)>]

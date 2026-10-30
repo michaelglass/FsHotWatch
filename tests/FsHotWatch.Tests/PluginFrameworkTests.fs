@@ -1293,6 +1293,128 @@ let ``RunExclusive forces a terminal Failed status when work raises (no strand)`
     }
     |> Async.RunSynchronously
 
+
+type private FaultMsg =
+    | WorkFaulted of string
+    | RetainedDone
+
+[<Fact(Timeout = 30000)>]
+let ``a faulted exclusive run declared onFailure folds its failure message and the fold can start retained work`` () =
+    // A plugin that keeps a trigger refused while the key was held drains it from the
+    // fold that holds the key. A faulted run used to deliver no fold at all, so the
+    // retained trigger waited for some unrelated later event. Declared `onFailure`, the
+    // failure folds like a result: it holds the key, and its claim starts the retained
+    // work with no further event.
+    async {
+        let folded = ref None
+        let drainClaim = ref None
+        let retainedRan = ref 0
+
+        let handler: PluginHandler<int, FaultMsg> =
+            { Name = PluginName.create "rx-fault-fold"
+              Init = 0
+              Update =
+                fun ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged _ ->
+                            let work =
+                                async { return failwith "boom" }
+                                |> PluginWork.onFailure (fun failure -> WorkFaulted failure.Message)
+
+                            let claim = ctx.RunExclusive "k" work
+                            test <@ claim = Claimed @>
+                            return state
+                        | Custom(WorkFaulted message) ->
+                            folded.Value <- Some(message, ctx.SlotHolder "k")
+
+                            drainClaim.Value <-
+                                Some(
+                                    ctx.RunExclusive
+                                        "k"
+                                        (async {
+                                            System.Threading.Interlocked.Increment(retainedRan) |> ignore
+                                            return RetainedDone
+                                        })
+                                )
+
+                            return state
+                        | Custom RetainedDone -> return state + 1
+                        | _ -> return state
+                    }
+              Commands = [ "get", PluginCommand.Observe(fun _ s _ -> async { return string s }) ]
+              Subscriptions = Set.singleton SubscribeFileChanged
+              PrepareCommit = None
+              CacheKey = None
+              Teardown = None }
+
+        let reg = registerDefault handler
+        dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/throw" ]))
+
+        waitUntil (fun () -> retainedRan.Value = 1) 20000
+        test <@ folded.Value = Some("boom", SlotHolder.Fold) @>
+        test <@ drainClaim.Value = Some Claimed @>
+        test <@ retainedRan.Value = 1 @>
+    }
+    |> Async.RunSynchronously
+
+[<Fact(Timeout = 30000)>]
+let ``a faulted exclusive run whose onFailure builder throws still retires with the work's failure`` () =
+    async {
+        let statuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
+        let mutable capturedCtx: PluginCtx<FaultMsg> option = None
+        let folds = ref 0
+
+        let services: PluginHostServices =
+            { defaultServices with
+                ReportStatus = fun _ status -> statuses.Enqueue status }
+
+        let handler: PluginHandler<int, FaultMsg> =
+            { Name = PluginName.create "rx-fault-fold-broken"
+              Init = 0
+              Update =
+                fun ctx state event ->
+                    async {
+                        capturedCtx <- Some ctx
+
+                        match event with
+                        | FileChanged _ ->
+                            let work =
+                                async { return failwith "boom" }
+                                |> PluginWork.onFailure (fun _ -> failwith "the failure fold cannot be built")
+
+                            let claim = ctx.RunExclusive "k" work
+                            test <@ claim = Claimed @>
+                            return state
+                        | Custom _ ->
+                            System.Threading.Interlocked.Increment(folds) |> ignore
+                            return state
+                        | _ -> return state
+                    }
+              Commands = []
+              Subscriptions = Set.singleton SubscribeFileChanged
+              PrepareCommit = None
+              CacheKey = None
+              Teardown = None }
+
+        let reg = registerHandler services handler
+        dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/throw" ]))
+
+        let failedWithBoom () =
+            statuses
+            |> Seq.exists (fun s ->
+                match s with
+                | Failed(message, _, _) -> message.Contains "boom"
+                | _ -> false)
+
+        waitUntil failedWithBoom 20000
+        test <@ failedWithBoom () @>
+        waitUntil (fun () -> capturedCtx.Value.SlotHolder "k" = SlotHolder.Free) 20000
+        test <@ capturedCtx.Value.SlotHolder "k" = SlotHolder.Free @>
+        test <@ folds.Value = 0 @>
+    }
+    |> Async.RunSynchronously
+
 [<Fact(Timeout = 20000)>]
 let ``SlotHolder reports a live run while work is in flight and free after completion`` () =
     async {
