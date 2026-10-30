@@ -5252,7 +5252,7 @@ module Daemon =
                         // daemons), so the gate would have nothing to guard.
                         None
                     else
-                        let tracker = DepsFreshness.RecoveryTracker()
+                        let tracker = DepsFreshness.trackerFor repoRoot
                         let runner = opts.Restore repoRoot
 
                         Some(fun projPath ->

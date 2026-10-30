@@ -132,6 +132,9 @@ it was deliberately NOT done here — see below.
 
 ## Deliberately not done
 
+> Superseded 2026-10-30 by ADR-060: the signature now covers the `ProjectReference`
+> closure, and the baseline is durable and bound to the assets it saw.
+
 **A durable, cross-process fresh-signature baseline.** That report's own suggested shape,
 and it would remove the spurious restore. Rejected for now for a reason that only
 appears when both directions are held at once: that spurious restore is currently

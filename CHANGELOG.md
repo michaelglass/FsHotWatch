@@ -85,6 +85,36 @@ All notable changes to FsHotWatch packages are documented here.
   would break consumers) and the recorder's `<Type>_<Method>` shims, whose underscores the
   weaver matches by name; those carry a scoped `fsharplint:disable` with the reason.
 
+### core: a new daemon no longer restores projects whose deps were only touched
+
+- The deps gate's fresh baseline is now kept in `.fshw/deps-baseline.json`, so a new
+  daemon process recognises a content-identical rewrite of a restore input (a merge
+  rewriting `Directory.Build.props` byte for byte) and skips the restore. Each baseline
+  vouches only for the `project.assets.json` it was recorded with, compared by content.
+- The dep signature now covers the project's transitive `ProjectReference` closure, so a
+  referenced project's package-graph change re-restores the projects that reference it.
+- Each stale reading logs which inputs were written after the assets, and whether the
+  baseline suppressed the restore. See ADR-060.
+
+### core, coverage: a faulted exclusive run can fold, so work retained behind it still runs
+
+- `PluginWork.onFailure (fun ex -> msg)` declares what a `RunExclusive` run folds as when
+  its work throws. The message folds like a result and holds the key until it commits, so
+  a plugin's retained work (a trigger refused with `SlotBusy`) drains on failure as well
+  as success. `RunExclusiveShared` already did this through its failure mapper.
+- coverage: a check that throws (a report that is not Cobertura, for example) now reports
+  an unreadable, red verdict and runs the trigger retained behind it. It used to fold
+  nothing, so that trigger waited for an unrelated later test run.
+
+### cli: the stale-daemon kill no longer SIGKILLs a recycled pid
+
+- Before replacing a daemon that does not answer, the CLI killed whatever process held
+  the pid in `.fshw/daemon.pid`. If the daemon had died and the OS had handed that pid to
+  another program, that program was killed. It now signals only a process that started
+  no later than the pidfile was written (the daemon writes its pid after it starts). A
+  later start, or a start time it cannot read, leaves the process alone and says so; the
+  stale pidfile is still removed.
+
 ### build: FSharp.Compiler.Service and FSharp.Core are pinned exactly
 
 - FCS is pinned at `[43.12.402]` and FSharp.Core at `[10.1.402]` in every project, instead

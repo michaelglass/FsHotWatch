@@ -1043,3 +1043,220 @@ let ``evaluateProject: a concurrent evaluation waits for an in-flight restore in
     // The project restored successfully, so the concurrent evaluation must not report
     // it as stale-and-already-attempted — that is the silent whole-project drop.
     test <@ loserResult <> SkipAlreadyAttempted @>
+
+// ---- the durable, cross-process fresh baseline (AUTOMATION-1096) ----
+
+/// A restored project under `root`: `P/P.fsproj` referencing `Lib/Lib.fsproj`, a
+/// `Directory.Build.props` above both, and an assets file newer than every input.
+let private restoredWorkspace (root: string) =
+    let write (relative: string) (content: string) =
+        let path = Path.Combine(root, relative)
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllText(path, content)
+        path
+
+    let props =
+        write "Directory.Build.props" "<Project><PropertyGroup><LangVersion>9</LangVersion></PropertyGroup></Project>"
+
+    write
+        "Lib/Lib.fsproj"
+        """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="A" Version="1.0.0" /></ItemGroup></Project>"""
+    |> ignore
+
+    let fsproj =
+        write
+            "P/P.fsproj"
+            """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="..\Lib\Lib.fsproj" /></ItemGroup></Project>"""
+
+    let assets = write "P/obj/project.assets.json" """{ "version": 3 }"""
+
+    for input in [ props; fsproj ] do
+        File.SetLastWriteTimeUtc(input, DateTime.UtcNow.AddMinutes -10.0)
+
+    File.SetLastWriteTimeUtc(assets, DateTime.UtcNow.AddMinutes -5.0)
+    props, fsproj, assets
+
+/// One daemon's gate over `root`: the probe, signature and tracker the daemon wires.
+let private gateOf (root: string) (runs: int ref) =
+    let runner: RestoreRunner =
+        fun _ ->
+            runs.Value <- runs.Value + 1
+            Succeeded(ProcessOutput.Drained "")
+
+    let tracker = trackerFor root
+
+    fun fsproj ->
+        evaluateProject (detectProjectFreshness root) (depRelevantSignature root) assetsPresent runner tracker fsproj
+
+/// Rewrite `path` with the bytes it already has, the way a merge or a checkout does:
+/// same content, a newer mtime.
+let private touchIdentical (path: string) =
+    File.WriteAllText(path, File.ReadAllText path)
+    File.SetLastWriteTimeUtc(path, DateTime.UtcNow)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a content-identical dep rewrite seen by a new daemon does not restore`` () =
+    withTempDir "deps-durable-identical" (fun root ->
+        let props, fsproj, _ = restoredWorkspace root
+        let runs = ref 0
+
+        // The first daemon sees the project fresh and records its baseline.
+        test <@ gateOf root runs fsproj = Proceed @>
+
+        touchIdentical props
+        test <@ detectProjectFreshness root fsproj = Stale @>
+
+        // A second daemon process: its own tracker, nothing shared in memory.
+        test <@ gateOf root runs fsproj = Proceed @>
+        test <@ runs.Value = 0 @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a new daemon still restores when the dep content really changed`` () =
+    withTempDir "deps-durable-changed" (fun root ->
+        let props, fsproj, _ = restoredWorkspace root
+        let runs = ref 0
+        test <@ gateOf root runs fsproj = Proceed @>
+
+        File.WriteAllText(props, "<Project><PropertyGroup><LangVersion>10</LangVersion></PropertyGroup></Project>")
+        File.SetLastWriteTimeUtc(props, DateTime.UtcNow)
+
+        test <@ gateOf root runs fsproj = RecoveredOk @>
+        test <@ runs.Value = 1 @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a durable baseline never vouches for assets it did not see`` () =
+    // Deps went to another state and were restored with no daemon watching, then came
+    // back: the signature matches the baseline again, but the assets on disk are the
+    // other state's. Only the restore output the baseline recorded is vouched for.
+    withTempDir "deps-durable-other-assets" (fun root ->
+        let props, fsproj, assets = restoredWorkspace root
+        let runs = ref 0
+        test <@ gateOf root runs fsproj = Proceed @>
+
+        File.WriteAllText(assets, """{ "version": 3, "restoredFor": "another dep state" }""")
+        File.SetLastWriteTimeUtc(assets, DateTime.UtcNow.AddMinutes -1.0)
+        touchIdentical props
+
+        test <@ gateOf root runs fsproj = RecoveredOk @>
+        test <@ runs.Value = 1 @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``an unreadable durable baseline is no baseline`` () =
+    withTempDir "deps-durable-corrupt" (fun root ->
+        let props, fsproj, _ = restoredWorkspace root
+        let runs = ref 0
+        test <@ gateOf root runs fsproj = Proceed @>
+
+        File.WriteAllText(Path.Combine(root, ".fshw", "deps-baseline.json"), "{ not json")
+        touchIdentical props
+
+        test <@ gateOf root runs fsproj = RecoveredOk @>
+        test <@ runs.Value = 1 @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``depRelevantSignature covers the ProjectReference closure`` () =
+    // ADR-017's precondition for a durable baseline: a referenced project's package graph
+    // is part of this project's restore, so it must move this project's signature.
+    withTempDir "deps-signature-closure" (fun root ->
+        let _, fsproj, _ = restoredWorkspace root
+        let before = depRelevantSignature root fsproj
+
+        File.WriteAllText(
+            Path.Combine(root, "Lib", "Lib.fsproj"),
+            """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="A" Version="2.0.0" /></ItemGroup></Project>"""
+        )
+
+        test <@ depRelevantSignature root fsproj <> before @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``describeStaleness names each input written after the assets`` () =
+    let root = Path.Combine(Path.GetTempPath(), "repo")
+    let assets = DateTime(2026, 10, 30, 12, 0, 0, DateTimeKind.Utc)
+    let props = Path.Combine(root, "Directory.Build.props")
+    let fsproj = Path.Combine(root, "P", "P.fsproj")
+
+    let described =
+        describeStaleness root (Some assets) [ props, assets.AddMinutes 1.0; fsproj, assets.AddMinutes -1.0 ]
+
+    test <@ described.Contains "Directory.Build.props (written 2026-10-30T12:01:00" @>
+    test <@ not (described.Contains "P.fsproj") @>
+    test <@ describeStaleness root None [ props, assets ] = "obj/project.assets.json is missing" @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``projectReferenceClosure is transitive, cycle-safe, and skips property-named references`` () =
+    withTempDir "deps-closure" (fun root ->
+        let write (relative: string) (references: string list) =
+            let path = Path.Combine(root, relative)
+            Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+
+            let items =
+                references
+                |> List.map (fun r -> $"""<ProjectReference Include="%s{r}" />""")
+                |> String.concat ""
+
+            File.WriteAllText(path, $"""<Project><ItemGroup>%s{items}</ItemGroup></Project>""")
+            Path.GetFullPath path
+
+        let a = write "A/A.fsproj" [ "../B/B.fsproj"; "$(RepoRoot)/C/C.fsproj" ]
+        let b = write "B/B.fsproj" [ "../C/C.fsproj"; "../A/A.fsproj" ]
+        let c = write "C/C.fsproj" []
+
+        test <@ projectReferenceClosure a = List.sort [ b; c ] @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a durable baseline of another schema is no baseline`` () =
+    withTempDir "deps-durable-schema" (fun root ->
+        let props, fsproj, _ = restoredWorkspace root
+        let runs = ref 0
+        test <@ gateOf root runs fsproj = Proceed @>
+
+        File.WriteAllText(baselinePath root, """{ "schema": 99, "projects": {} }""")
+        touchIdentical props
+
+        test <@ gateOf root runs fsproj = RecoveredOk @>
+        test <@ runs.Value = 1 @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a new daemon restores when a referenced project's package graph changed under a fresh mtime`` () =
+    // The referencing project's own inputs are all older than its assets, so the mtime
+    // probe reads Fresh. Its closure's content moved since the baseline, and its assets
+    // are still the ones that baseline saw: nothing has restored it since.
+    withTempDir "deps-durable-closure-drift" (fun root ->
+        let _, fsproj, _ = restoredWorkspace root
+        let runs = ref 0
+        test <@ gateOf root runs fsproj = Proceed @>
+
+        let lib = Path.Combine(root, "Lib", "Lib.fsproj")
+
+        File.WriteAllText(
+            lib,
+            """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="A" Version="2.0.0" /></ItemGroup></Project>"""
+        )
+
+        File.SetLastWriteTimeUtc(lib, DateTime.UtcNow.AddMinutes -10.0)
+        test <@ detectProjectFreshness root fsproj = Fresh @>
+
+        test <@ gateOf root runs fsproj = RecoveredOk @>
+        test <@ runs.Value = 1 @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a new daemon does not restore a project restored since its baseline moved`` () =
+    // Same drift, but the assets changed too: something restored the project after the
+    // baseline was recorded, so the drift is already paid for.
+    withTempDir "deps-durable-closure-restored" (fun root ->
+        let _, fsproj, assets = restoredWorkspace root
+        let runs = ref 0
+        test <@ gateOf root runs fsproj = Proceed @>
+
+        let lib = Path.Combine(root, "Lib", "Lib.fsproj")
+
+        File.WriteAllText(
+            lib,
+            """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="A" Version="2.0.0" /></ItemGroup></Project>"""
+        )
+
+        File.SetLastWriteTimeUtc(lib, DateTime.UtcNow.AddMinutes -10.0)
+        File.WriteAllText(assets, """{ "version": 3, "restoredFor": "A 2.0.0" }""")
+
+        test <@ gateOf root runs fsproj = Proceed @>
+        test <@ runs.Value = 0 @>)
