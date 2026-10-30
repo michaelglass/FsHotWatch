@@ -1896,12 +1896,12 @@ type UsersTests(fixture: IntegrationTestFixture) =
             let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
             test <@ pairs = set [ "App.Tests.TestServer.Login", "App.Handlers.Users.getUser" ] @>)
 
-    /// The one case where the edge path must still fall back: a URL in the file
-    /// HEADER belongs to no declaration, so any of them could reach the route
-    /// through it. Every declaration becomes a carrier — here the fixture, which
-    /// is the file's only declaration and yields no test class to run.
+    /// The one case where the edge path must still fall back: a URL in the file HEADER
+    /// that no indexed symbol holds (here the index located nothing at or above it)
+    /// could reach the route through any symbol of the file, so every one of them
+    /// becomes a carrier — here the fixture, which yields no test class to run.
     [<Fact>]
-    let ``URL in the file header makes every declaration an edge carrier`` () =
+    let ``a URL in the file header that no indexed symbol holds makes every symbol of the file a carrier`` () =
         let headerUrl =
             """module Tests.Fixtures.BrowserFixtures
 
@@ -1929,7 +1929,9 @@ type BrowserErrorTracker() =
         // ...yet the fixture still carries the route on the edge path.
         let symbols =
             [ fn "App.Handlers.Users.getUser" "src/Handlers/Users.fs"
-              fn "App.Tests.BrowserErrorTracker.Track" "tests/IntTests/BrowserFixtures.fs" ]
+              { fn "App.Tests.BrowserErrorTracker.Track" "tests/IntTests/BrowserFixtures.fs" with
+                  LineStart = 6
+                  LineEnd = 6 } ]
 
         withAnalyzeEdges routes symbols [ ("BrowserFixtures.fs", headerUrl) ] (fun edges ->
             let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
@@ -2081,6 +2083,36 @@ type UsersTests() =
                       "App.Tests.BrowserTests.UsersTests.VisitsAgain" ]
             @>
 
+    /// The index names a class `let` only where it is used: an extern symbol under the
+    /// class's name with no definition site. Its callers are the class's members, but it
+    /// belongs to the type, so it carries the route the type carries.
+    [<Fact>]
+    let ``a class binding the index knows only as an extern carries its class's route`` () =
+        let content =
+            """module App.Tests.BrowserTests
+
+type UsersTests() =
+    let url = "/api/users/1"
+
+    [<Fact>]
+    member _.Visits() = ignore url
+"""
+
+        let symbols =
+            [ at "App.Tests.BrowserTests.UsersTests" Type 3
+              at "App.Tests.BrowserTests.UsersTests.Visits" Function 7
+              { at "App.Tests.BrowserTests.UsersTests.url" Function 0 with
+                  SourceFile = ExternSourceFile
+                  IsExtern = true } ]
+
+        test
+            <@
+                sourcesOf symbols content = set
+                    [ "App.Tests.BrowserTests.UsersTests"
+                      "App.Tests.BrowserTests.UsersTests.Visits"
+                      "App.Tests.BrowserTests.UsersTests.url" ]
+            @>
+
     [<Fact>]
     let ``a URL before any located symbol of its declaration falls back to the whole declaration`` () =
         let content =
@@ -2099,6 +2131,158 @@ let other () = ()
               at "App.Tests.BrowserTests.other" Function 7 ]
 
         test <@ sourcesOf symbols content = set [ "App.Tests.BrowserTests.helper"; "App.Tests.BrowserTests.other" ] @>
+
+    /// The consumer shape behind a route edge on every helper of a 10,000-line browser
+    /// test file: `module X` with helpers, then `type X(...)` — a test class of the SAME
+    /// name as its file module. Resolving the class by name matched every symbol of the
+    /// module, so a helper called by 183 tests carried routes it never names.
+    let private widthTests =
+        """module App.Tests.WidthTests
+
+let shouldSkip () = false
+
+let routes = [ "/api/users/1" ]
+
+type Outcome =
+    | Ready
+    | Failed
+
+type WidthTests() =
+    [<Fact>]
+    member _.Visits() = if shouldSkip () then () else ignore routes
+
+    [<Fact>]
+    member _.Renders() = ignore Ready
+"""
+
+    let private widthSymbols =
+        [ at "App.Tests.WidthTests" Module 1
+          at "App.Tests.WidthTests.shouldSkip" Function 3
+          at "App.Tests.WidthTests.routes" Value 5
+          at "App.Tests.WidthTests.Outcome" Type 7
+          at "App.Tests.WidthTests.Outcome.Ready" DuCase 8
+          at "App.Tests.WidthTests.Outcome.Failed" DuCase 9
+          at "App.Tests.WidthTests.WidthTests" Type 11
+          at "App.Tests.WidthTests.WidthTests.Visits" Function 13
+          at "App.Tests.WidthTests.WidthTests.Renders" Function 16 ]
+
+    [<Fact>]
+    let ``a URL in the file header is held by the binding that names it, not by a class of the module's name`` () =
+        // The header binding `routes` holds the URL. The class carries the edge whole only
+        // because the run path selects it through the header (its own symbols, never the
+        // module's): over-selection inside the class, never a helper outside it.
+        test
+            <@
+                sourcesOf widthSymbols widthTests = set
+                    [ "App.Tests.WidthTests.routes"
+                      "App.Tests.WidthTests.WidthTests"
+                      "App.Tests.WidthTests.WidthTests.Visits"
+                      "App.Tests.WidthTests.WidthTests.Renders" ]
+            @>
+
+    /// What the edges select through the production walk when the route's handler
+    /// changes, over an index holding `deps` as core's own edges.
+    let private selectedByHandlerEdit (symbols: SymbolInfo list) (deps: Dependency list) (tests: string list) files =
+        let tempDir = Path.Combine(Path.GetTempPath(), $"falco-walk-%A{Guid.NewGuid()}")
+        let testDir = Path.Combine(tempDir, "tests/IntTests")
+        Directory.CreateDirectory testDir |> ignore
+
+        try
+            for (name: string, text: string) in files do
+                File.WriteAllText(Path.Combine(testDir, name), text)
+
+            let db = Database.create (Path.Combine(tempDir, "test.db"))
+
+            let testMethods =
+                tests
+                |> List.map (fun name ->
+                    { SymbolFullName = name
+                      TestProject = "IntTests"
+                      TestClass = name.Substring(0, name.LastIndexOf '.')
+                      TestMethod = name.Substring(name.LastIndexOf '.' + 1) })
+
+            db.RebuildProjects [ AnalysisResult.Create(handler :: symbols, deps, testMethods) ]
+            let routeStore = RouteStore(toPluginStore db)
+            routeStore.Rebuild [ route ]
+
+            let falco =
+                FalcoRouteExtension("IntTests", "tests/IntTests", routeStore) :> ITestPruneExtension
+
+            refreshExtensionEdges db tempDir [ falco ] |> ignore
+
+            db.QueryAffectedTests [ handler.FullName ]
+            |> List.map _.SymbolFullName
+            |> Set.ofList
+        finally
+            Directory.Delete(tempDir, true)
+
+    [<Fact>]
+    let ``a handler edit reaches the test using the header binding, and not a test that only calls a helper`` () =
+        let otherFile = "OtherTests.fs"
+
+        let otherTests =
+            """module App.Tests.OtherTests
+
+type OtherTests() =
+    [<Fact>]
+    member _.Skips() = if App.Tests.WidthTests.shouldSkip () then ()
+"""
+
+        let symbols =
+            widthSymbols
+            @ [ { at "App.Tests.OtherTests.OtherTests.Skips" Function 5 with
+                    SourceFile = $"tests/IntTests/%s{otherFile}" } ]
+
+        let uses (from: string) (target: string) =
+            { FromSymbol = from
+              ToSymbol = target
+              Kind = Calls
+              Source = "core" }
+
+        let deps =
+            [ uses "App.Tests.WidthTests.WidthTests.Visits" "App.Tests.WidthTests.shouldSkip"
+              uses "App.Tests.WidthTests.WidthTests.Visits" "App.Tests.WidthTests.routes"
+              uses "App.Tests.OtherTests.OtherTests.Skips" "App.Tests.WidthTests.shouldSkip" ]
+
+        let selected =
+            selectedByHandlerEdit
+                symbols
+                deps
+                [ "App.Tests.WidthTests.WidthTests.Visits"
+                  "App.Tests.WidthTests.WidthTests.Renders"
+                  "App.Tests.OtherTests.OtherTests.Skips" ]
+                [ ("BrowserTests.fs", widthTests); (otherFile, otherTests) ]
+
+        // Recall: the test that requests the route through `routes` is selected.
+        test <@ selected |> Set.contains "App.Tests.WidthTests.WidthTests.Visits" @>
+        // Precision: `shouldSkip` makes no request, so its other callers are not.
+        test <@ not (selected |> Set.contains "App.Tests.OtherTests.OtherTests.Skips") @>
+
+    /// `module OrgQueries = App.Database.OrgQueries` is a module declaration to the
+    /// textual scan, and the tests after it fall in its span. Resolving that declaration
+    /// by name reached the production module of the same name in another file.
+    [<Fact>]
+    let ``a module abbreviation's span attributes to the file's own symbols, never another file's module`` () =
+        let content =
+            """module App.Tests.FeedbackFlow
+
+module OrgQueries = App.Database.OrgQueries
+
+[<Fact>]
+let saves () = ignore "/api/users/1"
+"""
+
+        let elsewhere (fullName: string) (kind: SymbolKind) (line: int) =
+            { at fullName kind line with
+                SourceFile = "src/Database/OrgQueries.fs" }
+
+        let symbols =
+            [ at "App.Tests.FeedbackFlow" Module 1
+              at "App.Tests.FeedbackFlow.saves" Function 6
+              elsewhere "App.Database.OrgQueries" Module 1
+              elsewhere "App.Database.OrgQueries.createOrg" Function 3 ]
+
+        test <@ sourcesOf symbols content = set [ "App.Tests.FeedbackFlow.saves" ] @>
 
 module ``AnalyzeEdges fallback`` =
 

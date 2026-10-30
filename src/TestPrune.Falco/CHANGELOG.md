@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a route edge starts only at symbols defined in the file that names the route.
+  A declaration used to be resolved by NAME across the whole index, so a test class named
+  like its file module (`module X` … `type X(…)`) took every helper and union case of the
+  module, and a module abbreviation (`module Q = App.Q`) took the production module it
+  names, in another project. It now resolves to the file's own symbols within the
+  declaration's span. A route named in the file header is placed at the binding that names
+  it, like any other mention, rather than making every declaration of the file a carrier
+  whole. Only an index holding no symbol of the file still resolves by name.
 - build: the package's source and project links point at github.com/michaelglass/FsHotWatch, where
   TestPrune now lives with its history (AUTOMATION-1367). No code change.
 

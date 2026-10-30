@@ -30,14 +30,26 @@ type private DeclarationSpan =
 /// below it rather than the one above.
 type private RouteMention = { Line: int; InAttribute: bool }
 
-/// A declaration that carries a route edge, and where in it the route is named.
+/// The text an edge participant stands for.
+type private ParticipantScope =
+    /// The text before a file's first declaration. It belongs to no declaration, so
+    /// `declarations` names every one of the file's, for an index that holds no symbol of
+    /// the file and can only resolve them by name.
+    | FileHeader of declarations: string list
+    /// One top-level declaration's span.
+    | OwnDeclaration of name: string
+
+/// Text that carries a route edge, and where in it the route is named.
 type private EdgeParticipant =
     {
-        Declaration: string
+        Scope: ParticipantScope
         /// Repository-relative path of the declaring file, `/`-separated.
         File: string
-        /// Empty when the route reaches the declaration as a whole (a match in the file
-        /// header, or a test class selected by fallback): every symbol of it carries the edge.
+        /// The 1-based lines the text spans, both inclusive.
+        FirstLine: int
+        LastLine: int
+        /// Empty when the route reaches the text as a whole (a test class selected by
+        /// fallback): every symbol of it carries the edge.
         Mentions: RouteMention list
     }
 
@@ -386,23 +398,6 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                         else
                             directlyMatched
 
-                    // Every span holding the route URL carries the route across the
-                    // HTTP boundary, whether or not it can run a test: a fixture that
-                    // calls the endpoint is precisely the symbol the tests in other
-                    // files depend on.
-                    //
-                    // This path has no narrower "selectable" subset — every
-                    // declaration participates — so a match inside ANY span is
-                    // attributable to it and the run path's fallback must NOT fire
-                    // here. Only the file HEADER belongs to no declaration, and a
-                    // route matched there could be reached by any of them, so that
-                    // (and only that) makes every declaration a carrier.
-                    let routeCarriers =
-                        if matchesText headerText then
-                            spans
-                        else
-                            spans |> List.filter (fun span -> matchesText span.Text)
-
                     let file = Path.GetRelativePath(repoRoot, path).Replace('\\', '/')
                     let lines = content.Split('\n')
 
@@ -428,30 +423,48 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                                     InAttribute = lines[line - 1].TrimStart().StartsWith("[<") } ])
                         |> List.distinct
 
-                    let wholeDeclaration (span: DeclarationSpan) =
-                        { Declaration = span.Name
+                    let participant scope (span: DeclarationSpan) mentions =
+                        { Scope = scope
                           File = file
-                          Mentions = [] }
+                          FirstLine = lineOf span.Start
+                          LastLine = lineOf (span.Start + max 0 (span.Text.Length - 1))
+                          Mentions = mentions }
 
-                    // A carrier is attributed by where its span names the route, unless the
-                    // header made it a carrier. A class the run path picked up only through
-                    // its own fallback names no route itself, so it carries the edge whole.
-                    let carriers =
+                    // Every span holding the route URL carries the route across the HTTP
+                    // boundary, whether or not it can run a test: a fixture that calls the
+                    // endpoint is precisely the symbol the tests in other files depend on.
+                    // So does the file HEADER, which belongs to no declaration. Each is
+                    // attributed by where it names the route (see `AnalyzeEdges`), exactly
+                    // like a declaration: a header binding is a symbol like any other, and the
+                    // tests that reach the route through it depend on it.
+                    //
+                    // This path has no narrower "selectable" subset, so the run path's
+                    // fallback does not widen the carriers. A class the run path picked up
+                    // only through that fallback names no route itself; it carries the edge
+                    // whole, over its own symbols.
+                    let header =
+                        { Name = ""
+                          IsClass = false
+                          Text = headerText
+                          Start = 0 }
+
+                    let headerCarrier =
                         if matchesText headerText then
-                            routeCarriers |> List.map wholeDeclaration
+                            [ participant (FileHeader(spans |> List.map _.Name)) header (mentionsIn header) ]
                         else
-                            routeCarriers
-                            |> List.map (fun span ->
-                                { Declaration = span.Name
-                                  File = file
-                                  Mentions = mentionsIn span })
+                            []
+
+                    let spanCarriers =
+                        spans
+                        |> List.filter (fun span -> matchesText span.Text)
+                        |> List.map (fun span -> participant (OwnDeclaration span.Name) span (mentionsIn span))
 
                     let fallbackClasses =
                         testClasses
-                        |> List.filter (fun span -> not (List.contains span routeCarriers))
-                        |> List.map wholeDeclaration
+                        |> List.filter (fun span -> not (matchesText span.Text))
+                        |> List.map (fun span -> participant (OwnDeclaration span.Name) span [])
 
-                    testClasses |> List.map (fun span -> span.Name), carriers @ fallbackClasses)
+                    testClasses |> List.map (fun span -> span.Name), headerCarrier @ spanCarriers @ fallbackClasses)
 
         { TestClasses = perFile |> List.collect fst |> List.distinct
           EdgeParticipants = perFile |> List.collect snd |> List.distinct }
@@ -612,33 +625,102 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                 let constantSources = constantParseCache.Sources repoFiles
                 let allSymbols = symbolStore.GetAllSymbols()
 
-                // Resolve the symbols belonging to a single declaration: those whose full
-                // name has the declaration as a whole dotted segment. A generic class's
-                // segment carries its arity (`UsersTests`1`). Memoised: a declaration
-                // carrying several routes is resolved once per call, not once per route.
-                let declarationSymbols =
-                    System.Collections.Generic.Dictionary<string, SymbolInfo list>()
+                // A declaration's name as a whole dotted segment of a symbol's full name. A
+                // generic class's segment carries its arity (`UsersTests`1`). Memoised: a
+                // declaration carrying several routes is resolved once per call.
+                let segmentPatterns = System.Collections.Generic.Dictionary<string, Regex>()
 
-                let symbolsForDeclaration (declaration: string) =
-                    match declarationSymbols.TryGetValue declaration with
+                let namesDeclaration (declaration: string) (symbol: SymbolInfo) =
+                    let segment =
+                        match segmentPatterns.TryGetValue declaration with
+                        | true, pattern -> pattern
+                        | false, _ ->
+                            let pattern = Regex($@"\.%s{Regex.Escape declaration}(?:`\d+)?(?:\.|$)")
+                            segmentPatterns[declaration] <- pattern
+                            pattern
+
+                    segment.IsMatch symbol.FullName
+
+                let fileSymbols = System.Collections.Generic.Dictionary<string, SymbolInfo list>()
+
+                let symbolsInFile (file: string) =
+                    match fileSymbols.TryGetValue file with
                     | true, symbols -> symbols
                     | false, _ ->
-                        let segment = Regex($@"\.%s{Regex.Escape declaration}(?:`\d+)?(?:\.|$)")
-
-                        let symbols = allSymbols |> List.filter (fun s -> segment.IsMatch s.FullName)
-
-                        declarationSymbols[declaration] <- symbols
+                        let symbols = symbolStore.GetSymbolsInFile file
+                        fileSymbols[file] <- symbols
                         symbols
+
+                // The symbols `participant`'s text can hold. Text is only ever inside a
+                // definition in its own file, so they are that file's symbols: the whole file
+                // for its header, and for a declaration the ones defined within its span.
+                // Never resolved by name across the index: a test class named like its file
+                // module (`module X` … `type X(…)`) would take every symbol of the module, and
+                // a module abbreviation (`module Q = App.Q`) the production module it names.
+                // Only an index holding no symbol of the file falls back to names.
+                let ownSymbols (participant: EdgeParticipant) =
+                    let inFile = symbolsInFile participant.File
+
+                    match participant.Scope with
+                    | FileHeader declarations when inFile.IsEmpty ->
+                        declarations
+                        |> List.collect (fun declaration -> allSymbols |> List.filter (namesDeclaration declaration))
+                    | OwnDeclaration declaration when inFile.IsEmpty ->
+                        allSymbols |> List.filter (namesDeclaration declaration)
+                    | FileHeader _ -> inFile
+                    | OwnDeclaration declaration ->
+                        let inSpan =
+                            inFile
+                            |> List.filter (fun symbol ->
+                                participant.FirstLine <= symbol.LineStart
+                                && symbol.LineStart <= participant.LastLine)
+
+                        let named = inFile |> List.filter (namesDeclaration declaration)
+
+                        // Both, when the span and the name agree; otherwise whichever the
+                        // index can answer, and the whole file when it can answer neither.
+                        match named |> List.filter (fun symbol -> List.contains symbol inSpan) with
+                        | [] when not inSpan.IsEmpty -> inSpan
+                        | [] when not named.IsEmpty -> named
+                        | [] -> inFile
+                        | both -> both
+
+                // The index names a class's `let` bindings only where they are used: extern
+                // symbols under the class's name, with no definition site in any file. They
+                // belong to the type that declares them, so they carry what it carries.
+                let externs =
+                    allSymbols |> List.filter (fun symbol -> symbol.SourceFile = ExternSourceFile)
+
+                let externMembers = System.Collections.Generic.Dictionary<string, SymbolInfo list>()
+
+                let withExternMembers (symbols: SymbolInfo list) =
+                    let under (holder: SymbolInfo) =
+                        match holder.Kind with
+                        | Type
+                        | Module ->
+                            match externMembers.TryGetValue holder.FullName with
+                            | true, members -> members
+                            | false, _ ->
+                                let prefix = holder.FullName + "."
+
+                                let members =
+                                    externs |> List.filter (fun symbol -> symbol.FullName.StartsWith prefix)
+
+                                externMembers[holder.FullName] <- members
+                                members
+                        | _ -> []
+
+                    symbols @ List.collect under symbols |> List.distinct
 
                 // The symbols of `participant` that hold its mentions of the route. Symbols
                 // carry only the line of their definition, so a mention belongs to the
                 // nearest definition at or above it, and an attribute line also to the
                 // definition below it. A type or module found that way holds bindings the
                 // index does not name (a class's `let`s), so all of its members carry the
-                // edge. Wherever the index cannot place a mention, the whole declaration
-                // carries it.
+                // edge. Wherever the index cannot place a mention, all of the participant's
+                // own symbols carry it.
                 let participantSymbols (participant: EdgeParticipant) =
-                    let declaration = symbolsForDeclaration participant.Declaration
+                    let declaration = ownSymbols participant
 
                     let located =
                         declaration |> List.filter (fun symbol -> symbol.SourceFile = participant.File)
@@ -657,6 +739,7 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                             declaration
                             |> List.filter (fun symbol ->
                                 symbol = holder || symbol.FullName.StartsWith(holder.FullName + "."))
+                            |> withExternMembers
                         | _ -> [ holder ]
 
                     let holders (mention: RouteMention) =
@@ -674,11 +757,11 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                                 []
 
                         match above @ below with
-                        | [] -> declaration
+                        | [] -> withExternMembers declaration
                         | found -> found |> List.collect membersOf
 
                     if participant.Mentions.IsEmpty || located.IsEmpty then
-                        declaration
+                        withExternMembers declaration
                     else
                         participant.Mentions |> List.collect holders |> List.distinct
 
