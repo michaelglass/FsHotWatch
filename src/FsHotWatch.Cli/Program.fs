@@ -313,7 +313,8 @@ type Command =
             + "  passed here, but check says failed  → a stale red, a flake, or a\n"
             + "                                        test that only passes with company\n"
             + "Refuses a green verdict from anything less than the full suite (exit 3).\n"
-            + "An unchanged tree is answered from the evidence already earned; --fresh runs it again.")>] Confirm of
+            + "An unchanged tree is answered from the evidence already earned: nothing runs,\n"
+            + "and the output says `reused` with the run that earned it. --fresh runs it again.")>] Confirm of
         ConfirmFlag list
     /// Read `.fshw/verdict.json` and report whether it still applies to the tree on
     /// disk. Touches NO socket, starts no daemon, triggers no run, so reading cannot
@@ -4239,6 +4240,7 @@ let private executeCommandRendered
                     match Verdict.priorConfirmation repoRoot config.Exclude with
                     | Verdict.PriorConfirmation.StillApplies(confirmed, covered) ->
                         UI.success $"confirm — %s{Verdict.describeStillApplies confirmed covered}"
+                        eprintfn $"    %s{Verdict.describeReuse confirmed}"
                         eprintfn ""
 
                         eprintfn
@@ -4490,6 +4492,9 @@ let internal executeCommandWatchingConfig
         printfn "%s" (AgentEnvelope.render token exitCode (AgentEnvelope.Shape.VerdictBacked facts) None)
         exitCode
     | ProgressRenderer.Agent, AgentGate.VerdictAfterRun ->
+        // Taken BEFORE the command runs: a verdict published earlier than this was not
+        // produced by this invocation (`AgentEnvelope.reusedBy`).
+        let invokedAt = DateTime.UtcNow
         let exitCode, transcript = AgentEnvelope.capture repoRoot rendered
 
         // The verdict on disk answers for this run only when it applies to this tree and
@@ -4498,7 +4503,11 @@ let internal executeCommandWatchingConfig
         let facts =
             try
                 let report, _ = Verdict.reportWithCoverage repoRoot config.Exclude
+
                 AgentEnvelope.factsOf (AgentEnvelope.Evidence.AfterRun report) exitCode
+                |> Option.map (fun f ->
+                    { f with
+                        Reused = AgentEnvelope.reusedBy invokedAt report })
             with ex ->
                 FsHotWatch.Logging.debug "agent" $"verdict unreadable after the run: %s{ex.Message}"
                 None

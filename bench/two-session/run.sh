@@ -24,7 +24,9 @@
 # tier barrier the chain waits for it, and under ADR-056 it does not.
 # `dotnet` must be on PATH.
 #
-# Writes <out>/<label>/{status.json,summary.tsv,driver.log} and prints the summary.
+# Writes <out>/<label>/{status.json,summary.tsv,driver.log} and prints the summary. fshw's
+# box-wide homes (FSHW_CACHE_HOME, FSHW_STATE_HOME) point into <out>/<label>/ too, so a
+# run never touches the real ~/.cache/fshw or ~/.local/state/fshw.
 set -euo pipefail
 
 bin_src=${1:?fshw bin dir}
@@ -42,6 +44,14 @@ mkdir -p "$run_dir/bin"
 cp -R "$bin_src"/. "$run_dir/bin/"
 fshw="$run_dir/bin/FsHotWatch.Cli"
 log="$run_dir/driver.log"
+
+# Scratch homes, before anything runs fshw. Without them every daemon this harness starts
+# writes its shared task store into the real ~/.cache/fshw (a namespace per synthetic
+# repo) and the host's control state into the real ~/.local/state/fshw. They live in the
+# run directory, so `rm -rf "$run_dir"` above discards the last run's along with it.
+# TwoSessionHarnessTests pins both exports and their order.
+export FSHW_CACHE_HOME="$run_dir/fshw-cache"
+export FSHW_STATE_HOME="$run_dir/fshw-state"
 say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$log"; }
 
 r="$run_dir/r"

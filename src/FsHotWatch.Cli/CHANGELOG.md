@@ -16,6 +16,16 @@
   their source in this repository (AUTOMATION-1367), not PackageReferences to released versions. The
   bundled TestPrune.Sql and TestPrune.SqlHydra move to their current sources, 0.3.2 and 0.2.3 (were
   0.3.1 and 0.2.2); TestPrune.Core (13.5.2) and TestPrune.Falco (4.0.4) are unchanged.
+- feat: a `confirm` that answers from an earlier verdict says so (AUTOMATION-1355). On an
+  unchanged tree `confirm` reports the full-suite green `.fshw/verdict.json` already holds and
+  runs nothing — documented since 0.14.0-alpha.4 and kept (ADR-059 §13) — but its output read
+  like a run that had just executed. The human output now prints a `reused` line naming the
+  verdict's own run id, when it was earned, and `confirm --fresh`. The agent envelope gains an
+  additive `reused: {runId, producedAt}`, set whenever the verdict a `check` or `confirm`
+  answered from was published before the invocation began. `.fshw/verdict.json` stays
+  byte-identical. New: `AgentEnvelope.Reuse`, `AgentEnvelope.reusedBy`, `Facts.Reused`,
+  `Verdict.describeReuse`. A gate that must report only a green earned in its own invocation
+  runs `confirm --fresh`.
 - feat: `fshw analytics` (AUTOMATION-1368): flaky, slow and trust analytics over the outcome
   store and the shadow ledgers. A pure read, with no daemon, no run and nothing quarantined.
   - **Flaky.** An action key (the same inputs) recorded both pass and fail, per subject, with

@@ -49,7 +49,8 @@ let facts (outcome: string) (scope: TestScope option) (reasons: string list) : A
       Scope = scope
       Reasons = reasons
       ReasonsOmitted = 0
-      FromVerdictFile = true }
+      FromVerdictFile = true
+      Reused = None }
 
 /// What a human run of `verdict` writes on a stale tree: the block the ticket names.
 let humanBlock =
@@ -571,3 +572,158 @@ let ``verdict without agent mode still prints the human block (positive control)
         test <@ exitCode = 5 @>
         test <@ stderr.Contains "✗" @>
         test <@ not (stdout.Contains AgentEnvelope.Contract) @>)
+
+// --- confirm that REUSES a stored verdict says so (AUTOMATION-1355) ---
+
+/// The run id of the seeded full-suite green: the run `confirm` reuses.
+let private seededRunId = Guid.Parse "6a1f0c3e9b2d4f5a8e7c1b0d2f3a4e5b"
+
+/// A full-suite green `confirm` verdict for THIS tree from THIS binary, earned by
+/// `seededRunId`: exactly what `confirm`'s fast path answers from. Asserts the fast path
+/// will be taken, so a test that reaches the slow path fails as a setup error.
+let private seedReusableGreen (root: string) : Verdict.Verdict =
+    Directory.CreateDirectory(Path.Combine(root, "src")) |> ignore
+    File.WriteAllText(Path.Combine(root, "src", "Lib.fs"), "module Lib\nlet x = 1\n")
+    let tree = TreeHash.compute root []
+
+    let verdict =
+        Verdict.create
+            Verdict.Confirm
+            { BaselineFixtures.reportOf (FullSuite(1, None)) with
+                RunId = Some seededRunId }
+            ({ Hash = tree.Hash
+               FileCount = tree.FileCount
+               SkippedCount = tree.SkippedCount
+               DeclaredCount = tree.DeclaredCount
+               AbsentDeclarationCount = tree.AbsentDeclarationCount }
+            : TreeHash.Tree)
+            (Some [])
+            (Verdict.Green BaselineFixtures.baseline)
+            0
+            ([ { Name = "test-prune"
+                 Outcome = Verdict.PluginOutcome.Ok
+                 ElapsedMs = Some 1000L
+                 Summary = Some "ok" } ]
+            : Verdict.PluginVerdict list)
+            []
+            Verdict.CheckComparison.notRecorded
+            []
+            ProjectModelFixtures.available
+
+    Verdict.write root verdict
+
+    match Verdict.priorConfirmation root [] with
+    | Verdict.PriorConfirmation.StillApplies(stored, _) -> stored
+    | Verdict.PriorConfirmation.MustEarn -> failwith "setup: expected confirm's fast path to be taken"
+
+/// Run `confirm` in `root` with `agent`, returning (stdout, stderr, exit code). The fast
+/// path answers before any daemon contact, so a daemon factory that throws is the
+/// assertion that none was started.
+let private runConfirm (root: string) (agent: bool) : string * string * int =
+    let priorOut = Console.Out
+    let priorErr = Console.Error
+    use out = new StringWriter()
+    use err = new StringWriter()
+    Console.SetOut out
+    Console.SetError err
+
+    let exitCode =
+        try
+            executeCommand
+                ""
+                (fun _ -> failwith "the confirm fast path must not create a daemon")
+                (fakeIpc ())
+                root
+                "pipe-agent-envelope"
+                (Command.Confirm [])
+                { defaultGlobalOptions with
+                    AgentMode = Some agent }
+                fakeConfig
+                5.0
+        finally
+            Console.SetOut priorOut
+            Console.SetError priorErr
+
+    out.ToString(), err.ToString(), exitCode
+
+/// THE DEFECT. A second `confirm` on an unchanged tree answers from the verdict the
+/// first one earned (documented: README "Running the suite again", ADR-059 §13), and
+/// leaves `.fshw/verdict.json` byte-identical. Its envelope was indistinguishable from
+/// one whose run had just executed, so a deploy gate reading it could not tell that
+/// THIS invocation ran nothing. The envelope must say so, naming the run that earned it.
+[<Fact(Timeout = 15000)>]
+let ``an agent-mode confirm that reuses a stored verdict says so and names the run that earned it`` () =
+    withTempDir "agent-confirm-reused" (fun root ->
+        let stored = seedReusableGreen root
+        let stdout, stderr, exitCode = runConfirm root true
+        test <@ exitCode = 0 @>
+        test <@ stderr = "" @>
+        let e = parse (stdout.Trim())
+        test <@ str e "command" = "confirm" @>
+        test <@ str e "outcome" = "green" @>
+        test <@ has e "reused" @>
+        let reused = prop e "reused"
+        test <@ str reused "runId" = seededRunId.ToString("N") @>
+        test <@ (prop reused "producedAt").GetDateTime().ToUniversalTime() = stored.ProducedAt.ToUniversalTime() @>)
+
+/// The human line says the same thing in words: nothing ran, and how to make it run.
+[<Fact(Timeout = 15000)>]
+let ``a human-mode confirm that reuses a stored verdict says it ran nothing and names --fresh`` () =
+    withTempDir "human-confirm-reused" (fun root ->
+        seedReusableGreen root |> ignore
+        let stdout, stderr, exitCode = runConfirm root false
+        let shown = stdout + stderr
+        test <@ exitCode = 0 @>
+        test <@ shown.Contains "reused" @>
+        test <@ shown.Contains(seededRunId.ToString("N")) @>
+        test <@ shown.Contains "confirm --fresh" @>)
+
+/// The negative control: a verdict published DURING the invocation is that invocation's
+/// own, and is not reported as reused — nor is anything that is not an applying verdict.
+[<Fact(Timeout = 15000)>]
+let ``a verdict published after the invocation began is not reused`` () =
+    let v = redVerdict ()
+    let before = v.ProducedAt.AddSeconds -1.0
+    let after = v.ProducedAt.AddSeconds 1.0
+    test <@ AgentEnvelope.reusedBy before (Verdict.Report.Applies v) = None @>
+    test <@ AgentEnvelope.reusedBy after (Verdict.Report.Stale(v, "stale")) = None @>
+    test <@ AgentEnvelope.reusedBy after (Verdict.Report.NoVerdict "none") = None @>
+    test <@ AgentEnvelope.reusedBy after (Verdict.Report.InFlight(v, "running")) = None @>
+    // Positive control: the same verdict, asked about by an invocation that began later.
+    test <@ (AgentEnvelope.reusedBy after (Verdict.Report.Applies v)) |> Option.map _.RunId = Some v.RunId @>
+
+/// An envelope with no reuse carries no `reused` field at all, so its absence means
+/// "this invocation produced the verdict".
+[<Fact(Timeout = 15000)>]
+let ``an envelope without reuse has no reused field`` () =
+    let e =
+        parse (
+            AgentEnvelope.render
+                "confirm"
+                0
+                (AgentEnvelope.Shape.VerdictBacked(Some(facts "green" (Some(FullSuite(1, None))) [])))
+                None
+        )
+
+    test <@ not (has e "reused") @>
+
+/// A reused verdict that names no run says so with `null`, never an invented id.
+[<Fact(Timeout = 15000)>]
+let ``a reused verdict that names no run reports a null runId`` () =
+    let producedAt = DateTime(2026, 10, 30, 8, 0, 0, DateTimeKind.Utc)
+
+    let reused =
+        { facts "green" (Some(FullSuite(1, None))) [] with
+            Reused =
+                Some
+                    { RunId = None
+                      ProducedAt = producedAt } }
+
+    let e =
+        parse (AgentEnvelope.render "confirm" 0 (AgentEnvelope.Shape.VerdictBacked(Some reused)) None)
+
+    let r = prop e "reused"
+    let kind = (prop r "runId").ValueKind
+    test <@ kind = JsonValueKind.Null @>
+    let expected = producedAt.ToString("o")
+    test <@ str r "producedAt" = expected @>
