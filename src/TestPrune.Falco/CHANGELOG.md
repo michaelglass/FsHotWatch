@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 4.0.4 - 2026-10-29
+
+- Finish: AUTOMATION-1362 step 8: a schema rebuild keeps the tables core did not create
+
+
 ## 4.0.3 - 2026-10-28
 
 - Finish: AUTOMATION-1358 pin FSharp.Core exactly so packed floors stop floating
