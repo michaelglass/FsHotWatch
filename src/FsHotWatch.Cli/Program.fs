@@ -800,6 +800,35 @@ let defaultIpcOps: IpcOps =
             let (exe, toolPrefix) = computeLaunchCommand Environment.ProcessPath entryDll
             launchDaemonProcess exe toolPrefix repoRoot extraArgs logFile }
 
+/// `ipc` with every pipe name passed through `resolve` at the moment of the call, not
+/// once up front. A client that restarts a daemon started under another TMPDIR probes for
+/// the replacement it launched, which records a different socket than the one it replaced:
+/// a name resolved once still points at the old daemon's socket, and the client waits out
+/// its startup timeout against a daemon that is already serving.
+let internal resolvingIpcOps (resolve: string -> string) (ipc: IpcOps) : IpcOps =
+    { Shutdown = fun pipe -> ipc.Shutdown(resolve pipe)
+      Scan = fun pipe invocation -> ipc.Scan (resolve pipe) invocation
+      ScanStatus = fun pipe -> ipc.ScanStatus(resolve pipe)
+      GetStatus = fun pipe -> ipc.GetStatus(resolve pipe)
+      GetPluginStatus = fun pipe plugin -> ipc.GetPluginStatus (resolve pipe) plugin
+      RunCommand = fun pipe name args -> ipc.RunCommand (resolve pipe) name args
+      RunCommandFor = fun pipe id name args -> ipc.RunCommandFor (resolve pipe) id name args
+      GetDiagnostics = fun pipe filter -> ipc.GetDiagnostics (resolve pipe) filter
+      WaitForScan = fun pipe after -> ipc.WaitForScan (resolve pipe) after
+      WaitForComplete = fun pipe timeoutMs -> ipc.WaitForComplete (resolve pipe) timeoutMs
+      WaitForRest = fun pipe bound -> ipc.WaitForRest (resolve pipe) bound
+      TriggerBuild = fun pipe -> ipc.TriggerBuild(resolve pipe)
+      FormatAll = fun pipe -> ipc.FormatAll(resolve pipe)
+      RerunPlugin = fun pipe plugin -> ipc.RerunPlugin (resolve pipe) plugin
+      Invalidate = fun pipe -> ipc.Invalidate(resolve pipe)
+      IsRunning = fun pipe -> ipc.IsRunning(resolve pipe)
+      LaunchDaemon = ipc.LaunchDaemon }
+
+/// The IPC to `repoRoot`'s own daemon: each call reaches the socket the live daemon
+/// recorded in `.fshw/daemon.endpoint`, whatever this process's TMPDIR says.
+let internal worktreeIpcOps (repoRoot: string) : IpcOps =
+    resolvingIpcOps (DaemonEndpoint.resolve FsHotWatch.RepositoryHost.processAlive repoRoot) defaultIpcOps
+
 /// Where `fshw completions` writes its fish completion script.
 ///
 /// Resolved HERE rather than left to `CommandTree.FishCompletions.writeToFile`, which
@@ -4806,14 +4835,14 @@ let forwardRootUnknownCommand
 /// host that serves this worktree when its record is live, else the worktree's own
 /// daemon. Like `status`, it reaches whichever daemon serves the worktree now and never
 /// attaches or starts one, so it needs no opt-in: a served worktree has no other daemon.
-let internal passthroughIpc (live: FsHotWatch.RepositoryHost.HostSessionRecord option) : IpcOps =
+let internal passthroughIpc (repoRoot: string) (live: FsHotWatch.RepositoryHost.HostSessionRecord option) : IpcOps =
     match live with
     | Some record ->
         sessionIpcOps
             { Endpoint = record.Endpoint
               Session = fun () -> record.Session
               Reattach = fun () -> false }
-    | None -> defaultIpcOps
+    | None -> worktreeIpcOps repoRoot
 
 /// Apply parsed global flags: configure logging and return the resolved options.
 let applyGlobalFlags (globals: GlobalFlag list) : GlobalOptions =
@@ -4955,7 +4984,8 @@ let private chooseLink
     (command: Command)
     : Result<DaemonLink * IpcOps, int> =
     let ownDaemon =
-        Ok(ownDaemonLink defaultIpcOps repoRoot pipeName opts config DaemonStartupWaitSeconds, defaultIpcOps)
+        let ipc = worktreeIpcOps repoRoot
+        Ok(ownDaemonLink ipc repoRoot pipeName opts config DaemonStartupWaitSeconds, ipc)
 
     let live =
         FsHotWatch.RepositoryHost.HostSessionRecord.tryReadLive FsHotWatch.RepositoryHost.processAlive repoRoot
@@ -5078,10 +5108,10 @@ let private runCli (args: string array) : int =
                         exit 1
                         ""
 
-            // The socket a running daemon recorded, when it has one: a daemon started
-            // under a different TMPDIR listens somewhere this process would not look.
-            let pipeName =
-                DaemonEndpoint.resolve FsHotWatch.RepositoryHost.processAlive repoRoot (computePipeName repoRoot)
+            // The computed name. A daemon started under a different TMPDIR listens somewhere
+            // this name does not resolve to here; the IPC (`worktreeIpcOps`) reaches the
+            // socket it recorded instead, re-read on every call.
+            let pipeName = computePipeName repoRoot
 
             match dispatch with
             | RunCommand(globals, command) ->
@@ -5173,11 +5203,11 @@ let private runCli (args: string array) : int =
                         CompactMode = compact }
 
                 let ipc =
-                    passthroughIpc (
-                        FsHotWatch.RepositoryHost.HostSessionRecord.tryReadLive
+                    passthroughIpc
+                        repoRoot
+                        (FsHotWatch.RepositoryHost.HostSessionRecord.tryReadLive
                             FsHotWatch.RepositoryHost.processAlive
-                            repoRoot
-                    )
+                            repoRoot)
 
                 forwardRootUnknownCommand
                     (DaemonConfig.DaemonLog.forRepo repoRoot)
