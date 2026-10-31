@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `RunClaim.survey` returns the held claims and the claims whose process died without
+  releasing them, and deletes only the died claims its caller says are retired (AUTOMATION-1420).
+  `RunClaim.live` no longer deletes abandoned claims: a SIGKILLed check's claim is the only
+  evidence that it ran, so it stays until a verdict published after it makes it moot.
+
 ## 0.10.0-alpha.99 - 2026-10-30
 
 - test: `ProcessHelper.TeardownPatience` (internal) puts a floor under the waits of an accounted
@@ -408,7 +413,6 @@
 
 - feat(rules): FSHW-WALK-001 bans walks that can follow a directory symlink
 
-
 ## 0.10.0-alpha.88 - 2026-10-18
 
 - fix: an unreadable directory that a `dir/` exclude names is no longer a hole in the tree
@@ -552,7 +556,6 @@
 ## 0.10.0-alpha.80 - 2026-10-17
 
 - fix: overlapping project evaluations no longer strand the process in a deleted directory
-
 
 ## 0.10.0-alpha.79 - 2026-10-16
 
@@ -961,7 +964,6 @@
 
 - fix!: a kept receipt keeps its run's evidence, and a verdict reads both from one reply
 
-
 ## 0.10.0-alpha.64 - 2026-10-05
 
 - feat: `RepositoryIdentity.isCheckoutRoot` says whether a directory is a checkout root,
@@ -1015,7 +1017,6 @@
 ## 0.10.0-alpha.61 - 2026-10-01
 
 - cli: a reused verdict says what its freshness key covered
-
 
 ## 0.10.0-alpha.60 - 2026-09-29
 
@@ -1149,7 +1150,6 @@
   `PluginCtxHelpers.beginRun` reports `Running` and returns the run's clock, and
   `PluginCtxHelpers.timedOutWith` reports a timed-out run in the order the recorded
   `TimedOut` outcome requires; Lint, Analyzers, FormatCheck and FileCommand use them.
-
 
 ## 0.10.0-alpha.58 - 2026-09-28
 
@@ -1815,7 +1815,6 @@
 
 - core: the self-incompatible guard now sees FCS's GROUP SEPARATOR
 
-
 ## 0.10.0-alpha.41 - 2026-09-22
 
 - core: recovery attempts are serialised per project, so an in-flight restore is
@@ -1831,7 +1830,6 @@
   re-reads the disk instead of trusting the mark; the uncontended path is
   unchanged.
 
-
 - core: a project the deps-freshness gate skips now reports its own diagnostic.
   `SkipAlreadyAttempted` drops EVERY file of a project from the scan, and relied on
   the `FailFast` diagnostic from the first recovery attempt still being in the
@@ -1840,7 +1838,6 @@
   them while the scan published its generation as authoritative. Skipping stays
   (a project whose deps will not restore must not be type-checked against an empty
   reference set); skipping silently does not.
-
 
 - core: the per-scan metrics record now says where a scan's files went.
   `scan-metrics.jsonl` carried checked, unchecked and registered counts, so a scan
@@ -1854,7 +1851,6 @@
   and a field addition that discarded it would look like an empty history rather
   than an error.
 
-
 - core: the daemon's checker construction moved to a named `Daemon.createChecker`,
   so the `keepAssemblyContents` capability the analyzers stage depends on is
   pinned by a test rather than left implicit at the construction site. No
@@ -1865,11 +1861,9 @@
 - core: root the rerun synthetic path so it cannot resolve against a deleted cwd
 - Drop private-tracker references from comments and docs
 
-
 ## 0.10.0-alpha.39 - 2026-09-18
 
 - core, cli: a superseded scan re-captures its model instead of ending the check
-
 
 ## 0.10.0-alpha.38 - 2026-09-18
 

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a check killed with SIGKILL no longer leaves an older green as the answer
+  (AUTOMATION-1420). A hard kill (an OOM kill, `timeout -s KILL`, power loss) runs no cleanup, so
+  the `incomplete` record of AUTOMATION-1416 is never written. Its run claim stays in
+  `.fshw/in-flight/` with a dead pid; when that claim started after the verdict was published,
+  `fshw verdict` now reports the verdict as superseded (exit 4, `superseded: the last check (pid N
+  on HOST, started T) died without a verdict …`), and `confirm` and a check with nothing to run no
+  longer reuse it. The reader reports and never rewrites `.fshw/verdict.json`. A claim older than
+  the verdict, or from the check that published it, changes nothing, and a live claim reads as
+  in flight as before.
+
 ## 0.14.0-alpha.132 - 2026-10-30
 
 - fix: a check that ends without a verdict of its own no longer leaves an older green as the
@@ -396,7 +406,6 @@
 - fix: an unreadable directory a dir/ exclude names is not a tree-hash hole
 - fix(lint): honour fsharplint.json ignoreFiles and follow config edits
 
-
 ## 0.14.0-alpha.120 - 2026-10-18
 
 - fix: test evidence is reused across checkouts of one commit when an `exclude`d file under
@@ -415,11 +424,9 @@
 
 - chore: rebuild to bundle updated dependencies
 
-
 ## 0.14.0-alpha.118 - 2026-10-18
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.14.0-alpha.117 - 2026-10-18
 
@@ -432,7 +439,6 @@
 ## 0.14.0-alpha.116 - 2026-10-18
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.14.0-alpha.115 - 2026-10-18
 
@@ -454,21 +460,17 @@
 
 - chore: rebuild to bundle updated dependencies
 
-
 ## 0.14.0-alpha.112 - 2026-10-17
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.14.0-alpha.111 - 2026-10-17
 
 - chore: rebuild to bundle updated dependencies
 
-
 ## 0.14.0-alpha.110 - 2026-10-17
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.14.0-alpha.109 - 2026-10-17
 
@@ -486,11 +488,9 @@
 
 - chore: rebuild to bundle updated dependencies
 
-
 ## 0.14.0-alpha.107 - 2026-10-17
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.14.0-alpha.106 - 2026-10-17
 
@@ -527,7 +527,6 @@
 ## 0.14.0-alpha.104 - 2026-10-16
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.14.0-alpha.103 - 2026-10-16
 
@@ -566,7 +565,6 @@
 ## 0.14.0-alpha.100 - 2026-10-15
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.14.0-alpha.99 - 2026-10-14
 
@@ -887,7 +885,6 @@
 
 - chore: rebuild to bundle updated dependencies
 
-
 ## 0.14.0-alpha.76 - 2026-09-28
 
 - fix: a daemon no longer stops, killing the checks and test runs in flight, when
@@ -920,7 +917,6 @@
 ## 0.14.0-alpha.74 - 2026-09-27
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.14.0-alpha.73 - 2026-09-27
 
@@ -990,7 +986,6 @@
 
 - chore: rebuild to bundle updated dependencies
 
-
 ## 0.14.0-alpha.67 - 2026-09-26
 
 - **BREAKING (pin):** TestPrune.Core 13.1.1 (index schema 17). A type declared in the
@@ -1022,7 +1017,6 @@
 ## 0.14.0-alpha.65 - 2026-09-26
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.14.0-alpha.64 - 2026-09-25
 
@@ -1178,11 +1172,9 @@
 
 - chore: rebuild to bundle updated dependencies
 
-
 ## 0.14.0-alpha.59 - 2026-09-22
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.14.0-alpha.58 - 2026-09-22
 
@@ -1338,7 +1330,6 @@
 
 - core, cli: a superseded scan re-captures its model instead of ending the check
 
-
 ## 0.14.0-alpha.55 - 2026-09-18
 
 - (breaking) One settled read decides a check. The convergence loop is gone:
@@ -1448,7 +1439,6 @@
 ## 0.14.0-alpha.52 - 2026-09-16
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.14.0-alpha.51 - 2026-09-16
 
@@ -1658,7 +1648,6 @@
 
 - chore: rebuild to bundle updated dependencies
 
-
 ## 0.14.0-alpha.41 - 2026-09-04
 
 - `check --run-once`, `confirm --run-once` and `format --run-once`
@@ -1673,7 +1662,6 @@
 ## 0.14.0-alpha.40 - 2026-09-04
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.14.0-alpha.39 - 2026-09-03
 
@@ -1740,11 +1728,9 @@
 - Finish: refuse unexplained red verdicts
 - Finish: keep subset test receipts out of the whole-tree cache
 
-
 ## 0.14.0-alpha.33 - 2026-08-30
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.14.0-alpha.32 - 2026-08-30
 
@@ -1758,7 +1744,6 @@
 
 - Fix: satisfy analyzer in the prior-red quarantine regression test
 - Finish: preserve literal selections and quarantine prior reds
-
 
 ## 0.14.0-alpha.30 - 2026-08-29
 
@@ -1830,7 +1815,6 @@
 
 - chore: rebuild to bundle updated dependencies
 
-
 ## 0.14.0-alpha.26 - 2026-08-24
 
 - **`confirm` now records a real check-vs-confirm sample on the runs that produce one —
@@ -1860,7 +1844,6 @@
 - fix: the replay gate was correct and switched OFF in every live daemon
 - docs: remove three stray diff3 base markers from the changelogs
 
-
 ## 0.14.0-alpha.24 - 2026-08-23
 
 - **A test project in the solution but not in `.fshw.json` is now a `config error`, not a
@@ -1885,7 +1868,6 @@
     between the tree and the outcome; `DaemonConfiguration.Tests` gains `Excluded` and
     `Solution`. New module `FsHotWatch.Cli.SolutionScope`.
 
-
 - fix: **a tree that changes while a check is finishing is now actually caught** — both
   `check`/`confirm` and their `--run-once` twin exit `2` and record `incomplete`.
   The mid-check tree-move detector compared two hashes it took
@@ -1898,7 +1880,6 @@
   check is settling can therefore go from green to `incomplete`/2 — which is the point:
   the verdict is a claim about a particular tree, and that tree is no longer the one
   that was verified.
-
 
 - **BREAKING** — `CheckVerdict.CheckOutcome` gains `RunnerAborted of aborts: string list`
   and `CheckVerdict.CheckInputs` gains a required `RunnerAborted: RunnerAbort` term.
@@ -1921,12 +1902,10 @@
 
 - chore: rebuild to bundle updated dependencies
 
-
 ## 0.14.0-alpha.22 - 2026-08-21
 
 - fix(ci): format changes with pinned Fantomas
 - preserve BootScan debt across full-run completion
-
 
 ## 0.14.0-alpha.21 - 2026-08-19
 
@@ -2109,7 +2088,6 @@
 - test-prune report: name the prior verdict when a run selects no tests
 - confirm records the check-scoped run it already computed
 
-
 ## 0.14.0-alpha.15 - 2026-08-13
 
 - a confirm verdict cannot record a filtered scope
@@ -2151,7 +2129,6 @@
   across those seconds without receiving a single event. A watcher that delivers
   nothing over 45s is not slow, it is not working — so a larger budget buys a
   slower red and hides the breakage. Tracked.
-
 
 ## 0.14.0-alpha.13 - 2026-08-12
 
@@ -2261,7 +2238,6 @@
 
 - confirm: force a REAL build — a cache hit must not assert freshness it never verified
 
-
 ## 0.14.0-alpha.10 - 2026-08-05
 
 - fix!: **dead config now FAILS the load instead of warning.** `"cache": "file"` / `"jj"`
@@ -2286,7 +2262,6 @@
 - chore: trim stale/historical comments to minimal current-state context
 - deps: bump CoverageRatchet.Core 0.1.0-alpha.3 -> 0.1.0-alpha.4
 - deps: bump CommandTree 0.7.0 -> 0.8.0
-
 
 ## 0.14.0-alpha.8 - 2026-07-22
 
@@ -2718,11 +2693,9 @@
 
 - chore: rebuild to bundle updated dependencies
 
-
 ## 0.13.0-alpha.1 - 2026-07-05
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.12.0-alpha.1 - 2026-07-03
 
@@ -2755,7 +2728,6 @@
 ## 0.10.0-alpha.1 - 2026-07-03
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.9.0-alpha.1 - 2026-07-03
 
@@ -2790,11 +2762,9 @@
 
 - chore: rebuild to bundle updated dependencies
 
-
 ## 0.8.0-alpha.36 - 2026-06-17
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.8.0-alpha.35 - 2026-06-17
 
@@ -2869,16 +2839,13 @@
 
 - chore: rebuild to bundle updated dependencies
 
-
 ## 0.8.0-alpha.26 - 2026-06-10
 
 - chore: rebuild to bundle updated dependencies
 
-
 ## 0.8.0-alpha.25 - 2026-06-09
 
 - chore: rebuild to bundle updated dependencies
-
 
 Note: CLI versions release together with the core package under the `core-v` tag (no separate `cli-v` tag prefix).
 

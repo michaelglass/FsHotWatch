@@ -3536,6 +3536,19 @@ type Applicability =
     /// back its own freshly published result gets `Applies`, not a refusal to read
     /// its own answer.
     | RunInFlight of held: RunClaim.Claim list
+    /// Everything matched, and a check that STARTED after this verdict was published
+    /// died without publishing its own (AUTOMATION-1420). A SIGKILL runs no bracket, so
+    /// the terminal record `tryPublishTerminal` writes for every other abnormal ending
+    /// never lands; the dead check's claim is the only trace. The verdict is an older
+    /// answer than the last question asked.
+    | Superseded of died: RunClaim.Claim
+
+/// Does the claim of a check that died without releasing it make `v` an older answer?
+/// Only when that check started AFTER `v` was published, and is not the check that
+/// published it: a check killed after publishing has answered. The same line
+/// `tryPublishTerminal` draws for a check that ends abnormally but can still write.
+let diedAfter (v: Verdict) (c: RunClaim.Claim) : bool =
+    v.InvocationId <> Some c.InvocationId && c.StartedAtUtc > v.ProducedAt
 
 /// Total. Content equality on the SUBJECT and on the PRODUCER — no mtimes, no
 /// "close enough", no heuristic that can fail open.
@@ -3558,6 +3571,7 @@ type Applicability =
 /// gate across it, which is the only road a stale green could ever have travelled.
 let applicability
     (heldClaims: RunClaim.Claim list)
+    (diedClaims: RunClaim.Claim list)
     (currentProducer: Producer)
     (currentTreeHash: string)
     (v: Verdict)
@@ -3583,9 +3597,15 @@ let applicability
         // and is therefore refused while any run is in flight. That is the
         // conservative reading and the right one: a verdict that cannot say which run
         // made it has not established that it is this one.
-        match heldClaims |> List.filter (fun c -> v.InvocationId <> Some c.InvocationId) with
-        | [] -> Applicability.Applies
-        | others -> Applicability.RunInFlight others
+        //
+        // A check that DIED after the verdict outranks one in flight: the in-flight run
+        // may yet answer, but nothing will ever publish for the dead one.
+        match diedClaims |> List.filter (diedAfter v) with
+        | [] ->
+            match heldClaims |> List.filter (fun c -> v.InvocationId <> Some c.InvocationId) with
+            | [] -> Applicability.Applies
+            | others -> Applicability.RunInFlight others
+        | died -> Applicability.Superseded(died |> List.maxBy _.StartedAtUtc)
 
 /// What `fshw verdict` found. Total, and in one-to-one correspondence with an
 /// exit code — the codes 0/1/2/3 are exactly `check`'s, so a verdict READ and a
@@ -3610,7 +3630,8 @@ type Report =
 ///   0/1/2/3 — the verdict applies, and these are `check`'s own codes.
 ///   128 + N — the run that wrote it was ended by signal N (129 SIGHUP, 130 SIGINT,
 ///             143 SIGTERM); its outcome is `incomplete`.
-///   4       — STALE: a verdict exists but describes a different tree.
+///   4       — STALE: a verdict exists but describes a different tree, or a check that
+///             started after it died without publishing (superseded).
 ///   5       — no usable verdict on disk.
 ///   6       — IN FLIGHT: a run is verifying this tree right now, and the verdict on
 ///             disk is the previous run's. Distinct from 4 because the consequence is
@@ -3633,8 +3654,18 @@ let reportExitCode (r: Report) : int =
 let private reportAgainst (repoRoot: string) (v: Verdict) (currentTree: TreeHash.Tree) : Report =
     let currentProducer = Producer.current ()
 
-    match applicability (RunClaim.live repoRoot) currentProducer currentTree.Hash v with
+    // A died claim stays on disk as evidence until a verdict published after it began
+    // makes it moot; only then is it reaped.
+    let claims = RunClaim.survey repoRoot (diedAfter v >> not)
+
+    match applicability claims.Held claims.Died currentProducer currentTree.Hash v with
     | Applicability.Applies -> Report.Applies v
+    | Applicability.Superseded died ->
+        Report.Stale(
+            v,
+            $"superseded: the last %s{RunClaim.describe died} died without a verdict — the verdict on disk was \
+              earned by an EARLIER run and is not the latest answer; run `fshw check` again"
+        )
     | Applicability.RunInFlight held ->
         let who = held |> List.map RunClaim.describe |> String.concat ", "
 
@@ -3739,6 +3770,10 @@ type PriorConfirmation =
 /// the workspace happened to be running, which is most of the time under continuous
 /// verification — and it would buy nothing, because the evidence it discarded is the
 /// same evidence the re-run would have to produce.
+///
+/// A check that DIED after the verdict is a different matter (AUTOMATION-1420): it is not
+/// a question still being answered but one that never will be, and `report` names the
+/// verdict superseded (`Report.Stale`), so it is `MustEarn` here like any other stale one.
 let priorConfirmation (repoRoot: string) (excludePatterns: string list) : PriorConfirmation =
     match reportWithCoverage repoRoot excludePatterns with
     | Report.Applies v, Some covered when isFullSuiteGreen v -> PriorConfirmation.StillApplies(v, covered)
