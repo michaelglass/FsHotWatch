@@ -180,3 +180,35 @@ let ``a missing or bad id count falls back to a generous default`` () =
 
         let state = Runtime.install (env vars) ignoreExit
         test <@ state.IdCount = (1 <<< 20) && isNull state.ParentScope @>
+
+[<Fact>]
+let ``a mutate list makes exactly those probes throw, after recording the hit`` () =
+    let out = Directory.CreateTempSubdirectory().FullName
+    let ignoreExit (_: EventHandler) = ()
+
+    let state =
+        Runtime.install (env [ Contract.OutEnv, out; Contract.IdsEnv, "16"; Contract.MutateEnv, "3, 5,x," ]) ignoreExit
+
+    test <@ Set.ofSeq state.Mutants = set [ 3; 5 ] @>
+
+    withRecorder state (fun () ->
+        Probes.Hit 4
+        let thrown = Assert.Throws<MutantHitException>(fun () -> Probes.Hit 5)
+        test <@ thrown.Id = 5 @>
+        raises<MutantHitException> <@ Probes.HitIfTrue(true, 3) @>
+        Probes.HitIfTrue(false, 3))
+
+    let hit = state.Scopes |> Seq.collect (fun s -> s.Ids()) |> Set.ofSeq
+
+    test <@ hit = set [ 3; 4; 5 ] @>
+
+[<Fact>]
+let ``without a mutate list no probe throws`` () =
+    let out = Directory.CreateTempSubdirectory().FullName
+    let state = Runtime.install (env [ Contract.OutEnv, out ]) ignore
+    test <@ isNull state.Mutants @>
+    withRecorder state (fun () -> Probes.Hit 1)
+
+[<Fact>]
+let ``a mutate list that names no whole number mutates nothing`` () =
+    test <@ isNull (Runtime.mutants "x, ,y") && isNull (Runtime.mutants "") @>

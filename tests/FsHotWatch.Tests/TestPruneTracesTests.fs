@@ -20,7 +20,8 @@ let private settings record =
       WeaveTests = WeaveTestSites
       FingerprintInputs = []
       FingerprintEnv = []
-      VerifyTimeoutSec = 120 }
+      VerifyTimeoutSec = 120
+      Select = SelectOff }
 
 let private runtime root record excluded mode =
     { Settings = settings record

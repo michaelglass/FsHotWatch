@@ -2578,6 +2578,9 @@ type TestRunLaunch =
         /// every project in full, and would read as "check would have run everything": a
         /// perfect, permanent, false agreement).
         WouldHaveRun: Map<string, ProjectSelection> option
+        /// The trace selection computed beside this run's static one (`TraceShadow.atLaunch`),
+        /// stored at completion. Empty unless `tests.traces.select` is shadow. It selects nothing.
+        TraceShadow: ShadowReading list
         /// The seeds that selected this run, captured atomically with its scope.
         Seeds: string list
         ZeroSelection: ZeroSelection
@@ -9588,6 +9591,24 @@ let internal createWithEvidenceAndQueries
                     |> List.map (fun (proj, tests) -> proj, tests |> List.map (fun t -> t.TestClass) |> List.distinct)
                     |> Map.ofList
 
+                // `tests.traces.select: "shadow"`: what the recorded traces would select,
+                // beside the static symbol selection above, from the same seeds and index at
+                // the same instant. Logged now, stored at completion; it selects nothing.
+                let traceShadow =
+                    match traces with
+                    | Some wiring when wiring.Policy.Select = SelectShadow ->
+                        let symbols = TestPrune.Ports.toSymbolStore db
+
+                        TraceShadow.atLaunch
+                            wiring.Policy
+                            repoRoot
+                            (configs |> List.map (fun c -> c.Project) |> List.distinct)
+                            (fun project -> symbols.GetTestMethodsInProjects [ project ])
+                            (lazy (TestPrune.Trace.TraceIngest.versionHashes symbols))
+                            affectedTestsList
+                            (Logging.info "test-prune")
+                    | _ -> []
+
                 // A prior red is mandatory verification debt. The
                 // graph for today's edit may not reach yesterday's failing class, but
                 // the next ordinary run must still execute it. Unknown class scope is
@@ -9908,7 +9929,8 @@ let internal createWithEvidenceAndQueries
                       ZeroSelection = ZeroSelection.NotAZero
                       FullSuiteCause = fullSuiteCause
                       SelectedBy = selectedBy
-                      SeedFanout = inputs.SeedFanout }
+                      SeedFanout = inputs.SeedFanout
+                      TraceShadow = traceShadow }
 
                 logLaunch "impact" inputs.Mode launch
 
@@ -10166,7 +10188,8 @@ let internal createWithEvidenceAndQueries
                       ZeroSelection = ZeroSelection.NotAZero
                       FullSuiteCause = fullSuiteCause
                       SelectedBy = []
-                      SeedFanout = SeedFanoutReading.NoSelection }
+                      SeedFanout = SeedFanoutReading.NoSelection
+                      TraceShadow = [] }
 
                 return TestsFinished(started, completed, launch)
         }
@@ -10224,6 +10247,7 @@ let internal createWithEvidenceAndQueries
               ZeroSelection = ZeroSelection.NotAZero
               FullSuiteCause = FullSuiteCause.ForceRun
               SeedFanout = SeedFanoutReading.NoSelection
+              TraceShadow = []
               SelectedBy =
                 configs
                 |> List.map (fun c ->
@@ -12510,9 +12534,33 @@ let internal createWithEvidenceAndQueries
 
                     let foundFailures = failuresOf runLogOf reportOf state.TestClassFiles testResults
 
+                    let failedTests = failedTestsOfRun repoRoot completed.RunId testResults
+
                     let checkReach, conditionalFailureRecall =
-                        failedTestsOfRun repoRoot completed.RunId testResults
-                        |> CheckReach.classifyEvidence launch.WouldHaveRun
+                        failedTests |> CheckReach.classifyEvidence launch.WouldHaveRun
+
+                    // Shadow trace selection: store the launch's comparison with this
+                    // run's failed tests. A run with no complete report judges no miss.
+                    match traces with
+                    | Some wiring when not launch.TraceShadow.IsEmpty ->
+                        let failedKeys =
+                            match failedTests with
+                            | Ok failures ->
+                                failures
+                                |> List.choose (fun f ->
+                                    match f.Class, f.Method with
+                                    | Some cls, Some meth -> Some(TraceShadow.failureKey f.Project cls meth)
+                                    | _ -> None)
+                            | Error _ -> []
+
+                        TraceShadow.atCompletion
+                            wiring.Policy
+                            repoRoot
+                            launch.TraceShadow
+                            (completed.RunId.ToString "N")
+                            failedKeys
+                            (Logging.info "test-prune")
+                    | _ -> ()
 
                     // Classified HERE, against THIS run's failures and the
                     // selection retained at its launch. Nothing extra runs and nothing is

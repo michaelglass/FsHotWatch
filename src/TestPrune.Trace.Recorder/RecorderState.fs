@@ -6,6 +6,14 @@ open System.Collections.Generic
 open System.Runtime.CompilerServices
 open System.Threading
 
+/// Thrown by a probe whose id the mutation list (`Contract.MutateEnv`) names: the code
+/// that probe stands for fails as if it had a bug.
+type MutantHitException(id: int) =
+    inherit Exception($"testprune-trace mutant: probe %d{id} was hit")
+
+    /// The probe that was hit.
+    member _.Id = id
+
 /// Per-thread hot-path cache. One instance per thread, registered so the exit dump
 /// can sum its counters.
 [<Sealed; AllowNullLiteral>]
@@ -92,6 +100,9 @@ type RecorderState(idCount: int, source: IContextSource option, parentScope: str
 
     /// Absolute repository root; file inputs outside it are not recorded. Null records none.
     member val RepoRoot: string = null with get, set
+
+    /// The probe ids that throw when hit (`Contract.MutateEnv`); null in a normal run.
+    member val Mutants: HashSet<int> = null with get, set
 
     /// Where a file read or a child process is noted: static init, then the current
     /// scope, then ambient. Never null.

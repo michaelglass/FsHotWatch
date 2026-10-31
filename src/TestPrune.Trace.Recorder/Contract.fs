@@ -55,6 +55,11 @@ let RepoRootEnv = "TESTPRUNE_TRACE_REPO_ROOT"
 [<Literal>]
 let ParentScopeEnv = "TESTPRUNE_TRACE_PARENT_SCOPE"
 
+/// Comma-separated probe ids that throw `MutantHitException` when hit: the mutation
+/// harness's way of making a symbol fail without rebuilding anything. Unset in a normal run.
+[<Literal>]
+let MutateEnv = "TESTPRUNE_TRACE_MUTATE"
+
 /// Path of the JIT-verification report; set only in verify mode.
 [<Literal>]
 let VerifyEnv = "TESTPRUNE_TRACE_VERIFY"

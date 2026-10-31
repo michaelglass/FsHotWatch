@@ -1,6 +1,7 @@
 namespace TestPrune.Trace.Recorder
 
 open System
+open System.Collections.Generic
 open System.Diagnostics
 open System.IO
 open System.Reflection
@@ -20,6 +21,21 @@ module internal Runtime =
             with e ->
                 err.WriteLine("testprune-trace: dump write failed: " + e.GetType().FullName + ": " + e.Message))
 
+    /// The ids a `Contract.MutateEnv` value names; null when it names none. Text that is
+    /// not a whole number is skipped.
+    let mutants (value: string) : HashSet<int> =
+        if String.IsNullOrEmpty value then
+            null
+        else
+            let ids = HashSet<int>()
+
+            for part in value.Split ',' do
+                match Int32.TryParse(part.Trim()) with
+                | true, id -> ids.Add id |> ignore
+                | _ -> ()
+
+            if ids.Count = 0 then null else ids
+
     /// Build the recorder the environment asks for, registering its exit dump with
     /// `onExit`. Null when `TESTPRUNE_TRACE_OUT` is unset or empty.
     let install (getEnv: string -> string) (onExit: EventHandler -> unit) : RecorderState =
@@ -37,6 +53,7 @@ module internal Runtime =
                 RecorderState(ids, XunitContextSource.tryCreate (), getEnv Contract.ParentScopeEnv)
 
             s.RepoRoot <- getEnv Contract.RepoRootEnv
+            s.Mutants <- mutants (getEnv Contract.MutateEnv)
 
             let handler = exitDump outDir s Console.Error
             // Compiled now, while the module's IL is readable: a coverage collector that
@@ -55,12 +72,17 @@ module internal Runtime =
 /// Static entry points the weaver calls. Each is a null check when the process is not traced.
 [<AbstractClass; Sealed>]
 type Probes =
-    /// Records probe `id` against the current scope.
+    /// Records probe `id` against the current scope, then throws `MutantHitException` when
+    /// the mutation list names `id`.
     static member Hit(id: int) : unit =
         let s = Runtime.state
 
         if not (isNull s) then
             s.Hit id
+            let m = s.Mutants
+
+            if not (isNull m) && m.Contains id then
+                raise (MutantHitException id)
 
     /// Records probe `id` when `value` is not null.
     static member HitIfNotNull(value: obj, id: int) : unit =

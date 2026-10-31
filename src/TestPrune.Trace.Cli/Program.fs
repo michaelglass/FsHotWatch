@@ -11,7 +11,7 @@ open TestPrune.Trace
 
 /// The usage line printed for an unknown or missing verb.
 let usage =
-    "usage: test-prune-traces census|audit|overhead|file-census|recall [options]"
+    "usage: test-prune-traces census|audit|overhead|file-census|mutate|recall [options]"
 
 /// The usage of the census verb.
 let censusUsage =
@@ -220,17 +220,29 @@ let private recall (cwd: string) (args: string list) : Outcome =
             with e ->
                 fail 2 $"recall measured nothing: %s{e.Message}"
 
+/// `Mutation.run`: request, app args, samples, seed, target filter, timeout.
+type MutateMeasure =
+    TraceSession.PrepareRequest
+        -> string list
+        -> int
+        -> int
+        -> string list
+        -> TimeSpan
+        -> Result<Mutation.MutationReport, string>
+
 /// The process-driving measurements the verbs run (substituted in tests).
 type Measures =
     { Audit: TraceSession.PrepareRequest -> string list -> float -> int -> TimeSpan -> Result<Audit.AuditReport, string>
       Overhead: TraceSession.PrepareRequest -> string list -> int -> TimeSpan -> Result<Overhead.OverheadReport, string>
-      FileCensus: TraceSession.PrepareRequest -> string list -> TimeSpan -> Result<FileCensus.FileCensusReport, string> }
+      FileCensus: TraceSession.PrepareRequest -> string list -> TimeSpan -> Result<FileCensus.FileCensusReport, string>
+      Mutate: MutateMeasure }
 
 /// The real measurements.
 let measures =
     { Audit = Audit.run
       Overhead = Overhead.run
-      FileCensus = FileCensus.run }
+      FileCensus = FileCensus.run
+      Mutate = Mutation.run }
 
 let private measureTail =
     "  [--repo <root>] [--weave-tests sites|full] [--timeout-min 30] [--keep <dir>] [--json] [-- <app args>]\n"
@@ -247,6 +259,12 @@ let overheadUsage =
     "usage: test-prune-traces overhead --project-dir <dir> --assembly <name> [--reps 3]\n"
     + measureTail
 
+/// The usage of the mutate verb.
+let mutateUsage =
+    "usage: test-prune-traces mutate --project-dir <dir> --assembly <name> [--samples 20] [--seed 1] [--only <text>]...\n"
+    + "  makes one sampled repository method throw per run and checks every test it breaks is one its trace selects\n"
+    + measureTail
+
 /// The usage of the file-census verb.
 let fileCensusUsage =
     "usage: test-prune-traces file-census --project-dir <dir> --assembly <name>\n"
@@ -260,6 +278,8 @@ type private MeasureArgs =
       Sample: float
       Seed: int
       Reps: int
+      Samples: int
+      Only: string list
       TimeoutMin: float
       Keep: string option
       Json: bool
@@ -293,6 +313,8 @@ let private setters: Map<string, string -> MeasureArgs -> Result<MeasureArgs, st
           "--sample", (fun v a -> number "--sample" v (fun n -> { a with Sample = n }))
           "--seed", (fun v a -> whole "--seed" v (fun n -> { a with Seed = n }))
           "--reps", (fun v a -> whole "--reps" v (fun n -> { a with Reps = n }))
+          "--samples", (fun v a -> whole "--samples" v (fun n -> { a with Samples = n }))
+          "--only", (fun v a -> Ok { a with Only = a.Only @ [ v ] })
           "--timeout-min", (fun v a -> number "--timeout-min" v (fun n -> { a with TimeoutMin = n }))
           "--keep", (fun v a -> Ok { a with Keep = Some v }) ]
 
@@ -336,6 +358,8 @@ let private measure
           Sample = 0.01
           Seed = 1
           Reps = 3
+          Samples = 20
+          Only = []
           TimeoutMin = 30.0
           Keep = None
           Json = false
@@ -424,6 +448,15 @@ let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
             (fun req a -> m.FileCensus req a.AppArgs (TimeSpan.FromMinutes a.TimeoutMin))
             FileCensus.passes
             FileCensus.render
+    | "mutate" :: rest ->
+        measure
+            cwd
+            mutateUsage
+            [ "--samples"; "--seed"; "--only" ]
+            rest
+            (fun req a -> m.Mutate req a.AppArgs a.Samples a.Seed a.Only (TimeSpan.FromMinutes a.TimeoutMin))
+            Mutation.passes
+            Mutation.render
     | _ -> fail 2 usage
 
 /// Runs a verb against `cwd`, returning its output rather than printing it.

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: trace-based selection in shadow (`tests.traces.select: "shadow"`, AUTOMATION-975). At each
+  launch the plugin computes what the recorded traces would select beside the static selection,
+  logs one `trace-shadow:` line per traced project, and at completion stores the comparison and
+  its verified-failure misses in the trace database. It never changes what runs; off by default.
+
 - fix: a file's indexed analysis is no longer replayed after something it resolved upstream
   changed shape (AUTOMATION-1151). The identity that decides whether a `FileChecked` cache hit
   may stand in for re-analysing a file named only its source and diagnostics, so an earlier

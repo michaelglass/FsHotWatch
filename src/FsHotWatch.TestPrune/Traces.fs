@@ -11,6 +11,14 @@ type TraceRecordPolicy =
     /// Record every run; an impact-selected run refreshes only the tests it ran.
     | RecordEveryRun
 
+/// Whether trace-based selection runs beside the static one (`tests.traces.select`).
+type TraceSelectPolicy =
+    /// No trace selection. The default when the key is absent.
+    | SelectOff
+    /// Compute the trace selection at every launch, log it next to the static selection and
+    /// store the comparison in the trace database. The static selection still runs.
+    | SelectShadow
+
 /// How the test project's own assembly is woven (`tests.traces.weaveTests`, or a
 /// project's own `traces.weaveTests`).
 type TraceWeaveTests =
@@ -34,6 +42,8 @@ type TraceSettings =
         FingerprintEnv: string list
         /// Upper bound, in seconds, on verifying a woven copy before launching it.
         VerifyTimeoutSec: int
+        /// Whether trace selection runs in shadow.
+        Select: TraceSelectPolicy
     }
 
 /// Defaults and value parsing for `TraceSettings`.
@@ -54,6 +64,14 @@ module TraceSettings =
         | "off" -> Some RecordOff
         | "full-runs" -> Some RecordFullRuns
         | "every-run" -> Some RecordEveryRun
+        | _ -> None
+
+    /// Parse the `select` value (case-insensitive). Unknown text is `None`: the caller
+    /// refuses the configuration.
+    let parseSelect (s: string) : TraceSelectPolicy option =
+        match s.ToLowerInvariant() with
+        | "off" -> Some SelectOff
+        | "shadow" -> Some SelectShadow
         | _ -> None
 
     /// Parse a `weaveTests` value (case-insensitive). Unknown text is `None`: the caller

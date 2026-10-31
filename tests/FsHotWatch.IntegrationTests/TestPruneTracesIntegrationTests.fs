@@ -162,7 +162,8 @@ let ``a traced run records its test's trace and reaches the untraced run's verdi
                       WeaveTests = WeaveTestSites
                       FingerprintInputs = []
                       FingerprintEnv = []
-                      VerifyTimeoutSec = 300 })
+                      VerifyTimeoutSec = 300
+                      Select = SelectOff })
 
         test <@ untraced = "passed" @>
         test <@ traced = untraced @>

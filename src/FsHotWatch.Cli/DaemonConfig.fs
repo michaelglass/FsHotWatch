@@ -1367,8 +1367,29 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                         | true, n when n.ValueKind = JsonValueKind.Number -> n.GetInt32()
                         | _ -> FsHotWatch.TestPrune.TraceSettings.DefaultVerifyTimeoutSec
 
+                    // `select`: trace selection in shadow. Unknown values (including `live`,
+                    // which this release does not implement) are refused, and so is shadow
+                    // without recording: nothing would ever be selected from.
+                    let select =
+                        match str "select" with
+                        | None -> FsHotWatch.TestPrune.SelectOff
+                        | Some raw ->
+                            match FsHotWatch.TestPrune.TraceSettings.parseSelect raw with
+                            | None ->
+                                raise (
+                                    ConfigErrorException
+                                        $"tests.traces.select has unknown value '%s{raw}' (expected off or shadow)"
+                                )
+                            | Some FsHotWatch.TestPrune.SelectShadow when record = FsHotWatch.TestPrune.RecordOff ->
+                                raise (
+                                    ConfigErrorException
+                                        "tests.traces.select is shadow but tests.traces.record is off: set record to every-run (or full-runs) so there are traces to select from"
+                                )
+                            | Some s -> s
+
                     let settings: FsHotWatch.TestPrune.TraceSettings =
-                        { Record = record
+                        { Select = select
+                          Record = record
                           DbPath = str "db" |> Option.defaultValue FsHotWatch.TestPrune.TraceSettings.DefaultDbPath
                           WeaveTests = weaveTests
                           FingerprintInputs = strs "fingerprintInputs"

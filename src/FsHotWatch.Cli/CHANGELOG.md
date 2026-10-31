@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `tests.traces.select` (`"off"` or `"shadow"`), refused when unknown or when `record` is off
+  (AUTOMATION-975).
+
 - fix!: a `test-rerun` whose wait ran out exits 6 (in flight), not 1, and says nothing ran to
   completion (AUTOMATION-1400). When `--wait-sec` (default 600 s) expired with the run still
   queued or running, the command printed the daemon's one-line reason and exited 1, the same code

@@ -205,6 +205,7 @@
     <Compile Include="TracedLaunchTests.fs" />
     <Compile Include="TestPruneTracesTests.fs" />
     <Compile Include="TestPruneTracesPluginTests.fs" />
+    <Compile Include="TraceShadowTests.fs" />
     <Compile Include="TraceLauncherTests.fs" />
     <Compile Include="StaleArtifactPreflightTests.fs" />
     <Compile Include="DependencyFanoutTests.fs" />

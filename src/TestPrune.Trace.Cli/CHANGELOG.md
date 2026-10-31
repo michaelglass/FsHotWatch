@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- feat: `mutate` verb (AUTOMATION-975): runs `Mutation` on a test project and exits 1 when trace
+  selection misses a test a mutant breaks.
 - build: the package's source and project links point at github.com/michaelglass/FsHotWatch, where
   TestPrune now lives with its history (AUTOMATION-1367). No code change.
 

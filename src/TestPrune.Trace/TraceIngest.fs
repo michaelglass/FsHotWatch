@@ -292,24 +292,37 @@ let metaHash (path: string) : string =
     else
         "absent"
 
-/// The (kind, key, hash) of a recorded file input as the file is now, or None when it is
-/// outside the input root or of a kind this reader does not know (`unknownInputs`). The
-/// one definition of an input's current hash: whatever compares a stored input with the
-/// tree must compute it here.
-let inputOf (root: string) (i: RecordedInput) =
-    repoRelative root i.Path
-    |> Option.bind (fun rel ->
-        let p = Path.Combine(root, rel)
+/// The current hash of a stored input, by its stored kind code and repo-relative key, or
+/// None for a kind this reader does not know. The one definition of an input's current
+/// hash: ingestion (`inputOf`) and selection both compute it here.
+let currentInputHash (root: string) (kind: string, rel: string) : string option =
+    let p = Path.Combine(root, rel)
 
+    match kind with
+    | "read" -> Some(Fingerprint.hashFile root rel)
+    | "exists" -> Some(if Path.Exists p then "present" else "absent")
+    | "list" -> Some(listingHash p SearchOption.TopDirectoryOnly)
+    // Every entry of the tree, whatever pattern the listing used: an entry added or
+    // removed at any depth changes the hash.
+    | "list-deep" -> Some(listingHash p SearchOption.AllDirectories)
+    | "meta" -> Some(metaHash p)
+    | _ -> None
+
+/// The (kind, key, hash) of a recorded file input as the file is now, or None when it is
+/// outside the input root or of a kind this reader does not know (`unknownInputs`).
+let inputOf (root: string) (i: RecordedInput) =
+    let code =
         match i.Kind with
-        | FileRead -> Some("read", rel, Fingerprint.hashFile root rel)
-        | ExistenceProbe -> Some("exists", rel, (if Path.Exists p then "present" else "absent"))
-        | DirectoryListing -> Some("list", rel, listingHash p SearchOption.TopDirectoryOnly)
-        // Every entry of the tree, whatever pattern the listing used: an entry added or
-        // removed at any depth changes the hash.
-        | DeepDirectoryListing -> Some("list-deep", rel, listingHash p SearchOption.AllDirectories)
-        | MetadataRead -> Some("meta", rel, metaHash p)
-        | UnknownInputKind _ -> None)
+        | FileRead -> Some "read"
+        | ExistenceProbe -> Some "exists"
+        | DirectoryListing -> Some "list"
+        | DeepDirectoryListing -> Some "list-deep"
+        | MetadataRead -> Some "meta"
+        | UnknownInputKind _ -> None
+
+    match code, repoRelative root i.Path with
+    | Some kind, Some rel -> currentInputHash root (kind, rel) |> Option.map (fun hash -> kind, rel, hash)
+    | _ -> None
 
 /// An input of a kind this reader does not know cannot be compared on replay, so its scope
 /// is incomplete.

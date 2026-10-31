@@ -3038,6 +3038,32 @@ let ``parseConfig tests.traces record off is carried as off`` () =
 let ``parseConfig tests.traces without a record value is off`` () =
     test <@ (tracesOf "{}").Value.Record = FsHotWatch.TestPrune.RecordOff @>
 
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig tests.traces select defaults to off and reads shadow`` () =
+    test <@ (tracesOf """{"record": "every-run"}""").Value.Select = FsHotWatch.TestPrune.SelectOff @>
+
+    test
+        <@ (tracesOf """{"record": "every-run", "select": "Shadow"}""").Value.Select = FsHotWatch.TestPrune.SelectShadow @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("""{"record": "every-run", "select": "live"}""", "'live'")>]
+[<InlineData("""{"record": "every-run", "select": "sometimes"}""", "'sometimes'")>]
+[<InlineData("""{"select": "shadow"}""", "record")>]
+[<InlineData("""{"record": "off", "select": "shadow"}""", "record")>]
+let ``parseConfig refuses a select value it cannot honour`` (traces: string, named: string) =
+    let ex = Assert.Throws<ConfigErrorException>(fun () -> tracesOf traces |> ignore)
+
+    test <@ ex.message.Contains "tests.traces.select" && ex.message.Contains named @>
+
+
+[<Fact(Timeout = 15000)>]
+let ``TraceSettings.parseSelect reads off and shadow in any case and nothing else`` () =
+    test <@ FsHotWatch.TestPrune.TraceSettings.parseSelect "OFF" = Some FsHotWatch.TestPrune.SelectOff @>
+    test <@ (tracesOf """{"record": "every-run", "select": "off"}""").Value.Select = FsHotWatch.TestPrune.SelectOff @>
+    test <@ FsHotWatch.TestPrune.TraceSettings.parseSelect "shadow" = Some FsHotWatch.TestPrune.SelectShadow @>
+    test <@ FsHotWatch.TestPrune.TraceSettings.parseSelect "live" = None @>
+
 [<Fact(Timeout = 15000)>]
 let ``TraceSettings.parseRecord rejects unknown values`` () =
     test <@ FsHotWatch.TestPrune.TraceSettings.parseRecord "sometimes" = None @>

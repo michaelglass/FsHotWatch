@@ -72,6 +72,32 @@ type StoredTrace =
       Symbols: Set<string * string>
       Inputs: Set<string * string * string> }
 
+/// One shadow comparison: what trace selection would have run for a test project at one
+/// run's launch, next to what the static selection did run. Shadow rows never change a run.
+type ShadowRow =
+    {
+        RunId: string
+        TestProject: string
+        /// The fingerprint whose traces the selection read.
+        EnvFingerprint: string
+        RecordedAt: DateTimeOffset
+        /// Tests the selection considered.
+        Universe: int
+        /// Share of the universe with a complete trace under `EnvFingerprint`.
+        CompleteShare: float
+        StaticTests: int
+        TraceTests: int
+        StaticClasses: int
+        TraceClasses: int
+        /// Rule code ("R1".."R5") -> tests that rule selected.
+        RuleCounts: Map<string, int>
+        /// Selected by static, not by trace: the payoff (at most 200, sorted).
+        StaticOnly: string list
+        /// Selected by trace, not by static: a static-graph miss (at most 200, sorted).
+        TraceOnly: string list
+        SelectMs: int64
+    }
+
 // Public API: consumers catch `TraceSchemaNewerThanConsumer` by name, so a rename breaks them.
 // fsharplint:disable ExceptionNames
 /// Raised by `Store.Open` when the file's trace schema is newer than this TestPrune.Trace
@@ -137,6 +163,35 @@ let internal migrations: (int * string) list =
           scope_id INTEGER NOT NULL REFERENCES trace_scopes(id),
           PRIMARY KEY (test_id, scope_id)) WITHOUT ROWID;
       CREATE INDEX trace_test_scopes_by_scope ON trace_test_scopes (scope_id);
+      """
+      2,
+      """
+      CREATE TABLE shadow_selections (
+          id INTEGER PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          test_project TEXT NOT NULL,
+          env_fingerprint TEXT NOT NULL,
+          recorded_at TEXT NOT NULL,
+          universe INTEGER NOT NULL,
+          complete_share REAL NOT NULL,
+          static_tests INTEGER NOT NULL,
+          trace_tests INTEGER NOT NULL,
+          static_classes INTEGER NOT NULL,
+          trace_classes INTEGER NOT NULL,
+          rule_counts TEXT NOT NULL,
+          static_only TEXT NOT NULL,
+          trace_only TEXT NOT NULL,
+          select_ms INTEGER NOT NULL,
+          UNIQUE (run_id, test_project));
+      CREATE TABLE shadow_misses (
+          id INTEGER PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          test_project TEXT NOT NULL,
+          test_key TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          recorded_at TEXT NOT NULL,
+          UNIQUE (run_id, test_key, kind));
+      CREATE INDEX shadow_misses_by_project ON shadow_misses (test_project);
       """ ]
 
 /// Versions must start at 1 and increase by exactly one, so "apply every entry above the
@@ -448,6 +503,97 @@ type Store private (conn: SqliteConnection) =
     /// Every test project that has a run, sorted.
     member _.TestProjects() : string list =
         readRows conn "SELECT DISTINCT test_project FROM trace_runs ORDER BY test_project" [] (fun r -> r.GetString 0)
+
+    /// Store one shadow comparison, replacing an earlier row of the same (run, project).
+    member _.RecordShadow(row: ShadowRow) : unit =
+        let rules =
+            row.RuleCounts
+            |> Map.toList
+            |> List.map (fun (code, n) -> $"%s{code}:%d{n}")
+            |> String.concat ","
+
+        inTransaction conn (fun tx ->
+            exec
+                conn
+                tx
+                """INSERT INTO shadow_selections (run_id, test_project, env_fingerprint, recorded_at, universe,
+                       complete_share, static_tests, trace_tests, static_classes, trace_classes, rule_counts,
+                       static_only, trace_only, select_ms)
+                   VALUES (@r, @p, @e, @at, @u, @cs, @st, @tt, @sc, @tc, @rules, @so, @to, @ms)
+                   ON CONFLICT (run_id, test_project) DO UPDATE SET
+                       env_fingerprint = excluded.env_fingerprint, recorded_at = excluded.recorded_at,
+                       universe = excluded.universe, complete_share = excluded.complete_share,
+                       static_tests = excluded.static_tests, trace_tests = excluded.trace_tests,
+                       static_classes = excluded.static_classes, trace_classes = excluded.trace_classes,
+                       rule_counts = excluded.rule_counts, static_only = excluded.static_only,
+                       trace_only = excluded.trace_only, select_ms = excluded.select_ms"""
+                [ "@r", box row.RunId
+                  "@p", box row.TestProject
+                  "@e", box row.EnvFingerprint
+                  "@at", box (row.RecordedAt.ToString "O")
+                  "@u", box row.Universe
+                  "@cs", box row.CompleteShare
+                  "@st", box row.StaticTests
+                  "@tt", box row.TraceTests
+                  "@sc", box row.StaticClasses
+                  "@tc", box row.TraceClasses
+                  "@rules", box rules
+                  "@so", box (JsonSerializer.Serialize(Array.ofList row.StaticOnly))
+                  "@to", box (JsonSerializer.Serialize(Array.ofList row.TraceOnly))
+                  "@ms", box row.SelectMs ])
+
+    /// A project's shadow rows, oldest first.
+    member _.ShadowRows(testProject: string) : ShadowRow list =
+        let rulesOf (text: string) =
+            text.Split(',', StringSplitOptions.RemoveEmptyEntries)
+            |> Array.map (fun pair ->
+                let i = pair.LastIndexOf ':'
+                pair.Substring(0, i), int (pair.Substring(i + 1)))
+            |> Map.ofArray
+
+        let listOf (json: string) =
+            JsonSerializer.Deserialize<string[]> json |> List.ofArray
+
+        readRows conn """SELECT run_id, env_fingerprint, recorded_at, universe, complete_share, static_tests, trace_tests,
+                      static_classes, trace_classes, rule_counts, static_only, trace_only, select_ms
+               FROM shadow_selections WHERE test_project = @p ORDER BY id""" [ "@p", box testProject ] (fun r ->
+            { RunId = r.GetString 0
+              TestProject = testProject
+              EnvFingerprint = r.GetString 1
+              RecordedAt = DateTimeOffset.Parse(r.GetString 2, Globalization.CultureInfo.InvariantCulture)
+              Universe = r.GetInt32 3
+              CompleteShare = r.GetDouble 4
+              StaticTests = r.GetInt32 5
+              TraceTests = r.GetInt32 6
+              StaticClasses = r.GetInt32 7
+              TraceClasses = r.GetInt32 8
+              RuleCounts = rulesOf (r.GetString 9)
+              StaticOnly = listOf (r.GetString 10)
+              TraceOnly = listOf (r.GetString 11)
+              SelectMs = r.GetInt64 12 })
+
+    /// Store tests that failed in a run while trace selection, computed at that run's
+    /// launch, did not select them: verified-failure misses. A repeat is ignored.
+    member _.RecordShadowMisses(runId: string, testProject: string, at: DateTimeOffset, testKeys: string list) =
+        inTransaction conn (fun tx ->
+            for key in testKeys do
+                exec
+                    conn
+                    tx
+                    """INSERT INTO shadow_misses (run_id, test_project, test_key, kind, recorded_at)
+                       VALUES (@r, @p, @k, 'verified-failure', @at) ON CONFLICT DO NOTHING"""
+                    [ "@r", box runId
+                      "@p", box testProject
+                      "@k", box key
+                      "@at", box (at.ToString "O") ])
+
+    /// A project's verified-failure misses as (run, test key), oldest first.
+    member _.ShadowMisses(testProject: string) : (string * string) list =
+        readRows
+            conn
+            "SELECT run_id, test_key FROM shadow_misses WHERE test_project = @p ORDER BY id"
+            [ "@p", box testProject ]
+            (fun r -> r.GetString 0, r.GetString 1)
 
     /// A project's runs, newest first.
     member _.Runs(testProject: string) : TraceRun list =
