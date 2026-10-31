@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: a command that throws still has its queued audit events flushed before the exception
+  surfaces (AUTOMATION-1095). `runWithAuditSink` flushed only after the command returned, so
+  `index`, `run`, `status` and `dead-code` lost the last queued events exactly on the failure
+  path. The bounded flush now runs in a `finally`.
 - chore: FSharpLint findings fixed now that this package is linted again (AUTOMATION-1409). No
   behaviour or API change.
 - build: the package's source and project links point at github.com/michaelglass/FsHotWatch, where

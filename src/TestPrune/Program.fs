@@ -159,18 +159,19 @@ let private createAuditSinkForRepo (repoRoot: string) =
         createNoopSink ()
 
 /// Run `command` with `sink`, then flush the sink so the events the command queued are
-/// persisted before the process exits. A flush that times out is reported on stderr; the
-/// command's exit code stands, because a missing audit record does not change what the
-/// command did. The flush is a parameter so tests can use a short bound.
+/// persisted before the process exits — also when the command throws, whose exception then
+/// surfaces: the failure path is where the audit record matters most. The flush is bounded
+/// (`FlushWithin`). A flush that times out is reported on stderr; the command's exit code
+/// stands, because a missing audit record does not change what the command did. The flush
+/// is a parameter so tests can use a short bound.
 let runWithAuditSink (flush: AuditSink -> FlushOutcome) (sink: AuditSink) (command: AuditSink -> int) : int =
-    let exitCode = command sink
-
-    match flush sink with
-    | Flushed -> ()
-    | FlushTimedOut _ ->
-        eprintfn "Warning: the audit sink did not finish writing; audit events for this run may be missing"
-
-    exitCode
+    try
+        command sink
+    finally
+        match flush sink with
+        | Flushed -> ()
+        | FlushTimedOut _ ->
+            eprintfn "Warning: the audit sink did not finish writing; audit events for this run may be missing"
 
 /// Run `command` with the repo's audit sink, flushed within the sink's production bound.
 let private withRepoAuditSink (repoRoot: string) (command: AuditSink -> int) : int =
