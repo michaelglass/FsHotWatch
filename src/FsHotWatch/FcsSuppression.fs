@@ -21,14 +21,45 @@ open FSharp.Compiler.Diagnostics
 /// warning codes. Workaround for https://github.com/dotnet/fsharp/issues/9796 —
 /// FCS TransparentCompiler ignores `#nowarn` directives for warnaserror codes.
 /// When that issue is resolved this function and its callers can be removed.
+///
+/// Every form F# accepts is read: `#nowarn "57"`, `#nowarn 57`, `#nowarn FS0057` and
+/// `#nowarn "FS0057"`, several to a line, up to a trailing `//` comment.
 let parseNowarnCodes (source: string) : Set<int> =
-    source.Split('\n')
-    |> Array.filter (fun line -> line.TrimStart().StartsWith("#nowarn"))
-    |> Array.collect (fun line -> line.TrimStart().Split('"'))
-    |> Array.choose (fun part ->
-        match System.Int32.TryParse(part) with
+    let directive = "#nowarn"
+
+    let argumentsOf (line: string) =
+        let line = line.Trim()
+
+        if
+            line.StartsWith(directive, System.StringComparison.Ordinal)
+            && (line.Length = directive.Length
+                || System.Char.IsWhiteSpace line[directive.Length]
+                || line[directive.Length] = '"')
+        then
+            let rest = line.Substring directive.Length
+
+            match rest.IndexOf("//", System.StringComparison.Ordinal) with
+            | -1 -> Some rest
+            | comment -> Some(rest.Substring(0, comment))
+        else
+            None
+
+    let codeOf (token: string) =
+        let digits =
+            if token.StartsWith("FS", System.StringComparison.OrdinalIgnoreCase) then
+                token.Substring 2
+            else
+                token
+
+        match System.Int32.TryParse digits with
         | true, code -> Some code
-        | _ -> None)
+        | _ -> None
+
+    source.Split('\n')
+    |> Array.choose argumentsOf
+    |> Array.collect (fun arguments ->
+        arguments.Split([| ' '; '\t'; '\r'; '"' |], System.StringSplitOptions.RemoveEmptyEntries))
+    |> Array.choose codeOf
     |> Set.ofArray
 
 /// Which warning codes compiler `flags` promote to errors, read the way fsc reads them,

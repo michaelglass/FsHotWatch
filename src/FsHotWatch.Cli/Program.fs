@@ -4238,7 +4238,7 @@ let private executeCommandRendered
                         repoRoot
                         (RerunBaseline.requestedOnlyConfig config)
 
-                    let statuses = RunOnceOutput.runOnceWithProgress daemon
+                    let statuses = ScanHeartbeat.runOnceWithProgress daemon
 
                     // Tests run against what the build left in place, so a failed build
                     // runs none.

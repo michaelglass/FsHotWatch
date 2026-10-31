@@ -50,3 +50,21 @@ let emitLineTo (interactive: bool) (write: string -> unit) (line: string) : unit
 /// `Console.Error.Write` would keep whichever writer was current when it was first read.
 let emitLine (line: string) : unit =
     emitLineTo UI.isInteractive (fun text -> Console.Error.Write(text: string)) line
+
+/// `--run-once`'s scan and settle (`Daemon.RunOnce`), its scan reported every `every`
+/// through `emit`, as a daemon-backed `check` reports its scan (AUTOMATION-1395). The
+/// in-process daemon's `FormatScanStatus` is the answer a daemon's `ScanStatus` serves,
+/// so the line is the same; only the scan is reported, never the settle after it.
+let runOnceReporting
+    (every: TimeSpan)
+    (emit: string -> unit)
+    (daemon: FsHotWatch.Daemon.Daemon)
+    : Map<string, FsHotWatch.Events.PluginStatus> =
+    let run () =
+        waitReporting every daemon.FormatScanStatus emit (fun () -> daemon.RunOnce() |> Async.RunSynchronously)
+
+    RunOnceOutput.withRunOnceDisplay run
+
+/// `runOnceReporting` at the production interval, to stderr.
+let runOnceWithProgress (daemon: FsHotWatch.Daemon.Daemon) : Map<string, FsHotWatch.Events.PluginStatus> =
+    runOnceReporting interval emitLine daemon

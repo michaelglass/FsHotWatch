@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- fix!: the idle-exit line names the memory-pressure reading it acted on (AUTOMATION-1391): the
+  macOS kernel level (`kern.memorystatus_vm_pressure_level`, e.g. `level 2 (warning)`) or, where
+  the kernel gives none, whether the GC's high-memory-load mark was crossed. It said only that
+  pressure had shortened the window. **`IdleExitDeps.Pressure` is now `unit -> PressureReading`**
+  (was `unit -> bool`); production wires the new `IdleExit.readPressure`. `readMemoryPressure` is
+  unchanged.
+
+- fix: a change batch that replaces the project model seals the new model even when none of
+  its checks completes (AUTOMATION-1393). The model change retires the previous cohort seal,
+  and the batch skipped its seal when it dispatched no result, so the new model had none. A
+  daemon that runs tests grades its test evidence through the seal, and with none it graded
+  the run ungated: a checkable file that no analysis covered refused nothing. The seal now
+  names each such file as a refusal, as a batch with at least one completed check already did.
+
+- fix: the `#nowarn` reader that works around FCS ignoring `#nowarn` for `--warnaserror`
+  codes accepts every form F# does: `#nowarn 57`, `#nowarn FS0057` and `#nowarn "FS0057"`
+  as well as `#nowarn "57"` (AUTOMATION-1395). Only the last was read, so a file using the
+  others kept its suppressed code as an error. A line that merely starts with `#nowarn`
+  (`#nowarnings`) and the text of a trailing `//` comment are no longer read as codes.
+
 - fix: a change batch restores the projects whose deps it changed before it re-discovers them,
   as the scan already did (AUTOMATION-1392). The batch re-discovered first and let the deps gate
   restore each stale project when its tier came up, so every restore rewrote an assets file the

@@ -222,7 +222,13 @@ let private describe = describeBuildOverrun (Some "1") noSideLog
 
 let private whole = BuildScope.WholeCommand "sh -c \"dotnet build\""
 let private budget = TimeSpan.FromSeconds 600.0
-let private elapsed = TimeSpan.FromSeconds 600.4
+
+/// When the build started and when it was stopped: 600.4s of wall and awake time alike.
+let private readingAt (wall: float) (awake: float) : FsHotWatch.HostClock.Reading =
+    { Wall = DateTime(2026, 10, 31, 12, 0, 0, DateTimeKind.Utc).AddSeconds wall
+      Awake = TimeSpan.FromSeconds awake }
+
+let private elapsed = readingAt 0.0 0.0, readingAt 600.4 600.4
 
 let private tree =
     [ row 45128 1 "sh -c dotnet build"
@@ -240,6 +246,26 @@ let ``the report names the command, the budget and where to change it`` () =
     test <@ report.Contains "600s" @>
     test <@ report.Contains "timeoutSec" @>
     test <@ report.Contains ".fshw.json" @>
+    test <@ report.Contains "after 600.4s and was stopped" @>
+
+[<Fact>]
+let ``an overrun across a host suspension reports the awake time its budget counts, and the wall time beside it`` () =
+    // AUTOMATION-1391. The budget counts awake time, and the report gave wall time:
+    // "overran its 1200s budget after 1680.9s" for a build that ran 1201s awake.
+    let acrossSleep = readingAt 0.0 0.0, readingAt 1680.9 1201.0
+
+    let _, report =
+        describe
+            whole
+            (TimeSpan.FromSeconds 1200.0)
+            acrossSleep
+            ""
+            (Some(teardown (Ok tree) (Ok []) KillOutcome.Killed))
+            KillOutcome.Killed
+
+    test <@ report.Contains "overran its 1200s budget after 1201.0s awake" @>
+    test <@ report.Contains "1680.9s wall clock" @>
+    test <@ report.Contains "host was suspended ~479s" @>
 
 [<Fact>]
 let ``the report names the last project the build finished and its last output line`` () =

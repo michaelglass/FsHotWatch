@@ -192,6 +192,20 @@ module Foo"""
 
     test <@ parseNowarnCodes source = Set.ofList [ 1182; 3536 ] @>
 
+[<Fact(Timeout = 15000)>]
+let ``parseNowarnCodes reads every form F# accepts: bare, FS-prefixed, quoted or not`` () =
+    // F# 9 accepts `#nowarn 57`, `#nowarn FS0057` and `#nowarn "FS0057"` as well as
+    // `#nowarn "57"`. A form missed here leaves its code promoted by --warnaserror.
+    let source =
+        """#nowarn 57
+#nowarn "FS0064"
+#nowarn FS1182 3370 // a trailing comment: 9999
+#nowarnings "42"
+#nowarn
+module Foo"""
+
+    test <@ parseNowarnCodes source = Set.ofList [ 57; 64; 1182; 3370 ] @>
+
 // Two `waitForPluginTerminalIfRunning` tests with Task.Delay-based timing and
 // elapsed-bound assertions (300ms release scenarios, 3.5s elapsed upper bound)
 // moved to FsHotWatch.IntegrationTests 2026-05-02 — they systematically busted
@@ -3013,20 +3027,23 @@ let ``watcher paths under the real root are respelled under the configured root,
     // A root that cannot be canonicalized is used as given.
     test <@ Daemon.watcherSpellingOf "/no/such/fshw-root" = "/no/such/fshw-root" @>
 
-[<Fact(Timeout = 60000)>]
-let ``a project change that replaces the model seals the new model even with no checkable files`` () =
-    // The cold scan seals an EMPTY cohort, because "every checkable file of this model has
-    // been dealt with" is an answer a model with no checkable files has too. A change batch
-    // that re-discovers the project replaces that model with a new generation — and the new
-    // one is owed the same answer. Unsealed, an analysis-only daemon never earns a receipt
-    // for it and its check can never be green.
-    withTempDir "daemon-empty-model-change" (fun tmpDir ->
+/// A one-project daemon whose project lists `sources` (relative to its directory; none of
+/// them is written to disk), its project file edited once after the cold scan. Asserts the
+/// change batch that re-discovers it seals the new model, and returns that seal.
+let private sealOfModelReplacingBatch (name: string) (sources: string list) : BatchChecked =
+    withTempDir name (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src")
         Directory.CreateDirectory(srcDir) |> ignore
         let projectPath = Path.Combine(srcDir, "Empty.fsproj")
         File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let sourcePaths = sources |> List.map (fun source -> Path.Combine(srcDir, source))
 
-        let loader = CountingWorkspaceLoader([ minimalLoadedProject projectPath ])
+        let loader =
+            CountingWorkspaceLoader(
+                [ { minimalLoadedProject projectPath with
+                      SourceFiles = sourcePaths } ]
+            )
+
         let checker = sharedChecker.Value
 
         let fcsOptions =
@@ -3038,7 +3055,7 @@ let ``a project change that replaces the model seals the new model even with no 
 
             { scriptOptions with
                 ProjectFileName = projectPath
-                SourceFiles = [||] }
+                SourceFiles = Array.ofList sourcePaths }
 
         let callback = ref None
 
@@ -3105,8 +3122,91 @@ let ``a project change that replaces the model seals the new model even with no 
 
         test <@ loader.Loads = 2 @>
         let seal = batchSeals.ToArray() |> Array.head
-        test <@ seal.Files.IsEmpty @>
-        test <@ seal.ModelGeneration.IsSome && seal.ModelGeneration > bootModel @>)
+        test <@ seal.ModelGeneration.IsSome && seal.ModelGeneration > bootModel @>
+        seal)
+
+[<Fact(Timeout = 60000)>]
+let ``a project change that replaces the model seals the new model even with no checkable files`` () =
+    // The cold scan seals an EMPTY cohort, because "every checkable file of this model has
+    // been dealt with" is an answer a model with no checkable files has too. A change batch
+    // that re-discovers the project replaces that model with a new generation — and the new
+    // one is owed the same answer. Unsealed, an analysis-only daemon never earns a receipt
+    // for it and its check can never be green.
+    let seal = sealOfModelReplacingBatch "daemon-empty-model-change" []
+    test <@ seal.Files.IsEmpty @>
+
+[<Fact(Timeout = 60000)>]
+let ``a project change that replaces the model seals the new model even when no check completes`` () =
+    // AUTOMATION-1393. The model change retires the previous seal, and the new model has a
+    // checkable file whose check returns nothing (here: it is not on disk). The batch then
+    // dispatched no result, and it skipped its seal, so the new model had none. A daemon
+    // that runs tests grades its test evidence through the seal, and with none it graded
+    // the run ungated: the file no analysis covered refused nothing. Sealed, the seal names
+    // that file as a refusal.
+    let seal =
+        sealOfModelReplacingBatch "daemon-unchecked-model-change" [ "Missing.fs" ]
+
+    test <@ seal.Files.IsEmpty @>
+
+[<Fact(Timeout = 60000)>]
+let ``a run-once scan reports its progress while it runs, as a daemon-backed check does`` () =
+    // AUTOMATION-1395. `check` against a daemon prints the scan's progress line every
+    // interval; `check --run-once` printed nothing until its scan was over. The discovery
+    // here holds until a progress line has been reported (or 10s), so without the report
+    // the run is slow and the assertion below fails.
+    withTempDir "daemon-run-once-heartbeat" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Empty.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        use reported = new ManualResetEventSlim(false)
+
+        let loader =
+            CountingWorkspaceLoader(
+                [ minimalLoadedProject projectPath ],
+                fun _ -> reported.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+            )
+
+        let checker = sharedChecker.Value
+
+        let fcsOptions =
+            let scriptOptions, _ =
+                checker.GetProjectOptionsFromScript(
+                    Path.Combine(srcDir, "Probe.fsx"),
+                    FSharp.Compiler.Text.SourceText.ofString ""
+                )
+                |> Async.RunSynchronously
+
+            { scriptOptions with
+                ProjectFileName = projectPath
+                SourceFiles = [||] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                tmpDir
+                { oneShotDaemonOptions with
+                    RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun projects -> projects |> List.map (fun _ -> fcsOptions))
+                (fun _ _ _ _ _ -> failwith "a run-once daemon watches nothing")
+
+        let emitted = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+        let emit line =
+            emitted.Enqueue line
+            reported.Set()
+
+        FsHotWatch.Cli.ScanHeartbeat.runOnceReporting (TimeSpan.FromMilliseconds 20.0) emit daemon
+        |> ignore
+
+        test <@ reported.IsSet @>
+
+        test
+            <@
+                emitted
+                |> Seq.forall (fun line -> line.StartsWith("scanning:", StringComparison.Ordinal))
+            @>)
 
 /// Two independent projects, `Changed` and `Untouched`, under an analysis-only TestPrune
 /// daemon (no test configs, so the plugin mints analysis evidence). `Start` takes the

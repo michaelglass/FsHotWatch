@@ -2629,10 +2629,17 @@ let private processBatchAttempt
 
             // Empty cohorts (every file filtered as content-unchanged or no
             // results from the pipeline) skip the emit — there's nothing to
-            // "flush and decide" against.
+            // "flush and decide" against — unless the batch REPLACED the model
+            // (AUTOMATION-1393). The replacement retired the previous seal, and the
+            // new model is owed one even when none of its checks completed: a daemon
+            // that runs tests grades its test evidence through the seal, and with no
+            // seal it graded the run ungated, so a file no analysis covered refused
+            // nothing. Sealed, every such file is a refusal that names it.
             if dispatchedFiles.Count > 0 then
                 ctx.Pipeline.SettleApiIndex()
                 persistCheckRecords ctx.Pipeline
+                seal ()
+            elif modelGenerationOf batchModel <> modelGenerationOf initialModel then
                 seal ()
 
             batchPhase.Complete(Some $"change batch: %d{dispatchedFiles.Count} file(s) checked")
@@ -4018,7 +4025,7 @@ type Daemon
                             { BaseThresholdMin = minutes
                               Source = idleExitSource
                               PressureFloorMin = pressureIdleFloorMin
-                              Pressure = IdleExit.readMemoryPressure
+                              Pressure = IdleExit.readPressure
                               Now = fun () -> System.DateTime.UtcNow
                               // Inhibited by plugin work in flight (mailbox events
                               // or an exclusive background run), a client blocked

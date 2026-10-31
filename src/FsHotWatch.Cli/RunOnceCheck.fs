@@ -163,7 +163,7 @@ let private liveCoverage (daemon: Daemon.Daemon) : Coverage =
 ///     reach a green. Anything less is exit 3, `UnearnedScope` — no verdict, never a
 ///     laundered pass.
 /// Dependency-injected form used to pin command-level scan cardinality without spawning
-/// an external CLI process. Production passes `runOnceWithProgress` unchanged.
+/// an external CLI process. Production passes `ScanHeartbeat.runOnceWithProgress` unchanged.
 let private runOnceAndVerdictIn
     // The invocation every verdict this run publishes belongs to.
     (invocation: Verdict.Invocation)
@@ -426,7 +426,15 @@ let runOnceAndVerdictForInvocation
     (repoRoot: string)
     (config: DaemonConfiguration)
     : int =
-    runOnceAndVerdictIn invocation runOnceWithProgress renderSummary checkMode noWarnFail createDaemon repoRoot config
+    runOnceAndVerdictIn
+        invocation
+        ScanHeartbeat.runOnceWithProgress
+        renderSummary
+        checkMode
+        noWarnFail
+        createDaemon
+        repoRoot
+        config
 
 /// `runOnceAndVerdictForInvocation` for a run that no CLI bracket wraps.
 let runOnceAndVerdict

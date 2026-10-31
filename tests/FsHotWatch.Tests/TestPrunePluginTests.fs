@@ -6146,6 +6146,40 @@ let ``a full suite run for want of a baseline says so in test-scope and in the v
         test <@ scope.["cause"].GetValue<string>() = "no-full-suite-baseline" @>)
 
 [<Fact(Timeout = 25000)>]
+let ``a run-tests force run says so in test-scope and in the verdict scope`` () =
+    // The force-run launch names its own cause; nothing read it back, so a force run
+    // reported under another cause (or none) would have passed every test.
+    withTempDir "tp-force-run-cause" (fun tmpDir ->
+        let host, sentinel = withSingleProjectHarness tmpDir "TestProj"
+
+        host.RunCommand("run-tests", [| "{}" |])
+        |> Async.RunSynchronously
+        |> Option.defaultWith (fun () -> failwith "run-tests returned nothing")
+        |> ignore
+
+        waitForQuiescent host 10000
+        test <@ File.Exists sentinel @>
+
+        let reply =
+            host.RunCommand("test-scope", [||])
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "test-scope returned nothing")
+
+        use document = JsonDocument.Parse reply
+        test <@ document.RootElement.GetProperty("kind").GetString() = "full" @>
+        test <@ document.RootElement.GetProperty("cause").GetString() = "force-run" @>
+
+        let selectedBy = document.RootElement.GetProperty("selectedBy").GetRawText()
+        test <@ selectedBy.Contains "\"force-run\"" @>
+
+        let scope =
+            FsHotWatch.Cli.IpcParsing.parseTestRunReport reply
+            |> VerdictFixtures.scopeOnTheWire
+
+        test <@ scope.["kind"].GetValue<string>() = "full" @>
+        test <@ scope.["cause"].GetValue<string>() = "force-run" @>)
+
+[<Fact(Timeout = 25000)>]
 let ``a cold-start BuildCompleted must NOT replay a test result from the task cache`` () =
     // Asserting the opposite here — that session 2 must NOT re-create the sentinel because
     // the cached entry replays — is asserting the bug, and it passed for its whole life. A

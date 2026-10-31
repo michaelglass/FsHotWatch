@@ -11726,16 +11726,6 @@ let internal createWithEvidenceAndQueries
                             let store = Volatile.Read(&freshnessRef)
                             FileFreshness.classify relPath store
 
-                        if not currentClean then
-                            let errCount =
-                                fcsErrorCount
-                                    (FileCheckResult.suppression ctx.FcsSuppressedCodes result)
-                                    result.CheckResults
-
-                            Logging.warn
-                                "test-prune"
-                                $"FCS reported %d{errCount} error(s) for %s{relPath}; persisting symbols but marking file dirty in freshness sidecar (Phase B detectChanges will fall back for this file)"
-
                         // FileChecked is the completion payload from the daemon's warm FCS
                         // pass. Re-entering FSharpChecker here duplicated that expensive
                         // work and could observe a different compiler state than the event
@@ -11768,6 +11758,19 @@ let internal createWithEvidenceAndQueries
 
                         match analysisResult with
                         | Ok analysisResult ->
+                            // Said only once the analysis has produced symbols to persist:
+                            // a syntax error refuses the analysis below, and that file is
+                            // reported as unanalysable instead (AUTOMATION-1391).
+                            if not currentClean then
+                                let errCount =
+                                    fcsErrorCount
+                                        (FileCheckResult.suppression ctx.FcsSuppressedCodes result)
+                                        result.CheckResults
+
+                                Logging.warn
+                                    "test-prune"
+                                    $"FCS reported %d{errCount} error(s) for %s{relPath}; persisting symbols but marking file dirty in freshness sidecar (Phase B detectChanges will fall back for this file)"
+
                             let normalizedSymbols = normalizeSymbolPaths analysisRoot analysisResult.Symbols
 
                             let fileAnalysis =
