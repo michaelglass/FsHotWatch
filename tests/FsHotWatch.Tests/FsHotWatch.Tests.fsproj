@@ -171,6 +171,7 @@
     <Compile Include="TestPrunePendingVerificationTests.fs" />
     <Compile Include="TestPruneRedRetryTests.fs" />
     <Compile Include="TestPruneRunScopeTests.fs" />
+    <Compile Include="TestPruneIndexedIdentityTests.fs" />
     <Compile Include="TestPruneTestNameTests.fs" />
     <Compile Include="TestPruneFailedLineTests.fs" />
     <Compile Include="TestPruneDiscoveryWaitTests.fs" />

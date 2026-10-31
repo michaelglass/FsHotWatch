@@ -2333,7 +2333,7 @@ type TestPruneState =
         /// leaves the map when a later check of it is diffed. `test-scope` reports the map
         /// as `notSelected`. NOT persisted, for the same reason as `UnanalyzableFiles`.
         NotSelected: Map<string, NotSelectedReason>
-        /// The identity (`IndexedAnalysis.identity`) of each analysis in
+        /// The identity (`IndexedAnalysis.identityOf`) of each analysis in
         /// `PendingAnalysis`, by repo-relative path. The flush that writes them records
         /// them as what the index holds; a retirement drops them with the analyses.
         PendingIdentities: Map<string, string>
@@ -8214,10 +8214,8 @@ let internal createWithEvidenceAndQueries
         || (let relPath =
                 Path.GetRelativePath(repoRoot, AbsFilePath.value result.File).Replace('\\', '/')
 
-            IndexedAnalysis.mayReplay
-                (indexedKey relPath)
-                (Map.tryFind relPath pending)
-                (IndexedAnalysis.identity result.Source (FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults)))
+            IndexedAnalysis.identityOf repoRoot result
+            |> Option.exists (IndexedAnalysis.mayReplay (indexedKey relPath) (Map.tryFind relPath pending)))
 
     // Durable "needs-testing" queue (plugin-owned sidecar). The set of changed
     // symbols not yet proven test-equivalent to the last green run. Loaded once
@@ -11896,9 +11894,8 @@ let internal createWithEvidenceAndQueries
                                     PendingIdentities =
                                         Map.add
                                             relPath
-                                            (IndexedAnalysis.identity
-                                                result.Source
-                                                (FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults))
+                                            (IndexedAnalysis.identityOf repoRoot result
+                                             |> Option.defaultWith IndexedAnalysis.undescribed)
                                             state.PendingIdentities
                                     AnalysisModelGeneration = modelGeneration
                                     AnalysisFiles =
