@@ -1621,6 +1621,20 @@
         "reason": "New file (AUTOMATION-670). Platform-neutral: no arm depends on the OS (File/Directory/JSON only), so Linux reaches what macOS reaches; set to the macOS measurement (line 91.3%, branch 92.9%, 2026-10-30) and to be confirmed by the Linux CI run of this commit.",
         "platform": "linux"
       }
+    ],
+    "TraceShadow.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "new file (AUTOMATION-975 trace selection in shadow). Explicit so that a report which drops this file fails coverage-check. Measured 2026-10-31 on macOS by TraceShadowTests with coverage: line 100% (56/56), branch 100% (6/6).",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "new file (AUTOMATION-975). Pure orchestration over the trace store with no platform-specific path; the macOS measurement (56/56 lines, 6/6 branches) is the floor until Linux CI measures it, then ratchet or explain any SDK branch attribution difference.",
+        "platform": "linux"
+      }
     ]
   },
   "countFloors": {

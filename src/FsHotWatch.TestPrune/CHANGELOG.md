@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: trace-based selection in shadow (`tests.traces.select: "shadow"`, AUTOMATION-975). At each
+  launch the plugin computes what the recorded traces would select beside the static selection,
+  logs one `trace-shadow:` line per traced project, and at completion stores the comparison and
+  its verified-failure misses in the trace database. It never changes what runs; off by default.
+
 ## 0.13.0-alpha.99 - 2026-10-30
 
 - fix: a project-model change no longer drops the analysis already recorded for the new

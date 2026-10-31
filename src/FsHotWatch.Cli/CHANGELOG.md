@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- feat: `tests.traces.select` (`"off"` or `"shadow"`), refused when unknown or when `record` is off
+  (AUTOMATION-975).
 - fix: a check killed with SIGKILL no longer leaves an older green as the answer
   (AUTOMATION-1420). A hard kill (an OOM kill, `timeout -s KILL`, power loss) runs no cleanup, so
   the `incomplete` record of AUTOMATION-1416 is never written. Its run claim stays in

@@ -24,7 +24,8 @@ let private settings record : TraceSettings =
       WeaveTests = WeaveTestSites
       FingerprintInputs = []
       FingerprintEnv = []
-      VerifyTimeoutSec = 60 }
+      VerifyTimeoutSec = 60
+      Select = SelectOff }
 
 let private oneRowManifest: Manifest =
     { Rows =

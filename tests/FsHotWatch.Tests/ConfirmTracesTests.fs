@@ -29,7 +29,8 @@ let private settings record : TraceSettings =
       WeaveTests = WeaveTestSites
       FingerprintInputs = []
       FingerprintEnv = []
-      VerifyTimeoutSec = 300 }
+      VerifyTimeoutSec = 300
+      Select = SelectOff }
 
 [<Fact>]
 let ``a graded run that recorded a project owes nothing`` () =
