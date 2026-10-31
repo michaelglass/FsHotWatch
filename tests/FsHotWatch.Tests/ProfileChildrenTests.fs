@@ -123,3 +123,113 @@ let ``a recorder whose children reader throws still finishes`` () =
                 | Profile.End _ -> true
                 | _ -> false)
         @>
+
+// AUTOMATION-1421: under load the first `ps` read can fail. That is no reading — never a tree
+// of the root alone, recorded as one `?` process — and it does not wait out the refresh
+// cadence: the next sample reads the table again.
+[<Fact>]
+let ``a failed table read is no reading and is retried on the next sample`` () =
+    let tables =
+        Collections.Generic.Queue<Result<FsHotWatch.ProcessHelper.ProcessRow list, string>>(
+            [ Error "`ps` did not answer"
+              Ok [ row 10 1 "sh -c sleep"; row 11 10 "/bin/sleep 7" ] ]
+        )
+
+    let tree =
+        Profile.processTreeWith 6 (fun () -> tables.Dequeue()) (fun pid -> Some(float pid))
+
+    test <@ tree.Cpu 10 = Some 10.0 @>
+    test <@ List.isEmpty (tree.Children()) @>
+
+    test <@ tree.Cpu 10 = Some 21.0 @>
+
+    test
+        <@
+            tree.Children() = [ { Command = "sleep"
+                                  Processes = 1
+                                  CpuMs = 11.0 }
+                                { Command = "sh"
+                                  Processes = 1
+                                  CpuMs = 10.0 } ]
+        @>
+
+    test <@ tables.Count = 0 @>
+
+[<Fact>]
+let ``a failed table read after a reading is retried too, and the members already known are kept`` () =
+    let reads = ref 0
+
+    let tree =
+        Profile.processTreeWith
+            2
+            (fun () ->
+                reads.Value <- reads.Value + 1
+
+                if reads.Value = 1 then
+                    Ok [ row 10 1 "sh -c sleep"; row 11 10 "/bin/sleep 7" ]
+                else
+                    Error "`ps` did not answer")
+            (fun pid -> Some(float pid))
+
+    for _ in 1..5 do
+        tree.Cpu 10 |> ignore
+
+    // Read at sample 1 (a reading: the next is due at 3), then at 3, 4 and 5, each failing.
+    test <@ reads.Value = 4 @>
+    test <@ tree.Children() |> List.map _.Command = [ "sleep"; "sh" ] @>
+
+// AUTOMATION-1421: each sample says whether the host's tree has been read, so a reader (and a
+// test) can tell a reading from its absence instead of inferring it from the sampling cadence.
+[<Fact>]
+let ``a sample records the processes the tree's reading holds, and none before a reading`` () =
+    let dir = tempRunDir ()
+
+    let tables =
+        Collections.Generic.Queue<Result<FsHotWatch.ProcessHelper.ProcessRow list, string>>(
+            [ Error "`ps` did not answer"
+              Ok [ row 10 1 "sh -c sleep"; row 11 10 "/bin/sleep 7" ] ]
+        )
+
+    let tree =
+        Profile.processTreeWith 6 (fun () -> tables.Dequeue()) (fun pid -> Some(float pid))
+
+    let r =
+        Profile.start dir "P.Tests" None 4 (fun () -> None) tree.Cpu Threading.Timeout.InfiniteTimeSpan
+
+    Profile.trackChildren r tree.Children
+    Profile.spawned r 10
+    Profile.sampleNow r
+    Profile.sampleNow r
+    Profile.finish r "passed" (Ok [])
+
+    let processes =
+        Profile.read (Profile.pathIn dir "P.Tests")
+        |> List.choose (function
+            | Profile.Sampled s -> Some s.Processes
+            | _ -> None)
+
+    test <@ processes = [ None; Some 2 ] @>
+
+[<Fact>]
+let ``a sample's processes round-trip, and a sample line written before them reads as no reading`` () =
+    let at = DateTime(2026, 10, 31, 12, 0, 0, DateTimeKind.Utc)
+
+    let line =
+        Profile.Sampled
+            { At = at
+              Load1 = Some 2.0
+              CpuMs = Some 5.0
+              Processes = Some 3 }
+
+    test <@ Profile.tryParse (Profile.render line) = Some line @>
+
+    test
+        <@
+            Profile.tryParse """{"event":"sample","at":"2026-10-31T12:00:00.0000000Z","load1":2,"cpuMs":5}""" = Some(
+                Profile.Sampled
+                    { At = at
+                      Load1 = Some 2.0
+                      CpuMs = Some 5.0
+                      Processes = None }
+            )
+        @>

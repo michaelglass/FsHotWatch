@@ -12,8 +12,9 @@
 ///
 ///   * `start`  — cores, the project's `timeoutSec`, the 1-minute load at launch;
 ///   * `spawn`  — the host's pid (once per launch; a relaunch adds another);
-///   * `sample` — every `DefaultInterval`: the load, and the CPU time of the host's process
-///                tree so far (`treeCpu`);
+///   * `sample` — every `DefaultInterval`: the load, the CPU time of the host's process
+///                tree so far (`treeCpu`), and how many processes the tree's process-table
+///                reading holds (null until one succeeds);
 ///   * `end`    — wall time, the tree's last-seen CPU time, the load, the outcome;
 ///   * `class`  — per class of the CTRF report: tests, summed duration, the span from its
 ///                first start to its last stop, and the load per core over THAT window,
@@ -67,6 +68,9 @@ type Sample =
         /// The CPU time of the host's process tree so far (`treeCpu`); `None` before the spawn,
         /// or when the OS will not say.
         CpuMs: float option
+        /// The processes in the host's tree as the process table last named them (`ProcessTree.Children`);
+        /// `None` until a table reading succeeds — a reading, told apart from its absence (AUTOMATION-1421).
+        Processes: int option
     }
 
 /// The load a class ran under, read from the run's own samples.
@@ -392,7 +396,8 @@ let render (line: Line) : string =
             [ "event", str "sample"
               "at", str (iso s.At)
               "load1", optNumber s.Load1
-              "cpuMs", optNumber s.CpuMs ]
+              "cpuMs", optNumber s.CpuMs
+              "processes", optInt s.Processes ]
         | End(at, wallMs, cpuMs, load1, outcome) ->
             [ "event", str "end"
               "at", str (iso at)
@@ -483,8 +488,22 @@ let tryParse (text: string) : Line option =
                 | Some at, Some pid -> Some(Spawn(at, pid))
                 | _ -> None
             | Some "sample" ->
-                match date o "at", optional<float> o "load1", optional<float> o "cpuMs" with
-                | Some at, Some l, Some c -> Some(Sampled { At = at; Load1 = l; CpuMs = c })
+                // `processes` is absent from a line written before it existed: no reading.
+                let processes =
+                    if o.ContainsKey "processes" then
+                        optional<int> o "processes"
+                    else
+                        Some None
+
+                match date o "at", optional<float> o "load1", optional<float> o "cpuMs", processes with
+                | Some at, Some l, Some c, Some p ->
+                    Some(
+                        Sampled
+                            { At = at
+                              Load1 = l
+                              CpuMs = c
+                              Processes = p }
+                    )
                 | _ -> None
             | Some "end" ->
                 match
@@ -623,8 +642,9 @@ type ProcessTree =
     {
         /// The CPU time of the tree rooted at the pid, for `Recorder`'s `readCpu`.
         Cpu: int -> float option
-        /// Every member seen so far, by command, most CPU first. A process that lived and
-        /// died between two table reads is never seen, so the counts are a lower bound.
+        /// Every member a process-table reading named so far, by command, most CPU first. A
+        /// process that lived and died between two table reads is never seen, so the counts
+        /// are a lower bound; empty until a reading succeeds — never the root alone, unnamed.
         Children: unit -> ChildCommand list
     }
 
@@ -637,8 +657,9 @@ type ProcessTree =
 ///
 /// Membership comes from the process table, read on the first call and then every
 /// `refreshEvery` calls: `ps -A` measured 67 ms on a loaded box, over 1% of a 5 s
-/// interval, while a per-pid CPU read costs microseconds. A table that cannot be read
-/// keeps the members already known.
+/// interval, while a per-pid CPU read costs microseconds. A table that cannot be read is
+/// no reading (AUTOMATION-1421): it keeps the members already known and is read again on
+/// the next call, so a `ps` that fails under load costs a retry, not a cadence.
 ///
 /// Stateful (the readings so far): one per project launch.
 let internal processTreeWith
@@ -648,24 +669,30 @@ let internal processTreeWith
     : ProcessTree =
     let lastSeen = Collections.Generic.Dictionary<int, float>()
     let members = Collections.Generic.HashSet<int>()
-    // Each member's command, as the table named it when it was first seen.
+    // Each member's command, as the table named it when it was first seen. Only a member a
+    // table reading named is a child: the root alone, before any reading, is no tree.
     let commands = Collections.Generic.Dictionary<int, string>()
-    let calls = ref 0
+    // Calls until the table is due again; 0 = read on this call.
+    let untilTable = ref 0
     let gate = obj ()
 
     { Cpu =
         fun root ->
             lock gate (fun () ->
-                if calls.Value % max 1 refreshEvery = 0 then
+                if untilTable.Value <= 0 then
                     match readTable () with
                     | Ok rows ->
+                        untilTable.Value <- max 1 refreshEvery
+
                         ProcessHelper.treeOf root rows
                         |> List.iter (fun r ->
-                            if members.Add r.Pid then
-                                commands[r.Pid] <- commandName r.Command)
-                    | Error _ -> ()
+                            members.Add r.Pid |> ignore
 
-                calls.Value <- calls.Value + 1
+                            if not (commands.ContainsKey r.Pid) then
+                                commands[r.Pid] <- commandName r.Command)
+                    | Error _ -> untilTable.Value <- 1
+
+                untilTable.Value <- untilTable.Value - 1
                 members.Add root |> ignore
 
                 for pid in members do
@@ -678,19 +705,16 @@ let internal processTreeWith
       Children =
         fun () ->
             lock gate (fun () ->
-                members
+                commands
                 |> Seq.toList
-                |> List.groupBy (fun pid ->
-                    match commands.TryGetValue pid with
-                    | true, c -> c
-                    | _ -> "?")
-                |> List.map (fun (command, pids) ->
+                |> List.groupBy _.Value
+                |> List.map (fun (command, named) ->
                     { Command = command
-                      Processes = pids.Length
+                      Processes = named.Length
                       CpuMs =
-                        pids
-                        |> List.sumBy (fun pid ->
-                            match lastSeen.TryGetValue pid with
+                        named
+                        |> List.sumBy (fun kv ->
+                            match lastSeen.TryGetValue kv.Key with
                             | true, cpu -> cpu
                             | _ -> 0.0) })
                 |> List.sortBy (fun c -> -c.CpuMs, c.Command)) }
@@ -751,6 +775,20 @@ let private emit (r: Recorder) (line: Line) =
             ()
     | None -> ()
 
+/// The processes the tracked children reader names (`trackChildren`); `None` with no reader,
+/// before a reading, or when the reader fails.
+let private processesOf (r: Recorder) : int option =
+    match r.ReadChildren with
+    | Some read ->
+        try
+            match read () with
+            | [] -> None
+            | children -> Some(children |> List.sumBy _.Processes)
+        with ex ->
+            Logging.debug "test-prune" $"could not count the host's processes: %s{ex.Message}"
+            None
+    | None -> None
+
 /// Take one sample now. A no-op after `finish`.
 let sampleNow (r: Recorder) : unit =
     lock r.Gate (fun () ->
@@ -758,7 +796,9 @@ let sampleNow (r: Recorder) : unit =
             let sample =
                 { At = DateTime.UtcNow
                   Load1 = r.ReadLoad()
-                  CpuMs = r.Pid |> Option.bind r.ReadCpu }
+                  CpuMs = r.Pid |> Option.bind r.ReadCpu
+                  // After `ReadCpu`, which takes the table reading this counts.
+                  Processes = processesOf r }
 
             r.Samples <- sample :: r.Samples
             emit r (Sampled sample))

@@ -368,11 +368,13 @@ let private killedProfile (load1: float) =
       Profile.Sampled
           { At = at 2.0
             Load1 = Some load1
-            CpuMs = None }
+            CpuMs = None
+            Processes = None }
       Profile.Sampled
           { At = at 7.0
             Load1 = Some load1
-            CpuMs = None }
+            CpuMs = None
+            Processes = None }
       Profile.End(at 12.0, 12_000L, None, Some load1, "timed-out")
       Profile.Class(
           timing "K.Pole" 0.0 9.0,

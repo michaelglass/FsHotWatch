@@ -31,8 +31,7 @@ let private projectOf (command: string) (args: string) (timeoutSec: int option) 
 
 let private project (args: string) (timeoutSec: int option) : TestConfig = projectOf "sh" args timeoutSec
 
-let private runOnce (config: TestConfig) : string * Profile.Line list =
-    let root = isolatedRoot ()
+let private runIn (root: string) (config: TestConfig) : string * Profile.Line list =
     let host = PluginHost.create (Unchecked.defaultof<_>) root
     let handler = create ":memory:" root (Some [ config ]) None None None None []
     host.RegisterHandler(handler)
@@ -49,6 +48,8 @@ let private runOnce (config: TestConfig) : string * Profile.Line list =
         Directory.GetDirectories(FsHotWatch.Ctrf.reportsDir root) |> Array.exactlyOne
 
     status, Profile.read (Profile.pathIn runDir config.Project)
+
+let private runOnce (config: TestConfig) : string * Profile.Line list = runIn (isolatedRoot ()) config
 
 [<Fact(Timeout = 120_000)>]
 let ``a project killed at its timeout still leaves a profile with its start, host pid, end and why no classes`` () =
@@ -227,11 +228,20 @@ let ``fshw's default launch of a real xUnit host holds none of its thread-pool t
 
     test <@ status = "passed" @>
 
-// Slice 5: the host's child processes, by command. The first sample (at 5 s) reads the
-// process table, so a host that runs past it has its children seen.
+// Slice 5: the host's child processes, by command. The host keeps its child alive until a
+// sample of its profile says the process table was read (AUTOMATION-1421): it waits on that
+// reading, not on the sampling cadence, which a `ps` failing under load once outran.
 [<Fact(Timeout = 120_000)>]
 let ``a project's profile lists the child processes its host ran`` () =
-    let status, lines = runOnce (project "-c \"sleep 7; exit 0\"" None)
+    let root = isolatedRoot ()
+
+    let config =
+        { project
+              "-c \"sleep 600 & until grep -qs 'processes.:[0-9]' $FSHW_TEST_RUNS/*/Profiled.Tests.profile.jsonl; do sleep 0.1; done; kill $!; exit 0\""
+              None with
+            Environment = [ "FSHW_TEST_RUNS", FsHotWatch.Ctrf.reportsDir root ] }
+
+    let status, lines = runIn root config
 
     test <@ status = "passed" @>
 
