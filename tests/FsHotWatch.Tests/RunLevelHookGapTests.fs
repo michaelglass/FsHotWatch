@@ -748,6 +748,128 @@ let ``premature terminal fallback never overwrites a newer invocation verdict`` 
             test <@ verdict.Hooks |> List.map _.Scope = [ "tests.beforeRun" ] @>
         | other -> failwith $"expected newer verdict to survive, got %A{other}")
 
+/// How a check can end without publishing a verdict of its own: its action returns
+/// (the transport gave up, here after the daemon recorded an interrupted shutdown), a
+/// signal ends it, or an exception escapes the transport.
+let private endWithoutVerdict (ending: string) (signalFinalize: (unit -> unit) option ref) : int =
+    match ending with
+    | "signal" ->
+        fireCapturedSignal signalFinalize
+        2
+    | "exception" -> raise (InvalidOperationException "the transport lost the daemon")
+    | _ -> 2
+
+let private runEndingWithoutVerdict (root: string) (ending: string) (before: string -> unit) : string option =
+    let signalFinalize = ref None
+    let mutable ownedInvocation = None
+
+    Record.Exception(fun () ->
+        withRunHooksCommandUsingSignals
+            (captureSignalFinalizer signalFinalize)
+            FsHotWatch.Cli.Verdict.Check
+            root
+            (hooks None None)
+            (fun invocation ->
+                ownedInvocation <- Some invocation.Id
+                before invocation.Id
+                endWithoutVerdict ending signalFinalize)
+        |> ignore)
+    |> ignore
+
+    ownedInvocation
+
+/// AUTOMATION-1416. A green from an EARLIER invocation over this exact tree, then a
+/// check that ends without a verdict of its own. The tree did not move, so a reader
+/// that judges a verdict by its tree hash (`fshw verdict`, `confirm`'s reuse, a
+/// consumer's gate) would take the old green as this check's answer. It must not
+/// survive: the check that ended last is recorded as incomplete, under its own id.
+[<Theory(Timeout = 15000)>]
+[<InlineData("returned")>]
+[<InlineData("signal")>]
+[<InlineData("exception")>]
+let ``a check that ends without a verdict supersedes an older green on the same tree`` (ending: string) =
+    withTempDir "run-hook-older-green" (fun root ->
+        publishCleanInvocation "earlier-invocation" root
+
+        // POSITIVE CONTROL: before the check, the old green is this tree's answer.
+        match FsHotWatch.Cli.Verdict.priorConfirmation root [] with
+        | FsHotWatch.Cli.Verdict.PriorConfirmation.StillApplies _ -> ()
+        | FsHotWatch.Cli.Verdict.PriorConfirmation.MustEarn ->
+            failwith "the fixture's earlier green must apply to this tree"
+
+        let ownedInvocation =
+            runEndingWithoutVerdict root ending (fun _ ->
+                FsHotWatch.Interruption.record
+                    root
+                    { At = DateTime.UtcNow
+                      Pid = 4242
+                      InFlight = [ "build" ] })
+
+        match FsHotWatch.Cli.Verdict.read root with
+        | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+            test <@ verdict.InvocationId = ownedInvocation @>
+            test <@ isIncomplete verdict.Outcome @>
+            test <@ verdict.ExitCode <> 0 @>
+
+            if ending = "returned" then
+                match verdict.Outcome with
+                | FsHotWatch.Cli.Verdict.Incomplete reason -> test <@ reason.Contains "the check was interrupted" @>
+                | other -> failwith $"expected the interruption to be named, got %A{other}"
+        | other -> failwith $"expected this check's terminal verdict, got %A{other}"
+
+        // `fshw verdict` reads it as not green, and `confirm` must earn a new one.
+        let report, _ = FsHotWatch.Cli.Verdict.reportWithCoverage root []
+        test <@ FsHotWatch.Cli.Verdict.reportExitCode report <> 0 @>
+        test <@ FsHotWatch.Cli.Verdict.priorConfirmation root [] = FsHotWatch.Cli.Verdict.PriorConfirmation.MustEarn @>)
+
+/// The protection 1416 must keep: a verdict published AFTER this check began belongs
+/// to a newer (or concurrent) invocation and is a better answer than this one's
+/// absence, however this check ends.
+[<Theory(Timeout = 15000)>]
+[<InlineData("returned")>]
+[<InlineData("signal")>]
+[<InlineData("exception")>]
+let ``a check that ends without a verdict never overwrites one published after it began`` (ending: string) =
+    withTempDir "run-hook-concurrent-green" (fun root ->
+        runEndingWithoutVerdict root ending (fun _ -> publishCleanInvocation "concurrent-invocation" root)
+        |> ignore
+
+        match FsHotWatch.Cli.Verdict.read root with
+        | FsHotWatch.Cli.Verdict.Reading.Found verdict ->
+            test <@ verdict.InvocationId = Some "concurrent-invocation" @>
+            test <@ BaselineFixtures.isGreen verdict.Outcome @>
+        | other -> failwith $"expected the newer verdict to survive, got %A{other}")
+
+/// The other protection: a check that FINISHED by finding nothing to run keeps the
+/// full-suite green already earned over this tree (`IpcOutput.priorVerdictToPreserve`)
+/// byte for byte. It answered, so its bracket must not treat it as having ended
+/// without a verdict.
+[<Fact(Timeout = 15000)>]
+let ``a check that answered by keeping an earned green leaves it byte for byte`` () =
+    withTempDir "run-hook-preserved-green" (fun root ->
+        publishCleanInvocation "earlier-invocation" root
+        let priorText = File.ReadAllText(FsHotWatch.Cli.Verdict.path root)
+
+        let code =
+            withRunHooksForInvocation RunHookCommand.Check root (hooks None None) (fun invocation ->
+                FsHotWatch.Cli.IpcOutput.publishVerdictForInvocation
+                    invocation
+                    root
+                    []
+                    FsHotWatch.Cli.CheckVerdict.InnerLoop
+                    false
+                    (BaselineFixtures.reportOf (NoTestsRun NoTestsReason.AlreadyVerified))
+                    FsHotWatch.Cli.Verdict.NoReading
+                    Map.empty
+                    FsHotWatch.Cli.IpcParsing.DaemonEvidence.NotServed
+                    []
+                    ProjectModelFixtures.available
+                    (FsHotWatch.Cli.IpcOutput.SettledTree.capture root [])
+                    (FsHotWatch.Cli.CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified)))
+
+        test <@ code = 3 @>
+        test <@ File.ReadAllText(FsHotWatch.Cli.Verdict.path root) = priorText @>)
+
 /// `--run-once` over a tree with no projects: the hooks still bracket it, and the
 /// refusal is published as an invocation-owned incomplete instead of a bare exit 2
 /// that would leave a prior green readable.

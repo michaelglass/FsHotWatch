@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a check that ends without a verdict of its own no longer leaves an older green as the
+  answer (AUTOMATION-1416). Its terminal record (`the check was interrupted: …`, a signal, an
+  exception, or `the check ended without publishing a verdict for this invocation`) used to be
+  written only when no other invocation owned `.fshw/verdict.json`, so on an unchanged tree the
+  previous green still matched the tree hash, and `fshw verdict`, `confirm`'s reuse and any
+  tree-hash consumer read a check that never finished as green. Now a verdict published BEFORE
+  the check began is superseded by the check's `incomplete`. A verdict published after it began
+  (a newer or concurrent check's) is still never overwritten, and a check that answered by keeping
+  the full-suite green already earned over this tree still leaves it byte for byte.
+
 - fix: `fshw stop` names the work it interrupted (AUTOMATION-670): `Interrupted work in flight:
   build. Output it was writing may be incomplete; …`. A `check` whose daemon was shut down under
   it records `the check was interrupted: the daemon … was shut down … while build was running — a

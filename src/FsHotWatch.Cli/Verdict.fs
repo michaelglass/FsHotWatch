@@ -58,9 +58,18 @@ let Schema = "fshw-verdict-v2"
 /// reason given. A suspension inside the invocation is a stretch of wall time no work
 /// explains, and `Invocation.timingReasons` names it (the awake clock is read for that).
 type Invocation =
-    { Id: string
-      Clock: FsHotWatch.HostClock.Clock
-      Origin: FsHotWatch.HostClock.Reading }
+    {
+        Id: string
+        Clock: FsHotWatch.HostClock.Clock
+        Origin: FsHotWatch.HostClock.Reading
+        /// Set when this invocation answered by KEEPING the verdict already on disk: a
+        /// check that found nothing to run leaves the full-suite green earned over this
+        /// exact tree in place (`IpcOutput.priorVerdictToPreserve`). That file is owned
+        /// by an earlier invocation, so without this mark the bracket could not tell an
+        /// invocation that answered this way from one that ended without an answer
+        /// (`tryPublishTerminal`). Set by the publisher, in the same process.
+        mutable KeptPriorVerdict: bool
+    }
 
     /// The wall-clock instant every interval on this invocation's timeline is placed from.
     member this.OriginUtc: DateTime = this.Origin.Wall
@@ -73,7 +82,8 @@ module Invocation =
     let startOn (clock: FsHotWatch.HostClock.Clock) (id: string) : Invocation =
         { Id = id
           Clock = clock
-          Origin = FsHotWatch.HostClock.read clock }
+          Origin = FsHotWatch.HostClock.read clock
+          KeptPriorVerdict = false }
 
     let startAs (id: string) : Invocation = startOn FsHotWatch.HostClock.system id
 
@@ -2653,6 +2663,27 @@ let writeHookFailure
     : unit =
     writeTerminal repoRoot excludePatterns command invocation hooks spans reason incompleteExitCode
 
+/// Was the verdict node published before `instantUtc`? Read the way `read` reads
+/// `producedAt`, where a value that does not parse is `DateTime.MinValue`: an age that
+/// cannot be read cannot show the file is newer.
+let private publishedBefore (instantUtc: DateTime) (root: JsonObject) : bool =
+    let producedAt =
+        match root["producedAt"] with
+        | null -> None
+        | token when token.GetValueKind() = JsonValueKind.String ->
+            match
+                DateTime.TryParse(
+                    token.GetValue<string>(),
+                    Globalization.CultureInfo.InvariantCulture,
+                    Globalization.DateTimeStyles.AdjustToUniversal
+                )
+            with
+            | true, dt -> Some dt
+            | _ -> None
+        | _ -> None
+
+    (producedAt |> Option.defaultValue DateTime.MinValue) < instantUtc
+
 /// The invocation ended abnormally — an exception out of the transport, a signal, or
 /// an action that returned without ever publishing. Leave behind an invocation-owned
 /// `incomplete` so a prior green cannot survive as the answer, WITHOUT ever
@@ -2665,7 +2696,15 @@ let writeHookFailure
 ///   `downgradeSameOwner` (an exception or signal AFTER publishing), keeping its
 ///   plugin, hook, interval and wall-time evidence; left alone otherwise (the action
 ///   published and returned normally — nothing abnormal happened);
-/// - owned by a DIFFERENT invocation → untouched, `false`.
+/// - owned by a DIFFERENT invocation and published AFTER this one began → untouched,
+///   `false`: a newer or concurrent check's answer beats this one's absence;
+/// - owned by a DIFFERENT invocation and published BEFORE this one began → superseded
+///   by the terminal fallback. The tree did not have to move, so a reader judging the
+///   file by its tree hash would otherwise take an older green as the answer of a check
+///   that never finished (AUTOMATION-1416). Left alone only when this invocation
+///   ANSWERED by keeping it (`Invocation.KeptPriorVerdict`) and nothing abnormal
+///   followed (`downgradeSameOwner` false). A `producedAt` that does not parse cannot
+///   establish that the file is newer, so it is superseded too.
 ///
 /// `exitCode` is the run's own exit: `incompleteExitCode`, or 128 + N for a run that
 /// signal N ended, so a reader can tell an interrupt from a failure.
@@ -2716,6 +2755,13 @@ let tryPublishTerminal
                     root["observedElapsedMs"] <- JsonValue.Create observed)
 
                 FsHwPaths.atomicWriteAllText verdictPath (root.ToJsonString(jsonOptions) + "\n")
+                true
+            | Ok(root, Some owner) when
+                owner <> invocation.Id
+                && not (invocation.KeptPriorVerdict && not downgradeSameOwner)
+                && publishedBefore invocation.OriginUtc root
+                ->
+                FsHwPaths.atomicWriteAllText verdictPath (fallback ())
                 true
             | Ok _ -> false)
 

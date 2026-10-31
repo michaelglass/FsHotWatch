@@ -1445,7 +1445,7 @@ let private publishVerdictWithReason
                 Verdict.priorConfirmation repoRoot excludePatterns)
 
         match preservedPrior with
-        | Some _ -> ()
+        | Some _ -> invocation.KeptPriorVerdict <- true
         | None -> Verdict.write repoRoot v
 
         // ADR-059 shadow mode: what the outcome store would answer for this tree, logged

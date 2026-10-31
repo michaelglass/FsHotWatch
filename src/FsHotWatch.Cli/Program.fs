@@ -2802,8 +2802,9 @@ let internal withRunHooksCommandUsingSignals
     // did not end by publishing normally: `downgrade` says whether a verdict this
     // invocation ALREADY published must be downgraded to incomplete (an exception or
     // signal after the publish) or left as it is (the action returned normally and
-    // simply never published — the fallback is written only where nothing owns the
-    // file). Publishing the terminal record is best-effort like every other verdict
+    // simply never published — the fallback is written where nothing owns the file or
+    // an EARLIER invocation does, never over a verdict published after this run began;
+    // see `Verdict.tryPublishTerminal`). Publishing the terminal record is best-effort like every other verdict
     // write: a `.fshw/` that cannot be written must not turn into a second failure.
     let finalize (reason: string) (downgrade: bool) : unit =
         // Whatever the run still has running goes first: interrupted in a hook, that
