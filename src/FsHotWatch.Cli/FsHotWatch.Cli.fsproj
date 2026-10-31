@@ -78,6 +78,7 @@
         <Compile Include="DeadCode.fs" />
         <Compile Include="Explain.fs" />
         <Compile Include="Findings.fs" />
+        <Compile Include="Headroom.fs" />
         <Compile Include="Program.fs" />
     </ItemGroup>
 

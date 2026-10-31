@@ -356,6 +356,7 @@ type Command =
     | [<CmdExample("", "--json", "--since 7");
         Cmd("Flaky, slow and trust analytics over the outcome store and the shadow ledger: input sets recorded both green and red, duration percentiles, reds later green on identical inputs, runs a lookup would have answered, shadow agreement by day (reads the store; never contacts the daemon)")>] Analytics of
         AnalyticsFlag list
+    | [<Cmd("Report memory headroom and the fshw daemons recorded under this repository and its .workspaces. Report only: stops nothing, deletes nothing, never contacts a daemon")>] Headroom
     | [<Cmd("Install fish completions")>] Completions
     | [<CmdArg("worktree root");
         Cmd("Run the repository host for the repository containing <root> (launched on demand when `repositoryHost` is enabled)")>] Host of
@@ -409,6 +410,7 @@ let internal agentGateFor (command: Command) : AgentGate =
     | Command.Config _
     | Command.Coverage _
     | Command.Insights _
+    | Command.Headroom
     | Command.Analytics _ -> AgentGate.OwnOutput
     | Command.Start
     | Command.Init
@@ -441,6 +443,7 @@ let internal commandToken (command: Command) : string =
     | Command.Insights _ -> "insights"
     | Command.Analytics _ -> "analytics"
     | Command.Explain _ -> "explain"
+    | Command.Headroom -> "headroom"
     | Command.Completions -> "completions"
     | Command.Host _ -> "host"
 
@@ -1452,17 +1455,9 @@ let restartReasonLine (action: RunningDaemonAction) : string option =
                (%s{recorded.Version}) — restarting it with this one..."
     | RestartConfigChanged -> Some "  Daemon config changed — restarting..."
 
-/// How far a process's reported start time may trail the write of the pidfile it
-/// names and still count as the process that wrote it. The daemon writes its pid only
-/// once its runtime is up, so the real gap is the other way round; this absorbs the OS's
-/// start-time arithmetic (Linux derives it from boot time and clock ticks), not a race.
-let internal PidfileStartSlack = TimeSpan.FromSeconds 1.0
-
-/// Whether the process holding a pidfile's pid now can be the one that wrote it: it
-/// started no later than the pidfile was written. A process that started afterwards
-/// was handed a recycled pid after the daemon that wrote the file was gone.
-let internal startedBeforePidfile (pidfileWritten: DateTime) (processStarted: DateTime) : bool =
-    processStarted <= pidfileWritten + PidfileStartSlack
+/// The recycled-pid rule `headroom` reports with, so `stop` and the report agree on
+/// which process a pidfile names (see `Headroom.startedBeforePidfile`).
+let internal startedBeforePidfile = FsHotWatch.Cli.Headroom.startedBeforePidfile
 
 /// Kill a stale daemon process by PID file (injectable).
 ///
@@ -3707,7 +3702,10 @@ let private executeCommandRendered
     //   2. If the daemon restarted ITSELF over a wedge, say what it did — the
     //      last-wedge breadcrumb is the recovery notice the daemon could not
     //      print to a terminal it never had. Printed once, then consumed.
-    cleanStalePidfile repoRoot
+    // Not for `headroom`, which reports stale pidfiles and must not remove them first.
+    match command with
+    | Headroom -> ()
+    | _ -> cleanStalePidfile repoRoot
 
     match PluginWedge.consumeBreadcrumb repoRoot with
     | Some message -> eprintfn "⚠ %s" message
@@ -3749,6 +3747,7 @@ let private executeCommandRendered
         | Insights _
         | Analytics _
         | Explain _
+        | Headroom
         | Completions
         | Host _ -> false
 
@@ -4572,6 +4571,7 @@ let private executeCommandRendered
                 repoRoot
                 { File = file
                   Json = flags |> List.contains ExplainFlag.Json }
+        | Headroom -> FsHotWatch.Cli.Headroom.run repoRoot
         | Completions ->
             match writeFishCompletions commandTree cliName with
             | Ok path ->
@@ -4925,6 +4925,7 @@ let internal needsDaemon (command: Command) : bool =
     | Coverage _
     | DeadCode _
     | Explain _
+    | Headroom
     | Completions
     | Host _ -> false
     | _ -> true
@@ -5066,6 +5067,13 @@ let private runCli (args: string array) : int =
                         eprintfn "Error: not in a jj or git repository"
                         exit 1
                         ""
+
+            // `headroom` reports before anything else here can act: the stale-pidfile
+            // hygiene every other verb runs first would delete what it exists to report,
+            // and it needs no configuration.
+            match dispatch with
+            | RunCommand(_, Headroom) -> exit (FsHotWatch.Cli.Headroom.run repoRoot)
+            | _ -> ()
 
             // The socket a running daemon recorded, when it has one: a daemon started
             // under a different TMPDIR listens somewhere this process would not look.

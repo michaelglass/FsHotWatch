@@ -132,6 +132,7 @@
     <Compile Include="HostLifecycleTests.fs" />
     <Compile Include="RepositoryHostTests.fs" />
     <Compile Include="RepositoryHostModeTests.fs" />
+    <Compile Include="HeadroomTests.fs" />
     <Compile Include="RepositoryHostIsolationTests.fs" />
     <Compile Include="RepositoryHostSharingTests.fs" />
     <Compile Include="RepositoryHostParityTests.fs" />
