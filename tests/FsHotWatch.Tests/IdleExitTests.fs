@@ -361,7 +361,7 @@ let private makeDeps (idleMinutes: float) (busy: bool) =
         { BaseThresholdMin = 30
           Source = ThresholdSource.Auto
           PressureFloorMin = Some 2
-          Pressure = fun () -> false
+          Pressure = fun () -> PressureReading.GcHighLoad false
           Now = fun () -> now
           Inhibitors = fun () -> if busy then [ IdleInhibitor.PluginBusy ] else []
           LastActivityAt = fun () -> now.AddMinutes(-idleMinutes)
@@ -402,7 +402,7 @@ let ``runTick defers when busy then fires when free`` () =
         { BaseThresholdMin = 30
           Source = ThresholdSource.Auto
           PressureFloorMin = Some 2
-          Pressure = fun () -> false
+          Pressure = fun () -> PressureReading.GcHighLoad false
           Now = fun () -> now
           Inhibitors = fun () -> if busy.Value then [ IdleInhibitor.PluginBusy ] else []
           LastActivityAt = fun () -> now.AddMinutes(-31.0)
@@ -429,7 +429,7 @@ let private makePressureDeps (idleMinutes: float) (pressure: bool ref) (floor: i
         { BaseThresholdMin = 30
           Source = ThresholdSource.Auto
           PressureFloorMin = floor
-          Pressure = fun () -> pressure.Value
+          Pressure = fun () -> PressureReading.KernelLevel(if pressure.Value then 2 else 1)
           Now = fun () -> now
           Inhibitors = fun () -> []
           LastActivityAt = fun () -> now.AddMinutes(-idleMinutes)
@@ -452,6 +452,50 @@ let ``runTick under pressure fires at the floor boundary`` () =
     test <@ runTick deps (FireLatch.create ()) = TickOutcome.Fired @>
     test <@ shutdownCalls.Value = 1 @>
     test <@ logs |> Seq.exists (fun m -> m.Contains "memory pressure shortened") @>
+
+[<Fact>]
+let ``the idle-exit line names the memory-pressure reading it acted on`` () =
+    // AUTOMATION-1391. The exit line said "memory pressure shortened the window" and
+    // never which reading it acted on: the kernel's level, or the GC's mark where the
+    // kernel gives none.
+    let fire reading =
+        let deps, _, logs = makePressureDeps 2.0 (ref true) (Some 2)
+
+        let deps =
+            { deps with
+                Pressure = fun () -> reading }
+
+        test <@ runTick deps (FireLatch.create ()) = TickOutcome.Fired @>
+        logs |> Seq.find (fun m -> m.Contains "shutting down")
+
+    test <@ (fire (PressureReading.KernelLevel 4)).Contains "kernel memory-pressure level 4 (critical)" @>
+    test <@ (fire (PressureReading.KernelLevel 2)).Contains "kernel memory-pressure level 2 (warning)" @>
+    test <@ (fire (PressureReading.GcHighLoad true)).Contains "GC high-memory-load mark crossed" @>
+
+[<Fact>]
+let ``pressure is read from the kernel level where there is one, else the GC mark`` () =
+    test <@ PressureReading.isPressure (PressureReading.KernelLevel 1) = false @>
+    test <@ PressureReading.isPressure (PressureReading.KernelLevel 2) @>
+    test <@ PressureReading.isPressure (PressureReading.KernelLevel 4) @>
+    test <@ PressureReading.isPressure (PressureReading.GcHighLoad true) @>
+    test <@ PressureReading.isPressure (PressureReading.GcHighLoad false) = false @>
+
+    let unread () : bool =
+        failwith "the GC mark is not read when the kernel answers"
+
+    test <@ pressureReadingFrom (Some 4) unread = PressureReading.KernelLevel 4 @>
+    test <@ pressureReadingFrom None (fun () -> true) = PressureReading.GcHighLoad true @>
+    // The live read answers one of the two, whichever this host gives.
+    test <@ PressureReading.describe (readPressure ()) <> "" @>
+
+[<Fact>]
+let ``every kernel level is named, including one the kernel does not document`` () =
+    test <@ PressureReading.describe (PressureReading.KernelLevel 1) = "kernel memory-pressure level 1 (normal)" @>
+
+    test
+        <@ PressureReading.describe (PressureReading.KernelLevel 3) = "kernel memory-pressure level 3 (unrecognised)" @>
+
+    test <@ (PressureReading.describe (PressureReading.GcHighLoad false)).Contains "not crossed" @>
 
 [<Fact>]
 let ``runTick re-evaluates pressure each tick - subsiding restores the full window`` () =
@@ -509,7 +553,7 @@ let ``runTick swallows a throwing shutdown without escaping`` () =
         { BaseThresholdMin = 30
           Source = ThresholdSource.Auto
           PressureFloorMin = Some 2
-          Pressure = fun () -> false
+          Pressure = fun () -> PressureReading.GcHighLoad false
           Now = fun () -> now
           Inhibitors = fun () -> []
           LastActivityAt = fun () -> now.AddMinutes(-31.0)
@@ -534,7 +578,7 @@ let ``createTimer logs the enable line and is disposable`` () =
         { BaseThresholdMin = 30
           Source = ThresholdSource.Auto
           PressureFloorMin = Some 2
-          Pressure = fun () -> false
+          Pressure = fun () -> PressureReading.GcHighLoad false
           // Activity is "now" so the timer never fires within the test window.
           Now = fun () -> now
           Inhibitors = fun () -> []
@@ -556,7 +600,7 @@ let ``the enable line names where its window came from`` () =
         { BaseThresholdMin = 240
           Source = ThresholdSource.Environment
           PressureFloorMin = None
-          Pressure = fun () -> false
+          Pressure = fun () -> PressureReading.GcHighLoad false
           Now = fun () -> now
           Inhibitors = fun () -> []
           LastActivityAt = fun () -> now
@@ -588,7 +632,7 @@ let private makeScanDeps (leases: ScanActivity.ScanLeases) (idleMinutes: float) 
           Source = ThresholdSource.Auto
           PressureFloorMin = Some 2
           // Pressure ON: this is the shortened-window case that actually fired.
-          Pressure = fun () -> true
+          Pressure = fun () -> PressureReading.KernelLevel 2
           Now = fun () -> now
           Inhibitors = fun () -> idleInhibitors false 0 (ScanActivity.ScanLeases.inFlight leases)
           LastActivityAt = fun () -> now.AddMinutes(-idleMinutes)
@@ -658,7 +702,7 @@ let ``a tick in flight when the timer is disposed shuts down before the daemon's
                 { BaseThresholdMin = 1
                   Source = ThresholdSource.Auto
                   PressureFloorMin = None
-                  Pressure = fun () -> false
+                  Pressure = fun () -> PressureReading.GcHighLoad false
                   Now = fun () -> now
                   Inhibitors =
                     fun () ->

@@ -4025,7 +4025,7 @@ type Daemon
                             { BaseThresholdMin = minutes
                               Source = idleExitSource
                               PressureFloorMin = pressureIdleFloorMin
-                              Pressure = IdleExit.readMemoryPressure
+                              Pressure = IdleExit.readPressure
                               Now = fun () -> System.DateTime.UtcNow
                               // Inhibited by plugin work in flight (mailbox events
                               // or an exclusive background run), a client blocked

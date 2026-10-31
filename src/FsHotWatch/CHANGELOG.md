@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix!: the idle-exit line names the memory-pressure reading it acted on (AUTOMATION-1391): the
+  macOS kernel level (`kern.memorystatus_vm_pressure_level`, e.g. `level 2 (warning)`) or, where
+  the kernel gives none, whether the GC's high-memory-load mark was crossed. It said only that
+  pressure had shortened the window. **`IdleExitDeps.Pressure` is now `unit -> PressureReading`**
+  (was `unit -> bool`); production wires the new `IdleExit.readPressure`. `readMemoryPressure` is
+  unchanged.
+
 - fix: a change batch that replaces the project model seals the new model even when none of
   its checks completes (AUTOMATION-1393). The model change retires the previous cohort seal,
   and the batch skipped its seal when it dispatched no result, so the new model had none. A

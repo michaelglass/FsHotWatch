@@ -110,13 +110,16 @@ let internal kernelPressureLevelOn (isMacOS: bool) (probe: unit -> int option) :
 let readKernelPressureLevel () : int option =
     kernelPressureLevelOn (OperatingSystem.IsMacOS()) sysctlKernelPressureLevel
 
+/// Warning (2) or critical (4) is pressure; normal (1) is not.
+let kernelLevelIsPressure (level: int) : bool = level >= 2
+
 /// Pure: the machine is under memory pressure. Where the kernel reports a level, the
 /// kernel decides — warning (2) or critical (4) is pressure, normal (1) is not — and
 /// the GC's mark is not consulted. Without a kernel level the GC's high-load mark
 /// decides. Both readings are passed in so the decision is testable without either.
 let pressureFrom (kernelLevel: int option) (gcPressure: unit -> bool) : bool =
     match kernelLevel with
-    | Some level -> level >= 2
+    | Some level -> kernelLevelIsPressure level
     | None -> gcPressure ()
 
 /// Read the live memory-pressure signal: the kernel's level on macOS, the GC's
@@ -124,6 +127,50 @@ let pressureFrom (kernelLevel: int option) (gcPressure: unit -> bool) : bool =
 /// unit-testable without a real machine under pressure.
 let readMemoryPressure () : bool =
     pressureFrom (readKernelPressureLevel ()) readGcPressure
+
+/// One reading of the machine's memory pressure, kept with what it was read from, so a
+/// decision taken on it can say which reading that was.
+[<RequireQualifiedAccess>]
+type PressureReading =
+    /// The macOS kernel's `kern.memorystatus_vm_pressure_level`: 1 normal, 2 warning,
+    /// 4 critical.
+    | KernelLevel of level: int
+    /// No kernel level (off macOS, or the sysctl did not answer): whether the GC's
+    /// high-memory-load mark is crossed.
+    | GcHighLoad of crossed: bool
+
+module PressureReading =
+    /// Whether the reading is pressure — the rule `pressureFrom` applies.
+    let isPressure (reading: PressureReading) : bool =
+        match reading with
+        | PressureReading.KernelLevel level -> kernelLevelIsPressure level
+        | PressureReading.GcHighLoad crossed -> crossed
+
+    /// The reading, as a log names it.
+    let describe (reading: PressureReading) : string =
+        match reading with
+        | PressureReading.KernelLevel level ->
+            let name =
+                match level with
+                | 1 -> "normal"
+                | 2 -> "warning"
+                | 4 -> "critical"
+                | _ -> "unrecognised"
+
+            $"kernel memory-pressure level %d{level} (%s{name})"
+        | PressureReading.GcHighLoad true -> "GC high-memory-load mark crossed (no kernel level)"
+        | PressureReading.GcHighLoad false -> "GC high-memory-load mark not crossed (no kernel level)"
+
+/// Read the live memory pressure with what it was read from: the kernel's level on
+/// macOS, the GC's high-load mark elsewhere.
+let internal pressureReadingFrom (kernelLevel: int option) (gcPressure: unit -> bool) : PressureReading =
+    match kernelLevel with
+    | Some level -> PressureReading.KernelLevel level
+    | None -> PressureReading.GcHighLoad(gcPressure ())
+
+/// `pressureReadingFrom` over the live kernel level and GC mark.
+let readPressure () : PressureReading =
+    pressureReadingFrom (readKernelPressureLevel ()) readGcPressure
 
 /// Pure: the sentence appended to a daemon-disconnect or aborted-check message
 /// when the MACHINE is under memory pressure.
@@ -415,8 +462,8 @@ type IdleExitDeps =
         PressureFloorMin: int option
         /// Current memory-pressure signal. Re-evaluated each tick (a live
         /// current-state read, not latched): if pressure subsides the full window
-        /// is restored. Production wires `IdleExit.readMemoryPressure`.
-        Pressure: unit -> bool
+        /// is restored. Production wires `IdleExit.readPressure`; the reading is named on the exit line.
+        Pressure: unit -> PressureReading
         /// Current UTC time.
         Now: unit -> DateTime
         /// Everything currently forbidding an exit — plugin work, connected
@@ -449,7 +496,8 @@ let runTick (deps: IdleExitDeps) (latch: FireLatch) : TickOutcome =
     try
         let idleFor = deps.Now() - deps.LastActivityAt()
         let inhibitors = deps.Inhibitors()
-        let pressure = deps.Pressure()
+        let reading = deps.Pressure()
+        let pressure = PressureReading.isPressure reading
         // BaseThresholdMin is always > 0 here — createTimer is only wired once
         // resolveThreshold returned Some, so the daemon is already eligible.
         let effectiveMin =
@@ -469,8 +517,11 @@ let runTick (deps: IdleExitDeps) (latch: FireLatch) : TickOutcome =
                     else
                         ""
 
+                // The reading this decision acted on, whether or not it shortened the
+                // window: an exit taken at the full window under a "normal" reading is
+                // as much an answer as one the pressure floor brought forward.
                 deps.Log
-                    $"[idle-exit] idle for %d{effectiveMin}min — shutting down (next fshw command auto-restarts)%s{pressureNote}"
+                    $"[idle-exit] idle for %d{effectiveMin}min — shutting down (next fshw command auto-restarts)%s{pressureNote}; memory: %s{PressureReading.describe reading}"
 
                 deps.Shutdown()
                 TickOutcome.Fired
