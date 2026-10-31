@@ -351,7 +351,7 @@ For memory/idle-exit, FSEvents latency, and per-task timeout keys, see
 |-------|------|---------|-------------|
 | `command` | `string` | `"dotnet"` | Build command. |
 | `args` | `string` | `"build"` | Arguments to the build command. |
-| `buildTemplate` | `string` | — | Template for incremental builds. `{projects}` is replaced with changed project paths. |
+| `buildTemplate` | `string` | — | Template for incremental builds, run once per root project: of the non-test projects affected by the change, each one that no other affected non-test project depends on. `{project}` is replaced with that root's path. Test projects are never built by the template; when the change reaches no non-test project, the `command`/`args` build runs instead. |
 | `timeoutSec` | `number` | global `timeoutSec` | Bound on one build. Resolution: this → the top-level `timeoutSec` → the built-in 1200s default. An overrunning build reports the targets still running, what it killed and what survived. See [Memory & tuning](docs/memory-and-tuning.md#per-task-timeouts). |
 
 **`tests` fields:**

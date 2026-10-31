@@ -282,6 +282,7 @@
     <Compile Include="AnalyzerPathDiagnosisTests.fs" />
     <Compile Include="BuildDiagnosticTests.fs" />
     <Compile Include="BuildPluginTests.fs" />
+    <Compile Include="BuildTemplateDocsTests.fs" />
     <Compile Include="BuildOverrunTests.fs" />
     <Compile Include="BuildSideLogTests.fs" />
     <Compile Include="BuildProcessAdmissionTests.fs" />
