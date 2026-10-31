@@ -114,3 +114,12 @@ Pinned by `a run whose beforeRun generates output is not revoked as moved` and i
 
 Not changed, and deliberately left open: the walk still hashes gitignored build output
 under a discovery root. Whether it should honour VCS ignores is a separate decision.
+
+Decided 2026-10-31 (AUTOMATION-1393): it does not. Neither the verdict walk
+(`TreeHash.files`, which `TestEvidenceKey.snapshot` partitions) nor a closure project's
+direct walk reads `.gitignore`; only `exclude` leaves a file out. A gitignored file can be
+a compile input or something the tests read, so dropping it risks a false green, while
+keying it costs at most a re-run when it differs between checkouts. A repository that
+wants an ignored path out of the key excludes it. Pinned by `a gitignored file the config
+does not exclude is keyed, by the snapshot and by a direct closure walk`
+(TestEvidenceKeyTests).

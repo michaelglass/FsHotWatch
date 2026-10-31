@@ -889,6 +889,42 @@ let ``a closure project outside the verdict walk is keyed under the same exclude
                 File.SetUnixFileMode(hidden, rwx))
 
 [<Fact>]
+let ``a gitignored file the config does not exclude is keyed, by the snapshot and by a direct closure walk`` () =
+    // AUTOMATION-1393, declined deliberately. Only `exclude` leaves a file out of the
+    // verdict tree and the evidence key; `.gitignore` does not. A gitignored file can still
+    // be a compile input or a file the tests read (generated sources, a bundled `app.js`),
+    // so leaving it out is the direction that replays a green into a tree that never earned
+    // it, while keying it only costs a re-run when it differs between checkouts. A
+    // repository that wants an ignored path out of the key excludes it. (A directory or
+    // glob DECLARED in `verdictInputs`/`evidence.extra` does honour `.gitignore`; that is
+    // a separate rule, in `VerdictInputs.resolve`.)
+    withTwin (fun a b ->
+        for root in [ a; b ] do
+            write root ".gitignore" "generated.js\n"
+            write root "src/A/generated.js" root
+            write root "bench/C/C.fsproj" (fsproj [])
+            write root "bench/C/Lib.fs" "1"
+            write root "bench/C/generated.js" root
+
+        // The snapshot's walk (under `src`): the tree hash and the closure label move.
+        test <@ (TreeHash.compute a []).Hash <> (TreeHash.compute b []).Hash @>
+        test <@ moved (keyExcluding [] a id).Labels (keyExcluding [] b id).Labels = [ "closure" ] @>
+
+        // A closure project outside every discovery root is walked directly: the same rule.
+        for root in [ a; b ] do
+            File.WriteAllText(Path.Combine(root, "src/A/generated.js"), "same")
+
+        let withC (root: string) (r: Request) =
+            { r with
+                Closure = Path.Combine(root, "bench/C/C.fsproj") :: r.Closure }
+
+        test <@ moved (keyExcluding [] a (withC a)).Labels (keyExcluding [] b (withC b)).Labels = [ "closure" ] @>
+
+        // The positive control: excluding it is what takes it out.
+        let exclude = [ "**/generated.js" ]
+        test <@ (keyExcluding exclude a (withC a)).Value = (keyExcluding exclude b (withC b)).Value @>)
+
+[<Fact>]
 let ``an unreadable directory a dir-slash exclude names is no hole in a direct walk`` () =
     // The directory the pattern names, not one below it: asked as a bare path it reads
     // as a file, and `bench/C/.cache/` missed it.
