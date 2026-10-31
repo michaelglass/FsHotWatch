@@ -49,6 +49,7 @@
     <Compile Include="RecallTests.fs" />
     <Compile Include="MeasurementLogicTests.fs" />
     <Compile Include="MutationTests.fs" />
+    <Compile Include="TraceSelectTests.fs" />
     <Compile Include="MeasurementTests.fs" />
     <Compile Include="CoverageParityTests.fs" />
     <Compile Include="MeasurementCliTests.fs" />

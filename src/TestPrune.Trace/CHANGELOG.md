@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `TraceSelect`, trace-based selection for shadow mode (AUTOMATION-975): rules R1-R4 (no trace,
+  changed or removed symbol, changed file input, incomplete trace), the comparison with a static
+  selection, verified-failure misses and a one-line log. Trace schema migration 2 adds
+  `shadow_selections` and `shadow_misses` (`Store.RecordShadow`, `ShadowRows`, `RecordShadowMisses`,
+  `ShadowMisses`). `TraceIngest.currentInputHash` is the shared current hash of a stored input.
 - feat: `Mutation`, the mutation harness (AUTOMATION-975): a baseline traced run, then one run per
   sampled repository method with its probes throwing; every test the mutant breaks must be in the
   trace selection for a change to that method. Reports recall and names each miss.
