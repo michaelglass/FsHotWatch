@@ -3143,8 +3143,70 @@ let ``a project change that replaces the model seals the new model even when no 
     // that runs tests grades its test evidence through the seal, and with none it graded
     // the run ungated: the file no analysis covered refused nothing. Sealed, the seal names
     // that file as a refusal.
-    let seal = sealOfModelReplacingBatch "daemon-unchecked-model-change" [ "Missing.fs" ]
+    let seal =
+        sealOfModelReplacingBatch "daemon-unchecked-model-change" [ "Missing.fs" ]
+
     test <@ seal.Files.IsEmpty @>
+
+[<Fact(Timeout = 60000)>]
+let ``a run-once scan reports its progress while it runs, as a daemon-backed check does`` () =
+    // AUTOMATION-1395. `check` against a daemon prints the scan's progress line every
+    // interval; `check --run-once` printed nothing until its scan was over. The discovery
+    // here holds until a progress line has been reported (or 10s), so without the report
+    // the run is slow and the assertion below fails.
+    withTempDir "daemon-run-once-heartbeat" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Empty.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        use reported = new ManualResetEventSlim(false)
+
+        let loader =
+            CountingWorkspaceLoader(
+                [ minimalLoadedProject projectPath ],
+                fun _ -> reported.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+            )
+
+        let checker = sharedChecker.Value
+
+        let fcsOptions =
+            let scriptOptions, _ =
+                checker.GetProjectOptionsFromScript(
+                    Path.Combine(srcDir, "Probe.fsx"),
+                    FSharp.Compiler.Text.SourceText.ofString ""
+                )
+                |> Async.RunSynchronously
+
+            { scriptOptions with
+                ProjectFileName = projectPath
+                SourceFiles = [||] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                tmpDir
+                { oneShotDaemonOptions with
+                    RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun projects -> projects |> List.map (fun _ -> fcsOptions))
+                (fun _ _ _ _ _ -> failwith "a run-once daemon watches nothing")
+
+        let emitted = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+        let emit line =
+            emitted.Enqueue line
+            reported.Set()
+
+        FsHotWatch.Cli.ScanHeartbeat.runOnceReporting (TimeSpan.FromMilliseconds 20.0) emit daemon
+        |> ignore
+
+        test <@ reported.IsSet @>
+
+        test
+            <@
+                emitted
+                |> Seq.forall (fun line -> line.StartsWith("scanning:", StringComparison.Ordinal))
+            @>)
 
 /// Two independent projects, `Changed` and `Untouched`, under an analysis-only TestPrune
 /// daemon (no test configs, so the plugin mints analysis evidence). `Start` takes the

@@ -227,12 +227,16 @@ let failIfNoProjects (repoRoot: string) (excludePatterns: string list) : int opt
 
         Some 2
 
+/// Run `run` under the run-once progress display: a spinner on a terminal, nothing else.
+let withRunOnceDisplay (run: unit -> 'a) : 'a =
+    if UI.isInteractive then
+        UI.withSpinnerQuiet "Running checks" run
+    else
+        run ()
+
 /// Run a daemon's RunOnce with live progress display to stderr.
 let runOnceWithProgress (daemon: FsHotWatch.Daemon.Daemon) : Map<string, PluginStatus> =
-    if UI.isInteractive then
-        UI.withSpinnerQuiet "Running checks" (fun () -> daemon.RunOnce() |> Async.RunSynchronously)
-    else
-        daemon.RunOnce() |> Async.RunSynchronously
+    withRunOnceDisplay (fun () -> daemon.RunOnce() |> Async.RunSynchronously)
 
 /// Build a parsed-status map from the daemon's host, for use by the progress renderer.
 let snapshotHost (host: FsHotWatch.PluginHost.PluginHost) (statuses: Map<string, PluginStatus>) =
