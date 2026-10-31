@@ -132,6 +132,7 @@
     <Compile Include="HostLifecycleTests.fs" />
     <Compile Include="RepositoryHostTests.fs" />
     <Compile Include="RepositoryHostModeTests.fs" />
+    <Compile Include="HeadroomTests.fs" />
     <Compile Include="RepositoryHostIsolationTests.fs" />
     <Compile Include="RepositoryHostSharingTests.fs" />
     <Compile Include="RepositoryHostParityTests.fs" />
@@ -307,6 +308,8 @@
     <Compile Include="CiParityTests.fs" />
     <Compile Include="CiLinuxTests.fs" />
     <Compile Include="ToolchainPinTests.fs" />
+    <Compile Include="WarnOnAlignmentTests.fs" />
+    <Compile Include="CommitMessageGuardTests.fs" />
     <Compile Include="CoverageFloorCompletenessTests.fs" />
     <Compile Include="BenchmarkPlacementTests.fs" />
     <Compile Include="AnalyzerIdentityTests.fs" />

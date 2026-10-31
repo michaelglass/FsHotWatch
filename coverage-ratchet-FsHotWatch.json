@@ -420,6 +420,20 @@
         "platform": "linux"
       }
     ],
+    "Headroom.fs": [
+      {
+        "line": 96,
+        "branch": 80,
+        "reason": "measured 2026-10-31 by mise run test-direct on macOS: line 96.9% (93/96), branch 80% (36/45). Uncovered: the unreadable-start-time fallback of liveProcessStart, a failed kern.memorystatus_level sysctl, and readAvailable's live wiring (each platform branch is covered through availableOn).",
+        "platform": "macos"
+      },
+      {
+        "line": 91,
+        "branch": 77,
+        "reason": "inspected 2026-10-31 from GitHub CI run 41223377496 (Linux coverage-report for b9930721): line 91, branch 77. Uncovered on Linux: the macOS-only kern.memorystatus_level sysctl (unreachable there), the unreadable-start-time fallback of liveProcessStart, and exception-filter branch edges.",
+        "platform": "linux"
+      }
+    ],
     "Explain.fs": [
       {
         "line": 100,

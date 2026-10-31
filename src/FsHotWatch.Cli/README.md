@@ -93,6 +93,7 @@ names are `sql` and `sql-hydra`; any other name or shape fails configuration.
 | `format [--run-once]` | Run the Fantomas formatter on all files. |
 | `rerun <plugin>` | Force a single plugin to re-run, clearing its cached state. |
 | `invalidate` | Clear every cached task result for this workspace without stopping the warm daemon. Repository-side clean commands should call this after removing `bin/` or `obj/`. |
+| `headroom` | Report available and physical memory, the memory-pressure reading, and each `.fshw/daemon.pid` in this worktree and under `.workspaces/*`: live, stale (no process, or its pid recycled to a process started after the pidfile) or unreadable. Report only: it stops nothing, deletes nothing (it runs before the stale-pidfile cleanup other verbs do) and contacts no daemon. Exits `0`. |
 | `init` | Write a starter `.fshw.json` to the repo root. |
 | `config check` | Validate `.fshw.json` without starting the daemon. Exits `0` on valid config, `2` on parse/validation error. |
 | `coverage refresh-baseline` | Delete the coverage baseline + partial JSON so the next full run rebuilds it from scratch. |

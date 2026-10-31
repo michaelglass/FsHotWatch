@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `fshw headroom` reports available and physical memory, the memory-pressure reading, and
+  each `.fshw/daemon.pid` in the worktree and under `.workspaces/*` as live, stale (pid gone or
+  recycled) or unreadable (AUTOMATION-1072). Report only: it stops nothing, deletes nothing and
+  contacts no daemon, and it runs before the stale-pidfile cleanup other verbs do, so a stale
+  pidfile it reports is still there afterwards.
+
 - feat: `tests.traces.select` (`"off"` or `"shadow"`), refused when unknown or when `record` is off
   (AUTOMATION-975).
 

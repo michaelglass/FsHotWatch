@@ -9187,9 +9187,6 @@ let internal createWithEvidenceAndQueries
                 updateFreshness kept
         | _ -> ()
 
-    let hasTestConfigs =
-        testConfigs |> Option.map (List.isEmpty >> not) |> Option.defaultValue false
-
     // Seed the in-memory hot view from the durable queue so a restart with a non-empty
     // queue re-flags those symbols. Without this, a restart diffs current symbols against
     // the already-advanced analysis snapshot → "nothing changed" → zero tests run → false

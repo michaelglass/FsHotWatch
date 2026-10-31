@@ -127,6 +127,7 @@ This matters more than the feature list, so it is stated up front:
 | `fshw test-rerun` | Rerun tests for an xUnit v3 `--filter-class` / `--filter-trait` slice. Add `--project <name>` (repeatable) to aim it at particular test projects — without it the filter is fanned out across every configured project, so a class living in one of them reports zero matches in all the others. |
 | `fshw rerun <plugin>` | Force one plugin to re-run, clearing its cached state. |
 | `fshw invalidate` | Clear every cached task result for this workspace without stopping its warm daemon. Intended for repository-side clean commands that remove `bin/` or `obj/`. |
+| `fshw headroom` | Report memory headroom and every fshw daemon recorded here and under `.workspaces/`: live, stale (its pid is gone or was recycled) or unreadable. Report only: stops nothing, deletes nothing, contacts no daemon, always exits 0. |
 | `fshw init` | Generate a starter `.fshw.json`. |
 | `fshw config check` | Validate `.fshw.json` without starting the daemon. |
 

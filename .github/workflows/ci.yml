@@ -116,6 +116,24 @@ jobs:
       - name: Integration tests
         run: dotnet test --project tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj --no-build
 
+  # This is a public repository. Refuse commit messages that carry private references
+  # (agent-session links, private hostnames, tracker URLs) in the commits this push or
+  # pull request adds. jj runs no hooks, so this and the `check-commit-messages` task
+  # `mise run ci` depends on are the only places such a message can be stopped. A push
+  # cannot be un-published by a red here; the red says to reword before the next one.
+  # ci-linux runs this job on a tarball with no history, where the script says SKIPPED.
+  commit-messages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PUSH_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Commit messages carry no private references
+        run: bash scripts/check-commit-messages.sh --git-base "$PUSH_BASE"
+
   lint-project:
     uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-lint-project.yml@main
     with:
