@@ -24,7 +24,7 @@ run = "dotnet build src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj"
 depends = ["restore", "build-analyzers"]
 
 [tasks.build-analyzers]
-description = "Materialize EVERY analyzer path in .fshw.json analyzers.paths (house rules, the FSharpLint shim, TestPrune.Analyzers)"
+description = "Materialize EVERY analyzer path in .fshw.json analyzers.paths (house rules, the wall-clock rule, the FSharpLint shim, TestPrune.Analyzers)"
 # One entry per `.fshw.json` `analyzers.paths` element, in the same order. The daemon
 # loads analyzers at startup and REFUSES to start when a configured path yields zero
 # (DaemonConfig.analyzerPathFailures) — an unloaded analyzer and a clean one are
@@ -39,6 +39,7 @@ description = "Materialize EVERY analyzer path in .fshw.json analyzers.paths (ho
 run = [
   "dotnet build tools/fsharplint-shim/fsharplint-shim.csproj",
   "dotnet build analyzers/FsHotWatch.Rules/FsHotWatch.Rules.fsproj",
+  "dotnet build analyzers/FsHotWatch.WallClock/FsHotWatch.WallClock.fsproj",
   "dotnet build src/TestPrune.Analyzers/TestPrune.Analyzers.fsproj",
 ]
 depends = ["restore"]

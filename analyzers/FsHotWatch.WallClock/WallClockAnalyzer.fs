@@ -4,7 +4,7 @@
 /// three sweeps (docs/wall-clock-bounds.md) each fixed some, and each was followed by more:
 /// this rule is what stops the next one being written.
 ///
-/// WHAT IS FLAGGED, in test sources only (`ConventionAnalyzers.Detect.isTestSource`):
+/// WHAT IS FLAGGED, in test sources only (`TestSource.isTestSource`):
 ///   1. A sleep: a call to `Thread.Sleep`, `Task.Delay` or `Async.Sleep`, at any
 ///      qualification. Whatever it waits for, it waits by guessing how long that takes.
 ///      Not flagged: a sleep of `Timeout.Infinite`, which is a stand-in for hung work that
@@ -287,7 +287,7 @@ module Detect =
 
     /// Every FSHW-WALL-001 finding in `input`, or [] when it is not a test source.
     let findings (input: ParsedInput) : Finding list =
-        if not (ConventionAnalyzers.Detect.isTestSource input.FileName) then
+        if not (TestSource.isTestSource input.FileName) then
             []
         else
             let c = Collector()

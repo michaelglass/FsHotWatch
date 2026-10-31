@@ -239,13 +239,35 @@ let withEveryPoolThreadBusy (body: unit -> 'T) : 'T =
         gate.Set()
         Tasks.Task.WaitAll(held |> Array.ofList, TimeSpan.FromSeconds 10.0) |> ignore
 
+/// A wait, inside a test capped at `SyncHangBackstopMs`, for in-process work or one
+/// trivial child (`echo`, `false`, `sh -c true`) to reach the state it awaits. Neither
+/// has a product bound to sit above. Alone they finish in under a second; a loaded full
+/// run stalled them past 5 s and 10 s waits. This only ends work that never finishes.
+[<Literal>]
+let HangWaitMs = 30_000
+
+/// `HangWaitMs` for the `Wait(TimeSpan)` overloads. FSHW-WALL-001 flags an asserted wait
+/// whose budget is a literal; this is the named form a hang-only wait takes instead.
+let HangWait = TimeSpan.FromMilliseconds(float HangWaitMs)
+
+/// `waitUntilOr` with the floor under its budget named: it waits at least `floorMs`,
+/// whatever `timeoutMs` says.
+let waitUntilOrAtLeast (floorMs: int) (what: string) (condition: unit -> bool) (timeoutMs: int) =
+    let budgetMs = max floorMs timeoutMs
+
+    if not (waitUntilTrue condition budgetMs) then
+        raise (TimeoutException $"%s{what} did not happen within %d{budgetMs} ms")
+
 /// Poll until `condition` holds, and throw a `TimeoutException` naming `what` if it has
 /// not within `timeoutMs`. An expiry must reach the caller: a test that waits and then
 /// asserts something NEGATIVE is satisfied identically by "the work ran" and "the wait
 /// gave up before it ran", so a wait that returns either way makes that test vacuous.
+///
+/// The budget is a hang cap and never the claim, so it is never less than `HangWaitMs`:
+/// 105 call sites passed 5-20 s, and a box at load 140-190 ran them out on work that was
+/// only slow (AUTOMATION-1364). A green run returns the moment the condition holds.
 let waitUntilOr (what: string) (condition: unit -> bool) (timeoutMs: int) =
-    if not (waitUntilTrue condition timeoutMs) then
-        raise (TimeoutException $"%s{what} did not happen within %d{timeoutMs} ms")
+    waitUntilOrAtLeast HangWaitMs what condition timeoutMs
 
 /// Poll until `condition` holds (50ms poll interval); throws `TimeoutException` on expiry.
 let waitUntil (condition: unit -> bool) (timeoutMs: int) =
@@ -1139,17 +1161,6 @@ let SyncHangBackstopMs = 60_000
 /// times the slowest solo reading.
 [<Literal>]
 let PropertyTestCapMs = 120_000
-
-/// A wait, inside a test capped at `SyncHangBackstopMs`, for in-process work or one
-/// trivial child (`echo`, `false`, `sh -c true`) to reach the state it awaits. Neither
-/// has a product bound to sit above. Alone they finish in under a second; a loaded full
-/// run stalled them past 5 s and 10 s waits. This only ends work that never finishes.
-[<Literal>]
-let HangWaitMs = 30_000
-
-/// `HangWaitMs` for the `Wait(TimeSpan)` overloads. FSHW-WALL-001 flags an asserted wait
-/// whose budget is a literal; this is the named form a hang-only wait takes instead.
-let HangWait = TimeSpan.FromMilliseconds(float HangWaitMs)
 
 /// The xUnit cap for a test whose daemon discovers a real `.fsproj`. Discovery is an
 /// in-process MSBuild evaluation with no product bound, and a process runs one

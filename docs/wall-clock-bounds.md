@@ -149,9 +149,15 @@ One line per kind. Each meets rule 2 as written above.
 ## Enforced: FSHW-WALL-001 (AUTOMATION-1364)
 
 The tables above were swept three times, and each sweep was followed by new flakes. The
-rule `FSHW-WALL-001` (`analyzers/FsHotWatch.Rules/WallClockAnalyzer.fs`) now stops the
+rule `FSHW-WALL-001` (`analyzers/FsHotWatch.WallClock/WallClockAnalyzer.fs`) now stops the
 class at review time. `check` and `confirm --run-once` load it with the other house rules,
-so `mise run ci` and GitHub CI fail on a finding. In test sources it flags:
+so `mise run ci` and GitHub CI fail on a finding. It is its own assembly, apart from
+`analyzers/FsHotWatch.Rules`, so `.fshw.json` scopes it on its own: it covers every test
+source in the repository, TestPrune's (`tests/TestPrune.Tests`, `tests/TestPrune.Trace.Tests`)
+included, while the other house rules stay scoped to FsHotWatch's code. Its four TestPrune
+sites were converted when it took them in: three short literal waits became
+`TestHelpers.HangWait` with the outcome asserted, and one stopwatch upper bound was dropped
+for the exception's own claim. In test sources it flags:
 
 1. **a sleep**: `Thread.Sleep`, `Task.Delay` or `Async.Sleep`, except `Timeout.Infinite`
    (hung work that only cancellation ends);

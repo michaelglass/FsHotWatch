@@ -251,9 +251,10 @@ module ``drainOutputWithin`` =
     // "captured-so-far" (stdout: still running) and the completed (stderr: empty) arms of
     // the give-up branch.
     //
-    // The drain is run off-thread and given far longer (10s) than its own 500ms bound: a
-    // correctly-bounded drain returns almost immediately, so `.Wait(10s)` is true. An
-    // unbounded drain blocks on the 30s grandchild sleep and never returns inside 10s.
+    // The drain is run off-thread and waited for up to the hang cap. The claim is its OUTCOME,
+    // not its duration: a bounded drain gives up at its own 500ms bound and says so
+    // (`Completed = false`); an unbounded one blocks until the 30s grandchild sleep ends and
+    // then reports a complete read, so it fails here whichever side of the cap it lands on.
     [<Fact>]
     let ``bounds a drain wedged by a grandchild holding the stdout pipe open`` () =
         let psi = ProcessStartInfo("/bin/sh")
@@ -276,11 +277,11 @@ module ``drainOutputWithin`` =
             Task.Run(fun () ->
                 drainOutputWithin 500 "/bin/sh -c 'sleep 30 2>/dev/null & echo done'" stdoutTask stderrTask)
 
-        let finishedWithinTestBound = drainTask.Wait(10_000)
+        test <@ drainTask.Wait(TestHelpers.HangWait) @>
 
         // The bounded drain gave up on its 500ms bound rather than waiting out the 30s
-        // grandchild sleep; the unbounded baseline never gets here inside 10s.
-        test <@ finishedWithinTestBound @>
+        // grandchild sleep.
+        test <@ not drainTask.Result.Completed @>
 
 module ``resolveTestRunTimeoutMs`` =
 

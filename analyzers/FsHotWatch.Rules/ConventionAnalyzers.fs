@@ -256,18 +256,9 @@ module Detect =
     [<Literal>]
     let OptOutMarker = "FSHW-WAIT-001 ok"
 
-    /// Which files this rule polices. Deliberately name-based rather than
-    /// project-based: an analyzer sees one file at a time and its `FileName` is
-    /// the only thing that survives into the AST, and everything the rule names
-    /// as the fix (`probeLoop`, `waitUntilTrue`, `withWatchedDir`) lives in the
-    /// test assemblies.
-    let isTestSource (fileName: string) : bool =
-        let normalized = fileName.Replace('\\', '/')
-        let name = normalized.Split('/') |> Array.tryLast |> Option.defaultValue ""
-
-        name.EndsWith("Tests.fs", System.StringComparison.Ordinal)
-        || name.StartsWith("TestHelpers", System.StringComparison.Ordinal)
-        || normalized.Contains("/tests/")
+    /// Which files this rule polices: `TestSource.isTestSource`, shared with
+    /// FSHW-WALL-001 (analyzers/FsHotWatch.WallClock).
+    let isTestSource (fileName: string) : bool = TestSource.isTestSource fileName
 
     let private isThreadSleepPath (ids: Ident list) =
         match List.rev ids |> List.map (fun i -> i.idText) with

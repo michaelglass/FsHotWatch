@@ -38,8 +38,8 @@ module ``bounded flush`` =
 
     // A persist that never completes keeps the agent from ever reaching the flush message, so
     // the reply never comes: before the bound, this flush waited forever with no diagnostic.
-    // It runs off-thread and the test waits far longer (10s) than the flush's own 50ms bound,
-    // so a bounded flush finishes inside that window and an unbounded one does not.
+    // It runs off-thread and the test waits up to its hang cap for it: a bounded flush ends at
+    // its own 50ms bound as FlushTimedOut, and an unbounded one never ends.
     [<Fact>]
     let ``flush on a wedged agent ends within its bound as FlushTimedOut`` () =
         let release = TaskCompletionSource()
@@ -49,7 +49,7 @@ module ``bounded flush`` =
         try
             let flushTask = Task.Run(fun () -> sink.FlushWithin 50)
 
-            test <@ flushTask.Wait(10_000) @>
+            test <@ flushTask.Wait(TestHelpers.HangWait) @>
             test <@ flushTask.Result = FlushTimedOut 50 @>
         finally
             release.SetResult()

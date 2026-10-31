@@ -93,3 +93,38 @@ let ``daemon-backed task list matches the tasks whose run invokes the CLI`` () =
         |> List.filter (fun name -> name <> "ci") // `ci` builds the whole solution via `compile`
 
     test <@ Set.ofList cliTasks = Set.ofList daemonBackedTasks @>
+
+/// The configured analyzer path whose project compiles `sourceFile`, a file name
+/// unique to one rule. Fails when no configured project, or more than one, does.
+let private pathCompiling root (sourceFile: string) =
+    let compiles (path: string) =
+        let project = analyzerProjectFor root path
+
+        System.IO.File.ReadAllText(System.IO.Path.Combine(root, project)).Contains($"Include=\"%s{sourceFile}\"")
+
+    match configuredAnalyzerPaths root |> List.filter compiles with
+    | [ path ] -> path
+    | paths -> failwith $"expected one configured analyzer project to compile %s{sourceFile}, found %A{paths}"
+
+[<Fact>]
+let ``the analyzer path that carries FSHW-WALL-001 runs on every test source, TestPrune's included`` () =
+    // AUTOMATION-1364: the rule bans wall-clock asserts in FsHotWatch AND TestPrune tests.
+    // `analyzers.scope` decides which files a path's analyzers see; a scope that leaves
+    // TestPrune's tests out leaves the rule unenforced there while every control passes.
+    let root = repoRoot ()
+    let config = FsHotWatch.Cli.DaemonConfig.loadConfig root
+    let analyzers = config.Analyzers |> Option.get
+    let path = pathCompiling root "WallClockAnalyzer.fs"
+
+    let runsOn =
+        FsHotWatch.Analyzers.AnalyzersPlugin.runsOn (Some root) analyzers.Scopes
+
+    let testSources =
+        [ "tests/TestPrune.Tests/AuditSinkTests.fs"
+          "tests/TestPrune.Trace.Tests/CensusTests.fs"
+          "tests/FsHotWatch.Tests/CliTests.fs"
+          "tests/FsHotWatch.IntegrationTests/IntegrationTests.fs" ]
+
+    for source in testSources do
+        let file = System.IO.Path.Combine(root, source)
+        test <@ runsOn path file @>
