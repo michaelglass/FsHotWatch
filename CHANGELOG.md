@@ -1096,7 +1096,7 @@ trailing constraint slot is filled — the place the compiler puts the differenc
 names alone do not carry it — is reported normally. A genuine cross-assembly conflict keeps
 reddening, pinned by a negative-control test built from the real rendered form.
 
-See `docs/adr-036-a-type-incompatible-with-itself-is-our-fault-not-yours.md`.
+See `docs/adr-063-a-type-incompatible-with-itself-is-our-fault-not-yours.md`.
 
 ### core, cli: a daemon squeezed out by memory pressure says so, instead of reporting a transport fault
 
