@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.133 - 2026-10-31
+
 - fix!: the shadow lookup verdict (ADR-059 §7) no longer disagrees with a correct green in the
   three ways intelligence's land workspaces showed (AUTOMATION-1428). Each was bookkeeping in
   the shadow; none was a false green in today's verdict.

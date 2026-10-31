@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.52 - 2026-10-31
+
 - fix: a build that overran its `timeoutSec` reports the AWAKE time its budget counts, not the
   wall time (AUTOMATION-1391). A build stopped across a host suspension read "overran its 1200s
   budget after 1680.9s" for a run that was 1201s awake. When the host slept while it ran, the

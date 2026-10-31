@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.100 - 2026-10-31
+
 - fix: a file compiled into several projects of one tier is checked under the same project in
   every daemon (AUTOMATION-1432). The scan checks such a file once, under the first project of
   its tier, and `ProjectGraph.GetParallelTiers` listed a tier in hash order, which .NET seeds

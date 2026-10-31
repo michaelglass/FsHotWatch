@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.100 - 2026-10-31
+
 - feat: trace-based selection in shadow (`tests.traces.select: "shadow"`, AUTOMATION-975). At each
   launch the plugin computes what the recorded traces would select beside the static selection,
   logs one `trace-shadow:` line per traced project, and at completion stores the comparison and
