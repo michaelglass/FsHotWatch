@@ -136,7 +136,8 @@
       }
     ],
     "traces": {
-      "record": "full-runs",
+      "record": "every-run",
+      "select": "shadow",
       "fingerprintInputs": [
         "global.json",
         "Directory.Packages.props"
