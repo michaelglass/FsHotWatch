@@ -99,7 +99,10 @@ let ``699: a verdict whose own suites report a failure is never looked up green`
                         Passed = 1805
                         Failed = 1
                         Skipped = 0 }
-                    Passed = false } ]
+                    Passed = false
+                    FailedTests = None
+                    PassedTests = Set.empty } ]
+              RunOrder = []
               RecordedAt = t0
               OutcomeKeys = Map.empty }
 
@@ -151,7 +154,10 @@ let ``1242: a configured test project the model never discovered is still requir
                         Passed = 3
                         Failed = 0
                         Skipped = 0 }
-                    Passed = true } ]
+                    Passed = true
+                    FailedTests = None
+                    PassedTests = Set.empty } ]
+              RunOrder = []
               RecordedAt = t0
               OutcomeKeys = Map.empty }
 

@@ -705,3 +705,48 @@ after the options are registered, is the follow-up if that cost shows up.
 - each can be measured on intelligence with the other off.
 
 Both file into the same store and share its GC.
+
+## 19. Amendment (AUTOMATION-1428): three shadow bookkeeping defects, none a false green
+
+Intelligence's land workspaces logged 15 `stricter` lines on the server and 3 on the laptop
+between 2026-10-30 and 2026-10-31, on fshw 0.14.0-alpha.130 to 132. Each was traced to the
+store's records and the daemon log. Today's verdict was right every time. The shadow was
+wrong, in three ways.
+
+**A later run's pass did not supersede an earlier fail in the same check (6 lines).** A check
+ran a project twice: run 1 failed a test, the outstanding-failure ledger re-selected it, and
+run 2 passed it. Today graded run 2 green. The shadow filed every suite of every run at the
+publication's one instant. `lookup` breaks a `recordedAt` tie toward `fail`, so the lookup was
+red. In one laptop case, the fail and the pass were under different keys (an `impact` fail,
+then a `full` pass), so no tie-break could have helped. The fix: a failed suite is not filed
+when every failed test is **named** in its report and each one passed in a run the check
+attributed later (`supersededFailures`). The order comes from `TestRunReport.CheckRuns`, which
+the check keeps in completion order (`runOrder`). This mirrors §4's ledger #10: a failure
+stands until a passing record exists. It does not loosen the lookup. A failure nobody can name
+(a raw throw, a crashed host), a run of unknown position, or a later run that did not run the
+test leaves the fail filed.
+
+**The baseline was pinned to the producer (2 lines and 2 reads).** `test-baseline` keyed on
+the fshw binary. The land workspace runs the binary each landing branch pins, which moved
+between alpha.124 and alpha.132 in these two days. Each new binary started with no baseline,
+while today's watermark (`full-suite-baseline.json`) does not depend on the binary. The tests
+a baseline vouches for are built from the tree, and the binary does not change them. So the
+key is now the project alone. The `impact` record beside it stays pinned to the tree and the
+producer.
+
+**A full-suite run whose publication did not conclude filed no baseline (6 lines).** On
+2026-10-30 at 22:49, run 248f25ac earned today's watermark. Its publication was `incomplete`,
+and the shadow files nothing for an unconcluded publication, so every check the next day had
+nothing to be relative to. A baseline names no tree, so such a publication now files the
+baselines of the full-suite run it was graded from, and still nothing about its tree.
+
+**Not fixed, and why.** The four alpha.130 lines on 2026-10-30 rest on a watermark earned at
+12:12 that day by an alpha.126 daemon, which predates shadow mode. That evidence was never in
+the store, and no keying can find it. The class ends once every binary on a box files
+records, and the fix above lets a baseline filed by one binary serve the next. One more class
+is predicted, though not yet seen. Today's watermark accepts a red full suite ("accounted
+for") and carries its reds as outstanding failures. The store requires a passing full record.
+A project that was red in the watermark run, and later passed only in impact runs, is
+therefore missing in the lookup while today is green. If it appears, it needs its own ticket.
+The `fshw verdict` read also keeps no K_P keys (`OutcomeKeys` comes from the daemon, and a
+read has none), so a check that a K_P record alone made green can read as missing.

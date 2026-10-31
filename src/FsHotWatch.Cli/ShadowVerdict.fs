@@ -62,6 +62,11 @@ type Suite =
         Counts: OutcomeStore.Counts
         /// The suite's own outcome: no failed test, or a starved re-run that passed alone.
         Passed: bool
+        /// The names of the failed tests when the report names every failure it counts;
+        /// `None` when it does not (a raw throw, a crashed host, an unreadable report).
+        FailedTests: string list option
+        /// The names of the tests the report lists as passed.
+        PassedTests: Set<string>
     }
 
 /// What one publication says, reduced to what the shadow needs.
@@ -89,6 +94,9 @@ type Observation =
         /// The graded run's scope was impact-filtered.
         ImpactFiltered: bool
         Suites: Suite list
+        /// The runs the suites came from, OLDEST FIRST, as the check attributed them
+        /// (`runOrder`). Empty when nobody said, and then no run is later than another.
+        RunOrder: string list
         RecordedAt: DateTimeOffset
         /// Each project's full-run outcome key over this tree, as the daemon computed it
         /// (ADR-059 step 7b): a record the test runner filed under it satisfies the project.
@@ -106,10 +114,14 @@ let diagnosticsKey (o: Observation) =
 let testKey (o: Observation) (project: string) (scope: string) =
     ActionKey.create "test" [ "tree", o.Tree; "producer", o.Producer; "project", project; "scope", scope ]
 
-/// "This project once passed in full under this producer": ADR-021's baseline, read from
-/// the store instead of `full-suite-baseline.json`.
-let baselineKey (producer: string) (project: string) =
-    ActionKey.create "test-baseline" [ "producer", producer; "project", project ]
+/// "This project once passed in full": ADR-021's baseline, read from the store instead of
+/// `full-suite-baseline.json`. It names no producer and no tree, as that watermark does not:
+/// it vouches for the tests an impact run skips, which the binary that ran them does not
+/// change. A baseline pinned to the producer was void after every fshw upgrade while today's
+/// watermark still held, so each first check on a new binary was missing every project
+/// (AUTOMATION-1428). The impact record beside it stays pinned to the tree and producer.
+let baselineKey (project: string) =
+    ActionKey.create "test-baseline" [ "project", project ]
 
 [<Literal>]
 let FullScope = "full"
@@ -143,50 +155,86 @@ let requirements (o: Observation) (testProjects: string list) : LookupVerdict.Re
               if o.Command = "confirm" then
                   [ full ] @ byKp
               else
-                  [ full; [ testKey o project ImpactScope; baselineKey o.Producer project ] ]
-                  @ byKp } ]
+                  [ full; [ testKey o project ImpactScope; baselineKey project ] ] @ byKp } ]
 
-/// The outcome records a publication files. None for one that did not conclude.
+/// The failed suites of `o` that a LATER run of the same check ran again and passed.
+///
+/// A check runs a project more than once: a run fails a test, the outstanding-failure
+/// ledger re-selects it, and the next run passes it. Today's verdict is then green, and
+/// rightly so. The shadow used to file both suites at the publication's one instant, where
+/// a tie goes to `fail`, so the lookup stayed red on a failure the check had already run
+/// again green (AUTOMATION-1428). A failure is superseded only when every failed test is
+/// NAMED and each passed in a run that `RunOrder` places after it. A failure nobody can
+/// name, a run of unknown position, or a later run that skipped the test leaves it standing.
+let supersededFailures (o: Observation) : Suite list =
+    let position (s: Suite) =
+        s.RunId |> Option.bind (fun id -> List.tryFindIndex ((=) id) o.RunOrder)
+
+    o.Suites
+    |> List.filter (fun s ->
+        not s.Passed
+        && match s.FailedTests, position s with
+           | Some(_ :: _ as failed), Some at ->
+               let passedLater =
+                   o.Suites
+                   |> List.filter (fun later ->
+                       later.Project = s.Project && position later |> Option.exists (fun p -> p > at))
+                   |> List.map _.PassedTests
+                   |> Set.unionMany
+
+               failed |> List.forall passedLater.Contains
+           | _ -> false)
+
+/// The outcome records a publication files.
 ///
 /// A suite of the graded run under a full-suite scope is a `full` record; every other
 /// suite is `impact`. A full pass also records the project's baseline. Under an
 /// impact-filtered scope, a configured project with no suite at all is recorded as an
 /// `impact` pass of zero tests: today's selector chose nothing in it, and the shadow takes
-/// today's selection as given.
+/// today's selection as given. A failed suite a later run of the check passed again is not
+/// filed (`supersededFailures`).
+///
+/// A publication that did not conclude files nothing about its tree: it is a statement
+/// that nothing was established there. It still files the baselines of a full-suite run it
+/// was graded from. A baseline names no tree, and today's watermark is earned by that run
+/// whatever the publication concluded; filing none left every later check missing
+/// (AUTOMATION-1428, the run of 2026-10-30 22:49 on intelligence's land workspace).
 let recordsOf (o: Observation) (testProjects: string list) : OutcomeStore.Record list =
-    if not o.Concluded then
-        []
-    else
-        let record (key: ActionKey.ActionKey) subject outcome counts runId : OutcomeStore.Record =
-            { Key = key
-              Subject = subject
-              Outcome = outcome
-              Counts = counts
-              DurationMs = None
-              Producer =
-                { Binary = o.Producer
-                  Worktree = o.Worktree
-                  RunId = runId }
-              RecordedAt = o.RecordedAt }
+    let record (key: ActionKey.ActionKey) subject outcome counts runId : OutcomeStore.Record =
+        { Key = key
+          Subject = subject
+          Outcome = outcome
+          Counts = counts
+          DurationMs = None
+          Producer =
+            { Binary = o.Producer
+              Worktree = o.Worktree
+              RunId = runId }
+          RecordedAt = o.RecordedAt }
 
-        let outcomeOf passed =
-            if passed then
-                OutcomeStore.Outcome.Pass
-            else
-                OutcomeStore.Outcome.Fail
+    let outcomeOf passed =
+        if passed then
+            OutcomeStore.Outcome.Pass
+        else
+            OutcomeStore.Outcome.Fail
+
+    let isFull (s: Suite) = o.FullSuite && s.RunId = o.GradedRunId
+
+    let baselines =
+        [ for s in o.Suites do
+              if isFull s && s.Passed then
+                  record (baselineKey s.Project) s.Project OutcomeStore.Outcome.Pass None s.RunId ]
+
+    if not o.Concluded then
+        baselines
+    else
+        let superseded = supersededFailures o
 
         let suites =
             [ for s in o.Suites do
-                  let scope =
-                      if o.FullSuite && s.RunId = o.GradedRunId then
-                          FullScope
-                      else
-                          ImpactScope
-
-                  record (testKey o s.Project scope) s.Project (outcomeOf s.Passed) (Some s.Counts) s.RunId
-
-                  if scope = FullScope && s.Passed then
-                      record (baselineKey o.Producer s.Project) s.Project OutcomeStore.Outcome.Pass None s.RunId ]
+                  if not (List.contains s superseded) then
+                      let scope = if isFull s then FullScope else ImpactScope
+                      record (testKey o s.Project scope) s.Project (outcomeOf s.Passed) (Some s.Counts) s.RunId ]
 
         let ran = o.Suites |> List.map _.Project |> Set.ofList
 
@@ -213,6 +261,8 @@ let recordsOf (o: Observation) (testProjects: string list) : OutcomeStore.Record
               | None -> ()
           record (diagnosticsKey o) "diagnostics" (outcomeOf (not o.DiagnosticsFailed)) None None ]
         @ suites
+        @ baselines
+        @ unselected
         @ unselected
 
 let classOf (answer: LookupVerdict.Answer) : Class =
@@ -365,6 +415,20 @@ let observe (repoRoot: string) (o: Observation) : unit =
         with ex ->
             Logging.warn "shadow" $"lookup verdict not computed: %s{ex.GetType().Name}: %s{ex.Message}"
 
+
+/// The runs of a check, OLDEST FIRST, as `Observation.RunOrder` wants them: the check's own
+/// runs (`TestRunReport.CheckRuns`, which `TestRunEvidence.attribute` keeps in the order they
+/// completed), after the graded run when the check did not produce it. A graded run the check
+/// did not produce is one it reused from before it began (`Verdict.runSuites`), so it
+/// predates every run the check did produce.
+let runOrder (graded: Guid option) (checkRuns: Guid list) : string list =
+    let earlier =
+        match graded with
+        | Some g when not (List.contains g checkRuns) -> [ g ]
+        | _ -> []
+
+    earlier @ checkRuns |> List.map (fun g -> g.ToString "N")
+
 /// The observation a published verdict makes.
 let ofVerdict (repoRoot: string) (v: Verdict.Verdict) : Observation =
     let today =
@@ -411,8 +475,23 @@ let ofVerdict (repoRoot: string) (v: Verdict.Verdict) : Observation =
          | IpcParsing.ImpactFiltered _ -> true
          | _ -> false)
       Suites =
+        // Test names are read only for a project some suite of this verdict failed in:
+        // they decide nothing else (`supersededFailures`), and a report can be large.
+        let failedSomewhere =
+            v.Runs
+            |> List.collect _.Suites
+            |> List.filter (fun s -> s.Failed > 0)
+            |> List.map _.Project
+            |> Set.ofList
+
         [ for run in v.Runs do
               for s in run.Suites do
+                  let names =
+                      if failedSomewhere.Contains s.Project then
+                          Ctrf.tryReadTestNames (Path.Combine(repoRoot, s.Ctrf))
+                      else
+                          None
+
                   { RunId = runToken run.RunId
                     Project = s.Project
                     Counts =
@@ -420,7 +499,13 @@ let ofVerdict (repoRoot: string) (v: Verdict.Verdict) : Observation =
                         Passed = s.Passed
                         Failed = s.Failed
                         Skipped = s.Skipped }
-                    Passed = s.Failed = 0 || (s.StarvedRerun |> Option.exists _.PassedAlone) } ]
+                    Passed = s.Failed = 0 || (s.StarvedRerun |> Option.exists _.PassedAlone)
+                    FailedTests =
+                      names
+                      |> Option.map _.Failed
+                      |> Option.filter (fun f -> List.length f = s.Failed)
+                    PassedTests = names |> Option.map _.Passed |> Option.defaultValue Set.empty } ]
+      RunOrder = []
       RecordedAt = DateTimeOffset(DateTime.SpecifyKind(v.ProducedAt, DateTimeKind.Utc))
       OutcomeKeys = Map.empty }
 

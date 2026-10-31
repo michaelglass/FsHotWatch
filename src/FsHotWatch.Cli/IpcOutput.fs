@@ -1489,7 +1489,8 @@ let private publishVerdictWithReason
         ShadowVerdict.observe
             repoRoot
             { ShadowVerdict.ofVerdict repoRoot v with
-                OutcomeKeys = runReport.OutcomeKeys |> Option.defaultValue Map.empty }
+                OutcomeKeys = runReport.OutcomeKeys |> Option.defaultValue Map.empty
+                RunOrder = ShadowVerdict.runOrder runReport.RunId runReport.CheckRuns }
 
         if not UI.isInteractive then
             VerdictTerminal.line ""

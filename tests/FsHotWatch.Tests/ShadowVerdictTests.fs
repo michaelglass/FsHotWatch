@@ -25,7 +25,9 @@ let private suite run project failed : Suite =
     { RunId = Some run
       Project = project
       Counts = counts 3 failed
-      Passed = failed = 0 }
+      Passed = failed = 0
+      FailedTests = Some [ for i in 1..failed -> $"%s{project}.t%d{i}" ]
+      PassedTests = Set.empty }
 
 /// A green confirm over tree T1 that ran both configured projects in full.
 let private confirmGreen: Observation =
@@ -45,6 +47,7 @@ let private confirmGreen: Observation =
       FullSuite = true
       ImpactFiltered = false
       Suites = [ suite "r1" "A.Tests" 0; suite "r1" "B.Tests" 0 ]
+      RunOrder = []
       RecordedAt = t0
       OutcomeKeys = Map.empty }
 
@@ -168,8 +171,8 @@ let ``a failed suite is red and records no baseline`` () =
                 Suites = [ suite "r1" "A.Tests" 1; suite "r1" "B.Tests" 0 ] }
 
         test <@ observeWith repo store None projects red = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>
-        test <@ store.Lookup (baselineKey red.Producer "A.Tests").Value = None @>
-        test <@ store.Lookup (baselineKey red.Producer "B.Tests").Value <> None @>)
+        test <@ store.Lookup (baselineKey "A.Tests").Value = None @>
+        test <@ store.Lookup (baselineKey "B.Tests").Value <> None @>)
 
 [<Fact>]
 let ``a failing plugin and a red diagnostic are both red`` () =
@@ -246,10 +249,6 @@ let ``an impact batch never stands in for the full suite under confirm`` () =
                 Suites = [ suite "r0" "B.Tests" 0; suite "r1" "A.Tests" 0 ] }
 
         test <@ observeWith repo store None projects o = LookupVerdict.Answer.Missing [ "test:B.Tests" ] @>)
-
-[<Fact>]
-let ``an unconcluded publication files nothing`` () =
-    test <@ List.isEmpty (recordsOf { confirmGreen with Concluded = false } projects) @>
 
 [<Fact>]
 let ``direction names which side is greener`` () =
@@ -567,3 +566,225 @@ let ``a read looks the K_P keys up as well, and files nothing in either store`` 
 let ``the K_P store is opened only when the daemon named keys to look up`` () =
     test <@ (kpStoreFor "/w" freshTree).IsSome @>
     test <@ (kpStoreFor "/w" confirmGreen).IsNone @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-1428: the stricter disagreements seen on intelligence.
+// ---------------------------------------------------------------------------
+
+let private named run project (failed: string list) (passed: string list) : Suite =
+    { RunId = Some run
+      Project = project
+      Counts =
+        { Total = failed.Length + passed.Length
+          Passed = passed.Length
+          Failed = failed.Length
+          Skipped = 0 }
+      Passed = List.isEmpty failed
+      FailedTests = Some failed
+      PassedTests = Set.ofList passed }
+
+/// An impact check over T1 graded from `r2`, after a full green over T0 earned both baselines.
+let private checkAfterBaseline repo store (suites: Suite list) (order: string list) =
+    observeWith repo store None projects { confirmGreen with Tree = "sha256:t0" }
+    |> ignore
+
+    observeWith
+        repo
+        store
+        None
+        projects
+        { confirmGreen with
+            Command = "check"
+            Tree = "sha256:t1"
+            GradedRunId = Some "r2"
+            FullSuite = false
+            ImpactFiltered = true
+            Suites = suites
+            RunOrder = order
+            RecordedAt = t0.AddMinutes 1.0 }
+
+[<Fact>]
+let ``a failure a later run of the same check passed again is superseded, as the outstanding-failure ledger clears it``
+    ()
+    =
+    // Class (b): server land 2026-10-31 01:38, 08:07 and 09:10. Run r1 failed A.x; the
+    // outstanding failure was re-selected and passed in r2, which today graded green. Both
+    // records were filed at the publication's instant, and a tie goes to fail.
+    withStore (fun repo store ->
+        let suites =
+            [ named "r1" "A.Tests" [ "A.x" ] [ "A.y" ]; named "r2" "A.Tests" [] [ "A.x" ] ]
+
+        test <@ checkAfterBaseline repo store suites [ "r1"; "r2" ] = LookupVerdict.Answer.Green @>)
+
+[<Fact>]
+let ``a later run that did not run the failed test again leaves the failure standing`` () =
+    withStore (fun repo store ->
+        let suites =
+            [ named "r1" "A.Tests" [ "A.x" ] [ "A.y" ]; named "r2" "A.Tests" [] [ "A.y" ] ]
+
+        test <@ checkAfterBaseline repo store suites [ "r1"; "r2" ] = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
+
+[<Fact>]
+let ``a failure in the later run is never superseded by an earlier pass`` () =
+    withStore (fun repo store ->
+        let suites =
+            [ named "r1" "A.Tests" [ "A.x" ] [ "A.y" ]; named "r2" "A.Tests" [] [ "A.x" ] ]
+
+        test <@ checkAfterBaseline repo store suites [ "r2"; "r1" ] = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
+
+[<Fact>]
+let ``a failure the report does not name is never superseded`` () =
+    withStore (fun repo store ->
+        let suites =
+            [ { named "r1" "A.Tests" [ "A.x" ] [] with
+                  FailedTests = None }
+              named "r2" "A.Tests" [] [ "A.x" ] ]
+
+        test <@ checkAfterBaseline repo store suites [ "r1"; "r2" ] = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
+
+[<Fact>]
+let ``with no run order no run is later than another, and the failure stands`` () =
+    withStore (fun repo store ->
+        let suites =
+            [ named "r1" "A.Tests" [ "A.x" ] [ "A.y" ]; named "r2" "A.Tests" [] [ "A.x" ] ]
+
+        test <@ checkAfterBaseline repo store suites [] = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
+
+[<Fact>]
+let ``an earlier impact failure is superseded by a later full run that passed it`` () =
+    // Class (b), laptop land 2026-10-31 14:40: r1 (impact) failed A.x, then the graded r2
+    // ran the whole suite green. The impact fail sat under another key than the full pass.
+    withStore (fun repo store ->
+        let check =
+            { confirmGreen with
+                Command = "check"
+                GradedRunId = Some "r2"
+                Suites =
+                    [ named "r1" "A.Tests" [ "A.x" ] [ "A.y" ]
+                      named "r2" "A.Tests" [] [ "A.x"; "A.y" ]
+                      named "r2" "B.Tests" [] [ "B.x" ] ]
+                RunOrder = [ "r1"; "r2" ] }
+
+        test <@ observeWith repo store None projects check = LookupVerdict.Answer.Green @>)
+
+[<Fact>]
+let ``a baseline earned under one fshw binary still vouches for an impact check under the next`` () =
+    // Class (a): server land 2026-10-31 17:22 and 18:10, the first checks on alpha.132 after
+    // the baselines alpha.130 filed at 15:53. Today's full-suite watermark is not per binary.
+    withStore (fun repo store ->
+        observeWith repo store None projects { confirmGreen with Tree = "sha256:t0" }
+        |> ignore
+
+        let check =
+            { confirmGreen with
+                Command = "check"
+                Tree = "sha256:t1"
+                Producer = "fshw 2"
+                GradedRunId = Some "r2"
+                FullSuite = false
+                ImpactFiltered = true
+                Suites = [ suite "r2" "A.Tests" 0 ]
+                RecordedAt = t0.AddMinutes 1.0 }
+
+        test <@ observeWith repo store None projects check = LookupVerdict.Answer.Green @>)
+
+[<Fact>]
+let ``a full-suite run whose publication did not conclude still earns each passing project's baseline`` () =
+    // Class (a): server land 2026-10-30 22:49, run 248f25ac earned today's watermark and its
+    // publication was incomplete, so the shadow filed nothing and every later check missed.
+    withStore (fun repo store ->
+        let incomplete =
+            { confirmGreen with
+                Tree = "sha256:t0"
+                Today = Class.Missing
+                TodayOutcome = "incomplete"
+                ExitCode = 2
+                Concluded = false
+                Suites = [ suite "r1" "A.Tests" 0; suite "r1" "B.Tests" 1 ] }
+
+        let records = recordsOf incomplete projects
+        test <@ records |> List.map (fun r -> r.Key.Kind, r.Subject) = [ "test-baseline", "A.Tests" ] @>
+        observeWith repo store None projects incomplete |> ignore
+
+        let check =
+            { confirmGreen with
+                Command = "check"
+                Tree = "sha256:t1"
+                GradedRunId = Some "r2"
+                FullSuite = false
+                ImpactFiltered = true
+                Suites = [ suite "r2" "A.Tests" 0; suite "r2" "B.Tests" 0 ]
+                RecordedAt = t0.AddMinutes 1.0 }
+
+        // B's full run failed, so only A has a baseline; B is missing, not green.
+        test <@ observeWith repo store None projects check = LookupVerdict.Answer.Missing [ "test:B.Tests" ] @>)
+
+[<Fact>]
+let ``an unconcluded impact-filtered publication files nothing at all`` () =
+    let o =
+        { confirmGreen with
+            Concluded = false
+            FullSuite = false
+            ImpactFiltered = true }
+
+    test <@ List.isEmpty (recordsOf o projects) @>
+
+[<Fact>]
+let ``a check's runs are ordered oldest first, a graded run it did not produce before them all`` () =
+    let g n = Guid(sprintf "%032x" n)
+    let token (n: int) = (g n).ToString "N"
+    test <@ runOrder (Some(g 2)) [ g 1; g 2; g 3 ] = [ token 1; token 2; token 3 ] @>
+    test <@ runOrder (Some(g 9)) [ g 1; g 2 ] = [ token 9; token 1; token 2 ] @>
+    test <@ runOrder None [ g 1 ] = [ token 1 ] @>
+
+[<Fact>]
+let ``a report's test names are read by status, and an unnamed failure reads as none`` () =
+    let report rows =
+        $"""{{ "results": {{ "summary": {{ "tests": 3 }}, "tests": [ %s{rows} ] }} }}"""
+
+    let names =
+        Ctrf.tryTestNames (
+            report
+                """{ "name": "A.x", "status": "failed" }, { "name": "A.y", "status": "passed" }, { "name": "A.z", "status": "skipped" }"""
+        )
+
+    test
+        <@
+            names = Some
+                { Failed = [ "A.x" ]
+                  Passed = set [ "A.y" ] }
+        @>
+
+    test <@ Ctrf.tryTestNames (report """{ "status": "failed" }""") = None @>
+    test <@ Ctrf.tryTestNames """{ "results": { "summary": {} } }""" = None @>
+    test <@ Ctrf.tryTestNames "not json" = None @>
+    test <@ Ctrf.tryTestNames "null" = None @>
+
+[<Fact>]
+let ``test names read a flattened report, skip rows they cannot read, and refuse an unnamed failure`` () =
+    // No `results` wrapper; a passed row with no name, a numeric name, a non-object row and a
+    // non-string status are each left out rather than read.
+    let flat =
+        """{ "tests": [ { "name": "A.y", "status": "passed" }, { "status": "passed" }, { "name": 7, "status": "passed" }, 3, { "name": "A.z", "status": 1 } ] }"""
+
+    test <@ Ctrf.tryTestNames flat = Some { Failed = []; Passed = set [ "A.y" ] } @>
+    test <@ Ctrf.tryTestNames """{ "tests": [ { "name": "", "status": "failed" } ] }""" = None @>
+    test <@ Ctrf.tryTestNames """{ "tests": [ { "name": 1, "status": "failed" } ] }""" = None @>
+    test <@ Ctrf.tryTestNames """{ "tests": {} }""" = None @>
+    test <@ Ctrf.tryTestNames "[ 1 ]" = None @>
+
+[<Fact>]
+let ``test names are read from a report on disk, and a missing report reads as none`` () =
+    withTempDir "ctrf-names" (fun dir ->
+        let path = Path.Combine(dir, "A.Tests.ctrf.json")
+        File.WriteAllText(path, """{ "results": { "tests": [ { "name": "A.x", "status": "failed" } ] } }""")
+
+        test
+            <@
+                Ctrf.tryReadTestNames path = Some
+                    { Failed = [ "A.x" ]
+                      Passed = Set.empty }
+            @>
+
+        test <@ Ctrf.tryReadTestNames (Path.Combine(dir, "absent.ctrf.json")) = None @>
+        test <@ Ctrf.tryReadTestNames dir = None @>)
