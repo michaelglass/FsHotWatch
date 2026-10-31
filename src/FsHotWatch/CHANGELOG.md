@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: a change batch restores the projects whose deps it changed before it re-discovers them,
+  as the scan already did (AUTOMATION-1392). The batch re-discovered first and let the deps gate
+  restore each stale project when its tier came up, so every restore rewrote an assets file the
+  batch's model had just been loaded from: the batch checked files under the old package graph,
+  and the next scan re-discovered the workspace again ("a restore changed the package graph").
+  Measured on a one-project fixture whose dep edit adds a package: 3 model loads before, 2 after;
+  the batch's restore now runs before its model load, not after it. A failed preflight restore is
+  still reported as the project's deps failure.
+
 - feat: `RunClaim.survey` returns the held claims and the claims whose process died without
   releasing them, and deletes only the died claims its caller says are retired (AUTOMATION-1420).
   `RunClaim.live` no longer deletes abandoned claims: a SIGKILLed check's claim is the only

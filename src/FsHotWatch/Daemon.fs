@@ -2044,6 +2044,32 @@ let private processBatchAttempt
         // What the seal carries from the model this cohort replaced. See `RetainedResults`.
         let mutable retained: RetainedResults option = None
 
+        // What the deps gate answered for the projects this batch re-discovers, asked
+        // BEFORE the re-discovery loads their model (see `DepsFreshness.preflight`). Asked
+        // after, as each project's tier came up, a restore rewrote an assets file the
+        // batch's model had just been loaded from, and the next scan re-discovered the
+        // workspace a second time (AUTOMATION-1392).
+        let mutable batchPreflight: Map<string, DepsFreshness.GateResult> = Map.empty
+
+        let preflightBeforeDiscovery (projects: string list) =
+            match ctx.DepsGate with
+            | None -> ()
+            | Some gate ->
+                let answers = DepsFreshness.preflight gate projects
+
+                let restoredOk =
+                    answers
+                    |> Map.filter (fun _ result -> result = DepsFreshness.RecoveredOk)
+                    |> Map.keys
+                    |> List.ofSeq
+
+                if not restoredOk.IsEmpty then
+                    Logging.info
+                        "deps"
+                        $"Restored %d{restoredOk.Length} project(s) before the batch's re-discovery%s{describeChangedProjects ctx.RepoRoot restoredOk}"
+
+                batchPreflight <- answers
+
         let publishCurrent write =
             ctx.Discovery.WithCurrent(batchModel, write)
 
@@ -2176,6 +2202,10 @@ let private processBatchAttempt
                     "daemon"
                     $"Scoped project change — %d{affectedFsprojs.Length} changed%s{describeChangedProjects ctx.RepoRoot affectedFsprojs} + %d{recheckProjects.Length - affectedFsprojs.Length} dependent project(s) invalidated; rest stay warm"
 
+                // A dependent's dep signature covers its references (ADR-060), so the
+                // whole re-check set is asked, not only the changed projects.
+                preflightBeforeDiscovery (affectedFsprojs @ (recheckProjects |> List.map AbsProjectPath.value))
+
                 let! _ =
                     rediscoverAndClearRemoved
                         ctx.RepoRoot
@@ -2262,6 +2292,15 @@ let private processBatchAttempt
 
                 ctx.InvalidateFcs |> Option.iter (fun invalidate -> invalidate ())
 
+                // Every project the re-discovery will read, as the scan asks: the ones on
+                // disk and the ones the current model holds.
+                let isExcluded = PathFilter.isExcludedPath ctx.RepoRoot ctx.ExcludePatterns
+
+                preflightBeforeDiscovery (
+                    (Discovery.findFsprojFiles ctx.RepoRoot |> List.filter (isExcluded >> not))
+                    @ ctx.Pipeline.GetRegisteredProjects()
+                )
+
                 let! _ =
                     rediscoverAndClearRemoved
                         ctx.RepoRoot
@@ -2341,11 +2380,15 @@ let private processBatchAttempt
             // One deps-gate decision per project per batch, whichever cohort reaches it first.
             let gated = System.Collections.Generic.Dictionary<string, bool>()
 
+            // A failed preflight restore keeps its failure as the project's answer.
+            let depsGate =
+                ctx.DepsGate |> Option.map (DepsFreshness.withPreflight batchPreflight)
+
             let depsAllow projPath =
                 match gated.TryGetValue projPath with
                 | true, allowed -> allowed
                 | false, _ ->
-                    let allowed = applyDepsGate ctx.DepsGate ctx.Host projPath
+                    let allowed = applyDepsGate depsGate ctx.Host projPath
                     gated[projPath] <- allowed
                     allowed
 
