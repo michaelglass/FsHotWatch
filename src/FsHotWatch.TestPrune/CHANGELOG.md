@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- fix: a file's indexed analysis is no longer replayed after something it resolved upstream
+  changed shape (AUTOMATION-1151). The identity that decides whether a `FileChecked` cache hit
+  may stand in for re-analysing a file named only its source and diagnostics, so an earlier
+  file or a referenced project could change what the file resolves to while it still compiled
+  cleanly, for example an auto-opened module that shadows a name the file uses. The index
+  then kept the old dependency edge and test selection followed it. The identity
+  (`IndexedAnalysis.identityOf`) now also covers `CacheInputs.usedSignaturesHash`, so an
+  upstream signature or resolution change re-analyses the file and a body-only edit upstream
+  does not. A file whose upstream shape cannot be described is never replayed. Breaking:
+  `IndexedAnalysis.identity` takes the used-signatures hash. Each existing index entry is
+  re-analysed once, because the identities it recorded no longer match.
+
 ## 0.13.0-alpha.99 - 2026-10-30
 
 - fix: a project-model change no longer drops the analysis already recorded for the new

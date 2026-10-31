@@ -25,10 +25,29 @@ module FsHotWatch.TestPrune.IndexedAnalysis
 
 open FsHotWatch
 
-/// The identity of one file's analysis: what its `FileChecked` cache key names, the
-/// file's source and its compiler signature.
-let identity (source: string) (fcsSignature: string) : string =
-    CheckCache.sha256Hex $"%s{fcsSignature}\n%s{source}"
+/// The identity of one file's analysis: the file's source, its compiler signature, and
+/// the public shape of everything its check resolved outside the file
+/// (`CacheInputs.usedSignaturesHash`).
+///
+/// The shape is in it because the analysis reads it. A type or value in an earlier file
+/// or a referenced project can change while this file's bytes and diagnostics do not: an
+/// auto-opened module that now shadows a name this file uses moves the dependency the
+/// index records to a different symbol, and test selection would follow the stale edge
+/// (AUTOMATION-1151). A body-only edit upstream leaves the shape, and so the identity,
+/// alone.
+let identity (source: string) (fcsSignature: string) (usedSignatures: string) : string =
+    CheckCache.sha256Hex $"%s{fcsSignature}\n%s{usedSignatures}\n%s{source}"
+
+/// The identity of `result`'s analysis (`identity`). `None` when what the file's check
+/// resolved upstream cannot be described: no index entry can then vouch for the analysis.
+let identityOf (repoRoot: string) (result: FsHotWatch.Events.FileCheckResult) : string option =
+    CacheInputs.usedSignaturesHash (Some repoRoot) result.ProjectOptions result.CheckResults
+    |> Option.map (identity result.Source (CheckCache.fcsCheckSignature result.CheckResults))
+
+/// What a flush records for an analysis `identityOf` cannot describe: unique, so no
+/// later check's identity ever matches it and the analysis is never replayed.
+let undescribed () : string =
+    "undescribed:" + System.Guid.NewGuid().ToString "N"
 
 /// Whether a `FileChecked` cache hit may stand in for analysing a file whose check has
 /// `identity`: the index holds that analysis (`indexed`, its `file_keys` entry), and no
