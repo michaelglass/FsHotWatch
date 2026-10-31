@@ -150,3 +150,52 @@ let ``an edit after a red run still launches the run that verifies it`` () =
         waitForQuiescent host HangWaitMs
 
         test <@ runCount tmpDir = 2 @>)
+
+/// `project` appends to `runs-<project>` and exits `exitCode`, ungated.
+let private quickRunner (tmpDir: string) (project: string) (exitCode: int) : TestConfig =
+    let runs = Path.Combine(tmpDir, $"runs-%s{project}")
+
+    { runner tmpDir (Path.Combine(tmpDir, "unused")) exitCode with
+        Project = project
+        Args = $"-c \"printf 'run\\n' >> '%s{runs}'; exit %d{exitCode}\"" }
+
+let private runsOf (tmpDir: string) (project: string) =
+    let runs = Path.Combine(tmpDir, $"runs-%s{project}")
+
+    if File.Exists runs then
+        File.ReadAllLines(runs).Length
+    else
+        0
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a red full-suite run is not followed by a second full pass that re-runs its green projects`` () =
+    // AUTOMATION-1392: a check that went red re-ran projects that were already green, in
+    // a second full pass. A cold daemon (no full-suite baseline) widens its first run to
+    // every project: P1 (owing `Lib.foo`) goes red, P2 passes. The cohort the next gate
+    // invocation folds over the same tree must not launch that full pass again.
+    withTempDir "tp-red-full" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "src/Lib.fs" "P1" "P1Tests" "fooTest"
+        PendingVerification.save tmpDir (Set.singleton "Lib.foo")
+        let sourceDir = Directory.CreateDirectory(Path.Combine(tmpDir, "src")).FullName
+        File.WriteAllText(Path.Combine(sourceDir, "Lib.fs"), "module Lib\nlet foo x = x + 1\n")
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
+
+        host.RegisterHandler(
+            create dbPath tmpDir (Some [ quickRunner tmpDir "P1" 1; quickRunner tmpDir "P2" 0 ]) None None None None []
+        )
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitUntil (fun () -> runsOf tmpDir "P1" >= 1 && runsOf tmpDir "P2" >= 1) HangWaitMs
+        waitForQuiescent host HangWaitMs
+        let p2First = runsOf tmpDir "P2"
+
+        let committedBefore = committedBy host "test-prune"
+        host.EmitBatchChecked(fakeBatchChecked [ "src/Lib.fs" ])
+        test <@ waitForCommitted host "test-prune" committedBefore 1L HangWaitMs @>
+        waitForQuiescent host HangWaitMs
+
+        test <@ runsOf tmpDir "P1" = 1 @>
+        test <@ runsOf tmpDir "P2" = p2First @>
+        expectRed host)

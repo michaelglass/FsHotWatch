@@ -6789,6 +6789,111 @@ let ``a cold scan restores a project found outside the discovery roots before it
     test <@ loads = 2 @>
     test <@ scans = [ 2, 2L ] @>
 
+/// AUTOMATION-1392: a change batch restores a project whose dep inputs it changed BEFORE
+/// it re-discovers, as the scan does. Restored after, by the deps gate as each project's
+/// tier came up, every restore rewrote an assets file the batch's model had just been
+/// loaded from, so the next scan found "a restore changed the package graph" and
+/// re-discovered the workspace a second time (land 10-27: 23 serial restores, then a
+/// second full re-discovery).
+[<Fact(Timeout = 60000)>]
+let ``a change batch restores a project whose deps it changed before it re-discovers`` () =
+    withTempDir "batch-restore-before-discovery" (fun tmpDir ->
+        let directory = Path.Combine(tmpDir, "src", "App")
+        Directory.CreateDirectory directory |> ignore
+        let projectPath = Path.Combine(directory, "App.fsproj")
+        let sourcePath = Path.Combine(directory, "App.fs")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        File.WriteAllText(sourcePath, "module App\nlet x = 1\n")
+        let assets = Path.Combine(directory, "obj", "project.assets.json")
+
+        let loader =
+            CountingWorkspaceLoader(
+                [ { minimalLoadedProject projectPath with
+                      SourceFiles = [ sourcePath ] } ]
+            )
+
+        // The model generation each restore ran under: 0 = before any discovery.
+        let restoredAtLoad = Collections.Concurrent.ConcurrentQueue<int>()
+
+        let fakeRestore (_: string) : DepsFreshness.RestoreRunner =
+            fun _ ->
+                restoredAtLoad.Enqueue loader.Loads
+                Directory.CreateDirectory(Path.GetDirectoryName assets) |> ignore
+                // The first restore resolves Xunit; the one after the dep edit adds Expecto,
+                // so a restore after the batch loaded its model moves the package graph.
+                let package = if restoredAtLoad.Count = 1 then "Xunit" else "Expecto"
+                File.WriteAllText(assets, assetsJson package "restore")
+                ProcessHelper.Succeeded(ProcessHelper.ProcessOutput.Drained "restored")
+
+        let callback = ref None
+
+        let watcher: Daemon.WatcherFactory =
+            fun _ onChange _ _ _ ->
+                callback.Value <- Some onChange
+
+                { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+                  Disposables = [] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                sharedChecker.Value
+                tmpDir
+                { watchingDaemonOptions with
+                    Restore = fakeRestore }
+                loader
+                (fun loaded ->
+                    loaded
+                    |> List.map (fun p -> makeProjectOptions p.ProjectFileName [ sourcePath ] []))
+                watcher
+
+        let batchSeals = System.Collections.Concurrent.ConcurrentQueue<BatchChecked>()
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "seal-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | BatchChecked batch when batch.Trigger <> BootScan -> batchSeals.Enqueue batch
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeBatchChecked ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        daemon.ScanAll() |> Async.RunSynchronously
+        test <@ List.ofSeq restoredAtLoad = [ 0 ] @>
+        test <@ loader.Loads = 1 @>
+
+        // A dep edit: the project file now names a package its assets were not restored for.
+        File.SetLastWriteTimeUtc(assets, DateTime.UtcNow.AddMinutes -1.0)
+
+        File.WriteAllText(
+            projectPath,
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><PackageReference Include=\"Expecto\" /></ItemGroup></Project>"
+        )
+
+        (callback.Value |> Option.get) (ProjectChanged [ projectPath ])
+
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> not batchSeals.IsEmpty), TimeSpan.FromSeconds 20.0),
+            "the project change must produce a sealed cohort"
+        )
+
+        // Restored before the batch's one re-discovery loaded the model.
+        test <@ List.ofSeq restoredAtLoad = [ 0; 1 ] @>
+        test <@ loader.Loads = 2 @>
+
+        // And the next scan has nothing to re-discover: no restore moved the package
+        // graph under the model the batch loaded.
+        daemon.ScanAll() |> Async.RunSynchronously
+        test <@ loader.Loads = 2 @>)
+
 
 [<Fact(Timeout = 5000)>]
 let ``the batch line names the changed files that caused it and counts the dependents`` () =

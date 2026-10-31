@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: a change batch restores the projects whose deps it changed before it re-discovers them,
+  as the scan already did (AUTOMATION-1392). The batch re-discovered first and let the deps gate
+  restore each stale project when its tier came up, so every restore rewrote an assets file the
+  batch's model had just been loaded from: the batch checked files under the old package graph,
+  and the next scan re-discovered the workspace again ("a restore changed the package graph").
+  Measured on a one-project fixture whose dep edit adds a package: 3 model loads before, 2 after;
+  the batch's restore now runs before its model load, not after it. A failed preflight restore is
+  still reported as the project's deps failure.
+
 - fix: a daemon whose root is spelled through a symbolic link (`/var` is `/private/var` on
   macOS) no longer re-discovers its workspace on the first watcher echo of each unchanged
   project file (AUTOMATION-989). FSEvents reports real paths, while the project-content
