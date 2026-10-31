@@ -1,0 +1,23 @@
+<Project>
+  <!-- A nested Directory.Build.props stops MSBuild's upward search, so the root one
+       must be imported explicitly or every src/ project silently loses it. -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <!-- One warning set for every shipped package. Each src/ project sets
+       TreatWarningsAsErrors, so a warning enabled here is a build error everywhere,
+       not in whichever package happened to carry the block.
+       WarnOnAlignmentTests pins this list and forbids per-project copies. -->
+  <PropertyGroup>
+    <WarnOn>
+      3390,  <!-- Malformed XML documentation comments -->
+      1104,  <!-- Identifiers containing @ reserved for F# -->
+      0020,  <!-- Implicitly ignored expression results -->
+      0044,  <!-- Use of obsolete constructs -->
+      0025,  <!-- Incomplete pattern matches -->
+      3391,  <!-- Implicit conversions (op_Implicit) -->
+      0067,  <!-- Type tests that always hold -->
+      0021,  <!-- Recursive object references checked at runtime -->
+      1182   <!-- Unused variables and bindings -->
+    </WarnOn>
+  </PropertyGroup>
+</Project>

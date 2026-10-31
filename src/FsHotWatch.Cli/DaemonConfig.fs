@@ -580,7 +580,7 @@ type DaemonConfiguration =
         AgentMode: bool
     }
 
-let private defaultConfigFor (repoRoot: string) =
+let private defaultConfig () =
     { Build =
         Some
             [ {| Command = "dotnet"
@@ -1903,7 +1903,7 @@ module DaemonLog =
             let configPath = Path.Combine(repoRoot, ".fshw.json")
 
             if File.Exists configPath then
-                file repoRoot (parseConfig (File.ReadAllText configPath) (defaultConfigFor repoRoot)).LogDir
+                file repoRoot (parseConfig (File.ReadAllText configPath) (defaultConfig ())).LogDir
             else
                 file repoRoot DefaultLogDir
         with _ ->
@@ -2005,7 +2005,7 @@ let private validateVerdictInputs (repoRoot: string) (json: string) : unit =
 let loadConfigWithSource (repoRoot: string) : DaemonConfiguration * string =
     let configPath = Path.Combine(repoRoot, ".fshw.json")
 
-    let defaults = defaultConfigFor repoRoot
+    let defaults = defaultConfig ()
 
     if not (File.Exists configPath) then
         Logging.info "config" "No .fshw.json found, using defaults (build + format + lint)"
@@ -2149,9 +2149,7 @@ let internal configLook
 /// root — recursive in the kernel whatever the filter, so fseventsd would queue
 /// every file event in the repository for a watcher that wants one file.
 let internal watchConfigFileEvery (interval: TimeSpan) (configPath: string) (onChange: string -> unit) : IDisposable =
-    // Capture defaults once at construction — defaultConfigFor probes the
-    // filesystem (.jj detection) and we don't want that on every look.
-    let defaults = defaultConfigFor (Path.GetDirectoryName configPath)
+    let defaults = defaultConfig ()
     let lastFire = ref DateTime.MinValue
     let gate = obj ()
     let window = TimeSpan.FromMilliseconds(200.0)

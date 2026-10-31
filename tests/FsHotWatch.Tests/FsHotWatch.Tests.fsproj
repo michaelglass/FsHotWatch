@@ -307,6 +307,7 @@
     <Compile Include="CiParityTests.fs" />
     <Compile Include="CiLinuxTests.fs" />
     <Compile Include="ToolchainPinTests.fs" />
+    <Compile Include="WarnOnAlignmentTests.fs" />
     <Compile Include="CoverageFloorCompletenessTests.fs" />
     <Compile Include="BenchmarkPlacementTests.fs" />
     <Compile Include="AnalyzerIdentityTests.fs" />

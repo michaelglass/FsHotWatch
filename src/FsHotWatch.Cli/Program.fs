@@ -3813,14 +3813,6 @@ let private executeCommandRendered
                 pipeName
                 filter
 
-        let queryPluginWith (mode: ProgressRenderer.RenderMode) (filter: string) : int =
-            queryPluginIn
-                (Verdict.Invocation.start ())
-                CheckVerdict.InnerLoop
-                CheckVerdict.Freshness.MayReuse
-                mode
-                filter
-
         /// `check`/`confirm` with NO daemon (`--run-once`). Same verdict, same verdict
         /// file, same exit codes — only the transport differs (`PluginHost.RunCommand`
         /// in-process instead of a socket).
@@ -3842,9 +3834,6 @@ let private executeCommandRendered
             with ConfigErrorException msg ->
                 eprintfn $"fshw: config error: %s{msg}"
                 2
-
-        let queryPlugin filter =
-            queryPluginWith ProgressRenderer.Verbose filter
 
         let withDaemon (action: unit -> int) : int =
             if not (ensureDaemonFn ()) then
@@ -4287,7 +4276,7 @@ let private executeCommandRendered
                 repoRoot
                 formatConfig
                 (Some "format")
-        | Format flags ->
+        | Format _ ->
 
 
             withDaemon (fun () ->
@@ -4332,7 +4321,7 @@ let private executeCommandRendered
         | Check flags when isRunOnce flags ->
             withRunHooksForInvocation RunHookCommand.Check repoRoot config (fun invocation ->
                 runOnceIn invocation CheckVerdict.InnerLoop)
-        | Check flags ->
+        | Check _ ->
             withRunHooksForInvocation RunHookCommand.Check repoRoot config (fun invocation ->
                 queryPluginIn invocation CheckVerdict.InnerLoop CheckVerdict.Freshness.MayReuse mode "")
         | Confirm flags ->
