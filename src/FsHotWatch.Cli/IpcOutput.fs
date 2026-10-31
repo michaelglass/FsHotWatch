@@ -330,32 +330,47 @@ let renderIpcResult
     | None ->
         eprintfn "%s" result
         0
+    // Valid JSON that is not an object: every reply the daemon sends is one, so this is a
+    // malformed reply, named as one, never an exception from a field read (AUTOMATION-1079).
+    | Some doc when doc.RootElement.ValueKind <> JsonValueKind.Object ->
+        use doc = doc
+
+        VerdictTerminal.fail
+            $"malformed daemon reply: expected a JSON object, got %s{doc.RootElement.ValueKind.ToString().ToLowerInvariant()} — no verdict"
+
+        NoVerdictExitCode
     | Some doc ->
         use doc = doc
         let root = doc.RootElement
 
-        match root.TryGetProperty("count") with
-        | true, _ ->
+        match FsHotWatch.Json.tryProp root "count" with
+        | Some _ ->
             let resp = parseDiagnosticsResponse result
             let output = formatDiagnosticsResponse mode renderStatuses resp
             eprintfn "%s" output
             exitCodeFromResponse noWarnFail resp
-        | false, _ ->
+        | None ->
 
-            match root.TryGetProperty("error") with
-            | true, e ->
-                UI.fail (e.GetString())
+            match FsHotWatch.Json.tryProp root "error" with
+            | Some e ->
+                UI.fail (
+                    if e.ValueKind = JsonValueKind.String then
+                        e.GetString()
+                    else
+                        e.GetRawText()
+                )
+
                 1
-            | false, _ ->
+            | None ->
 
-                match root.TryGetProperty("status") with
-                | true, v when v.ValueKind = JsonValueKind.String && v.GetString() = "failed" ->
+                match FsHotWatch.Json.tryProp root "status" with
+                | Some v when v.ValueKind = JsonValueKind.String && v.GetString() = "failed" ->
                     UI.fail "Failed"
                     1
-                | true, v when v.ValueKind = JsonValueKind.String && v.GetString() = "passed" ->
+                | Some v when v.ValueKind = JsonValueKind.String && v.GetString() = "passed" ->
                     UI.success "Passed"
                     0
-                | true, v when v.ValueKind = JsonValueKind.String && v.GetString() = "busy" ->
+                | Some v when v.ValueKind = JsonValueKind.String && v.GetString() = "busy" ->
                     // The force-rerun did not produce a result within its
                     // budget (a prior run holds the slot, or the queued run
                     // didn't finish in time). Distinct from "Tests failed" —
@@ -364,8 +379,8 @@ let renderIpcResult
                     // exit 0 without a run is a vacuous green. Nor is it a red: it
                     // gets the in-flight code, so a caller can tell the two apart.
                     let msg =
-                        match root.TryGetProperty("message") with
-                        | true, m when m.ValueKind = JsonValueKind.String -> Some(m.GetString())
+                        match FsHotWatch.Json.tryProp root "message" with
+                        | Some m when m.ValueKind = JsonValueKind.String -> Some(m.GetString())
                         | _ -> None
 
                     let lines = busyRerunLines msg
@@ -377,8 +392,8 @@ let renderIpcResult
                     RerunTimedOutExitCode
                 | _ ->
 
-                    match root.TryGetProperty("projects") with
-                    | true, projects when projects.ValueKind = JsonValueKind.Array ->
+                    match FsHotWatch.Json.tryProp root "projects" with
+                    | Some projects when projects.ValueKind = JsonValueKind.Array ->
                         // Name and status of every project the run consulted. Kept as a
                         // list (not just a count) because a refusal has to say WHAT it
                         // searched: "no tests matched the filter" over an unnamed set of
@@ -389,13 +404,13 @@ let renderIpcResult
                             projects.EnumerateArray()
                             |> Seq.map (fun p ->
                                 let name =
-                                    match p.TryGetProperty("project") with
-                                    | true, n when n.ValueKind = JsonValueKind.String -> n.GetString()
+                                    match FsHotWatch.Json.tryProp p "project" with
+                                    | Some n when n.ValueKind = JsonValueKind.String -> n.GetString()
                                     | _ -> "(unnamed)"
 
                                 let status =
-                                    match p.TryGetProperty("status") with
-                                    | true, s when s.ValueKind = JsonValueKind.String -> s.GetString()
+                                    match FsHotWatch.Json.tryProp p "status" with
+                                    | Some s when s.ValueKind = JsonValueKind.String -> s.GetString()
                                     | _ -> "unknown"
 
                                 name, status)
@@ -413,12 +428,8 @@ let renderIpcResult
                         // which is the same vacuous green one level down.
                         let countsLine (p: JsonElement) : string =
                             let field (name: string) =
-                                match p.TryGetProperty("counts") with
-                                | true, c when c.ValueKind = JsonValueKind.Object ->
-                                    match c.TryGetProperty(name) with
-                                    | true, v when v.ValueKind = JsonValueKind.Number -> Some(v.GetInt32())
-                                    | _ -> None
-                                | _ -> None
+                                FsHotWatch.Json.tryProp p "counts"
+                                |> Option.bind (fun c -> FsHotWatch.Json.tryInt c name)
 
                             match field "total", field "succeeded", field "failed" with
                             | Some total, Some succeeded, Some failed ->
@@ -476,9 +487,9 @@ let renderIpcResult
                         // `test-rerun --filter-*` that selected no test never looks
                         // like a real green run that exercised code.
                         let noTestsMatched =
-                            match root.TryGetProperty("noTestsMatched") with
-                            | true, n -> n.ValueKind = JsonValueKind.True
-                            | false, _ -> false
+                            match FsHotWatch.Json.tryProp root "noTestsMatched" with
+                            | Some n -> n.ValueKind = JsonValueKind.True
+                            | None -> false
 
                         // The producer STATES what the run verified instead of leaving
                         // the consumer to infer it from array lengths.
@@ -493,8 +504,8 @@ let renderIpcResult
                         // handled below as no-verdict. Absent is the older-daemon case:
                         // reconstruct from the counts rather than assume anything.
                         let parsedCoverage =
-                            match root.TryGetProperty("coverage") with
-                            | true, c when c.ValueKind = JsonValueKind.String ->
+                            match FsHotWatch.Json.tryProp root "coverage" with
+                            | Some c when c.ValueKind = JsonValueKind.String ->
                                 match RunVerification.tryParse (c.GetString()) with
                                 | Some v -> Understood v
                                 | None -> Unrecognized(c.GetString())
@@ -554,8 +565,8 @@ let renderIpcResult
                         // "the run was unfiltered", and a refusal that guesses between
                         // them is how a wrong conclusion gets drawn.
                         let activeFilter =
-                            match root.TryGetProperty("filter") with
-                            | true, f when f.ValueKind = JsonValueKind.String && f.GetString() <> "" ->
+                            match FsHotWatch.Json.tryProp root "filter" with
+                            | Some f when f.ValueKind = JsonValueKind.String && f.GetString() <> "" ->
                                 Some(f.GetString())
                             | _ -> None
 
