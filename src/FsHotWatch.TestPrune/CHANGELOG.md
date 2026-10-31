@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a file whose FCS errors include a syntax error is no longer logged as "persisting symbols"
+  (AUTOMATION-1391). The warning was written before the analysis ran, and the syntax error then
+  refused the analysis, so the log claimed symbols were kept for a file that had none. It is now
+  written only when the analysis produced symbols; a refused file is reported as unanalysable, as before.
+
 - fix: a file's indexed analysis is no longer replayed after something it resolved upstream
   changed shape (AUTOMATION-1151). The identity that decides whether a `FileChecked` cache hit
   may stand in for re-analysing a file named only its source and diagnostics, so an earlier

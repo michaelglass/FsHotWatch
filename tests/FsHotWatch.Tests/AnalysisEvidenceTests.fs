@@ -104,6 +104,31 @@ let private analysisHandler root name =
     create (Path.Combine(root, name + ".db")) root None None None None None []
 
 [<Fact(Timeout = RealCheckTestCapMs)>]
+let ``a file whose syntax error refuses its analysis is not logged as persisting symbols`` () =
+    // AUTOMATION-1391. The FCS-error warning said "persisting symbols" before the
+    // analysis ran; a syntax error then refused the analysis, so the log claimed symbols
+    // were kept for a file that had none.
+    withCheckedText "module Lib\nlet answer = (\n" (fun root result ->
+        let lines = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+        let sink: FsHotWatch.Logging.LogSink =
+            { Write = lines.Enqueue
+              Level = FsHotWatch.Logging.LogLevel.Debug
+              File = None }
+
+        let state =
+            use _ = FsHotWatch.Logging.installSink sink
+            let handler = analysisHandler root "refused"
+
+            handler.Update (analysisContext root 1L) handler.Init (FileChecked result)
+            |> fun work -> Async.RunSynchronously(work, timeout = RealCheckWaitMs)
+
+        // Positive control: the analysis was refused, and the log says so.
+        Assert.True(state.UnanalyzableFiles.ContainsKey "Lib.fs")
+        Assert.Contains(lines, fun line -> line.Contains "INVISIBLE to the impact graph")
+        Assert.DoesNotContain(lines, fun line -> line.Contains "persisting symbols"))
+
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``queued old-model FileChecked cannot enter a newer analysis owner`` () =
     withCheckedSource (fun root result ->
         let update generation name =
