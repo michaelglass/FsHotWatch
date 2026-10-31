@@ -90,6 +90,7 @@
     <Compile Include="MacAttrList.fs" />
     <Compile Include="StoredName.fs" />
     <Compile Include="FileStamp.fs" />
+    <Compile Include="Interruption.fs" />
     <Compile Include="RepositoryIdentity.fs" />
     <Compile Include="AttachHandshake.fs" />
     <Compile Include="WatchRouter.fs" />
