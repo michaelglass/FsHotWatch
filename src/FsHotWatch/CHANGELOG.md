@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a change batch that replaces the project model seals the new model even when none of
+  its checks completes (AUTOMATION-1393). The model change retires the previous cohort seal,
+  and the batch skipped its seal when it dispatched no result, so the new model had none. A
+  daemon that runs tests grades its test evidence through the seal, and with none it graded
+  the run ungated: a checkable file that no analysis covered refused nothing. The seal now
+  names each such file as a refusal, as a batch with at least one completed check already did.
+
 - fix: the `#nowarn` reader that works around FCS ignoring `#nowarn` for `--warnaserror`
   codes accepts every form F# does: `#nowarn 57`, `#nowarn FS0057` and `#nowarn "FS0057"`
   as well as `#nowarn "57"` (AUTOMATION-1395). Only the last was read, so a file using the

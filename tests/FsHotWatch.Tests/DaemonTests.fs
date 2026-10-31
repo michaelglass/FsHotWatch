@@ -3027,20 +3027,23 @@ let ``watcher paths under the real root are respelled under the configured root,
     // A root that cannot be canonicalized is used as given.
     test <@ Daemon.watcherSpellingOf "/no/such/fshw-root" = "/no/such/fshw-root" @>
 
-[<Fact(Timeout = 60000)>]
-let ``a project change that replaces the model seals the new model even with no checkable files`` () =
-    // The cold scan seals an EMPTY cohort, because "every checkable file of this model has
-    // been dealt with" is an answer a model with no checkable files has too. A change batch
-    // that re-discovers the project replaces that model with a new generation — and the new
-    // one is owed the same answer. Unsealed, an analysis-only daemon never earns a receipt
-    // for it and its check can never be green.
-    withTempDir "daemon-empty-model-change" (fun tmpDir ->
+/// A one-project daemon whose project lists `sources` (relative to its directory; none of
+/// them is written to disk), its project file edited once after the cold scan. Asserts the
+/// change batch that re-discovers it seals the new model, and returns that seal.
+let private sealOfModelReplacingBatch (name: string) (sources: string list) : BatchChecked =
+    withTempDir name (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src")
         Directory.CreateDirectory(srcDir) |> ignore
         let projectPath = Path.Combine(srcDir, "Empty.fsproj")
         File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let sourcePaths = sources |> List.map (fun source -> Path.Combine(srcDir, source))
 
-        let loader = CountingWorkspaceLoader([ minimalLoadedProject projectPath ])
+        let loader =
+            CountingWorkspaceLoader(
+                [ { minimalLoadedProject projectPath with
+                      SourceFiles = sourcePaths } ]
+            )
+
         let checker = sharedChecker.Value
 
         let fcsOptions =
@@ -3052,7 +3055,7 @@ let ``a project change that replaces the model seals the new model even with no 
 
             { scriptOptions with
                 ProjectFileName = projectPath
-                SourceFiles = [||] }
+                SourceFiles = Array.ofList sourcePaths }
 
         let callback = ref None
 
@@ -3119,8 +3122,29 @@ let ``a project change that replaces the model seals the new model even with no 
 
         test <@ loader.Loads = 2 @>
         let seal = batchSeals.ToArray() |> Array.head
-        test <@ seal.Files.IsEmpty @>
-        test <@ seal.ModelGeneration.IsSome && seal.ModelGeneration > bootModel @>)
+        test <@ seal.ModelGeneration.IsSome && seal.ModelGeneration > bootModel @>
+        seal)
+
+[<Fact(Timeout = 60000)>]
+let ``a project change that replaces the model seals the new model even with no checkable files`` () =
+    // The cold scan seals an EMPTY cohort, because "every checkable file of this model has
+    // been dealt with" is an answer a model with no checkable files has too. A change batch
+    // that re-discovers the project replaces that model with a new generation — and the new
+    // one is owed the same answer. Unsealed, an analysis-only daemon never earns a receipt
+    // for it and its check can never be green.
+    let seal = sealOfModelReplacingBatch "daemon-empty-model-change" []
+    test <@ seal.Files.IsEmpty @>
+
+[<Fact(Timeout = 60000)>]
+let ``a project change that replaces the model seals the new model even when no check completes`` () =
+    // AUTOMATION-1393. The model change retires the previous seal, and the new model has a
+    // checkable file whose check returns nothing (here: it is not on disk). The batch then
+    // dispatched no result, and it skipped its seal, so the new model had none. A daemon
+    // that runs tests grades its test evidence through the seal, and with none it graded
+    // the run ungated: the file no analysis covered refused nothing. Sealed, the seal names
+    // that file as a refusal.
+    let seal = sealOfModelReplacingBatch "daemon-unchecked-model-change" [ "Missing.fs" ]
+    test <@ seal.Files.IsEmpty @>
 
 /// Two independent projects, `Changed` and `Untouched`, under an analysis-only TestPrune
 /// daemon (no test configs, so the plugin mints analysis evidence). `Start` takes the
