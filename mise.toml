@@ -317,7 +317,7 @@ run = "dotnet fsi scripts/check-msbuild-deps.fsx && dotnet fsi scripts/check-pac
 # which is the very thing this repo refuses to ship.
 # `check-msbuild-deps` is NOT listed here — it is in the `run` command above, so
 # that CI runs it too. `compile` stays, because the check reads a BUILT deps.json.
-depends = ["compile", "lint-project", "coverage-check", "tp-coverage-check", "tp-example-build", "sync-docs-check"]
+depends = ["compile", "lint-project", "coverage-check", "tp-coverage-check", "tp-example-build", "sync-docs-check", "check-commit-messages"]
 
 [tasks.ci-linux]
 description = "Run GitHub Actions' CI jobs (build, integration, lint-project) in a local Linux container. Required before every push to main."
@@ -332,6 +332,12 @@ description = "Run GitHub Actions' CI jobs (build, integration, lint-project) in
 # has changed. Needs a Docker daemon (Docker Desktop, OrbStack or colima). Pass a checkout
 # path to run another revision: `mise run ci-linux -- .workspaces/<name>`.
 run = "bash scripts/ci-linux.sh"
+
+[tasks.check-commit-messages]
+description = "Refuse private references (agent-session links, private hostnames, tracker URLs) in the commits a push would publish"
+# `ci` depends on this, and GitHub CI runs the same script on the pushed range (the
+# `commit-messages` job). jj runs no hooks, so nothing earlier can stop such a message.
+run = "bash scripts/check-commit-messages.sh --jj-revset 'main@origin..@'"
 
 [tasks.check-msbuild-deps]
 description = "Verify app-local MSBuild support assemblies are not downgraded"
