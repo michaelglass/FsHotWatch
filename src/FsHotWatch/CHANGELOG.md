@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a file compiled into several projects of one tier is checked under the same project in
+  every daemon (AUTOMATION-1432). The scan checks such a file once, under the first project of
+  its tier, and `ProjectGraph.GetParallelTiers` listed a tier in hash order, which .NET seeds
+  per process. With `checkRecords` on, a restart could check the file under a project with no
+  record for it, and then miss every record compiled after it there: a clean restart on a
+  25-project repository still started up to 28 FCS checks. A tier is now in ordinal path order.
+
 - fix!: the idle-exit line names the memory-pressure reading it acted on (AUTOMATION-1391): the
   macOS kernel level (`kern.memorystatus_vm_pressure_level`, e.g. `level 2 (warning)`) or, where
   the kernel gives none, whether the GC's high-memory-load mark was crossed. It said only that

@@ -126,3 +126,96 @@ let ``an edit while the daemon is stopped live-checks exactly the edited file an
                 File.AppendAllText(Path.Combine(directory, "Middle.fs"), "let extra () = 3\n"))
 
         Assert.True((replayed, started, demanded) = (1, 3, 0), log))
+
+/// A library project of the fixture that compiles `shared/Shared.fs` through a link, as
+/// `tests/Replay` does, and one file of its own. It references nothing, so it shares the
+/// first tier with `tests/Replay`.
+let private linkedLibrary (root: string) (name: string) =
+    let directory = Path.Combine(root, "src", name)
+    Directory.CreateDirectory directory |> ignore
+
+    File.WriteAllText(
+        Path.Combine(directory, $"%s{name}.fsproj"),
+        $"""<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../shared/Shared.fs" Link="Shared.fs" />
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Update="FSharp.Core" Version="10.1.*" />
+  </ItemGroup>
+</Project>
+"""
+    )
+
+    File.WriteAllText(
+        Path.Combine(directory, "Lib.fs"),
+        $"module %s{name}.Lib\nlet two () = Shared.Helper.one () + 1\n"
+    )
+
+    $"src/%s{name}/%s{name}.fsproj"
+
+[<Fact(Timeout = 900000)>]
+let ``a file compiled into three projects of one tier is replayed after a restart, with no FCS check`` () =
+    // AUTOMATION-1432. The scan checks a shared file once, under the first project of its
+    // tier to reach it, and files its record there. That project was the first in the
+    // graph's hash order, which is seeded per process, so a restart checked it under
+    // another project, missed, and re-checked the files compiled after it there as well.
+    let clock = budget ()
+
+    withTempDir "fshw-check-records-linked" (fun root ->
+        Directory.CreateDirectory(Path.Combine(root, "shared")) |> ignore
+        File.WriteAllText(Path.Combine(root, "shared", "Shared.fs"), "module Shared.Helper\nlet one () = 1\n")
+        let libraries = [ linkedLibrary root "LinkA"; linkedLibrary root "LinkB" ]
+        let directory = prepare clock root
+
+        let replay = Path.Combine(directory, "Replay.fsproj")
+
+        File.WriteAllText(
+            replay,
+            File
+                .ReadAllText(replay)
+                .Replace(
+                    """    <Compile Include="Value.fs" />""",
+                    """    <Compile Include="../../shared/Shared.fs" Link="Shared.fs" />
+    <Compile Include="Value.fs" />"""
+                )
+        )
+
+        // The build plugin requires every project's output, so the build covers all three.
+        File.WriteAllText(
+            Path.Combine(root, "Fixture.slnx"),
+            "<Solution>\n"
+            + String.concat
+                ""
+                [ for project in "tests/Replay/Replay.fsproj" :: libraries -> $"  <Project Path=\"%s{project}\" />\n" ]
+            + "</Solution>\n"
+        )
+
+        let config = Path.Combine(root, ".fshw.json")
+
+        File.WriteAllText(
+            config,
+            File
+                .ReadAllText(config)
+                .Replace(
+                    "\"args\": \"build tests/Replay/Replay.fsproj --disable-build-servers\"",
+                    "\"args\": \"build Fixture.slnx --disable-build-servers\""
+                )
+        )
+
+        Assert.Contains("build Fixture.slnx", File.ReadAllText config)
+
+        for library in libraries do
+            let code, text = run clock root "dotnet" [ "restore"; library ]
+            Assert.True((code = 0), text)
+
+        commit clock root "a file linked into three projects"
+
+        let (replayed, started, demanded), log = checkTwice clock root ignore
+        // Every checkable file once: Replay's four, LinkA's and LinkB's Lib.fs, and
+        // Shared.fs under the one project that claims it in both daemons.
+        Assert.True((replayed, started, demanded) = (7, 0, 0), log))

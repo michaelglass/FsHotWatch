@@ -305,8 +305,17 @@ type ProjectGraph() as this =
 
     /// Group projects into parallel tiers where each tier's projects
     /// have all dependencies satisfied by earlier tiers.
+    ///
+    /// Each tier is in ordinal path order, never the map's: its string hash is seeded per
+    /// process. A file compiled into two projects of one tier is checked by the first of
+    /// them a scan reaches (`Daemon.freshForTier`), and its check record is that project's
+    /// (AUTOMATION-1432). In hash order a restart checked it under the other project and
+    /// missed its record, and the records of every file compiled after it there.
     member this.GetParallelTiers() : AbsProjectPath list list =
-        let projects = this.GetAllProjects()
+        let projects =
+            this.GetAllProjects()
+            |> List.sortWith (fun a b -> System.String.CompareOrdinal(AbsProjectPath.value a, AbsProjectPath.value b))
+
         let allProjects = projects |> Set.ofList
 
         let rec buildTiers remaining (sortedSet: Set<AbsProjectPath>) acc =

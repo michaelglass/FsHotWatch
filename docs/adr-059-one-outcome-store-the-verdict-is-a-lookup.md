@@ -604,6 +604,31 @@ replays the one before it. Each daemon logs this tally as it stops
 A comment edit is not cut off within the scan that re-checks it. The files after it are keyed
 by the edited file's content until its new record is filed, so they are re-checked as well.
 
+**A file compiled into several projects is checked under one, and it must be the same one in
+every daemon (AUTOMATION-1432).** On intelligence a clean restart still started 15 to 28 FCS
+checks, all in files linked into more than one project with `<Compile Include="../…" Link=…>`
+and in the files compiled after them. The record key was not at fault: it names the project
+through `options` and `upstream`, and pending checks are held by (file, project). The scan
+checks a linked file once, under the first project of its tier to reach it
+(`Daemon.freshForTier`), and that order was the project graph's hash order, which .NET seeds
+per process. Each restart could check the file under a different project, whose record did not
+exist, and that miss renamed the file in the project's chain, so the files after it missed too.
+Two restarts on the same tree checked `Jj.fs` under GateHook and then under Vcs. A tier is now
+listed in ordinal path order (`ProjectGraph.GetParallelTiers`), and `CheckRecordsRestartTests`
+covers a file linked into three projects of one tier. A record is still filed only under the
+project that checked the file. The other projects name it by content, which is stable, and
+checking it under each of them would only buy duplicate checks.
+
+**The startup work before the check tier is not covered by §14's 5 s bar yet.** A restart's
+scan runs the preprocessors, then waits for the build plugin to leave Running before any check
+or replay, because the checks read the project outputs the build rewrites (ADR-037). A record's
+key also hashes those outputs, so serving records before the build would key them on outputs
+the build may still replace. It would need every replayed key re-validated after the build.
+That changes when a scan's answers are taken, so it is a design change and is not made here. On
+intelligence that window was 15 s (18:00:05 to 18:00:20). The logs do not show how it splits
+between the `dbtypes-sync` preprocessor and the build, because a `spawn` line names only the
+executable.
+
 ## 18. Amendment (AUTOMATION-1372): project options are records in the same store
 
 §14 left the project-options cache as a quick win: MSBuild evaluation, through Ionide's

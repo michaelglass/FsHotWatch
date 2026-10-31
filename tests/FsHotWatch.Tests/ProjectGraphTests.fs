@@ -164,6 +164,32 @@ let ``GetParallelTiers handles linear chain`` () =
     test <@ tiers.[1] = [ pp "/proj/B.fsproj" ] @>
     test <@ tiers.[2] = [ pp "/proj/C.fsproj" ] @>
 
+// AUTOMATION-1432. A file compiled into two projects of one tier is checked by the first
+// project of that tier the scan reaches (`Daemon.freshForTier`). The graph is a hash map
+// whose string hash is seeded per process, so an unsorted tier put the projects in a new
+// order in every daemon, and a restart checked the shared file under the other project.
+// Its check record is that project's, so the restart missed, and so did every file
+// compiled after it there. A tier is therefore listed in ordinal path order.
+[<Fact(Timeout = 15000)>]
+let ``GetParallelTiers lists each tier in ordinal path order, whatever the registration order`` () =
+    let names = [ for c in "QWERTYUIOPASDFGH" -> string c ]
+    let graph = ProjectGraph()
+
+    for name in List.rev names do
+        graph.RegisterProject(pp $"/proj/%s{name}.fsproj", [ fp "/proj/Shared.fs" ], [])
+
+    graph.RegisterProject(pp "/proj/Top.fsproj", [ fp "/proj/Top.fs" ], [ pp "/proj/Q.fsproj" ])
+
+    let tiers = graph.GetParallelTiers()
+
+    let ordinal (tier: AbsProjectPath list) =
+        tier
+        |> List.sortWith (fun a b -> String.CompareOrdinal(AbsProjectPath.value a, AbsProjectPath.value b))
+
+    test <@ tiers.Length = 2 @>
+    test <@ tiers.[0].Length = names.Length @>
+    test <@ tiers |> List.forall (fun tier -> tier = ordinal tier) @>
+
 // --- Shared source files (linked items) ---
 
 [<Fact(Timeout = 15000)>]

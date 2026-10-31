@@ -1841,7 +1841,10 @@ module ScanCheckOutcome =
 /// the more upstream project — a helper linked from its owning project into a
 /// downstream one is checked in the project that owns it. Either project's options
 /// would type-check the file; ordering makes WHICH of them deterministic rather than
-/// "whichever tier happened to run last".
+/// "whichever tier happened to run last". Within a tier the first project in ordinal path
+/// order wins (`ProjectGraph.GetParallelTiers`), so every daemon picks the same one: the
+/// file's check record is filed under that project, and a restart that picked another
+/// missed it (AUTOMATION-1432).
 ///
 /// Pure, and threaded by the caller, so the cross-tier invariant is testable without
 /// a daemon, a checker or a project graph.
