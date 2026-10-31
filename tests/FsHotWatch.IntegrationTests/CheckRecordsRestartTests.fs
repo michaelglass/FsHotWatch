@@ -70,6 +70,38 @@ let private tally (log: string) =
     Assert.True(found.Success, $"the daemon logged no check-record tally as it stopped:\n%s{log}")
     int found.Groups[1].Value, int found.Groups[2].Value, int found.Groups[3].Value
 
+/// Each full scan a daemon logged (`Checked N files (T tiers), skipped M, unchecked U`): the
+/// files it checked and the files it left unchecked, in order.
+let private scans (log: string) =
+    Regex.Matches(log, @"\[scan\] \S+ Checked (\d+) files \(\d+ tiers\), skipped \d+, unchecked (\d+)")
+    |> Seq.map (fun found -> int found.Groups[1].Value, int found.Groups[2].Value)
+    |> List.ofSeq
+
+/// How many full scans a daemon ran, after asserting the scans and the tally agree with what its
+/// FIRST scan did: `firstReplayed` files answered from records and `firstStarted` checked in FCS.
+///
+/// A daemon scans as it starts, and `check` asks for a scan of its own. A request admitted while
+/// a scan runs is answered by it; one admitted after it completed runs a second full scan
+/// (`answeredByLastScan` in Daemon.fs). Which one happens is a race between that scan and the
+/// CLI process starting up, and a scan answered from records takes well under a second, so on a
+/// loaded runner the request can land after it. The tally counts across scans, so a second scan
+/// adds every file again, each answered from the record the first scan read or filed: none is
+/// started in FCS, and no plugin demands one.
+let private assertTally (firstReplayed, firstStarted) (log: string) (replayed, started, demanded) =
+    let files = firstReplayed + firstStarted
+    let ran = scans log
+
+    Assert.True(
+        ran.Length = 1 || ran.Length = 2,
+        $"expected the start-up scan and at most the one `check` asked for, saw %d{ran.Length}:\n%s{log}"
+    )
+
+    for checkedFiles, unchecked in ran do
+        Assert.True((checkedFiles, unchecked) = (files, 0), log)
+
+    Assert.True((replayed, started, demanded) = (firstReplayed + files * (ran.Length - 1), firstStarted, 0), log)
+    ran.Length
+
 /// Each plugin's name and outcome in a verdict.
 let private outcomes (verdict: JsonElement) =
     verdict.GetProperty("plugins").EnumerateArray()
@@ -77,21 +109,36 @@ let private outcomes (verdict: JsonElement) =
     |> Seq.sort
     |> List.ofSeq
 
-/// Check `root` with a cold daemon, stop it, run `between`, then check again with a new one.
-/// Both verdicts, and the second daemon's tally.
-let private checkTwice clock root (between: unit -> unit) =
+/// Wait until the daemon serving `root` has completed its startup scan.
+let private startupScanSettled clock root =
+    let code, physical = run clock root "/bin/pwd" [ "-P" ]
+    Assert.True((code = 0), physical)
+    let pipe = FsHotWatch.Cli.Program.computePipeName (physical.Trim())
+
+    Async.RunSynchronously(FsHotWatch.Ipc.IpcClient.waitForScan pipe 0L, remaining clock 120000)
+    |> ignore
+
+/// Check `root` with a cold daemon, stop it, run `between`, then check again with a new one;
+/// with `settleFirst`, only once the new daemon has completed its start-up scan. The second
+/// daemon's tally and log.
+let private checkTwice clock root (between: unit -> unit) (settleFirst: bool) =
     let first, firstLog =
         withDaemonOutput true clock root (fun cli -> check clock root cli)
 
     assertGreen first
     let replayedFirst, startedFirst, _ = tally firstLog
-    // The cold daemon had no records to answer from: it checked every file.
-    Assert.Equal(0, replayedFirst)
+    // The cold daemon had no records to answer from: its first scan checked every file, and a
+    // second scan, when `check` asked after the first completed, replayed what it had filed.
+    Assert.Equal(scans firstLog |> List.skip 1 |> List.sumBy fst, replayedFirst)
     Assert.True(startedFirst >= 3, firstLog)
     between ()
 
     let second, secondLog =
-        withDaemonOutput false clock root (fun cli -> check clock root cli)
+        withDaemonOutput false clock root (fun cli ->
+            if settleFirst then
+                startupScanSettled clock root
+
+            check clock root cli)
 
     assertGreen second
     let _, _, firstVerdict = first
@@ -105,11 +152,23 @@ let ``a restarted daemon reaches the same green from check records, with no FCS 
 
     withTempDir "fshw-check-records-restart" (fun root ->
         prepare clock root |> ignore
-        let (replayed, started, demanded), log = checkTwice clock root ignore
+        let found, log = checkTwice clock root ignore false
         // Every file answered from its record: the three in the project and the
         // `DefaultRunnerReporters.fs` xunit.v3 compiles in after them from the NuGet cache.
         // No plugin lacked a cached answer for one, so none demanded a live check.
-        Assert.True((replayed, started, demanded) = (4, 0, 0), log))
+        assertTally (4, 0) log found |> ignore)
+
+[<Fact(Timeout = 900000)>]
+let ``a check sent after the restarted daemon's startup scan completed is answered from check records too`` () =
+    let clock = budget ()
+
+    withTempDir "fshw-check-records-settled" (fun root ->
+        prepare clock root |> ignore
+        let found, log = checkTwice clock root ignore true
+        // Admitted after the start-up scan completed, `check`'s request ran a second full scan
+        // (the path that only a slow runner took by chance): it too answered every file from
+        // its record.
+        Assert.Equal(2, assertTally (4, 0) log found))
 
 [<Fact(Timeout = 900000)>]
 let ``an edit while the daemon is stopped live-checks exactly the edited file and the files compiled after it`` () =
@@ -118,14 +177,18 @@ let ``an edit while the daemon is stopped live-checks exactly the edited file an
     withTempDir "fshw-check-records-edit" (fun root ->
         let directory = prepare clock root
 
-        let (replayed, started, demanded), log =
-            checkTwice clock root (fun () ->
-                // An API edit to the middle file: it and every file after it (Tests.fs, and the
-                // package's DefaultRunnerReporters.fs) must be checked again; Value.fs before
-                // it is answered from its record.
-                File.AppendAllText(Path.Combine(directory, "Middle.fs"), "let extra () = 3\n"))
+        let found, log =
+            checkTwice
+                clock
+                root
+                (fun () ->
+                    // An API edit to the middle file: it and every file after it (Tests.fs, and the
+                    // package's DefaultRunnerReporters.fs) must be checked again; Value.fs before
+                    // it is answered from its record.
+                    File.AppendAllText(Path.Combine(directory, "Middle.fs"), "let extra () = 3\n"))
+                false
 
-        Assert.True((replayed, started, demanded) = (1, 3, 0), log))
+        assertTally (1, 3) log found |> ignore)
 
 /// A library project of the fixture that compiles `shared/Shared.fs` through a link, as
 /// `tests/Replay` does, and one file of its own. It references nothing, so it shares the
@@ -215,7 +278,7 @@ let ``a file compiled into three projects of one tier is replayed after a restar
 
         commit clock root "a file linked into three projects"
 
-        let (replayed, started, demanded), log = checkTwice clock root ignore
+        let found, log = checkTwice clock root ignore false
         // Every checkable file once: Replay's four, LinkA's and LinkB's Lib.fs, and
         // Shared.fs under the one project that claims it in both daemons.
-        Assert.True((replayed, started, demanded) = (7, 0, 0), log))
+        assertTally (7, 0) log found |> ignore)
