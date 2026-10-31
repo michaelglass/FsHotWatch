@@ -8,6 +8,14 @@
   contacts no daemon, and it runs before the stale-pidfile cleanup other verbs do, so a stale
   pidfile it reports is still there afterwards.
 
+- fix: a client under a different TMPDIR than the daemon can restart it (AUTOMATION-1423). The
+  client read `.fshw/daemon.endpoint` once, at startup. When a config or binary change made it
+  restart a daemon started under another TMPDIR (for example under `env -i`, which puts the
+  socket in `/tmp`), it launched the replacement under its own TMPDIR and then waited for the old
+  socket. It waited out the whole startup timeout and reported `Failed to start daemon` while the
+  new daemon was serving. Every IPC call to the worktree's own daemon now reads the record when
+  it is made (`resolvingIpcOps` / `worktreeIpcOps`).
+
 - feat: `tests.traces.select` (`"off"` or `"shadow"`), refused when unknown or when `record` is off
   (AUTOMATION-975).
 

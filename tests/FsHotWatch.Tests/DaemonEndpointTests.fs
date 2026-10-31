@@ -115,3 +115,84 @@ let ``a daemon pid that does not parse leaves the record unused`` () =
         File.WriteAllText(Path.Combine(repoRoot, ".fshw", "daemon.pid"), "not-a-pid")
         DaemonEndpoint.record repoRoot "/tmp/fshw-ep-badpid"
         test <@ DaemonEndpoint.resolve (fun _ -> true) repoRoot "fshw-computed" = "fshw-computed" @>)
+
+/// Every IPC call a client makes, with the pipe name it was handed.
+let private recordingIpc (seen: Collections.Generic.List<string>) : Program.IpcOps =
+    let reply pipe =
+        seen.Add pipe
+        async { return "" }
+
+    { Shutdown = reply
+      Scan = fun pipe _ -> reply pipe
+      ScanStatus = reply
+      GetStatus = reply
+      GetPluginStatus = fun pipe _ -> reply pipe
+      RunCommand = fun pipe _ _ -> reply pipe
+      RunCommandFor = fun pipe _ _ _ -> reply pipe
+      GetDiagnostics = fun pipe _ -> reply pipe
+      WaitForScan = fun pipe _ -> reply pipe
+      WaitForComplete = fun pipe _ -> reply pipe
+      WaitForRest = fun pipe _ -> reply pipe
+      TriggerBuild = reply
+      FormatAll = reply
+      RerunPlugin = fun pipe _ -> reply pipe
+      Invalidate = reply
+      IsRunning =
+        fun pipe ->
+            seen.Add pipe
+            true
+      LaunchDaemon = fun _ _ _ -> seen.Add "launch" }
+
+[<Fact(Timeout = 15000)>]
+let ``every worktree IPC call goes to the resolved socket, and launching is left alone`` () =
+    let seen = Collections.Generic.List<string>()
+
+    let ipc =
+        Program.resolvingIpcOps (fun pipe -> "resolved:" + pipe) (recordingIpc seen)
+
+    [ ipc.Shutdown "p"
+      ipc.Scan "p" None
+      ipc.ScanStatus "p"
+      ipc.GetStatus "p"
+      ipc.GetPluginStatus "p" "lint"
+      ipc.RunCommand "p" "c" "{}"
+      ipc.RunCommandFor "p" "id" "c" "{}"
+      ipc.GetDiagnostics "p" ""
+      ipc.WaitForScan "p" 0L
+      ipc.WaitForComplete "p" 0
+      ipc.WaitForRest "p" 0
+      ipc.TriggerBuild "p"
+      ipc.FormatAll "p"
+      ipc.RerunPlugin "p" "lint"
+      ipc.Invalidate "p" ]
+    |> Async.Sequential
+    |> Async.RunSynchronously
+    |> ignore
+
+    test <@ ipc.IsRunning "p" @>
+    ipc.LaunchDaemon "root" "" "log"
+
+    test <@ seen.Count = 17 @>
+    test <@ seen |> Seq.take 16 |> Seq.forall ((=) "resolved:p") @>
+    test <@ seen[16] = "launch" @>
+
+[<Fact(Timeout = 15000)>]
+let ``the worktree IPC re-reads the record on every call, so it follows a daemon that replaced the one it first found``
+    ()
+    =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "endpoint-follows" (fun repoRoot ->
+            writePid repoRoot Environment.ProcessId
+            let ipc = Program.worktreeIpcOps repoRoot
+            let clientName = $"fshw-ep-client-%s{shortId ()}"
+
+            let first, firstServer = listenElsewhere ()
+            DaemonEndpoint.record repoRoot first
+            test <@ ipc.IsRunning clientName @>
+            firstServer.Dispose()
+            // The old daemon is gone and its replacement records a different socket.
+            let second, secondServer = listenElsewhere ()
+            use _second = secondServer
+            DaemonEndpoint.record repoRoot second
+
+            test <@ ipc.IsRunning clientName @>)

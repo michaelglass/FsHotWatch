@@ -19,6 +19,7 @@
   <Folder Name="/src/" />
   <Project Path="examples/ExampleAnalyzer/ExampleAnalyzer.fsproj" />
   <Project Path="analyzers/FsHotWatch.Rules/FsHotWatch.Rules.fsproj" />
+  <Project Path="analyzers/FsHotWatch.WallClock/FsHotWatch.WallClock.fsproj" />
   <Project Path="tools/fsharplint-shim/fsharplint-shim.csproj" />
   <Folder Name="/bench/">
     <Project Path="bench/FsHotWatch.Bench/FsHotWatch.Bench.fsproj" />

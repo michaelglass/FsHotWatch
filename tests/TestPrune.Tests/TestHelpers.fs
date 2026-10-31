@@ -99,3 +99,12 @@ let withDbPath (f: string -> Database -> unit) =
         f path db
     finally
         cleanupDb path
+
+/// The hang cap for a wait whose outcome, not its duration, is the claim. FSHW-WALL-001
+/// flags an asserted wait with a literal budget under 30 s: on a loaded box such a wait
+/// fails on load, not on behaviour. A named cap at or above 30 s only decides how long a
+/// genuine hang takes to report (as `HangWaitMs` in FsHotWatch's TestHelpers).
+let HangWaitMs = 30_000
+
+/// `HangWaitMs` for the `Wait(TimeSpan)` overloads.
+let HangWait = TimeSpan.FromMilliseconds(float HangWaitMs)
