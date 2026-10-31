@@ -164,11 +164,11 @@ let internal processAlive (pid: int) : bool =
 /// drive abandonment, corruption and foreign hosts without processes or clocks. Returns
 /// the held claims AND the files whose claims are provably abandoned, so the caller can
 /// do hygiene without a second pass deciding it again.
-let internal liveIn
+let internal surveyIn
     (thisHost: string)
     (isAlive: int -> bool)
     (files: (string * string) list)
-    : Claim list * string list =
+    : Claim list * (string * Claim) list =
     files
     |> List.fold
         (fun (held, abandoned) (path, contents) ->
@@ -180,11 +180,32 @@ let internal liveIn
             if isHeld thisHost isAlive claim then
                 claim :: held, abandoned
             else
-                held, path :: abandoned)
+                held, (path, claim) :: abandoned)
         ([], [])
     |> fun (held, abandoned) -> List.rev held, List.rev abandoned
 
-/// The claims held on this repo right now.
+/// `surveyIn`, naming only the abandoned claims' files.
+let internal liveIn
+    (thisHost: string)
+    (isAlive: int -> bool)
+    (files: (string * string) list)
+    : Claim list * string list =
+    let held, abandoned = surveyIn thisHost isAlive files
+    held, abandoned |> List.map fst
+
+/// What the claim files on this repo say: the claims HELD by a running check, and the
+/// claims whose process provably DIED without releasing them.
+type Survey =
+    {
+        Held: Claim list
+        /// A check that ended without running its bracket — SIGKILL, an OOM kill, power
+        /// loss — leaves only this behind. It is evidence that a check STARTED and never
+        /// answered, so a verdict published before it began is not the latest answer.
+        Died: Claim list
+    }
+
+/// The claims on this repo right now, deleting the died claims `retired` says no
+/// longer matter.
 ///
 /// TOTAL and never throwing: a `.fshw/` that cannot be listed or read is reported as NO
 /// claims. That is the one place this leans open, and deliberately — an unreadable
@@ -192,15 +213,16 @@ let internal liveIn
 /// and turning it into a permanent "a run is in flight" would wedge the workspace with
 /// no way out.
 ///
-/// Provably-abandoned claim files are deleted as they are found, the same hygiene
-/// `cleanStalePidfileWith` does for `daemon.pid`: cleaned up by the next command rather
-/// than left for an external reaper.
-let live (repoRoot: string) : Claim list =
+/// A died claim is NOT deleted merely for being found, unlike `daemon.pid`: it is the
+/// only trace a killed check leaves, and reaping it on the first read would hand the
+/// older green back to the second. The caller that can judge it — the verdict reader,
+/// which knows when the verdict on disk was published — says which are `retired`.
+let survey (repoRoot: string) (retired: Claim -> bool) : Survey =
     let dir = dirPath repoRoot
 
     try
         if not (Directory.Exists dir) then
-            []
+            { Held = []; Died = [] }
         else
             let files =
                 Directory.GetFiles(dir, "*.json")
@@ -211,25 +233,31 @@ let live (repoRoot: string) : Claim list =
                     with
                     // A file that vanished between listing and reading was released
                     // while we looked; a file we cannot read is folded into the
-                    // unreadable sentinel by `liveIn`, so only true disappearance
+                    // unreadable sentinel by `surveyIn`, so only true disappearance
                     // drops out here.
                     | :? FileNotFoundException
                     | :? DirectoryNotFoundException -> None
                     | :? IOException -> Some(path, "")
                     | :? UnauthorizedAccessException -> Some(path, ""))
 
-            let held, abandoned = liveIn Environment.MachineName processAlive files
+            let held, abandoned = surveyIn Environment.MachineName processAlive files
+            let reaped, kept = abandoned |> List.partition (snd >> retired)
 
-            for path in abandoned do
+            for path, _ in reaped do
                 try
                     File.Delete path
                 with ex ->
                     Logging.debug "run-claim" $"could not delete an abandoned claim: %s{ex.Message}"
 
-            held
+            { Held = held
+              Died = kept |> List.map snd }
     with ex ->
         Logging.debug "run-claim" $"could not read %s{RelativeDir}: %s{ex.Message}"
-        []
+        { Held = []; Died = [] }
+
+/// The claims held on this repo right now. Deletes nothing: whether a died claim still
+/// matters is the verdict reader's call (`survey`).
+let live (repoRoot: string) : Claim list = (survey repoRoot (fun _ -> false)).Held
 
 /// Claim the repo for this invocation. Best-effort by design, exactly like publishing
 /// the verdict: a repo whose `.fshw/` cannot be written must still get its exit code,

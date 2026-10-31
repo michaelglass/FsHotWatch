@@ -613,9 +613,16 @@ Three rules this obeys:
   records as `attribution.invocationId`; a match is the run that published it, not a
   refusal.
 - **A crashed run does not wedge the workspace.** A claim whose process is provably gone
-  is abandoned and reaped by the next command. Every unknown — a foreign host, a claim
-  file that will not parse — leans "in flight": what is unknown is WHO is running, never
-  WHETHER anyone is.
+  is abandoned, not in flight. Every unknown — a foreign host, a claim file that will not
+  parse — leans "in flight": what is unknown is WHO is running, never WHETHER anyone is.
+- **A killed run does not leave an older green as the answer.** A check SIGKILLed (an
+  OOM kill, `timeout -s KILL`, power loss) runs no cleanup, so it never writes the
+  `incomplete` record other abnormal endings leave. When its abandoned claim STARTED after
+  the verdict was published, `fshw verdict` reports that verdict as superseded — exit
+  **4**, `"superseded: the last check (pid N on HOST, started T) died without a
+  verdict …"` — and `confirm` will not reuse it. The claim is kept as evidence until a
+  verdict published after it began makes it moot; only then is it reaped. A claim older
+  than the verdict, or carrying the invocation id the verdict records, changes nothing.
 
 See [ADR-019](../../docs/adr-019-a-verdict-is-current-only-when-no-other-run-is-in-flight.md).
 
