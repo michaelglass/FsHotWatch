@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- docs: `buildTemplate`'s placeholder is `{project}`, substituted once per root project, not
+  `{projects}`. The READMEs named `{projects}`, which a template build passes through to the
+  command verbatim. They now also say which roots a template builds (affected non-test projects
+  that no other affected non-test project depends on) and that a test-file-only change still
+  builds (ADR-012). `BuildPlugin.TemplatePlaceholder` names the token, and a test pins both
+  READMEs to it (AUTOMATION-1418).
+
 - build: package versions come from Directory.Packages.props (Central Package Management, now
   repo-wide; AUTOMATION-1367). A packed FSharp.Core (and, where referenced, FSharp.Compiler.Service)
   dependency is a floor at the same exact pin (>= 10.1.402, >= 43.12.402) rather than an `[x]` range,

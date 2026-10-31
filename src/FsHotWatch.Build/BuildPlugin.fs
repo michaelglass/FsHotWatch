@@ -172,6 +172,11 @@ let private codedErrorLine =
         System.Text.RegularExpressions.RegexOptions.Compiled
     )
 
+/// The token a `buildTemplate` names its project by. A template build runs the template
+/// once per root project, with this token replaced by that root's path.
+[<Literal>]
+let TemplatePlaceholder = "{project}"
+
 /// How many coded error lines, or trailing output lines, a failure description keeps.
 [<Literal>]
 let FailureDescriptionLines = 20
@@ -1753,7 +1758,7 @@ let internal createArmedWith
 
                                     for index, root in List.indexed roots do
                                         let rootStr = AbsProjectPath.value root
-                                        let rendered = template.Replace("{project}", rootStr)
+                                        let rendered = template.Replace(TemplatePlaceholder, rootStr)
                                         let (cmd, cmdArgs) = splitCommand rendered
                                         ctx.Log $"Running template: %s{cmd} %s{cmdArgs}"
                                         let rootStarted = DateTime.UtcNow

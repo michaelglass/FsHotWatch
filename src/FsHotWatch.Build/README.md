@@ -23,8 +23,9 @@ plugins (TestPrune) react to the result.
 5. Downstream plugins like TestPrune react to the build result
 
 The plugin guards against concurrent builds -- if a build is already
-running and you save again, it skips. It also skips the build entirely
-if only test files changed (and emits `BuildSucceeded` directly).
+running and you save again, it skips. A change to test files alone still
+runs a build: the tests run the compiled test assembly, so it must be
+rebuilt (ADR-012).
 
 ## Configuration
 
@@ -35,7 +36,7 @@ In `.fshw.json`:
   "build": {
     "command": "dotnet",
     "args": "build",
-    "buildTemplate": "dotnet build {projects}"
+    "buildTemplate": "dotnet build {project}"
   }
 }
 ```
@@ -46,7 +47,7 @@ Set `"build": false` to disable the build plugin entirely.
 |-------|------|---------|-------------|
 | `command` | `string` | `"dotnet"` | Build command. |
 | `args` | `string` | `"build"` | Arguments to the build command. |
-| `buildTemplate` | `string` | -- | Template for incremental builds. `{projects}` is replaced with changed project paths. |
+| `buildTemplate` | `string` | -- | Template for incremental builds, run once per root project: of the non-test projects affected by the change, each one that no other affected non-test project depends on. `{project}` is replaced with that root's path. Test projects are never built by the template; when the change reaches no non-test project, the `command`/`args` build runs instead. |
 
 ## CLI
 
