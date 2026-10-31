@@ -3260,3 +3260,26 @@ let ``an incomplete read is the answer: one read, no re-scan, even where a later
         // Nothing was re-scanned, and the read that would have flipped it was never taken.
         test <@ rescans = 0 @>
         test <@ errorReads = 1 @>)
+
+// AUTOMATION-1079: a reply that is valid JSON but not an object (or whose `projects` holds
+// a non-object) is a malformed daemon reply, named as one, never an InvalidOperationException
+// from `JsonElement.TryGetProperty`, and never a green.
+[<Theory(Timeout = 15000)>]
+[<InlineData("[]")>]
+[<InlineData("\"x\"")>]
+[<InlineData("null")>]
+[<InlineData("42")>]
+let ``a daemon reply that is JSON but not an object is a named malformed reply`` (reply: string) =
+    use writer = new System.IO.StringWriter()
+
+    let exitCode =
+        use _ = VerdictTerminal.install writer
+        renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false reply
+
+    test <@ exitCode = NoVerdictExitCode @>
+    test <@ writer.ToString().Contains "malformed daemon reply" @>
+
+[<Fact(Timeout = 15000)>]
+let ``a rerun whose project entry is not an object is never a green, and never a throw`` () =
+    test
+        <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"projects":[1,"p"]}""" = NoVerdictExitCode @>

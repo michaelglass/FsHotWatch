@@ -87,19 +87,24 @@ let ``a class is contended when the load per core over its own window reaches th
     let samples: Profile.Sample list =
         [ { At = at 0.0
             Load1 = Some 4.0
-            CpuMs = None }
+            CpuMs = None
+            Processes = None }
           { At = at 5.0
             Load1 = Some 40.0
-            CpuMs = None }
+            CpuMs = None
+            Processes = None }
           { At = at 10.0
             Load1 = Some 48.0
-            CpuMs = None }
+            CpuMs = None
+            Processes = None }
           { At = at 15.0
             Load1 = Some 44.0
-            CpuMs = None }
+            CpuMs = None
+            Processes = None }
           { At = at 20.0
             Load1 = Some 2.0
-            CpuMs = None } ]
+            CpuMs = None
+            Processes = None } ]
 
     // 12 cores: the window 6–14 s is bracketed by the samples at 5 and 15 and holds 10.
     let busy = Profile.contentionOver 12 samples (at 6.0, at 14.0)
@@ -126,7 +131,8 @@ let ``with no load samples a class's contention is unknown, not quiet`` () =
             12
             [ { At = at 0.0
                 Load1 = None
-                CpuMs = Some 5.0 } ]
+                CpuMs = Some 5.0
+                Processes = None } ]
             (at 0.0, at 1.0)
 
     test <@ noLoad.Contended = None @>
@@ -147,11 +153,13 @@ let ``every line round-trips through render and tryParse`` () =
           Profile.Sampled
               { At = at 5.0
                 Load1 = Some 7.25
-                CpuMs = Some 1234.5 }
+                CpuMs = Some 1234.5
+                Processes = None }
           Profile.Sampled
               { At = at 5.0
                 Load1 = None
-                CpuMs = None }
+                CpuMs = None
+                Processes = None }
           Profile.End(at 10.0, 10_000L, Some 9000.0, Some 2.0, "timed-out")
           Profile.Class(timing, Profile.contentionOver 12 [] (timing.Start, timing.Stop), Profile.ClassSource.Report)
           Profile.ClassesUnavailable "no report: the host was killed at its timeout" ]

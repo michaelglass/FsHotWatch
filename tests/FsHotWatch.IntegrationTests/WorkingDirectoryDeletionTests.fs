@@ -175,3 +175,16 @@ let ``deleting a scratch tree a daemon is evaluating in waits the evaluation out
         test <@ discovery.Wait(HangWait) @>
         test <@ processWorkingDirectoryExists () @>
         test <@ not (Directory.Exists root) @>)
+
+// AUTOMATION-1390: this assembly moves the process working directory too (the tests above,
+// and every `withProcessWorkingDirectory`), and the 10-18 Linux cascade (AUTOMATION-1234)
+// happened here. The guard that turns one deleted working directory into one red test,
+// rather than a cascade across unrelated classes, runs after every test of this assembly
+// as it does in FsHotWatch.Tests. Matched by name: the guard is linked from FsHotWatch.Tests.
+[<Fact(Timeout = 15000)>]
+let ``the integration test assembly guards the process working directory after every test`` () =
+    let guards =
+        Reflection.Assembly.GetExecutingAssembly().GetCustomAttributes(true)
+        |> Array.filter (fun a -> a.GetType().Name = "ProcessWorkingDirectoryGuardAttribute")
+
+    test <@ guards.Length = 1 @>

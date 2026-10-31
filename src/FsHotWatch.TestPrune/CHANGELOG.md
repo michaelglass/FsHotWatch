@@ -12,6 +12,16 @@
   refused the analysis, so the log claimed symbols were kept for a file that had none. It is now
   written only when the analysis produced symbols; a refused file is reported as unanalysable, as before.
 
+- fix: a test host's profile no longer loses its child processes when the first `ps` read
+  fails under load (AUTOMATION-1421). A failed process-table read was followed by no other
+  read until the refresh cadence came round (every 6th sample, 30 s), so a host that ended
+  first was recorded as one `?` process: its root, unnamed. A failed read is now no reading:
+  the table is read again on the next sample, and `ProcessTree.Children` names only processes
+  a reading named, so it is empty, never the root alone, until a reading succeeds. Each
+  `sample` line also carries `processes`, the size of that reading (`null` before one), so a
+  reader can tell a reading from its absence. Breaking: `Profile.Sample` has a `Processes`
+  field; a sample line written before it reads as `Processes = None`.
+
 - fix: a file's indexed analysis is no longer replayed after something it resolved upstream
   changed shape (AUTOMATION-1151). The identity that decides whether a `FileChecked` cache hit
   may stand in for re-analysing a file named only its source and diagnostics, so an earlier

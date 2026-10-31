@@ -1,4 +1,8 @@
-# ADR-036: A type incompatible with itself is our fault, not yours
+# ADR-063: A type incompatible with itself is our fault, not yours
+
+Numbered ADR-036 until 2026-10-31, a number it shared with
+[ADR-036](adr-036-a-gate-never-writes-the-inputs-its-verdict-is-addressed-by.md); a citation of
+"ADR-036" from before then may mean this one.
 
 ## Context
 

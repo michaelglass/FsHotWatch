@@ -10,6 +10,12 @@
   Before, a run-once scan printed nothing until it was over, so a slow scan and a stuck one
   looked the same. New: `ScanHeartbeat.runOnceReporting` and `ScanHeartbeat.runOnceWithProgress`.
 
+- fix: a daemon reply that is valid JSON but not an object (an array, a string, `null`, a
+  number) is reported as a malformed daemon reply and exits 3 (no verdict), instead of
+  throwing `InvalidOperationException` from a field read (AUTOMATION-1079). The reply's fields,
+  and each `projects` entry's, are read through `FsHotWatch.Json`, so a non-object entry or a
+  non-integer count reads as absent.
+
 - fix!: a `test-rerun` whose wait ran out exits 6 (in flight), not 1, and says nothing ran to
   completion (AUTOMATION-1400). When `--wait-sec` (default 600 s) expired with the run still
   queued or running, the command printed the daemon's one-line reason and exited 1, the same code

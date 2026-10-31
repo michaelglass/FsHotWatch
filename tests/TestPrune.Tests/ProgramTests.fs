@@ -2567,3 +2567,26 @@ module ``runWithAuditSink`` =
         finally
             Console.SetError(oldErr)
             release.SetResult()
+
+    // AUTOMATION-1095: a command that throws still has its queued events flushed — the
+    // failure path is where the audit record matters most — and its exception still surfaces.
+    [<Fact>]
+    let ``a command that throws still has its queued events persisted, and the exception surfaces`` () =
+        withDb (fun db ->
+            let sink = createSqliteSink db.InsertEvent "cli-throw"
+
+            let raised =
+                try
+                    runWithAuditSink (fun s -> s.Flush()) sink (fun s ->
+                        for i in 1..200 do
+                            s.Post(timestamp (IndexStartedEvent i))
+
+                        invalidOp "the command failed")
+                    |> ignore
+
+                    None
+                with :? InvalidOperationException as ex ->
+                    Some ex.Message
+
+            test <@ raised = Some "the command failed" @>
+            test <@ (db.GetEvents "cli-throw").Length = 200 @>)
