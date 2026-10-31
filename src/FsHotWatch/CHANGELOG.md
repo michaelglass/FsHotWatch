@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.99 - 2026-10-30
+
 - test: `ProcessHelper.TeardownPatience` (internal) puts a floor under the waits of an accounted
   teardown: its process-table read, its stop grace and its deepest-first step (AUTOMATION-1414).
   Production installs none; a test of a real teardown installs a hang cap, so a `ps` slower than
@@ -33,6 +35,12 @@
 - feat: `OutcomeStore.readAll root` reads every record in a store directory, oldest first,
   for analysis (AUTOMATION-1368). Unlike a lookup it quarantines nothing: a file a lookup
   would move aside is counted in `Scan.Unreadable` and left where it is.
+- build(deps): remove FSharp.Data.Adaptive (was 1.2.26)
+- build(deps): remove Ignore (was 0.2.1)
+- build(deps): remove Ionide.ProjInfo (was 0.74.2)
+- build(deps): remove Ionide.ProjInfo.FCS (was 0.74.2)
+- build(deps): remove MessagePack (was 2.5.303)
+- build(deps): remove StreamJsonRpc (was 2.25.29)
 
 ## 0.10.0-alpha.98 - 2026-10-30
 

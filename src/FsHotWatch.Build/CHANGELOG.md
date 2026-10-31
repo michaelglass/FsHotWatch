@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.51 - 2026-10-30
+
 - docs: `buildTemplate`'s placeholder is `{project}`, substituted once per root project, not
   `{projects}`. The READMEs named `{projects}`, which a template build passes through to the
   command verbatim. They now also say which roots a template builds (affected non-test projects

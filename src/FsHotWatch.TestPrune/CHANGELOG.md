@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.99 - 2026-10-30
+
 - fix: a project-model change no longer drops the analysis already recorded for the new
   model (AUTOMATION-1415). A `FileChecked` replayed from the task cache records its outcome
   for the current model without passing through `Update`, so it did not retire the previous

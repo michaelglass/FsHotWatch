@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.132 - 2026-10-30
+
 - fix: a check that ends without a verdict of its own no longer leaves an older green as the
   answer (AUTOMATION-1416). Its terminal record (`the check was interrupted: …`, a signal, an
   exception, or `the check ended without publishing a verdict for this invocation`) used to be
@@ -83,6 +85,8 @@
   - Options: `--since <days>`, `--top <n>`, `--store <dir>`, `--shadow-log <file>`
     (repeatable; by default this checkout's ledger and every worktree's the store names),
     `--json` (`fshw-analytics-v1`). New module: `OutcomeAnalytics`.
+- build(deps): remove CommandTree (was 0.13.0)
+- build(deps): remove Microsoft.Data.Sqlite (was 10.0.11)
 
 ## 0.14.0-alpha.131 - 2026-10-30
 

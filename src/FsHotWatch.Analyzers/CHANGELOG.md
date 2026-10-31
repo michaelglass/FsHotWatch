@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.53 - 2026-10-30
+
 - feat: `analyzers.scope` in `.fshw.json` — `{ "<configured path>": { "include": [globs] } }` or
   `{ "exclude": [globs] }` — runs one analyzer path only on the files its scope admits (gitignore-style,
   repository-relative globs). A path with no scope runs on every file, as before, and an unscoped config
@@ -12,6 +14,7 @@
   repo-wide; AUTOMATION-1367). A packed FSharp.Core (and, where referenced, FSharp.Compiler.Service)
   dependency is a floor at the same exact pin (>= 10.1.402, >= 43.12.402) rather than an `[x]` range,
   as TestPrune's packages already declare it.
+- build(deps): remove FSharp.Analyzers.SDK (was 0.39.2)
 
 ## 0.7.0-alpha.52 - 2026-10-30
 
