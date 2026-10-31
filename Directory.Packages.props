@@ -52,7 +52,7 @@
         <PackageVersion Include="xunit.v3.mtp-v2" Version="4.0.0" />
 
         <!-- The FsHotWatch engine, plugins, tests and tools (inline versions until AUTOMATION-1367). -->
-        <PackageVersion Include="CommandTree" Version="0.13.0" />
+        <PackageVersion Include="CommandTree" Version="0.14.1" />
         <PackageVersion Include="CoverageRatchet.Core" Version="0.1.0-alpha.13" />
         <PackageVersion Include="FSharp.Data.Adaptive" Version="1.2.26" />
         <!-- FsHotWatch.Lint only (unused by every consumer; retired with it). The gate's own
