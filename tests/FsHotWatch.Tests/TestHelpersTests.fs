@@ -304,7 +304,9 @@ let ``every test that reads the process working directory runs in the serialized
 
 [<Fact(Timeout = 5000)>]
 let ``waitUntil throws when its condition never holds`` () =
-    let ex = Assert.Throws<TimeoutException>(fun () -> waitUntil (fun () -> false) 100)
+    // With no floor, so the expiry is reached at the budget given rather than the hang cap.
+    let ex =
+        Assert.Throws<TimeoutException>(fun () -> waitUntilOrAtLeast 0 "the awaited condition" (fun () -> false) 100)
 
     test <@ ex.Message.Contains "100 ms" @>
 
@@ -320,6 +322,21 @@ let ``waitUntil returns once its condition holds`` () =
         5000
 
     test <@ polls = 3 @>
+
+[<Fact(Timeout = 2 * HangWaitMs)>]
+let ``waitUntil never gives up on a short budget before the hang cap`` () =
+    // A positive wait's budget is a hang cap, never the claim: 105 call sites passed 5-20 s
+    // budgets that a box at load 140-190 ran out of (AUTOMATION-1364). The condition holds
+    // only on the fifth poll, 200 ms in at the 50 ms poll interval, well past a 1 ms budget.
+    let mutable polls = 0
+
+    waitUntil
+        (fun () ->
+            polls <- polls + 1
+            polls >= 5)
+        1
+
+    test <@ polls = 5 @>
 
 // ---------------------------------------------------------------------------
 // A wait for a daemon started in this process to serve IPC.
