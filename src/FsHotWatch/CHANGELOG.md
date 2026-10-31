@@ -9,6 +9,9 @@
   record for it, and then miss every record compiled after it there: a clean restart on a
   25-project repository still started up to 28 FCS checks. A tier is now in ordinal path order.
 
+- feat: `Ctrf.tryTestNames` and `Ctrf.tryReadTestNames` read the names of a report's failed and
+  passed rows (AUTOMATION-1428). They return `None` when a failed row has no name.
+
 - fix!: the idle-exit line names the memory-pressure reading it acted on (AUTOMATION-1391): the
   macOS kernel level (`kern.memorystatus_vm_pressure_level`, e.g. `level 2 (warning)`) or, where
   the kernel gives none, whether the GC's high-memory-load mark was crossed. It said only that

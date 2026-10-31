@@ -304,6 +304,75 @@ let tryReadReport (runId: string) (path: string) : Report option = tryReadReport
 let tryReadVerdictReport (runId: string) (path: string) : Report option =
     tryReadReportWith (tryVerdictReport >> Result.toOption >> Option.map VerdictReport.summary) runId path
 
+/// The tests a report names, by the status of their rows.
+type TestNames =
+    {
+        /// The names of the rows marked `failed`, in report order. A raw throw has no row,
+        /// so this can name fewer failures than the summary counts.
+        Failed: string list
+        /// The names of the rows marked `passed`.
+        Passed: Set<string>
+    }
+
+let private rowName (row: JsonNode) : string option =
+    objectOf row
+    |> Option.bind (fun o ->
+        match o.["name"] with
+        | :? JsonValue as value ->
+            match value.TryGetValue<string>() with
+            | true, name when not (String.IsNullOrEmpty name) -> Some name
+            | _ -> None
+        | _ -> None)
+
+let private rowStatus (row: JsonNode) : string option =
+    objectOf row
+    |> Option.bind (fun o ->
+        match o.["status"] with
+        | :? JsonValue as value ->
+            match value.TryGetValue<string>() with
+            | true, status -> Some status
+            | _ -> None
+        | _ -> None)
+
+/// The names of a report's failed and passed rows. `None` when the JSON is unparseable,
+/// carries no tests array, or a failed row has no name: a failure nobody can name cannot
+/// be shown to have been run again.
+let tryTestNames (json: string) : TestNames option =
+    try
+        match JsonNode.Parse json with
+        | null -> None
+        | root ->
+            let body =
+                match root.["results"] with
+                | null -> root
+                | results -> results
+
+            match body.["tests"] with
+            | :? JsonArray as rows ->
+                let withStatus (status: string) =
+                    rows |> Seq.filter (fun row -> rowStatus row = Some status) |> List.ofSeq
+
+                let failed = withStatus "failed" |> List.map rowName
+
+                if failed |> List.exists Option.isNone then
+                    None
+                else
+                    Some
+                        { Failed = List.choose id failed
+                          Passed = withStatus "passed" |> List.choose rowName |> Set.ofList }
+            | _ -> None
+    with
+    | :? JsonException
+    | :? InvalidOperationException -> None
+
+/// `tryTestNames` of the report at `path`; `None` when it cannot be read.
+let tryReadTestNames (path: string) : TestNames option =
+    try
+        tryTestNames (File.ReadAllText path)
+    with
+    | :? IOException
+    | :? UnauthorizedAccessException -> None
+
 /// Did this run happen at all? The run-dir is created before anything executes, so its
 /// existence records that a run took place, whether or not it produced a report.
 let runExists (repoRoot: string) (runId: Guid) : bool = Directory.Exists(runDir repoRoot runId)

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- fix!: the shadow lookup verdict (ADR-059 §7) no longer disagrees with a correct green in the
+  three ways intelligence's land workspaces showed (AUTOMATION-1428). Each was bookkeeping in
+  the shadow; none was a false green in today's verdict.
+  - A failed suite that a later run of the same check ran again and passed is not filed. Both
+    runs' suites were filed at the publication's one instant, and a tie goes to `fail`, so the
+    lookup stayed red on a failure the outstanding-failure ledger had already cleared. A failure
+    is superseded only when the report names every failed test and each one passed in a run
+    that the check attributed later. New: `ShadowVerdict.supersededFailures`,
+    `ShadowVerdict.runOrder`, `Observation.RunOrder`, `Suite.FailedTests`, `Suite.PassedTests`.
+  - **`ShadowVerdict.baselineKey` takes only the project** (it took the producer too). Today's
+    full-suite watermark does not depend on the fshw binary, so the first check after every
+    fshw upgrade was missing every project. Baselines filed under the old key are not read.
+  - A publication that did not conclude still files the baselines of the full-suite run it was
+    graded from. It files nothing about its tree.
+
 - feat: `fshw headroom` reports available and physical memory, the memory-pressure reading, and
   each `.fshw/daemon.pid` in the worktree and under `.workspaces/*` as live, stale (pid gone or
   recycled) or unreadable (AUTOMATION-1072). Report only: it stops nothing, deletes nothing and
