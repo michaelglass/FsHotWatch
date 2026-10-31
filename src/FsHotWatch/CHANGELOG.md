@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a daemon whose root is spelled through a symbolic link (`/var` is `/private/var` on
+  macOS) no longer re-discovers its workspace on the first watcher echo of each unchanged
+  project file (AUTOMATION-989). FSEvents reports real paths, while the project-content
+  tracker, the loader's options and the registered files use the configured root. The daemon
+  now resolves its root's real spelling once and respells every watcher path under the
+  configured root before comparing it (`respellPathUnderRoot`), so an echo of bytes the model
+  already holds is recognised, and a source edit is no longer checked under both spellings.
+  The paths a preprocessor reports rewriting are respelled the same way before their echoes
+  are suppressed, so a rewrite named under the real path does not re-trigger itself.
+
 - feat: `RunClaim.survey` returns the held claims and the claims whose process died without
   releasing them, and deletes only the died claims its caller says are retired (AUTOMATION-1420).
   `RunClaim.live` no longer deletes abandoned claims: a SIGKILLed check's claim is the only

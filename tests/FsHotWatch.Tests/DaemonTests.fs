@@ -2880,6 +2880,139 @@ let ``a cold daemon does not re-discover on a watcher echo of an unchanged proje
 
         test <@ loader.Loads = 2 @>)
 
+// AUTOMATION-989: FSEvents reports real paths. A daemon whose root is spelled through a
+// symbolic link (a macOS temp dir: `/var` is `/private/var`) seeded its project-content
+// tracker under the root's own spelling, so the first echo of every project file was a
+// first sighting under a different key, answered "changed", and re-discovered the
+// workspace for bytes the model already held.
+[<Fact(Timeout = 60000)>]
+let ``a daemon under a symlinked root does not re-discover on a real-path echo of an unchanged project file`` () =
+    withTempDir "daemon-symlinked-root-echo" (fun tmpDir ->
+        let realRoot = Path.Combine(tmpDir, "real")
+        let linkedRoot = Path.Combine(tmpDir, "linked")
+        Directory.CreateDirectory(Path.Combine(realRoot, "src")) |> ignore
+        Directory.CreateSymbolicLink(linkedRoot, realRoot) |> ignore
+
+        // The daemon and its loader spell every path through the link, as a root
+        // configured under `/var` does; the watcher reports the same files under the target.
+        let projectPath = Path.Combine(linkedRoot, "src", "Echo.fsproj")
+        let sourcePath = Path.Combine(linkedRoot, "src", "Echo.fs")
+        let realProjectPath = CommandPreprocessor.realPathOf projectPath
+        let realSourcePath = CommandPreprocessor.realPathOf sourcePath
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        File.WriteAllText(sourcePath, "module Echo\nlet value = 1\n")
+        let objDir = Path.Combine(linkedRoot, "src", "obj")
+        Directory.CreateDirectory(objDir) |> ignore
+        File.WriteAllText(Path.Combine(objDir, "project.assets.json"), "{}")
+
+        let loaded =
+            { minimalLoadedProject projectPath with
+                SourceFiles = [ sourcePath ] }
+
+        let loader = CountingWorkspaceLoader([ loaded ])
+        let checker = sharedChecker.Value
+
+        let fcsOptions =
+            let scriptOptions, _ =
+                checker.GetProjectOptionsFromScript(
+                    sourcePath,
+                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
+                )
+                |> Async.RunSynchronously
+
+            { scriptOptions with
+                ProjectFileName = projectPath
+                SourceFiles = [| sourcePath |] }
+
+        let callback = ref None
+
+        let watcher: Daemon.WatcherFactory =
+            fun _ onChange _ _ _ ->
+                callback.Value <- Some onChange
+
+                { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+                  Disposables = [] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                linkedRoot
+                watchingDaemonOptions
+                loader
+                (fun projects -> projects |> List.map (fun _ -> fcsOptions))
+                watcher
+
+        let seals = System.Collections.Concurrent.ConcurrentQueue<BatchChecked>()
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "symlink-echo-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | BatchChecked batch ->
+                            match batch.Trigger with
+                            | InSessionBatch _ -> seals.Enqueue batch
+                            | BootScan -> ()
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeBatchChecked ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        daemon.ScanAll() |> Async.RunSynchronously
+        test <@ loader.Loads = 1 @>
+        let deliver = callback.Value |> Option.get
+
+        // The echo, under the real path, then a genuine source edit (also under the real
+        // path). The queue is FIFO, so the source cohort's seal proves the project echo
+        // has already been dealt with.
+        File.WriteAllText(sourcePath, "module Echo\nlet value = 2\n")
+        deliver (ProjectChanged [ realProjectPath ])
+        deliver (SourceChanged [ realSourcePath ])
+
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> not seals.IsEmpty), TimeSpan.FromSeconds 20.0),
+            "the source change must produce a sealed cohort"
+        )
+
+        test <@ loader.Loads = 1 @>
+
+        // Positive control: a real project edit, reported under the real path, re-discovers.
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup /></Project>")
+        deliver (ProjectChanged [ realProjectPath ])
+
+        Assert.True(
+            SpinWait.SpinUntil((fun () -> loader.Loads > 1), TimeSpan.FromSeconds 20.0),
+            "a project file whose content really changed must re-discover"
+        )
+
+        test <@ loader.Loads = 2 @>)
+
+[<Fact>]
+let ``watcher paths under the real root are respelled under the configured root, and nothing else is`` () =
+    let respell = Daemon.respellUnderRoot "/var/r" "/private/var/r/"
+
+    test <@ respell (SourceChanged [ "/private/var/r/a.fs" ]) = SourceChanged [ "/var/r/a.fs" ] @>
+    test <@ respell (ProjectChanged [ "/private/var/r/p.fsproj" ]) = ProjectChanged [ "/var/r/p.fsproj" ] @>
+    // A path-segment boundary, not a string prefix; a path outside the root is kept.
+    test
+        <@
+            respell (SourceChanged [ "/private/var/rx/a.fs"; "/elsewhere/b.fs" ]) = SourceChanged
+                [ "/private/var/rx/a.fs"; "/elsewhere/b.fs" ]
+        @>
+
+    test <@ respell SolutionChanged = SolutionChanged @>
+    // An unlinked root is its own spelling: nothing is rewritten.
+    test <@ Daemon.respellUnderRoot "/r" "/r" (SourceChanged [ "/r/a.fs" ]) = SourceChanged [ "/r/a.fs" ] @>
+    // A root that cannot be canonicalized is used as given.
+    test <@ Daemon.watcherSpellingOf "/no/such/fshw-root" = "/no/such/fshw-root" @>
+
 [<Fact(Timeout = 60000)>]
 let ``a project change that replaces the model seals the new model even with no checkable files`` () =
     // The cold scan seals an EMPTY cohort, because "every checkable file of this model has

@@ -340,6 +340,48 @@ let internal projectAssetsFileFor (fsproj: string) : string option =
     else
         Some(Path.Combine(directory, "obj", "project.assets.json"))
 
+/// The daemon's root in the spelling the filesystem uses (`RepositoryIdentity.canonicalize`),
+/// or the root as given when it cannot be canonicalized.
+let internal watcherSpellingOf (repoRoot: string) : string =
+    match RepositoryIdentity.canonicalize repoRoot with
+    | Result.Ok canonical -> canonical.Value
+    | Result.Error _ -> repoRoot
+
+/// `path` spelled under `repoRoot` when it lies under `watcherRoot` (the root as a native
+/// watcher reports it), so the daemon holds ONE spelling of each file. A path outside
+/// `watcherRoot` is left as it is.
+///
+/// FSEvents reports real paths. A root spelled through a symbolic link (`/var` is
+/// `/private/var` on macOS) is therefore reported under a spelling the daemon never wrote:
+/// the project-content tracker (`observeProjectContent`), the loader's options and the
+/// registered files all use the root as configured. Unrespelled, the first echo of each
+/// project file was a first sighting under a new key, answered "changed", and re-discovered
+/// the workspace for bytes the model already held; a source edit was checked twice, once
+/// under each spelling.
+///
+/// A preprocessor may name the files it rewrote in either spelling (`CommandPreprocessor`
+/// matches the batch it was handed). Their echoes are suppressed by exact path, so those
+/// names are respelled the same way, or the echo of a rewrite would re-trigger it.
+let internal respellPathUnderRoot (repoRoot: string) (watcherRoot: string) (path: string) : string =
+    let configured = repoRoot.TrimEnd Path.DirectorySeparatorChar
+    let reported = watcherRoot.TrimEnd Path.DirectorySeparatorChar
+
+    if configured = reported || configured = "" || reported = "" then
+        path
+    elif WatchRouter.isWithin reported path then
+        configured + path.Substring reported.Length
+    else
+        path
+
+/// `change` with every path respelled by `respellPathUnderRoot`.
+let internal respellUnderRoot (repoRoot: string) (watcherRoot: string) (change: FileChangeKind) : FileChangeKind =
+    let respell = respellPathUnderRoot repoRoot watcherRoot
+
+    match change with
+    | SourceChanged files -> SourceChanged(List.map respell files)
+    | ProjectChanged files -> ProjectChanged(List.map respell files)
+    | SolutionChanged -> SolutionChanged
+
 /// Record the discovered project files' current content in `tracker`, so a watcher
 /// echo carrying the SAME bytes the model was just built from is not admitted as a
 /// change.
@@ -1598,6 +1640,9 @@ type internal BatchContext =
         /// the scoped path (test daemons with a null checker).
         InvalidateFcsForProjects: (FSharpProjectOptions list -> unit) option
         RepoRoot: string
+        /// `RepoRoot` as a native watcher reports it (`watcherSpellingOf`): a preprocessor's
+        /// rewritten paths are respelled from it before their echoes are suppressed.
+        WatcherRoot: string
         Loader: IWorkspaceLoader
         MapOptions: Types.ProjectOptions list -> FSharpProjectOptions list
         Discovery: DiscoveryCoordinator
@@ -2313,7 +2358,9 @@ let private processBatchAttempt
                 Logging.info "check" (settledLine nextGen (completedAt - seenAt) dispatchedFiles.Count))
 
         if not allSourceFiles.IsEmpty then
-            let modifiedByPreprocessors = ctx.Host.RunPreprocessors(allSourceFiles).Modified
+            let modifiedByPreprocessors =
+                ctx.Host.RunPreprocessors(allSourceFiles).Modified
+                |> List.map (respellPathUnderRoot ctx.RepoRoot ctx.WatcherRoot)
             // The cohort's content is the next snapshot (ADR-045), taken before any of its
             // results is published (ADR-046).
             advanceSnapshot modifiedByPreprocessors
@@ -5236,6 +5283,11 @@ module Daemon =
                 | SolutionChanged -> projectDebounceMs
                 | SourceChanged _ -> sourceDebounceMs
 
+            // Resolved once: every watcher path, and every path a preprocessor says it
+            // rewrote, is respelled under the configured root before anything compares it
+            // (`respellPathUnderRoot`).
+            let watcherRoot = watcherSpellingOf repoRoot
+
             let snapshots =
                 SnapshotEpoch.Ledger(List.distinct [ repoRoot; CommandPreprocessor.realPathOf repoRoot ])
 
@@ -5261,6 +5313,7 @@ module Daemon =
                             for opts in optsList do
                                 ProjectSnapshots.invalidate checker opts)
                   RepoRoot = repoRoot
+                  WatcherRoot = watcherRoot
                   Loader = loader
                   MapOptions = mapProjectOptions
                   Discovery = discovery
@@ -5346,7 +5399,11 @@ module Daemon =
                                     reply.TrySetResult(rendered) |> ignore
 
                                 return
-                                    { Suppressed = Set.union suppressed (Set.ofList run.Modified)
+                                    { Suppressed =
+                                        run.Modified
+                                        |> List.map (respellPathUnderRoot repoRoot watcherRoot)
+                                        |> Set.ofList
+                                        |> Set.union suppressed
                                       Owed = None }
                         })
                 )
@@ -5364,7 +5421,8 @@ module Daemon =
                           SeenAt = min earlier.SeenAt later.SeenAt })
                 )
 
-            let onChange change =
+            let onChange reported =
+                let change = respellUnderRoot repoRoot watcherRoot reported
                 Logging.debug "watcher" $"%O{change}"
 
                 try
