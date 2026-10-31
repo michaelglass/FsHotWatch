@@ -13,7 +13,7 @@ Three packages release together under one `trace-v` tag:
 |---------|------------|
 | [`TestPrune.Trace`](https://www.nuget.org/packages/TestPrune.Trace) | The library a test runner hosts: weaver, shadow bin, ingestion, trace store, measurements |
 | [`TestPrune.Trace.Recorder`](https://www.nuget.org/packages/TestPrune.Trace.Recorder) | The recorder loaded into the traced test process. You never reference it: the weaver adds it to the traced copy of your app |
-| [`TestPrune.Trace.Cli`](https://www.nuget.org/packages/TestPrune.Trace.Cli) | The `test-prune-traces` tool: census, isolation audit, CPU overhead, file census and recall |
+| [`TestPrune.Trace.Cli`](https://www.nuget.org/packages/TestPrune.Trace.Cli) | The `test-prune-traces` tool: census, isolation audit, CPU overhead, file census, mutation recall and recall |
 
 ```bash
 dotnet add package TestPrune.Trace
@@ -221,7 +221,30 @@ run (`--run` picks a run); a refused or failed run, or one that saw the tree mov
 over. Record them with a full traced run of the same tree the
 index was built from.
 
-The three process-driving verbs (`audit`, `overhead`, `file-census`) take the same
+### Mutate: does trace selection select every test a change breaks?
+
+```text
+test-prune-traces mutate --project-dir <dir> --assembly <name> [--samples 20] [--seed 1] [--only <text>]...
+```
+
+`mutate` runs the woven project once to record each test's trace, then once per sampled
+target (a repository method outside the test assembly that the first run hit), with every
+probe of that method throwing (`TESTPRUNE_TRACE_MUTATE`): the method fails as if it had a
+bug. Each test that passed before and fails (or loses its report row) now depends on the
+method, so a change to it must select that test. Trace selection selects the tests whose
+trace (own and inherited scopes) names one of the method's probes, plus every test with no
+trace. A failing test it does not select is a **miss**, and the report names it with the
+method that broke it. The report prints the recall (caught failing tests over failing
+tests). It exits **0** when some mutant failed a test and none was missed, **1**
+otherwise. `--only` keeps the targets whose `Type::member` name contains the text before
+sampling.
+
+It works on probe ids, not joined symbols. A method's closures are their own targets, so
+the measured recall is a lower bound on symbol-level selection, which joins a closure to the
+method that holds it. Nothing is stored and selection is not changed: this is the evidence
+for whether trace selection can replace the static walk.
+
+The four process-driving verbs (`audit`, `overhead`, `file-census`, `mutate`) take the same
 options:
 
 ```text

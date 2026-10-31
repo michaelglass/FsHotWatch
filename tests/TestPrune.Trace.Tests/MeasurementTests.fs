@@ -339,3 +339,19 @@ let ``every measurement refuses a project it cannot prepare`` () =
 [<Fact>]
 let ``overhead refuses fewer than one rep before preparing anything`` () =
     test <@ Overhead.run (noBuildOutput ()) [] 0 timeout = Error "reps must be at least 1, got 0" @>
+
+[<Fact>]
+let ``every test a mutated fixture method breaks is one its trace selects`` () =
+    withScratch (fun req ->
+        let report = Mutation.run req [] 1000 1 [] timeout |> ok
+        test <@ report.Targets > 0 && report.Samples.Length = report.Targets @>
+        test <@ report.Measured > 0 @>
+        test <@ report.Samples |> List.collect _.Missed |> List.isEmpty @>
+        test <@ Mutation.passes report @>)
+
+[<Fact>]
+let ``a target filter that matches nothing samples nothing and measures nothing`` () =
+    withScratch (fun req ->
+        let report = Mutation.run req [] 5 1 [ "no such target" ] timeout |> ok
+        test <@ report.Targets = 0 && report.Samples.IsEmpty && report.Universe > 0 @>
+        test <@ not (Mutation.passes report) @>)

@@ -55,6 +55,7 @@
         <Compile Include="Audit.fs" />
         <Compile Include="Overhead.fs" />
         <Compile Include="FileCensus.fs" />
+        <Compile Include="Mutation.fs" />
     </ItemGroup>
 
     <ItemGroup>

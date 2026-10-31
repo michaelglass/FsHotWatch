@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- feat: mutation mode (AUTOMATION-975). `TESTPRUNE_TRACE_MUTATE` lists probe ids that throw
+  `MutantHitException` once hit (the hit is recorded first). Unset, probes behave as before.
 - chore: this package is linted by FSharpLint again (AUTOMATION-1409); its names the rules flag stay, with a scoped suppression saying why. No
   behaviour or API change.
 - build: the package's source and project links point at github.com/michaelglass/FsHotWatch, where

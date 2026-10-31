@@ -17,6 +17,7 @@ type Call =
       Sample: float
       Seed: int
       Reps: int
+      Only: string list
       Timeout: TimeSpan }
 
 let private auditReport extra : Audit.AuditReport =
@@ -52,17 +53,34 @@ let private overheadReport (traced: float) : Overhead.OverheadReport =
             DumpFiles = 0 } ]
 
 /// Measurements that record their calls and return the given results.
+let private mutationReport: Result<Mutation.MutationReport, string> =
+    Ok(
+        Mutation.summarize
+            3
+            []
+            1
+            [ { Target = "Lib.A::f"
+                Outcome = Mutation.Measured
+                Failing = [ "t1"; "t2" ]
+                Selected = 2
+                Missed = [ "t2" ] } ]
+    )
+
 let private fake audit overhead census =
     let calls = ResizeArray<Call>()
 
-    let call req args sample seed reps timeout =
+    let callOnly req args sample seed reps only timeout =
         calls.Add
             { Request = req
               AppArgs = args
               Sample = sample
               Seed = seed
               Reps = reps
+              Only = only
               Timeout = timeout }
+
+    let call req args sample seed reps timeout =
+        callOnly req args sample seed reps [] timeout
 
     let m: Program.Measures =
         { Audit =
@@ -76,7 +94,11 @@ let private fake audit overhead census =
           FileCensus =
             fun req args timeout ->
                 call req args 0.0 0 0 timeout
-                census }
+                census
+          Mutate =
+            fun req args samples seed only timeout ->
+                callOnly req args 0.0 seed samples only timeout
+                mutationReport }
 
     m, calls
 
@@ -339,3 +361,38 @@ let ``the real measurements are wired to the verbs`` () =
 let ``the general usage names every verb`` () =
     let o = Program.run cwd [ "nope" ]
     test <@ o.Exit = 2 && o.Stderr = Program.usage + "\n" @>
+
+[<Fact>]
+let ``mutate defaults to 20 samples, seed 1, no target filter, and exits 1 on a miss`` () =
+    let m, calls = passing ()
+
+    let o = Program.runWith m cwd [ "mutate"; "--project-dir"; "P"; "--assembly"; "P" ]
+
+    test <@ o.Exit = 1 @>
+    test <@ o.Stdout = Mutation.render (Result.defaultWith failwith mutationReport) @>
+    let c = calls |> Seq.exactlyOne
+    test <@ (c.Reps, c.Seed, c.Only) = (20, 1, []) @>
+
+[<Fact>]
+let ``mutate takes --samples and repeated --only`` () =
+    let m, calls = passing ()
+
+    let o =
+        Program.runWith
+            m
+            cwd
+            [ "mutate"
+              "--project-dir"
+              "P"
+              "--assembly"
+              "P"
+              "--samples"
+              "5"
+              "--only"
+              "Lib.A"
+              "--only"
+              "Lib.B" ]
+
+    test <@ o.Exit = 1 @>
+    let c = calls |> Seq.exactlyOne
+    test <@ (c.Reps, c.Only) = (5, [ "Lib.A"; "Lib.B" ]) @>

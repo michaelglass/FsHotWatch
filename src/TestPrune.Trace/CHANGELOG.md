@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `Mutation`, the mutation harness (AUTOMATION-975): a baseline traced run, then one run per
+  sampled repository method with its probes throwing; every test the mutant breaks must be in the
+  trace selection for a change to that method. Reports recall and names each miss.
 - chore: FSharpLint findings fixed now that this package is linted again (AUTOMATION-1409). No
   behaviour or API change.
 - build: the package's source and project links point at github.com/michaelglass/FsHotWatch, where
