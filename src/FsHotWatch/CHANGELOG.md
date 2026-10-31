@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `RunClaim.survey` returns the held claims and the claims whose process died without
+  releasing them, and deletes only the died claims its caller says are retired (AUTOMATION-1420).
+  `RunClaim.live` no longer deletes abandoned claims: a SIGKILLed check's claim is the only
+  evidence that it ran, so it stays until a verdict published after it makes it moot.
+
 - test: `ProcessHelper.TeardownPatience` (internal) puts a floor under the waits of an accounted
   teardown: its process-table read, its stop grace and its deepest-first step (AUTOMATION-1414).
   Production installs none; a test of a real teardown installs a hang cap, so a `ps` slower than

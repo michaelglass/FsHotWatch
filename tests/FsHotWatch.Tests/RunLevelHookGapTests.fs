@@ -870,6 +870,59 @@ let ``a check that answered by keeping an earned green leaves it byte for byte``
         test <@ code = 3 @>
         test <@ File.ReadAllText(FsHotWatch.Cli.Verdict.path root) = priorText @>)
 
+/// AUTOMATION-1420: a check SIGKILLed after the green ran no bracket, so only its
+/// abandoned claim says it happened. A later check with nothing to run must not keep the
+/// green it never got to confirm: it publishes its own answer instead.
+[<Fact(Timeout = 15000)>]
+let ``a check with nothing to run does not keep a green that a SIGKILLed check died over`` () =
+    withTempDir "run-hook-killed-then-kept" (fun root ->
+        publishCleanInvocation "earlier-invocation" root
+        let priorText = File.ReadAllText(FsHotWatch.Cli.Verdict.path root)
+
+        let producedAt =
+            match FsHotWatch.Cli.Verdict.read root with
+            | FsHotWatch.Cli.Verdict.Reading.Found v -> v.ProducedAt
+            | other -> failwith $"expected a readable verdict, got %A{other}"
+
+        let killed =
+            { RunClaim.InvocationId = "a-check-that-was-killed"
+              RunClaim.Pid = 99_999_999
+              RunClaim.Host = Environment.MachineName
+              RunClaim.Command = "check"
+              RunClaim.StartedAtUtc = producedAt.AddSeconds 1.0 }
+
+        Directory.CreateDirectory(RunClaim.dirPath root) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(RunClaim.dirPath root, killed.InvocationId + ".json"),
+            RunClaim.serialize killed
+        )
+
+        withRunHooksForInvocation RunHookCommand.Check root (hooks None None) (fun invocation ->
+            FsHotWatch.Cli.IpcOutput.publishVerdictForInvocation
+                invocation
+                root
+                []
+                FsHotWatch.Cli.CheckVerdict.InnerLoop
+                false
+                (BaselineFixtures.reportOf (NoTestsRun NoTestsReason.AlreadyVerified))
+                FsHotWatch.Cli.Verdict.NoReading
+                Map.empty
+                FsHotWatch.Cli.IpcParsing.DaemonEvidence.NotServed
+                []
+                ProjectModelFixtures.available
+                (FsHotWatch.Cli.IpcOutput.SettledTree.capture root [])
+                (FsHotWatch.Cli.CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified)))
+        |> ignore
+
+        test <@ File.ReadAllText(FsHotWatch.Cli.Verdict.path root) <> priorText @>
+
+        match FsHotWatch.Cli.Verdict.read root with
+        | FsHotWatch.Cli.Verdict.Reading.Found v ->
+            test <@ v.InvocationId <> Some "earlier-invocation" @>
+            test <@ not (BaselineFixtures.isGreen v.Outcome) @>
+        | other -> failwith $"expected the later check's own verdict, got %A{other}")
+
 /// `--run-once` over a tree with no projects: the hooks still bracket it, and the
 /// refusal is published as an invocation-owned incomplete instead of a bare exit 2
 /// that would leave a prior green readable.

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a check killed with SIGKILL no longer leaves an older green as the answer
+  (AUTOMATION-1420). A hard kill (an OOM kill, `timeout -s KILL`, power loss) runs no cleanup, so
+  the `incomplete` record of AUTOMATION-1416 is never written. Its run claim stays in
+  `.fshw/in-flight/` with a dead pid; when that claim started after the verdict was published,
+  `fshw verdict` now reports the verdict as superseded (exit 4, `superseded: the last check (pid N
+  on HOST, started T) died without a verdict …`), and `confirm` and a check with nothing to run no
+  longer reuse it. The reader reports and never rewrites `.fshw/verdict.json`. A claim older than
+  the verdict, or from the check that published it, changes nothing, and a live claim reads as
+  in flight as before.
+
 - fix: a check that ends without a verdict of its own no longer leaves an older green as the
   answer (AUTOMATION-1416). Its terminal record (`the check was interrupted: …`, a signal, an
   exception, or `the check ended without publishing a verdict for this invocation`) used to be

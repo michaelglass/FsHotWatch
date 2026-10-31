@@ -6062,38 +6062,161 @@ let ``a run in flight does not disturb the STALE answer — 4 is still 4`` () =
 
         test <@ Verdict.reportExitCode report = 4 @>)
 
+/// The claim a check leaves behind when it is SIGKILLed: written by the bracket before
+/// the run, never released, its process gone.
+///
+/// The pid is above every platform's `pid_max` (macOS caps at 99998, Linux defaults
+/// to 4194304), so `Process.GetProcessById` answers "not running" rather than
+/// resolving something. Pid 0 would NOT do: on macOS it finds the kernel task and
+/// reads as alive.
+let private writeDeadClaim (root: string) (invocationId: string) (startedAtUtc: DateTime) : string =
+    let dead =
+        { RunClaim.InvocationId = invocationId
+          RunClaim.Pid = 99_999_999
+          RunClaim.Host = Environment.MachineName
+          RunClaim.Command = "check"
+          RunClaim.StartedAtUtc = startedAtUtc }
+
+    Directory.CreateDirectory(RunClaim.dirPath root) |> ignore
+    let path = Path.Combine(RunClaim.dirPath root, invocationId + ".json")
+    File.WriteAllText(path, RunClaim.serialize dead)
+    path
+
+let private producedAt (root: string) : DateTime =
+    match Verdict.read root with
+    | Verdict.Reading.Found v -> v.ProducedAt
+    | other -> failwith $"expected a readable verdict, got %A{other}"
+
 [<Fact>]
-let ``an abandoned claim from a dead process does not poison the verdict — and is reaped`` () =
-    // A crashed run must not wedge a workspace forever.
-    //
-    // The pid is above every platform's `pid_max` (macOS caps at 99998, Linux defaults
-    // to 4194304), so `Process.GetProcessById` answers "not running" rather than
-    // resolving something. Pid 0 would NOT do: on macOS it finds the kernel task and
-    // reads as alive.
+let ``an abandoned claim OLDER than the verdict does not poison it — and is reaped`` () =
+    // A crashed run must not wedge a workspace forever. A run that died BEFORE the
+    // verdict on disk was published has been answered since, so its claim says nothing
+    // about that verdict (AUTOMATION-1420's control).
     withTempDir "verdict-inflight-abandoned" (fun root ->
         makeRepo root
         let tree = TreeHash.compute root []
         greenFromRun root tree "the-run-that-finished"
 
-        let abandoned =
-            { RunClaim.InvocationId = "a-run-that-crashed"
-              RunClaim.Pid = 99_999_999
-              RunClaim.Host = Environment.MachineName
-              RunClaim.Command = "check"
-              RunClaim.StartedAtUtc = DateTime.UtcNow }
-
-        Directory.CreateDirectory(RunClaim.dirPath root) |> ignore
-
-        let path = Path.Combine(RunClaim.dirPath root, abandoned.InvocationId + ".json")
-
-        File.WriteAllText(path, RunClaim.serialize abandoned)
+        let path =
+            writeDeadClaim root "a-run-that-crashed" ((producedAt root).AddMinutes -1.0)
 
         match Verdict.report root [] with
         | Verdict.Report.Applies v -> test <@ BaselineFixtures.isGreen (v.Outcome) @>
         | other -> failwith $"a dead process's claim must not withhold the verdict, got %A{other}"
 
+        match Verdict.priorConfirmation root [] with
+        | Verdict.PriorConfirmation.StillApplies _ -> ()
+        | Verdict.PriorConfirmation.MustEarn -> failwith "a claim older than the verdict must not un-earn it"
+
         // Hygiene, on the next command — the same contract `daemon.pid` has.
         test <@ not (File.Exists path) @>)
+
+[<Fact>]
+let ``a check SIGKILLed after a green leaves a verdict read that is not green and names the dead check`` () =
+    // AUTOMATION-1420. A SIGKILL runs no cleanup, so the bracket's terminal publish
+    // (`tryPublishTerminal`, AUTOMATION-1416) never happens and the older green stays
+    // on disk, over the same tree. The killed check's claim is the only trace it leaves.
+    withTempDir "verdict-killed-check" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+        greenFromRun root tree "the-run-that-finished"
+
+        let path =
+            writeDeadClaim root "a-check-that-was-killed" ((producedAt root).AddSeconds 1.0)
+
+        for _ in 1..2 do
+            // Read twice: the first read must not reap the only evidence, or the
+            // second would hand the old green back.
+            let report = Verdict.report root []
+
+            match report with
+            | Verdict.Report.Stale(v, reason) ->
+                test <@ BaselineFixtures.isGreen (v.Outcome) @>
+                test <@ reason.Contains "died without a verdict" @>
+                test <@ reason.Contains "pid 99999999" @>
+            | other -> failwith $"a check that died after the green must supersede it, got %A{other}"
+
+            test <@ Verdict.reportExitCode report = 4 @>
+            test <@ File.Exists path @>)
+
+[<Fact>]
+let ``confirm must earn a new verdict after a check was SIGKILLed over the green it would reuse`` () =
+    withTempDir "verdict-killed-check-confirm" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+        greenFromRun root tree "the-run-that-finished"
+
+        // CONTROL: the green is reusable before the killed check.
+        match Verdict.priorConfirmation root [] with
+        | Verdict.PriorConfirmation.StillApplies _ -> ()
+        | Verdict.PriorConfirmation.MustEarn -> failwith "the earned green must be reusable before any check dies"
+
+        writeDeadClaim root "a-check-that-was-killed" ((producedAt root).AddSeconds 1.0)
+        |> ignore
+
+        match Verdict.priorConfirmation root [] with
+        | Verdict.PriorConfirmation.MustEarn -> ()
+        | Verdict.PriorConfirmation.StillApplies _ ->
+            failwith "confirm reused a green that a later check died over without answering")
+
+[<Fact>]
+let ``a check killed AFTER publishing its own verdict leaves that verdict standing`` () =
+    // Its claim carries the id the verdict records: the verdict IS that check's answer.
+    withTempDir "verdict-killed-after-publish" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+        greenFromRun root tree "a-check-killed-after-it-published"
+
+        writeDeadClaim root "a-check-killed-after-it-published" ((producedAt root).AddSeconds -1.0)
+        |> ignore
+
+        match Verdict.report root [] with
+        | Verdict.Report.Applies v -> test <@ BaselineFixtures.isGreen (v.Outcome) @>
+        | other -> failwith $"a check's own published verdict must stand, got %A{other}")
+
+[<Fact>]
+let ``a newer verdict retires the dead check's claim`` () =
+    // The superseding lasts until a later run answers, never longer: once a verdict is
+    // published after the dead check began, that verdict applies and the claim is reaped.
+    withTempDir "verdict-killed-then-answered" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+        greenFromRun root tree "the-run-that-finished"
+
+        // One tick after the first verdict: the dead check started after it, and every
+        // verdict published from here on is later still, with no wait.
+        let killedAt = (producedAt root).AddTicks 1L
+        let path = writeDeadClaim root "a-check-that-was-killed" killedAt
+
+        test <@ Verdict.reportExitCode (Verdict.report root []) = 4 @>
+
+        greenFromRun root tree "the-next-run"
+        // Precondition, asserted rather than assumed.
+        test <@ producedAt root > killedAt @>
+
+        match Verdict.report root [] with
+        | Verdict.Report.Applies v -> test <@ v.InvocationId = Some "the-next-run" @>
+        | other -> failwith $"the newer verdict must apply, got %A{other}"
+
+        test <@ not (File.Exists path) @>)
+
+[<Fact>]
+let ``a live claim beside a dead one older than the verdict still reports in flight`` () =
+    // Control: liveness of a running check is unaffected by the dead-claim rule.
+    withTempDir "verdict-live-and-dead" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+        greenFromRun root tree "the-run-that-finished"
+
+        writeDeadClaim root "an-old-crash" ((producedAt root).AddMinutes -1.0) |> ignore
+
+        let _held = claimHeldHere root "the-run-that-is-happening"
+
+        test <@ Verdict.reportExitCode (Verdict.report root []) = 6 @>
+
+        match Verdict.priorConfirmation root [] with
+        | Verdict.PriorConfirmation.StillApplies _ -> ()
+        | Verdict.PriorConfirmation.MustEarn -> failwith "a live claim must keep confirm's carve-out")
 
 [<Fact>]
 let ``a claim file this build cannot parse still reports in flight — unparseable is not absent`` () =
