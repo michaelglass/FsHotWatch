@@ -192,6 +192,20 @@ module Foo"""
 
     test <@ parseNowarnCodes source = Set.ofList [ 1182; 3536 ] @>
 
+[<Fact(Timeout = 15000)>]
+let ``parseNowarnCodes reads every form F# accepts: bare, FS-prefixed, quoted or not`` () =
+    // F# 9 accepts `#nowarn 57`, `#nowarn FS0057` and `#nowarn "FS0057"` as well as
+    // `#nowarn "57"`. A form missed here leaves its code promoted by --warnaserror.
+    let source =
+        """#nowarn 57
+#nowarn "FS0064"
+#nowarn FS1182 3370 // a trailing comment: 9999
+#nowarnings "42"
+#nowarn
+module Foo"""
+
+    test <@ parseNowarnCodes source = Set.ofList [ 57; 64; 1182; 3370 ] @>
+
 // Two `waitForPluginTerminalIfRunning` tests with Task.Delay-based timing and
 // elapsed-bound assertions (300ms release scenarios, 3.5s elapsed upper bound)
 // moved to FsHotWatch.IntegrationTests 2026-05-02 — they systematically busted
