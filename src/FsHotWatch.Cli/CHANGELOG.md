@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix!: a `test-rerun` whose wait ran out exits 6 (in flight), not 1, and says nothing ran to
+  completion (AUTOMATION-1400). When `--wait-sec` (default 600 s) expired with the run still
+  queued or running, the command printed the daemon's one-line reason and exited 1, the same code
+  as a failing test, with no per-project totals. It now leads with `NOTHING RAN TO COMPLETION …
+  (not a pass)`, names the wait that ran out, and exits 6, the code `fshw verdict` already uses
+  for "the answer is still being computed", so a caller can tell "wait longer" from "a test
+  failed". Callers that treated any non-zero exit as not-green are unaffected; one that read 1
+  as "busy or red" must learn 6.
+
 - fix: a check killed with SIGKILL no longer leaves an older green as the answer
   (AUTOMATION-1420). A hard kill (an OOM kill, `timeout -s KILL`, power loss) runs no cleanup, so
   the `incomplete` record of AUTOMATION-1416 is never written. Its run claim stays in

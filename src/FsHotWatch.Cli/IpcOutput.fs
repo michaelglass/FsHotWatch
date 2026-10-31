@@ -284,6 +284,26 @@ let unknownCommandMessage (command: string) : string =
 /// verdict. Nothing failed, and nothing ran — never the 0 a plain-text reply gets.
 let NoVerdictExitCode = 3
 
+/// Exit code for a `test-rerun` whose wait (`--wait-sec`) ran out while the run it asked
+/// for was still queued or running: 6, IN FLIGHT, the code `fshw verdict` uses for "the
+/// answer is still being computed" (ADR-019). Nothing finished, so it is never 0; nothing
+/// is known to be broken, so it is never the 1 a failing test gets. A caller branching on
+/// the code can tell "wait longer" from "go and fix something" (AUTOMATION-1400).
+let RerunTimedOutExitCode = 6
+
+/// What a `test-rerun` whose wait ran out says. Leads with the fact a reader most needs
+/// (no test ran to completion, so there are no per-project totals), then the daemon's
+/// own reason, which names the wait that ran out.
+let busyRerunLines (daemonMessage: string option) : string list =
+    let reason =
+        daemonMessage
+        |> Option.defaultValue "the test run did not produce a result in time; retry (or raise --wait-sec)"
+
+    [ "NOTHING RAN TO COMPLETION — test-rerun timed out waiting for its run, so there are no test totals (not a pass)"
+      $"  Why: %s{reason}"
+      $"  Exit %d{RerunTimedOutExitCode} (in flight): the run may still finish in the daemon; `fshw status test-prune` shows it." ]
+
+
 /// Render a generic IPC result (status JSON or plain text).
 let renderIpcResult
     (mode: ProgressRenderer.RenderMode)
@@ -341,16 +361,20 @@ let renderIpcResult
                     // didn't finish in time). Distinct from "Tests failed" —
                     // nothing is known to be broken — but it must NEVER exit 0:
                     // `test-rerun` is the explicit "prove it ran" verb, and an
-                    // exit 0 without a run is a vacuous green.
+                    // exit 0 without a run is a vacuous green. Nor is it a red: it
+                    // gets the in-flight code, so a caller can tell the two apart.
                     let msg =
                         match root.TryGetProperty("message") with
-                        | true, m when m.ValueKind = JsonValueKind.String -> m.GetString()
-                        | _ -> "the test run did not produce a result in time; retry (or raise --wait-sec)"
+                        | true, m when m.ValueKind = JsonValueKind.String -> Some(m.GetString())
+                        | _ -> None
 
-                    UI.fail msg
-                    // Non-zero: no run was proven. The caller retries; it must
-                    // not read this as a green verdict.
-                    1
+                    let lines = busyRerunLines msg
+                    UI.fail (List.head lines)
+
+                    for line in List.tail lines do
+                        UI.info line
+
+                    RerunTimedOutExitCode
                 | _ ->
 
                     match root.TryGetProperty("projects") with

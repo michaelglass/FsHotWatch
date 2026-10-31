@@ -457,7 +457,10 @@ let ``agent output puts each diagnostic line before the trailing next hint`` () 
 
 [<Fact(Timeout = 15000)>]
 let ``a busy rerun with no message still refuses a green, naming a default reason`` () =
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"status":"busy"}""" = 1 @>
+    test
+        <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"status":"busy"}""" = RerunTimedOutExitCode @>
+
+    test <@ (busyRerunLines None |> String.concat "\n").Contains "NOTHING RAN TO COMPLETION" @>
 
 [<Fact(Timeout = 15000)>]
 let ``a rerun whose project entry carries no name or status is never a green`` () =
@@ -686,7 +689,31 @@ let ``renderIpcResult with busy status NEVER returns 0 — no run, no green`` ()
         """{"status":"busy","message":"the test run did not produce a result within 600s (still queued or running); retry, or raise --wait-sec"}"""
 
     let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
-    test <@ result = 1 @>
+    test <@ result <> 0 @>
+
+/// AUTOMATION-1400: a `test-rerun` whose wait ran out with the run still queued or
+/// running finished NOTHING. It exits with its own code, never 0 and never the 1 a real
+/// test failure gets: 6, the in-flight code `fshw verdict` already uses for "the answer
+/// is still being computed". And it says so: nothing ran to completion, and the wait it
+/// ran out of.
+[<Fact(Timeout = 15000)>]
+let ``a test-rerun whose wait ran out exits in-flight and says nothing ran to completion`` () =
+    let daemonMessage =
+        "the test run did not produce a result within 600s (still queued or running); retry, or raise --wait-sec"
+
+    let json =
+        System.Text.Json.JsonSerializer.Serialize
+            {| status = "busy"
+               message = daemonMessage |}
+
+    test <@ RerunTimedOutExitCode = 6 @>
+    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json = RerunTimedOutExitCode @>
+    test <@ renderIpcResult ProgressRenderer.Agent (fun _ -> []) false json = RerunTimedOutExitCode @>
+
+    let said = busyRerunLines (Some daemonMessage) |> String.concat "\n"
+    test <@ said.Contains "NOTHING RAN TO COMPLETION" @>
+    test <@ said.Contains "within 600s" @>
+    test <@ said.Contains "not a pass" @>
 
 [<Fact(Timeout = 15000)>]
 let ``formatDiagnosticsResponse hides info-severity entries`` () =
