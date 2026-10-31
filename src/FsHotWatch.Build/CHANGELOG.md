@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a build that overran its `timeoutSec` reports the AWAKE time its budget counts, not the
+  wall time (AUTOMATION-1391). A build stopped across a host suspension read "overran its 1200s
+  budget after 1680.9s" for a run that was 1201s awake. When the host slept while it ran, the
+  report now names the awake time, the wall time and the gap.
+
 ## 0.7.0-alpha.51 - 2026-10-30
 
 - docs: `buildTemplate`'s placeholder is `{project}`, substituted once per root project, not

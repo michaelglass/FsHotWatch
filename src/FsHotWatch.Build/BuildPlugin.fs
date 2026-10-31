@@ -998,7 +998,7 @@ let internal describeBuildOverrun
     (sideLog: SideLogReading)
     (scope: BuildScope)
     (budget: TimeSpan)
-    (elapsed: TimeSpan)
+    (elapsed: FsHotWatch.HostClock.Reading * FsHotWatch.HostClock.Reading)
     (output: string)
     (teardown: TreeTeardown option)
     (kill: KillOutcome)
@@ -1178,8 +1178,25 @@ let internal describeBuildOverrun
               killLine (Some t.KillTook)
               after ]
 
+    // The budget counts AWAKE time (`ProcessHelper` bounds a child on `AwakeNow`), so the
+    // figure set against it is awake time too. Across a host suspension the wall clock
+    // ran on, and the report names both, with the gap (AUTOMATION-1391).
+    let overran =
+        let started, stopped = elapsed
+        let awake = stopped.Awake - started.Awake
+
+        let suspended = FsHotWatch.HostClock.suspendedBetween started stopped
+
+        if suspended >= FsHotWatch.HostClock.SuspensionFloor then
+            let wall = stopped.Wall - started.Wall
+
+            $"Build overran its %s{budgetText} budget after %s{seconds awake} awake (%s{seconds wall} wall clock: \
+              the host was suspended ~%d{int suspended.TotalSeconds}s while it ran) and was stopped."
+        else
+            $"Build overran its %s{budgetText} budget after %s{seconds awake} and was stopped."
+
     let report =
-        [ $"Build overran its %s{budgetText} budget after %s{seconds elapsed} and was stopped."
+        [ overran
           $"  budget: %s{budgetText} — `timeoutSec` on this build entry in .fshw.json (unset: the top-level `timeoutSec`)"
           building
           // A dotnet reusing an MSBuild node from an earlier build is one way a build
@@ -1602,6 +1619,8 @@ let internal createArmedWith
                         "dotnet build"
                         (async {
                             try
+                                let ranFrom = FsHotWatch.HostClock.read FsHotWatch.HostClock.system
+
                                 let result, teardown, sideLogReading =
                                     runWithSideLog ctx.RepoRoot buildCommand buildArgs
 
@@ -1614,7 +1633,7 @@ let internal createArmedWith
                                                 sideLogReading
                                                 (BuildScope.WholeCommand $"%s{buildCommand} %s{buildArgs}")
                                                 after
-                                                (DateTime.UtcNow - buildStarted)
+                                                (ranFrom, FsHotWatch.HostClock.read FsHotWatch.HostClock.system)
                                                 (ProcessOutput.text tail)
                                                 teardown
                                                 kill
@@ -1762,6 +1781,7 @@ let internal createArmedWith
                                         let (cmd, cmdArgs) = splitCommand rendered
                                         ctx.Log $"Running template: %s{cmd} %s{cmdArgs}"
                                         let rootStarted = DateTime.UtcNow
+                                        let rootRanFrom = FsHotWatch.HostClock.read FsHotWatch.HostClock.system
 
                                         try
                                             let result, teardown, sideLogReading =
@@ -1784,7 +1804,8 @@ let internal createArmedWith
                                                             queued
                                                         ))
                                                         after
-                                                        (DateTime.UtcNow - rootStarted)
+                                                        (rootRanFrom,
+                                                         FsHotWatch.HostClock.read FsHotWatch.HostClock.system)
                                                         (ProcessOutput.text tail)
                                                         teardown
                                                         kill
