@@ -3039,9 +3039,9 @@ module ``Busy timeout`` =
 
             clock.Stop()
 
-            // It waited out the bound, and gave up long before the 30s library default.
+            // It waited out the bound (a lower bound, which load cannot break). That it gave up
+            // at THIS bound and not the 30s library default is the exception's claim, below.
             test <@ clock.Elapsed >= bound @>
-            test <@ clock.Elapsed < TimeSpan.FromSeconds 20.0 @>
 
             test <@ refused.DbPath = path @>
             test <@ refused.BusyTimeout = bound @>

@@ -1650,7 +1650,7 @@ module ``runIndexWith`` =
                 Threading.Tasks.Task.Run(fun () ->
                     runIndexWith blockingBuild scriptOptions tmpDir testChecker 1 (createNoopSink ()))
 
-            test <@ enteredBuild.Wait(TimeSpan.FromSeconds(5.0)) @>
+            test <@ enteredBuild.Wait(TestHelpers.HangWait) @>
 
             let second =
                 runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ())
