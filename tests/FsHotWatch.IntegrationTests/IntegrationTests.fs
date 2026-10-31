@@ -121,6 +121,10 @@ let internal exampleAnalyzerPath =
 let private conventionRulesPath =
     lazy (buildAnalyzerProject "FsHotWatch.Rules" (Path.Combine(findRepoRoot (), "analyzers/FsHotWatch.Rules")))
 
+/// FSHW-WALL-001, its own assembly so `.fshw.json` can scope it apart from the house rules.
+let private wallClockRulesPath =
+    lazy (buildAnalyzerProject "FsHotWatch.WallClock" (Path.Combine(findRepoRoot (), "analyzers/FsHotWatch.WallClock")))
+
 [<Fact(Timeout = 30000)>]
 let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let repoRoot = findRepoRoot ()
@@ -1055,9 +1059,12 @@ let ``Bug C: warm daemon reloads analyzers when a new analyzer DLL is added to t
 // so each rule must be seen firing on a violating snippet before its green counts.
 // ===========================================================================
 
-let private runRulesOnFile (fileName: string) (source: string) : FsHotWatch.ErrorLedger.ErrorEntry list =
+let private runAnalyzersOnFile
+    (rulesBin: string)
+    (fileName: string)
+    (source: string)
+    : FsHotWatch.ErrorLedger.ErrorEntry list =
     let repoRoot = findRepoRoot ()
-    let rulesBin = conventionRulesPath.Value
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
     let host = createModelHost checker repoRoot
 
@@ -1081,6 +1088,9 @@ let private runRulesOnFile (fileName: string) (source: string) : FsHotWatch.Erro
             waitForTerminalStatus host "analyzers" 15000
             host.GetErrorsByPlugin("analyzers") |> Map.toList |> List.collect snd
         | None -> failwith "FCS failed to check temp file")
+
+let private runRulesOnFile (fileName: string) (source: string) =
+    runAnalyzersOnFile conventionRulesPath.Value fileName source
 
 /// Default fixture name — deliberately NOT a test source, so FSHW-WAIT-001 stays out of
 /// scope for every control that uses it.
@@ -1424,7 +1434,7 @@ let private wallPreamble =
       "let HangWaitMs = 30_000" ]
 
 let private wallFindingsIn (fileName: string) (source: string) =
-    runRulesOnFile fileName source
+    runAnalyzersOnFile wallClockRulesPath.Value fileName source
     |> List.filter (fun e -> e.Message.Contains "WallClock(")
 
 /// One of each shape the rule exists for, every one of them seen in a flake ticket.

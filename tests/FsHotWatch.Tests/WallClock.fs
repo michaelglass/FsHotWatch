@@ -4,7 +4,7 @@ open System
 
 /// The FSHW-WALL-001 allowlist: a test, member, type or module whose REAL time is the point.
 ///
-/// FSHW-WALL-001 (analyzers/FsHotWatch.Rules/WallClockAnalyzer.fs) flags, in test sources,
+/// FSHW-WALL-001 (analyzers/FsHotWatch.WallClock/WallClockAnalyzer.fs) flags, in test sources,
 /// a sleep (`Thread.Sleep` / `Task.Delay` / `Async.Sleep`), an assertion that reads a
 /// stopwatch or elapsed time, and an asserted wait whose budget is a literal. Each measures
 /// the box the suite runs on, and on a box at load 50–140 that fails tests on load rather

@@ -17,9 +17,9 @@
     <AssemblyName>FsHotWatch.ConventionAnalyzers</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="TestSource.fs" />
     <Compile Include="ConventionAnalyzers.fs" />
     <Compile Include="WalkAnalyzer.fs" />
-    <Compile Include="WallClockAnalyzer.fs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />

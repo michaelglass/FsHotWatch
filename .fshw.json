@@ -47,6 +47,7 @@
     "paths": [
       "tools/fsharplint-shim/bin/Debug/net10.0/",
       "analyzers/FsHotWatch.Rules/bin/Debug/net10.0/",
+      "analyzers/FsHotWatch.WallClock/bin/Debug/net10.0/",
       "src/TestPrune.Analyzers/bin/Debug/net10.0/"
     ],
     "scope": {
@@ -54,6 +55,14 @@
         "exclude": [
           "src/TestPrune*/**",
           "tests/TestPrune*/**",
+          "tests/TraceFixtures/**",
+          "examples/UsageExample/**",
+          "examples/SampleSolution/**",
+          "benchmarks/**"
+        ]
+      },
+      "analyzers/FsHotWatch.WallClock/bin/Debug/net10.0/": {
+        "exclude": [
           "tests/TraceFixtures/**",
           "examples/UsageExample/**",
           "examples/SampleSolution/**",
