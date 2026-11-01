@@ -465,27 +465,49 @@ let ``an input written while the projects were evaluated is never filed`` () =
         test <@ counted.Loads = 1 @>)
 
 [<Fact(Timeout = 120000)>]
-let ``an input removed while the projects were evaluated is never filed`` () =
+let ``an input removed while the projects were evaluated is never filed with the evaluation that read it`` () =
     withTree (fun t ->
-        // Read while it existed, absent when the inputs are listed: the absence is filed
-        // under a key the options were not evaluated from, so its directory decides.
+        // Read while it existed, absent when the inputs are listed: the absence would be
+        // filed under a key the options were not evaluated from, so its directory decides.
+        // The path is not there, so the projects are evaluated once more (AUTOMATION-1438),
+        // and that evaluation, which found it absent, is the one filed.
         let maybe = t.Path "maybe.props"
         writeFile maybe "<Project />\n"
+        let evaluations = ref 0
 
-        let _, first =
-            daemonLoader
-                t
-                (request t)
-                sameEnvironment
+        let inner =
+            CountingLoader(
                 (fun () ->
-                    untilFileClockReachesNow ()
-                    File.Delete maybe)
+                    evaluations.Value <- evaluations.Value + 1
+
+                    [ { sampleOptions t.Project t.Assets with
+                          ProjectId = Some $"evaluation-%d{evaluations.Value}" } ]),
+                (fun () ->
+                    if File.Exists maybe then
+                        untilFileClockReachesNow ()
+                        File.Delete maybe),
                 None
+            )
+
+        let first =
+            CachingLoader(
+                inner,
+                OptionsInputs.list,
+                t.Store,
+                (fun _ -> request t),
+                (fun () -> sameEnvironment),
+                ignore,
+                racyWindow = TimeSpan.Zero,
+                stamp = inTree t
+            )
+            :> IWorkspaceLoader
 
         first.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        test <@ inner.Loads = 2 @>
         let counted, restarted = daemonLoader t (request t) sameEnvironment ignore None
-        restarted.LoadProjects [ t.Project ] |> Seq.toList |> ignore
-        test <@ counted.Loads = 1 @>)
+        let replayed = restarted.LoadProjects [ t.Project ] |> Seq.toList
+        test <@ counted.Loads = 0 @>
+        test <@ replayed |> List.map _.ProjectId = [ Some "evaluation-2" ] @>)
 
 /// The design-time build of a checkout that was never built, as Ionide's runs it: it
 /// writes the project's generated compile item and creates `bin/` beside the project, but
@@ -634,6 +656,76 @@ let ``a project directory that changes on every evaluation is evaluated twice at
         let counted, restarted = daemonLoader t (request t) sameEnvironment ignore None
         restarted.LoadProjects [ t.Project ] |> Seq.toList |> ignore
         test <@ counted.Loads = 1 @>)
+
+/// What the first daemon in a checkout writes outside its projects while they are evaluated:
+/// test-prune's registration creates `<root>/coverage/<project>/` (ADR-059 §24). The
+/// checkout root is the directory the absent `Directory.Build.targets`,
+/// `Directory.Packages.props` and `global.json` there are judged by. A later daemon finds
+/// the directory there and writes nothing.
+let private firstDaemonCreatesCoverage (t: Tree) () =
+    let coverage = t.Path("coverage", "App.Tests")
+
+    if not (Directory.Exists coverage) then
+        untilFileClockReachesNow ()
+        Directory.CreateDirectory coverage |> ignore
+
+// AUTOMATION-1438, measured again at 0.14.0-alpha.134 on intelligence: the gate's daemon, the
+// first in a fresh workspace, would have evaluated a second time for the design-time build's
+// writes inside the projects, but not once the checkout root moved too. Its test-prune registration
+// created `coverage/` 0.26 s before the evaluation started, inside the window, which moved the
+// root that the absent root-level `Directory.Packages.props` and `Directory.Build.targets` are
+// judged by. That is outside every project, so nothing was filed, and the next plain start
+// (which found `coverage/` there and wrote nothing) evaluated for 12.2 s and filed. An absent
+// input whose directory moved is evaluated once more too, under the same rule.
+[<Fact(Timeout = 120000)>]
+let ``the first daemon in a checkout, which writes in the checkout root while its projects are evaluated, files them and the next start replays them``
+    ()
+    =
+    withTree (fun t ->
+        File.Delete(t.Path("src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
+
+        let firstDaemon () =
+            firstDesignTimeBuild t ()
+            firstDaemonCreatesCoverage t ()
+
+        let cold, gate = daemonLoader t (request t) sameEnvironment firstDaemon None
+        gate.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        test <@ cold.Loads = 2 @>
+        let counted, plain = daemonLoader t (request t) sameEnvironment ignore None
+        let options = plain.LoadProjects [ t.Project ] |> Seq.toList
+        test <@ counted.Loads = 0 @>
+        test <@ options.Length = 1 @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a directory an absent input is judged by that moves while a built checkout is evaluated is evaluated once more and filed``
+    ()
+    =
+    withTree (fun t ->
+        let cold, first =
+            daemonLoader t (request t) sameEnvironment (firstDaemonCreatesCoverage t) None
+
+        first.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        test <@ cold.Loads = 2 @>
+        let counted, restarted = daemonLoader t (request t) sameEnvironment ignore None
+        restarted.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        test <@ counted.Loads = 0 @>)
+
+// The boundary: a file the evaluation READ outside the projects that changes under it is an
+// edit, not a side effect of evaluating. It is not evaluated again here; the edit's own file
+// event re-discovers the projects.
+[<Fact(Timeout = 120000)>]
+let ``a file read outside the projects that changes while they are evaluated is not evaluated again`` () =
+    withTree (fun t ->
+        let n = ref 0
+
+        let edit () =
+            n.Value <- n.Value + 1
+            untilFileClockReachesNow ()
+            writeFile t.Common $"<Project><PropertyGroup><Common>%d{n.Value}</Common></PropertyGroup></Project>\n"
+
+        let cold, first = daemonLoader t (request t) sameEnvironment edit None
+        first.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        test <@ cold.Loads = 1 @>)
 
 [<Fact(Timeout = 120000)>]
 let ``an evaluation in which a project failed to load is never filed`` () =

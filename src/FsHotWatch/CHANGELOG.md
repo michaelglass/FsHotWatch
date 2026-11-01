@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: the first daemon in a checkout files its projects' options when it wrote outside them while
+  they were evaluated (AUTOMATION-1438, ADR-059 §24). On intelligence, test-prune's registration
+  creates `coverage/` in the checkout root 0.26 s before the first evaluation starts, inside the
+  racy window it is judged from. The root is the directory the absent root-level
+  `Directory.Build.targets` and `Directory.Packages.props` are judged by, and it lies outside every
+  project, so the evaluation was refused and never evaluated again: the first plain start after a
+  fresh workspace's gate then spent 12.2 s evaluating. An input that is not there, whose directory
+  moved, is now evaluated once more under the same rule as a write inside the projects, and the
+  clean second evaluation is filed. "not filed" now names an input outside the projects when one
+  moved, and how many moved.
+
 ## 0.10.0-alpha.101 - 2026-11-01
 
 - perf: recording a check's analysis outcome (`AnalysisFileEvidence`) reads the file's suppression

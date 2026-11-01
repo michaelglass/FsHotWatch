@@ -658,12 +658,25 @@ type CachingLoader
                 path = dir
                 || path.StartsWith(dir + string Path.DirectorySeparatorChar, StringComparison.Ordinal))
 
+    // An input that is not there, so it moved only because the directory it is judged by
+    // did (`file`). That directory need not be a project's: the first daemon in a checkout
+    // creates `coverage/` in the checkout root while its projects are evaluated, which moves
+    // the root the absent `Directory.Build.targets` there is judged by (AUTOMATION-1438).
+    // Whether the name itself came or went, the second evaluation reads what is there then.
+    let judgedByItsDirectory (path: string) =
+        not (File.Exists path || Directory.Exists path)
+
     let evaluateAndFile (req: Request) (env: (string * string) list) (projects: string list) =
+        let inProjects = underProjects projects
+
         let rec attempt (retried: bool) =
             let loaded, filing, loadedAt = evaluateOnce req env projects
 
             match filing with
-            | Moved moved when not retried && List.forall (underProjects projects) moved ->
+            | Moved moved when
+                not retried
+                && List.forall (fun path -> inProjects path || judgedByItsDirectory path) moved
+                ->
                 // What was evaluated may not be what is there now, and filing it would risk
                 // a stale replay. Evaluating once more costs what the next start would
                 // have paid, and files an evaluation nothing changed under. It starts once
@@ -672,8 +685,16 @@ type CachingLoader
                 // by would otherwise hold some of them. Those include paths only the second
                 // evaluation's inputs name, so the latest change among the first one's
                 // inputs is not the bound (seen on Linux, whose change times are coarse).
+                let outside = moved |> List.filter (inProjects >> not)
+
+                let where =
+                    match outside with
+                    | [] -> "in the projects' own directories"
+                    | first :: _ ->
+                        $"in the projects' own directories or absent, judged by a directory that moved (%s{first})"
+
                 log
-                    $"options: %d{moved.Length} input(s) in the projects' own directories changed while they were evaluated (%s{List.head moved}); evaluating once more"
+                    $"options: %d{moved.Length} input(s) %s{where} changed while they were evaluated (%s{List.head moved}); evaluating once more"
 
                 waitPast (fun () -> DateTime.UtcNow) Threading.Thread.Sleep (loadedAt + racyWindow)
 
@@ -682,7 +703,16 @@ type CachingLoader
                 log $"options: filed the evaluation of %d{loaded.Length} project(s)"
                 loaded
             | Moved moved ->
-                log $"options: not filed: %s{List.head moved} changed while the projects were evaluated"
+                // Name an input outside the projects when one moved: it decides whether a
+                // second evaluation runs, and the first in the list rarely is one.
+                let shown =
+                    moved
+                    |> List.tryFind (fun path -> not (inProjects path))
+                    |> Option.defaultValue (List.head moved)
+
+                log
+                    $"options: not filed: %s{shown} changed while the projects were evaluated (%d{moved.Length} input(s) moved)"
+
                 loaded
             | Refused why ->
                 log $"options: not filed: %s{why}"
