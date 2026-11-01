@@ -1687,7 +1687,7 @@ let ``coverageArgsTemplateFor leaves a template without {repoRoot} unchanged and
 
     test <@ coverageArgsTemplateFor root (Some custom) = custom @>
 
-    test <@ coverageArgsTemplateFor root None = FsHotWatch.TestPrune.TestPrunePlugin.DefaultCoverageArgsTemplate @>
+    test <@ coverageArgsTemplateFor root None = FsHotWatch.TestPrune.CoverageArtifacts.DefaultCoverageArgsTemplate @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig test project with coverage object enabled=false disables coverage`` () =

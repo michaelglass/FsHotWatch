@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- refactor!: `TestPrunePlugin` is being split along its seams into focused modules. Moved
+  definitions keep their names; a caller that qualified them as `TestPrunePlugin.X` now names
+  the new module: `CoverageArtifacts` (coverage paths, arguments and artifact states) and
+  `CoverageIngest` (coverage ingestion and the ratchet coverage table).
+
 - refactor!: `TestPruneState` holds its test-evidence receipt as one `HeldReceipt` (`NoneYet`,
   `Standing of receipt * manifest`, `Revoked of reason`) in place of `EvidenceReceipt`,
   `EvidenceManifest` and `ReceiptRevoked`, so a revocation reason can no longer stand beside a

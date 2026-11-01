@@ -2305,8 +2305,8 @@ let refreshCoverageBaseline (repoRoot: string) (config: DaemonConfiguration) : s
         |> List.collect (fun p ->
             let dir = Path.Combine(repoRoot, t.CoverageDir, p.Project)
 
-            [ FsHotWatch.TestPrune.TestPrunePlugin.BaselineName
-              FsHotWatch.TestPrune.TestPrunePlugin.PartialName ]
+            [ FsHotWatch.TestPrune.CoverageArtifacts.BaselineName
+              FsHotWatch.TestPrune.CoverageArtifacts.PartialName ]
             |> List.map (fun name -> Path.Combine(dir, name))
             |> List.filter File.Exists
             |> List.choose tryDeleteForCleanup)

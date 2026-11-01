@@ -59,6 +59,8 @@
     <Compile Include="CheckSkip.fs" />
     <Compile Include="TestEvidenceRun.fs" />
     <Compile Include="GroupSchedule.fs" />
+    <Compile Include="CoverageArtifacts.fs" />
+    <Compile Include="CoverageIngest.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 
