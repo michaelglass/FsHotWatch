@@ -2248,11 +2248,6 @@ type TestPruneState =
         /// for the run's phase (`ctx.IsRunning "tests"` while its worker is live,
         /// `ctx.IsSettling "tests"` until its result fold commits), so this carries none.
         LastResults: TestResults option
-        /// The id of the run that produced `LastResults` — i.e. the directory its
-        /// CTRF reports live in (`.fshw/test-runs/<runId>/`). Reported to the CLI by
-        /// `test-scope` so the verdict can DECLARE which reports are this run's,
-        /// instead of inferring membership from mtimes. `None` until a run completes.
-        LastRunId: Guid option
         /// The seed symbols that SELECTED the last completed run — i.e. the change
         /// that caused those tests to run. Empty for an unfiltered run (nothing
         /// selected it; everything ran) and until a run completes.
@@ -9298,7 +9293,6 @@ let internal createWithEvidenceAndQueries
           ChangedSymbols = loadedDebt.PendingQueue |> Set.toList
           ChangedFiles = []
           LastResults = None
-          LastRunId = None
           LastSeeds = []
           LastSeedFanout = SeedFanoutReading.NoSelection
           DebtDuringFullRun = Map.empty
@@ -13658,7 +13652,6 @@ let internal createWithEvidenceAndQueries
                     return
                         { state with
                             LastResults = Some testResults
-                            LastRunId = Some completed.RunId
                             // Only the files this run launched against are consumed; a
                             // file that changed during the run selects the next one.
                             ChangedFiles =
