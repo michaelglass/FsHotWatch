@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- refactor!: a `TraceSettings` always records, so a shadow selection always has traces to select
+  from. `TraceRecordPolicy.RecordOff` is gone: `tests.traces.record: "off"` (or no `record`) now
+  parses to no settings at all, which was already its whole effect. `TraceSettings.parseRecord` is
+  replaced by `TraceSettings.parseRecording`, which reads `record` and `select` together and is the
+  one place that refuses an unknown value or `select: "shadow"` without recording. The
+  configuration accepted and refused is unchanged.
+
 - fix: a test host that dies of SIGABRT is reported as having aborted itself, not as KILLED
   (AUTOMATION-1425). On .NET that is the runtime ending the process, most often when its exception
   dispatch fails (`SfiNextWorker` → `TerminateProcess` → `abort`), and it writes nothing first, so

@@ -9,15 +9,11 @@ open FsHotWatch.TestPrune
 open TestPrune.Trace
 
 /// The warning for run `runId`, or `None` when nothing is owed. `rows` holds, for each
-/// project that takes part in recording, its stored trace runs (of any run). Owed: the
-/// policy records, some project takes part, and no project's row for this run is a
-/// recording. A stored refusal is named with its reason; a run that stored nothing at
-/// all is named as that.
-let unrecordedWarning
-    (record: TraceRecordPolicy)
-    (runId: string)
-    (rows: (string * TraceStore.TraceRun list) list)
-    : string option =
+/// project that takes part in recording, its stored trace runs (of any run). Owed: some
+/// project takes part, and no project's row for this run is a recording (a `TraceSettings`
+/// always records, under either policy). A stored refusal is named with its reason; a run
+/// that stored nothing at all is named as that.
+let unrecordedWarning (runId: string) (rows: (string * TraceStore.TraceRun list) list) : string option =
     let ofRun =
         rows
         |> List.map (fun (project, runs) -> project, runs |> List.filter (fun r -> r.RunId = runId))
@@ -33,12 +29,9 @@ let unrecordedWarning
                 | TraceStore.Refused
                 | TraceStore.FailedToRecord -> false))
 
-    match record with
-    | RecordOff -> None
-    | RecordFullRuns
-    | RecordEveryRun when traced || List.isEmpty rows -> None
-    | RecordFullRuns
-    | RecordEveryRun ->
+    if traced || List.isEmpty rows then
+        None
+    else
         let reasons =
             ofRun
             |> List.choose (fun (project, runs) ->
@@ -80,7 +73,7 @@ let check
                     Error ex.Message
 
         match rows with
-        | Ok rows -> unrecordedWarning settings.Record (runId.ToString "N") rows
+        | Ok rows -> unrecordedWarning (runId.ToString "N") rows
         | Error reason ->
             Some $"tests.traces is configured, but the trace database %s{settings.DbPath} could not be read: %s{reason}"
     | _ -> None

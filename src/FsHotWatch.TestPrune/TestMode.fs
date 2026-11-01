@@ -128,6 +128,5 @@ module TestMode =
     /// impact-selected subset, which refreshes exactly the traces of the tests it ran.
     let recordsTraces (policy: TraceRecordPolicy) (mode: TestMode) =
         match policy with
-        | RecordOff -> false
         | RecordEveryRun -> true
         | RecordFullRuns -> requestsFullSuite mode

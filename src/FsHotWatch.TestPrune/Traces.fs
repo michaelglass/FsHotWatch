@@ -2,10 +2,10 @@
 /// Parsed and carried here; nothing in this file launches or records anything.
 namespace FsHotWatch.TestPrune
 
-/// When a test run records per-test traces (`tests.traces.record`).
+/// Which runs record per-test traces (`tests.traces.record`). There is no "off" case:
+/// `record: "off"` (or no `record`) parses to no `TraceSettings` at all, so a settings value
+/// always records, and a shadow selection always has traces to select from.
 type TraceRecordPolicy =
-    /// Never record. The default when the key is absent.
-    | RecordOff
     /// Record only runs that execute every project in full (`confirm`, nightly).
     | RecordFullRuns
     /// Record every run; an impact-selected run refreshes only the tests it ran.
@@ -27,10 +27,11 @@ type TraceWeaveTests =
     /// Method-entry probes as well (`"full"`).
     | WeaveTestFull
 
-/// The `tests.traces` block of `.fshw.json`.
+/// The `tests.traces` block of `.fshw.json`, when it records. `TraceSettings.parseRecording`
+/// is the only way in from text: a block whose `record` is off is no settings at all.
 type TraceSettings =
     {
-        /// When to record.
+        /// Which runs record.
         Record: TraceRecordPolicy
         /// Repo-relative as written in .fshw.json; resolved against the repo root at registration.
         DbPath: string
@@ -57,15 +58,6 @@ module TraceSettings =
     [<Literal>]
     let DefaultVerifyTimeoutSec = 300
 
-    /// Parse the `record` value (case-insensitive). Unknown text is `None`: the caller
-    /// refuses the configuration.
-    let parseRecord (s: string) : TraceRecordPolicy option =
-        match s.ToLowerInvariant() with
-        | "off" -> Some RecordOff
-        | "full-runs" -> Some RecordFullRuns
-        | "every-run" -> Some RecordEveryRun
-        | _ -> None
-
     /// Parse the `select` value (case-insensitive). Unknown text is `None`: the caller
     /// refuses the configuration.
     let parseSelect (s: string) : TraceSelectPolicy option =
@@ -73,6 +65,43 @@ module TraceSettings =
         | "off" -> Some SelectOff
         | "shadow" -> Some SelectShadow
         | _ -> None
+
+    /// Parse the `record` and `select` values together, each `None` when absent
+    /// (case-insensitive). `Ok None` when nothing is recorded (`record` absent or `"off"`,
+    /// `select` absent or `"off"`). `Error` names an unknown value, including `live`, which
+    /// this release does not implement, and a shadow selection without recording, which
+    /// would never have a trace to select from.
+    let parseRecording
+        (record: string option)
+        (select: string option)
+        : Result<(TraceRecordPolicy * TraceSelectPolicy) option, string> =
+        let recordValue =
+            match record |> Option.map _.ToLowerInvariant() with
+            | None
+            | Some "off" -> Ok None
+            | Some "full-runs" -> Ok(Some RecordFullRuns)
+            | Some "every-run" -> Ok(Some RecordEveryRun)
+            | Some _ ->
+                Error $"tests.traces.record has unknown value '%s{record.Value}' (expected off, full-runs or every-run)"
+
+        let selectValue =
+            match select with
+            | None -> Ok SelectOff
+            | Some raw ->
+                parseSelect raw
+                |> Option.map Ok
+                |> Option.defaultValue (
+                    Error $"tests.traces.select has unknown value '%s{raw}' (expected off or shadow)"
+                )
+
+        match recordValue, selectValue with
+        | Error why, _
+        | _, Error why -> Error why
+        | Ok None, Ok SelectOff -> Ok None
+        | Ok None, Ok SelectShadow ->
+            Error
+                "tests.traces.select is shadow but tests.traces.record is off: set record to every-run (or full-runs) so there are traces to select from"
+        | Ok(Some r), Ok s -> Ok(Some(r, s))
 
     /// Parse a `weaveTests` value (case-insensitive). Unknown text is `None`: the caller
     /// refuses the configuration.

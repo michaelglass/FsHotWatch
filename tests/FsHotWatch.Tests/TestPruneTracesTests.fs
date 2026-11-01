@@ -149,12 +149,6 @@ let ``check under full-runs does not trace`` () =
     test <@ TraceRun.decideWith unreachablePrepare someRoot rt (project "/nowhere" "T") "/tmp/run" [] = Untraced None @>
 
 [<Fact>]
-let ``record off does not trace even under confirm`` () =
-    let rt = runtime "/nowhere" RecordOff Set.empty PassThrough
-
-    test <@ TraceRun.decideWith unreachablePrepare someRoot rt (project "/nowhere" "T") "/tmp/run" [] = Untraced None @>
-
-[<Fact>]
 let ``an excluded project does not trace`` () =
     let rt = runtime "/nowhere" RecordEveryRun (set [ "T" ]) PassThrough
 
@@ -371,12 +365,10 @@ let ``an opted-out project in a full run is not named`` () =
 
     test <@ TraceRun.decideWith unreachablePrepare someRoot rt (project "/nowhere" "T") "/tmp/run" [] = Untraced None @>
 
-[<Theory>]
-[<InlineData("off")>]
-[<InlineData("every-run")>]
-let ``only full-runs names a full run it does not record`` (policy: string) =
+[<Fact>]
+let ``every-run never names a full run as unrecorded`` () =
     let rt =
-        { runtime "/nowhere" (TraceSettings.parseRecord policy).Value Set.empty ImpactSelection with
+        { runtime "/nowhere" RecordEveryRun Set.empty ImpactSelection with
             RunsEveryProjectInFull = true }
 
     test <@ TraceRun.unrecordedReason rt = None @>

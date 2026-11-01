@@ -3041,12 +3041,12 @@ let ``parseConfig tests.traces reads every field`` () =
     test <@ (t.FingerprintInputs, t.FingerprintEnv, t.VerifyTimeoutSec) = ([ "global.json" ], [ "APP_ENV" ], 60) @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig tests.traces record off is carried as off`` () =
-    test <@ (tracesOf """{"record": "off"}""").Value.Record = FsHotWatch.TestPrune.RecordOff @>
+let ``parseConfig tests.traces record off records nothing`` () =
+    test <@ tracesOf """{"record": "off"}""" = None @>
+    test <@ tracesOf """{"record": "OFF", "select": "off"}""" = None @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig tests.traces without a record value is off`` () =
-    test <@ (tracesOf "{}").Value.Record = FsHotWatch.TestPrune.RecordOff @>
+let ``parseConfig tests.traces without a record value records nothing`` () = test <@ tracesOf "{}" = None @>
 
 
 [<Fact(Timeout = 15000)>]
@@ -3075,11 +3075,27 @@ let ``TraceSettings.parseSelect reads off and shadow in any case and nothing els
     test <@ FsHotWatch.TestPrune.TraceSettings.parseSelect "live" = None @>
 
 [<Fact(Timeout = 15000)>]
-let ``TraceSettings.parseRecord rejects unknown values`` () =
-    test <@ FsHotWatch.TestPrune.TraceSettings.parseRecord "sometimes" = None @>
-    test <@ FsHotWatch.TestPrune.TraceSettings.parseRecord "full-run" = None @>
-    test <@ FsHotWatch.TestPrune.TraceSettings.parseRecord "" = None @>
-    test <@ FsHotWatch.TestPrune.TraceSettings.parseRecord "Full-Runs" = Some FsHotWatch.TestPrune.RecordFullRuns @>
+let ``TraceSettings.parseRecording reads record and select together`` () =
+    let parse = FsHotWatch.TestPrune.TraceSettings.parseRecording
+    test <@ parse None None = Ok None @>
+    test <@ parse (Some "off") (Some "off") = Ok None @>
+
+    test
+        <@ parse (Some "Full-Runs") None = Ok(Some(FsHotWatch.TestPrune.RecordFullRuns, FsHotWatch.TestPrune.SelectOff)) @>
+
+    test
+        <@
+            parse (Some "every-run") (Some "shadow") = Ok(
+                Some(FsHotWatch.TestPrune.RecordEveryRun, FsHotWatch.TestPrune.SelectShadow)
+            )
+        @>
+
+    for bad in [ "sometimes"; "full-run"; "" ] do
+        test <@ Result.isError (parse (Some bad) None) @>
+
+    // Shadow without recording is not a settings value: refused, never constructed.
+    test <@ Result.isError (parse None (Some "shadow")) @>
+    test <@ Result.isError (parse (Some "off") (Some "shadow")) @>
 
 [<Theory(Timeout = 15000)>]
 [<InlineData("sometimes")>]

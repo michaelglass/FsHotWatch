@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- refactor!: `ConfirmTraces.unrecordedWarning` no longer takes the record policy: with
+  `record: "off"` parsed as no `tests.traces` settings, every policy it could be given records.
+
 - fix: on macOS, every process the CLI starts inherits `DOTNET_INTERNAL_ThreadSuspendInjection=0`,
   as a daemon's children already did (AUTOMATION-1425). A CLI that hosts the work itself
   (`--run-once`, an in-process `test-rerun`) started its test hosts, builds and helpers with

@@ -38,14 +38,14 @@ let ``a graded run that recorded a project owes nothing`` () =
         [ "A", [ row runId TraceStore.Recorded "" ]
           "B", [ row runId TraceStore.Refused "no-ctrf-report" ] ]
 
-    test <@ ConfirmTraces.unrecordedWarning RecordFullRuns runId rows = None @>
+    test <@ ConfirmTraces.unrecordedWarning runId rows = None @>
 
 [<Fact>]
 let ``a graded run that stored nothing is named as that`` () =
     // The shape the full-suite scope bug left: rows from an earlier run, none from this one.
     let rows = [ "A", [ row "an-earlier-run" TraceStore.Recorded "" ] ]
 
-    let warning = ConfirmTraces.unrecordedWarning RecordFullRuns runId rows
+    let warning = ConfirmTraces.unrecordedWarning runId rows
 
     test <@ warning.IsSome @>
 
@@ -61,7 +61,7 @@ let ``a graded run whose every project was refused names each reason`` () =
         [ "A", [ row runId TraceStore.Refused "not-recorded: full-runs" ]
           "B", [ row runId TraceStore.FailedToRecord "recorder-no-output" ] ]
 
-    let warning = (ConfirmTraces.unrecordedWarning RecordEveryRun runId rows).Value
+    let warning = (ConfirmTraces.unrecordedWarning runId rows).Value
 
     test
         <@
@@ -70,9 +70,8 @@ let ``a graded run whose every project was refused names each reason`` () =
         @>
 
 [<Fact>]
-let ``nothing is owed when recording is off or no project takes part`` () =
-    test <@ ConfirmTraces.unrecordedWarning RecordOff runId [ "A", [] ] = None @>
-    test <@ ConfirmTraces.unrecordedWarning RecordFullRuns runId [] = None @>
+let ``nothing is owed when no project takes part`` () =
+    test <@ ConfirmTraces.unrecordedWarning runId [] = None @>
 
 [<Fact>]
 let ``check reads a missing trace database as a run that stored nothing`` () =
@@ -115,7 +114,7 @@ let ``check reads the graded run's rows from the trace database`` () =
 [<Fact>]
 let ``an every-run graded run that recorded a project owes nothing`` () =
     let rows = [ "A", [ row runId TraceStore.TreeMovedDuringRun "" ] ]
-    test <@ ConfirmTraces.unrecordedWarning RecordEveryRun runId rows = None @>
+    test <@ ConfirmTraces.unrecordedWarning runId rows = None @>
 
 [<Fact>]
 let ``check names a trace database it cannot read`` () =

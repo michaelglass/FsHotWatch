@@ -89,17 +89,20 @@ let ``the scan leaves questions to the seam alone`` (line: string) =
 // --- recordsTraces: the one place that decides when a run records traces ---
 
 [<Theory>]
-[<InlineData("off", false, false)>]
 [<InlineData("full-runs", false, true)>]
 [<InlineData("every-run", true, true)>]
 let ``recordsTraces follows the policy per mode`` (policy: string, underCheck: bool, underConfirm: bool) =
-    let p = (FsHotWatch.TestPrune.TraceSettings.parseRecord policy).Value
+    let p =
+        (FsHotWatch.TestPrune.TraceSettings.parseRecording (Some policy) None
+         |> Result.toOption
+         |> Option.flatten)
+            .Value
+        |> fst
+
     test <@ FsHotWatch.TestPrune.TestMode.recordsTraces p FsHotWatch.TestPrune.ImpactSelection = underCheck @>
     test <@ FsHotWatch.TestPrune.TestMode.recordsTraces p FsHotWatch.TestPrune.PassThrough = underConfirm @>
 
 [<Theory>]
-[<InlineData("off", "full", false)>]
-[<InlineData("off", "", false)>]
 [<InlineData("full-runs", "full", true)>]
 [<InlineData("full-runs", "", false)>]
 [<InlineData("full-runs", "affected", false)>]
@@ -107,7 +110,13 @@ let ``recordsTraces follows the policy per mode`` (policy: string, underCheck: b
 [<InlineData("every-run", "", true)>]
 let ``recordsTraces follows the policy per trigger scope`` (policy: string, scope: string, records: bool) =
     // `confirm` sets scope "full"; `check` (and any other scope) runs impact selection.
-    let p = (FsHotWatch.TestPrune.TraceSettings.parseRecord policy).Value
+    let p =
+        (FsHotWatch.TestPrune.TraceSettings.parseRecording (Some policy) None
+         |> Result.toOption
+         |> Option.flatten)
+            .Value
+        |> fst
+
     let mode = FsHotWatch.TestPrune.TestMode.ofScope scope
     test <@ FsHotWatch.TestPrune.TestMode.recordsTraces p mode = records @>
 
@@ -118,10 +127,8 @@ let ``a daemon session starts recording only under every-run`` () =
 
     test
         <@
-            [ FsHotWatch.TestPrune.RecordOff
-              FsHotWatch.TestPrune.RecordFullRuns
-              FsHotWatch.TestPrune.RecordEveryRun ]
-            |> List.map at = [ false; false; true ]
+            [ FsHotWatch.TestPrune.RecordFullRuns; FsHotWatch.TestPrune.RecordEveryRun ]
+            |> List.map at = [ false; true ]
         @>
 
 // --- afterRun: when a concluded run ends confirm's full-suite scope ---

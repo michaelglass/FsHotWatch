@@ -1330,7 +1330,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     arr.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList
                 | _ -> []
 
-            // `tests.traces`: opt-in per-test trace recording. Absent → None (off,
+            // `tests.traces`: opt-in per-test trace recording. Absent or `record: off` → None (off,
             // byte-for-byte today's behaviour). An unknown `record` value is a
             // ConfigErrorException: a typo would otherwise switch tracing off unnoticed.
             let traces =
@@ -1350,20 +1350,9 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                             |> Seq.toList
                         | _ -> []
 
-                    let record =
-                        match str "record" with
-                        | None -> FsHotWatch.TestPrune.RecordOff
-                        | Some raw ->
-                            match FsHotWatch.TestPrune.TraceSettings.parseRecord raw with
-                            | Some r -> r
-                            | None ->
-                                raise (
-                                    ConfigErrorException
-                                        $"tests.traces.record has unknown value '%s{raw}' (expected off, full-runs or every-run)"
-                                )
-
-                    // An unknown `weaveTests` is refused like an unknown `record`: read as
-                    // the default, a typo'd "full" would record call sites only, unnoticed.
+                    // An unknown `weaveTests` is refused like an unknown `record`, even when
+                    // nothing records: read as the default, a typo'd "full" would record call
+                    // sites only, unnoticed.
                     let weaveTests =
                         match t.TryGetProperty("weaveTests") with
                         | false, _ -> FsHotWatch.TestPrune.WeaveTestSites
@@ -1374,36 +1363,23 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                         | true, n when n.ValueKind = JsonValueKind.Number -> n.GetInt32()
                         | _ -> FsHotWatch.TestPrune.TraceSettings.DefaultVerifyTimeoutSec
 
-                    // `select`: trace selection in shadow. Unknown values (including `live`,
-                    // which this release does not implement) are refused, and so is shadow
-                    // without recording: nothing would ever be selected from.
-                    let select =
-                        match str "select" with
-                        | None -> FsHotWatch.TestPrune.SelectOff
-                        | Some raw ->
-                            match FsHotWatch.TestPrune.TraceSettings.parseSelect raw with
-                            | None ->
-                                raise (
-                                    ConfigErrorException
-                                        $"tests.traces.select has unknown value '%s{raw}' (expected off or shadow)"
-                                )
-                            | Some FsHotWatch.TestPrune.SelectShadow when record = FsHotWatch.TestPrune.RecordOff ->
-                                raise (
-                                    ConfigErrorException
-                                        "tests.traces.select is shadow but tests.traces.record is off: set record to every-run (or full-runs) so there are traces to select from"
-                                )
-                            | Some s -> s
+                    // `record` and `select` together: `record` off is no settings at all, and
+                    // an unknown value (including `select: live`, which this release does not
+                    // implement) or a shadow selection without recording is refused.
+                    match FsHotWatch.TestPrune.TraceSettings.parseRecording (str "record") (str "select") with
+                    | Result.Error why -> raise (ConfigErrorException why)
+                    | Ok None -> None
+                    | Ok(Some(record, select)) ->
+                        let settings: FsHotWatch.TestPrune.TraceSettings =
+                            { Select = select
+                              Record = record
+                              DbPath = str "db" |> Option.defaultValue FsHotWatch.TestPrune.TraceSettings.DefaultDbPath
+                              WeaveTests = weaveTests
+                              FingerprintInputs = strs "fingerprintInputs"
+                              FingerprintEnv = strs "fingerprintEnv"
+                              VerifyTimeoutSec = verifyTimeoutSec }
 
-                    let settings: FsHotWatch.TestPrune.TraceSettings =
-                        { Select = select
-                          Record = record
-                          DbPath = str "db" |> Option.defaultValue FsHotWatch.TestPrune.TraceSettings.DefaultDbPath
-                          WeaveTests = weaveTests
-                          FingerprintInputs = strs "fingerprintInputs"
-                          FingerprintEnv = strs "fingerprintEnv"
-                          VerifyTimeoutSec = verifyTimeoutSec }
-
-                    Some settings
+                        Some settings
                 | _ -> None
 
             // `tests.runOn`: an unknown value is refused, not read as the default — a typo
