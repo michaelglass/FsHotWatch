@@ -71,7 +71,7 @@ let ``treeOf leaves out a zombie — it has already exited`` () =
 
 [<Fact>]
 let ``isProcessAlive says a live process is alive`` () =
-    test <@ isProcessAlive Environment.ProcessId = Ok true @>
+    test <@ isProcessAlive Environment.ProcessId = Liveness.Alive @>
 
 [<Fact>]
 let ``isProcessAlive says an exited, reaped process is gone`` () =
@@ -79,7 +79,7 @@ let ``isProcessAlive says an exited, reaped process is gone`` () =
         Diagnostics.Process.Start(Diagnostics.ProcessStartInfo("true", UseShellExecute = false))
 
     p.WaitForExit()
-    test <@ isProcessAlive p.Id = Ok false @>
+    test <@ isProcessAlive p.Id = Liveness.Gone @>
 
 // ---------------------------------------------------------------------------
 // accountTeardown — snapshot, kill, poll liveness, name survivors
@@ -98,7 +98,11 @@ let ``settlePause waits the settle pause between liveness polls`` () =
 let private table rows () = Ok rows
 
 /// A liveness probe backed by a set the test mutates.
-let private aliveIn (alive: Set<int> ref) (pid: int) = Ok(alive.Value.Contains pid)
+let private aliveIn (alive: Set<int> ref) (pid: int) =
+    if alive.Value.Contains pid then
+        Liveness.Alive
+    else
+        Liveness.Gone
 
 [<Fact>]
 let ``accountTeardown: a clean kill names the tree and no survivors`` () =
@@ -151,7 +155,7 @@ let ``accountTeardown: stops polling the moment the tree is gone`` () =
 [<Fact>]
 let ``accountTeardown: an unreadable table before the kill makes the tree AND its survivors unknown`` () =
     let t =
-        accountTeardown (fun () -> Error "ps: not found") (fun _ -> Ok false) 3 noPause 10 (fun () ->
+        accountTeardown (fun () -> Error "ps: not found") (fun _ -> Liveness.Gone) 3 noPause 10 (fun () ->
             KillOutcome.Killed)
 
     test <@ t.Tree = Error "ps: not found" @>
@@ -166,7 +170,7 @@ let ``accountTeardown: an unreadable table before the kill makes the tree AND it
 [<Fact>]
 let ``accountTeardown: a liveness probe that cannot answer is UNKNOWN, never "gone"`` () =
     let t =
-        accountTeardown (table [ row 10 1 "sh -c x" ]) (fun _ -> Error "errno 22") 3 noPause 10 (fun () ->
+        accountTeardown (table [ row 10 1 "sh -c x" ]) (fun _ -> Liveness.Unknown "errno 22") 3 noPause 10 (fun () ->
             KillOutcome.Killed)
 
     test
@@ -181,7 +185,7 @@ let ``accountTeardown: a kill that throws still accounts for the tree`` () =
     let failure = ComponentModel.Win32Exception("denied") :> exn
 
     let t =
-        accountTeardown (table [ row 10 1 "sh -c x" ]) (fun _ -> Ok true) 1 noPause 10 (fun () ->
+        accountTeardown (table [ row 10 1 "sh -c x" ]) (fun _ -> Liveness.Alive) 1 noPause 10 (fun () ->
             KillOutcome.KillFailed failure)
 
     test <@ t.Kill = KillOutcome.KillFailed failure @>
@@ -542,7 +546,12 @@ let ``interruptTree gives up after its attempts and says the tree did not exit``
     let pauses = ref 0
 
     let i =
-        interruptTree (fun _ -> Ok()) (fun _ -> Ok true) 3 (fun () -> pauses.Value <- pauses.Value + 1) [ row 10 1 "x" ]
+        interruptTree
+            (fun _ -> Ok())
+            (fun _ -> Liveness.Alive)
+            3
+            (fun () -> pauses.Value <- pauses.Value + 1)
+            [ row 10 1 "x" ]
 
     test <@ not i.Exited @>
     test <@ pauses.Value = 2 @>
@@ -550,7 +559,7 @@ let ``interruptTree gives up after its attempts and says the tree did not exit``
 [<Fact>]
 let ``interruptTree counts an unanswerable liveness probe as still running`` () =
     let i =
-        interruptTree (fun _ -> Ok()) (fun _ -> Error "errno 22") 2 noPause [ row 10 1 "x" ]
+        interruptTree (fun _ -> Ok()) (fun _ -> Liveness.Unknown "errno 22") 2 noPause [ row 10 1 "x" ]
 
     test <@ not i.Exited @>
 
@@ -563,7 +572,7 @@ let ``interruptTree records a member it could not signal and does not wait on it
             (fun _ -> Error "errno 1")
             (fun _ ->
                 probed.Value <- probed.Value + 1
-                Ok true)
+                Liveness.Alive)
             5
             noPause
             [ row 10 1 "x" ]
@@ -607,7 +616,7 @@ let ``accountTeardownWith does not interrupt a tree it could not read`` () =
     let t =
         accountTeardownWith
             (fun () -> Error "ps: not found")
-            (fun _ -> Ok false)
+            (fun _ -> Liveness.Gone)
             3
             noPause
             10
@@ -792,7 +801,7 @@ let ``stopWith deepest-first stops a live single-process tree`` () =
 
 [<Fact>]
 let ``interruptTree records that it sent SIGINT`` () =
-    test <@ (interruptTree (fun _ -> Ok()) (fun _ -> Ok false) 1 ignore [ row 10 1 "x" ]).Signal = "SIGINT" @>
+    test <@ (interruptTree (fun _ -> Ok()) (fun _ -> Liveness.Gone) 1 ignore [ row 10 1 "x" ]).Signal = "SIGINT" @>
 
 // ---------------------------------------------------------------------------
 // frontierOf / stopDeepestFirst — a test host's tree, stopped from the bottom up
@@ -879,7 +888,7 @@ let ``stopDeepestFirst never signals the parents of a host that ignores the sign
             (fun pid ->
                 signalled.Value <- pid :: signalled.Value
                 Ok())
-            (fun _ -> Ok true)
+            (fun _ -> Liveness.Alive)
             20
             3
             noPause
@@ -891,7 +900,7 @@ let ``stopDeepestFirst never signals the parents of a host that ignores the sign
 [<Fact>]
 let ``stopDeepestFirst records a member it could not signal and counts it as running`` () =
     let i =
-        stopDeepestFirst "SIGTERM" (fun _ -> Error "errno 1") (fun _ -> Ok true) 4 2 noPause [ row 10 1 "x" ]
+        stopDeepestFirst "SIGTERM" (fun _ -> Error "errno 1") (fun _ -> Liveness.Alive) 4 2 noPause [ row 10 1 "x" ]
 
     test <@ List.isEmpty i.Signalled @>
     test <@ i.Refused = [ 10, "errno 1" ] @>
@@ -900,7 +909,7 @@ let ``stopDeepestFirst records a member it could not signal and counts it as run
 [<Fact>]
 let ``stopDeepestFirst on a tree that is already gone signals nothing and does not claim it stopped`` () =
     let i =
-        stopDeepestFirst "SIGTERM" (fun _ -> Ok()) (fun _ -> Ok false) 4 2 noPause coverageTree
+        stopDeepestFirst "SIGTERM" (fun _ -> Ok()) (fun _ -> Liveness.Gone) 4 2 noPause coverageTree
 
     test <@ List.isEmpty i.Signalled @>
     test <@ not i.Exited @>
@@ -908,7 +917,7 @@ let ``stopDeepestFirst on a tree that is already gone signals nothing and does n
 [<Fact>]
 let ``stopDeepestFirst counts an unanswerable liveness probe as still running`` () =
     let i =
-        stopDeepestFirst "SIGTERM" (fun _ -> Ok()) (fun _ -> Error "errno 22") 3 2 noPause [ row 10 1 "x" ]
+        stopDeepestFirst "SIGTERM" (fun _ -> Ok()) (fun _ -> Liveness.Unknown "errno 22") 3 2 noPause [ row 10 1 "x" ]
 
     test <@ i.Signalled = [ 10 ] @>
     test <@ not i.Exited @>

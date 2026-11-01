@@ -100,7 +100,7 @@ let private startId (request: Request option) : int64 =
     | other -> failwith $"expected a start request, got %A{other}"
 
 let private isGone (pid: int) =
-    SpinWait.SpinUntil((fun () -> isProcessAlive pid = Ok false), 10000)
+    SpinWait.SpinUntil((fun () -> isProcessAlive pid = Liveness.Gone), 10000)
 
 let private shell (script: string) = "-c \"" + script + "\""
 

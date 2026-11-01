@@ -19,7 +19,7 @@ let private env (pairs: (string * string) list) : string -> string =
     fun name -> values |> Map.tryFind name |> Option.toObj
 
 let private isGone (pid: int) =
-    SpinWait.SpinUntil((fun () -> isProcessAlive pid = Ok false), 10000)
+    SpinWait.SpinUntil((fun () -> isProcessAlive pid = Liveness.Gone), 10000)
 
 [<Fact>]
 let ``only FSHW_SPAWN_HELPER=1 enables the helper`` () =
