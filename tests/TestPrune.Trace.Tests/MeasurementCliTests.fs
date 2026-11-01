@@ -416,3 +416,20 @@ let ``a count, fraction or timeout that is not positive is refused before anythi
 
     test <@ o.Exit = 2 && o.Stderr.StartsWith(message + "\n") @>
     test <@ calls.Count = 0 @>
+
+[<Fact>]
+let ``mutate --json prints the report as JSON, each sample's outcome by name`` () =
+    let m, _ = passing ()
+
+    let o =
+        Program.runWith m cwd [ "mutate"; "--project-dir"; "P"; "--assembly"; "P"; "--json" ]
+
+    test <@ o.Exit = 1 @>
+
+    use doc = JsonDocument.Parse o.Stdout
+    let sample = doc.RootElement.GetProperty("Samples").[0]
+    let outcome = sample.GetProperty("Outcome").GetString()
+    let missed = sample.GetProperty("Missed").[0].GetString()
+    let missedTotal = doc.RootElement.GetProperty("MissedTotal").GetInt32()
+
+    test <@ (outcome, missed, missedTotal) = ("measured", "t2", 1) @>

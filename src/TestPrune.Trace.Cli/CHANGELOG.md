@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: `mutate --json` prints its report. It threw `NotSupportedException` instead: System.Text.Json
+  cannot write the F# union a sample's outcome is, so it is now written by name (`measured`,
+  `no-failure`, `run-failed`, with the reason beside a failed run).
+
 - fix!: the measurement verbs refuse a count, fraction or timeout that is not positive, at
   parse time, with exit 2: `--samples`, `--reps` (positive whole numbers), `--sample` and
   `--timeout-min` (positive finite numbers). Before, `mutate --samples 0` ran a baseline and

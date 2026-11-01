@@ -197,6 +197,57 @@ let summarize (universe: int) (baselineNotPassed: string list) (targetCount: int
 /// The bar: some mutant failed a test, and trace selection missed none of them.
 let passes (r: MutationReport) = r.Measured > 0 && r.MissedTotal = 0
 
+/// An outcome's name, as the report and its JSON print it.
+let outcomeName (o: Outcome) =
+    match o with
+    | Measured -> "measured"
+    | NoFailure -> "no-failure"
+    | RunFailed _ -> "run-failed"
+
+/// One sample as plain data: its outcome by `outcomeName`, with a failed run's reason
+/// beside it (null otherwise).
+type SampleJson =
+    { Target: string
+      Outcome: string
+      Reason: string
+      Failing: string list
+      Selected: int
+      Missed: string list }
+
+/// The report as plain data for `JsonSerializer`, which cannot write an F# union.
+type MutationReportJson =
+    { Universe: int
+      BaselineNotPassed: string list
+      Targets: int
+      Measured: int
+      FailingTotal: int
+      MissedTotal: int
+      Recall: float option
+      Samples: SampleJson list }
+
+/// The report as plain data a JSON serializer can write.
+let toJson (r: MutationReport) : MutationReportJson =
+    { Universe = r.Universe
+      BaselineNotPassed = r.BaselineNotPassed
+      Targets = r.Targets
+      Measured = r.Measured
+      FailingTotal = r.FailingTotal
+      MissedTotal = r.MissedTotal
+      Recall = r.Recall
+      Samples =
+        r.Samples
+        |> List.map (fun s ->
+            { Target = s.Target
+              Outcome = outcomeName s.Outcome
+              Reason =
+                match s.Outcome with
+                | RunFailed why -> why
+                | Measured
+                | NoFailure -> null
+              Failing = s.Failing
+              Selected = s.Selected
+              Missed = s.Missed }) }
+
 /// The human report: the verdict and recall, each sample, then every miss by name.
 let render (r: MutationReport) : string =
     let sb = StringBuilder()
@@ -221,9 +272,9 @@ let render (r: MutationReport) : string =
     for s in r.Samples do
         let outcome =
             match s.Outcome with
-            | Measured -> "measured"
-            | NoFailure -> "no-failure"
-            | RunFailed why -> $"run-failed: %s{why}"
+            | RunFailed why -> $"%s{outcomeName s.Outcome}: %s{why}"
+            | Measured
+            | NoFailure -> outcomeName s.Outcome
 
         line
             $"  %s{s.Target}  %s{outcome}  failing %d{s.Failing.Length}  selected %d{s.Selected}  missed %d{s.Missed.Length}"

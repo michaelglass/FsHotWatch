@@ -358,6 +358,8 @@ let private measure
     (go: TraceSession.PrepareRequest -> MeasureArgs -> Result<'report, string>)
     (passes: 'report -> bool)
     (render: 'report -> string)
+    // What `--json` serializes: the report itself, or plain data where it holds a union.
+    (toJson: 'report -> obj)
     : Outcome =
     let defaults =
         { ProjectDir = None
@@ -413,7 +415,7 @@ let private measure
                     { Exit = if passes report then 0 else 1
                       Stdout =
                         if a.Json then
-                            JsonSerializer.Serialize(report, jsonOptions) + "\n"
+                            JsonSerializer.Serialize(toJson report, jsonOptions) + "\n"
                         else
                             render report
                       Stderr = "" }
@@ -439,6 +441,7 @@ let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
             (fun req a -> m.Audit req a.AppArgs a.Sample a.Seed (TimeSpan.FromMinutes a.TimeoutMin))
             Audit.passes
             Audit.render
+            box
     | "overhead" :: rest ->
         measure
             cwd
@@ -448,6 +451,7 @@ let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
             (fun req a -> m.Overhead req a.AppArgs a.Reps (TimeSpan.FromMinutes a.TimeoutMin))
             Overhead.passes
             Overhead.render
+            box
     | "file-census" :: rest ->
         measure
             cwd
@@ -457,6 +461,7 @@ let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
             (fun req a -> m.FileCensus req a.AppArgs (TimeSpan.FromMinutes a.TimeoutMin))
             FileCensus.passes
             FileCensus.render
+            box
     | "mutate" :: rest ->
         measure
             cwd
@@ -466,6 +471,7 @@ let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
             (fun req a -> m.Mutate req a.AppArgs a.Samples a.Seed a.Only (TimeSpan.FromMinutes a.TimeoutMin))
             Mutation.passes
             Mutation.render
+            (Mutation.toJson >> box)
     | _ -> fail 2 usage
 
 /// Runs a verb against `cwd`, returning its output rather than printing it.

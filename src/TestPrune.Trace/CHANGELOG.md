@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `Mutation.toJson`, the report as plain data a JSON serializer can write (`MutationReportJson`,
+  `SampleJson`), and
+  `Mutation.outcomeName`, the name the report and its JSON give an outcome.
+
 - feat: `TraceSelect`, trace-based selection for shadow mode (AUTOMATION-975): rules R1-R4 (no trace,
   changed or removed symbol, changed file input, incomplete trace), the comparison with a static
   selection, verified-failure misses and a one-line log. Trace schema migration 2 adds

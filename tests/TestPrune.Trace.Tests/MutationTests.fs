@@ -203,3 +203,32 @@ let ``the report says when nothing was measured, when it passes, and why a run f
             text.Contains "baseline: 1 test(s) did not pass"
             && text.Contains "Lib.A::f  measured"
         @>
+
+[<Fact>]
+let ``the JSON report names each outcome as render does, with a failed run's reason`` () =
+    let measured =
+        Mutation.judge traces baseline f (Ok [ outcome "hits-f" Failed; outcome "untraced" Passed ])
+
+    let quiet = Mutation.judge traces baseline f (Ok baseline)
+    let crashed = Mutation.judge traces baseline f (Error "no CTRF report")
+    let report = Mutation.summarize 4 [] 1 [ measured; quiet; crashed ]
+
+    let json = System.Text.Json.JsonSerializer.Serialize(Mutation.toJson report)
+
+    use doc = System.Text.Json.JsonDocument.Parse json
+    let samples = doc.RootElement.GetProperty("Samples").EnumerateArray() |> List.ofSeq
+
+    let named =
+        samples
+        |> List.map (fun s ->
+            let reason = s.GetProperty("Reason")
+
+            s.GetProperty("Outcome").GetString(),
+            (if reason.ValueKind = System.Text.Json.JsonValueKind.Null then
+                 None
+             else
+                 Some(reason.GetString())))
+
+    test <@ named = [ "measured", None; "no-failure", None; "run-failed", Some "no CTRF report" ] @>
+
+    test <@ (Mutation.render report).Contains "run-failed: no CTRF report" @>
