@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- refactor: table-level facts carry `SqlColumn.AllColumns` (TestPrune.Sql's new column type)
+  instead of the `"*"` string. No edge change.
 - chore: this package is linted by FSharpLint again (AUTOMATION-1409); its names the rules flag stay, with a scoped suppression saying why. No
   behaviour or API change.
 - build: the package's source and project links point at github.com/michaelglass/FsHotWatch, where

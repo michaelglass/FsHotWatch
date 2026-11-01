@@ -180,7 +180,7 @@ type SqlHydraExtension(generatedModulePrefix: string) =
                   for access in dslAccesses do
                       { Symbol = sym.FullName
                         Table = $"%s{tref.Schema}.%s{tref.Table}"
-                        Column = "*"
+                        Column = AllColumns
                         Access = access } ])
 
     interface ITestPruneExtension with

@@ -46,7 +46,12 @@ type AutoSqlExtension() =
                 |> Option.map (fun access ->
                     let args = parseArgsJson argsJson
                     let table = args |> List.tryHead |> Option.defaultValue ""
-                    let column = args |> List.tryItem 1 |> Option.defaultValue "*"
+
+                    let column =
+                        args
+                        |> List.tryItem 1
+                        |> Option.map SqlColumn.parse
+                        |> Option.defaultValue AllColumns
 
                     { Symbol = symbolName
                       Table = table

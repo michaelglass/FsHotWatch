@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **BREAKING (API):** `SqlFact.Column` is a `SqlColumn` (`AllColumns | Column of name`), not a
+  string in which `"*"` meant every column. `SqlColumn.parse` reads an attribute argument
+  (`"*"` is `AllColumns`) and `SqlColumn.overlaps` is the column-matching rule `buildEdges`
+  applies. A hand-built fact writes `Column = AllColumns` for `Column = "*"`. No edge change.
 - build: the package's source and project links point at github.com/michaelglass/FsHotWatch, where
   TestPrune now lives with its history (AUTOMATION-1367). No code change.
 
