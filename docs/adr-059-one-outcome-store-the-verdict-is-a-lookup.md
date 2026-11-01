@@ -441,6 +441,30 @@ store:
 The project-options cache (4–10 s per restart) is filed separately as a quick win. It is an
 accelerator, and no verdict reads it. §18 records it.
 
+**Amendment (2026-11-01): check records are on for intelligence at a 27 s restart.**
+
+- **Decision.** The maintainer enabled check records (`"checkRecords": true`) for
+  intelligence at a clean restart of about 27 s, against the 5 s abandon bar above.
+- **Why the bar is read this way.** The abandon criterion tests whether check records
+  themselves work, not whether the whole restart is fast. Measured on fshotwatch.cli
+  0.14.0-alpha.133 over five restarts of an unchanged intelligence tree:
+  - every restart with records on started **0 FCS checks**, replayed all 2674 records and
+    demanded none;
+  - the same tree with records off (`FSHW_CHECK_RECORDS=0`) scanned in 192.5 s;
+  - the replayed diagnostics were identical to a forced re-check with records off:
+    **0 disagreements**.
+- **Where the remaining time goes.** It belongs to other plugins, not to check records.
+  Those tickets now carry the 5 s target:
+  - the fantomas preprocessor checks every file on each scan, about 10 s (AUTOMATION-1436);
+  - the replay waits on per-file plugin caches and on test-prune's extension refresh,
+    about 14.5 s (AUTOMATION-1437);
+  - options records miss their key on the first plain start after a gate, about 10 s once
+    (AUTOMATION-1438);
+  - the dbtypes-sync preprocessor, about 2 s.
+- **What still abandons check records.** Any disagreement between a replayed result and a
+  forced re-check in the nightly full suite. The restart-time half of the criterion no
+  longer applies to check records alone.
+
 ## 15. What a gate waits on, and the forced scan (AUTOMATION-1370)
 
 1370's handoff (intelligence `results/handoffs/AUTOMATION-1370-2026-10-29.md`) raised three
