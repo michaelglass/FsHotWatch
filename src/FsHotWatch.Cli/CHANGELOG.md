@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- refactor!: a `test-scope` reply's outcome keys are parsed where they are read.
+  `TestRunReport.OutcomeKeys` and `Observation.OutcomeKeys` hold `ActionKey.KeyValue`s, and
+  `IpcParsing.tryReadOutcomeKeys` drops a value that is not a key by failing to parse it, as it
+  dropped one before. The shadow requires a K_P key as the value it is, instead of wrapping it in
+  an `ActionKey` with no inputs.
+
 - refactor!: the shadow lookup verdict's observation admits only states a publication can be in
   (ADR-059 §7). `Observation.FullSuite` and `Observation.ImpactFiltered`, two bools that could
   both be true, are one `Observation.Scope: GradedScope` (`FullSuite`, `ImpactFiltered`,

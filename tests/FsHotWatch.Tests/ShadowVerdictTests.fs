@@ -510,7 +510,7 @@ let private freshTree =
         Tree = "sha256:fresh"
         Suites = []
         Plugins = []
-        OutcomeKeys = Map.ofList [ "A.Tests", kpA.Value; "B.Tests", kpB.Value ] }
+        OutcomeKeys = Map.ofList [ "A.Tests", ActionKey.valueOf kpA; "B.Tests", ActionKey.valueOf kpB ] }
 
 [<Fact>]
 let ``a project's K_P record satisfies its test requirement on a tree no publication recorded`` () =
@@ -529,7 +529,7 @@ let ``a K_P fail is red, and a project the daemon named no key for is still miss
 
         let onlyA =
             { freshTree with
-                OutcomeKeys = Map.ofList [ "A.Tests", kpA.Value ] }
+                OutcomeKeys = Map.ofList [ "A.Tests", ActionKey.valueOf kpA ] }
 
         test <@ observeWith repo store (Some kp) projects onlyA = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
 

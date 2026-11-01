@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- refactor!: a lookup verdict's requirement names parsed key values (ADR-059 §3).
+  `LookupVerdict.Requirement.Alternatives` is an `ActionKey.KeyValue list list`, and `decide`
+  takes a `KeyValue -> Outcome option` lookup. New: `ActionKey.KeyValue` (constructed only by
+  `KeyValue.tryParse`, which accepts exactly what `isValue` does, or by `ActionKey.valueOf` from a
+  created key). A requirement can no longer hold an
+  `ActionKey` whose value was never folded from its kind and inputs, which the shadow built for
+  each K_P key it was handed.
+
 - fix: a shutdown that lands during a kill escalation names that tree (AUTOMATION-1425). A kill that
   does not return is escalated (SIGTERM, then SIGKILL) on the thread that asked for it, which logs
   the outcome when it finishes; a daemon that exited right after its shutdown cut that line off, and

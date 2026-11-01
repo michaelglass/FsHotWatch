@@ -84,3 +84,12 @@ let ``moved names every label whose digest differs, including one present on one
     let current = [ "tree", "2"; "scope", "full"; "new", "y" ]
     test <@ ActionKey.moved stored current = [ "new"; "tree"; "gone" ] @>
     test <@ List.isEmpty (ActionKey.moved current current) @>
+
+[<Fact>]
+let ``a key value parses only from text a key could have, and a created key's value always parses`` () =
+    let k = ActionKey.create "plugin" [ "name", "lint" ]
+    test <@ ActionKey.KeyValue.tryParse k.Value = Some(ActionKey.valueOf k) @>
+    test <@ (ActionKey.valueOf k).Text = k.Value @>
+    test <@ ActionKey.KeyValue.tryParse "ak1:xyz" = None @>
+    test <@ ActionKey.KeyValue.tryParse (k.Value.ToUpperInvariant()) = None @>
+    test <@ ActionKey.KeyValue.tryParse null = None @>

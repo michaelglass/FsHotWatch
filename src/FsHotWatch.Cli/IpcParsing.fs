@@ -864,16 +864,14 @@ type GradedEvidenceReading =
 /// The `outcomeKeys` object of a `test-scope` reply (ADR-059 step 7b): project to outcome
 /// key. A value that is not a key is dropped, never looked up; anything but an object is
 /// `None`.
-let tryReadOutcomeKeys (field: JsonElement option) : Map<string, string> option =
+let tryReadOutcomeKeys (field: JsonElement option) : Map<string, ActionKey.KeyValue> option =
     match field with
     | Some keys when keys.ValueKind = JsonValueKind.Object ->
         keys.EnumerateObject()
         |> Seq.choose (fun p ->
-            if
-                p.Value.ValueKind = JsonValueKind.String
-                && ActionKey.isValue (p.Value.GetString())
-            then
-                Some(p.Name, p.Value.GetString())
+            if p.Value.ValueKind = JsonValueKind.String then
+                ActionKey.KeyValue.tryParse (p.Value.GetString())
+                |> Option.map (fun key -> p.Name, key)
             else
                 None)
         |> Map.ofSeq
@@ -977,7 +975,7 @@ type TestRunReport =
         /// Each project's full-run outcome-store key over the tree as it is now, as the
         /// daemon computed it (ADR-059 step 7b). `None` when the reply did not say: an older
         /// daemon, a run in flight, or no reply at all. Read by the shadow verdict only.
-        OutcomeKeys: Map<string, string> option
+        OutcomeKeys: Map<string, ActionKey.KeyValue> option
     }
 
 module TestRunReport =
