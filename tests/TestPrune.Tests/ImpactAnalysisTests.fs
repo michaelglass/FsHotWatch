@@ -575,26 +575,27 @@ module ``File-dependency attributes`` =
         | RunSubset tests -> test <@ tests |> List.exists (fun t -> t.TestMethod = "testA") @>
         | RunAll r -> failwith $"Expected RunSubset, got %s{SelectionReason.describe r}"
 
-    [<Fact>]
-    let ``malformed args_json is silently ignored`` () =
+    [<Theory>]
+    [<InlineData("not-json-at-all")>]
+    [<InlineData("{}")>]
+    [<InlineData("[]")>]
+    [<InlineData("[42]")>]
+    let ``an unreadable DependsOnFile declaration runs everything and names itself`` (argsJson: string) =
         let store = fromAnalysisResults [ standardGraph ]
 
-        // Not JSON at all, a non-array root, an empty array, and a non-string
-        // first element — none should fire or crash the walk.
-        let attrs =
-            Map.ofList
-                [ "Tests.testA",
-                  [ ("DependsOnFileAttribute", "not-json-at-all")
-                    ("DependsOnFileAttribute", "{}")
-                    ("DependsOnFileAttribute", "[]")
-                    ("DependsOnFileAttribute", "[42]") ] ]
+        // Not JSON at all, a non-array root, an empty array, and a non-string first
+        // element. None names a path, so no subset can be shown to be enough
+        // (AUTOMATION-1452: these used to seed nothing, in silence).
+        let attrs = Map.ofList [ "Tests.testA", [ ("DependsOnFileAttribute", argsJson) ] ]
 
         let result, _events =
             selectTests (store |> withAttributes attrs) [ "data/anything.json" ] Map.empty
 
         match result with
-        | RunSubset tests -> test <@ tests |> List.isEmpty @>
-        | RunAll r -> failwith $"Expected RunSubset, got %s{SelectionReason.describe r}"
+        | RunAll(AnalysisFailedFallback reason) ->
+            test <@ reason.Contains "Tests.testA" @>
+            test <@ reason.Contains argsJson @>
+        | other -> failwith $"Expected RunAll naming the declaration, got %A{other}"
 
     [<Fact>]
     let ``attribute name other than DependsOnFile/Glob is ignored`` () =

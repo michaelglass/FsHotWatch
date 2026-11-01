@@ -2044,20 +2044,16 @@ let private extractResults
                 with _ ->
                     None
 
-            // The JSON-ish payload stored in `symbol_attributes.args_json`, e.g. `["name", 42]`.
+            // The payload stored in `symbol_attributes.args_json` (see `AttributeArgs`). An
+            // attribute whose arguments FCS cannot read stores none, as before.
             let serializeAttributeArgs (attr: FSharpAttribute) : string =
-                let inner =
+                let values =
                     try
-                        attr.ConstructorArguments
-                        |> Seq.map (fun (_ty, value) ->
-                            match value with
-                            | :? string as s -> $"\"%s{s}\""
-                            | v -> string v)
-                        |> String.concat ", "
+                        attr.ConstructorArguments |> Seq.map snd |> List.ofSeq
                     with _ ->
-                        ""
+                        []
 
-                $"[%s{inner}]"
+                AttributeArgs.serialize values
 
             let firstStringArg (attr: FSharpAttribute) : string option =
                 try

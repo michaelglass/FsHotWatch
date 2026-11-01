@@ -82,3 +82,58 @@ let ``SelectionReason.describe FileDependencyChanged includes path and symbol`` 
     let msg = SelectionReason.describe reason
     test <@ msg.Contains("data/cases.json") @>
     test <@ msg.Contains("Tests.snap") @>
+
+module ``AttributeArgs round-trip`` =
+
+    open TestPrune.AttributeArgs
+
+    [<Fact>]
+    let ``every string reads back as itself`` () =
+        let values: obj list =
+            [ "data\\cases.json"; "a\"b"; "a,b"; "line\nbreak"; "café"; ""; "[\"x\"]" ]
+
+        let expected = values |> List.map (fun v -> Text(v :?> string))
+        test <@ parse (serialize values) = Ok expected @>
+
+    [<Fact>]
+    let ``non-string constants keep their JSON text and are not strings`` () =
+        let values: obj list = [ box 42; box true; null; box 1.5; box 'c' ]
+        let parsed = parse (serialize values)
+
+        test
+            <@
+                parsed = Ok
+                    [ Constant "42"
+                      Constant "true"
+                      Constant "null"
+                      Constant "1.5"
+                      Constant """{"value":"c"}""" ]
+            @>
+
+        test <@ parsed |> Result.map strings = Ok [] @>
+
+    [<Fact>]
+    let ``texts keeps every argument in order, strings unquoted`` () =
+        let parsed = parse (serialize [ box "t"; box 7 ])
+        test <@ parsed |> Result.map texts = Ok [ "t"; "7" ] @>
+
+    [<Fact>]
+    let ``a payload that is not a JSON array is an error naming it`` () =
+        for payload in [ "not-json"; "{}"; "[\"unterminated" ] do
+            match parse payload with
+            | Error reason -> test <@ reason.Contains payload @>
+            | Ok args -> failwith $"%s{payload} parsed as %A{args}"
+
+    [<Fact>]
+    let ``numbers of every width are JSON numbers; a non-finite one is spelled as a value`` () =
+        let values: obj list = [ box 3L; box 7UL; box 2.5m; box 1.5f; box nan ]
+
+        test
+            <@
+                parse (serialize values) = Ok
+                    [ Constant "3"
+                      Constant "7"
+                      Constant "2.5"
+                      Constant "1.5"
+                      Constant """{"value":"NaN"}""" ]
+            @>

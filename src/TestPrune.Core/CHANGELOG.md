@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: an attribute argument holding a backslash or a quote is stored so that it reads back
+  as itself (AUTOMATION-1452). `symbol_attributes.args_json` was assembled by hand with no
+  escaping; `DependsOnFile("data\\cases.json")` stored a payload no JSON reader accepts, and
+  the declaration silently seeded nothing, so a change to that file selected none of its
+  tests. New `AttributeArgs` writes the payload with a JSON writer and is the one reader for
+  it (`ImpactAnalysis`, `NamedDispatch`, TestPrune.Sql). A `DependsOnFile`/`DependsOnGlob`
+  declaration that still cannot be read now selects everything (`RunAll` with
+  `AnalysisFailedFallback` naming the symbol and payload) instead of nothing.
+  **Schema 23**: a REBUILD, so every file re-indexes once into the new form. Selection
+  changes only for declarations whose arguments held a backslash or a quote (they now
+  seed their tests) and for unreadable ones (they now run everything).
 - refactor: the analyser builds its own edges through one `coreEdge` constructor stamped
   with the new `AstAnalyzer.CoreSource` literal (the `"core"` source the status display
   compared against), and the three "type edge unless it is an end of the primary edge"

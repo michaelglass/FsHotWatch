@@ -50,14 +50,15 @@ let private registrationNames = set [ "DispatchedAs"; "DispatchedAsAttribute" ]
 
 let private templateNames = set [ "DispatchTemplate"; "DispatchTemplateAttribute" ]
 
-/// The string constructor arguments of a stored attribute, in order. Stored args are
-/// rendered as `["a", "b"]` (see `AstAnalyzer`); a quote inside an argument is not
-/// escaped there, so arguments must not contain one — channel names, dispatch names and
-/// templates have no reason to.
-let private stringArgs (argsJson: string) : string list =
-    Regex.Matches(argsJson, "\"([^\"]*)\"")
-    |> Seq.map (fun m -> m.Groups[1].Value)
-    |> List.ofSeq
+/// The string constructor arguments of a stored attribute, in order (see `AttributeArgs`).
+/// A payload that cannot be read is reported and contributes no arguments, so the
+/// registration or template it held matches nothing.
+let private stringArgs (symbol: string) (argsJson: string) : string list =
+    match AttributeArgs.parse argsJson with
+    | Ok args -> AttributeArgs.strings args
+    | Error reason ->
+        eprintfn $"Warning: dispatch attribute on %s{symbol} is unreadable: %s{reason}"
+        []
 
 /// Every `(symbol, args)` for attributes whose name is in `names`, in a stable order.
 let private attributeArgs (store: SymbolStore) (names: Set<string>) =
@@ -67,7 +68,7 @@ let private attributeArgs (store: SymbolStore) (names: Set<string>) =
         attributes
         |> List.choose (fun (name, argsJson) ->
             if names.Contains name then
-                Some(symbol, stringArgs argsJson)
+                Some(symbol, stringArgs symbol argsJson)
             else
                 None))
     |> List.sort

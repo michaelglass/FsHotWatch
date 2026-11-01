@@ -484,3 +484,18 @@ module ``SqlColumn`` =
             |> List.sort
 
         test <@ facts = [ "Q.a", AllColumns; "Q.b", Column "status"; "Q.c", AllColumns ] @>
+
+    [<Fact>]
+    let ``an unreadable SQL payload reads as no arguments: table-less, every column`` () =
+        let result =
+            { AnalysisResult.Create([], [], []) with
+                Attributes =
+                    [ { SymbolFullName = "Q.broken"
+                        AttributeName = "ReadsFromAttribute"
+                        ArgsJson = "[\"t" } ] }
+
+        let facts =
+            AutoSqlExtension.ExtractFacts(TestPrune.InMemoryStore.fromAnalysisResults [ result ])
+            |> List.map (fun f -> f.Symbol, f.Table, f.Column)
+
+        test <@ facts = [ "Q.broken", "", AllColumns ] @>

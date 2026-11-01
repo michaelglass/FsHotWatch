@@ -1,32 +1,10 @@
 module TestPrune.ImpactAnalysis
 
-open System.Text.Json
 open System.Text.RegularExpressions
 open TestPrune.AstAnalyzer
 open TestPrune.Domain
 open TestPrune.Ports
 open TestPrune.SymbolDiff
-
-/// Parse a DependsOnFile/DependsOnGlob args_json payload (always `["<string>"]`).
-/// Returns None for malformed or non-single-string payloads rather than throwing —
-/// attribute args that aren't the shape we expect silently don't match, which is
-/// strictly safer than crashing the selection pipeline.
-let private firstStringFromArgsJson (argsJson: string) : string option =
-    try
-        use doc = JsonDocument.Parse(argsJson)
-        let root = doc.RootElement
-
-        if root.ValueKind = JsonValueKind.Array && root.GetArrayLength() >= 1 then
-            let first = root[0]
-
-            if first.ValueKind = JsonValueKind.String then
-                Some(first.GetString())
-            else
-                None
-        else
-            None
-    with _ ->
-        None
 
 /// Translate a TestPrune glob into a regex. Supported tokens:
 ///   `**` — any number of path segments (including zero)
@@ -87,12 +65,12 @@ let private matches (matcher: FileMatcher) (changed: string) : bool =
     | ExactPath p -> System.String.Equals(p, changed, System.StringComparison.Ordinal)
     | GlobRegex r -> r.IsMatch(changed)
 
-/// Parse a stored attribute into the matcher it declares, if it is a well-formed
-/// DependsOnFile/DependsOnGlob annotation. Attribute names are matched loosely so both
+/// The matcher a stored DependsOnFile/DependsOnGlob attribute declares: None for any other
+/// attribute, an Error for one whose arguments do not name a path. Attribute names are matched loosely so both
 /// `TestPrune.DependsOnFileAttribute` and plain `DependsOnFileAttribute` resolve — the
 /// stored DisplayName sheds the namespace. The pattern is normalized (forward slashes,
 /// no leading `./`) and a glob compiled once here, never per changed file.
-let private tryParseFileDependency (attrName: string, argsJson: string) : FileMatcher option =
+let private tryParseFileDependency (attrName: string, argsJson: string) : Result<FileMatcher, string> option =
     let compile =
         match attrName with
         | "DependsOnFileAttribute"
@@ -102,18 +80,32 @@ let private tryParseFileDependency (attrName: string, argsJson: string) : FileMa
         | _ -> None
 
     compile
-    |> Option.bind (fun compile -> firstStringFromArgsJson argsJson |> Option.map (normalizePath >> compile))
+    |> Option.map (fun compile ->
+        match AttributeArgs.parse argsJson with
+        | Ok(AttributeArgs.Text path :: _) -> Ok(compile (normalizePath path))
+        | Ok _ -> Error $"%s{attrName} has no path argument: %s{argsJson}"
+        | Error reason -> Error reason)
 
-/// Every DependsOnFile/DependsOnGlob annotation in the attribute index, as
-/// (symbolFullName, matcher) pairs.
+/// Every DependsOnFile/DependsOnGlob annotation in the attribute index: the
+/// (symbolFullName, matcher) pairs, and a description of each one that cannot be read.
 let private fileDependencyDeclarations
     (allAttributes: Map<string, (string * string) list>)
-    : (string * FileMatcher) list =
-    [ for KeyValue(symbolFullName, attrs) in allAttributes do
-          for attr in attrs do
-              match tryParseFileDependency attr with
-              | Some matcher -> yield symbolFullName, matcher
-              | None -> () ]
+    : (string * FileMatcher) list * string list =
+    let parsed =
+        [ for KeyValue(symbolFullName, attrs) in allAttributes do
+              for attr in attrs do
+                  match tryParseFileDependency attr with
+                  | Some result -> yield symbolFullName, result
+                  | None -> () ]
+
+    [ for symbol, result in parsed do
+          match result with
+          | Ok matcher -> yield symbol, matcher
+          | Error _ -> () ],
+    [ for symbol, result in parsed do
+          match result with
+          | Error reason -> yield $"%s{symbol}: %s{reason}"
+          | Ok _ -> () ]
 
 /// Result of test impact analysis: either a subset of affected tests or run-all with a reason.
 type TestSelection =
@@ -192,57 +184,68 @@ let selectTests
             // DependsOnFile/Glob pattern matches. Each such symbol becomes an extra
             // changed-symbol input to the transitive walk, plus a per-test event carrying
             // a FileDependencyChanged reason.
-            let compiledFileDeps = fileDependencyDeclarations (store.GetAllAttributes())
+            let compiledFileDeps, unreadable =
+                fileDependencyDeclarations (store.GetAllAttributes())
 
-            let fileSeeds =
-                [ for (symbol, matcher) in compiledFileDeps do
-                      for changed in changedFiles do
-                          if matches matcher changed then
-                              yield (symbol, changed) ]
+            match unreadable with
+            | _ :: _ ->
+                // A declaration that cannot be read may name any file, so no subset is
+                // provably enough. Run everything and say which declarations, rather than
+                // letting them seed nothing (AUTOMATION-1452).
+                let described = unreadable |> String.concat "; "
 
-            let hashChangedNames = changedSymbolNames allChanges
-            let fileSeedNames = fileSeeds |> List.map fst |> List.distinct
-            let seedNames = (hashChangedNames @ fileSeedNames) |> List.distinct
+                RunAll(AnalysisFailedFallback $"unreadable DependsOnFile/DependsOnGlob declarations: %s{described}"),
+                symbolEvents
+            | [] ->
+                let fileSeeds =
+                    [ for (symbol, matcher) in compiledFileDeps do
+                          for changed in changedFiles do
+                              if matches matcher changed then
+                                  yield (symbol, changed) ]
 
-            let staticallyAffectedTests = queryAffectedTests seedNames
+                let hashChangedNames = changedSymbolNames allChanges
+                let fileSeedNames = fileSeeds |> List.map fst |> List.distinct
+                let seedNames = (hashChangedNames @ fileSeedNames) |> List.distinct
 
-            let runtimeProjects = store.GetRuntimeCoverageProjects changedFiles
-            let runtimeAffectedTests = store.GetTestMethodsInProjects runtimeProjects
+                let staticallyAffectedTests = queryAffectedTests seedNames
 
-            let affectedTests =
-                staticallyAffectedTests @ runtimeAffectedTests
-                |> List.distinctBy _.SymbolFullName
+                let runtimeProjects = store.GetRuntimeCoverageProjects changedFiles
+                let runtimeAffectedTests = store.GetTestMethodsInProjects runtimeProjects
 
-            // Pick the single reason reported with every TestSelectedEvent this batch.
-            // Hash changes take precedence when present (preserves the pre-file-dep
-            // event shape). Otherwise, a single file-dep seed yields a specific
-            // FileDependencyChanged; plural seeds collapse to MultipleChanges, matching
-            // how the hash path treats singleton vs plural.
-            let distinctFileSeeds = fileSeeds |> List.distinct
+                let affectedTests =
+                    staticallyAffectedTests @ runtimeAffectedTests
+                    |> List.distinctBy _.SymbolFullName
 
-            let reason =
-                match hashChangedNames, distinctFileSeeds with
-                | [], [ (symbol, path) ] -> FileDependencyChanged(path, symbol)
-                | [], (_ :: _ :: _) -> MultipleChanges(distinctFileSeeds |> List.map fst |> List.distinct)
-                | _, _ ->
-                    match allChanges with
-                    | [ change ] -> SymbolChanged(SymbolDiff.symbolName change, SymbolDiff.changeKind change)
-                    | _ -> MultipleChanges(allChanges |> List.map SymbolDiff.symbolName)
+                // Pick the single reason reported with every TestSelectedEvent this batch.
+                // Hash changes take precedence when present (preserves the pre-file-dep
+                // event shape). Otherwise, a single file-dep seed yields a specific
+                // FileDependencyChanged; plural seeds collapse to MultipleChanges, matching
+                // how the hash path treats singleton vs plural.
+                let distinctFileSeeds = fileSeeds |> List.distinct
 
-            let testEvents =
-                affectedTests
-                |> List.map (fun testMethod -> TestSelectedEvent(testMethod.SymbolFullName, reason))
+                let reason =
+                    match hashChangedNames, distinctFileSeeds with
+                    | [], [ (symbol, path) ] -> FileDependencyChanged(path, symbol)
+                    | [], (_ :: _ :: _) -> MultipleChanges(distinctFileSeeds |> List.map fst |> List.distinct)
+                    | _, _ ->
+                        match allChanges with
+                        | [ change ] -> SymbolChanged(SymbolDiff.symbolName change, SymbolDiff.changeKind change)
+                        | _ -> MultipleChanges(allChanges |> List.map SymbolDiff.symbolName)
 
-            // Which projects executed each changed file: one store read per file, not one
-            // per (project, file) pair.
-            let runtimeProjectsByFile =
-                changedFiles
-                |> List.map (fun file -> file, store.GetRuntimeCoverageProjects [ file ])
+                let testEvents =
+                    affectedTests
+                    |> List.map (fun testMethod -> TestSelectedEvent(testMethod.SymbolFullName, reason))
 
-            let runtimeEvents =
-                [ for project in runtimeProjects do
-                      for changedFile, projects in runtimeProjectsByFile do
-                          if projects |> List.contains project then
-                              yield ProjectSelectedByRuntimeCoverageEvent(project, changedFile) ]
+                // Which projects executed each changed file: one store read per file, not one
+                // per (project, file) pair.
+                let runtimeProjectsByFile =
+                    changedFiles
+                    |> List.map (fun file -> file, store.GetRuntimeCoverageProjects [ file ])
 
-            RunSubset affectedTests, symbolEvents @ testEvents @ runtimeEvents
+                let runtimeEvents =
+                    [ for project in runtimeProjects do
+                          for changedFile, projects in runtimeProjectsByFile do
+                              if projects |> List.contains project then
+                                  yield ProjectSelectedByRuntimeCoverageEvent(project, changedFile) ]
+
+                RunSubset affectedTests, symbolEvents @ testEvents @ runtimeEvents

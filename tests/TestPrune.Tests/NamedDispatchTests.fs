@@ -487,3 +487,35 @@ module ``unattributable and malformed input`` =
         let selfRegistered = attribute "Tests.first" "DispatchedAs" "[\"job\", \"Purge\"]"
 
         test <@ List.isEmpty (edges (storeWith (Some source) [ template; selfRegistered ])) @>
+
+module ``stored dispatch arguments`` =
+
+    let private storeOf (attributes: SymbolAttribute list) =
+        let result =
+            { AnalysisResult.Create([], [], []) with
+                Attributes = attributes }
+
+        TestPrune.InMemoryStore.fromAnalysisResults [ result ]
+
+    let private attribute (symbolName: string) (name: string) (argsJson: string) : SymbolAttribute =
+        { SymbolFullName = symbolName
+          AttributeName = name
+          ArgsJson = argsJson }
+
+    [<Fact>]
+    let ``a registration name with a quote and a backslash reads back whole`` () =
+        let store =
+            storeOf
+                [ attribute "App.run" "DispatchedAs" (TestPrune.AttributeArgs.serialize [ box "job"; box "Pu\"r\\ge" ]) ]
+
+        test <@ (registrations store |> List.map _.Name) = [ "Pu\"r\\ge" ] @>
+
+    [<Fact>]
+    let ``an unreadable payload registers and templates nothing`` () =
+        let store =
+            storeOf
+                [ attribute "App.run" "DispatchedAs" "[\"job\", \"Purge"
+                  attribute "App.run" "DispatchTemplate" "not-json" ]
+
+        test <@ registrations store |> List.isEmpty @>
+        test <@ templates store |> List.isEmpty @>

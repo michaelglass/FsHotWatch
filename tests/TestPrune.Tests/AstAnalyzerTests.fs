@@ -3394,3 +3394,79 @@ let Answer = 42
 """
 
         test <@ attributesOf result "M.Answer" = [ "LiteralAttribute" ] @>
+
+/// AUTOMATION-1452: an attribute argument is stored so that ANY string reads back as
+/// itself. A path with a backslash or a quote used to be stored unescaped, the stored
+/// payload failed to parse, and the DependsOnFile declaration silently seeded nothing.
+[<Collection("FCS-AstAnalyzer")>]
+module ``Attribute arguments round-trip through the index`` =
+
+    let private source =
+        """
+module Fixture
+
+open System
+
+[<AttributeUsage(AttributeTargets.Method, AllowMultiple = true)>]
+type DependsOnFileAttribute(path: string) =
+    inherit Attribute()
+    member _.Path = path
+
+[<AttributeUsage(AttributeTargets.Method, AllowMultiple = true)>]
+type ReadsFromAttribute(table: string, column: string) =
+    inherit Attribute()
+    member _.Table = table
+    member _.Column = column
+
+[<DependsOnFile("data\\cases.json")>]
+let backslash () = ()
+
+[<DependsOnFile("data/quoted\"name.json")>]
+let quote () = ()
+
+[<DependsOnFile("data/a,b.json")>]
+let comma () = ()
+
+[<ReadsFrom("schema,table", "col\"umn\\x")>]
+let reader () = ()
+"""
+
+    let private attributesOf (result: AnalysisResult) (functionName: string) =
+        result.Attributes
+        |> List.filter (fun a -> a.SymbolFullName.EndsWith("." + functionName))
+        |> List.map (fun a -> a.AttributeName, a.ArgsJson)
+
+    /// testA of `standardGraph`, carrying the attributes `functionName` was analysed with.
+    let private selectsTestA (result: AnalysisResult) (functionName: string) (changedFile: string) =
+        let store =
+            { TestPrune.InMemoryStore.fromAnalysisResults [ TestPrune.Tests.TestHelpers.standardGraph ] with
+                GetAllAttributes = fun () -> Map.ofList [ "Tests.testA", attributesOf result functionName ] }
+
+        match TestPrune.ImpactAnalysis.selectTests store [ changedFile ] Map.empty with
+        | TestPrune.ImpactAnalysis.RunSubset tests, _ -> tests |> List.exists (fun t -> t.TestMethod = "testA")
+        | TestPrune.ImpactAnalysis.RunAll _, _ -> false
+
+    [<Fact>]
+    let ``a DependsOnFile path with a backslash seeds its tests`` () =
+        let result = analyze source
+        test <@ selectsTestA result "backslash" "data/cases.json" @>
+
+    [<Fact>]
+    let ``a DependsOnFile path with a quote seeds its tests`` () =
+        let result = analyze source
+        test <@ selectsTestA result "quote" "data/quoted\"name.json" @>
+
+    [<Fact>]
+    let ``a DependsOnFile path with a comma seeds its tests`` () =
+        let result = analyze source
+        test <@ selectsTestA result "comma" "data/a,b.json" @>
+
+    [<Fact>]
+    let ``SQL attribute arguments with a comma, a quote and a backslash read back whole`` () =
+        let result = analyze source
+
+        let facts =
+            TestPrune.Sql.AutoSqlExtension.ExtractFacts(TestPrune.InMemoryStore.fromAnalysisResults [ result ])
+            |> List.map (fun f -> f.Table, f.Column)
+
+        test <@ facts = [ "schema,table", TestPrune.Sql.Column "col\"umn\\x" ] @>
