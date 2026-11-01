@@ -2234,11 +2234,10 @@ let ``ProcessRegistry.killAll terminates tracked live processes`` () =
         proc.WaitForExit(5000) |> ignore
         Assert.True(proc.HasExited))
 
-// Outer timeout 20s leaves headroom over the internal ceiling (8s registration
-// deadline + 5s task.Wait = 13s) so a real failure surfaces as an assertion
-// rather than a silent xUnit timeout.
-[<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
-[<Fact(Timeout = 20000)>]
+// Both waits are hang caps, never the claim: a Task.Run body can take seconds to reach
+// Process.Start under load (8 s ran out at load ~190), so each waits up to `HangWait`,
+// and the test backstop bounds the two together.
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ProcessRegistry.killAll kills a child started via runProcess from another thread`` () =
     let registry = FsHotWatch.ProcessRegistry.Registry()
     use _ = FsHotWatch.ProcessRegistry.install registry
@@ -2249,18 +2248,11 @@ let ``ProcessRegistry.killAll kills a child started via runProcess from another 
         System.Threading.Tasks.Task.Run(fun () ->
             runProcess "sleep" "30" "." [] (ProcessBounds.silent System.Threading.Timeout.InfiniteTimeSpan))
 
-    // 8s tolerates thread-pool contention from parallel tests — a Task.Run body can take
-    // seconds to reach Process.Start under load.
-    let deadline = DateTime.UtcNow.AddSeconds 8.0
-
-    while registry.Snapshot().IsEmpty && DateTime.UtcNow < deadline do
-        System.Threading.Thread.Sleep 25
-
-    Assert.NotEmpty(registry.Snapshot())
+    waitUntilOr "the runProcess child to register" (fun () -> not (registry.Snapshot().IsEmpty)) HangWaitMs
 
     registry.KillAll()
 
-    let completed = task.Wait(5000)
+    let completed = task.Wait(HangWait)
     Assert.True(completed, "runProcess did not return after killAll")
 
 // ===========================================================================
