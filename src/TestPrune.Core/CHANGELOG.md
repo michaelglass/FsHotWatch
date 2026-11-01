@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- refactor: `Database` reads each row type through one reader (`TestMethodInfo` was built
+  in four places, `SymbolInfo` in two), the per-region id sets reuse the name-set binder,
+  `RecordCoverage` is `RecordCoverageBatch` of one row instead of a copy of it, and a
+  failed transaction rethrows with its original stack trace. No behaviour or API change.
 - **BREAKING (API):** the index's own state is a type, not two reserved project names.
   `Ports.SymbolStore` gains `GetIndexState: unit -> Domain.IndexState`
   (`Incomplete | Complete of generation`), answered by `Database.GetIndexState` in one
