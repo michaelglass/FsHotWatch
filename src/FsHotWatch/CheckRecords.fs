@@ -61,10 +61,9 @@ module CheckOutputs =
     /// The outputs of a full check; None for one that did not complete.
     let ofResult (repoRoot: string option) (result: FileCheckResult) : CheckOutputs option =
         match result.CheckResults with
-        | ParseOnly -> None
+        | ParseOnly _ -> None
         | Replayed outputs -> Some outputs
-        | FullCheck results when isNull (box results) -> None
-        | FullCheck results ->
+        | FullCheck(_, results) ->
             let toReal = FileCheckResult.textToReal result
 
             Some

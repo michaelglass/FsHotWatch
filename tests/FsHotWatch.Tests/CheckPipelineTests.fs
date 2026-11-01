@@ -603,8 +603,7 @@ let private recorded result =
 let private fullCheckResult path options =
     { File = AbsFilePath.create path
       Source = "module M"
-      ParseResults = Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpParseFileResults>
-      CheckResults = FullCheck Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults>
+      CheckResults = fixtureFullCheck ()
       ProjectOptions = options
       Version = 1L
       ModelGeneration = None
@@ -615,8 +614,7 @@ let private fullCheckResult path options =
 let private parseOnlyResult path options =
     { File = AbsFilePath.create path
       Source = "module M"
-      ParseResults = Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpParseFileResults>
-      CheckResults = ParseOnly
+      CheckResults = fixtureParseOnly ()
       ProjectOptions = options
       Version = 1L
       ModelGeneration = None
@@ -955,7 +953,7 @@ let ``a cached check is not served after a file it depends on changes`` () =
 
         let errorsOf () =
             match pipeline.CheckFile(AbsFilePath.create b) |> Async.RunSynchronously with
-            | Some { CheckResults = FullCheck r } ->
+            | Some { CheckResults = FullCheck(_, r) } ->
                 r.Diagnostics
                 |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
                 |> Array.length
@@ -1074,7 +1072,7 @@ let ``a cached check is not served after a TRANSITIVE upstream project changes a
 
         let errorsOfC () =
             match pipeline.CheckFile cFile |> Async.RunSynchronously with
-            | Some { CheckResults = FullCheck r } ->
+            | Some { CheckResults = FullCheck(_, r) } ->
                 r.Diagnostics
                 |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
                 |> Array.map (fun d -> d.Message)
@@ -1117,7 +1115,7 @@ let ``a cached check is not served after a file EARLIER in its project changes a
 
         let errorsOfC () =
             match pipeline.CheckFile(AbsFilePath.create c) |> Async.RunSynchronously with
-            | Some { CheckResults = FullCheck r } ->
+            | Some { CheckResults = FullCheck(_, r) } ->
                 r.Diagnostics
                 |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
                 |> Array.map (fun d -> d.ErrorNumber)

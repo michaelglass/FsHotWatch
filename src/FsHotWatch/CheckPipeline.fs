@@ -603,7 +603,6 @@ type CheckPipeline
                     Some
                         { File = AbsFilePath.create absPath
                           Source = openFile.Text
-                          ParseResults = Unchecked.defaultof<_>
                           CheckResults = Replayed outputs
                           ProjectOptions = options
                           Version = Interlocked.Increment(&nextVersion)
@@ -1084,14 +1083,13 @@ type CheckPipeline
                                     (sw.Elapsed - snapshotTime)
                             )
 
-                            FullCheck checkResults
-                        | FSharpCheckFileAnswer.Aborted -> ParseOnly
+                            FullCheck(parseResults, checkResults)
+                        | FSharpCheckFileAnswer.Aborted -> ParseOnly parseResults
 
                     return
                         Some(
                             { File = checkedFile
                               Source = source
-                              ParseResults = parseResults
                               CheckResults = checkResults
                               ProjectOptions = options
                               Version = version
@@ -1456,7 +1454,7 @@ type CheckPipeline
                         heldInputs.Value <- held
 
                         match r.CheckResults with
-                        | FullCheck results when
+                        | FullCheck(_, results) when
                             not (cacheableAnswer (results.Diagnostics |> Seq.map (fun d -> d.Message)))
                             ->
                             if cacheBackend.IsSome then
@@ -1496,7 +1494,7 @@ type CheckPipeline
                             Logging.debug
                                 "check"
                                 $"Not caching %s{Path.GetFileName absPath}: its inputs moved during the check"
-                        | ParseOnly -> ()
+                        | ParseOnly _ -> ()
                         // CheckFileCore asks FCS; a replay here would be a defect, not an answer.
                         | Replayed _ -> raise (ReplayedResultException("CheckPipeline (an FCS check)", absPath))
                     | None -> ()

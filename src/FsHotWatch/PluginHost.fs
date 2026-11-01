@@ -564,7 +564,7 @@ type PluginHost
         // A replay is a completed check of exactly these inputs (ADR-059 §17).
         | FullCheck _
         | Replayed _ -> checkedFiles[result.File] <- ()
-        | ParseOnly -> ()
+        | ParseOnly _ -> ()
 
         dispatchToAll (PluginFramework.DispatchFileChecked result)
 
@@ -577,7 +577,7 @@ type PluginHost
         // A replay is a completed check of exactly these inputs (ADR-059 §17).
         | FullCheck _
         | Replayed _ -> checkedFiles[result.File] <- ()
-        | ParseOnly -> ()
+        | ParseOnly _ -> ()
 
         touchActivity ()
         let fanOut = workStore.BeginOperation "dispatch"

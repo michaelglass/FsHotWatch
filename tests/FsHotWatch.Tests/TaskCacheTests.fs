@@ -236,8 +236,7 @@ let ``LintPlugin cache key is stable across runs for same file content`` () =
     let mkResult (file: string) (source: string) : FileCheckResult =
         { File = AbsFilePath.create file
           Source = source
-          ParseResults = Unchecked.defaultof<_>
-          CheckResults = ParseOnly
+          CheckResults = fixtureParseOnly ()
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L
           ModelGeneration = None
@@ -276,8 +275,7 @@ let ``LintPlugin cache key reflects config file content`` () =
         let mkResult source : FileCheckResult =
             { File = AbsFilePath.create "/src/Foo.fs"
               Source = source
-              ParseResults = Unchecked.defaultof<_>
-              CheckResults = ParseOnly
+              CheckResults = fixtureParseOnly ()
               ProjectOptions = Unchecked.defaultof<_>
               Version = 0L
               ModelGeneration = None
@@ -309,9 +307,8 @@ let ``§1: LintPlugin cache key reflects FCS check signature for ParseOnly vs Fu
     let mkResult (file: string) (source: string) (state: FileCheckState) : FileCheckResult =
         { File = AbsFilePath.create file
           Source = source
-          ParseResults = Unchecked.defaultof<_>
           CheckResults = state
-          ProjectOptions = Unchecked.defaultof<_>
+          ProjectOptions = fixtureOptions ()
           Version = 0L
           ModelGeneration = None
           Frame = None
@@ -322,14 +319,16 @@ let ``§1: LintPlugin cache key reflects FCS check signature for ParseOnly vs Fu
     | None -> failwith "expected CacheKey"
     | Some keyOf ->
         let keyFn = keyOf handler.Init
-        let parseOnly = keyFn (FileChecked(mkResult "/src/X.fs" "let x = 1" ParseOnly))
 
-        let fullCheckNull =
-            keyFn (FileChecked(mkResult "/src/X.fs" "let x = 1" (FullCheck(Unchecked.defaultof<_>))))
+        let parseOnly =
+            keyFn (FileChecked(mkResult "/src/X.fs" "let x = 1" (fixtureParseOnly ())))
+
+        let fullCheck =
+            keyFn (FileChecked(mkResult "/src/X.fs" "let x = 1" (fixtureFullCheck ())))
 
         test <@ parseOnly.IsSome @>
-        test <@ fullCheckNull.IsSome @>
-        test <@ parseOnly <> fullCheckNull @>
+        test <@ fullCheck.IsSome @>
+        test <@ parseOnly <> fullCheck @>
 
 [<Fact(Timeout = 15000)>]
 let ``LintPlugin cache key uses missing-config marker when config path doesn't exist`` () =
@@ -343,8 +342,7 @@ let ``LintPlugin cache key uses missing-config marker when config path doesn't e
     let mkResult () : FileCheckResult =
         { File = AbsFilePath.create "/src/Foo.fs"
           Source = "let x = 1"
-          ParseResults = Unchecked.defaultof<_>
-          CheckResults = ParseOnly
+          CheckResults = fixtureParseOnly ()
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L
           ModelGeneration = None
@@ -376,12 +374,11 @@ let ``optionalSaltedCacheKey wraps getSalt when getCommitId is Some`` () =
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
 
-// The cache intercept reads neither Source nor ParseResults, so these override the shared
+// The cache intercept reads neither Source nor the check's FCS objects, so these override the shared
 // helper rather than build the record by hand.
 let private dummyFileCheckResult file =
     { fakeFileCheckResult file with
-        Source = ""
-        ParseResults = Unchecked.defaultof<_> }
+        Source = "" }
 
 [<Fact(Timeout = 15000)>]
 let ``plugin skips Update on cache hit and replays errors`` () =

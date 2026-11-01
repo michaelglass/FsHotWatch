@@ -41,13 +41,13 @@ let private checkedWith (flags: string list) (source: string) =
 
 let private errorCodes (result: FileCheckResult) =
     match result.CheckResults with
-    | FullCheck checkedResult ->
+    | FullCheck(_, checkedResult) ->
         checkedResult.Diagnostics
         |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
         |> Array.map (fun d -> d.ErrorNumber)
         |> Set.ofArray
     | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
-    | ParseOnly -> failwith "the fixture requires an actual completed type check"
+    | ParseOnly _ -> failwith "the fixture requires an actual completed type check"
 
 /// What the receipt refuses the file for.
 let private refusals (result: FileCheckResult) =
@@ -121,13 +121,13 @@ let ``a warning nothing promotes passes through the filter as no refusal`` () =
 
     // Positive control: FCS reports the incomplete match, at Warning severity.
     match result.CheckResults with
-    | FullCheck checkedResult ->
+    | FullCheck(_, checkedResult) ->
         Assert.Contains(
             checkedResult.Diagnostics,
             fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning
         )
     | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
-    | ParseOnly -> Assert.Fail "the fixture requires an actual completed type check"
+    | ParseOnly _ -> Assert.Fail "the fixture requires an actual completed type check"
 
     Assert.Empty(errorCodes result)
     Assert.Empty(refusals result)

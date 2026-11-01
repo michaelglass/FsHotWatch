@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- refactor!: a check result carries exactly the FCS objects it has. `FileCheckResult.ParseResults`
+  is gone; the parse travels in the state: `FullCheck of parse * check`, `ParseOnly of parse`, and
+  `Replayed of CheckOutputs`, which has neither. A replayed result no longer carries a null parse
+  tree, so lint's "no parse results" skip and its null check are gone. New:
+  `FileCheckResult.requireParseResults`, which throws `ReplayedResultException` for a replay, as
+  `requireTypedTree` does. The `"full-check-null"` marker that `fcsCheckSignature` and
+  `usedSignaturesHash` gave a null check result is gone too. Only test fixtures built one; they now
+  use a real parse and check.
+
 - refactor: `check`, `options` and `format` records are built by one function,
   `OutcomeStore.Record.ofAction` (new): an action that ran no tests, untimed and outside any
   test run. Each filed record is unchanged.

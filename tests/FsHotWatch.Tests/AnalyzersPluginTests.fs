@@ -19,12 +19,9 @@ let private compositeFileKey (repoRoot: string) (file: string) =
     FsHotWatch.CachePathIdentity.keyOf (Some repoRoot) file
 
 
-// `Unchecked.defaultof` for ParseResults is deliberate: it stands in for the null FCS
-// hands back on an abort, which the plugin must guard against.
 let private fakeResult file =
     { fakeFileCheckResult file with
-        Source = "let x = 1"
-        ParseResults = Unchecked.defaultof<_> }
+        Source = "let x = 1" }
 
 [<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
@@ -53,8 +50,7 @@ let ``analyzer error path does not crash`` () =
 
     let fakeResult =
         { fakeFileCheckResult "/tmp/nonexistent/Fake.fs" with
-            Source = ""
-            ParseResults = Unchecked.defaultof<_> }
+            Source = "" }
 
     try
         host.EmitFileChecked(fakeResult)
@@ -157,12 +153,12 @@ let ``cache key includes parse-only suffix for ParseOnly results`` () =
 
     let parseOnlyResult =
         { fakeFileCheckResult "/tmp/Fake.fs" with
-            Source = ""
-            ParseResults = Unchecked.defaultof<_> }
+            Source = "" }
 
     let fullCheckResult =
         { parseOnlyResult with
-            CheckResults = FullCheck(Unchecked.defaultof<_>) }
+            CheckResults = fixtureFullCheck ()
+            ProjectOptions = fixtureOptions () }
 
     let cacheKeyFn = handler.CacheKey.Value handler.Init
 
@@ -183,8 +179,7 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
     let fakeResult: FileCheckResult =
         { File = AbsFilePath.create "/tmp/nonexistent/Fake.fs"
           Source = "let x = 1"
-          ParseResults = Unchecked.defaultof<_>
-          CheckResults = ParseOnly
+          CheckResults = fixtureParseOnly ()
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L
           ModelGeneration = Some fixtureModelGeneration
@@ -196,8 +191,8 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
 
     waitForTerminalStatus host "analyzers" 12000
 
-    // The crash IS the evidence: with a null ParseResults the analyzer must fail via
-    // AnalysisFailed, proving the worker ran rather than skipping synchronously.
+    // The crash IS the evidence: with no project options the analyzer context cannot be
+    // built, so the analysis must fail via AnalysisFailed, proving the worker ran rather than skipping synchronously.
     let errors = host.GetErrorsByPlugin("analyzers")
 
     let hasAnalyzerCrash =
@@ -761,7 +756,7 @@ let ``regression: FileChecked with TaskCache writes a cache entry on terminal st
     let handler = create None [] None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
 
-    // The analyzer crashes on the null ParseResults. A crash is still terminal, so the
+    // The analysis crashes on the fixture's missing project options. A crash is still terminal, so the
     // cache write must happen anyway.
     host.EmitFileChecked(fakeResult "/tmp/test/CacheRegression.fs")
     waitForTerminalStatus host "analyzers" 15000
@@ -1261,7 +1256,7 @@ let private checkResultsWith (keepAssemblyContents: bool) (prefix: string) (sour
         | FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Aborted ->
             failwith "FCS aborted the check, so this fixture would prove nothing"
         | FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Succeeded results ->
-            FullCheck results, options, parseResults)
+            FullCheck(parseResults, results), options, parseResults)
 
 let private asTypedTree (boxed: obj) =
     boxed :?> FSharp.Compiler.Symbols.FSharpImplementationFileContents option
@@ -1279,7 +1274,7 @@ let ``typedTreeOf supplies the typed tree when the checker retained it`` () =
 [<Fact(Timeout = 15000)>]
 let ``typedTreeOf yields None for a parse-only result`` () =
     // No type-check happened, so there is no typed tree to offer.
-    test <@ typedTreeOf ParseOnly |> asTypedTree = None @>
+    test <@ typedTreeOf (fixtureParseOnly ()) |> asTypedTree = None @>
 
 [<Fact(Timeout = 60000)>]
 let ``typedTreeOf yields None rather than raising when the checker kept no contents`` () =
@@ -1300,20 +1295,20 @@ let ``createCliContext carries a real typed tree through the reflection construc
     // assembly-identity mismatch. Only driving a genuine
     // `FSharpImplementationFileContents` all the way through proves analyzers actually
     // receive one; asserting on `typedTreeOf` alone would not.
-    let checkResults, options, _ =
+    let checkResults, options, parseResults =
         checkResultsWith true "clicontext-typedtree" "module Typed\nlet answer = 42\n"
 
     let checkResultsObj =
         match checkResults with
-        | FullCheck cr -> box cr
+        | FullCheck(_, cr) -> box cr
         | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
-        | ParseOnly -> null
+        | ParseOnly _ -> null
 
     let context =
         createCliContext
             (box "Typed.fsx")
             (box (FSharp.Compiler.Text.SourceText.ofString "module Typed\nlet answer = 42\n"))
-            (box (dummyParseResults ()))
+            (box parseResults)
             checkResultsObj
             (typedTreeOf checkResults)
             (box options)
@@ -1371,29 +1366,29 @@ let ``the configured analyzer set walks a typed tree from this FCS and fires eve
 
     let checkResultsObj =
         match checkResults with
-        | FullCheck cr -> box cr
+        | FullCheck(_, cr) -> box cr
         | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
-        | ParseOnly -> null
+        | ParseOnly _ -> null
 
     // A plant that does not compile yields a partial tree the rules may skip, so the
     // probe itself must check clean before its silence could mean anything.
     let compileErrors =
         match checkResults with
-        | FullCheck cr ->
+        | FullCheck(_, cr) ->
             cr.Diagnostics
             |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
             |> Array.map (fun d -> d.Message)
             |> List.ofArray
         | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
-        | ParseOnly -> [ "parse only" ]
+        | ParseOnly _ -> [ "parse only" ]
 
     test <@ List.isEmpty compileErrors @>
 
     let realTypedTree =
         match checkResults with
-        | FullCheck cr -> box cr.ImplementationFile
+        | FullCheck(_, cr) -> box cr.ImplementationFile
         | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
-        | ParseOnly -> noTypedTree
+        | ParseOnly _ -> noTypedTree
 
     let client =
         FSharp.Analyzers.SDK.Client<FSharp.Analyzers.SDK.CliAnalyzerAttribute, FSharp.Analyzers.SDK.CliContext>()

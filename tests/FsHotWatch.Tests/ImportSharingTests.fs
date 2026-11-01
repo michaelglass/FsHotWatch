@@ -138,7 +138,7 @@ let private unitThroughPipeline
     pipeline.RegisterProject(s.Options.ProjectFileName, s.Options)
 
     match (pipeline.CheckFile(AbsFilePath.create s.Source) |> Async.RunSynchronously) with
-    | Some { CheckResults = FullCheck results } -> unitInResults results simpleName
+    | Some { CheckResults = FullCheck(_, results) } -> unitInResults results simpleName
     | other -> failwith $"check of P.fs did not complete: %A{other |> Option.map _.CheckResults}"
 
 /// Compile `source` into the library `output` (assembly name: its file name) with

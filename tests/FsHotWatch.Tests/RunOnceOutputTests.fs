@@ -859,8 +859,7 @@ let ``run-once grades the one scan it ran: an unchecked file is Incomplete, with
                     daemon.Host.EmitFileChecked(
                         { File = AbsFilePath.create file
                           Source = ""
-                          ParseResults = Unchecked.defaultof<_>
-                          CheckResults = FullCheck(Unchecked.defaultof<_>)
+                          CheckResults = fixtureFullCheck ()
                           ProjectOptions = Unchecked.defaultof<_>
                           Version = 0L
                           ModelGeneration = None
