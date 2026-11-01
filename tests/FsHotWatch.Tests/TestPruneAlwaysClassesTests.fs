@@ -17,6 +17,7 @@ open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open FsHotWatch.TestPrune
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.ReceiptTransitions
 open FsHotWatch.TestPrune.RunLaunch
 open FsHotWatch.TestPrune.PluginState
 open FsHotWatch.TestPrune.PluginTypes

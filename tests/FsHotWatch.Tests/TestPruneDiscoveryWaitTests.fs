@@ -15,6 +15,7 @@ open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.ReceiptTransitions
 open FsHotWatch.TestPrune.PluginTypes
 open FsHotWatch.TestPrune.CoverageArtifacts
 open FsHotWatch.Tests.TestHelpers
