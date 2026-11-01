@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- perf: recording a check's analysis outcome (`AnalysisFileEvidence`) reads the file's suppression
+  only when the check has an error to judge (AUTOMATION-1441). A suppression only silences errors, and
+  building one parses the file's `#nowarn` lines and every compiler flag: about 0.1 ms per file,
+  most of test-prune's per-file replay of a restart, for files that almost never have an error.
+  Measured on this repository's 646 replays: 80–120 µs fell to 5–6 µs per file.
+
 - fix: options records no longer key the runtime's internal knobs (`DOTNET_INTERNAL_*`) unless the
   evaluation's files name one (AUTOMATION-1438, ADR-059 §18). The detached launcher sets
   `DOTNET_INTERNAL_ThreadSuspendInjection=0` for the daemon it starts, and every `DOTNET_*` variable
