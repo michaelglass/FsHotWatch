@@ -876,3 +876,38 @@ folded every replay within 0.1 s of the last one.
 on intelligence its own replays still begin after its 6 s extension refresh, though the scan no
 longer waits for them. Moving that refresh off the fold, and test-prune's per-file replay cost
 (about 1.8 ms here), are follow-ups.
+
+## 22. Amendment (AUTOMATION-1438): one evaluation, both start modes
+
+After a cold `./build.fsx check` on intelligence, the next plain `fshw start` logged "no
+evaluation of this request is filed" and evaluated for 10.1 s. Two causes were measured. The
+request key was never one of them: both start modes compute the same root, projects,
+toolchain, SDK and global properties.
+
+- **The cold evaluation was never filed.** In a checkout that was never built, Ionide's
+  design-time build writes each project's generated compile items under `obj/` and creates
+  `bin/` beside the project while the projects are being evaluated. Those are §18 inputs (the
+  compile items, and the project directory an absent probe there is judged by), so the filer
+  refused: "...Intelligence.Build.AssemblyInfo.fs changed while the projects were evaluated".
+  Every AssemblyInfo in that workspace carried a change time inside the 9 s evaluation, in load
+  order. `file` now names every input that moved. When all of them lie in the requested
+  projects' own directories, the loader waits for the racy window to pass the last of those
+  writes and evaluates once more. That design-time build finds its outputs written and writes
+  nothing, as MSBuild's incremental targets do, so it is filed. A second move, or a move outside
+  the projects, still files nothing. §18's rule is unchanged: what is filed came from an
+  evaluation during which no input moved.
+- **The two modes ran with different environments.** The detached launcher sets
+  `DOTNET_INTERNAL_ThreadSuspendInjection=0` for the daemon it starts; a plain `fshw start` runs
+  with the runtime default. Every `DOTNET_*` variable was keyed, so a gate-started daemon missed
+  what a plain one filed ("inputs moved: env:DOTNET_INTERNAL_ThreadSuspendInjection"), and the
+  reverse. `DOTNET_INTERNAL_*` knobs configure the CLR hosting MSBuild, never what it reads, so
+  they are no longer keyed by prefix. One an evaluation's files name is keyed like any other.
+
+**Measured on this repository** (30 projects, restored but never built, debug CLI):
+- before: the cold start was refused, and the next start evaluated again (8.5 s);
+- after: the cold start evaluated twice and filed (14.2 s, against 9.9 s). The next start,
+  under the launcher's environment, replayed in 0.1 s, and a plain start after it replayed in
+  0.1 s too.
+
+The cost is one extra evaluation, about 4–6 s, paid once by the first daemon in a checkout that
+was never built. Every later start in that checkout saves a full evaluation.
