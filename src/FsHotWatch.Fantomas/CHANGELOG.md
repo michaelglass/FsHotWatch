@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: the format preprocessor files what it proved in the outcome store (ADR-059 §20,
+  AUTOMATION-1436). `FormatPreprocessor` takes an optional `store`; with one, each file the
+  pinned Fantomas left unchanged is a `format` record keyed by the Fantomas pin, the
+  `.editorconfig` chain above the file, its repository-relative path and its bytes, so a
+  restart over an unchanged tree hands the tool nothing. A record is filed only when the key
+  before the run equals the key after it and the tool neither rewrote nor failed the file.
+  New: `FormatCheckPlugin.FormatKind`. Without a store, the memo is per process as before.
+
 ## 0.7.0-alpha.33 - 2026-10-30
 
 - build: package versions come from Directory.Packages.props (Central Package Management, now

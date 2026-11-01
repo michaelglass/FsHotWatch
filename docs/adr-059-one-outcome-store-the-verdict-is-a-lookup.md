@@ -775,3 +775,49 @@ A project that was red in the watermark run, and later passed only in impact run
 therefore missing in the lookup while today is green. If it appears, it needs its own ticket.
 The `fshw verdict` read also keeps no K_P keys (`OutcomeKeys` comes from the daemon, and a
 read has none), so a check that a K_P record alone made green can read as missing.
+
+## 20. Amendment (AUTOMATION-1436): the format preprocessor's outcomes are records
+
+§17 noted that a restart's scan runs the preprocessors before any check or replay. On
+intelligence the format preprocessor alone took 9.4 to 10.3 s of a clean restart (2,674 files
+checked, 0 rewritten): its memo of "the pinned Fantomas left these bytes unchanged" lived only
+in the process, so every new daemon handed the tool every file again.
+
+**The memo is now a `format` record in this store.** The key is an ActionKey of kind `format`
+over:
+- `recipe`: `fshw-format-settled-v1`;
+- `fantomas`: the version the tool manifest pins;
+- `editorconfig`: a digest of every `.editorconfig` from the repository root down to the
+  file's directory, labelled repository-relative (`CacheInputs.editorConfigInputs`);
+- `file`: the file, repository-relative;
+- `content`: the file's bytes.
+
+A restart looks each file's key up and hands the tool only the misses. Every checkout of the
+repository reads the same records, as for `check` records.
+
+**What is filed.** A `pass` record, only when the tool ran over the file without rewriting it
+or failing it, and the key computed after the run equals the key computed before it. A rewrite,
+a parse error, a timeout, or a save or `.editorconfig` edit that landed while the tool ran files
+nothing. A false hit is the one failure that matters here: the preprocessor is the format stage,
+so a record that named unformatted bytes would let a gate pass a file that needs formatting.
+`FormatRecordsTests` covers each of these. A mutant that drops both guards turns two of its
+tests red; one that drops only the second (the key after the run) turns the
+`.editorconfig`-saved-mid-run test red.
+
+**Judgement calls.**
+- **The path is in the key.** Identical bytes at another path are not shared. An
+  `.editorconfig` section can match a file by name, and a `.fsi` parses differently from a
+  `.fs`, so the bytes alone do not decide the tool's output.
+- **`.fantomasignore` and `.gitignore` are not in the key.** They decide which files are handed
+  over, not what the tool says about one. They are read on every pass, as before.
+- **No config key, on by default.** Check and options records are off by default because a
+  stale one is wrong in ways nothing downstream sees. A format record is narrower: it can only
+  skip a run of a deterministic tool over bytes it has already left as they are.
+  `FSHW_FORMAT_RECORDS=0` keeps the memo per process, for measuring.
+- **Lookups run in parallel.** A restart reads one record per file.
+
+**Measured** (a fresh process per run, the pinned Fantomas, load average 25 to 35):
+- FsHotWatch, 650 files: 4.9 to 7.2 s before, 139 to 140 ms on a restart after.
+- A copy of intelligence's sources, 2,529 formattable files (Fantomas 7.0.6): 9.6 to 14.8 s
+  before, 325 to 327 ms on a restart after. The first run after the change costs what a run
+  cost before (9.9 s), plus filing.

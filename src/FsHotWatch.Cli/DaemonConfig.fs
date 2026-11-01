@@ -956,6 +956,13 @@ let resolveCheckRecords (configured: bool) (env: string -> string) : bool =
 let resolveOptionsRecords (configured: bool) (env: string -> string) : bool =
     resolveRecordFlag "FSHW_OPTIONS_RECORDS" configured env
 
+/// Whether the format preprocessor files its records (AUTOMATION-1436), ON unless
+/// `FSHW_FORMAT_RECORDS` turns it off. Unlike check and options records it has no config
+/// key: a record only says "the pinned tool left these bytes unchanged", and the variable
+/// exists to measure a restart with and without it.
+let resolveFormatRecords (configured: bool) (env: string -> string) : bool =
+    resolveRecordFlag "FSHW_FORMAT_RECORDS" configured env
+
 /// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
 let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
     use doc = JsonDocument.Parse(json)
@@ -2603,10 +2610,17 @@ let registerPluginsIn
 
         // A preprocessor runs inside a change batch AND inside the scan, so an
         // unbounded one is the worse of the two to leave uncapped.
+        // AUTOMATION-1436: what the formatter proved about a file's bytes is filed in the
+        // outcome store, so a restart over an unchanged tree hands the tool nothing.
+        // `FSHW_FORMAT_RECORDS=0` keeps the memo per process (for measuring the difference).
+        let store =
+            if resolveFormatRecords true Environment.GetEnvironmentVariable then
+                Some(FsHotWatch.OutcomeStore.openFor repoRoot (Logging.info "format-records"))
+            else
+                None
+
         daemon.RegisterPreprocessor(
-            match config.TimeoutSec with
-            | Some s -> FsHotWatch.Fantomas.FormatCheckPlugin.FormatPreprocessor(timeoutSec = s)
-            | None -> FsHotWatch.Fantomas.FormatCheckPlugin.FormatPreprocessor()
+            FsHotWatch.Fantomas.FormatCheckPlugin.FormatPreprocessor(?timeoutSec = config.TimeoutSec, ?store = store)
         )
     | Check ->
         Logging.info "config" "Registering FormatCheckPlugin (read-only)"

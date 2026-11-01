@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- perf: `format: true` (the format preprocessor) files its per-file outcomes in the outcome
+  store, so a daemon restart over an unchanged tree no longer runs Fantomas over every file
+  (AUTOMATION-1436, ADR-059 §20). Measured on a copy of intelligence's 2,529 formattable
+  files: 9.6–14.8 s before, 0.33 s after. On by default; `FSHW_FORMAT_RECORDS=0` turns it off.
+  New: `DaemonConfig.resolveFormatRecords`.
+
 ## 0.14.0-alpha.133 - 2026-10-31
 
 - fix!: the shadow lookup verdict (ADR-059 §7) no longer disagrees with a correct green in the

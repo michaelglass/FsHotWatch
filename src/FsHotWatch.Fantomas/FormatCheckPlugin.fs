@@ -24,37 +24,54 @@ let private formattable (isIgnored: string -> bool) (files: string list) : strin
         && (file.EndsWith(".fs") || file.EndsWith(".fsx") || file.EndsWith(".fsi"))
         && not (isIgnored file))
 
-/// What decides the pinned tool's output for a file: its version, the `.editorconfig`
-/// files above the file, and the file's bytes. `None` when the file cannot be read, so
-/// an unreadable file is never remembered as formatted. The configuration is read once
-/// per directory per call.
-let private settledKeys (repoRoot: string) (pin: FantomasPin) : string -> string option =
-    let configByDir = Collections.Generic.Dictionary<string, string>()
+/// The kind of a format record in the outcome store (ADR-059 §2, AUTOMATION-1436): the
+/// pinned Fantomas left a file's bytes as they are.
+[<Literal>]
+let FormatKind = "format"
+
+/// Names how a format key is folded. Any change to what it covers must change it.
+[<Literal>]
+let private FormatRecipe = "fshw-format-settled-v1"
+
+/// What decides the pinned tool's output for a file, as an ActionKey: its version, the
+/// `.editorconfig` files above the file, the file's repository-relative path (a section
+/// can match a file by name, and `.fsi` parses differently from `.fs`), and its bytes.
+/// `None` when the file cannot be read, so an unreadable file is never remembered as
+/// formatted. The configuration is read once per directory per call.
+///
+/// The path is repository-relative, so every checkout of the repository holding the same
+/// bytes reads the same record.
+let private settledKeys (repoRoot: string) (pin: FantomasPin) : string -> ActionKey.ActionKey option =
+    let configByDir = Collections.Concurrent.ConcurrentDictionary<string, string>()
+
+    let configOf (file: string) =
+        configByDir.GetOrAdd(
+            Path.GetDirectoryName(Path.GetFullPath file),
+            fun _ ->
+                FsHotWatch.CacheInputs.editorConfigInputs repoRoot [ file ]
+                |> List.map (fun (label, content) -> $"%s{label}\n%s{content}")
+                |> String.concat "\n"
+                |> ContentHash.ofText
+        )
 
     fun (file: string) ->
-        let dir = Path.GetDirectoryName(Path.GetFullPath file)
-
-        let config =
-            match configByDir.TryGetValue dir with
-            | true, config -> config
-            | false, _ ->
-                let config =
-                    FsHotWatch.CacheInputs.editorConfigInputs repoRoot [ file ]
-                    |> List.map (fun (label, content) -> $"%s{label}\n%s{content}")
-                    |> String.concat "\n"
-
-                configByDir[dir] <- config
-                config
-
         try
-            let bytes = File.ReadAllBytes file
+            let config = configOf file
+            let content = ContentHash.ofBytes (File.ReadAllBytes file)
 
-            let header = Text.Encoding.UTF8.GetBytes($"%s{pin.Version}\n%s{config}\n")
-            Some(Convert.ToHexString(Security.Cryptography.SHA256.HashData(Array.append header bytes)))
+            Some(
+                ActionKey.create
+                    FormatKind
+                    [ "recipe", FormatRecipe
+                      "fantomas", pin.Version
+                      "editorconfig", config
+                      "file", FsHotWatch.CachePathIdentity.keyOf (Some repoRoot) file
+                      "content", content ]
+            )
         with ex ->
             Logging.debug
                 "format"
-                $"not remembering %s{file}: could not read it: %s{ex.GetType().FullName}: %s{ex.Message}"
+                $"not remembering %s{file}: could not read it or its configuration: %s{ex.GetType().FullName}: %s{ex.Message}"
 
             None
 
@@ -82,12 +99,19 @@ let private settledKeys (repoRoot: string) (pin: FantomasPin) : string -> string
 /// run would be a no-op. Only an unchanged file is remembered. A file the tool rewrote,
 /// could not format, or never finished (timeout) goes back to it on the next pass.
 ///
+/// With a `store` (the ADR-059 §2 outcome store), what it remembers outlives the daemon
+/// (AUTOMATION-1436): each settled file is a `format` record, keyed by `settledKeys`, and
+/// a restart over unchanged bytes hands the tool nothing. A record is filed only when the
+/// key computed before the run equals the key computed after it and the tool neither
+/// rewrote nor failed the file, so it never names bytes the tool did not leave as they
+/// are. Without a store the memo is per process, as before.
+///
 /// A file the tool could not format or never finished is a FAILURE of the pass
 /// (`PreprocessResult.Failures`), never a quiet log line beside "rewrote 0 of N": the
 /// host fails the format status naming it. It goes back to the tool on EVERY later pass,
 /// whatever that pass's batch holds, until the tool processes it or the file is gone,
 /// so the failure is re-earned from the current bytes and never forgotten.
-type FormatPreprocessor(?timeoutSec: int, ?runner: Runner) =
+type FormatPreprocessor(?timeoutSec: int, ?runner: Runner, ?store: OutcomeStore.Store) =
     let ignoreCache = FsHotWatch.PathFilter.IgnoreFilterCache()
     let runner = defaultArg runner dotnetToolRunner
 
@@ -102,6 +126,40 @@ type FormatPreprocessor(?timeoutSec: int, ?runner: Runner) =
 
     let formatTimeout =
         TimeSpan.FromSeconds(float (defaultArg timeoutSec FormatTimeoutDefaultSec))
+
+    let producer =
+        lazy (DaemonIdentity.BinaryIdentity.render (DaemonIdentity.currentIdentity ()))
+
+    /// Has the pinned tool left exactly these bytes, under this key, unchanged — in this
+    /// process, or in any daemon that filed a record of it?
+    let isSettled (file: string) (key: ActionKey.ActionKey) : bool =
+        match settled.TryGetValue file with
+        | true, prior when prior = key.Value -> true
+        | _ ->
+            match store |> Option.bind (fun store -> store.Lookup key.Value) with
+            | Some record when record.Outcome = OutcomeStore.Outcome.Pass ->
+                settled[file] <- key.Value
+                true
+            | _ -> false
+
+    /// Remember that the pinned tool left the bytes under `key` unchanged, and file it.
+    let settle (repoRoot: string) (file: string) (key: ActionKey.ActionKey) =
+        settled[file] <- key.Value
+
+        store
+        |> Option.iter (fun store ->
+            store.Record
+                { Key = key
+                  Subject = FsHotWatch.CachePathIdentity.keyOf (Some repoRoot) file
+                  Outcome = OutcomeStore.Outcome.Pass
+                  Counts = None
+                  DurationMs = None
+                  Producer =
+                    { Binary = producer.Value
+                      Worktree = repoRoot
+                      RunId = None }
+                  RecordedAt = DateTimeOffset.UtcNow }
+            |> ignore)
 
     interface IFsHotWatchPreprocessor with
         member _.Name = "format"
@@ -120,15 +178,24 @@ type FormatPreprocessor(?timeoutSec: int, ?runner: Runner) =
                     failing.TryRemove file |> ignore
 
                 let keyOf = settledKeys repoRoot pin
+
                 // Keyed BEFORE the run, so a key only ever names bytes the tool was given.
-                let keyed = files |> List.map (fun file -> file, keyOf file)
+                // A restart reads one record per file, so the look-ups run in parallel.
+                let keyed =
+                    files
+                    |> Array.ofList
+                    |> Array.Parallel.map (fun file ->
+                        let key = keyOf file
+                        file, key, (key |> Option.exists (isSettled file)))
+                    |> List.ofArray
+
+                for (file, _, _) in keyed |> List.filter (fun (_, _, hit) -> hit) do
+                    failing.TryRemove file |> ignore
 
                 let pending =
                     keyed
-                    |> List.filter (fun (file, key) ->
-                        match key, settled.TryGetValue file with
-                        | Some key, (true, prior) -> key <> prior
-                        | _ -> true)
+                    |> List.filter (fun (_, _, hit) -> not hit)
+                    |> List.map (fun (file, key, _) -> file, key)
 
                 let toRun = pending |> List.map fst
 
@@ -145,14 +212,31 @@ type FormatPreprocessor(?timeoutSec: int, ?runner: Runner) =
                     let errored = Map.ofList report.FormatErrors
                     let unsettled = Set.ofList (report.Modified @ List.map fst report.FormatErrors)
 
-                    for (file, key) in pending do
+                    // Keyed AGAIN after the run, configuration included: a file is settled only
+                    // when the bytes and configuration it was keyed from before the run are
+                    // still there after it, so a save that landed while the tool ran is never
+                    // filed as formatted.
+                    let keyAfter = settledKeys repoRoot pin
+
+                    let settles =
+                        pending
+                        |> Array.ofList
+                        |> Array.Parallel.choose (fun (file, key) ->
+                            match key with
+                            | Some key when not (unsettled.Contains file) ->
+                                match keyAfter file with
+                                | Some after when after.Value = key.Value -> Some(file, key)
+                                | _ -> None
+                            | _ -> None)
+
+                    for (file, _) in pending do
                         match Map.tryFind file errored with
                         | Some reason -> failing[file] <- reason
                         | None -> failing.TryRemove file |> ignore
 
-                        match key with
-                        | Some key when not (unsettled.Contains file) -> settled[file] <- key
-                        | _ -> settled.TryRemove file |> ignore
+                        settled.TryRemove file |> ignore
+
+                    settles |> Array.Parallel.iter (fun (file, key) -> settle repoRoot file key)
 
                     Ok
                         { Modified = report.Modified

@@ -569,6 +569,16 @@ let ``FSHW_OPTIONS_RECORDS overrides the configured optionsRecords either way, a
     test <@ not (resolveOptionsRecords false (env "FSHW_CHECK_RECORDS" "1")) @>
     test <@ resolveOptionsRecords true (env "FSHW_OPTIONS_RECORDS" "maybe") @>
 
+[<Fact(Timeout = 15000)>]
+let ``format records are on unless FSHW_FORMAT_RECORDS turns them off`` () =
+    let env (variable: string) (value: string) : string -> string =
+        fun name -> if name = variable then value else null
+
+    test <@ resolveFormatRecords true (fun _ -> null) @>
+    test <@ not (resolveFormatRecords true (env "FSHW_FORMAT_RECORDS" "0")) @>
+    test <@ not (resolveFormatRecords true (env "FSHW_FORMAT_RECORDS" "false")) @>
+    test <@ resolveFormatRecords true (env "FSHW_CHECK_RECORDS" "0") @>
+
 // --- parseConfig: cache ---
 
 [<Fact(Timeout = 15000)>]
