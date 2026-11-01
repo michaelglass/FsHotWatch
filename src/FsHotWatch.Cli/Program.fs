@@ -3385,7 +3385,7 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
             "%s"
             (ThreadSuspendInjection.startupLine
                 (ThreadSuspendInjection.osDescription ())
-                Environment.GetEnvironmentVariable)
+                ThreadSuspendInjection.ownGetEnv)
 
         let pool = FsHotWatch.SharedWatchPool.WatchPool()
 
@@ -3945,7 +3945,7 @@ let private executeCommandRendered
                             "%s"
                             (ThreadSuspendInjection.startupLine
                                 (ThreadSuspendInjection.osDescription ())
-                                Environment.GetEnvironmentVariable)
+                                ThreadSuspendInjection.ownGetEnv)
 
                         // Before the daemon exists, so the helper forks from a small process;
                         // disposed after the daemon stops. Off unless FSHW_SPAWN_HELPER=1.
@@ -5233,4 +5233,8 @@ let main args =
         // So is the spawn helper: its stdout is a protocol stream.
         match SpawnHelperMode.tryRun args with
         | Some exitCode -> exitCode
-        | None -> runCli args
+        | None ->
+            // Before this process starts anything: what it starts inherits the
+            // thread-suspend setting a daemon would have given it (`ThreadSuspendInjection`).
+            ThreadSuspendInjection.install ()
+            runCli args

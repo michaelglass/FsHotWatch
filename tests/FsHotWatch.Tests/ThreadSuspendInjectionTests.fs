@@ -110,3 +110,60 @@ let ``a build is read only from a sysctl that succeeded and wrote something`` ()
     test <@ decodeBuild 0 answer written = Some "26A428" @>
     test <@ decodeBuild 0 answer empty = None @>
     test <@ decodeBuild -1 answer written = None @>
+
+// ---------------------------------------------------------------------------
+// Daemonless hosts (AUTOMATION-1425): `--run-once` and an in-process `test-rerun` start
+// test hosts, builds and helpers with no daemon in between. The CLI puts the setting in
+// its own environment, which every child inherits; its own runtime has already started.
+// ---------------------------------------------------------------------------
+
+/// An environment the code under test may change, as `getEnv` and `setEnv`.
+let private mutableEnv (pairs: (string * string) list) =
+    let values = Collections.Generic.Dictionary<string, string>(dict pairs)
+
+    let getEnv name =
+        match values.TryGetValue name with
+        | true, value -> value
+        | _ -> null
+
+    values, getEnv, (fun (name: string) (value: string) -> values[name] <- value)
+
+[<Fact>]
+let ``on macOS the children of a daemonless CLI inherit injection disabled`` () =
+    let _, getEnv, setEnv = mutableEnv []
+
+    inheritByChildren true getEnv setEnv |> ignore
+
+    test <@ getEnv RuntimeVariable = "0" @>
+
+[<Fact>]
+let ``the CLI's own mode is the one its runtime started with, not the one its children inherit`` () =
+    let _, getEnv, setEnv = mutableEnv []
+
+    let own = inheritByChildren true getEnv setEnv
+
+    test <@ isNull (own RuntimeVariable) @>
+
+    test
+        <@
+            startupLine "macOS 27.0 (26A428)" own = "thread-suspend: injection enabled (runtime default); os: macOS 27.0 (26A428)"
+        @>
+
+[<Theory>]
+[<InlineData("DOTNET_INTERNAL_ThreadSuspendInjection", "1")>]
+[<InlineData("COMPlus_INTERNAL_ThreadSuspendInjection", "1")>]
+[<InlineData("FSHW_THREAD_SUSPEND_INJECTION", "1")>]
+let ``a daemonless CLI leaves an explicit value or the opt-out alone`` (name: string, value: string) =
+    let values, getEnv, setEnv = mutableEnv [ name, value ]
+
+    inheritByChildren true getEnv setEnv |> ignore
+
+    test <@ values.Count = 1 && values[name] = value @>
+
+[<Fact>]
+let ``off macOS a daemonless CLI changes nothing`` () =
+    let values, getEnv, setEnv = mutableEnv []
+
+    inheritByChildren false getEnv setEnv |> ignore
+
+    test <@ values.Count = 0 @>

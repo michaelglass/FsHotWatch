@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: on macOS, every process the CLI starts inherits `DOTNET_INTERNAL_ThreadSuspendInjection=0`,
+  as a daemon's children already did (AUTOMATION-1425). A CLI that hosts the work itself
+  (`--run-once`, an in-process `test-rerun`) started its test hosts, builds and helpers with
+  injection at the runtime default. An explicit value and `FSHW_THREAD_SUSPEND_INJECTION=1` still
+  win. The CLI's own runtime keeps the mode it started with: the knob is read only from the
+  environment (a `runtimeconfig.json` entry does not reach it), so set it in the shell that runs
+  `fshw` to cover that process too. Startup lines describe that mode, not the children's.
+
 ## 0.14.0-alpha.134 - 2026-11-01
 
 - perf: `format: true` (the format preprocessor) files its per-file outcomes in the outcome

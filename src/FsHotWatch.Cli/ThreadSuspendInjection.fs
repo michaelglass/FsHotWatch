@@ -13,7 +13,9 @@
 /// On macOS the CLI sets it in the environment of every daemon it launches, unless the
 /// user's environment already names a value, or `FSHW_THREAD_SUSPEND_INJECTION=1` asks
 /// for the runtime default. The variable has to be in place before the runtime starts,
-/// so a daemon started in the foreground runs with whatever its shell provides.
+/// so a daemon started in the foreground, or a CLI hosting the work itself (`--run-once`,
+/// an in-process `test-rerun`), runs with whatever its shell provides. Every process the
+/// CLI starts inherits the setting, though (`inheritByChildren`).
 module FsHotWatch.Cli.ThreadSuspendInjection
 
 open System
@@ -111,3 +113,41 @@ let internal describeOs (isMacOS: bool) (build: unit -> string option) : string 
 /// runtime's description elsewhere.
 let osDescription () : string =
     describeOs (OperatingSystem.IsMacOS()) macOSBuild
+
+/// Give every process this one starts the setting `launchOverride` decides, by putting it
+/// in this process's environment, which children inherit (AUTOMATION-1425). A daemon's
+/// children inherit it from the daemon; a CLI that hosts the work itself (`--run-once`,
+/// an in-process `test-rerun`) starts test hosts, builds and helpers with no daemon in
+/// between, and they ran with injection at the runtime default.
+///
+/// This process's OWN mode cannot change: the runtime read the variable when it started,
+/// and `runtimeconfig.json` does not reach this knob (measured: a `configProperties` entry
+/// changes `System.GC.Server` but not `EnableHWIntrinsic`, a knob read the same way). So
+/// the result is the environment as it was, for `startupLine` to describe this process.
+let inheritByChildren (isMacOS: bool) (getEnv: string -> string) (setEnv: string -> string -> unit) : string -> string =
+    let own =
+        [ RuntimeVariable; LegacyRuntimeVariable; OptOutEnvVar ]
+        |> List.map (fun name -> name, getEnv name)
+        |> Map.ofList
+
+    launchOverride isMacOS getEnv
+    |> Option.iter (fun (name, value) -> setEnv name value)
+
+    fun name ->
+        match Map.tryFind name own with
+        | Some value -> value
+        | None -> getEnv name
+
+/// This process's own thread-suspend variables, as its runtime started with them:
+/// `install` replaces it with the view `inheritByChildren` returns.
+let mutable private ownEnvironment: string -> string =
+    Environment.GetEnvironmentVariable
+
+/// The environment `startupLine` describes this process from.
+let ownGetEnv (name: string) : string = ownEnvironment name
+
+/// `inheritByChildren` on this process, once, before it starts anything.
+let install () : unit =
+    ownEnvironment <-
+        inheritByChildren (OperatingSystem.IsMacOS()) Environment.GetEnvironmentVariable (fun name value ->
+            Environment.SetEnvironmentVariable(name, value))
