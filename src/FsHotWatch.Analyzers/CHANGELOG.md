@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.54 - 2026-11-01
+
 - perf: the analyzer set is read and hashed once per dispatch batch, not once per file
   (AUTOMATION-1437). Reading every analyzer DLL was about 1.6 of 2.2 ms of each cache replay on
   this repository; a restart replaying 645 files now drains the analyzers in about 0.6 s, from

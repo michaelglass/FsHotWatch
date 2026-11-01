@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.134 - 2026-11-01
+
 - perf: `format: true` (the format preprocessor) files its per-file outcomes in the outcome
   store, so a daemon restart over an unchanged tree no longer runs Fantomas over every file
   (AUTOMATION-1436, ADR-059 §20). Measured on a copy of intelligence's 2,529 formattable

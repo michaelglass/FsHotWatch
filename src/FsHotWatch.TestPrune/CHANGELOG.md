@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.101 - 2026-11-01
+
 - perf: a restart's first extension refresh runs beside the fold (AUTOMATION-1441). A new process
   owes every extension a refresh on its first flush, the `BuildCompleted` its scan dispatches before
   the checks; on a 2,674-file repository it took 6 s, and every check result queued behind the build

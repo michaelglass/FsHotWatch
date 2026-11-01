@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.34 - 2026-11-01
+
 - feat: the format preprocessor files what it proved in the outcome store (ADR-059 §20,
   AUTOMATION-1436). `FormatPreprocessor` takes an optional `store`; with one, each file the
   pinned Fantomas left unchanged is a `format` record keyed by the Fantomas pin, the

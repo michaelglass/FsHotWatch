@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.101 - 2026-11-01
+
 - perf: recording a check's analysis outcome (`AnalysisFileEvidence`) reads the file's suppression
   only when the check has an error to judge (AUTOMATION-1441). A suppression only silences errors, and
   building one parses the file's `#nowarn` lines and every compiler flag: about 0.1 ms per file,
