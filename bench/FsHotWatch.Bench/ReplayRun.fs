@@ -244,6 +244,20 @@ let private runCheck (opts: Options) (stepDir: string) (mode: string) : RunResul
     |> Option.iter (fun _ ->
         File.Copy(Path.Combine(opts.Workspace, ".fshw", "verdict.json"), Path.Combine(dir, "verdict.json"), true))
 
+    // The CTRF reports the verdict names: the workspace prunes them as later runs land, and
+    // they are what a disagreement is traced through.
+    verdict
+    |> Option.iter (fun _ ->
+        for runId in Diagnostics.verdictRunIds (File.ReadAllText(Path.Combine(dir, "verdict.json"))) do
+            let source = Path.Combine(opts.Workspace, ".fshw", "test-runs", runId)
+
+            if Directory.Exists source then
+                let target = Path.Combine(dir, "test-runs", runId)
+                Directory.CreateDirectory target |> ignore
+
+                for f in Directory.EnumerateFiles(source, "*.ctrf.json") do
+                    File.Copy(f, Path.Combine(target, Path.GetFileName f), true))
+
     let newShadow =
         if File.Exists shadowPath then
             Shadow.since shadowBefore (File.ReadAllLines shadowPath |> Array.toList)
