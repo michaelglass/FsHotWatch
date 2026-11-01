@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: the second options evaluation of a never-built checkout starts only once the clock is past the
+  racy window after the first load returned (AUTOMATION-1438). The wait truncated a fractional
+  millisecond, so on Linux the second evaluation started up to 1 ms inside the window and was refused
+  for the first design-time build's own write. It also waited only for the latest change among the
+  first evaluation's inputs, which misses a write only the second evaluation's inputs name.
+
 - fix: options records no longer key the runtime's internal knobs (`DOTNET_INTERNAL_*`) unless the
   evaluation's files name one (AUTOMATION-1438, ADR-059 §18). The detached launcher sets
   `DOTNET_INTERNAL_ThreadSuspendInjection=0` for the daemon it starts, and every `DOTNET_*` variable

@@ -891,8 +891,12 @@ toolchain, SDK and global properties.
   refused: "...Intelligence.Build.AssemblyInfo.fs changed while the projects were evaluated".
   Every AssemblyInfo in that workspace carried a change time inside the 9 s evaluation, in load
   order. `file` now names every input that moved. When all of them lie in the requested
-  projects' own directories, the loader waits for the racy window to pass the last of those
-  writes and evaluates once more. That design-time build finds its outputs written and writes
+  projects' own directories, the loader waits for the racy window to pass the moment the
+  first load returned, after every write its design-time build made, and evaluates once more.
+  The wait rounds up and reads the clock again: truncating a fractional millisecond started the
+  second evaluation up to 1 ms inside the window on Linux CI, where it was refused for the first
+  build's own write. Judging from the latest change among the first evaluation's inputs instead
+  would miss a write only the second evaluation's inputs name. That design-time build finds its outputs written and writes
   nothing, as MSBuild's incremental targets do, so it is filed. A second move, or a move outside
   the projects, still files nothing. §18's rule is unchanged: what is filed came from an
   evaluation during which no input moved.
