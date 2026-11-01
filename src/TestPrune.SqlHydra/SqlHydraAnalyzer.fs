@@ -127,11 +127,13 @@ type SqlHydraExtension(generatedModulePrefix: string) =
         let symbolsByName =
             allSymbols |> List.map (fun symbol -> symbol.FullName, symbol) |> Map.ofList
 
+        // Each file's edges grouped by source symbol once, so a symbol's edges are a lookup
+        // rather than a filter over every edge in its file.
         let depsByFile =
             allSymbols
             |> List.map (fun s -> s.SourceFile)
             |> List.distinct
-            |> List.map (fun f -> f, store.GetDependenciesFromFile f)
+            |> List.map (fun f -> f, store.GetDependenciesFromFile f |> List.groupBy _.FromSymbol |> Map.ofList)
             |> Map.ofList
 
         allSymbols
@@ -139,8 +141,8 @@ type SqlHydraExtension(generatedModulePrefix: string) =
             let deps =
                 depsByFile
                 |> Map.tryFind sym.SourceFile
+                |> Option.bind (Map.tryFind sym.FullName)
                 |> Option.defaultValue []
-                |> List.filter (fun d -> d.FromSymbol = sym.FullName)
 
             // EVERY DSL access this symbol performs, de-duplicated — not just the first.
             //

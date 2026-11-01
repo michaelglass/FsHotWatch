@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- perf: `extractFacts` groups each file's edges by source symbol once instead of filtering
+  the whole file's edges for every symbol in it. No fact change.
 - refactor: table-level facts carry `SqlColumn.AllColumns` (TestPrune.Sql's new column type)
   instead of the `"*"` string. No edge change.
 - chore: this package is linted by FSharpLint again (AUTOMATION-1409); its names the rules flag stay, with a scoped suppression saying why. No
