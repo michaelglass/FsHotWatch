@@ -702,7 +702,11 @@ let ``a settled test-scope reply names the outcome key each project's full run o
         test <@ Set.ofSeq keys.Keys = Set.ofList testProjects @>
 
         for KeyValue(_, key) in keys do
-            test <@ outcomes.Lookup key |> Option.map _.Outcome = Some OutcomeStore.Outcome.Pass @>
+            test
+                <@
+                    outcomes.Lookup(Option.get (ActionKey.KeyValue.tryParse key))
+                    |> Option.map _.Outcome = Some OutcomeStore.Outcome.Pass
+                @>
 
         // The keys describe the tree as it is NOW: after an edit no run has seen, they move,
         // and nothing on file answers for them.
@@ -714,5 +718,7 @@ let ``a settled test-scope reply names the outcome key each project's full run o
         test
             <@
                 moved
-                |> Map.forall (fun project key -> key = keys[project] || (outcomes.Lookup key).IsNone)
+                |> Map.forall (fun project key ->
+                    key = keys[project]
+                    || (outcomes.Lookup(Option.get (ActionKey.KeyValue.tryParse key))).IsNone)
             @>)

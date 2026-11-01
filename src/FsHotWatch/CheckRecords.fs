@@ -182,7 +182,7 @@ type Walk
     let chains = Dictionary<string, FileRecord list * string>()
 
     let lookup (key: ActionKey.ActionKey) =
-        store.LookupWithOutputs key.Value
+        store.LookupWithOutputs key
         |> Option.bind snd
         |> Option.bind (CheckOutputs.tryOfJson repoRoot)
 

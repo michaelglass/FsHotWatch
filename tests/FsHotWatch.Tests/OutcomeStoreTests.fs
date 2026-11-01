@@ -62,15 +62,15 @@ let ``a recorded outcome is found under its key and nowhere else`` () =
     withStore 1_000_000L (fun _ _ store ->
         let key = keyFor "sha256:t1"
         test <@ store.Record(recordOf key Outcome.Pass t0) @>
-        test <@ store.Lookup key.Value |> Option.map _.Outcome = Some Outcome.Pass @>
-        test <@ store.Lookup (keyFor "sha256:t2").Value = None @>)
+        test <@ store.Lookup key |> Option.map _.Outcome = Some Outcome.Pass @>
+        test <@ store.Lookup(keyFor "sha256:t2") = None @>)
 
 [<Fact>]
 let ``a record reads back exactly as it was written`` () =
     withStore 1_000_000L (fun _ _ store ->
         let record = recordOf (keyFor "sha256:t1") Outcome.Fail t0
         store.Record record |> ignore
-        test <@ store.Lookup record.Key.Value = Some record @>)
+        test <@ store.Lookup record.Key = Some record @>)
 
 [<Fact>]
 let ``a store opened afresh over the same directory gives the same answer`` () =
@@ -86,7 +86,7 @@ let ``a store opened afresh over the same directory gives the same answer`` () =
                   Log = ignore }
             )
 
-        test <@ reopened.Lookup record.Key.Value = Some record @>)
+        test <@ reopened.Lookup record.Key = Some record @>)
 
 [<Fact>]
 let ``re-recording an identical outcome writes nothing new`` () =
@@ -102,9 +102,9 @@ let ``two outcomes for one key are history and the newest is the answer`` () =
         let key = keyFor "sha256:t1"
         store.Record(recordOf key Outcome.Fail t0) |> ignore
         store.Record(recordOf key Outcome.Pass (t0.AddMinutes 1.0)) |> ignore
-        test <@ store.Lookup key.Value |> Option.map _.Outcome = Some Outcome.Pass @>
+        test <@ store.Lookup key |> Option.map _.Outcome = Some Outcome.Pass @>
 
-        test <@ store.History key.Value |> List.map _.Outcome = [ Outcome.Fail; Outcome.Pass ] @>)
+        test <@ store.History key |> List.map _.Outcome = [ Outcome.Fail; Outcome.Pass ] @>)
 
 [<Fact>]
 let ``a fail and a pass recorded at the same instant answer fail`` () =
@@ -112,7 +112,7 @@ let ``a fail and a pass recorded at the same instant answer fail`` () =
         let key = keyFor "sha256:t1"
         store.Record(recordOf key Outcome.Pass t0) |> ignore
         store.Record(recordOf key Outcome.Fail t0) |> ignore
-        test <@ store.Lookup key.Value |> Option.map _.Outcome = Some Outcome.Fail @>)
+        test <@ store.Lookup key |> Option.map _.Outcome = Some Outcome.Fail @>)
 
 [<Fact>]
 let ``a torn record is a miss and is quarantined`` () =
@@ -121,7 +121,7 @@ let ``a torn record is a miss and is quarantined`` () =
         store.Record(recordOf key Outcome.Pass t0) |> ignore
         let file = recordFiles dir |> List.exactlyOne
         File.WriteAllText(file, (File.ReadAllText file).Substring(0, 40))
-        test <@ store.Lookup key.Value = None @>
+        test <@ store.Lookup key = None @>
         test <@ List.isEmpty (recordFiles dir) @>
         test <@ Directory.GetFiles(Path.Combine(dir, "quarantine")).Length = 1 @>
         test <@ log () |> List.exists (fun l -> l.Contains "quarantined") @>)
@@ -137,7 +137,7 @@ let ``a record whose payload does not match its checksum is a miss`` () =
         test <@ payload.Contains "\"fail\"" @>
         envelope["payload"] <- Text.Json.Nodes.JsonValue.Create(payload.Replace("\"fail\"", "\"pass\""))
         File.WriteAllText(file, envelope.ToJsonString())
-        test <@ store.Lookup key.Value = None @>)
+        test <@ store.Lookup key = None @>)
 
 [<Fact>]
 let ``a record filed under a key its inputs do not fold to is a miss`` () =
@@ -147,10 +147,10 @@ let ``a record filed under a key its inputs do not fold to is a miss`` () =
         store.Record(recordOf honest Outcome.Pass t0) |> ignore
         let file = recordFiles dir |> List.exactlyOne
         // Move the honest record under another key's directory, as a buggy writer might.
-        let target = (store.DirectoryOf other.Value)
+        let target = (store.DirectoryOf other)
         Directory.CreateDirectory target |> ignore
         File.Move(file, Path.Combine(target, Path.GetFileName file))
-        test <@ store.Lookup other.Value = None @>)
+        test <@ store.Lookup other = None @>)
 
 [<Fact>]
 let ``a record with an unknown schema is a miss`` () =
@@ -159,11 +159,11 @@ let ``a record with an unknown schema is a miss`` () =
         store.Record(recordOf key Outcome.Pass t0) |> ignore
         let file = recordFiles dir |> List.exactlyOne
         File.WriteAllText(file, (File.ReadAllText file).Replace(Schema, "fshw-outcome-v0"))
-        test <@ store.Lookup key.Value = None @>)
+        test <@ store.Lookup key = None @>)
 
 [<Fact>]
 let ``a value that is not a key finds nothing`` () =
-    withStore 1_000_000L (fun _ _ store -> test <@ store.Lookup "../../etc" = None @>)
+    withStore 1_000_000L (fun _ _ _ -> test <@ ActionKey.KeyValue.tryParse "../../etc" = None @>)
 
 [<Fact>]
 let ``gc evicts keys whose newest record is older than the ttl`` () =
@@ -174,8 +174,8 @@ let ``gc evicts keys whose newest record is older than the ttl`` () =
         store.Record(recordOf fresh Outcome.Pass (t0.AddDays 10.0)) |> ignore
         let evicted = store.Gc(t0.AddDays 15.0, Set.empty)
         test <@ evicted = [ old.Value ] @>
-        test <@ store.Lookup old.Value = None @>
-        test <@ store.Lookup fresh.Value <> None @>)
+        test <@ store.Lookup old = None @>
+        test <@ store.Lookup fresh <> None @>)
 
 [<Fact>]
 let ``gc evicts the oldest keys until the store fits its byte budget, sparing the kept ones`` () =
@@ -188,7 +188,7 @@ let ``gc evicts the oldest keys until the store fits its byte budget, sparing th
         store.Record(recordOf c Outcome.Pass (t0.AddMinutes 2.0)) |> ignore
         let evicted = store.Gc(t0.AddMinutes 3.0, Set.ofList [ a.Value ])
         test <@ evicted = [ b.Value; c.Value ] @>
-        test <@ store.Lookup a.Value <> None @>)
+        test <@ store.Lookup a <> None @>)
 
 [<Fact>]
 let ``the store directory is namespaced per repository under the shared cache`` () =
@@ -206,7 +206,7 @@ let ``a record's outputs are read back as filed, and a record without outputs ha
         test <@ store.Record(recordOf without Outcome.Pass t0) @>
 
         let read (key: ActionKey.ActionKey) =
-            store.LookupWithOutputs key.Value |> Option.map snd
+            store.LookupWithOutputs key |> Option.map snd
 
         let roundTripped = read withOutputs |> Option.flatten
 
@@ -218,8 +218,8 @@ let ``a record's outputs are read back as filed, and a record without outputs ha
             @>
 
         test <@ read without = Some None @>
-        test <@ store.Lookup(withOutputs.Value) = Some(recordOf withOutputs Outcome.Pass t0) @>
-        test <@ store.LookupWithOutputs "not a key" = None @>)
+        test <@ store.Lookup(withOutputs) = Some(recordOf withOutputs Outcome.Pass t0) @>
+        test <@ ActionKey.KeyValue.tryParse "not a key" = None @>)
 
 // --- AUTOMATION-1368: the read-only scan analytics reads ---
 
@@ -233,7 +233,7 @@ let ``readAll returns every readable record of every key, oldest first, and move
         store.Record(recordOf a Outcome.Fail (t0.AddMinutes 1.0)) |> ignore
         let c = keyFor "sha256:c"
         store.Record(recordOf c Outcome.Pass (t0.AddMinutes 3.0)) |> ignore
-        let tornFile = Directory.GetFiles(store.DirectoryOf c.Value) |> Array.exactlyOne
+        let tornFile = Directory.GetFiles(store.DirectoryOf c) |> Array.exactlyOne
 
         File.WriteAllText(tornFile, (File.ReadAllText tornFile).Substring(0, 40))
 

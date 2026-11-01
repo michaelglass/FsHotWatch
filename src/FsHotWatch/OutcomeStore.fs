@@ -114,7 +114,7 @@ let private outcomeToken =
 
 let private serializePayload (r: Record) (outputs: string option) : string =
     let o = JsonObject()
-    o["key"] <- r.Key.Value
+    o["key"] <- r.Key.Value.Text
     o["kind"] <- r.Key.Kind
     let inputs = JsonArray()
 
@@ -174,7 +174,7 @@ let private parsePayload (payload: string) : Record * string option =
 
     let key = ActionKey.create (str o "kind") inputs
 
-    if key.Value <> str o "key" then
+    if key.Value.Text <> str o "key" then
         raise (FormatException "the inputs do not fold to the stated key")
 
     let outcome =
@@ -260,7 +260,7 @@ let readAll (root: string) : Scan =
             [ for shard in Directory.GetDirectories recordsDir do
                   for dir in Directory.GetDirectories shard do
                       for file in Directory.GetFiles(dir, "*.json") do
-                          yield ActionKey.Prefix + Path.GetFileName dir, file ]
+                          yield ActionKey.KeyValue.tryParse (ActionKey.Prefix + Path.GetFileName dir), file ]
         else
             []
 
@@ -269,7 +269,7 @@ let readAll (root: string) : Scan =
         |> List.map (fun (keyValue, file) ->
             try
                 match decode (File.ReadAllText file) with
-                | Ok(record, outputs) when record.Key.Value = keyValue -> Some(record, outputs)
+                | Ok(record, outputs) when Some record.Key.Value = keyValue -> Some(record, outputs)
                 | _ -> None
             with :? IOException ->
                 None)
@@ -283,10 +283,10 @@ type Store(settings: Settings) =
     let quarantineDir = Path.Combine(root, "quarantine")
     let tmpDir = Path.Combine(root, "tmp")
 
-    let hexOf (keyValue: string) =
-        keyValue.Substring ActionKey.Prefix.Length
+    let hexOf (keyValue: ActionKey.KeyValue) =
+        keyValue.Text.Substring ActionKey.Prefix.Length
 
-    let directoryOf (keyValue: string) =
+    let directoryOf (keyValue: ActionKey.KeyValue) =
         let hex = hexOf keyValue
         Path.Combine(recordsDir, hex.Substring(0, 2), hex)
 
@@ -304,7 +304,7 @@ type Store(settings: Settings) =
 
     /// Every readable record filed under `keyValue` with its outputs, oldest first. A file
     /// that is not a record of THAT key is quarantined and left out.
-    let readKeyWithOutputs (keyValue: string) : (Record * string option) list =
+    let readKeyWithOutputs (keyValue: ActionKey.KeyValue) : (Record * string option) list =
         let dir = directoryOf keyValue
 
         if not (Directory.Exists dir) then
@@ -323,7 +323,7 @@ type Store(settings: Settings) =
                   | Error why -> quarantine file why ]
             |> chronological
 
-    let readKey (keyValue: string) : Record list =
+    let readKey (keyValue: ActionKey.KeyValue) : Record list =
         readKeyWithOutputs keyValue |> List.map fst
 
     let writeOnce (path: string) (text: string) =
@@ -346,7 +346,7 @@ type Store(settings: Settings) =
     member _.Root = root
 
     /// The directory the records of `keyValue` are filed in.
-    member _.DirectoryOf(keyValue: string) = directoryOf keyValue
+    member _.DirectoryOf(keyValue: ActionKey.KeyValue) = directoryOf keyValue
 
     /// File `record`. Never throws: a store that cannot be written costs a future lookup,
     /// not the run that produced the record. Returns whether it is filed.
@@ -367,32 +367,41 @@ type Store(settings: Settings) =
             settings.Log $"outcome store: could not record %s{record.Key.Kind} %s{record.Subject}: %s{ex.Message}"
             false
 
-    /// Every record of `keyValue`, oldest first; empty for a value that is not a key.
-    member _.History(keyValue: string) : Record list =
-        if ActionKey.isValue keyValue then readKey keyValue else []
+    /// Every record of `keyValue`, oldest first.
+    member _.History(keyValue: ActionKey.KeyValue) : Record list = readKey keyValue
 
     /// `Lookup` with the record's outputs: `None` is a miss.
-    member _.LookupWithOutputs(keyValue: string) : (Record * string option) option =
-        if ActionKey.isValue keyValue then
-            readKeyWithOutputs keyValue |> List.tryLast
-        else
-            None
+    member _.LookupWithOutputs(keyValue: ActionKey.KeyValue) : (Record * string option) option =
+        readKeyWithOutputs keyValue |> List.tryLast
 
     /// The answer for `keyValue`: its newest record, a fail outranking a pass at the same
     /// instant. `None` is a miss.
-    member this.Lookup(keyValue: string) : Record option = this.History keyValue |> List.tryLast
+    member this.Lookup(keyValue: ActionKey.KeyValue) : Record option = this.History keyValue |> List.tryLast
+
+    /// `Lookup` by the key itself.
+    member this.Lookup(key: ActionKey.ActionKey) : Record option = this.Lookup key
+
+    /// `LookupWithOutputs` by the key itself.
+    member this.LookupWithOutputs(key: ActionKey.ActionKey) : (Record * string option) option =
+        this.LookupWithOutputs key
+
+    /// `History` by the key itself.
+    member this.History(key: ActionKey.ActionKey) : Record list = this.History key
+
+    /// `DirectoryOf` by the key itself.
+    member _.DirectoryOf(key: ActionKey.ActionKey) = directoryOf key.Value
 
     /// Evict every key whose newest record is older than the TTL at `now`, then the keys
     /// with the oldest newest-record until the store fits `MaxBytes`. Never a key in
     /// `keep`. Returns the evicted key values, oldest first.
-    member _.Gc(now: DateTimeOffset, keep: Set<string>) : string list =
+    member _.Gc(now: DateTimeOffset, keep: Set<ActionKey.KeyValue>) : ActionKey.KeyValue list =
         let keys =
             if Directory.Exists recordsDir then
                 [ for shard in Directory.GetDirectories recordsDir do
                       for dir in Directory.GetDirectories shard do
-                          let keyValue = ActionKey.Prefix + Path.GetFileName dir
-
-                          if ActionKey.isValue keyValue then
+                          match ActionKey.KeyValue.tryParse (ActionKey.Prefix + Path.GetFileName dir) with
+                          | None -> ()
+                          | Some keyValue ->
                               let size = Directory.GetFiles dir |> Array.sumBy (fun f -> FileInfo(f).Length)
 
                               match readKey keyValue |> List.tryLast with
@@ -408,7 +417,7 @@ type Store(settings: Settings) =
             evictable
             |> List.partition (fun (_, _, newest, _) -> now - newest > settings.Ttl)
 
-        let sizeOf (entries: (string * string * DateTimeOffset * int64) list) =
+        let sizeOf (entries: (ActionKey.KeyValue * string * DateTimeOffset * int64) list) =
             entries |> List.sumBy (fun (_, _, _, size) -> size)
 
         let mutable total = sizeOf keys - sizeOf expired
@@ -424,7 +433,7 @@ type Store(settings: Settings) =
                   Directory.Delete(dir, true)
                   yield k
               with ex ->
-                  settings.Log $"outcome store: could not evict %s{k}: %s{ex.Message}" ]
+                  settings.Log $"outcome store: could not evict %s{k.Text}: %s{ex.Message}" ]
 
 /// The store of `repoRoot`'s repository with the default TTL and byte budget.
 let openFor (repoRoot: string) (log: string -> unit) =

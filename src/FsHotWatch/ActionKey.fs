@@ -28,11 +28,37 @@ let Version = "fshw-action-v1"
 [<Literal>]
 let Prefix = "ak1:"
 
+/// Is `value` a key this recipe could have produced?
+let isValue (value: string) : bool =
+    not (isNull value)
+    && value.Length = Prefix.Length + 64
+    && value.StartsWith(Prefix, StringComparison.Ordinal)
+    && value
+       |> Seq.skip Prefix.Length
+       |> Seq.forall (fun c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))
+
+/// A key's value, parsed: text `isValue` accepts, and nothing else. A lookup that is handed
+/// one never asks again whether it names a key.
+[<Struct>]
+type KeyValue =
+    private
+    | KeyValue of string
+
+    /// The value as the store files it.
+    member this.Text =
+        let (KeyValue text) = this
+        text
+
+module KeyValue =
+    /// The key value `text` is; `None` for text no key could have.
+    let tryParse (text: string) : KeyValue option =
+        if isValue text then Some(KeyValue text) else None
+
 /// A key: its value, the kind of action, and the labelled digests it was folded from,
 /// sorted by label.
 type ActionKey =
     { Kind: string
-      Value: string
+      Value: KeyValue
       Inputs: (string * string) list }
 
 let private byLabel (inputs: (string * string) list) =
@@ -70,37 +96,8 @@ let create (kind: string) (inputs: (string * string) list) : ActionKey =
         invalidArg (nameof inputs) $"an input label may appear once: %s{labels}"
 
     { Kind = kind
-      Value = Prefix + ContentHash.ofText (encode kind inputs)
+      Value = KeyValue(Prefix + ContentHash.ofText (encode kind inputs))
       Inputs = byLabel inputs }
-
-/// Is `value` a key this recipe could have produced?
-let isValue (value: string) : bool =
-    not (isNull value)
-    && value.Length = Prefix.Length + 64
-    && value.StartsWith(Prefix, StringComparison.Ordinal)
-    && value
-       |> Seq.skip Prefix.Length
-       |> Seq.forall (fun c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))
-
-/// A key's value, parsed: text `isValue` accepts, and nothing else. A lookup that is handed
-/// one never asks again whether it names a key.
-[<Struct>]
-type KeyValue =
-    private
-    | KeyValue of string
-
-    /// The value as the store files it.
-    member this.Text =
-        let (KeyValue text) = this
-        text
-
-module KeyValue =
-    /// The key value `text` is; `None` for text no key could have.
-    let tryParse (text: string) : KeyValue option =
-        if isValue text then Some(KeyValue text) else None
-
-/// The value of `key`, which `create` folded, so it needs no check.
-let valueOf (key: ActionKey) : KeyValue = KeyValue key.Value
 
 /// The labels whose digest differs between `stored` and `current`: first the current
 /// labels that moved or are new, in label order, then the labels only `stored` has.

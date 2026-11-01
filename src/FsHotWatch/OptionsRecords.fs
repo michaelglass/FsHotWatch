@@ -196,7 +196,7 @@ let optionsKey
     (environment: (string * string) list)
     : ActionKey.ActionKey =
     let labelled =
-        [ "request", (requestKey request).Value
+        [ "request", (requestKey request).Value.Text
           yield! environmentInputs inputs.EnvNames environment
           for path in inputs.Reads do
               "read:" + path, pathState path
@@ -457,10 +457,10 @@ module private InputsJson =
 
         o["envNames"] <- stringArray inputs.EnvNames
 
-        o["optionsKey"] <- key.Value
+        o["optionsKey"] <- key.Value.Text
         o.ToJsonString()
 
-    let tryOfJson (text: string) : (EvaluationInputs * string) option =
+    let tryOfJson (text: string) : (EvaluationInputs * ActionKey.KeyValue) option =
         try
             use doc = JsonDocument.Parse text
             let o = doc.RootElement
@@ -482,7 +482,9 @@ module private InputsJson =
                                 Recursive = l.GetProperty("recursive").GetBoolean() } ]
                       EnvNames = readStrings o "envNames" }
 
-                Some(inputs, o.GetProperty("optionsKey").GetString())
+                match ActionKey.KeyValue.tryParse (o.GetProperty("optionsKey").GetString()) with
+                | Some filedKey -> Some(inputs, filedKey)
+                | None -> None
         with
         | :? JsonException
         | :? KeyNotFoundException
@@ -503,7 +505,7 @@ let tryReplay
     (environment: (string * string) list)
     (loadTime: DateTime)
     : Replay =
-    match store.LookupWithOutputs (requestKey request).Value with
+    match store.LookupWithOutputs(requestKey request) with
     | None -> Missed "no evaluation of this request is filed"
     | Some(_, outputs) ->
         match outputs |> Option.bind InputsJson.tryOfJson with
@@ -511,7 +513,7 @@ let tryReplay
         | Some(inputs, filedKey) ->
             let key = optionsKey request inputs environment
 
-            match store.LookupWithOutputs key.Value with
+            match store.LookupWithOutputs key with
             | Some(_, Some text) ->
                 match ProjectOptionsJson.tryOfJson loadTime text with
                 | Some projects -> Replayed projects
