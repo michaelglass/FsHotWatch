@@ -453,6 +453,100 @@ let ``an input removed while the projects were evaluated is never filed`` () =
         restarted.LoadProjects [ t.Project ] |> Seq.toList |> ignore
         test <@ counted.Loads = 1 @>)
 
+/// The design-time build of a checkout that was never built, as Ionide's runs it: it
+/// writes the project's generated compile item and creates `bin/` beside the project, but
+/// only what is not there yet. A second design-time build over the same bytes writes
+/// nothing, which is what MSBuild's incremental targets do.
+let private firstDesignTimeBuild (t: Tree) () =
+    let generated =
+        t.Path("src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs")
+
+    let bin = Path.Combine(t.ProjectDir, "bin", "Debug")
+
+    if not (File.Exists generated && Directory.Exists bin) then
+        untilFileClockReachesNow ()
+        writeFile generated "module AssemblyInfo\n"
+        Directory.CreateDirectory bin |> ignore
+
+// AUTOMATION-1438. Measured on intelligence: the gate's first daemon in a fresh workspace
+// evaluated while Ionide's design-time build wrote every project's obj/ AssemblyInfo and
+// created bin/, so its filing was refused ("...AssemblyInfo.fs changed while the projects
+// were evaluated"), and the next plain start found nothing filed and evaluated for 10.1 s.
+// The start mode was never the variable: the key was the same, the record was never
+// written. An evaluation the design-time build changed is evaluated once more, and that
+// one, which changed nothing, is filed.
+[<Fact(Timeout = 120000)>]
+let ``an evaluation whose own design-time build wrote its inputs is filed from a second one, and the next start replays it``
+    ()
+    =
+    withTree (fun t ->
+        File.Delete(t.Path("src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
+
+        let cold, first =
+            daemonLoader t (request t) sameEnvironment (firstDesignTimeBuild t) None
+
+        first.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        test <@ cold.Loads = 2 @>
+        let counted, restarted = daemonLoader t (request t) sameEnvironment ignore None
+        let options = restarted.LoadProjects [ t.Project ] |> Seq.toList
+        test <@ counted.Loads = 0 @>
+        test <@ options.Length = 1 @>)
+
+// The same, under a racy window: the first design-time build's last writes land just before
+// the second evaluation starts, inside the window a filing is judged from. Measured on this
+// repository's own tree: the second evaluation was refused for the first one's last
+// AssemblyInfo. The second evaluation starts only once the window has passed those writes.
+[<WallClock("timestamp granularity: the sleep lets the racy window pass the tree the test just wrote, so only the design-time build's writes fall inside it; the assertion is on evaluation counts, never on a duration")>]
+[<Fact(Timeout = 120000)>]
+let ``the second evaluation starts after the racy window has passed the first one's writes`` () =
+    withTree (fun t ->
+        File.Delete(t.Path("src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
+        // The tree was written just now: let the window pass it, so only the design-time
+        // build's writes fall inside it.
+        Threading.Thread.Sleep(TimeSpan.FromMilliseconds 600.0)
+
+        let inner =
+            CountingLoader((fun () -> [ sampleOptions t.Project t.Assets ]), firstDesignTimeBuild t, None)
+
+        let loader =
+            CachingLoader(
+                inner,
+                OptionsInputs.list,
+                t.Store,
+                (fun _ -> request t),
+                (fun () -> sameEnvironment),
+                ignore,
+                racyWindow = TimeSpan.FromMilliseconds 500.0,
+                stamp = inTree t
+            )
+            :> IWorkspaceLoader
+
+        loader.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        test <@ inner.Loads = 2 @>
+        let counted, restarted = daemonLoader t (request t) sameEnvironment ignore None
+        restarted.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        test <@ counted.Loads = 0 @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a project directory that changes on every evaluation is evaluated twice at most and never filed`` () =
+    withTree (fun t ->
+        let n = ref 0
+
+        let churn () =
+            n.Value <- n.Value + 1
+            untilFileClockReachesNow ()
+
+            writeFile
+                (Path.Combine(t.ProjectDir, "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
+                $"// %d{n.Value}\n"
+
+        let cold, first = daemonLoader t (request t) sameEnvironment churn None
+        first.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        test <@ cold.Loads = 2 @>
+        let counted, restarted = daemonLoader t (request t) sameEnvironment ignore None
+        restarted.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        test <@ counted.Loads = 1 @>)
+
 [<Fact(Timeout = 120000)>]
 let ``an evaluation in which a project failed to load is never filed`` () =
     withTree (fun t ->

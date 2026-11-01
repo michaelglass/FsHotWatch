@@ -16,6 +16,14 @@
   one plugin's unrelated work, then ran in lockstep with each plugin's per-file cache replay.
   `LiveResults.Bound.HoldFor` takes the result and holds a place only for a live one.
 
+- fix: an options evaluation that its own design-time build changed is evaluated once more and
+  filed (AUTOMATION-1438, ADR-059 §18). The first evaluation in a checkout that was never built
+  writes each project's generated compile items under `obj/` and creates `bin/`, while it is being
+  evaluated, so the filer refused it and the next start evaluated again (10 s on a 25-project
+  repository). When every input that moved is in a requested project's own directory, the loader
+  evaluates once more; that design-time build writes nothing, and its result is filed. A second
+  move, or one outside the projects, still files nothing.
+
 ## 0.10.0-alpha.100 - 2026-10-31
 
 - fix: a file compiled into several projects of one tier is checked under the same project in
