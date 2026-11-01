@@ -1781,6 +1781,29 @@ let pollAndRenderForInvocation
     // record there would make it indistinguishable from a confirm that never escalated.
     let impactScoped: Verdict.ImpactScopedRun option ref = ref None
 
+    // The verdict an abort below publishes, from the last state read. The daemon is gone,
+    // wedged or out of memory, so it is not asked for a projection: an escalation's
+    // EXECUTED reading is already in hand and is exactly the "the escalated run never
+    // completed" sample, and without one there is nothing to offer, and the verdict says so.
+    // `unreadableReach` says why recall could not be read.
+    let publishAbort (unreadableReach: string) (outcome: CheckVerdict.CheckOutcome) : int =
+        publishVerdictForInvocation
+            invocation
+            repoRoot
+            excludePatterns
+            checkMode
+            noWarnFail
+            finalRun.Value
+            (match impactScoped.Value with
+             | Some reading -> Verdict.ExecutedReading(reading, IpcParsing.ReachUnavailable unreadableReach)
+             | None -> Verdict.NoReading)
+            finalStatuses.Value
+            finalEvidence.Value
+            finalCauses.Value
+            finalModel.Value
+            settledTree.Value
+            outcome
+
     try
         withProgress "Scanning" "Scanning..." (fun () -> waitForScan () |> ignore)
 
@@ -1966,28 +1989,8 @@ let pollAndRenderForInvocation
         let reason = ex.Message
 
         let abortExitCode =
-            publishVerdictForInvocation
-                invocation
-                repoRoot
-                excludePatterns
-                checkMode
-                noWarnFail
-                finalRun.Value
-                // Same reasoning as the two aborts below: an escalation's EXECUTED
-                // reading is already in hand; asking the daemon for a fresh projection
-                // on a path that just failed for want of memory is the last thing to do.
-                (match impactScoped.Value with
-                 | Some reading ->
-                     Verdict.ExecutedReading(
-                         reading,
-                         IpcParsing.ReachUnavailable "the check ran out of memory before recall could be read"
-                     )
-                 | None -> Verdict.NoReading)
-                finalStatuses.Value
-                finalEvidence.Value
-                finalCauses.Value
-                finalModel.Value
-                settledTree.Value
+            publishAbort
+                "the check ran out of memory before recall could be read"
                 (CheckVerdict.CheckOutcome.ResultUnreceived reason)
 
         UI.fail (Verdict.CheckProse.resultUnreceived reason)
@@ -1999,29 +2002,8 @@ let pollAndRenderForInvocation
         // the recovery path.
         // Return the code the verdict FILE records, not a literal.
         let abortExitCode =
-            publishVerdictForInvocation
-                invocation
-                repoRoot
-                excludePatterns
-                checkMode
-                noWarnFail
-                finalRun.Value
-                // The daemon is gone or wedged — asking it for a projection would hang or
-                // throw. An escalation's EXECUTED reading is already in hand and is
-                // exactly the "the escalated run never completed" sample; without one
-                // there is nothing to offer, and the verdict says so.
-                (match impactScoped.Value with
-                 | Some reading ->
-                     Verdict.ExecutedReading(
-                         reading,
-                         IpcParsing.ReachUnavailable "the escalated confirm aborted before recall could be read"
-                     )
-                 | None -> Verdict.NoReading)
-                finalStatuses.Value
-                finalEvidence.Value
-                finalCauses.Value
-                finalModel.Value
-                settledTree.Value
+            publishAbort
+                "the escalated confirm aborted before recall could be read"
                 (CheckVerdict.CheckOutcome.Incomplete -1)
 
         UI.fail
@@ -2031,29 +2013,8 @@ let pollAndRenderForInvocation
     | ex when isDaemonShutdownDuringWait ex ->
         // Return the code the verdict FILE records, not a literal.
         let abortExitCode =
-            publishVerdictForInvocation
-                invocation
-                repoRoot
-                excludePatterns
-                checkMode
-                noWarnFail
-                finalRun.Value
-                // The daemon is gone or wedged — asking it for a projection would hang or
-                // throw. An escalation's EXECUTED reading is already in hand and is
-                // exactly the "the escalated run never completed" sample; without one
-                // there is nothing to offer, and the verdict says so.
-                (match impactScoped.Value with
-                 | Some reading ->
-                     Verdict.ExecutedReading(
-                         reading,
-                         IpcParsing.ReachUnavailable "the escalated confirm aborted before recall could be read"
-                     )
-                 | None -> Verdict.NoReading)
-                finalStatuses.Value
-                finalEvidence.Value
-                finalCauses.Value
-                finalModel.Value
-                settledTree.Value
+            publishAbort
+                "the escalated confirm aborted before recall could be read"
                 (CheckVerdict.CheckOutcome.Incomplete -1)
 
         // A daemon squeezed out by machine memory pressure dies exactly here, and
