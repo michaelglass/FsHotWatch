@@ -179,21 +179,29 @@ type FormatPreprocessor(?timeoutSec: int, ?runner: Runner, ?store: OutcomeStore.
 
                 // Keyed BEFORE the run, so a key only ever names bytes the tool was given.
                 // A restart reads one record per file, so the look-ups run in parallel.
+                // A file is settled only under a key, so a hit always has one; a pending file may
+                // have none (it could not be read), and is then never filed.
                 let keyed =
                     files
                     |> Array.ofList
                     |> Array.Parallel.map (fun file ->
-                        let key = keyOf file
-                        file, key, (key |> Option.exists (isSettled file)))
+                        match keyOf file with
+                        | Some key when isSettled file key -> Choice1Of2 file
+                        | key -> Choice2Of2(file, key))
                     |> List.ofArray
 
-                for (file, _, _) in keyed |> List.filter (fun (_, _, hit) -> hit) do
+                for file in
+                    keyed
+                    |> List.choose (function
+                        | Choice1Of2 file -> Some file
+                        | _ -> None) do
                     failing.TryRemove file |> ignore
 
                 let pending =
                     keyed
-                    |> List.filter (fun (_, _, hit) -> not hit)
-                    |> List.map (fun (file, key, _) -> file, key)
+                    |> List.choose (function
+                        | Choice2Of2 pending -> Some pending
+                        | _ -> None)
 
                 let toRun = pending |> List.map fst
 
