@@ -17,6 +17,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.RuntimeCoverageSelection
 open FsHotWatch.TestPrune.PluginTypes
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.Tests.TestPrunePluginTestSupport
