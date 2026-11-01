@@ -775,3 +775,34 @@ A project that was red in the watermark run, and later passed only in impact run
 therefore missing in the lookup while today is green. If it appears, it needs its own ticket.
 The `fshw verdict` read also keeps no K_P keys (`OutcomeKeys` comes from the daemon, and a
 read has none), so a check that a K_P record alone made green can read as missing.
+
+## 20. Amendment (AUTOMATION-1437): a replay goes at the store's pace, not the plugins'
+
+With 0 FCS checks, a clean intelligence restart still spent about 14.5 s replaying 2,674
+records. Two waits caused it, and neither was the store.
+
+- **The live-results bound held replays.** Each replay took a place under ADR-054's bound, and
+  a place is given back only once every subscribing plugin has committed the result. When
+  test-prune spent 6 s refreshing its extensions after the build, the places filled and the
+  replay crawled at about 13 files/s. The bound exists for results that carry FCS objects. A
+  replayed result carries none, so it now takes no place (`LiveResults.Bound.HoldFor`). Every
+  result is still dispatched to every plugin before `BatchChecked`, and the gate waits on what
+  it waited on.
+- **Each plugin's cache replay re-read the disk per file.** About 1.6 of 2.2 ms of an analyzers
+  replay was hashing every analyzer DLL, once per file, in series on the plugin's loop. A key may
+  now share such work across a **dispatch batch** (`PluginFramework.DispatchBatch`): the event
+  the loop takes plus every message already waiting, all admitted before the batch began. A key
+  that reused the work says so. A hit under it replays a result true of the inputs it names. A
+  miss is keyed again outside the batch before the handler runs, so a result is only stored
+  under a key that read the disk for its own event. §18's rule holds: neither change decides
+  anything.
+
+**Measured on this repository** (645 files, warm restarts, debug logs): with the analyzers
+alone, the scan's replay fell from 1.33 s to 0.59 s and the analyzers drained in 0.6 s. With
+test-prune also running one test project, the scan replayed in 1.5–1.7 s and every plugin had
+folded every replay within 0.1 s of the last one.
+
+**Not done here.** Test-prune folds its `BuildCompleted` before the replays queued behind it, so
+on intelligence its own replays still begin after its 6 s extension refresh, though the scan no
+longer waits for them. Moving that refresh off the fold, and test-prune's per-file replay cost
+(about 1.8 ms here), are follow-ups.
