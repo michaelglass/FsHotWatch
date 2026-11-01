@@ -717,7 +717,7 @@ let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSi
             let sources = db.QueryEdgeSourcesForTest(changedSymbolNames)
 
             let sourceTag =
-                if sources.IsEmpty || sources = [ "core" ] then
+                if sources.IsEmpty || sources = [ CoreSource ] then
                     ""
                 else
                     let s = sources |> List.sort |> String.concat ", "

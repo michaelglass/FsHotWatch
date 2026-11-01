@@ -92,6 +92,17 @@ type Dependency =
       Kind: DependencyKind
       Source: string }
 
+/// `Dependency.Source` of the edges the analyser itself emits (extensions stamp their own).
+[<Literal>]
+let CoreSource = "core"
+
+/// An edge the analyser emits: `fromSymbol` depends on `toSymbol`.
+let internal coreEdge (kind: DependencyKind) (fromSymbol: string) (toSymbol: string) : Dependency =
+    { FromSymbol = fromSymbol
+      ToSymbol = toSymbol
+      Kind = kind
+      Source = CoreSource }
+
 /// Describes a test method's fully-qualified name, project, class, and method name.
 type TestMethodInfo =
     { SymbolFullName: string
@@ -809,11 +820,6 @@ let private createGenericEdgeResolver (budget: SymbolTraversalBudget) enableMemo
 
 [<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
 module internal TestHelpers =
-    let testClassifySymbol = classifySymbol
-    let testTryClassifyEntity = tryClassifyEntity
-    let testTryClassifyMemberOrFunction = tryClassifyMemberOrFunction
-    let testTryClassifyUnionCase = tryClassifyUnionCase
-    let testTryClassifyActivePatternCase = tryClassifyActivePatternCase
     let testTryName = tryName
     let testBoundedDepthFirst = boundedDepthFirst
 
@@ -1982,10 +1988,7 @@ let private extractResults
                                 | Some recName ->
                                     match findEnclosing u.Range with
                                     | Some enclosingSi when enclosingSi.FullName <> recName ->
-                                        [ { FromSymbol = enclosingSi.FullName
-                                            ToSymbol = recName
-                                            Kind = UsesType
-                                            Source = "core" } ]
+                                        [ coreEdge UsesType enclosingSi.FullName recName ]
                                     | _ -> []
                                 | None -> []
                             | _ -> []
@@ -2004,46 +2007,23 @@ let private extractResults
                                     fieldRecordEdge
                                 else
                                     let primary =
-                                        { FromSymbol = enclosingSi.FullName
-                                          ToSymbol = usedFullName
-                                          Kind = classifyDependency u.Symbol
-                                          Source = "core" }
+                                        coreEdge (classifyDependency u.Symbol) enclosingSi.FullName usedFullName
+
+                                    // A type edge to anything but the two ends of the primary edge.
+                                    let usesTypeOtherThanEnds (typeName: string) =
+                                        if typeName = enclosingSi.FullName || typeName = usedFullName then
+                                            None
+                                        else
+                                            Some(coreEdge UsesType enclosingSi.FullName typeName)
 
                                     let parentEdge =
-                                        tryGetUnionParentType u.Symbol
-                                        |> Option.bind (fun parentName ->
-                                            if parentName = enclosingSi.FullName || parentName = usedFullName then
-                                                None
-                                            else
-                                                Some
-                                                    { FromSymbol = enclosingSi.FullName
-                                                      ToSymbol = parentName
-                                                      Kind = UsesType
-                                                      Source = "core" })
+                                        tryGetUnionParentType u.Symbol |> Option.bind usesTypeOtherThanEnds
 
                                     let genericArgEdges =
-                                        genericEdgesForSymbol u.Symbol
-                                        |> List.choose (fun argName ->
-                                            if argName = enclosingSi.FullName || argName = usedFullName then
-                                                None
-                                            else
-                                                Some
-                                                    { FromSymbol = enclosingSi.FullName
-                                                      ToSymbol = argName
-                                                      Kind = UsesType
-                                                      Source = "core" })
+                                        genericEdgesForSymbol u.Symbol |> List.choose usesTypeOtherThanEnds
 
                                     let recordTypeEdge =
-                                        tryGetRecordTypeFromField u.Symbol
-                                        |> Option.bind (fun recName ->
-                                            if recName = enclosingSi.FullName || recName = usedFullName then
-                                                None
-                                            else
-                                                Some
-                                                    { FromSymbol = enclosingSi.FullName
-                                                      ToSymbol = recName
-                                                      Kind = UsesType
-                                                      Source = "core" })
+                                        tryGetRecordTypeFromField u.Symbol |> Option.bind usesTypeOtherThanEnds
 
                                     primary :: (parentEdge |> Option.toList)
                                     @ genericArgEdges
@@ -2317,20 +2297,13 @@ let private extractResults
                                     for fixtureFullName in collectFixtureTypes entity do
                                         if fixtureFullName <> memberName mfv then
                                             fixtureEdges <-
-                                                { FromSymbol = memberName mfv
-                                                  ToSymbol = fixtureFullName
-                                                  Kind = UsesType
-                                                  Source = "core" }
-                                                :: fixtureEdges
+                                                coreEdge UsesType (memberName mfv) fixtureFullName :: fixtureEdges
 
                                     match collectionMemberships |> Map.tryFind (entityName entity) with
                                     | Some names ->
                                         for name in names do
                                             fixtureEdges <-
-                                                { FromSymbol = memberName mfv
-                                                  ToSymbol = SyntheticCollectionPrefix + name
-                                                  Kind = UsesType
-                                                  Source = "core" }
+                                                coreEdge UsesType (memberName mfv) (SyntheticCollectionPrefix + name)
                                                 :: fixtureEdges
                                     | None -> ()
                                 | _ -> ()
@@ -2382,12 +2355,7 @@ let private extractResults
                           IsExtern = false }
                         :: syms
 
-                    edges <-
-                        { FromSymbol = synthFullName
-                          ToSymbol = fixtureFullName
-                          Kind = UsesType
-                          Source = "core" }
-                        :: edges
+                    edges <- coreEdge UsesType synthFullName fixtureFullName :: edges
 
                 syms, edges
 
@@ -2420,15 +2388,9 @@ let private extractResults
 
                         let edge =
                             if testSymbolNames.Contains enclosing.FullName then
-                                { FromSymbol = enclosing.FullName
-                                  ToSymbol = nodeName
-                                  Kind = SharedLiteral
-                                  Source = "core" }
+                                coreEdge SharedLiteral enclosing.FullName nodeName
                             else
-                                { FromSymbol = nodeName
-                                  ToSymbol = enclosing.FullName
-                                  Kind = SharedLiteral
-                                  Source = "core" }
+                                coreEdge SharedLiteral nodeName enclosing.FullName
 
                         edges <- edge :: edges
                     | _ -> ()

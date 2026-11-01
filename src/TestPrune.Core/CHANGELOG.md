@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- refactor: the analyser builds its own edges through one `coreEdge` constructor stamped
+  with the new `AstAnalyzer.CoreSource` literal (the `"core"` source the status display
+  compared against), and the three "type edge unless it is an end of the primary edge"
+  blocks share one helper. Five unused internal test aliases are gone. No edge change.
 - refactor: `AstAnalyzer.fs` is split along two seams that never touched its model:
   `ScriptOptions` (project snapshots and standalone-script options) and the internal
   `SharedLiterals` (which literals join a test to a producer, and the parse-tree walk that
