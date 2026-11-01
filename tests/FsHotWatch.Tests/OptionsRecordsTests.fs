@@ -533,33 +533,68 @@ let ``an evaluation whose own design-time build wrote its inputs is filed from a
 [<WallClock("timestamp granularity: the sleep lets the racy window pass the tree the test just wrote, so only the design-time build's writes fall inside it; the assertion is on evaluation counts, never on a duration")>]
 [<Fact(Timeout = 120000)>]
 let ``the second evaluation starts after the racy window has passed the first one's writes`` () =
-    withTree (fun t ->
-        File.Delete(t.Path("src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
-        // The tree was written just now: let the window pass it, so only the design-time
-        // build's writes fall inside it.
-        Threading.Thread.Sleep(TimeSpan.FromMilliseconds 600.0)
+    for _ in 1..6 do
+        withTree (fun t ->
+            File.Delete(t.Path("src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
+            // The tree was written just now: let the window pass it, so only the design-time
+            // build's writes fall inside it.
+            Threading.Thread.Sleep(TimeSpan.FromMilliseconds 600.0)
 
-        let inner =
-            CountingLoader((fun () -> [ sampleOptions t.Project t.Assets ]), firstDesignTimeBuild t, None)
+            let logs = Collections.Concurrent.ConcurrentQueue<string>()
 
-        let loader =
-            CachingLoader(
-                inner,
-                OptionsInputs.list,
-                t.Store,
-                (fun _ -> request t),
-                (fun () -> sameEnvironment),
-                ignore,
-                racyWindow = TimeSpan.FromMilliseconds 500.0,
-                stamp = inTree t
-            )
-            :> IWorkspaceLoader
+            let inner =
+                CountingLoader(
+                    (fun () ->
+                        logs.Enqueue("load at " + DateTime.UtcNow.ToString "o")
+                        [ sampleOptions t.Project t.Assets ]),
+                    firstDesignTimeBuild t,
+                    None
+                )
 
-        loader.LoadProjects [ t.Project ] |> Seq.toList |> ignore
-        test <@ inner.Loads = 2 @>
-        let counted, restarted = daemonLoader t (request t) sameEnvironment ignore None
-        restarted.LoadProjects [ t.Project ] |> Seq.toList |> ignore
-        test <@ counted.Loads = 0 @>)
+            let loader =
+                CachingLoader(
+                    inner,
+                    OptionsInputs.list,
+                    t.Store,
+                    (fun _ -> request t),
+                    (fun () -> sameEnvironment),
+                    (fun m -> logs.Enqueue(DateTime.UtcNow.ToString "o" + " " + m)),
+                    racyWindow = TimeSpan.FromMilliseconds 500.0,
+                    stamp =
+                        (fun p ->
+                            let s = inTree t p in
+
+                            (match s with
+                             | ValueSome st -> logs.Enqueue(("stamp " + p + " " + st.ChangedAt.ToString "o"))
+                             | ValueNone -> ())
+
+                            s)
+                )
+                :> IWorkspaceLoader
+
+            loader.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+            test <@ inner.Loads = 2 @>
+
+            let counted =
+                CountingLoader((fun () -> [ sampleOptions t.Project t.Assets ]), ignore, None)
+
+            let restarted =
+                CachingLoader(
+                    counted,
+                    OptionsInputs.list,
+                    t.Store,
+                    (fun _ -> request t),
+                    (fun () -> sameEnvironment),
+                    logs.Enqueue,
+                    racyWindow = TimeSpan.Zero,
+                    stamp = inTree t
+                )
+                :> IWorkspaceLoader
+
+            restarted.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+
+            if counted.Loads <> 0 then
+                failwith ("DIAG\n" + String.concat "\n" logs))
 
 // The first design-time build can write a path only the SECOND evaluation's inputs name,
 // and waiting for the window to pass the latest change among the first evaluation's inputs
