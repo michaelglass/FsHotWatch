@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- perf: `ImpactAnalysis.selectTests` reads runtime coverage once per changed file, not once
+  per (project, file) pair, and reads the attribute index only when it will use it.
+  `DependsOnFile`/`DependsOnGlob` attributes are parsed straight into their matcher. No
+  selection or API change.
 - chore: FSharpLint findings fixed now that this package is linted again (AUTOMATION-1409). No
   behaviour or API change.
 - fix: a named-dispatch edge starts at the test member that dispatches, also when the

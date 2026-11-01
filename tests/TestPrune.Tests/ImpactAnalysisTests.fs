@@ -156,6 +156,44 @@ module ``Runtime-only coupling`` =
                     @>
             | RunAll reason -> failwith $"Expected runtime-covered subset, got %s{SelectionReason.describe reason}")
 
+    [<Fact>]
+    let ``runtime coverage is read once per changed file, not once per project and file`` () =
+        let coverage =
+            Map.ofList [ "src/A.fs", [ "P1"; "P2" ]; "src/B.fs", [ "P2"; "P3" ]; "src/C.fs", [ "P3" ] ]
+
+        let calls = ref 0
+
+        let projectsOf (files: string list) =
+            calls.Value <- calls.Value + 1
+
+            files
+            |> List.collect (fun f -> coverage |> Map.tryFind f |> Option.defaultValue [])
+            |> List.distinct
+
+        let store =
+            { fromAnalysisResults [] with
+                GetRuntimeCoverageProjects = projectsOf }
+
+        let changed = [ "src/A.fs"; "src/B.fs"; "src/C.fs" ]
+        let _, events = selectTests store changed Map.empty
+
+        let runtimeEvents =
+            events
+            |> List.choose (function
+                | ProjectSelectedByRuntimeCoverageEvent(p, f) -> Some(p, f)
+                | _ -> None)
+
+        test
+            <@
+                runtimeEvents = [ "P1", "src/A.fs"
+                                  "P2", "src/A.fs"
+                                  "P2", "src/B.fs"
+                                  "P3", "src/B.fs"
+                                  "P3", "src/C.fs" ]
+            @>
+
+        test <@ calls.Value = 1 + changed.Length @>
+
 module ``Multiple changed symbols`` =
 
     [<Fact>]
