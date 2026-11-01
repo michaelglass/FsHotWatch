@@ -8,6 +8,7 @@ open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.OutstandingFailures
 open FsHotWatch.TestPrune.SelectionAssembly
 open FsHotWatch.TestPrune.RunLaunch
 open FsHotWatch.TestPrune.PluginTypes
