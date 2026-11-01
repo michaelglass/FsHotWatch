@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **BREAKING (API):** a parsed command carries exactly the options it reads.
+  `Command.Index of parallelism` replaces `ParsedCommand.Parallelism` (which every other
+  command carried and ignored), and `DeadCodeCmd of DeadCodeOptions` replaces the
+  positional `string list * bool * bool`; an empty `--entry` list is resolved to
+  `defaultEntryPatterns` while parsing. The command line itself is unchanged.
 - fix: a command that throws still has its queued audit events flushed before the exception
   surfaces (AUTOMATION-1095). `runWithAuditSink` flushed only after the command returned, so
   `index`, `run`, `status` and `dead-code` lost the last queued events exactly on the failure

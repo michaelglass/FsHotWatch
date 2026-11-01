@@ -8,25 +8,39 @@ open TestPrune.Database
 open TestPrune.Orchestration
 open TestPrune.ProjectLoader
 
+/// `dead-code`'s options. `EntryPatterns` is never empty: no `--entry` means
+/// `defaultEntryPatterns`, resolved when the arguments are parsed.
+type DeadCodeOptions =
+    { EntryPatterns: string list
+      IncludeTests: bool
+      Verbose: bool }
+
+/// A command with exactly the options it reads. Only `index` analyses projects in
+/// parallel, so only `Index` carries a parallelism.
 type Command =
-    | Index
+    | Index of parallelism: int
     | Run
     | Status
-    | DeadCodeCmd of entryPatterns: string list * includeTests: bool * verbose: bool
+    | DeadCodeCmd of DeadCodeOptions
     | Help
 
-let rec private parseDeadCodeFlags (args: string list) (acc: string list) (includeTests: bool) (verbose: bool) =
+let rec private parseDeadCodeFlags (args: string list) (acc: string list) (options: DeadCodeOptions) =
     match args with
-    | "--entry" :: pattern :: rest -> parseDeadCodeFlags rest (pattern :: acc) includeTests verbose
-    | "--include-tests" :: rest -> parseDeadCodeFlags rest acc true verbose
-    | "--verbose" :: rest -> parseDeadCodeFlags rest acc includeTests true
-    | [] -> Ok(acc |> List.rev, includeTests, verbose)
+    | "--entry" :: pattern :: rest -> parseDeadCodeFlags rest (pattern :: acc) options
+    | "--include-tests" :: rest -> parseDeadCodeFlags rest acc { options with IncludeTests = true }
+    | "--verbose" :: rest -> parseDeadCodeFlags rest acc { options with Verbose = true }
+    | [] ->
+        match List.rev acc with
+        | [] -> Ok options
+        | patterns ->
+            Ok
+                { options with
+                    EntryPatterns = patterns }
     | unknown :: _ -> Error $"Unknown flag: %s{unknown}"
 
 type ParsedCommand =
     { Command: Command
-      RepoRoot: string option
-      Parallelism: int }
+      RepoRoot: string option }
 
 let rec private parseGlobalFlags
     (args: string list)
@@ -48,24 +62,23 @@ let parseArgs (args: string array) : Result<ParsedCommand, string> =
         let cmdResult =
             match commandArgs with
             | [] -> Ok Help
-            | [ "index" ] -> Ok Index
+            | [ "index" ] -> Ok(Index parallelism)
             | [ "run" ] -> Ok Run
             | [ "status" ] -> Ok Status
             | "dead-code" :: rest ->
-                match parseDeadCodeFlags rest [] false false with
-                | Ok([], includeTests, verbose) -> Ok(DeadCodeCmd(defaultEntryPatterns, includeTests, verbose))
-                | Ok(patterns, includeTests, verbose) -> Ok(DeadCodeCmd(patterns, includeTests, verbose))
-                | Error msg -> Error msg
+                parseDeadCodeFlags
+                    rest
+                    []
+                    { EntryPatterns = defaultEntryPatterns
+                      IncludeTests = false
+                      Verbose = false }
+                |> Result.map DeadCodeCmd
             | [ "help" ]
             | [ "--help" ]
             | [ "-h" ] -> Ok Help
             | unknown :: _ -> Error $"Unknown command: %s{unknown}"
 
-        cmdResult
-        |> Result.map (fun cmd ->
-            { Command = cmd
-              RepoRoot = repoRoot
-              Parallelism = parallelism })
+        cmdResult |> Result.map (fun cmd -> { Command = cmd; RepoRoot = repoRoot })
 
 let showHelp () =
     printfn "TestPrune - Test impact analysis tool"
@@ -270,11 +283,12 @@ let runCommandFrom (startDir: string) (parsed: ParsedCommand) : int =
     | Help ->
         showHelp ()
         0
-    | Index -> withRepoRoot (fun root -> runIndex root parsed.Parallelism)
+    | Index parallelism -> withRepoRoot (fun root -> runIndex root parallelism)
     | Run -> withRepoRoot runRun
     | Status -> withRepoRoot runStatus
-    | DeadCodeCmd(patterns, includeTests, verbose) ->
-        withRepoRoot (fun root -> withRepoAuditSink root (runDeadCode root patterns includeTests verbose))
+    | DeadCodeCmd options ->
+        withRepoRoot (fun root ->
+            withRepoAuditSink root (runDeadCode root options.EntryPatterns options.IncludeTests options.Verbose))
 
 /// Run a parsed command from the current working directory.
 let runCommand (parsed: ParsedCommand) : int =

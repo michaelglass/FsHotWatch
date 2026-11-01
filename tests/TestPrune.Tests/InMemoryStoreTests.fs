@@ -129,6 +129,18 @@ module ``InMemoryStore basics`` =
         test <@ store.GetProjectKey "nonexistent" = None @>
 
     [<Fact>]
+    let ``an in-memory index is complete and never changes generation`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        test <@ store.GetIndexState() = store.GetIndexState() @>
+
+        test
+            <@
+                match store.GetIndexState() with
+                | TestPrune.Domain.IndexState.Complete _ -> true
+                | TestPrune.Domain.IndexState.Incomplete -> false
+            @>
+
+    [<Fact>]
     let ``GetReachableSymbols with empty list returns empty`` () =
         let store = fromAnalysisResults [ standardGraph ]
         test <@ store.GetReachableSymbols [] |> Set.isEmpty @>

@@ -2,7 +2,6 @@ module TestPrune.AstAnalyzer
 
 open System
 open System.IO
-open System.Threading.Tasks
 open System.Diagnostics
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.CodeAnalysis.ProjectSnapshot
@@ -13,11 +12,7 @@ open FSharp.Compiler.Text
 
 #nowarn "57" // Experimental snapshot API
 
-open System.Threading
-
-/// Serializes concurrent GetProjectOptionsFromScript calls.
-/// FCS has internal state corruption when script options are loaded concurrently.
-let private scriptSemaphore = new SemaphoreSlim(1, 1)
+open TestPrune.SharedLiterals
 
 /// Discriminated union for kinds of F# symbols (function, type, DU case, etc.).
 type SymbolKind =
@@ -63,15 +58,9 @@ let InlineAttributeName = "TestPrune.Inline"
 let SyntheticCollectionPrefix = "TestPrune.__Collection__."
 
 /// Prefix for the synthetic join node used when a test and a production symbol contain
-/// the same prose-shaped string literal. The literal itself is never persisted.
+/// the same prose-shaped string literal (see `SharedLiterals`).
 [<Literal>]
-let internal SyntheticLiteralPrefix = "TestPrune.__Literal__."
-
-[<Literal>]
-let private MinSharedLiteralLength = 24
-
-[<Literal>]
-let private MinSharedLiteralWords = 4
+let internal SyntheticLiteralPrefix = SharedLiterals.SyntheticLiteralPrefix
 
 // xUnit marker names matched by DisplayName (which strips the namespace).
 [<Literal>]
@@ -102,6 +91,17 @@ type Dependency =
       ToSymbol: string
       Kind: DependencyKind
       Source: string }
+
+/// `Dependency.Source` of the edges the analyser itself emits (extensions stamp their own).
+[<Literal>]
+let CoreSource = "core"
+
+/// An edge the analyser emits: `fromSymbol` depends on `toSymbol`.
+let internal coreEdge (kind: DependencyKind) (fromSymbol: string) (toSymbol: string) : Dependency =
+    { FromSymbol = fromSymbol
+      ToSymbol = toSymbol
+      Kind = kind
+      Source = CoreSource }
 
 /// Describes a test method's fully-qualified name, project, class, and method name.
 type TestMethodInfo =
@@ -820,11 +820,6 @@ let private createGenericEdgeResolver (budget: SymbolTraversalBudget) enableMemo
 
 [<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
 module internal TestHelpers =
-    let testClassifySymbol = classifySymbol
-    let testTryClassifyEntity = tryClassifyEntity
-    let testTryClassifyMemberOrFunction = tryClassifyMemberOrFunction
-    let testTryClassifyUnionCase = tryClassifyUnionCase
-    let testTryClassifyActivePatternCase = tryClassifyActivePatternCase
     let testTryName = tryName
     let testBoundedDepthFirst = boundedDepthFirst
 
@@ -1638,292 +1633,6 @@ let private hashTypeHeader (index: SourceIndex) (shape: TypeDefnShape) (punched:
     text.Append(index.Slice(cursor, finish)) |> ignore
     hashText (text.ToString())
 
-let private isSharedLiteral (text: string) =
-    text.Length >= MinSharedLiteralLength
-    && text.Split([| ' '; '\t'; '\r'; '\n' |], StringSplitOptions.RemoveEmptyEntries).Length
-       >= MinSharedLiteralWords
-
-let private sharedLiteralNodeName (text: string) =
-    let bytes =
-        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text))
-
-    SyntheticLiteralPrefix + System.Convert.ToHexStringLower(bytes)
-
-/// Collect decoded ordinary string constants from the parsed tree.
-///
-/// This deliberately reads `SynConst.String`: FCS has already decoded escapes and all
-/// supported ordinary/verbatim/triple-quoted spellings to their runtime value, so two
-/// source spellings of the same message share one node. Interpolated strings are a
-/// different AST case and are skipped as a whole; their static fragments are not values
-/// that a test can assert independently of the fills.
-let internal collectSharedLiterals (tree: ParsedInput) : (string * range) list =
-    let found = ResizeArray<string * range>()
-
-    let add text expressionRange =
-        if isSharedLiteral text then
-            found.Add(text, expressionRange)
-
-    // FCS's full-tree fold intentionally treats attribute applications as leaves and
-    // skips exception declarations. Supplement those exact branches with a typed
-    // expression walk rather than falling back to object reflection.
-    let rec walkSupplementaryExpression expression =
-        match expression with
-        | SynExpr.Const(SynConst.String(text = text), expressionRange) -> add text expressionRange
-        | SynExpr.Const _
-        | SynExpr.Typar _
-        | SynExpr.Ident _
-        | SynExpr.LongIdent _
-        | SynExpr.Null _
-        | SynExpr.ImplicitZero _
-        | SynExpr.ArbitraryAfterError _ -> ()
-        | SynExpr.InterpolatedString _ -> ()
-        | SynExpr.Quote(operator = operator; quotedExpr = quotedExpression) ->
-            walkSupplementaryExpression operator
-            walkSupplementaryExpression quotedExpression
-        | SynExpr.Paren(expr = nested)
-        | SynExpr.Typed(expr = nested)
-        | SynExpr.TypeApp(expr = nested)
-        | SynExpr.ArrayOrListComputed(expr = nested)
-        | SynExpr.ComputationExpr(expr = nested)
-        | SynExpr.LongIdentSet(expr = nested)
-        | SynExpr.Do(expr = nested)
-        | SynExpr.DoBang(expr = nested)
-        | SynExpr.Assert(expr = nested)
-        | SynExpr.Fixed(expr = nested)
-        | SynExpr.DebugPoint(innerExpr = nested)
-        | SynExpr.AddressOf(expr = nested)
-        | SynExpr.TraitCall(argExpr = nested)
-        | SynExpr.Lazy(expr = nested)
-        | SynExpr.InferredUpcast(expr = nested)
-        | SynExpr.InferredDowncast(expr = nested)
-        | SynExpr.YieldOrReturn(expr = nested)
-        | SynExpr.YieldOrReturnFrom(expr = nested)
-        | SynExpr.FromParseError(expr = nested)
-        | SynExpr.DiscardAfterMissingQualificationAfterDot(expr = nested)
-        | SynExpr.IndexFromEnd(expr = nested)
-        | SynExpr.DotGet(expr = nested)
-        | SynExpr.DotLambda(expr = nested)
-        | SynExpr.New(expr = nested)
-        | SynExpr.TypeTest(expr = nested)
-        | SynExpr.Upcast(expr = nested)
-        | SynExpr.Downcast(expr = nested)
-        | SynExpr.LibraryOnlyUnionCaseFieldGet(expr = nested) -> walkSupplementaryExpression nested
-        | SynExpr.Tuple(exprs = expressions)
-        | SynExpr.ArrayOrList(exprs = expressions) -> List.iter walkSupplementaryExpression expressions
-        | SynExpr.App(funcExpr = functionExpression; argExpr = argumentExpression)
-        | SynExpr.Sequential(expr1 = functionExpression; expr2 = argumentExpression)
-        | SynExpr.Set(targetExpr = functionExpression; rhsExpr = argumentExpression)
-        | SynExpr.DotSet(targetExpr = functionExpression; rhsExpr = argumentExpression)
-        | SynExpr.TryFinally(tryExpr = functionExpression; finallyExpr = argumentExpression)
-        | SynExpr.While(whileExpr = functionExpression; doExpr = argumentExpression)
-        | SynExpr.WhileBang(whileExpr = functionExpression; doExpr = argumentExpression)
-        | SynExpr.DotIndexedGet(objectExpr = functionExpression; indexArgs = argumentExpression)
-        | SynExpr.JoinIn(lhsExpr = functionExpression; rhsExpr = argumentExpression)
-        | SynExpr.NamedIndexedPropertySet(expr1 = functionExpression; expr2 = argumentExpression) ->
-            walkSupplementaryExpression functionExpression
-            walkSupplementaryExpression argumentExpression
-        | SynExpr.Dynamic(funcExpr = functionExpression; argExpr = argumentExpression)
-        | SynExpr.LibraryOnlyStaticOptimization(expr = functionExpression; optimizedExpr = argumentExpression)
-        | SynExpr.LibraryOnlyUnionCaseFieldSet(expr = functionExpression; rhsExpr = argumentExpression) ->
-            walkSupplementaryExpression functionExpression
-            walkSupplementaryExpression argumentExpression
-        | SynExpr.SequentialOrImplicitYield(expr1 = first; expr2 = second; ifNotStmt = third) ->
-            walkSupplementaryExpression first
-            walkSupplementaryExpression second
-            walkSupplementaryExpression third
-        | SynExpr.For(identBody = first; toBody = second; doBody = third)
-        | SynExpr.DotIndexedSet(objectExpr = first; indexArgs = second; valueExpr = third)
-        | SynExpr.DotNamedIndexedPropertySet(targetExpr = first; argExpr = second; rhsExpr = third) ->
-            walkSupplementaryExpression first
-            walkSupplementaryExpression second
-            walkSupplementaryExpression third
-        | SynExpr.IfThenElse(ifExpr = condition; thenExpr = ifTrue; elseExpr = ifFalse) ->
-            walkSupplementaryExpression condition
-            walkSupplementaryExpression ifTrue
-            Option.iter walkSupplementaryExpression ifFalse
-        | SynExpr.IndexRange(expr1 = first; expr2 = second) ->
-            Option.iter walkSupplementaryExpression first
-            Option.iter walkSupplementaryExpression second
-        | SynExpr.Lambda(body = body) -> walkSupplementaryExpression body
-        | SynExpr.LetOrUse(letOrUse) ->
-            List.iter walkSupplementaryBinding letOrUse.Bindings
-            walkSupplementaryExpression letOrUse.Body
-        | SynExpr.Match(expr = input; clauses = clauses)
-        | SynExpr.MatchBang(expr = input; clauses = clauses)
-        | SynExpr.TryWith(tryExpr = input; withCases = clauses) ->
-            walkSupplementaryExpression input
-            List.iter walkSupplementaryClause clauses
-        | SynExpr.MatchLambda(matchClauses = clauses) -> List.iter walkSupplementaryClause clauses
-        | SynExpr.ForEach(enumExpr = input; bodyExpr = body) ->
-            walkSupplementaryExpression input
-            walkSupplementaryExpression body
-        | SynExpr.AnonRecd(copyInfo = copyInfo; recordFields = fields) ->
-            copyInfo |> Option.iter (fst >> walkSupplementaryExpression)
-
-            for _, _, fieldExpression in fields do
-                walkSupplementaryExpression fieldExpression
-        | SynExpr.Record(baseInfo = baseInfo; copyInfo = copyInfo; recordFields = fields) ->
-            baseInfo
-            |> Option.iter (fun (_, expression, _, _, _) -> walkSupplementaryExpression expression)
-
-            copyInfo |> Option.iter (fst >> walkSupplementaryExpression)
-
-            for SynExprRecordField(expr = fieldExpression) in fields do
-                Option.iter walkSupplementaryExpression fieldExpression
-        | SynExpr.ObjExpr(argOptions = baseCall; bindings = bindings; members = members; extraImpls = interfaces) ->
-            baseCall |> Option.iter (fst >> walkSupplementaryExpression)
-            List.iter walkSupplementaryBinding bindings
-            List.iter walkSupplementaryMember members
-
-            for SynInterfaceImpl(bindings = interfaceBindings; members = interfaceMembers) in interfaces do
-                List.iter walkSupplementaryBinding interfaceBindings
-                List.iter walkSupplementaryMember interfaceMembers
-        | SynExpr.LibraryOnlyILAssembly(args = arguments) -> List.iter walkSupplementaryExpression arguments
-
-    and walkSupplementaryClause (SynMatchClause(whenExpr = guard; resultExpr = body)) =
-        Option.iter walkSupplementaryExpression guard
-        walkSupplementaryExpression body
-
-    and walkSupplementaryBinding (SynBinding(attributes = attributes; expr = expression; returnInfo = returnInfo)) =
-        walkAttributeLists attributes
-
-        match returnInfo with
-        | Some(SynBindingReturnInfo(attributes = returnAttributes)) -> walkAttributeLists returnAttributes
-        | None -> ()
-
-        walkSupplementaryExpression expression
-
-    and walkSupplementaryMember memberDefinition =
-        let (SyntaxNode.Attributes attributes) = SyntaxNode.SynMemberDefn memberDefinition
-
-        walkAttributeLists attributes
-
-        match memberDefinition with
-        | SynMemberDefn.Member(memberDefn = binding) -> walkSupplementaryBinding binding
-        | SynMemberDefn.GetSetMember(memberDefnForGet = getter; memberDefnForSet = setter) ->
-            Option.iter walkSupplementaryBinding getter
-            Option.iter walkSupplementaryBinding setter
-        | SynMemberDefn.AutoProperty(synExpr = expression) -> walkSupplementaryExpression expression
-        | SynMemberDefn.LetBindings(bindings = bindings) -> List.iter walkSupplementaryBinding bindings
-        | SynMemberDefn.ImplicitInherit(inheritArgs = expression) -> walkSupplementaryExpression expression
-        | SynMemberDefn.Interface(members = Some members) -> List.iter walkSupplementaryMember members
-        | SynMemberDefn.ValField(fieldInfo = SynField(attributes = fieldAttributes)) ->
-            walkAttributeLists fieldAttributes
-        | SynMemberDefn.NestedType(typeDefn = typeDefinition) -> walkSupplementaryTypeDefinition typeDefinition
-        | SynMemberDefn.Open _
-        | SynMemberDefn.ImplicitCtor _
-        | SynMemberDefn.AbstractSlot _
-        | SynMemberDefn.Interface(members = None)
-        | SynMemberDefn.Inherit _ -> ()
-
-    and walkAttributeLists (attributeLists: SynAttributes) =
-        for attributeList in attributeLists do
-            for attribute in attributeList.Attributes do
-                walkSupplementaryExpression attribute.ArgExpr
-
-    and walkSupplementaryTypeDefinition
-        (SynTypeDefn(
-            typeInfo = SynComponentInfo(attributes = attributes)
-            typeRepr = representation
-            members = members
-            implicitConstructor = implicitConstructor) as typeDefinition)
-        =
-        let (SyntaxNode.Attributes nodeAttributes) = SyntaxNode.SynTypeDefn typeDefinition
-
-        walkAttributeLists nodeAttributes
-        walkAttributeLists attributes
-
-        match representation with
-        | SynTypeDefnRepr.ObjectModel(members = representationMembers) ->
-            List.iter walkSupplementaryMember representationMembers
-        | SynTypeDefnRepr.Simple(simpleRepr = simpleRepresentation) ->
-            match simpleRepresentation with
-            | SynTypeDefnSimpleRepr.Record(recordFields = fields) ->
-                for SynField(attributes = fieldAttributes) in fields do
-                    walkAttributeLists fieldAttributes
-            | SynTypeDefnSimpleRepr.Union(unionCases = cases) -> List.iter walkUnionCaseAttributes cases
-            | SynTypeDefnSimpleRepr.Enum(cases = cases) ->
-                for SynEnumCase(attributes = caseAttributes; valueExpr = valueExpression) in cases do
-                    walkAttributeLists caseAttributes
-                    walkSupplementaryExpression valueExpression
-            | SynTypeDefnSimpleRepr.Exception exceptionRepresentation ->
-                walkExceptionRepresentation exceptionRepresentation
-            | SynTypeDefnSimpleRepr.General(fields = fields) ->
-                for SynField(attributes = fieldAttributes) in fields do
-                    walkAttributeLists fieldAttributes
-            | SynTypeDefnSimpleRepr.TypeAbbrev _
-            | SynTypeDefnSimpleRepr.LibraryOnlyILAssembly _
-            | SynTypeDefnSimpleRepr.None _ -> ()
-        | SynTypeDefnRepr.Exception exceptionRepresentation -> walkExceptionRepresentation exceptionRepresentation
-
-        List.iter walkSupplementaryMember members
-        Option.iter walkSupplementaryMember implicitConstructor
-
-    and walkUnionCaseAttributes (SynUnionCase(attributes = attributes; caseType = caseType)) =
-        walkAttributeLists attributes
-
-        match caseType with
-        | SynUnionCaseKind.Fields fields ->
-            for SynField(attributes = fieldAttributes) in fields do
-                walkAttributeLists fieldAttributes
-        | _ -> ()
-
-    and walkExceptionRepresentation (SynExceptionDefnRepr(attributes = attributes; caseName = caseName)) =
-        walkAttributeLists attributes
-        walkUnionCaseAttributes caseName
-
-    and walkExceptionDefinition (SynExceptionDefn(exnRepr = representation; members = members)) =
-        walkExceptionRepresentation representation
-
-        for memberDefinition in members do
-            walkSupplementaryMember memberDefinition
-
-    let isInsideInterpolation path =
-        path
-        |> List.exists (function
-            | SyntaxNode.SynExpr(SynExpr.InterpolatedString _) -> true
-            | _ -> false)
-
-    ParsedInput.fold
-        (fun () path node ->
-            match node with
-            | SyntaxNode.SynExpr(SynExpr.Const(SynConst.String(text = text), expressionRange)) when
-                not (isInsideInterpolation path)
-                ->
-                add text expressionRange
-            | _ -> ()
-
-            let (SyntaxNode.Attributes attributeLists) = node
-            walkAttributeLists attributeLists
-
-            match node with
-            | SyntaxNode.SynModule(SynModuleDecl.NestedModule(moduleInfo = SynComponentInfo(attributes = attributes))) ->
-                walkAttributeLists attributes
-            | SyntaxNode.SynModule(SynModuleDecl.Exception(exnDefn = exceptionDefinition)) ->
-                walkExceptionDefinition exceptionDefinition
-            | SyntaxNode.SynTypeDefn(SynTypeDefn(typeRepr = SynTypeDefnRepr.Simple(simpleRepr = simpleRepr))) ->
-                match simpleRepr with
-                | SynTypeDefnSimpleRepr.Record(recordFields = fields) ->
-                    for SynField(attributes = fieldAttributes) in fields do
-                        walkAttributeLists fieldAttributes
-                | SynTypeDefnSimpleRepr.Union(unionCases = cases) -> List.iter walkUnionCaseAttributes cases
-                | SynTypeDefnSimpleRepr.Enum(cases = cases) ->
-                    for SynEnumCase(attributes = caseAttributes) in cases do
-                        walkAttributeLists caseAttributes
-                | _ -> ()
-            | SyntaxNode.SynTypeDefn(SynTypeDefn(typeRepr = SynTypeDefnRepr.Exception exceptionRepresentation)) ->
-                let (SynExceptionDefnRepr(attributes = attributes; caseName = caseName)) =
-                    exceptionRepresentation
-
-                walkAttributeLists attributes
-                walkUnionCaseAttributes caseName
-            | _ -> ())
-        ()
-        tree
-    |> ignore
-
-    found |> Seq.distinct |> Seq.toList
-
 /// The parse diagnostics that actually make an AST unusable: Error severity, and
 /// nothing else.
 ///
@@ -2279,10 +1988,7 @@ let private extractResults
                                 | Some recName ->
                                     match findEnclosing u.Range with
                                     | Some enclosingSi when enclosingSi.FullName <> recName ->
-                                        [ { FromSymbol = enclosingSi.FullName
-                                            ToSymbol = recName
-                                            Kind = UsesType
-                                            Source = "core" } ]
+                                        [ coreEdge UsesType enclosingSi.FullName recName ]
                                     | _ -> []
                                 | None -> []
                             | _ -> []
@@ -2301,46 +2007,23 @@ let private extractResults
                                     fieldRecordEdge
                                 else
                                     let primary =
-                                        { FromSymbol = enclosingSi.FullName
-                                          ToSymbol = usedFullName
-                                          Kind = classifyDependency u.Symbol
-                                          Source = "core" }
+                                        coreEdge (classifyDependency u.Symbol) enclosingSi.FullName usedFullName
+
+                                    // A type edge to anything but the two ends of the primary edge.
+                                    let usesTypeOtherThanEnds (typeName: string) =
+                                        if typeName = enclosingSi.FullName || typeName = usedFullName then
+                                            None
+                                        else
+                                            Some(coreEdge UsesType enclosingSi.FullName typeName)
 
                                     let parentEdge =
-                                        tryGetUnionParentType u.Symbol
-                                        |> Option.bind (fun parentName ->
-                                            if parentName = enclosingSi.FullName || parentName = usedFullName then
-                                                None
-                                            else
-                                                Some
-                                                    { FromSymbol = enclosingSi.FullName
-                                                      ToSymbol = parentName
-                                                      Kind = UsesType
-                                                      Source = "core" })
+                                        tryGetUnionParentType u.Symbol |> Option.bind usesTypeOtherThanEnds
 
                                     let genericArgEdges =
-                                        genericEdgesForSymbol u.Symbol
-                                        |> List.choose (fun argName ->
-                                            if argName = enclosingSi.FullName || argName = usedFullName then
-                                                None
-                                            else
-                                                Some
-                                                    { FromSymbol = enclosingSi.FullName
-                                                      ToSymbol = argName
-                                                      Kind = UsesType
-                                                      Source = "core" })
+                                        genericEdgesForSymbol u.Symbol |> List.choose usesTypeOtherThanEnds
 
                                     let recordTypeEdge =
-                                        tryGetRecordTypeFromField u.Symbol
-                                        |> Option.bind (fun recName ->
-                                            if recName = enclosingSi.FullName || recName = usedFullName then
-                                                None
-                                            else
-                                                Some
-                                                    { FromSymbol = enclosingSi.FullName
-                                                      ToSymbol = recName
-                                                      Kind = UsesType
-                                                      Source = "core" })
+                                        tryGetRecordTypeFromField u.Symbol |> Option.bind usesTypeOtherThanEnds
 
                                     primary :: (parentEdge |> Option.toList)
                                     @ genericArgEdges
@@ -2614,20 +2297,13 @@ let private extractResults
                                     for fixtureFullName in collectFixtureTypes entity do
                                         if fixtureFullName <> memberName mfv then
                                             fixtureEdges <-
-                                                { FromSymbol = memberName mfv
-                                                  ToSymbol = fixtureFullName
-                                                  Kind = UsesType
-                                                  Source = "core" }
-                                                :: fixtureEdges
+                                                coreEdge UsesType (memberName mfv) fixtureFullName :: fixtureEdges
 
                                     match collectionMemberships |> Map.tryFind (entityName entity) with
                                     | Some names ->
                                         for name in names do
                                             fixtureEdges <-
-                                                { FromSymbol = memberName mfv
-                                                  ToSymbol = SyntheticCollectionPrefix + name
-                                                  Kind = UsesType
-                                                  Source = "core" }
+                                                coreEdge UsesType (memberName mfv) (SyntheticCollectionPrefix + name)
                                                 :: fixtureEdges
                                     | None -> ()
                                 | _ -> ()
@@ -2679,12 +2355,7 @@ let private extractResults
                           IsExtern = false }
                         :: syms
 
-                    edges <-
-                        { FromSymbol = synthFullName
-                          ToSymbol = fixtureFullName
-                          Kind = UsesType
-                          Source = "core" }
-                        :: edges
+                    edges <- coreEdge UsesType synthFullName fixtureFullName :: edges
 
                 syms, edges
 
@@ -2717,15 +2388,9 @@ let private extractResults
 
                         let edge =
                             if testSymbolNames.Contains enclosing.FullName then
-                                { FromSymbol = enclosing.FullName
-                                  ToSymbol = nodeName
-                                  Kind = SharedLiteral
-                                  Source = "core" }
+                                coreEdge SharedLiteral enclosing.FullName nodeName
                             else
-                                { FromSymbol = nodeName
-                                  ToSymbol = enclosing.FullName
-                                  Kind = SharedLiteral
-                                  Source = "core" }
+                                coreEdge SharedLiteral nodeName enclosing.FullName
 
                         edges <- edge :: edges
                     | _ -> ()
@@ -2955,141 +2620,20 @@ module internal AnalysisTestHelpers =
 
         result, chargedVisits
 
+
+// The script/project-option entry points live in `ScriptOptions`; callers reach them
+// through this module, as they did before the split.
+
 /// Create a project snapshot from project options, using file modification times as version keys.
-/// FCS uses version strings to skip re-checking files that haven't changed.
 let createProjectSnapshot (projectOptions: FSharpProjectOptions) =
-    let getFileSnapshot (_opts: FSharpProjectOptions) (fileName: string) =
-        async {
-            let version =
-                if File.Exists(fileName) then
-                    File.GetLastWriteTimeUtc(fileName).Ticks |> string
-                else
-                    "0"
+    ScriptOptions.createProjectSnapshot projectOptions
 
-            let getSource () =
-                task {
-                    let text =
-                        if File.Exists(fileName) then
-                            File.ReadAllText(fileName)
-                        else
-                            ""
-
-                    return SourceTextNew.ofString text
-                }
-
-            return FSharpFileSnapshot.Create(fileName, version, getSource)
-        }
-
-    FSharpProjectSnapshot.FromOptions(projectOptions, getFileSnapshot)
-
-/// Detect 'open' statements in source code to find cross-file dependencies.
-let private detectOpenedModules (source: string) : string list =
-    source.Split('\n')
-    |> Array.map (fun line ->
-        let trimmed = line.Trim()
-
-        if trimmed.StartsWith("open ") then
-            trimmed.Substring(5).Trim()
-        else
-            "")
-    |> Array.filter (fun s -> not (String.IsNullOrEmpty(s)))
-    |> Array.toList
-
-/// Find script files in the same directory that match opened modules.
-/// Returns both actual files on disk and hypothetical files that match the module names.
-let private findRelatedScriptFiles (currentFile: string) (openedModules: string list) : string list =
-    if List.isEmpty openedModules then
-        []
-    else
-        let dirPath = Path.GetDirectoryName(currentFile)
-
-        try
-            let availableFiles =
-                if Directory.Exists(dirPath) then
-                    Directory.GetFiles(dirPath, "*.fsx")
-                    |> Array.filter (fun f -> f <> currentFile)
-                    |> Array.toList
-                else
-                    []
-
-            let foundFiles =
-                availableFiles
-                |> List.filter (fun f ->
-                    let fileName = Path.GetFileNameWithoutExtension(f)
-                    openedModules |> List.exists (fun m -> m = fileName))
-
-            // Paths for opened modules whose files don't exist on disk — sources analyzed
-            // in memory.
-            let hypotheticalFiles =
-                openedModules
-                |> List.map (fun m -> Path.Combine(dirPath, m + ".fsx"))
-                |> List.filter (fun f -> f <> currentFile && not (List.contains f foundFiles))
-
-            foundFiles @ hypotheticalFiles |> List.distinct
-        with ex ->
-            eprintfn $"  Warning: findRelatedScriptFiles failed: %s{ex.Message}"
-            []
-
-/// FCS GetProjectOptionsFromScript can return paths relative to the script location
-/// rather than the process cwd. Normalise them so FCS can load assemblies regardless
-/// of where the CLI was invoked.
-let internal resolveToAbsolute (basePath: string) (path: string) =
-    if String.IsNullOrEmpty(path) || Path.IsPathRooted(path) then
-        path
-    else
-        Path.GetFullPath(Path.Combine(basePath, path))
-
-/// -r: entries in OtherOptions are DLL reference paths that may be relative.
-/// Other entries (e.g. --noframework) are compiler flags, not paths — leave them untouched.
-let private resolveReferenceOptions (baseDir: string) (opts: string array) =
-    opts
-    |> Array.map (fun opt ->
-        if opt.StartsWith("-r:", StringComparison.Ordinal) then
-            let path = opt[3..]
-            let resolved = resolveToAbsolute baseDir path
-
-            if Object.ReferenceEquals(resolved, path) then
-                opt
-            else
-                "-r:" + resolved
-        else
-            opt)
-
-/// Convenience: create project options from a script source string.
-/// Detects 'open' statements and includes related script files in the SourceFiles array.
+/// Project options for a standalone script (see `ScriptOptions.getScriptOptions`).
 let getScriptOptions (checker: FSharpChecker) (sourceFileName: string) (source: string) =
-    async {
-        let sourceText = SourceText.ofString source
+    ScriptOptions.getScriptOptions checker sourceFileName source
 
-        let! ct = Async.CancellationToken
-        do! scriptSemaphore.WaitAsync(ct) |> Async.AwaitTask
+let internal resolveToAbsolute (basePath: string) (path: string) =
+    ScriptOptions.resolveToAbsolute basePath path
 
-        let! projOptions, _diagnostics =
-            try
-                checker.GetProjectOptionsFromScript(sourceFileName, sourceText, assumeDotNetFramework = false)
-            finally
-                scriptSemaphore.Release() |> ignore
-
-        let openedModules = detectOpenedModules source
-        let relatedFiles = findRelatedScriptFiles sourceFileName openedModules
-
-        let enhancedSourceFiles =
-            if List.isEmpty relatedFiles then
-                projOptions.SourceFiles
-            else
-                (relatedFiles |> List.toArray)
-                |> Array.append projOptions.SourceFiles
-                |> Array.distinct
-
-        let baseDir =
-            match Path.GetDirectoryName(sourceFileName) with
-            | null -> Directory.GetCurrentDirectory()
-            | dir -> dir
-
-        let enhancedOptions =
-            { projOptions with
-                SourceFiles = enhancedSourceFiles |> Array.map (resolveToAbsolute baseDir)
-                OtherOptions = projOptions.OtherOptions |> resolveReferenceOptions baseDir }
-
-        return enhancedOptions
-    }
+let internal collectSharedLiterals (tree: ParsedInput) =
+    SharedLiterals.collectSharedLiterals tree

@@ -118,6 +118,16 @@
       "line": 96,
       "branch": 91,
       "reason": "loosened automatically"
+    },
+    "ScriptOptions.fs": {
+      "line": 91,
+      "branch": 65,
+      "reason": "new file (AUTOMATION-1446): moved verbatim out of AstAnalyzer.fs, whose aggregate it was measured in before; no code or test change. Measured 2026-11-01 on macOS: line 91.4%, branch 68.8% (22/32). Uncovered, inspected: the catch-all in findRelatedScriptFiles (a directory read failing mid-scan), a reference path that is already absolute, the null-directory fallback for a bare file name, and the version-key fallbacks for a file that vanishes between listing and stat. Branch floor set 3.8 points under the macOS value for Linux denominator drift; line is the guard."
+    },
+    "SharedLiterals.fs": {
+      "line": 74,
+      "branch": 58,
+      "reason": "new file (AUTOMATION-1446): moved verbatim out of AstAnalyzer.fs, whose aggregate it was measured in before; no code or test change. Measured 2026-11-01 on macOS: line 74.5%, branch 61.5% (110/179). Uncovered, inspected: descent arms of the supplementary parse-tree walk for constructs no fixture puts a prose literal in (auto-property initialisers, object-expression interface bindings, inherit clauses, attributes on record fields and exception cases, simple-representation type abbreviations and the None representation). They only descend; a missed literal there drops a coupling the impact walk already widens for. Branch floor set 3.5 points under the macOS value for Linux denominator drift."
     }
   }
 }

@@ -80,12 +80,6 @@ type private FileMatcher =
     | ExactPath of string
     | GlobRegex of Regex
 
-/// Build a matcher for a declared pattern. Normalization (forward slashes,
-/// strip `./`) is applied once here so it doesn't run per-candidate.
-let private compileMatcher (pattern: string) (isGlob: bool) : FileMatcher =
-    let p = normalizePath pattern
-    if isGlob then GlobRegex(globToRegex p) else ExactPath p
-
 let private matches (matcher: FileMatcher) (changed: string) : bool =
     let changed = normalizePath changed
 
@@ -93,23 +87,33 @@ let private matches (matcher: FileMatcher) (changed: string) : bool =
     | ExactPath p -> System.String.Equals(p, changed, System.StringComparison.Ordinal)
     | GlobRegex r -> r.IsMatch(changed)
 
-/// Walk the attribute index to produce (symbolFullName, pattern, isGlob) triples for
-/// every DependsOnFile/DependsOnGlob annotation. Attribute names are matched loosely
-/// so both `TestPrune.DependsOnFileAttribute` and plain `DependsOnFileAttribute`
-/// resolve — the stored DisplayName sheds the namespace.
+/// Parse a stored attribute into the matcher it declares, if it is a well-formed
+/// DependsOnFile/DependsOnGlob annotation. Attribute names are matched loosely so both
+/// `TestPrune.DependsOnFileAttribute` and plain `DependsOnFileAttribute` resolve — the
+/// stored DisplayName sheds the namespace. The pattern is normalized (forward slashes,
+/// no leading `./`) and a glob compiled once here, never per changed file.
+let private tryParseFileDependency (attrName: string, argsJson: string) : FileMatcher option =
+    let compile =
+        match attrName with
+        | "DependsOnFileAttribute"
+        | "DependsOnFile" -> Some ExactPath
+        | "DependsOnGlobAttribute"
+        | "DependsOnGlob" -> Some(globToRegex >> GlobRegex)
+        | _ -> None
+
+    compile
+    |> Option.bind (fun compile -> firstStringFromArgsJson argsJson |> Option.map (normalizePath >> compile))
+
+/// Every DependsOnFile/DependsOnGlob annotation in the attribute index, as
+/// (symbolFullName, matcher) pairs.
 let private fileDependencyDeclarations
     (allAttributes: Map<string, (string * string) list>)
-    : (string * string * bool) list =
+    : (string * FileMatcher) list =
     [ for KeyValue(symbolFullName, attrs) in allAttributes do
-          for (attrName, argsJson) in attrs do
-              let isFile = attrName = "DependsOnFileAttribute" || attrName = "DependsOnFile"
-
-              let isGlob = attrName = "DependsOnGlobAttribute" || attrName = "DependsOnGlob"
-
-              if isFile || isGlob then
-                  match firstStringFromArgsJson argsJson with
-                  | Some pattern -> yield (symbolFullName, pattern, isGlob)
-                  | None -> () ]
+          for attr in attrs do
+              match tryParseFileDependency attr with
+              | Some matcher -> yield symbolFullName, matcher
+              | None -> () ]
 
 /// Result of test impact analysis: either a subset of affected tests or run-all with a reason.
 type TestSelection =
@@ -154,17 +158,14 @@ let selectTests
     : TestSelection * AnalysisEvent list =
     let getStoredSymbols = store.GetSymbolsInFile
     let queryAffectedTests = store.QueryAffectedTests
-    let allAttributes = store.GetAllAttributes()
 
-    if changedFiles.IsEmpty then
-        RunSubset [], []
-    elif DiffParser.hasFsprojChanges changedFiles then
-        RunAll(FsprojChanged(changedFiles |> List.find DiffParser.isFsproj)), []
-    else
+    match changedFiles, changedFiles |> List.tryFind DiffParser.isFsproj with
+    | [], _ -> RunSubset [], []
+    | _, Some fsproj -> RunAll(FsprojChanged fsproj), []
+    | _, None ->
+        // No .fsproj reaches here: any one of them selects everything above.
         let diffs =
-            changedFiles
-            |> List.filter (DiffParser.isFsproj >> not)
-            |> List.map (diffFile getStoredSymbols currentSymbolsByFile)
+            changedFiles |> List.map (diffFile getStoredSymbols currentSymbolsByFile)
 
         let firstNewFile =
             diffs
@@ -190,10 +191,8 @@ let selectTests
             // File-attribute seeds: every (symbol, changedFile) pair where a declared
             // DependsOnFile/Glob pattern matches. Each such symbol becomes an extra
             // changed-symbol input to the transitive walk, plus a per-test event carrying
-            // a FileDependencyChanged reason. Compile matchers once, not per pair.
-            let compiledFileDeps =
-                fileDependencyDeclarations allAttributes
-                |> List.map (fun (symbol, pattern, isGlob) -> symbol, compileMatcher pattern isGlob)
+            // a FileDependencyChanged reason.
+            let compiledFileDeps = fileDependencyDeclarations (store.GetAllAttributes())
 
             let fileSeeds =
                 [ for (symbol, matcher) in compiledFileDeps do
@@ -234,10 +233,16 @@ let selectTests
                 affectedTests
                 |> List.map (fun testMethod -> TestSelectedEvent(testMethod.SymbolFullName, reason))
 
+            // Which projects executed each changed file: one store read per file, not one
+            // per (project, file) pair.
+            let runtimeProjectsByFile =
+                changedFiles
+                |> List.map (fun file -> file, store.GetRuntimeCoverageProjects [ file ])
+
             let runtimeEvents =
                 [ for project in runtimeProjects do
-                      for changedFile in changedFiles do
-                          if store.GetRuntimeCoverageProjects([ changedFile ]) |> List.contains project then
+                      for changedFile, projects in runtimeProjectsByFile do
+                          if projects |> List.contains project then
                               yield ProjectSelectedByRuntimeCoverageEvent(project, changedFile) ]
 
             RunSubset affectedTests, symbolEvents @ testEvents @ runtimeEvents

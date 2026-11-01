@@ -35,6 +35,8 @@
     <ItemGroup>
         <Compile Include="SafeWalk.fs" />
         <Compile Include="Domain.fs" />
+        <Compile Include="SharedLiterals.fs" />
+        <Compile Include="ScriptOptions.fs" />
         <Compile Include="AstAnalyzer.fs" />
         <Compile Include="SeedCoverage.fs" />
         <Compile Include="ProjectFanout.fs" />

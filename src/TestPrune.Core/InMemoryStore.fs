@@ -196,6 +196,8 @@ let fromAnalysisResultsWith (policy: Domain.WalkPolicy) (results: AnalysisResult
       GetTestMethodsInFile = fun file -> testsByFile |> Map.tryFind file |> Option.defaultValue []
       GetFileKey = fun _ -> None
       GetProjectKey = fun _ -> None
+      // Built whole from its inputs and never re-indexed: complete, at one generation.
+      GetIndexState = fun () -> Domain.IndexState.Complete "in-memory"
       QueryAffectedTests =
         fun changedNames ->
             let testsIn (affected: Set<string>) =

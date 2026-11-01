@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- refactor: `AnalyzeEdges` memoises each file's symbols once (a handler file and a test file
+  shared one store read only when they were looked up through the same cache), a
+  declaration candidate carries its kind (`ClassDeclaration | ModuleDeclaration of hasBody`)
+  instead of two bools of which one meant nothing for classes, and the file header is
+  attributed from its text and offset rather than through a nameless placeholder span. No
+  edge or selection change.
 - chore: FSharpLint findings fixed now that this package is linted again (AUTOMATION-1409). No
   behaviour or API change.
 - fix: a route edge starts only at symbols defined in the file that names the route.

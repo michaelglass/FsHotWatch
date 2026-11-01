@@ -7,15 +7,6 @@ open System.Text.Json
 open Microsoft.Data.Sqlite
 open TestPrune.AstAnalyzer
 
-[<Literal>]
-let internal IndexIncompleteLookupKey = "\u0000testprune:index-incomplete"
-
-[<Literal>]
-let internal IndexGenerationLookupKey = "\u0000testprune:index-generation"
-
-[<Literal>]
-let internal IndexIncompleteValue = "\u0000testprune:incomplete"
-
 let private schema =
     """
     CREATE TABLE IF NOT EXISTS symbols (
@@ -182,6 +173,25 @@ let private readAll (reader: SqliteDataReader) (f: SqliteDataReader -> 'T) : 'T 
 
     results |> List.rev
 
+/// A `TestMethodInfo` from four consecutive columns starting at `offset`: symbol full name,
+/// test project, test class, test method.
+let private readTestMethodAt (offset: int) (r: SqliteDataReader) : TestMethodInfo =
+    { SymbolFullName = r.GetString(offset)
+      TestProject = r.GetString(offset + 1)
+      TestClass = r.GetString(offset + 2)
+      TestMethod = r.GetString(offset + 3) }
+
+/// A `SymbolInfo` from the columns full_name, kind, source_file, line_start, line_end,
+/// content_hash, is_extern, in that order.
+let private readSymbol (warnedUnknownKinds: HashSet<string>) (r: SqliteDataReader) : SymbolInfo =
+    { FullName = r.GetString(0)
+      Kind = stringToSymbolKind warnedUnknownKinds (r.GetString(1))
+      SourceFile = r.GetString(2)
+      LineStart = r.GetInt32(3)
+      LineEnd = r.GetInt32(4)
+      ContentHash = r.GetString(5)
+      IsExtern = r.GetInt32(6) = 1 }
+
 /// The right-hand side of an `IN (...)` membership test over a caller-supplied set of
 /// names, as a subquery over ONE bound parameter carrying the whole set as a JSON array.
 /// Pair it with `bindNameSetNamed` under the same prefix.
@@ -210,7 +220,7 @@ let private readAll (reader: SqliteDataReader) (f: SqliteDataReader -> 'T) : 'T 
 let private nameSetNamed (prefix: string) =
     $"SELECT value FROM json_each(@%s{prefix})"
 
-let private bindNameSetNamed (prefix: string) (cmd: SqliteCommand) (names: string list) =
+let private bindNameSetNamed (prefix: string) (cmd: SqliteCommand) (names: 'T list) =
     cmd.Parameters.AddWithValue($"@%s{prefix}", JsonSerializer.Serialize names)
     |> ignore
 
@@ -314,9 +324,9 @@ let private openConnectionWaiting (busyTimeout: TimeSpan) (dbPath: string) =
         conn.Open()
         execute conn "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"
         conn
-    with ex ->
+    with _ ->
         conn.Dispose()
-        raise ex
+        reraise ()
 
 /// Increment this whenever the schema changes in a backwards-incompatible way.
 /// An OLDER file has its core tables dropped and recreated in place (`rebuildCoreTables`);
@@ -1146,9 +1156,9 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
                 | _ -> ()
 
                 txn.Commit()
-            with ex ->
+            with _ ->
                 txn.Rollback()
-                raise ex)
+                reraise ())
 
     /// Replace every edge `extensionName` contributed with `edges`, in one transaction.
     ///
@@ -1250,9 +1260,9 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
                         insCmd.ExecuteNonQuery() |> ignore
 
                 txn.Commit()
-            with ex ->
+            with _ ->
                 txn.Rollback()
-                raise ex)
+                reraise ())
 
     /// Find test methods transitively depending on the given changed symbol names,
     /// ignoring `[<TestPrune.CompositionRoot>]` markers. `QueryAffectedTests` uses it for
@@ -1328,11 +1338,7 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
             let reader = cmd.ExecuteReader()
 
             try
-                readAll reader (fun r ->
-                    { SymbolFullName = r.GetString(0)
-                      TestProject = r.GetString(1)
-                      TestClass = r.GetString(2)
-                      TestMethod = r.GetString(3) })
+                readAll reader (readTestMethodAt 0)
             finally
                 reader.Dispose()
         finally
@@ -1431,13 +1437,6 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
             finally
                 cmd.Dispose()
 
-        let idSet (prefix: string) =
-            $"SELECT value FROM json_each(@%s{prefix})"
-
-        let bindIds (prefix: string) (ids: int64 list) (cmd: SqliteCommand) =
-            cmd.Parameters.AddWithValue($"@%s{prefix}", JsonSerializer.Serialize ids)
-            |> ignore
-
         try
             // Each seed's start set, labelled by seed: the seed itself, lifted to a
             // containing type, and that type's members — `QueryAffectedTestsUnbarriered`'s
@@ -1479,7 +1478,7 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
                 rows
                     $"""
                         WITH RECURSIVE closure(id) AS (
-                            {idSet "s"}
+                            {nameSetNamed "s"}
                             UNION
                             SELECT d.from_symbol_id
                             FROM dependencies d
@@ -1488,7 +1487,7 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
                         SELECT id FROM closure
                         """
                     (fun cmd ->
-                        bindIds "s" startIds cmd
+                        bindNameSetNamed "s" cmd startIds
                         bindUnfollowed cmd)
                     (fun r -> r.GetInt64(0))
 
@@ -1497,10 +1496,10 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
                     $"""
                         SELECT DISTINCT d.to_symbol_id, d.from_symbol_id
                         FROM dependencies d
-                        WHERE d.to_symbol_id IN ({idSet "c"}) {unfollowed "d"}
+                        WHERE d.to_symbol_id IN ({nameSetNamed "c"}) {unfollowed "d"}
                         """
                     (fun cmd ->
-                        bindIds "c" closure cmd
+                        bindNameSetNamed "c" cmd closure
                         bindUnfollowed cmd)
                     (fun r -> r.GetInt64(0), r.GetInt64(1))
 
@@ -1509,13 +1508,8 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
                         SELECT DISTINCT tm.symbol_id, s.full_name, tm.test_project, tm.test_class, tm.test_method
                         FROM test_methods tm
                         JOIN symbols s ON s.id = tm.symbol_id
-                        WHERE tm.symbol_id IN ({idSet "c"})
-                        """ (bindIds "c" closure) (fun r ->
-                    r.GetInt64(0),
-                    { SymbolFullName = r.GetString(1)
-                      TestProject = r.GetString(2)
-                      TestClass = r.GetString(3)
-                      TestMethod = r.GetString(4) })
+                        WHERE tm.symbol_id IN ({nameSetNamed "c"})
+                        """ (fun cmd -> bindNameSetNamed "c" cmd closure) (fun r -> r.GetInt64(0), readTestMethodAt 1 r)
 
             let markers =
                 rows
@@ -1523,10 +1517,10 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
                         SELECT DISTINCT symbol_id
                         FROM symbol_attributes
                         WHERE attribute_name IN ({nameSetNamed "cr"})
-                          AND symbol_id IN ({idSet "c"})
+                          AND symbol_id IN ({nameSetNamed "c"})
                         """
                     (fun cmd ->
-                        bindIds "c" closure cmd
+                        bindNameSetNamed "c" cmd closure
                         bindNameSetNamed "cr" cmd Domain.CompositionRoot.Names)
                     (fun r -> r.GetInt64(0))
 
@@ -1565,14 +1559,7 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
 
         use reader = cmd.ExecuteReader()
 
-        readAll reader (fun r ->
-            { FullName = r.GetString(0)
-              Kind = stringToSymbolKind warnedUnknownKinds (r.GetString(1))
-              SourceFile = r.GetString(2)
-              LineStart = r.GetInt32(3)
-              LineEnd = r.GetInt32(4)
-              ContentHash = r.GetString(5)
-              IsExtern = r.GetInt32(6) = 1 })
+        readAll reader (readSymbol warnedUnknownKinds)
 
     /// Return the set of all symbol full names.
     member _.GetAllSymbolNames() : Set<string> =
@@ -1605,14 +1592,7 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
 
         use reader = cmd.ExecuteReader()
 
-        readAll reader (fun r ->
-            { FullName = r.GetString(0)
-              Kind = stringToSymbolKind warnedUnknownKinds (r.GetString(1))
-              SourceFile = r.GetString(2)
-              LineStart = r.GetInt32(3)
-              LineEnd = r.GetInt32(4)
-              ContentHash = r.GetString(5)
-              IsExtern = r.GetInt32(6) = 1 })
+        readAll reader (readSymbol warnedUnknownKinds)
 
     /// Return the set of symbol names that are test methods.
     member _.GetTestMethodSymbolNames() : Set<string> =
@@ -1655,26 +1635,35 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
             readAll reader (fun r -> r.GetString(0)) |> Set.ofList
 
     /// Get the stored cache key for a project, or None if not yet indexed.
-    member this.GetProjectKey(projectName: string) : string option =
-        if projectName = IndexIncompleteLookupKey then
-            if this.IsIndexIncomplete() then
-                Some IndexIncompleteValue
-            else
-                None
-        elif projectName = IndexGenerationLookupKey then
-            use conn = openConnection dbPath
-            use cmd = conn.CreateCommand()
-            cmd.CommandText <- "SELECT value FROM index_metadata WHERE key = 'index_completed' LIMIT 1"
-            cmd.ExecuteScalar() |> Option.ofObj |> Option.map string
+    member _.GetProjectKey(projectName: string) : string option =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- "SELECT key FROM project_keys WHERE project_name = @projectName"
+        cmd.Parameters.AddWithValue("@projectName", projectName) |> ignore
+
+        use reader = cmd.ExecuteReader()
+
+        if reader.Read() then Some(reader.GetString(0)) else None
+
+    /// The index as a whole: incomplete while an attempt's marker is present or no attempt
+    /// has completed, otherwise complete at the token of the attempt that completed it.
+    /// One read, so the two facts cannot come from different moments.
+    member _.GetIndexState() : TestPrune.Domain.IndexState =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """SELECT
+                 EXISTS (SELECT 1 FROM index_metadata WHERE key = 'index_incomplete'),
+                 (SELECT value FROM index_metadata WHERE key = 'index_completed' LIMIT 1)"""
+
+        use reader = cmd.ExecuteReader()
+        reader.Read() |> ignore
+
+        if reader.GetInt64(0) = 1L || reader.IsDBNull(1) then
+            TestPrune.Domain.IndexState.Incomplete
         else
-            use conn = openConnection dbPath
-            use cmd = conn.CreateCommand()
-            cmd.CommandText <- "SELECT key FROM project_keys WHERE project_name = @projectName"
-            cmd.Parameters.AddWithValue("@projectName", projectName) |> ignore
-
-            use reader = cmd.ExecuteReader()
-
-            if reader.Read() then Some(reader.GetString(0)) else None
+            TestPrune.Domain.IndexState.Complete(reader.GetString(1))
 
     /// Persist a fail-closed marker when an index attempt cannot produce a complete graph.
     member internal _.MarkIndexIncomplete() : string =
@@ -1720,14 +1709,7 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
 
     /// Whether the last index attempt failed before producing a complete graph.
     member internal this.IsIndexIncomplete() : bool =
-        use conn = openConnection dbPath
-
-        scalarInt64
-            conn
-            """SELECT CASE
-                 WHEN EXISTS (SELECT 1 FROM index_metadata WHERE key = 'index_incomplete')
-                   OR NOT EXISTS (SELECT 1 FROM index_metadata WHERE key = 'index_completed')
-                 THEN 1 ELSE 0 END""" = 1L
+        this.GetIndexState() = TestPrune.Domain.IndexState.Incomplete
 
     /// Get the stored cache key for a source file, or None if not yet indexed.
     member _.GetFileKey(sourceFile: string) : string option =
@@ -1936,11 +1918,7 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
 
         use reader = cmd.ExecuteReader()
 
-        readAll reader (fun r ->
-            { SymbolFullName = r.GetString(0)
-              TestProject = r.GetString(1)
-              TestClass = r.GetString(2)
-              TestMethod = r.GetString(3) })
+        readAll reader (readTestMethodAt 0)
 
     /// Find the symbol a coverage `line` belongs to in `sourceFile`: the symbol whose
     /// declaration most-recently PRECEDES the line (largest `line_start <= line`).
@@ -1982,25 +1960,7 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
     /// partial run can never lower a previously-observed hit count. If no symbol
     /// spans the line it is a no-op (per-file fallback is a later phase).
     member this.RecordCoverage(sourceFile: string, line: int, hits: int) : unit =
-        writing (fun () ->
-            match this.FindSymbolContainingLine(sourceFile, line) with
-            | None -> ()
-            | Some(symbolId, lineStart) ->
-                use conn = openConnection dbPath
-                use cmd = conn.CreateCommand()
-
-                cmd.CommandText <-
-                    """
-                    INSERT INTO coverage_points (occurrence_id, line_offset, kind, hits)
-                    VALUES (@s, @o, 'line', @h)
-                    ON CONFLICT(occurrence_id, line_offset, kind)
-                    DO UPDATE SET hits = MAX(hits, excluded.hits)
-                    """
-
-                cmd.Parameters.AddWithValue("@s", symbolId) |> ignore
-                cmd.Parameters.AddWithValue("@o", line - lineStart) |> ignore
-                cmd.Parameters.AddWithValue("@h", hits) |> ignore
-                cmd.ExecuteNonQuery() |> ignore)
+        this.RecordCoverageBatch [ sourceFile, line, hits ] |> ignore
 
     /// Ingest many `(sourceFile, line, hits)` rows in ONE connection + transaction,
     /// reusing a single lookup command and a single upsert command across every row.
@@ -2218,11 +2178,7 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
             bindNameSet cmd testProjects
             use reader = cmd.ExecuteReader()
 
-            readAll reader (fun row ->
-                { SymbolFullName = row.GetString(0)
-                  TestProject = row.GetString(1)
-                  TestClass = row.GetString(2)
-                  TestMethod = row.GetString(3) })
+            readAll reader (readTestMethodAt 0)
 
     /// Complete runtime-coverage baseline watermarks, ordered for deterministic
     /// diagnostics and tests.

@@ -7,11 +7,31 @@ type AccessKind =
     | Read
     | Write
 
+/// The columns of a table an access touches: all of them (table-level tracking), or one.
+type SqlColumn =
+    | AllColumns
+    | Column of name: string
+
+module SqlColumn =
+
+    /// The column a `ReadsFrom`/`WritesTo` argument names. `"*"` is the attributes'
+    /// table-level spelling (their one-argument constructors pass it), so it means every
+    /// column, not a column called `*`.
+    let parse (name: string) : SqlColumn =
+        if name = "*" then AllColumns else Column name
+
+    /// Can a write to one column be observed by a read of the other?
+    let overlaps (a: SqlColumn) (b: SqlColumn) : bool =
+        match a, b with
+        | AllColumns, _
+        | _, AllColumns -> true
+        | Column a, Column b -> a = b
+
 /// A fact about a symbol's database access.
 type SqlFact =
     { Symbol: string
       Table: string
-      Column: string
+      Column: SqlColumn
       Access: AccessKind }
 
 /// Build SharedState dependency edges from SQL access facts.
@@ -37,10 +57,8 @@ module SqlCoupling =
     let reachabilityGated: TestPrune.Domain.WalkPolicy =
         { TestScopedSources = set [ Source; SqlHydraSource ] }
 
-    let private columnsMatch (a: string) (b: string) = a = "*" || b = "*" || a = b
-
     /// For each (table, column) pair, connect every writer to every reader.
-    /// Wildcard columns ("*") match any specific column.
+    /// `AllColumns` overlaps every column.
     ///
     /// A test method in `testMethods` is never a writer. A test that seeds its own rows
     /// writes them only for itself: no reader outside that test observes them. Coupling
@@ -61,7 +79,7 @@ module SqlCoupling =
 
             [ for w in writers do
                   for r in readers do
-                      if w.Symbol <> r.Symbol && columnsMatch w.Column r.Column then
+                      if w.Symbol <> r.Symbol && SqlColumn.overlaps w.Column r.Column then
                           // Reader depends on writer: when writer changes, reader is affected
                           { FromSymbol = r.Symbol
                             ToSymbol = w.Symbol

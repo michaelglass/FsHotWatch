@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- refactor: the analyser builds its own edges through one `coreEdge` constructor stamped
+  with the new `AstAnalyzer.CoreSource` literal (the `"core"` source the status display
+  compared against), and the three "type edge unless it is an end of the primary edge"
+  blocks share one helper. Five unused internal test aliases are gone. No edge change.
+- refactor: `AstAnalyzer.fs` is split along two seams that never touched its model:
+  `ScriptOptions` (project snapshots and standalone-script options) and the internal
+  `SharedLiterals` (which literals join a test to a producer, and the parse-tree walk that
+  finds them). `AstAnalyzer` keeps `getScriptOptions` and `createProjectSnapshot` as
+  forwarding entry points, so callers are unchanged. No behaviour change.
+- refactor: `Database` reads each row type through one reader (`TestMethodInfo` was built
+  in four places, `SymbolInfo` in two), the per-region id sets reuse the name-set binder,
+  `RecordCoverage` is `RecordCoverageBatch` of one row instead of a copy of it, and a
+  failed transaction rethrows with its original stack trace. No behaviour or API change.
+- **BREAKING (API):** the index's own state is a type, not two reserved project names.
+  `Ports.SymbolStore` gains `GetIndexState: unit -> Domain.IndexState`
+  (`Incomplete | Complete of generation`), answered by `Database.GetIndexState` in one
+  read; `GetProjectKey` answers only project names. A complete index always names the
+  attempt that completed it, so "complete, generation unknown" — what `InMemoryStore`
+  used to answer — cannot be expressed. A hand-built `SymbolStore` must supply the new
+  field. No selection change.
+- perf: `ImpactAnalysis.selectTests` reads runtime coverage once per changed file, not once
+  per (project, file) pair, and reads the attribute index only when it will use it.
+  `DependsOnFile`/`DependsOnGlob` attributes are parsed straight into their matcher. No
+  selection or API change.
 - chore: FSharpLint findings fixed now that this package is linted again (AUTOMATION-1409). No
   behaviour or API change.
 - fix: a named-dispatch edge starts at the test member that dispatches, also when the

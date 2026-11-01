@@ -14,6 +14,12 @@ type AffectedTest =
     { TestProject: string
       TestClass: string }
 
+/// What starts a top-level declaration: a class, or a module, which may be only a
+/// `module X` header line with no `=` body (the file's own top-level module).
+type private DeclarationKind =
+    | ClassDeclaration
+    | ModuleDeclaration of hasBody: bool
+
 /// A top-level declaration (test class or test module) in a test file, carrying
 /// the text of its own span for per-declaration URL match attribution.
 type private DeclarationSpan =
@@ -347,18 +353,20 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                     let declarations =
                         let candidates =
                             [ for matched in classPattern.Matches(content) ->
-                                  matched.Index, declarationName matched, true, true
+                                  matched.Index, declarationName matched, ClassDeclaration
                               for matched in modulePattern.Matches(content) ->
-                                  matched.Index, declarationName matched, false, matched.Groups.["body"].Success ]
-                            |> List.sortBy (fun (start, _, _, _) -> start)
+                                  matched.Index,
+                                  declarationName matched,
+                                  ModuleDeclaration(hasBody = matched.Groups.["body"].Success) ]
+                            |> List.sortBy (fun (start, _, _) -> start)
 
                         match candidates with
-                        | (start, _, false, false) :: (nextStart, _, _, _) :: _ when
+                        | (start, _, ModuleDeclaration(hasBody = false)) :: (nextStart, _, _) :: _ when
                             content.Substring(start, nextStart - start) |> hasTestAttribute |> not
                             ->
                             List.tail candidates
                         | _ -> candidates
-                        |> List.map (fun (start, name, isClass, _) -> start, name, isClass)
+                        |> List.map (fun (start, name, kind) -> start, name, (kind = ClassDeclaration))
 
                     let spans =
                         declarations
@@ -413,21 +421,22 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                         | found when found >= 0 -> found + 1
                         | insertion -> ~~~insertion
 
-                    let mentionsIn (span: DeclarationSpan) =
+                    // Where the route is named in `text`, which starts at `start` in the file.
+                    let mentionsIn (start: int) (text: string) =
                         regexes
                         |> List.collect (fun regex ->
-                            [ for matched in regex.Matches(span.Text) ->
-                                  let line = lineOf (span.Start + matched.Index)
+                            [ for matched in regex.Matches(text) ->
+                                  let line = lineOf (start + matched.Index)
 
                                   { Line = line
                                     InAttribute = lines[line - 1].TrimStart().StartsWith("[<") } ])
                         |> List.distinct
 
-                    let participant scope (span: DeclarationSpan) mentions =
+                    let participant scope (start: int) (text: string) mentions =
                         { Scope = scope
                           File = file
-                          FirstLine = lineOf span.Start
-                          LastLine = lineOf (span.Start + max 0 (span.Text.Length - 1))
+                          FirstLine = lineOf start
+                          LastLine = lineOf (start + max 0 (text.Length - 1))
                           Mentions = mentions }
 
                     // Every span holding the route URL carries the route across the HTTP
@@ -442,27 +451,26 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                     // fallback does not widen the carriers. A class the run path picked up
                     // only through that fallback names no route itself; it carries the edge
                     // whole, over its own symbols.
-                    let header =
-                        { Name = ""
-                          IsClass = false
-                          Text = headerText
-                          Start = 0 }
-
                     let headerCarrier =
                         if matchesText headerText then
-                            [ participant (FileHeader(spans |> List.map _.Name)) header (mentionsIn header) ]
+                            [ participant (FileHeader(spans |> List.map _.Name)) 0 headerText (mentionsIn 0 headerText) ]
                         else
                             []
 
                     let spanCarriers =
                         spans
                         |> List.filter (fun span -> matchesText span.Text)
-                        |> List.map (fun span -> participant (OwnDeclaration span.Name) span (mentionsIn span))
+                        |> List.map (fun span ->
+                            participant
+                                (OwnDeclaration span.Name)
+                                span.Start
+                                span.Text
+                                (mentionsIn span.Start span.Text))
 
                     let fallbackClasses =
                         testClasses
                         |> List.filter (fun span -> not (matchesText span.Text))
-                        |> List.map (fun span -> participant (OwnDeclaration span.Name) span [])
+                        |> List.map (fun span -> participant (OwnDeclaration span.Name) span.Start span.Text [])
 
                     testClasses |> List.map (fun span -> span.Name), headerCarrier @ spanCarriers @ fallbackClasses)
 
@@ -765,17 +773,6 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                     else
                         participant.Mentions |> List.collect holders |> List.distinct
 
-                let handlerFileSymbols =
-                    System.Collections.Generic.Dictionary<string, SymbolInfo list>()
-
-                let symbolsInHandlerFile (handlerFile: string) =
-                    match handlerFileSymbols.TryGetValue handlerFile with
-                    | true, symbols -> symbols
-                    | false, _ ->
-                        let symbols = symbolStore.GetSymbolsInFile handlerFile
-                        handlerFileSymbols[handlerFile] <- symbols
-                        symbols
-
                 // Edges for one route. Tests are matched by THIS route's URL only (per-route
                 // regex), so an unrelated route in the same handler file contributes no
                 // edges — and each route's tests are scoped to the handler function serving
@@ -812,6 +809,6 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                         | Some name -> NamedSymbol name
                         | None -> UnnamedSymbol
 
-                    edgesTo "falco" SharedState (symbolsInHandlerFile handlerFile) target routeTestMethods
+                    edgesTo "falco" SharedState (symbolsInFile handlerFile) target routeTestMethods
 
                 routes |> List.collect edgesForRoute |> List.distinct

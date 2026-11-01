@@ -15,11 +15,11 @@ module ``SqlCoupling buildEdges`` =
         let facts =
             [ { Symbol = "Queries.saveArticle"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Write }
               { Symbol = "Queries.getArticle"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Read } ]
 
         let edges = SqlCoupling.buildEdges Set.empty facts
@@ -34,15 +34,15 @@ module ``SqlCoupling buildEdges`` =
         let facts =
             [ { Symbol = "W.save"
                 Table = "articles"
-                Column = "status"
+                Column = Column "status"
                 Access = Write }
               { Symbol = "R.loadTitle"
                 Table = "articles"
-                Column = "title"
+                Column = Column "title"
                 Access = Read }
               { Symbol = "R.loadStatus"
                 Table = "articles"
-                Column = "status"
+                Column = Column "status"
                 Access = Read } ]
 
         let edges = SqlCoupling.buildEdges Set.empty facts
@@ -55,15 +55,15 @@ module ``SqlCoupling buildEdges`` =
         let facts =
             [ { Symbol = "W.save"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Write }
               { Symbol = "R.loadTitle"
                 Table = "articles"
-                Column = "title"
+                Column = Column "title"
                 Access = Read }
               { Symbol = "R.loadStatus"
                 Table = "articles"
-                Column = "status"
+                Column = Column "status"
                 Access = Read } ]
 
         let edges = SqlCoupling.buildEdges Set.empty facts
@@ -74,15 +74,15 @@ module ``SqlCoupling buildEdges`` =
         let facts =
             [ { Symbol = "W.saveStatus"
                 Table = "articles"
-                Column = "status"
+                Column = Column "status"
                 Access = Write }
               { Symbol = "W.saveTitle"
                 Table = "articles"
-                Column = "title"
+                Column = Column "title"
                 Access = Write }
               { Symbol = "R.load"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Read } ]
 
         let edges = SqlCoupling.buildEdges Set.empty facts
@@ -93,11 +93,11 @@ module ``SqlCoupling buildEdges`` =
         let facts =
             [ { Symbol = "Q.upsert"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Write }
               { Symbol = "Q.upsert"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Read } ]
 
         let edges = SqlCoupling.buildEdges Set.empty facts
@@ -108,11 +108,11 @@ module ``SqlCoupling buildEdges`` =
         let facts =
             [ { Symbol = "W.save"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Write }
               { Symbol = "W.update"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Write } ]
 
         let edges = SqlCoupling.buildEdges Set.empty facts
@@ -123,11 +123,11 @@ module ``SqlCoupling buildEdges`` =
         let facts =
             [ { Symbol = "R.load1"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Read }
               { Symbol = "R.load2"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Read } ]
 
         let edges = SqlCoupling.buildEdges Set.empty facts
@@ -138,11 +138,11 @@ module ``SqlCoupling buildEdges`` =
         let facts =
             [ { Symbol = "W.saveArticle"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Write }
               { Symbol = "R.loadUser"
                 Table = "users"
-                Column = "*"
+                Column = AllColumns
                 Access = Read } ]
 
         let edges = SqlCoupling.buildEdges Set.empty facts
@@ -153,19 +153,19 @@ module ``SqlCoupling buildEdges`` =
         let facts =
             [ { Symbol = "W1.save"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Write }
               { Symbol = "W2.update"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Write }
               { Symbol = "R1.load"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Read }
               { Symbol = "R2.list"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Read } ]
 
         let edges = SqlCoupling.buildEdges Set.empty facts
@@ -177,11 +177,11 @@ module ``SqlCoupling buildEdges`` =
         let facts =
             [ { Symbol = "Tests.seedsArticles"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Write }
               { Symbol = "Queries.getArticle"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Read } ]
 
         test
@@ -197,11 +197,11 @@ module ``SqlCoupling buildEdges`` =
         let facts =
             [ { Symbol = "Commands.saveArticle"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Write }
               { Symbol = "Tests.readsArticles"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Read } ]
 
         let edges = SqlCoupling.buildEdges (Set.singleton "Tests.readsArticles") facts
@@ -329,11 +329,11 @@ module ``SqlExtension as ITestPruneExtension`` =
         let facts =
             [ { Symbol = "Queries.save"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Write }
               { Symbol = "Queries.load"
                 Table = "articles"
-                Column = "*"
+                Column = AllColumns
                 Access = Read } ]
 
         let extension = SqlExtension(facts)
@@ -440,3 +440,47 @@ module ``SqlExtension auto-discovery`` =
 
         // Only the same-table pair couples. The file-mate `saveUser` writer is absent.
         test <@ pairs = set [ "Queries.loadArticle", "Queries.saveArticle" ] @>
+
+module ``SqlColumn`` =
+
+    [<Fact>]
+    let ``star is every column, any other name is that column`` () =
+        test <@ SqlColumn.parse "*" = AllColumns @>
+        test <@ SqlColumn.parse "status" = Column "status" @>
+
+    [<Fact>]
+    let ``every column overlaps any column; two named columns overlap only when equal`` () =
+        test <@ SqlColumn.overlaps AllColumns (Column "a") @>
+        test <@ SqlColumn.overlaps (Column "a") AllColumns @>
+        test <@ SqlColumn.overlaps (Column "a") (Column "a") @>
+        test <@ not (SqlColumn.overlaps (Column "a") (Column "b")) @>
+
+    [<Fact>]
+    let ``auto-discovered facts parse the column argument, and a missing one means every column`` () =
+        let symbol name =
+            { FullName = name
+              Kind = Function
+              SourceFile = "src/Queries.fs"
+              LineStart = 1
+              LineEnd = 1
+              ContentHash = name
+              IsExtern = false }
+
+        let attribute symbolName attributeName argsJson =
+            { SymbolFullName = symbolName
+              AttributeName = attributeName
+              ArgsJson = argsJson }
+
+        let result =
+            { AnalysisResult.Create([ symbol "Q.a"; symbol "Q.b"; symbol "Q.c" ], [], []) with
+                Attributes =
+                    [ attribute "Q.a" "ReadsFromAttribute" "[\"t\", \"*\"]"
+                      attribute "Q.b" "ReadsFrom" "[\"t\", \"status\"]"
+                      attribute "Q.c" "WritesToAttribute" "[\"t\"]" ] }
+
+        let facts =
+            AutoSqlExtension.ExtractFacts(TestPrune.InMemoryStore.fromAnalysisResults [ result ])
+            |> List.map (fun f -> f.Symbol, f.Column)
+            |> List.sort
+
+        test <@ facts = [ "Q.a", AllColumns; "Q.b", Column "status"; "Q.c", AllColumns ] @>

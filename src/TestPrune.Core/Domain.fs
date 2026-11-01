@@ -137,6 +137,16 @@ type WalkPolicy =
     member this.Follows(source: string) =
         not (this.TestScopedSources.Contains source)
 
+/// The index as a whole, as selection must judge it before trusting any edge in it.
+///
+/// An index that the last attempt left unfinished (or that no attempt has finished yet)
+/// cannot answer which tests a change affects, and selection runs everything. A
+/// complete index always names the attempt that completed it (its generation), so a
+/// selection can tell whether a concurrent index attempt replaced the graph under it.
+type IndexState =
+    | Incomplete
+    | Complete of generation: string
+
 type ChangeKind =
     | Modified
     | Added
