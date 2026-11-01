@@ -305,11 +305,11 @@ let ``usage errors exit 2 with the verb's usage`` () =
     test
         <@
             notNumber.Exit = 2
-            && notNumber.Stderr.StartsWith "--sample needs a number, got lots\n"
+            && notNumber.Stderr.StartsWith "--sample needs a positive number, got lots\n"
         @>
 
     let notInt = err [ "overhead"; "--reps"; "2.5" ]
-    test <@ notInt.Stderr.StartsWith "--reps needs a whole number, got 2.5\n" @>
+    test <@ notInt.Stderr.StartsWith "--reps needs a positive whole number, got 2.5\n" @>
 
     test <@ calls.Count = 0 @>
 
@@ -396,3 +396,23 @@ let ``mutate takes --samples and repeated --only`` () =
     test <@ o.Exit = 1 @>
     let c = calls |> Seq.exactlyOne
     test <@ (c.Reps, c.Only) = (5, [ "Lib.A"; "Lib.B" ]) @>
+
+[<Theory>]
+[<InlineData("mutate", "--seed", "x", "--seed needs a whole number, got x")>]
+[<InlineData("mutate", "--samples", "0", "--samples needs a positive whole number, got 0")>]
+[<InlineData("mutate", "--samples", "-3", "--samples needs a positive whole number, got -3")>]
+[<InlineData("overhead", "--reps", "0", "--reps needs a positive whole number, got 0")>]
+[<InlineData("audit", "--sample", "0", "--sample needs a positive number, got 0")>]
+[<InlineData("audit", "--sample", "NaN", "--sample needs a positive number, got NaN")>]
+[<InlineData("file-census", "--timeout-min", "-1", "--timeout-min needs a positive number, got -1")>]
+[<InlineData("file-census", "--timeout-min", "Infinity", "--timeout-min needs a positive number, got Infinity")>]
+let ``a count, fraction or timeout that is not positive is refused before anything runs``
+    (verb: string, flag: string, value: string, message: string)
+    =
+    let m, calls = passing ()
+
+    let o =
+        Program.runWith m cwd [ verb; "--project-dir"; "P"; "--assembly"; "P"; flag; value ]
+
+    test <@ o.Exit = 2 && o.Stderr.StartsWith(message + "\n") @>
+    test <@ calls.Count = 0 @>

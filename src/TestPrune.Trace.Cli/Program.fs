@@ -100,10 +100,26 @@ type private RecallArgs =
       Limit: int
       Json: bool }
 
-let private positive (flag: string) (set: int -> RecallArgs -> RecallArgs) (v: string) (a: RecallArgs) =
+/// A whole number, or why `v` is not one.
+let private whole (flag: string) (v: string) : Result<int, string> =
     match Int32.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture) with
-    | true, n when n > 0 -> Ok(set n a)
+    | true, n -> Ok n
+    | _ -> Error $"%s{flag} needs a whole number, got %s{v}"
+
+/// A positive whole number, or why `v` is not one.
+let private positiveWhole (flag: string) (v: string) : Result<int, string> =
+    match Int32.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture) with
+    | true, n when n > 0 -> Ok n
     | _ -> Error $"%s{flag} needs a positive whole number, got %s{v}"
+
+/// A positive, finite number, or why `v` is not one.
+let private positiveNumber (flag: string) (v: string) : Result<float, string> =
+    match Double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture) with
+    | true, n when n > 0.0 && Double.IsFinite n -> Ok n
+    | _ -> Error $"%s{flag} needs a positive number, got %s{v}"
+
+let private positive (flag: string) (set: int -> RecallArgs -> RecallArgs) (v: string) (a: RecallArgs) =
+    positiveWhole flag v |> Result.map (fun n -> set n a)
 
 /// Every valued flag of the recall verb and how it sets its argument.
 let private recallSetters: Map<string, string -> RecallArgs -> Result<RecallArgs, string>> =
@@ -285,16 +301,6 @@ type private MeasureArgs =
       Json: bool
       AppArgs: string list }
 
-let private number (flag: string) (v: string) (set: float -> MeasureArgs) =
-    match Double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture) with
-    | true, n -> Ok(set n)
-    | _ -> Error $"%s{flag} needs a number, got %s{v}"
-
-let private whole (flag: string) (v: string) (set: int -> MeasureArgs) =
-    match Int32.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture) with
-    | true, n -> Ok(set n)
-    | _ -> Error $"%s{flag} needs a whole number, got %s{v}"
-
 /// How the test assembly is woven: its sites only (the default), or fully, as every other
 /// repository assembly is.
 let private weaveMode (v: string) (a: MeasureArgs) =
@@ -310,12 +316,15 @@ let private setters: Map<string, string -> MeasureArgs -> Result<MeasureArgs, st
           "--assembly", (fun v a -> Ok { a with Assembly = Some v })
           "--repo", (fun v a -> Ok { a with Repo = Some v })
           "--weave-tests", weaveMode
-          "--sample", (fun v a -> number "--sample" v (fun n -> { a with Sample = n }))
-          "--seed", (fun v a -> whole "--seed" v (fun n -> { a with Seed = n }))
-          "--reps", (fun v a -> whole "--reps" v (fun n -> { a with Reps = n }))
-          "--samples", (fun v a -> whole "--samples" v (fun n -> { a with Samples = n }))
+          "--sample", (fun v a -> positiveNumber "--sample" v |> Result.map (fun n -> { a with Sample = n }))
+          "--seed", (fun v a -> whole "--seed" v |> Result.map (fun n -> { a with Seed = n }))
+          "--reps", (fun v a -> positiveWhole "--reps" v |> Result.map (fun n -> { a with Reps = n }))
+          "--samples", (fun v a -> positiveWhole "--samples" v |> Result.map (fun n -> { a with Samples = n }))
           "--only", (fun v a -> Ok { a with Only = a.Only @ [ v ] })
-          "--timeout-min", (fun v a -> number "--timeout-min" v (fun n -> { a with TimeoutMin = n }))
+          "--timeout-min",
+          (fun v a ->
+              positiveNumber "--timeout-min" v
+              |> Result.map (fun n -> { a with TimeoutMin = n }))
           "--keep", (fun v a -> Ok { a with Keep = Some v }) ]
 
 let private common =

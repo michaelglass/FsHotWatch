@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix!: the measurement verbs refuse a count, fraction or timeout that is not positive, at
+  parse time, with exit 2: `--samples`, `--reps` (positive whole numbers), `--sample` and
+  `--timeout-min` (positive finite numbers). Before, `mutate --samples 0` ran a baseline and
+  reported NOTHING MEASURED, `audit --sample 0` audited one test, and a negative timeout reached
+  the launcher.
+
 - feat: `mutate` verb (AUTOMATION-975): runs `Mutation` on a test project and exits 1 when trace
   selection misses a test a mutant breaks.
 - build: the package's source and project links point at github.com/michaelglass/FsHotWatch, where
