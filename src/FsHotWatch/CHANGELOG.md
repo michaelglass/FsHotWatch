@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: options records no longer key the runtime's internal knobs (`DOTNET_INTERNAL_*`) unless the
+  evaluation's files name one (AUTOMATION-1438, ADR-059 §18). The detached launcher sets
+  `DOTNET_INTERNAL_ThreadSuspendInjection=0` for the daemon it starts, and every `DOTNET_*` variable
+  was keyed, so options filed by a gate-started daemon missed in a plainly started one, and the
+  reverse: a 10 s evaluation on a 25-project repository. The knob configures the process hosting
+  MSBuild, never what MSBuild reads.
+
 - feat: `DispatchBatch` lets a plugin's `CacheKey` share work that reads the disk across one
   batch of queued events (AUTOMATION-1437). A batch is the event a plugin's loop takes plus every
   message already waiting then, so the work is no older than any event it answers. A key that
@@ -15,6 +22,14 @@
   at the pace of the slowest plugin's fold: on a 2,674-file repository it waited about 6 s behind
   one plugin's unrelated work, then ran in lockstep with each plugin's per-file cache replay.
   `LiveResults.Bound.HoldFor` takes the result and holds a place only for a live one.
+
+- fix: an options evaluation that its own design-time build changed is evaluated once more and
+  filed (AUTOMATION-1438, ADR-059 §18). The first evaluation in a checkout that was never built
+  writes each project's generated compile items under `obj/` and creates `bin/`, while it is being
+  evaluated, so the filer refused it and the next start evaluated again (10 s on a 25-project
+  repository). When every input that moved is in a requested project's own directory, the loader
+  evaluates once more; that design-time build writes nothing, and its result is filed. A second
+  move, or one outside the projects, still files nothing.
 
 ## 0.10.0-alpha.100 - 2026-10-31
 

@@ -93,6 +93,13 @@ type Request =
 /// set whose name starts with one of these is keyed.
 let envPrefixes = [ "DOTNET_"; "MSBUILD"; "NUGET_" ]
 
+/// The runtime's internal knobs (`DOTNET_INTERNAL_*`): they configure the CLR hosting the
+/// evaluation, never what MSBuild reads, so `envPrefixes` does not key them. fshw's detached
+/// launcher sets one for the daemon it starts (`DOTNET_INTERNAL_ThreadSuspendInjection`), so
+/// keying them split one evaluation across two start modes (AUTOMATION-1438). One the
+/// evaluation's files name is keyed like any other they name.
+let runtimeInternalPrefix = "DOTNET_INTERNAL_"
+
 let private ordinal (a: string) (b: string) = String.CompareOrdinal(a, b)
 
 let private digestOf (lines: string seq) =
@@ -129,15 +136,17 @@ let listingState (listing: Listing) : string =
 
 /// The variables of `environment` an evaluation that reads `names` depends on: those it
 /// names, in any case (MSBuild properties are case-insensitive), and those `envPrefixes`
-/// marks, as `env:<name>` labels over the value's digest.
+/// marks other than the runtime's internal knobs, as `env:<name>` labels over the value's
+/// digest.
 let environmentInputs (names: string list) (environment: (string * string) list) : (string * string) list =
     let wanted = HashSet<string>(names, StringComparer.OrdinalIgnoreCase)
 
     environment
     |> List.filter (fun (name, _) ->
         wanted.Contains name
-        || envPrefixes
-           |> List.exists (fun prefix -> name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+        || not (name.StartsWith(runtimeInternalPrefix, StringComparison.OrdinalIgnoreCase))
+           && envPrefixes
+              |> List.exists (fun prefix -> name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
     |> List.distinctBy fst
     |> List.map (fun (name, value) -> "env:" + name, ContentHash.ofText value)
 
@@ -501,6 +510,10 @@ let tryReplay
 /// Whether an evaluation was filed.
 type Filing =
     | Filed
+    /// Inputs changed while the projects were evaluated, so what was evaluated may not be
+    /// what the key reads now: every one of them, in the order the inputs list them, and
+    /// the latest change among them.
+    | Moved of paths: string list * latest: DateTime
     | Refused of why: string
 
 /// Where to look for whether `path` changed: the path itself, or for a path that is not
@@ -527,20 +540,20 @@ let file
     (since: DateTime)
     (stamp: string -> FileStamp.Stamp voption)
     : Filing =
-    let changedSince (path: string) =
+    let changedAt (path: string) =
         match witnessOf path |> Option.map stamp with
-        | Some(ValueSome s) -> s.ChangedAt >= since
-        | _ -> false
+        | Some(ValueSome s) when s.ChangedAt >= since -> Some(path, s.ChangedAt)
+        | _ -> None
 
     let watched =
         inputs.Reads
         @ inputs.Probes
         @ [ for listing in inputs.Listings -> listing.Directory ]
 
-    match inputs.Listings |> List.tryFind _.Recursive, watched |> List.tryFind changedSince with
+    match inputs.Listings |> List.tryFind _.Recursive, watched |> List.distinct |> List.choose changedAt with
     | Some listing, _ -> Refused $"MSBuild listed the tree under %s{listing.Directory}, which is not keyed"
-    | None, Some path -> Refused $"%s{path} changed while the projects were evaluated"
-    | None, None ->
+    | None, (_ :: _ as moved) -> Moved(List.map fst moved, moved |> List.map snd |> List.max)
+    | None, [] ->
         let key = optionsKey request inputs environment
 
         let filedRecord (recordKey: ActionKey.ActionKey) (subject: string) (outputs: string) =
@@ -594,7 +607,7 @@ type CachingLoader
     let racyWindow = defaultArg racyWindow CheckCache.FileContentHasher.RacyWindow
     let stamp = defaultArg stamp FileStamp.read
 
-    let evaluateAndFile (req: Request) (env: (string * string) list) (projects: string list) =
+    let evaluateOnce (req: Request) (env: (string * string) list) (projects: string list) =
         let startedAt = DateTime.UtcNow
         let failed = List<string>()
 
@@ -617,11 +630,55 @@ type CachingLoader
                 with ex ->
                     Refused $"its inputs could not be listed: %s{ex.Message}"
 
-        match filing with
-        | Filed -> log $"options: filed the evaluation of %d{loaded.Length} project(s)"
-        | Refused why -> log $"options: not filed: %s{why}"
+        loaded, filing
 
-        loaded
+    // The directories of the projects asked for. The first design-time build in a checkout
+    // that was never built writes there: each project's generated compile items under
+    // obj/, and bin/ beside the project, which moves the directory an absent probe there is
+    // judged by (AUTOMATION-1438). A second evaluation finds them written and writes
+    // nothing, as MSBuild's incremental targets do.
+    let underProjects (projects: string list) =
+        let dirs = projects |> List.map (fun p -> Path.GetDirectoryName(Path.GetFullPath p))
+
+        fun (path: string) ->
+            let path = Path.TrimEndingDirectorySeparator path
+
+            dirs
+            |> List.exists (fun dir ->
+                path = dir
+                || path.StartsWith(dir + string Path.DirectorySeparatorChar, StringComparison.Ordinal))
+
+    let evaluateAndFile (req: Request) (env: (string * string) list) (projects: string list) =
+        let rec attempt (retried: bool) =
+            let loaded, filing = evaluateOnce req env projects
+
+            match filing with
+            | Moved(moved, latest) when not retried && List.forall (underProjects projects) moved ->
+                // What was evaluated may not be what is there now, and filing it would risk
+                // a stale replay. Evaluating once more costs what the next start would
+                // have paid, and files an evaluation nothing changed under. It starts once
+                // the racy window has passed the last of those writes, or the window it is
+                // judged by would hold them.
+                log
+                    $"options: %d{moved.Length} input(s) in the projects' own directories changed while they were evaluated (%s{List.head moved}); evaluating once more"
+
+                let settle = latest + racyWindow - DateTime.UtcNow
+
+                if settle > TimeSpan.Zero then
+                    Threading.Thread.Sleep(min settle racyWindow)
+
+                attempt true
+            | Filed ->
+                log $"options: filed the evaluation of %d{loaded.Length} project(s)"
+                loaded
+            | Moved(moved, _) ->
+                log $"options: not filed: %s{List.head moved} changed while the projects were evaluated"
+                loaded
+            | Refused why ->
+                log $"options: not filed: %s{why}"
+                loaded
+
+        attempt false
 
     let load (projects: string list) : seq<Types.ProjectOptions> =
         let req = request projects
