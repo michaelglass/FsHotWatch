@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- refactor!: the thread-suspend setting is read from the environment once, into
+  `ThreadSuspendInjection.Setting` (the runtime variable that applies and its value, and a
+  non-blank opt-out). `launchOverride` and `startupLine` take a `Setting`, not an environment
+  lookup; `inheritByChildren` returns the `Setting` this process started with, and `ownSetting`
+  replaces `ownGetEnv`. Decisions and log lines are unchanged.
+
 - refactor!: a `test-scope` reply's outcome keys are parsed where they are read.
   `TestRunReport.OutcomeKeys` and `Observation.OutcomeKeys` hold `ActionKey.KeyValue`s, and
   `IpcParsing.tryReadOutcomeKeys` drops a value that is not a key by failing to parse it, as it
