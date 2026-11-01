@@ -74,6 +74,7 @@
     <Compile Include="OutstandingFailures.fs" />
     <Compile Include="TestFilters.fs" />
     <Compile Include="FailureReports.fs" />
+    <Compile Include="RunnerArgs.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 

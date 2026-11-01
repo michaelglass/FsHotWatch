@@ -266,7 +266,7 @@ let isTestProject (projectXml: string) : bool =
         let referencesXunitMtpRunner =
             Regex.Matches(projectXml, @"Include\s*=\s*""([^""]+)""")
             |> Seq.exists (fun m ->
-                FsHotWatch.TestPrune.TestPrunePlugin.xunitMtpRunnerPackageId.IsMatch(m.Groups[1].Value.Trim()))
+                FsHotWatch.TestPrune.RunnerArgs.xunitMtpRunnerPackageId.IsMatch(m.Groups[1].Value.Trim()))
 
         propertyIsTrue "UseMicrosoftTestingPlatformRunner"
         || propertyIsTrue "IsTestProject"

@@ -6,6 +6,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.RunnerArgs
 open FsHotWatch.TestPrune.FailureReports
 open FsHotWatch.TestPrune.SelectionAssembly
 open FsHotWatch.TestPrune.PluginTypes
