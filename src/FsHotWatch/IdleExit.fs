@@ -4,6 +4,19 @@ open System
 open System.Runtime.InteropServices
 open System.Threading
 
+/// A positive number of minutes: the only window idle-exit or its pressure floor can be
+/// given. Built only by `PositiveMinutes.tryCreate`, so a zero or negative window, which
+/// would fire at once, cannot be configured at all rather than being discarded later.
+type PositiveMinutes = private PositiveMinutes of int
+
+module PositiveMinutes =
+    /// `n` as a window, when it is positive.
+    let tryCreate (n: int) : PositiveMinutes option =
+        if n > 0 then Some(PositiveMinutes n) else None
+
+    /// The number of minutes.
+    let value (PositiveMinutes n) : int = n
+
 /// How the daemon's idle-exit feature is configured in `.fshw.json` via the
 /// `idleExitMin` key. The three cases are kept distinct (rather than collapsing
 /// absent into a default int) because the *absent* case has path-conditional
@@ -16,7 +29,7 @@ type IdleExitConfig =
     /// `idleExitMin: 0` or `idleExitMin: false`. Explicit opt-out everywhere.
     | Disabled
     /// `idleExitMin: N` (positive). Explicit opt-in everywhere, N-minute window.
-    | Minutes of int
+    | Minutes of PositiveMinutes
 
 /// The threshold AUTO mode applies to non-default workspaces.
 [<Literal>]
@@ -40,20 +53,18 @@ type PressureFloorConfig =
     | Disabled
     /// `pressureIdleFloorMin: N` (positive). Pressure shortens the window to
     /// `min(baseThreshold, N)`.
-    | Minutes of int
+    | Minutes of PositiveMinutes
 
 /// Resolve the effective pressure floor (in minutes) from its config.
 ///
 /// - `Absent`   → `Some 2` (default-on)
 /// - `Disabled` → `None` (no pressure-shortening)
-/// - `Minutes N` (N > 0) → `Some N`
-/// - `Minutes N` (N <= 0) → `None` (defensive: non-positive disables, never an
-///   instantly-firing floor)
+/// - `Minutes N` → `Some N`
 let resolvePressureFloor (config: PressureFloorConfig) : int option =
     match config with
     | PressureFloorConfig.Absent -> Some DefaultPressureFloorMin
     | PressureFloorConfig.Disabled -> None
-    | PressureFloorConfig.Minutes n -> if n > 0 then Some n else None
+    | PressureFloorConfig.Minutes n -> Some(PositiveMinutes.value n)
 
 /// Pure: the GC's high-load decision. True when `memoryLoad` has reached the GC's own
 /// `highLoadThreshold`. No percentage knob — we reuse the GC's high-load mark. A 0
@@ -224,9 +235,7 @@ let isNonDefaultWorkspace (repoRoot: string) : bool =
 ///
 /// - `Absent`  → `Some 30` iff `repoRoot` is a non-default workspace, else `None`
 /// - `Disabled`→ `None` everywhere (explicit opt-out beats AUTO)
-/// - `Minutes N` (N > 0) → `Some N` everywhere (explicit opt-in, path-agnostic)
-/// - `Minutes N` (N <= 0) → `None` (defensive: a non-positive explicit value is
-///   treated as disabled rather than an instantly-firing window)
+/// - `Minutes N` → `Some N` everywhere (explicit opt-in, path-agnostic)
 let resolveThreshold (config: IdleExitConfig) (repoRoot: string) : int option =
     match config with
     | IdleExitConfig.Absent ->
@@ -235,7 +244,7 @@ let resolveThreshold (config: IdleExitConfig) (repoRoot: string) : int option =
         else
             None
     | IdleExitConfig.Disabled -> None
-    | IdleExitConfig.Minutes n -> if n > 0 then Some n else None
+    | IdleExitConfig.Minutes n -> Some(PositiveMinutes.value n)
 
 /// The environment variable that overrides `.fshw.json`'s `idleExitMin` for the one
 /// daemon started with it. `.fshw.json` is shared and tracked, and an edit to it stops
@@ -272,8 +281,10 @@ let parseOverride (raw: string) : OverrideValue =
                 Globalization.CultureInfo.InvariantCulture
             )
         with
-        | true, n when n > 0 -> OverrideValue.Set(IdleExitConfig.Minutes n)
-        | true, _ -> OverrideValue.Set IdleExitConfig.Disabled
+        | true, n ->
+            match PositiveMinutes.tryCreate n with
+            | Some window -> OverrideValue.Set(IdleExitConfig.Minutes window)
+            | None -> OverrideValue.Set IdleExitConfig.Disabled
         | false, _ ->
             match value.ToLowerInvariant() with
             | "false"

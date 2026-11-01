@@ -10,6 +10,12 @@ open FsHotWatch.IdleExit
 
 let private threshold = TimeSpan.FromMinutes(30.0)
 
+/// A window the test knows is positive.
+let private minutes (n: int) : PositiveMinutes =
+    match PositiveMinutes.tryCreate n with
+    | Some window -> window
+    | None -> failwith $"%d{n} is not a positive window"
+
 // --- idleInhibitors (what forbids an idle exit, named) ---
 
 [<Fact>]
@@ -193,16 +199,17 @@ let ``disabled resolves to None in default repo`` () =
 
 [<Fact>]
 let ``positive N resolves to Some N in default repo`` () =
-    test <@ resolveThreshold (IdleExitConfig.Minutes 5) "/dev/repo" = Some 5 @>
+    test <@ resolveThreshold (IdleExitConfig.Minutes(minutes 5)) "/dev/repo" = Some 5 @>
 
 [<Fact>]
 let ``positive N resolves to Some N in workspace`` () =
-    test <@ resolveThreshold (IdleExitConfig.Minutes 5) "/dev/repo/.workspaces/x" = Some 5 @>
+    test <@ resolveThreshold (IdleExitConfig.Minutes(minutes 5)) "/dev/repo/.workspaces/x" = Some 5 @>
 
 [<Fact>]
-let ``non-positive explicit N resolves to None`` () =
-    test <@ resolveThreshold (IdleExitConfig.Minutes 0) "/dev/repo/.workspaces/x" = None @>
-    test <@ resolveThreshold (IdleExitConfig.Minutes -3) "/dev/repo/.workspaces/x" = None @>
+let ``a window is only ever positive: zero and negative minutes cannot be built`` () =
+    test <@ PositiveMinutes.tryCreate 0 = None @>
+    test <@ PositiveMinutes.tryCreate -3 = None @>
+    test <@ PositiveMinutes.tryCreate 1 |> Option.map PositiveMinutes.value = Some 1 @>
 
 // --- FSHW_IDLE_EXIT_MIN: a per-daemon override outside .fshw.json ---
 //
@@ -228,8 +235,8 @@ let ``an unset or blank override is Unset`` () =
 
 [<Fact>]
 let ``a positive override is a window in minutes`` () =
-    test <@ parseOverride "45" = OverrideValue.Set(IdleExitConfig.Minutes 45) @>
-    test <@ parseOverride " 7 " = OverrideValue.Set(IdleExitConfig.Minutes 7) @>
+    test <@ parseOverride "45" = OverrideValue.Set(IdleExitConfig.Minutes(minutes 45)) @>
+    test <@ parseOverride " 7 " = OverrideValue.Set(IdleExitConfig.Minutes(minutes 7)) @>
 
 [<Fact>]
 let ``zero, a negative number, false and true disable, as in .fshw.json`` () =
@@ -257,7 +264,7 @@ let ``without the override a workspace keeps AUTO 30`` () =
 [<Fact>]
 let ``without the override an explicit file value is sourced from the file`` () =
     let resolved =
-        resolveIdleExit noEnv (IdleExitConfig.Minutes 15) "/dev/repo/.workspaces/x"
+        resolveIdleExit noEnv (IdleExitConfig.Minutes(minutes 15)) "/dev/repo/.workspaces/x"
 
     test <@ resolved.ThresholdMin = Some 15 @>
     test <@ resolved.Source = ThresholdSource.ConfigFile @>
@@ -274,7 +281,7 @@ let ``the override disables idle-exit in a workspace AUTO would arm`` () =
 [<Fact>]
 let ``the override beats an explicit file value`` () =
     let resolved =
-        resolveIdleExit (envOf "240") (IdleExitConfig.Minutes 15) "/dev/repo/.workspaces/land"
+        resolveIdleExit (envOf "240") (IdleExitConfig.Minutes(minutes 15)) "/dev/repo/.workspaces/land"
 
     test <@ resolved.ThresholdMin = Some 240 @>
     test <@ resolved.Source = ThresholdSource.Environment @>
@@ -323,12 +330,7 @@ let ``pressure floor disabled resolves to None`` () =
 
 [<Fact>]
 let ``pressure floor positive N resolves to Some N`` () =
-    test <@ resolvePressureFloor (PressureFloorConfig.Minutes 5) = Some 5 @>
-
-[<Fact>]
-let ``pressure floor non-positive N resolves to None`` () =
-    test <@ resolvePressureFloor (PressureFloorConfig.Minutes 0) = None @>
-    test <@ resolvePressureFloor (PressureFloorConfig.Minutes -3) = None @>
+    test <@ resolvePressureFloor (PressureFloorConfig.Minutes(minutes 5)) = Some 5 @>
 
 // --- effectiveThreshold (pressure shortens an already-eligible window) ---
 // Eligibility (default/main workspace exempt → no window at all) is owned and

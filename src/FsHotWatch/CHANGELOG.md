@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **BREAKING (API):** `IdleExit.IdleExitConfig.Minutes` and `IdleExit.PressureFloorConfig.Minutes` carry a
+  `PositiveMinutes`, built only by `PositiveMinutes.tryCreate` (AUTOMATION-1445). A zero or negative
+  window could be constructed and was discarded when resolved; it can no longer be built. Both
+  parsers (`.fshw.json` and `FSHW_IDLE_EXIT_MIN`) already read a non-positive number as disabled, so
+  configuration behaves as before. Code that built `Minutes n` builds `Minutes window` from
+  `PositiveMinutes.tryCreate n`.
+
 - refactor: `PidFile` reads a pid file in one place (AUTOMATION-1445). The daemon pid file was parsed
   by four readers with three rules (any integer, a positive one, or a crash on text); the endpoint
   resolver, `fshw headroom`, `fshw stop` and the repository host now share `PidFile.parse`, which
