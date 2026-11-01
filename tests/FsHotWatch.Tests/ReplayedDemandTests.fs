@@ -336,3 +336,53 @@ let ``a replayed check of a file the plugin never inspects is answered without a
     dispatchAndAwait registration (DispatchFileChecked(replayedResult "/tmp/repo/A.fs"))
     test <@ List.ofSeq demanded = [ "/tmp/repo/A.fs" ] @>
     test <@ List.ofSeq runs = [ "/tmp/repo/A.fs" ] @>
+
+// AUTOMATION-1441. A file's suppression (its `#nowarn` lines and its compiler flags) only
+// decides which ERROR diagnostics block. Recording a replay's outcome built it for every
+// file, about 0.1 ms each and a third of test-prune's per-file replay, though most files
+// have no error to judge. It is read only when there is one.
+[<Fact>]
+let ``a file's suppression is read only when its check has an error to judge`` () =
+    let diagnostic severity code : StoredDiagnostic =
+        { FileName = "/r/A.fs"
+          StartLine = 2
+          StartColumn = 3
+          EndLine = 2
+          EndColumn = 9
+          ErrorNumber = code
+          Severity = severity
+          Subcategory = "typecheck"
+          Message = $"m%d{code}" }
+
+    let replayedWith diagnostics =
+        { replayedResult "/r/A.fs" with
+            CheckResults =
+                Replayed
+                    { outputs with
+                        Diagnostics = diagnostics }
+            ModelGeneration = Some 1L }
+
+    let reads = ref 0
+
+    let suppression silenced () =
+        reads.Value <- reads.Value + 1
+        FsHotWatch.FcsSuppression.Suppression.forFile (Set.ofList silenced) [] ""
+
+    let refused silenced diagnostics =
+        let result = replayedWith diagnostics
+
+        let outcome =
+            AnalysisFileEvidence.fromResultWith (suppression silenced) result (Ok())
+
+        let proof =
+            AnalysisEvidence.fromCompleted (Some 1L) (Set.singleton result.File) (Map.ofList [ result.File, outcome ])
+            |> Option.get
+
+        not (List.isEmpty proof.FailureReasons)
+
+    test <@ not (refused [] [ diagnostic "Warning" 25; diagnostic "Info" 26 ]) @>
+    test <@ reads.Value = 0 @>
+    test <@ refused [] [ diagnostic "Error" 1 ] @>
+    test <@ reads.Value = 1 @>
+    test <@ not (refused [ 1 ] [ diagnostic "Error" 1 ]) @>
+    test <@ reads.Value = 2 @>

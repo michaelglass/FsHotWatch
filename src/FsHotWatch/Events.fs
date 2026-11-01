@@ -1097,15 +1097,25 @@ module internal AnalysisFileEvidence =
     /// A result plus what the analysis of it concluded. Compiler errors and a failed
     /// symbol analysis are refusals; warnings are not, and neither is an error that
     /// `suppressedCodes` or the file's own `#nowarn` silences (`FcsSuppression.Suppression.silences`).
-    let fromResult (suppressedCodes: Set<int>) (result: FileCheckResult) (symbolAnalysis: Result<unit, string>) =
+    let fromResultWith
+        (suppressionOf: unit -> FcsSuppression.Suppression)
+        (result: FileCheckResult)
+        (symbolAnalysis: Result<unit, string>)
+        =
         let refusals =
             // Live or replayed (ADR-059 §17): the same blocking errors either way.
             [ match FileCheckResult.diagnostics result with
               | None -> yield "type checking did not complete"
-              | Some diagnostics ->
-                  for diagnostic in
-                      FcsSuppression.blockingErrors (FileCheckResult.suppression suppressedCodes result) diagnostics do
+              // A suppression only silences errors, and building one reads the file's
+              // `#nowarn` lines and every compiler flag: about 0.1 ms, for every file a
+              // restart replays, most of which have no error to judge (AUTOMATION-1441).
+              | Some diagnostics when
+                  diagnostics
+                  |> Array.exists (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                  ->
+                  for diagnostic in FcsSuppression.blockingErrors (suppressionOf ()) diagnostics do
                       yield diagnostic.Message
+              | Some _ -> ()
 
               match symbolAnalysis with
               | Ok() -> ()
@@ -1114,6 +1124,11 @@ module internal AnalysisFileEvidence =
         { File = result.File
           ModelGeneration = result.ModelGeneration
           Refusals = List.distinct refusals }
+
+    /// `fromResultWith` the suppression `suppressedCodes` and the file's own `#nowarn`
+    /// lines and flags give.
+    let fromResult (suppressedCodes: Set<int>) (result: FileCheckResult) (symbolAnalysis: Result<unit, string>) =
+        fromResultWith (fun () -> FileCheckResult.suppression suppressedCodes result) result symbolAnalysis
 
     /// The outcomes produced under `modelGeneration`. Retiring a replaced model's analysis
     /// keeps these: a replayed `FileChecked` records its outcome for the current model

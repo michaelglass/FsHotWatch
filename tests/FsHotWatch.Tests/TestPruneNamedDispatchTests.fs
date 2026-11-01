@@ -175,3 +175,45 @@ let ``an extension failure stays reported until the extension answers again`` ()
         emitBuildAndWaitTerminal host
         test <@ reported () |> List.isEmpty @>
         test <@ (state ()).FailedExtensions.IsEmpty @>)
+
+// AUTOMATION-1441. A restart owes every extension a refresh on its first flush, the
+// `BuildCompleted` the scan dispatches before its checks. On intelligence that refresh took
+// 6 s, and the check results queued behind the build could not fold until it finished. They
+// read neither the extensions' edges nor their failures, so they fold while it runs.
+[<Fact(Timeout = 60000)>]
+let ``check results queued behind a restart's first build fold while its extension refresh runs`` () =
+    withTempDir "tp-ext-background" (fun tmpDir ->
+        use entered = new System.Threading.ManualResetEventSlim(false)
+        use release = new System.Threading.ManualResetEventSlim(false)
+
+        let slow =
+            { new ITestPruneExtension with
+                member _.Name = "slow-extension"
+
+                member _.AnalyzeEdges _symbolStore _repoRoot =
+                    entered.Set()
+                    release.Wait()
+                    [] }
+
+        let host = createModelHost (Unchecked.defaultof<_>) tmpDir
+
+        let handler =
+            create (Path.Combine(tmpDir, "tp.db")) tmpDir None (Some(fun _db -> [ slow ])) None None None []
+
+        host.RegisterHandler(handler)
+        let before = host.CompletedDispatches()
+
+        let folded =
+            try
+                host.EmitBuildCompleted(BuildSucceeded)
+                test <@ entered.Wait 30000 @>
+
+                for i in 1..3 do
+                    host.EmitFileChecked(fakeFileCheckResult (Path.Combine(tmpDir, $"F%d{i}.fs")))
+
+                waitUntilTrue (fun () -> host.CompletedDispatches() >= before + 4L) 30000
+            finally
+                release.Set()
+
+        test <@ folded @>
+        waitForQuiescent host 30000)

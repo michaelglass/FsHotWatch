@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- perf: recording a check's analysis outcome (`AnalysisFileEvidence`) reads the file's suppression
+  only when the check has an error to judge (AUTOMATION-1441). A suppression only silences errors, and
+  building one parses the file's `#nowarn` lines and every compiler flag: about 0.1 ms per file,
+  most of test-prune's per-file replay of a restart, for files that almost never have an error.
+  Measured on this repository's 646 replays: 80–120 µs fell to 5–6 µs per file.
+
 - fix: the second options evaluation of a never-built checkout starts only once the clock is past the
   racy window after the first load returned (AUTOMATION-1438). The wait truncated a fractional
   millisecond, so on Linux the second evaluation started up to 1 ms inside the window and was refused
