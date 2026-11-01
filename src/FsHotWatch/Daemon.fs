@@ -3477,9 +3477,9 @@ type Daemon
         lifetime: CancellationTokenSource,
         formatAllFn: (unit -> Async<string>) option,
         excludePatterns: string list,
-        idleExitMin: int option,
+        idleExitMin: IdleExit.PositiveMinutes option,
         idleExitSource: IdleExit.ThresholdSource,
-        pressureIdleFloorMin: int option,
+        pressureIdleFloorMin: IdleExit.PositiveMinutes option,
         // How often a running daemon checks that its root still exists (`VanishedRoot`).
         vanishedRootCheckEvery: TimeSpan,
         // Live scan-activity leases, shared with the scan supervisor that takes them.
@@ -4027,7 +4027,7 @@ type Daemon
                 // window.
                 use _idleExitTimer: IDisposable =
                     match idleExitMin with
-                    | Some minutes when minutes > 0 ->
+                    | Some minutes ->
                         let deps: IdleExit.IdleExitDeps =
                             { BaseThresholdMin = minutes
                               Source = idleExitSource
@@ -5045,7 +5045,7 @@ module Daemon =
             /// auto-restarts. `None` (the default) disables it — no timer is
             /// created. Resolution from the `idleExitMin` config + repo path is
             /// done by the caller (`IdleExit.resolveThreshold`).
-            IdleExitMin: int option
+            IdleExitMin: IdleExit.PositiveMinutes option
             /// Where `IdleExitMin` came from (`IdleExit.resolveIdleExit`): named on the
             /// `[idle-exit] enabled:` line, and an `Environment` source that disables
             /// idle-exit logs that it did.
@@ -5059,7 +5059,7 @@ module Daemon =
             /// None`, e.g. the default workspace) eligible. Resolution from the
             /// `pressureIdleFloorMin` config is done by the caller
             /// (`IdleExit.resolvePressureFloor`).
-            PressureIdleFloorMin: int option
+            PressureIdleFloorMin: IdleExit.PositiveMinutes option
             /// How often a running daemon checks that its root still exists; it shuts
             /// down once it does not (`VanishedRoot`).
             VanishedRootCheckEvery: TimeSpan

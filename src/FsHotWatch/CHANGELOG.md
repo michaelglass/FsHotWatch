@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **BREAKING (API):** a resolved idle-exit window is a `PositiveMinutes` from config to timer
+  (AUTOMATION-1445). `IdleExit.resolveThreshold`, `resolvePressureFloor`, `ResolvedIdleExit.ThresholdMin`,
+  `effectiveThreshold`, `IdleExitDeps.BaseThresholdMin`/`PressureFloorMin` and
+  `DaemonOptions.IdleExitMin`/`PressureIdleFloorMin` now carry `PositiveMinutes` in place of `int`. The
+  daemon no longer re-checks `minutes > 0` before arming the timer, and the timer no longer relies on a
+  comment saying its window is positive. Windows, log lines and exits are unchanged.
+
 - **BREAKING (API):** `DepsFreshness.Freshness.Stale` carries a `StaleReason`: `AssetsMissing`, or
   `DepsNewer` with the assets' write time and the dependency files written after them
   (AUTOMATION-1445). `Stale` used to mean either fact, so the gate re-checked the assets on disk before

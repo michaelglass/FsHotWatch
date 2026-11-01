@@ -183,7 +183,7 @@ let ``empty path does not match`` () =
 
 [<Fact>]
 let ``absent + workspaces path resolves to auto 30`` () =
-    test <@ resolveThreshold IdleExitConfig.Absent "/dev/repo/.workspaces/x" = Some 30 @>
+    test <@ resolveThreshold IdleExitConfig.Absent "/dev/repo/.workspaces/x" = Some(minutes 30) @>
 
 [<Fact>]
 let ``absent + normal path resolves to None`` () =
@@ -199,11 +199,11 @@ let ``disabled resolves to None in default repo`` () =
 
 [<Fact>]
 let ``positive N resolves to Some N in default repo`` () =
-    test <@ resolveThreshold (IdleExitConfig.Minutes(minutes 5)) "/dev/repo" = Some 5 @>
+    test <@ resolveThreshold (IdleExitConfig.Minutes(minutes 5)) "/dev/repo" = Some(minutes 5) @>
 
 [<Fact>]
 let ``positive N resolves to Some N in workspace`` () =
-    test <@ resolveThreshold (IdleExitConfig.Minutes(minutes 5)) "/dev/repo/.workspaces/x" = Some 5 @>
+    test <@ resolveThreshold (IdleExitConfig.Minutes(minutes 5)) "/dev/repo/.workspaces/x" = Some(minutes 5) @>
 
 [<Fact>]
 let ``a window is only ever positive: zero and negative minutes cannot be built`` () =
@@ -258,7 +258,7 @@ let ``without the override the default workspace keeps its AUTO exemption`` () =
 [<Fact>]
 let ``without the override a workspace keeps AUTO 30`` () =
     let resolved = resolveIdleExit noEnv IdleExitConfig.Absent "/dev/repo/.workspaces/x"
-    test <@ resolved.ThresholdMin = Some 30 @>
+    test <@ resolved.ThresholdMin = Some(minutes 30) @>
     test <@ resolved.Source = ThresholdSource.Auto @>
 
 [<Fact>]
@@ -266,7 +266,7 @@ let ``without the override an explicit file value is sourced from the file`` () 
     let resolved =
         resolveIdleExit noEnv (IdleExitConfig.Minutes(minutes 15)) "/dev/repo/.workspaces/x"
 
-    test <@ resolved.ThresholdMin = Some 15 @>
+    test <@ resolved.ThresholdMin = Some(minutes 15) @>
     test <@ resolved.Source = ThresholdSource.ConfigFile @>
 
 [<Fact>]
@@ -283,13 +283,13 @@ let ``the override beats an explicit file value`` () =
     let resolved =
         resolveIdleExit (envOf "240") (IdleExitConfig.Minutes(minutes 15)) "/dev/repo/.workspaces/land"
 
-    test <@ resolved.ThresholdMin = Some 240 @>
+    test <@ resolved.ThresholdMin = Some(minutes 240) @>
     test <@ resolved.Source = ThresholdSource.Environment @>
 
 [<Fact>]
 let ``the override can arm the default workspace too`` () =
     let resolved = resolveIdleExit (envOf "60") IdleExitConfig.Absent "/dev/repo"
-    test <@ resolved.ThresholdMin = Some 60 @>
+    test <@ resolved.ThresholdMin = Some(minutes 60) @>
     test <@ resolved.Source = ThresholdSource.Environment @>
 
 [<Fact>]
@@ -297,7 +297,7 @@ let ``an invalid override falls back to the file and says so`` () =
     let resolved =
         resolveIdleExit (envOf "soon") IdleExitConfig.Absent "/dev/repo/.workspaces/x"
 
-    test <@ resolved.ThresholdMin = Some 30 @>
+    test <@ resolved.ThresholdMin = Some(minutes 30) @>
     test <@ resolved.Source = ThresholdSource.Auto @>
     test <@ resolved.Warning.IsSome @>
     test <@ resolved.Warning.Value.Contains "FSHW_IDLE_EXIT_MIN" @>
@@ -322,7 +322,7 @@ let ``only an override that disables idle-exit has a disabled line`` () =
 
 [<Fact>]
 let ``pressure floor absent resolves to default 2`` () =
-    test <@ resolvePressureFloor PressureFloorConfig.Absent = Some 2 @>
+    test <@ resolvePressureFloor PressureFloorConfig.Absent = Some(minutes 2) @>
 
 [<Fact>]
 let ``pressure floor disabled resolves to None`` () =
@@ -330,7 +330,7 @@ let ``pressure floor disabled resolves to None`` () =
 
 [<Fact>]
 let ``pressure floor positive N resolves to Some N`` () =
-    test <@ resolvePressureFloor (PressureFloorConfig.Minutes(minutes 5)) = Some 5 @>
+    test <@ resolvePressureFloor (PressureFloorConfig.Minutes(minutes 5)) = Some(minutes 5) @>
 
 // --- effectiveThreshold (pressure shortens an already-eligible window) ---
 // Eligibility (default/main workspace exempt → no window at all) is owned and
@@ -338,19 +338,19 @@ let ``pressure floor positive N resolves to Some N`` () =
 
 [<Fact>]
 let ``eligible without pressure uses the base window`` () =
-    test <@ effectiveThreshold 30 false (Some 2) = 30 @>
+    test <@ effectiveThreshold (minutes 30) false (Some(minutes 2)) = minutes 30 @>
 
 [<Fact>]
 let ``eligible under pressure shortens to min(base, floor)`` () =
-    test <@ effectiveThreshold 30 true (Some 2) = 2 @>
+    test <@ effectiveThreshold (minutes 30) true (Some(minutes 2)) = minutes 2 @>
 
 [<Fact>]
 let ``floor never lengthens a window already smaller`` () =
-    test <@ effectiveThreshold 1 true (Some 2) = 1 @>
+    test <@ effectiveThreshold (minutes 1) true (Some(minutes 2)) = minutes 1 @>
 
 [<Fact>]
 let ``floor disabled ignores pressure and uses the base window`` () =
-    test <@ effectiveThreshold 30 true None = 30 @>
+    test <@ effectiveThreshold (minutes 30) true None = minutes 30 @>
 
 // --- runTick wiring (injected effects) ---
 
@@ -360,9 +360,9 @@ let private makeDeps (idleMinutes: float) (busy: bool) =
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { BaseThresholdMin = 30
+        { BaseThresholdMin = minutes 30
           Source = ThresholdSource.Auto
-          PressureFloorMin = Some 2
+          PressureFloorMin = Some(minutes 2)
           Pressure = fun () -> PressureReading.GcHighLoad false
           Now = fun () -> now
           Inhibitors = fun () -> if busy then [ IdleInhibitor.PluginBusy ] else []
@@ -401,9 +401,9 @@ let ``runTick defers when busy then fires when free`` () =
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { BaseThresholdMin = 30
+        { BaseThresholdMin = minutes 30
           Source = ThresholdSource.Auto
-          PressureFloorMin = Some 2
+          PressureFloorMin = Some(minutes 2)
           Pressure = fun () -> PressureReading.GcHighLoad false
           Now = fun () -> now
           Inhibitors = fun () -> if busy.Value then [ IdleInhibitor.PluginBusy ] else []
@@ -428,9 +428,9 @@ let private makePressureDeps (idleMinutes: float) (pressure: bool ref) (floor: i
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { BaseThresholdMin = 30
+        { BaseThresholdMin = minutes 30
           Source = ThresholdSource.Auto
-          PressureFloorMin = floor
+          PressureFloorMin = floor |> Option.map minutes
           Pressure = fun () -> PressureReading.KernelLevel(if pressure.Value then 2 else 1)
           Now = fun () -> now
           Inhibitors = fun () -> []
@@ -552,9 +552,9 @@ let ``runTick swallows a throwing shutdown without escaping`` () =
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { BaseThresholdMin = 30
+        { BaseThresholdMin = minutes 30
           Source = ThresholdSource.Auto
-          PressureFloorMin = Some 2
+          PressureFloorMin = Some(minutes 2)
           Pressure = fun () -> PressureReading.GcHighLoad false
           Now = fun () -> now
           Inhibitors = fun () -> []
@@ -577,9 +577,9 @@ let ``createTimer logs the enable line and is disposable`` () =
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { BaseThresholdMin = 30
+        { BaseThresholdMin = minutes 30
           Source = ThresholdSource.Auto
-          PressureFloorMin = Some 2
+          PressureFloorMin = Some(minutes 2)
           Pressure = fun () -> PressureReading.GcHighLoad false
           // Activity is "now" so the timer never fires within the test window.
           Now = fun () -> now
@@ -599,7 +599,7 @@ let ``the enable line names where its window came from`` () =
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { BaseThresholdMin = 240
+        { BaseThresholdMin = minutes 240
           Source = ThresholdSource.Environment
           PressureFloorMin = None
           Pressure = fun () -> PressureReading.GcHighLoad false
@@ -630,9 +630,9 @@ let private makeScanDeps (leases: ScanActivity.ScanLeases) (idleMinutes: float) 
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { BaseThresholdMin = 30
+        { BaseThresholdMin = minutes 30
           Source = ThresholdSource.Auto
-          PressureFloorMin = Some 2
+          PressureFloorMin = Some(minutes 2)
           // Pressure ON: this is the shortened-window case that actually fired.
           Pressure = fun () -> PressureReading.KernelLevel 2
           Now = fun () -> now
@@ -701,7 +701,7 @@ let ``a tick in flight when the timer is disposed shuts down before the daemon's
         TestHelpers.cancelAcrossTeardown (fun hold shutdown ->
             createTimerWith
                 (TimeSpan.FromMilliseconds 100.0)
-                { BaseThresholdMin = 1
+                { BaseThresholdMin = minutes 1
                   Source = ThresholdSource.Auto
                   PressureFloorMin = None
                   Pressure = fun () -> PressureReading.GcHighLoad false
