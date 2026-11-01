@@ -911,3 +911,28 @@ toolchain, SDK and global properties.
 
 The cost is one extra evaluation, about 4–6 s, paid once by the first daemon in a checkout that
 was never built. Every later start in that checkout saves a full evaluation.
+
+## 23. Amendment (AUTOMATION-1441): test-prune's share of a restart's replay
+
+§21 left two costs in test-prune.
+
+- **Its first extension refresh held the fold.** A new process owes every extension a refresh on
+  its first flush, which is the `BuildCompleted` a scan dispatches before its checks. On
+  intelligence that refresh took 6 s, and every replay queued behind the build waited for it. When
+  the refresh is owed only because the process has not refreshed yet (nothing indexed, no failed
+  extension), it now runs on its own task, over the index the fold's refresh would have read: no
+  flush writes the index until its answer is taken. A `FileChecked` folds while it runs. Every other
+  event, a flush, a selection that queries the index, and a `BuildCompleted` that may wait for the
+  diff take its answer first. A run launched in the meantime takes the extensions' failures before
+  it reads anything, off the fold. What test-prune selects is unchanged.
+- **Its per-file replay.** Profiled on this repository (646 records, info logging, quiet restarts),
+  test-prune's fold of a replay costs 0.35–0.54 ms, not the 1.8 ms first estimated (that figure
+  summed every plugin). Recording the replay's outcome took 80–120 µs of it, nearly all building
+  the file's suppression (its `#nowarn` lines and every compiler flag), which only decides whether
+  an error blocks. It is now read only when a diagnostic is an error: 5–6 µs per file. What is left
+  per file: about 150 µs of task-cache lookup and replay reporting (the framework's, shared by
+  every plugin), about 75 µs of key (the source is hashed for the key and again for the key's miss
+  fingerprint), about 25–70 µs reading the file's analysis identity from SQLite on a fresh
+  connection, and about 25 µs hashing that identity.
+
+Neither change decides anything (§18). Not measured on intelligence: that needs a release.
