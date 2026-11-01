@@ -11,6 +11,7 @@ open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.ProcessHelper
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.PluginTypes
 open FsHotWatch.TestPrune.CoverageArtifacts
 
 /// Cache backend for the FCS check pipeline.

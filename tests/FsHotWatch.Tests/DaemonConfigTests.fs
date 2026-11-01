@@ -1268,10 +1268,10 @@ let ``parseConfig tests reportVerificationFormat parses auto/ctrf/off`` () =
         (parseConfig """{"tests": {"projects": [{"project": "T"}]}}""" defaults)
             .Tests.Value.Projects.[0].ReportVerificationFormat
 
-    test <@ absent = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect @>
-    test <@ parseFmt "auto" = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect @>
-    test <@ parseFmt "ctrf" = FsHotWatch.TestPrune.TestPrunePlugin.Ctrf @>
-    test <@ parseFmt "off" = FsHotWatch.TestPrune.TestPrunePlugin.Disabled @>
+    test <@ absent = FsHotWatch.TestPrune.PluginTypes.AutoDetect @>
+    test <@ parseFmt "auto" = FsHotWatch.TestPrune.PluginTypes.AutoDetect @>
+    test <@ parseFmt "ctrf" = FsHotWatch.TestPrune.PluginTypes.Ctrf @>
+    test <@ parseFmt "off" = FsHotWatch.TestPrune.PluginTypes.Disabled @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig tests alwaysClasses reads the class names, and none when absent`` () =

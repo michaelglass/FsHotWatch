@@ -61,6 +61,7 @@
     <Compile Include="GroupSchedule.fs" />
     <Compile Include="CoverageArtifacts.fs" />
     <Compile Include="CoverageIngest.fs" />
+    <Compile Include="PluginTypes.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 

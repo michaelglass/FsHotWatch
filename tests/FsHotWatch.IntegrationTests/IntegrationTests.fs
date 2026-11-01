@@ -22,9 +22,11 @@ module LintPlugin = FsHotWatch.Lint.LintPlugin
 
 open FsHotWatch.Fantomas.FormatCheckPlugin
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.PluginTypes
 open FsHotWatch.TestPrune.CoverageArtifacts
 
 module TestPrunePlugin = FsHotWatch.TestPrune.TestPrunePlugin
+module PluginTypes = FsHotWatch.TestPrune.PluginTypes
 
 module AnalyzersPlugin = FsHotWatch.Analyzers.AnalyzersPlugin
 
@@ -2274,7 +2276,7 @@ let ``ProcessRegistry.killAll kills a child started via runProcess from another 
 let ``TestPrune honors per-project TimeoutSec and records TimedOut`` () =
     withTempDir "fshw-tp-timeout" (fun tmpDir ->
         let configs =
-            [ { TestPrunePlugin.TestConfig.Project = "Slow"
+            [ { PluginTypes.TestConfig.Project = "Slow"
                 Command = "sleep"
                 Args = "10"
                 Group = "default"
@@ -2468,7 +2470,7 @@ let ``run summary names the slowest project when 2+ projects ran`` () =
         // 20× differential — wide enough that fork-exec / first-time JIT overhead
         // on FastProj can't overtake SlowProj's actual wall time.
         let configs =
-            [ { TestPrunePlugin.TestConfig.Project = "FastProj"
+            [ { PluginTypes.TestConfig.Project = "FastProj"
                 Command = "sh"
                 Args = "-c \"sleep 0.05\""
                 Group = "default"
@@ -2482,7 +2484,7 @@ let ``run summary names the slowest project when 2+ projects ran`` () =
                 NameHungTests = false
                 Weight = 1.0
                 AlwaysClasses = [] }
-              { TestPrunePlugin.TestConfig.Project = "SlowProj"
+              { PluginTypes.TestConfig.Project = "SlowProj"
                 Command = "sh"
                 Args = "-c \"sleep 1.0\""
                 Group = "default"

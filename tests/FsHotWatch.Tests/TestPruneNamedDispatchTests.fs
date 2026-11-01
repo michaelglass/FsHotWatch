@@ -10,6 +10,7 @@ open FsHotWatch.CheckPipeline
 open FsHotWatch.Events
 open TestPrune.AstAnalyzer
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.PluginTypes
 open TestPrune.Extensions
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.Tests.TestPrunePluginTestSupport

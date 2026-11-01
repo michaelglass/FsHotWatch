@@ -379,7 +379,7 @@ let private barrierScript (tmpDir: string) (count: int) =
 
     script
 
-let private runnerConfig (script: string) (project: string) : TestPrunePlugin.TestConfig =
+let private runnerConfig (script: string) (project: string) : PluginTypes.TestConfig =
     { Project = project
       Command = "sh"
       Args = $"%s{script} %s{project}"
@@ -388,14 +388,14 @@ let private runnerConfig (script: string) (project: string) : TestPrunePlugin.Te
       FilterTemplate = None
       ClassJoin = " "
       TimeoutSec = None
-      ReportVerificationFormat = TestPrunePlugin.AutoDetect
+      ReportVerificationFormat = PluginTypes.AutoDetect
       Starvation = None
       CheckSkip = None
       NameHungTests = false
       Weight = 1.0
       AlwaysClasses = [] }
 
-let private runAll (tmpDir: string) (cap: int option) (configs: TestPrunePlugin.TestConfig list) =
+let private runAll (tmpDir: string) (cap: int option) (configs: PluginTypes.TestConfig list) =
     let host = FsHotWatch.PluginHost.PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
     host.RegisterHandler(

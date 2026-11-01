@@ -13,6 +13,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.PluginTypes
 open FsHotWatch.Tests.TestPrunePluginTestSupport
 
 /// A test class written the way most F# suites write them.

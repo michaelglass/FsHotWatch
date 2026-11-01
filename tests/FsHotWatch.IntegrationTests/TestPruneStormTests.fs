@@ -6,6 +6,7 @@ open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.PluginTypes
 open FsHotWatch.Tests.TestHelpers
 
 // A convergence-UNDER-LOAD stress test, not a fixed-window behavior test: it

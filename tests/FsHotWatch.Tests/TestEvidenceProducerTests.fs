@@ -394,7 +394,7 @@ let ``a run that matched nothing, or a key lost by completion, publishes nothing
 
 [<Fact>]
 let ``the canonical config writes every field in full, however long`` () =
-    let config (last: string) : FsHotWatch.TestPrune.TestPrunePlugin.TestConfig =
+    let config (last: string) : FsHotWatch.TestPrune.PluginTypes.TestConfig =
         { Project = "T"
           Command = "dotnet"
           Args = "run"
@@ -403,20 +403,20 @@ let ``the canonical config writes every field in full, however long`` () =
           FilterTemplate = Some "--filter-class {classes}"
           ClassJoin = " "
           TimeoutSec = Some 30
-          ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.Ctrf
+          ReportVerificationFormat = FsHotWatch.TestPrune.PluginTypes.Ctrf
           Starvation = None
           CheckSkip = None
           NameHungTests = false
           Weight = 1.0
           AlwaysClasses = [] }
 
-    let a = FsHotWatch.TestPrune.TestPrunePlugin.canonicalTestConfig (config "a")
-    let b = FsHotWatch.TestPrune.TestPrunePlugin.canonicalTestConfig (config "b")
+    let a = FsHotWatch.TestPrune.PluginTypes.canonicalTestConfig (config "a")
+    let b = FsHotWatch.TestPrune.PluginTypes.canonicalTestConfig (config "b")
     test <@ a <> b @>
     test <@ a.Contains "V250" @>
 
     let bare =
-        FsHotWatch.TestPrune.TestPrunePlugin.canonicalTestConfig
+        FsHotWatch.TestPrune.PluginTypes.canonicalTestConfig
             { config "a" with
                 FilterTemplate = None
                 TimeoutSec = None }
@@ -427,7 +427,7 @@ let ``the canonical config writes every field in full, however long`` () =
     // so a green earned under it is a different claim (AUTOMATION-1353). Off, it is not
     // written, so every key earned before the option existed is unchanged.
     let named =
-        FsHotWatch.TestPrune.TestPrunePlugin.canonicalTestConfig
+        FsHotWatch.TestPrune.PluginTypes.canonicalTestConfig
             { config "a" with
                 NameHungTests = true
                 Weight = 1.0 }
@@ -437,4 +437,4 @@ let ``the canonical config writes every field in full, however long`` () =
 
     // `weight` decides when a host is admitted, never what it runs: it is no part of the key
     // (AUTOMATION-1299, ADR-053).
-    test <@ FsHotWatch.TestPrune.TestPrunePlugin.canonicalTestConfig { config "a" with Weight = 3.0 } = a @>
+    test <@ FsHotWatch.TestPrune.PluginTypes.canonicalTestConfig { config "a" with Weight = 3.0 } = a @>

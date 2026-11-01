@@ -19,6 +19,7 @@ open FsHotWatch.Plugin
 open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.PluginTypes
 open TestPrune.AstAnalyzer
 open TestPrune.Coverage
 open TestPrune.Database
@@ -5018,7 +5019,8 @@ let ``a narrower run that keeps the receipt leaves no revocation reason behind``
     // no reason survives it for `test-scope` to report. A reason beside a standing receipt
     // cannot be held at all (`HeldReceipt`); a narrower transition over a revoked one
     // leaves neither.
-    test <@ ReceiptTransition.hold (HeldReceipt.Revoked "stale") ReceiptTransition.Narrower None = HeldReceipt.NoneYet @>
+    test
+        <@ ReceiptTransition.hold (HeldReceipt.Revoked "stale") ReceiptTransition.Narrower None = HeldReceipt.NoneYet @>
 
     withReceiptSource (fun repoRoot _ ->
         let handler =
