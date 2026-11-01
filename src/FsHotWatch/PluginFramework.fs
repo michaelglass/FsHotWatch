@@ -610,6 +610,64 @@ type IFileCacheReadGuard =
 /// (ADR-059 §17). Scoped by the host's repository root.
 type ISkipsOutOfRepoFiles = interface end
 
+/// The batch of queued events a plugin's loop is folding, as its `CacheKey` sees it
+/// (AUTOMATION-1437).
+///
+/// A batch begins when the loop takes an event with no batch left to finish, and holds that
+/// event and every message already waiting in the plugin's mailbox. So every event of a batch
+/// was admitted before the batch began. A key function may therefore share work that reads
+/// the disk, such as hashing the tool set its verdicts depend on, across the events of one
+/// batch: the work is no older than any event it answers, which is all a per-event read
+/// promised. On a restart that replays thousands of cached results, that read was most of the
+/// cost of each replay.
+///
+/// A key that answers from such shared work says so with `Reuse`. A hit under it replays a
+/// result that is true of the inputs the key names. A miss never runs the handler under it:
+/// the framework keys the event again outside any batch, so a result is stored under a key
+/// that describes the disk the handler ran against, as it was before batches existed.
+///
+/// The batch is the loop's own: the key is computed synchronously on the loop's thread,
+/// between `Within` setting the batch and restoring it.
+[<AbstractClass; Sealed>]
+type DispatchBatch =
+    [<System.ThreadStatic; DefaultValue>]
+    static val mutable private current: int64
+
+    [<System.ThreadStatic; DefaultValue>]
+    static val mutable private reused: bool
+
+    /// The batch the calling key function runs in: an id that no other batch of this
+    /// process shares, or 0 outside one (a key computed off the loop, or keyed afresh).
+    static member Current: int64 = DispatchBatch.current
+
+    /// Say that the key just computed answers from work shared with an earlier event of its
+    /// batch. Outside a batch it means nothing.
+    static member Reuse() : unit =
+        if DispatchBatch.current <> 0L then
+            DispatchBatch.reused <- true
+
+    /// `compute` inside `batch` (0: outside any), and whether it said `Reuse`.
+    static member internal Within(batch: int64, compute: unit -> 'T) : 'T * bool =
+        let priorBatch = DispatchBatch.current
+        let priorReused = DispatchBatch.reused
+        DispatchBatch.current <- batch
+        DispatchBatch.reused <- false
+
+        try
+            let value = compute ()
+            value, DispatchBatch.reused
+        finally
+            DispatchBatch.current <- priorBatch
+            DispatchBatch.reused <- priorReused
+
+/// Batch ids, unique in the process, so a key function shared by two loops never mistakes
+/// one loop's batch for another's.
+module internal DispatchBatches =
+    let mutable private last = 0L
+
+    let next () =
+        System.Threading.Interlocked.Increment(&last)
+
 /// Declarative plugin definition.
 [<NoComparison; NoEquality>]
 type PluginHandler<'State, 'Msg> =
@@ -1950,6 +2008,11 @@ let internal registerHandlerForOwner
                     // still in the mailbox.
                     let taken = ResizeArray<PluginEvent<'Msg> * PluginWorkOwner.WorkId>()
 
+                    // The dispatch batch the next event folds in, and how many of the messages
+                    // waiting when it began are still to fold in it (`DispatchBatch`).
+                    let batch = ref 0L
+                    let batchLeft = ref 0
+
                     let isResultFirst identity =
                         match queuedResults.TryGetValue identity with
                         | true, (_, resultFirst) -> resultFirst
@@ -1979,6 +2042,16 @@ let internal registerHandlerForOwner
                             let! event, identity = receive ()
                             beginRunOf identity
 
+                            // A batch holds the event that begins it and every message already
+                            // waiting then. Messages fold oldest first, and one that jumps the
+                            // queue (a `resultFirst` result) only ends the batch sooner.
+                            if batchLeft.Value <= 0 then
+                                batch.Value <- DispatchBatches.next ()
+                                batchLeft.Value <- 1 + taken.Count + inbox.CurrentQueueLength
+
+                            batchLeft.Value <- batchLeft.Value - 1
+                            let eventBatch = batch.Value
+
                             match queuedResults.TryRemove identity with
                             | true, (subtask, _) -> services.EndSubtask handler.Name subtask
                             | _ -> ()
@@ -1991,12 +2064,20 @@ let internal registerHandlerForOwner
                             let! attempted =
                                 async {
                                     try
-                                        // Computed ONCE per dispatched event — see `tryReplayCache`.
-                                        let cacheKeyOpt =
-                                            if cacheable event then
-                                                handler.CacheKey |> Option.bind (fun key -> key state event)
-                                            else
-                                                None
+                                        // Computed ONCE per dispatched event — see `tryReplayCache` —
+                                        // inside its dispatch batch. A key that reused its batch's work
+                                        // and missed is computed once more, outside the batch.
+                                        let keyIn (inBatch: int64) =
+                                            DispatchBatch.Within(
+                                                inBatch,
+                                                fun () ->
+                                                    if cacheable event then
+                                                        handler.CacheKey |> Option.bind (fun key -> key state event)
+                                                    else
+                                                        None
+                                            )
+
+                                        let batchKey, reusedBatch = keyIn eventBatch
 
                                         // A `Custom` message is a cache WRITER, never a cache READER.
                                         //
@@ -2013,16 +2094,28 @@ let internal registerHandlerForOwner
                                         //
                                         // A state may also refuse to READ a `FileChecked` entry it
                                         // still writes (`IFileCacheReadGuard`).
-                                        let replayKeyOpt =
+                                        let replayKeyOf keyOpt =
                                             match event, box state with
                                             | Custom _, _ -> None
                                             | FileChecked result, (:? IFileCacheReadGuard as guard) when
                                                 not (guard.MayReadFileCache result)
                                                 ->
                                                 None
-                                            | _ -> cacheKeyOpt
+                                            | _ -> keyOpt
 
-                                        match tryReplayCache event replayKeyOpt with
+                                        // A miss under a key that reused its batch's work is keyed
+                                        // afresh and looked up again, exactly as an event outside any
+                                        // batch is: the handler only ever runs, and stores, under a key
+                                        // that read the disk for this event (`DispatchBatch`).
+                                        let cacheKeyOpt, replayHit =
+                                            match tryReplayCache event (replayKeyOf batchKey) with
+                                            | Some replayed -> batchKey, Some replayed
+                                            | None when reusedBatch ->
+                                                let freshKey, _ = keyIn 0L
+                                                freshKey, tryReplayCache event (replayKeyOf freshKey)
+                                            | None -> batchKey, None
+
+                                        match replayHit with
                                         | Some replayed ->
                                             return Result.Ok(replayedState state event replayed, None, false)
                                         // ADR-059 §17: a replayed check of a file this plugin never

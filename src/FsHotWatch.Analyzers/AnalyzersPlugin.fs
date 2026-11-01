@@ -669,15 +669,19 @@ let internal createScopedWithSeams
     // Files served from cache instead of analyzed. The framework computes this
     // handler's key and then EITHER replays the entry OR runs `Update`, one event at a
     // time on the plugin's loop — so a keyed event that `Update` never saw was
-    // replayed. The key marks it pending, `Update` clears the mark, and whichever
-    // key computation comes next counts a mark still standing.
-    let mutable replayPending = false
+    // replayed. The key marks its result pending, `Update` clears the mark, and
+    // whichever key computation comes next counts a mark still standing. A key computed
+    // again for the same result (`DispatchBatch`: a miss keyed afresh) is not a replay of it.
+    let mutable replayPending: obj = null
     let mutable replayedFiles = 0
 
-    let countPendingReplay () =
-        if Volatile.Read(&replayPending) then
+    let countPendingReplay (current: obj) =
+        let pending = Volatile.Read(&replayPending)
+
+        if not (isNull pending) && not (obj.ReferenceEquals(pending, current)) then
             Volatile.Write(&replayedFiles, Volatile.Read(&replayedFiles) + 1)
-            Volatile.Write(&replayPending, false)
+
+        Volatile.Write(&replayPending, null)
 
     let summarizeRun analyzed diagnosticsByFile crashesByFile =
         summarize
@@ -806,7 +810,7 @@ let internal createScopedWithSeams
         fun ctx state event ->
             async {
                 match event with
-                | FileChecked _ -> Volatile.Write(&replayPending, false)
+                | FileChecked _ -> Volatile.Write(&replayPending, null)
                 | _ -> ()
 
                 let modelGeneration = currentModelGeneration ctx
@@ -1180,8 +1184,17 @@ let internal createScopedWithSeams
         // the digest `fshw findings` compares a file's stamp with.
         let analyzerConfigHash = FsHotWatch.Analyzers.AnalyzerFindings.configDigestOf
 
+        // The dispatch batch the analyzer set was last read in (`DispatchBatch`). Reading it
+        // hashes every analyzer DLL, which was most of a cache replay: a restart replaying
+        // thousands of files read the same bytes once per file (AUTOMATION-1437).
+        let mutable setReadInBatch = 0L
+
         let cacheKey (event: PluginEvent<AnalyzersMsg>) : ContentHash option =
-            countPendingReplay ()
+            countPendingReplay (
+                match event with
+                | FileChecked result -> box result
+                | _ -> null
+            )
 
             match event with
             | FileChecked result ->
@@ -1190,14 +1203,23 @@ let internal createScopedWithSeams
                 // The key is computed once per event on the plugin's own loop, before
                 // the lookup and the run, so refreshing here is what makes the entry
                 // looked up and the analyzers that run describe the same set on disk —
-                // and, for a config edit, analyzers loaded since it.
-                refreshAnalyzerSet ()
+                // and, for a config edit, analyzers loaded since it. Within one dispatch
+                // batch the set is read once: the events after the first say they reused
+                // that read, and a miss among them is keyed afresh before it runs.
+                let batch = FsHotWatch.PluginFramework.DispatchBatch.Current
+
+                if batch <> 0L && batch = Volatile.Read(&setReadInBatch) then
+                    FsHotWatch.PluginFramework.DispatchBatch.Reuse()
+                else
+                    refreshAnalyzerSet ()
+                    Volatile.Write(&setReadInBatch, batch)
+
                 let chain = refreshConfigs file
 
                 match (Volatile.Read(&snapshot)).Inputs with
                 | Result.Error _ -> None
                 | Result.Ok analyzerInputs ->
-                    Volatile.Write(&replayPending, true)
+                    Volatile.Write(&replayPending, box result)
                     // A hit on this key replays the analysis it names; its stamp is this.
                     stamps.Put(file, Some analyzerInputs, analyzerConfigHash chain)
 

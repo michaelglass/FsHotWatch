@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: `DispatchBatch` lets a plugin's `CacheKey` share work that reads the disk across one
+  batch of queued events (AUTOMATION-1437). A batch is the event a plugin's loop takes plus every
+  message already waiting then, so the work is no older than any event it answers. A key that
+  answers from such work calls `DispatchBatch.Reuse()`; a hit under it replays, and a miss is keyed
+  again outside the batch before the handler runs, so a result is only ever stored under a key
+  that read the disk for its own event.
+
 - perf: a replayed check result (`checkRecords`) is published without a place under the live-results
   bound (AUTOMATION-1437, ADR-054). It holds no FCS objects, only what its record filed, so the
   bound has nothing to bound in it. A restart that answered its checks from records published them

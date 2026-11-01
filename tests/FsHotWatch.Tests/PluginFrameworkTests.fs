@@ -922,6 +922,133 @@ let ``cache key is computed exactly once per dispatched event on a cache hit`` (
     }
     |> Async.RunSynchronously
 
+/// A handler whose key records the dispatch batch it ran in for each changed file, under a
+/// first fold that waits for `gate`. Its key names the batch only as "inside one" or not.
+let private batchRecordingHandler
+    (name: string)
+    (gate: System.Threading.Tasks.Task)
+    (batches: System.Collections.Concurrent.ConcurrentQueue<string * int64>)
+    (reuse: bool)
+    : PluginHandler<int, unit> =
+    { Name = PluginName.create name
+      Init = 0
+      Update =
+        fun ctx folded event ->
+            async {
+                if folded = 0 then
+                    do! Async.AwaitTask gate
+
+                match event with
+                | FileChanged _ -> ctx.ReportStatus(completedAt System.DateTime.UtcNow)
+                | _ -> ()
+
+                return folded + 1
+            }
+      Commands = []
+      Subscriptions = Set.singleton SubscribeFileChanged
+      PrepareCommit = None
+      CacheKey =
+        Some(fun _ event ->
+            let batch = DispatchBatch.Current
+
+            match event with
+            | FileChanged(SourceChanged [ file ]) -> batches.Enqueue((file, batch))
+            | _ -> ()
+
+            if reuse && batch <> 0L then
+                DispatchBatch.Reuse()
+
+            Some(ContentHash.create (if batch = 0L then "fresh" else "batch")))
+      Teardown = None }
+
+[<Fact(Timeout = 20000)>]
+let ``events queued behind a fold share one dispatch batch, and an event admitted after them starts another`` () =
+    // AUTOMATION-1437: a key may share work that reads the disk across the events of one
+    // batch. Every event of a batch was admitted before the batch began, so the work is no
+    // older than any event it answers.
+    let gate =
+        System.Threading.Tasks.TaskCompletionSource<unit>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+
+    let batches = System.Collections.Concurrent.ConcurrentQueue<string * int64>()
+    let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+    let handler = batchRecordingHandler "dispatch-batch" gate.Task batches false
+    let reg = registerHandler (servicesWithCache cache ignore) handler
+
+    let dispatch file =
+        (reg.DispatchTracked(DispatchFileChanged(SourceChanged [ file ]))).Value
+
+    let first = dispatch "A"
+    waitUntil (fun () -> batches.Count = 1) 5000
+    // Queued while A's fold waits.
+    let queued = [ dispatch "B"; dispatch "C"; dispatch "D" ]
+    gate.SetResult()
+
+    for receipt in first :: queued do
+        receipt.Wait(System.TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
+
+    (dispatch "E").Wait(System.TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
+
+    let batchOf = batches |> Map.ofSeq
+    test <@ batches.Count = 5 @>
+    test <@ batchOf |> Map.forall (fun _ batch -> batch <> 0L) @>
+    test <@ batchOf["B"] = batchOf["C"] && batchOf["C"] = batchOf["D"] @>
+    test <@ batchOf["A"] <> batchOf["B"] @>
+    test <@ batchOf["E"] <> batchOf["D"] @>
+
+[<Fact(Timeout = 20000)>]
+let ``a key that reused its batch's work and missed is keyed again outside the batch before the handler runs`` () =
+    // The batch's shared work may be older than the disk now. A hit under it is a true
+    // answer for the inputs it names; a miss runs the handler, whose result must be stored
+    // under a key that describes the disk it ran against, as it was before batches.
+    let gate =
+        System.Threading.Tasks.TaskCompletionSource<unit>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+
+    gate.SetResult()
+    let batches = System.Collections.Concurrent.ConcurrentQueue<string * int64>()
+    let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+    let name = "dispatch-batch-miss"
+    let handler = batchRecordingHandler name gate.Task batches true
+    let reg = registerHandler (servicesWithCache cache ignore) handler
+    dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "A" ]))
+
+    let compKey: TaskCache.CompositeKey = { Plugin = name; File = None }
+    // Keyed in its batch, then again outside it; stored under the second.
+    test <@ batches |> Seq.map (fun (_, b) -> b <> 0L) |> List.ofSeq = [ true; false ] @>
+    waitUntil (fun () -> (cache.TryGet compKey (ContentHash.create "fresh")).IsSome) 5000
+    test <@ (cache.TryGet compKey (ContentHash.create "batch")).IsNone @>
+
+[<Fact(Timeout = 20000)>]
+let ``a key that reused its batch's work and hit is replayed without being keyed again`` () =
+    let gate =
+        System.Threading.Tasks.TaskCompletionSource<unit>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+
+    gate.SetResult()
+    let batches = System.Collections.Concurrent.ConcurrentQueue<string * int64>()
+    let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+    let name = "dispatch-batch-hit"
+    let compKey: TaskCache.CompositeKey = { Plugin = name; File = None }
+
+    cache.Set
+        compKey
+        (ContentHash.create "batch")
+        { CacheKey = ContentHash.create "batch"
+          Errors = []
+          Status = cachedRunDone
+          EmittedEvents = [] }
+
+    let handler = batchRecordingHandler name gate.Task batches true
+    let reg = registerHandler (servicesWithCache cache ignore) handler
+    dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "A" ]))
+
+    test <@ batches |> Seq.map (fun (_, b) -> b <> 0L) |> List.ofSeq = [ true ] @>
+    test <@ (cache.TryGet compKey (ContentHash.create "fresh")).IsNone @>
+
 // --- RunExclusive primitive: per-handler single-flight (always-Drop) ---
 
 /// Drives RunExclusive end-to-end through the agent. `started` increments at the top of the

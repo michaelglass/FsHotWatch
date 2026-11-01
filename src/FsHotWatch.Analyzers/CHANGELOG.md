@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- perf: the analyzer set is read and hashed once per dispatch batch, not once per file
+  (AUTOMATION-1437). Reading every analyzer DLL was about 1.6 of 2.2 ms of each cache replay on
+  this repository; a restart replaying 645 files now drains the analyzers in about 0.6 s, from
+  1.3 s. A miss in a batch is keyed afresh before the analyzers run, as before.
+
 ## 0.7.0-alpha.53 - 2026-10-30
 
 - feat: `analyzers.scope` in `.fshw.json` — `{ "<configured path>": { "include": [globs] } }` or
