@@ -561,6 +561,60 @@ let ``the second evaluation starts after the racy window has passed the first on
         restarted.LoadProjects [ t.Project ] |> Seq.toList |> ignore
         test <@ counted.Loads = 0 @>)
 
+// The first design-time build can write a path only the SECOND evaluation's inputs name,
+// and waiting for the window to pass the latest change among the first evaluation's inputs
+// leaves that write inside it. Here the first build writes such a path well after its last
+// input. The window is judged from
+// when the first load returned, after every one of its writes.
+[<WallClock("timestamp granularity: the sleep puts a write the first evaluation's inputs do not name a clear interval after those they do; the assertion is on evaluation counts, never on a duration")>]
+[<Fact(Timeout = 120000)>]
+let ``the second evaluation starts after the racy window has passed every write of the first one`` () =
+    withTree (fun t ->
+        File.Delete(t.Path("src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
+        // In a directory no input of the first evaluation is judged by, so writing it moves none.
+        let late = Path.Combine(t.ProjectDir, "obj", "late", "late.props")
+        Directory.CreateDirectory(Path.GetDirectoryName late) |> ignore
+        Threading.Thread.Sleep(TimeSpan.FromMilliseconds 2100.0)
+
+        let designTimeBuild () =
+            if not (File.Exists late) then
+                firstDesignTimeBuild t ()
+                Threading.Thread.Sleep(TimeSpan.FromMilliseconds 1000.0)
+                writeFile late "<Project />\n"
+
+        let inner =
+            CountingLoader((fun () -> [ sampleOptions t.Project t.Assets ]), designTimeBuild, None)
+
+        // The second evaluation reads the late file; the first, which wrote it, did not.
+        let listings = ref 0
+
+        let listInputs projects =
+            listings.Value <- listings.Value + 1
+            let inputs = OptionsInputs.list projects
+
+            if listings.Value = 1 then
+                inputs
+            else
+                { inputs with
+                    Reads = late :: inputs.Reads }
+
+        let loader =
+            CachingLoader(
+                inner,
+                listInputs,
+                t.Store,
+                (fun _ -> request t),
+                (fun () -> sameEnvironment),
+                ignore,
+                racyWindow = TimeSpan.FromMilliseconds 2000.0,
+                stamp = inTree t
+            )
+            :> IWorkspaceLoader
+
+        loader.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        test <@ inner.Loads = 2 @>
+        test <@ t.Store.Lookup((requestKey (request t)).Value) |> Option.isSome @>)
+
 [<Fact(Timeout = 120000)>]
 let ``a project directory that changes on every evaluation is evaluated twice at most and never filed`` () =
     withTree (fun t ->
@@ -935,3 +989,16 @@ let ``the toolchain names fshw, Ionide and MSBuild, and a file names what it rea
 
     test <@ OptionsInputs.environmentNamesIn text = [ "Knob"; "HOME_X" ] @>
     test <@ processEnvironment () |> List.exists (fun (name, _) -> name = "PATH") @>
+
+// Seen on Linux CI: the second evaluation of a never-built checkout started 0.7 ms before
+// the racy window had passed the first load, and was refused for the first design-time
+// build's own write. A wait of a fractional millisecond slept a whole one less.
+[<Fact>]
+let ``the wait for the racy window ends only once the clock is past it`` () =
+    let start = DateTime(2026, 11, 1, 6, 47, 15, DateTimeKind.Utc)
+    let clock = ref start
+    let deadline = start.AddTicks 7_000L // 0.7 ms
+
+    waitPast (fun () -> clock.Value) (fun ms -> clock.Value <- clock.Value.AddMilliseconds(float ms)) deadline
+
+    test <@ clock.Value > deadline @>

@@ -511,9 +511,8 @@ let tryReplay
 type Filing =
     | Filed
     /// Inputs changed while the projects were evaluated, so what was evaluated may not be
-    /// what the key reads now: every one of them, in the order the inputs list them, and
-    /// the latest change among them.
-    | Moved of paths: string list * latest: DateTime
+    /// what the key reads now: every one of them, in the order the inputs list them.
+    | Moved of paths: string list
     | Refused of why: string
 
 /// Where to look for whether `path` changed: the path itself, or for a path that is not
@@ -540,19 +539,19 @@ let file
     (since: DateTime)
     (stamp: string -> FileStamp.Stamp voption)
     : Filing =
-    let changedAt (path: string) =
+    let changedSince (path: string) =
         match witnessOf path |> Option.map stamp with
-        | Some(ValueSome s) when s.ChangedAt >= since -> Some(path, s.ChangedAt)
-        | _ -> None
+        | Some(ValueSome s) -> s.ChangedAt >= since
+        | _ -> false
 
     let watched =
         inputs.Reads
         @ inputs.Probes
         @ [ for listing in inputs.Listings -> listing.Directory ]
 
-    match inputs.Listings |> List.tryFind _.Recursive, watched |> List.distinct |> List.choose changedAt with
+    match inputs.Listings |> List.tryFind _.Recursive, watched |> List.distinct |> List.filter changedSince with
     | Some listing, _ -> Refused $"MSBuild listed the tree under %s{listing.Directory}, which is not keyed"
-    | None, (_ :: _ as moved) -> Moved(List.map fst moved, moved |> List.map snd |> List.max)
+    | None, (_ :: _ as moved) -> Moved moved
     | None, [] ->
         let key = optionsKey request inputs environment
 
@@ -587,6 +586,16 @@ let processEnvironment () : (string * string) list =
           Environment.GetEnvironmentVariables()
           |> Seq.cast<System.Collections.DictionaryEntry> -> string entry.Key, string entry.Value ]
 
+/// Returns once `now ()` is past `deadline`, sleeping through `sleep` (milliseconds). A
+/// sleep is rounded up and the clock read again: a fractional millisecond truncated away
+/// left the second options evaluation 0.7 ms inside the window it is judged by.
+let rec waitPast (now: unit -> DateTime) (sleep: int -> unit) (deadline: DateTime) : unit =
+    let left = deadline - now ()
+
+    if left >= TimeSpan.Zero then
+        sleep (int (Math.Ceiling left.TotalMilliseconds) + 1)
+        waitPast now sleep deadline
+
 /// A workspace loader that answers from the outcome store when every input of the last
 /// evaluation of the same request is byte-identical, and otherwise evaluates through
 /// `inner`, lists what that read with `listInputs`, and files it.
@@ -618,6 +627,7 @@ type CachingLoader
                 | _ -> ())
 
         let loaded = inner.LoadProjects projects |> Seq.toList
+        let loadedAt = DateTime.UtcNow
 
         let filing =
             if failed.Count > 0 then
@@ -630,7 +640,7 @@ type CachingLoader
                 with ex ->
                     Refused $"its inputs could not be listed: %s{ex.Message}"
 
-        loaded, filing
+        loaded, filing, loadedAt
 
     // The directories of the projects asked for. The first design-time build in a checkout
     // that was never built writes there: each project's generated compile items under
@@ -650,28 +660,28 @@ type CachingLoader
 
     let evaluateAndFile (req: Request) (env: (string * string) list) (projects: string list) =
         let rec attempt (retried: bool) =
-            let loaded, filing = evaluateOnce req env projects
+            let loaded, filing, loadedAt = evaluateOnce req env projects
 
             match filing with
-            | Moved(moved, latest) when not retried && List.forall (underProjects projects) moved ->
+            | Moved moved when not retried && List.forall (underProjects projects) moved ->
                 // What was evaluated may not be what is there now, and filing it would risk
                 // a stale replay. Evaluating once more costs what the next start would
                 // have paid, and files an evaluation nothing changed under. It starts once
-                // the racy window has passed the last of those writes, or the window it is
-                // judged by would hold them.
+                // the racy window has passed the moment the first load returned, which
+                // follows every write its design-time build made: the window it is judged
+                // by would otherwise hold some of them. Those include paths only the second
+                // evaluation's inputs name, so the latest change among the first one's
+                // inputs is not the bound (seen on Linux, whose change times are coarse).
                 log
                     $"options: %d{moved.Length} input(s) in the projects' own directories changed while they were evaluated (%s{List.head moved}); evaluating once more"
 
-                let settle = latest + racyWindow - DateTime.UtcNow
-
-                if settle > TimeSpan.Zero then
-                    Threading.Thread.Sleep(min settle racyWindow)
+                waitPast (fun () -> DateTime.UtcNow) (fun ms -> Threading.Thread.Sleep ms) (loadedAt + racyWindow)
 
                 attempt true
             | Filed ->
                 log $"options: filed the evaluation of %d{loaded.Length} project(s)"
                 loaded
-            | Moved(moved, _) ->
+            | Moved moved ->
                 log $"options: not filed: %s{List.head moved} changed while the projects were evaluated"
                 loaded
             | Refused why ->
