@@ -22,6 +22,7 @@ module LintPlugin = FsHotWatch.Lint.LintPlugin
 
 open FsHotWatch.Fantomas.FormatCheckPlugin
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.RunResults
 open FsHotWatch.TestPrune.PluginTypes
 open FsHotWatch.TestPrune.CoverageArtifacts
 
