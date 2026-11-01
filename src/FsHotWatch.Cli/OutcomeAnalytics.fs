@@ -33,9 +33,9 @@ type ShadowLine =
     {
         At: DateTimeOffset
         Command: string
-        Direction: string
-        /// The lookup's class: `green`, `red` or `missing`.
-        Lookup: string
+        Direction: ShadowVerdict.Direction
+        /// The lookup's class.
+        Lookup: ShadowVerdict.Class
     }
 
 type ShadowRead =
@@ -91,7 +91,7 @@ type ShadowDay =
     { Day: string
       Lines: int
       Agree: int
-      Directions: (string * int) list }
+      Directions: (ShadowVerdict.Direction * int) list }
 
 type LookupReads =
     { Reads: int
@@ -125,25 +125,29 @@ let parseShadowLine (text: string) : ShadowLine option =
             Json.tryString o "schema", Json.tryString o "at", Json.tryString o "command", Json.tryString o "direction"
         with
         | Some "fshw-shadow-v1", Some at, Some command, Some direction ->
+            // A line with no lookup class names none; one naming an unknown class or
+            // direction is not a line this schema wrote.
             let lookup =
-                Json.tryProp o "lookup"
-                |> Option.bind (fun l -> Json.tryString l "outcome")
-                |> Option.defaultValue "missing"
+                match Json.tryProp o "lookup" |> Option.bind (fun l -> Json.tryString l "outcome") with
+                | Some token -> ShadowVerdict.Class.tryParse token
+                | None -> Some ShadowVerdict.Class.Missing
 
             match
                 DateTimeOffset.TryParse(
                     at,
                     Globalization.CultureInfo.InvariantCulture,
                     Globalization.DateTimeStyles.None
-                )
+                ),
+                ShadowVerdict.Direction.tryParse direction,
+                lookup
             with
-            | true, parsed ->
+            | (true, parsed), Some direction, Some lookup ->
                 Some
                     { At = parsed
                       Command = command
                       Direction = direction
                       Lookup = lookup }
-            | false, _ -> None
+            | _ -> None
         | _ -> None
     with :? JsonException ->
         None
@@ -298,11 +302,21 @@ let analyze (since: DateTimeOffset option) (scan: OutcomeStore.Scan) (shadow: Sh
         |> List.map (fun (d, ls) ->
             { ShadowDay.Day = d
               Lines = ls.Length
-              Agree = ls |> List.filter (fun l -> l.Direction = "agree") |> List.length
-              Directions = ls |> List.countBy _.Direction |> List.sortBy fst })
+              Agree =
+                ls
+                |> List.filter (fun l -> l.Direction = ShadowVerdict.Direction.Agree)
+                |> List.length
+              Directions =
+                ls
+                |> List.countBy _.Direction
+                |> List.sortBy (fst >> ShadowVerdict.Direction.token) })
 
     let reads = lines |> List.filter (fun l -> l.Command = "verdict")
-    let missing = reads |> List.filter (fun l -> l.Lookup = "missing") |> List.length
+
+    let missing =
+        reads
+        |> List.filter (fun l -> l.Lookup = ShadowVerdict.Class.Missing)
+        |> List.length
 
     let durations = records |> List.filter (fun r -> r.DurationMs.IsSome) |> List.length
 
@@ -401,7 +415,9 @@ let render (top: int) (r: Report) : string list =
 
       for d in r.ShadowDays do
           let directions =
-              d.Directions |> List.map (fun (k, n) -> $"%s{k} %d{n}") |> String.concat ", "
+              d.Directions
+              |> List.map (fun (k, n) -> $"%s{ShadowVerdict.Direction.token k} %d{n}")
+              |> String.concat ", "
 
           yield $"  %s{d.Day} shadow: agree %d{d.Agree}/%d{d.Lines} (%s{directions})"
 
@@ -514,7 +530,8 @@ let toJson (r: Report) : string =
                                 [ "day", js d.Day
                                   "lines", ji d.Lines
                                   "agree", ji d.Agree
-                                  "directions", counts d.Directions ]
+                                  "directions",
+                                  counts (d.Directions |> List.map (fun (k, n) -> ShadowVerdict.Direction.token k, n)) ]
                             :> JsonNode)
                     )
                     "shadowUnreadable", ji r.ShadowUnreadable

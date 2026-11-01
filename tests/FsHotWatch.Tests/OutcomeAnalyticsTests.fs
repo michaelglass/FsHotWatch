@@ -10,6 +10,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch
 open FsHotWatch.OutcomeStore
+open FsHotWatch.Cli
 open FsHotWatch.Cli.OutcomeAnalytics
 open FsHotWatch.Tests.TestHelpers
 
@@ -81,13 +82,15 @@ let ``a shadow line is read back by its fields, and anything else is not a line`
             parsed = Some
                 { At = t0
                   Command = "check"
-                  Direction = "stricter"
-                  Lookup = "missing" }
+                  Direction = ShadowVerdict.Direction.Stricter
+                  Lookup = ShadowVerdict.Class.Missing }
         @>
 
     test <@ parseShadowLine "{" = None @>
     test <@ parseShadowLine """{"schema":"fshw-shadow-v0","at":"2026-10-27T00:00:00+00:00"}""" = None @>
     test <@ parseShadowLine """{"schema":"fshw-shadow-v1"}""" = None @>
+    test <@ parseShadowLine (shadowLine t0 "check" "sideways" "missing") = None @>
+    test <@ parseShadowLine (shadowLine t0 "check" "agree" "amber") = None @>
 
 [<Fact>]
 let ``shadow logs are read line by line; a missing log is skipped and an unreadable line counted`` () =
@@ -163,11 +166,11 @@ let ``trust over time: the store and the shadow ledger by UTC day`` () =
             r.ShadowDays = [ { Day = "2026-10-27"
                                Lines = 3
                                Agree = 2
-                               Directions = [ "agree", 2; "stricter", 1 ] }
+                               Directions = [ ShadowVerdict.Direction.Agree, 2; ShadowVerdict.Direction.Stricter, 1 ] }
                              { Day = "2026-10-28"
                                Lines = 2
                                Agree = 1
-                               Directions = [ "agree", 1; "stricter", 1 ] } ]
+                               Directions = [ ShadowVerdict.Direction.Agree, 1; ShadowVerdict.Direction.Stricter, 1 ] } ]
         @>
 
     test <@ r.ShadowUnreadable = 2 @>

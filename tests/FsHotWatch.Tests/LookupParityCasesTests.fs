@@ -8,6 +8,7 @@ open System
 open Xunit
 open Swensen.Unquote
 open FsHotWatch
+open FsHotWatch.Cli
 open FsHotWatch.Cli.ShadowVerdict
 open FsHotWatch.Tests.TestHelpers
 
@@ -78,19 +79,17 @@ let ``698: a file outside the tree hash that a plugin reads still keys that plug
 let ``699: a verdict whose own suites report a failure is never looked up green`` () =
     withStore (fun repo store ->
         let contradictory: Observation =
-            { Command = "check"
+            { Command = Verdict.Check
               Tree = "sha256:t1"
               Producer = "fshw 1"
               Worktree = repo
               Today = Class.Green
               TodayOutcome = "green"
               ExitCode = 0
-              Concluded = true
               Plugins = []
               DiagnosticsFailed = false
               GradedRunId = Some "r1"
-              FullSuite = true
-              ImpactFiltered = false
+              Scope = GradedScope.FullSuite
               Suites =
                 [ { RunId = Some "r1"
                     Project = "Database.Tests"
@@ -133,19 +132,17 @@ let ``1242: a configured test project the model never discovered is still requir
         // requirements come from the configuration, so a run that never launched it is
         // missing it rather than silently green without it.
         let o: Observation =
-            { Command = "confirm"
+            { Command = Verdict.Confirm
               Tree = "sha256:t1"
               Producer = "fshw 1"
               Worktree = repo
               Today = Class.Green
               TodayOutcome = "green"
               ExitCode = 0
-              Concluded = true
               Plugins = []
               DiagnosticsFailed = false
               GradedRunId = Some "r1"
-              FullSuite = true
-              ImpactFiltered = false
+              Scope = GradedScope.FullSuite
               Suites =
                 [ { RunId = Some "r1"
                     Project = "FsHotWatch.Tests"

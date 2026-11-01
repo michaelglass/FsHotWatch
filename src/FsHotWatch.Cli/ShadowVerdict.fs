@@ -48,11 +48,60 @@ type Class =
     | Red
     | Missing
 
-let private classToken =
-    function
-    | Class.Green -> "green"
-    | Class.Red -> "red"
-    | Class.Missing -> "missing"
+module Class =
+    /// The class as a shadow line names it.
+    let token =
+        function
+        | Class.Green -> "green"
+        | Class.Red -> "red"
+        | Class.Missing -> "missing"
+
+    /// The class a shadow line names; `None` for any other token.
+    let tryParse =
+        function
+        | "green" -> Some Class.Green
+        | "red" -> Some Class.Red
+        | "missing" -> Some Class.Missing
+        | _ -> None
+
+/// How the lookup's class relates to today's.
+[<RequireQualifiedAccess>]
+type Direction =
+    | Agree
+    /// The lookup is green and today is not.
+    | Looser
+    /// Today is green and the lookup is not.
+    | Stricter
+    /// Neither is green, and they differ.
+    | RedVsMissing
+
+module Direction =
+    /// The direction as a shadow line names it.
+    let token =
+        function
+        | Direction.Agree -> "agree"
+        | Direction.Looser -> "looser"
+        | Direction.Stricter -> "stricter"
+        | Direction.RedVsMissing -> "red-vs-missing"
+
+    /// The direction a shadow line names; `None` for any other token.
+    let tryParse =
+        function
+        | "agree" -> Some Direction.Agree
+        | "looser" -> Some Direction.Looser
+        | "stricter" -> Some Direction.Stricter
+        | "red-vs-missing" -> Some Direction.RedVsMissing
+        | _ -> None
+
+/// The scope of the run a publication was graded from.
+[<RequireQualifiedAccess>]
+type GradedScope =
+    /// Every configured test project ran unfiltered.
+    | FullSuite
+    /// A subset ran.
+    | ImpactFiltered
+    /// No scope was earned: no tests ran, or none could be read.
+    | Unscoped
 
 /// One test project's report in one run.
 type Suite =
@@ -72,8 +121,7 @@ type Suite =
 /// What one publication says, reduced to what the shadow needs.
 type Observation =
     {
-        /// `check` or `confirm`.
-        Command: string
+        Command: Verdict.Command
         Tree: string
         Producer: string
         Worktree: string
@@ -81,18 +129,12 @@ type Observation =
         /// Today's outcome tag (`green`, `red`, `incomplete`, `model-unavailable`).
         TodayOutcome: string
         ExitCode: int
-        /// Today's verdict concluded green or red. Only a concluded publication files
-        /// records: an incomplete one is a statement that nothing was established.
-        Concluded: bool
         /// Each plugin and its terminal outcome; `None` for one still running.
         Plugins: (string * OutcomeStore.Outcome option) list
         /// A diagnostic the exit code was computed from reddened the run.
         DiagnosticsFailed: bool
         GradedRunId: string option
-        /// The graded run's scope was the full suite.
-        FullSuite: bool
-        /// The graded run's scope was impact-filtered.
-        ImpactFiltered: bool
+        Scope: GradedScope
         Suites: Suite list
         /// The runs the suites came from, OLDEST FIRST, as the check attributed them
         /// (`runOrder`). Empty when nobody said, and then no run is later than another.
@@ -103,6 +145,11 @@ type Observation =
         /// Empty when the daemon did not say.
         OutcomeKeys: Map<string, string>
     }
+
+/// Today's verdict concluded green or red. Only a concluded publication files records: an
+/// incomplete one is a statement that nothing was established. (A read files nothing
+/// whatever it concluded: `observeReadWith` never asks `recordsOf`.)
+let concluded (o: Observation) = o.Today <> Class.Missing
 
 let pluginKey (o: Observation) (name: string) =
     ActionKey.create "plugin" [ "tree", o.Tree; "producer", o.Producer; "plugin", name ]
@@ -152,7 +199,7 @@ let requirements (o: Observation) (testProjects: string list) : LookupVerdict.Re
 
           { LookupVerdict.Requirement.Name = "test:" + project
             LookupVerdict.Requirement.Alternatives =
-              if o.Command = "confirm" then
+              if o.Command = Verdict.Confirm then
                   [ full ] @ byKp
               else
                   [ full; [ testKey o project ImpactScope; baselineKey project ] ] @ byKp } ]
@@ -218,14 +265,15 @@ let recordsOf (o: Observation) (testProjects: string list) : OutcomeStore.Record
         else
             OutcomeStore.Outcome.Fail
 
-    let isFull (s: Suite) = o.FullSuite && s.RunId = o.GradedRunId
+    let isFull (s: Suite) =
+        o.Scope = GradedScope.FullSuite && s.RunId = o.GradedRunId
 
     let baselines =
         [ for s in o.Suites do
               if isFull s && s.Passed then
                   record (baselineKey s.Project) s.Project OutcomeStore.Outcome.Pass None s.RunId ]
 
-    if not o.Concluded then
+    if not (concluded o) then
         baselines
     else
         let superseded = supersededFailures o
@@ -239,7 +287,7 @@ let recordsOf (o: Observation) (testProjects: string list) : OutcomeStore.Record
         let ran = o.Suites |> List.map _.Project |> Set.ofList
 
         let unselected =
-            if o.ImpactFiltered then
+            if o.Scope = GradedScope.ImpactFiltered then
                 [ for project in testProjects do
                       if not (Set.contains project ran) then
                           record
@@ -263,7 +311,6 @@ let recordsOf (o: Observation) (testProjects: string list) : OutcomeStore.Record
         @ suites
         @ baselines
         @ unselected
-        @ unselected
 
 let classOf (answer: LookupVerdict.Answer) : Class =
     match answer with
@@ -271,14 +318,13 @@ let classOf (answer: LookupVerdict.Answer) : Class =
     | LookupVerdict.Answer.Red _ -> Class.Red
     | LookupVerdict.Answer.Missing _ -> Class.Missing
 
-/// How the lookup's class relates to today's: `agree`; `looser` (the lookup is green and
-/// today is not); `stricter` (today is green and the lookup is not); `red-vs-missing`.
-let direction (today: Class) (lookup: Class) : string =
+/// How the lookup's class relates to today's.
+let direction (today: Class) (lookup: Class) : Direction =
     match today, lookup with
-    | a, b when a = b -> "agree"
-    | _, Class.Green -> "looser"
-    | Class.Green, _ -> "stricter"
-    | _ -> "red-vs-missing"
+    | a, b when a = b -> Direction.Agree
+    | _, Class.Green -> Direction.Looser
+    | Class.Green, _ -> Direction.Stricter
+    | _ -> Direction.RedVsMissing
 
 /// The log line for one comparison, under the command label `command`.
 let lineAs (command: string) (o: Observation) (answer: LookupVerdict.Answer) (recorded: int) : string =
@@ -291,7 +337,7 @@ let lineAs (command: string) (o: Observation) (answer: LookupVerdict.Answer) (re
         a
 
     let lookup = JsonObject()
-    lookup["outcome"] <- classToken (classOf answer)
+    lookup["outcome"] <- Class.token (classOf answer)
 
     lookup["missing"] <-
         strings (
@@ -309,7 +355,7 @@ let lineAs (command: string) (o: Observation) (answer: LookupVerdict.Answer) (re
 
     let today = JsonObject()
     today["outcome"] <- o.TodayOutcome
-    today["class"] <- classToken o.Today
+    today["class"] <- Class.token o.Today
     today["exit"] <- o.ExitCode
 
     let dir = direction o.Today (classOf answer)
@@ -321,13 +367,14 @@ let lineAs (command: string) (o: Observation) (answer: LookupVerdict.Answer) (re
     root["producer"] <- o.Producer
     root["today"] <- today
     root["lookup"] <- lookup
-    root["agree"] <- (dir = "agree")
-    root["direction"] <- dir
+    root["agree"] <- (dir = Direction.Agree)
+    root["direction"] <- Direction.token dir
     root["recorded"] <- recorded
     root.ToJsonString()
 
 /// The log line for one publication: labelled with its own command.
-let line (o: Observation) (answer: LookupVerdict.Answer) (recorded: int) : string = lineAs o.Command o answer recorded
+let line (o: Observation) (answer: LookupVerdict.Answer) (recorded: int) : string =
+    lineAs (Verdict.Command.token o.Command) o answer recorded
 
 /// File `o`'s records, look the tree up, and append the comparison to the shadow log.
 /// Returns the lookup's answer. `testProjects` are the configured test projects.
@@ -450,14 +497,13 @@ let ofVerdict (repoRoot: string) (v: Verdict.Verdict) : Observation =
     let runToken (id: Guid option) =
         id |> Option.map (fun g -> g.ToString "N")
 
-    { Command = Verdict.Command.token v.Command
+    { Command = v.Command
       Tree = v.TreeHash
       Producer = DaemonIdentity.BinaryIdentity.render v.Producer
       Worktree = repoRoot
       Today = today
       TodayOutcome = Verdict.Outcome.tag v.Outcome
       ExitCode = v.ExitCode
-      Concluded = today <> Class.Missing
       Plugins = v.Plugins |> List.map (fun p -> p.Name, pluginOutcome p)
       // The downgrade causes (`tree`, `receipt`) are refusals about the evidence, not
       // diagnostics about the code; a verdict carrying one is incomplete and records nothing.
@@ -466,14 +512,11 @@ let ofVerdict (repoRoot: string) (v: Verdict.Verdict) : Observation =
         && v.RedCauses
            |> List.exists (fun c -> c.Source <> "tree" && c.Source <> "receipt")
       GradedRunId = runToken v.RunId
-      FullSuite =
+      Scope =
         (match v.Scope with
-         | IpcParsing.FullSuite _ -> true
-         | _ -> false)
-      ImpactFiltered =
-        (match v.Scope with
-         | IpcParsing.ImpactFiltered _ -> true
-         | _ -> false)
+         | IpcParsing.FullSuite _ -> GradedScope.FullSuite
+         | IpcParsing.ImpactFiltered _ -> GradedScope.ImpactFiltered
+         | _ -> GradedScope.Unscoped)
       Suites =
         // Test names are read only for a project some suite of this verdict failed in:
         // they decide nothing else (`supersededFailures`), and a report can be large.
@@ -527,7 +570,6 @@ let ofRead
             Today = today
             TodayOutcome = todayOutcome
             ExitCode = Verdict.reportExitCode report
-            Concluded = false
             Suites = []
             RecordedAt = now }
 

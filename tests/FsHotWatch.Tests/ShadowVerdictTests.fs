@@ -31,21 +31,19 @@ let private suite run project failed : Suite =
 
 /// A green confirm over tree T1 that ran both configured projects in full.
 let private confirmGreen: Observation =
-    { Command = "confirm"
+    { Command = Verdict.Confirm
       Tree = "sha256:t1"
       Producer = "fshw 1"
       Worktree = "/w"
       Today = Class.Green
       TodayOutcome = "green"
       ExitCode = 0
-      Concluded = true
       Plugins =
         [ "build", Some OutcomeStore.Outcome.Pass
           "lint", Some OutcomeStore.Outcome.Pass ]
       DiagnosticsFailed = false
       GradedRunId = Some "r1"
-      FullSuite = true
-      ImpactFiltered = false
+      Scope = GradedScope.FullSuite
       Suites = [ suite "r1" "A.Tests" 0; suite "r1" "B.Tests" 0 ]
       RunOrder = []
       RecordedAt = t0
@@ -103,7 +101,6 @@ let ``a later publication that ran nothing answers from the records already on f
                 Today = Class.Missing
                 TodayOutcome = "incomplete"
                 ExitCode = 3
-                Concluded = false
                 Suites = []
                 GradedRunId = None
                 RecordedAt = t0.AddMinutes 5.0 }
@@ -128,7 +125,7 @@ let ``a store opened afresh over the same directory gives the same answer`` () =
 
         let ranNothing =
             { confirmGreen with
-                Concluded = false
+                Today = Class.Missing
                 Suites = [] }
 
         test <@ observeWith repo reopened None projects ranNothing = LookupVerdict.Answer.Green @>)
@@ -141,7 +138,7 @@ let ``another tree finds none of those records`` () =
         let otherTree =
             { confirmGreen with
                 Tree = "sha256:t2"
-                Concluded = false
+                Today = Class.Missing
                 Suites = [] }
 
         test
@@ -205,11 +202,10 @@ let ``an impact-filtered check is green on its selection plus each project's ful
 
         let check =
             { confirmGreen with
-                Command = "check"
+                Command = Verdict.Check
                 Tree = "sha256:t1"
                 GradedRunId = Some "r2"
-                FullSuite = false
-                ImpactFiltered = true
+                Scope = GradedScope.ImpactFiltered
                 Suites = [ suite "r2" "A.Tests" 0 ]
                 RecordedAt = t0.AddMinutes 1.0 }
 
@@ -228,13 +224,11 @@ let ``an impact-filtered check with no full baseline is missing, as today's exit
     withStore (fun repo store ->
         let check =
             { confirmGreen with
-                Command = "check"
+                Command = Verdict.Check
                 Today = Class.Missing
                 TodayOutcome = "incomplete"
                 ExitCode = 3
-                Concluded = false
-                FullSuite = false
-                ImpactFiltered = true
+                Scope = GradedScope.ImpactFiltered
                 Suites = [ suite "r1" "A.Tests" 0 ] }
 
         test <@ classOf (observeWith repo store None projects check) = Class.Missing @>
@@ -252,13 +246,13 @@ let ``an impact batch never stands in for the full suite under confirm`` () =
 
 [<Fact>]
 let ``direction names which side is greener`` () =
-    test <@ direction Class.Green Class.Green = "agree" @>
-    test <@ direction Class.Missing Class.Green = "looser" @>
-    test <@ direction Class.Red Class.Green = "looser" @>
-    test <@ direction Class.Green Class.Missing = "stricter" @>
-    test <@ direction Class.Green Class.Red = "stricter" @>
-    test <@ direction Class.Red Class.Missing = "red-vs-missing" @>
-    test <@ direction Class.Missing Class.Red = "red-vs-missing" @>
+    test <@ direction Class.Green Class.Green = Direction.Agree @>
+    test <@ direction Class.Missing Class.Green = Direction.Looser @>
+    test <@ direction Class.Red Class.Green = Direction.Looser @>
+    test <@ direction Class.Green Class.Missing = Direction.Stricter @>
+    test <@ direction Class.Green Class.Red = Direction.Stricter @>
+    test <@ direction Class.Red Class.Missing = Direction.RedVsMissing @>
+    test <@ direction Class.Missing Class.Red = Direction.RedVsMissing @>
 
 [<Fact>]
 let ``the kill switch is 0 and only 0`` () =
@@ -331,8 +325,7 @@ let ``a read that applies keeps the verdict's class, judged against the current 
     test <@ o.TodayOutcome = "applies:green" @>
     test <@ o.Tree = "sha256:now" @>
     test <@ o.Producer = "fshw 2" @>
-    test <@ o.Command = "confirm" @>
-    test <@ not o.Concluded @>
+    test <@ o.Command = Verdict.Confirm @>
     test <@ List.isEmpty o.Suites @>
     test <@ o.RecordedAt = t0 @>
 
@@ -357,7 +350,6 @@ let ``a read answers from what publications filed, labels its line verdict, and 
 
         let read =
             { confirmGreen with
-                Concluded = false
                 Suites = []
                 RecordedAt = t0.AddMinutes 3.0 }
 
@@ -379,7 +371,6 @@ let ``a stale read of a tree the store already verified is looser, not a disagre
                 Today = Class.Missing
                 TodayOutcome = "stale"
                 ExitCode = 4
-                Concluded = false
                 Suites = [] }
 
         test <@ observeReadWith repo store None projects staleRead = LookupVerdict.Answer.Green @>
@@ -515,8 +506,8 @@ let private kpB = ActionKey.create "test" [ "kp", "B" ]
 /// A confirm over a tree no publication recorded, the daemon naming each project's K_P key.
 let private freshTree =
     { confirmGreen with
+        Today = Class.Missing
         Tree = "sha256:fresh"
-        Concluded = false
         Suites = []
         Plugins = []
         OutcomeKeys = Map.ofList [ "A.Tests", kpA.Value; "B.Tests", kpB.Value ] }
@@ -594,11 +585,10 @@ let private checkAfterBaseline repo store (suites: Suite list) (order: string li
         None
         projects
         { confirmGreen with
-            Command = "check"
+            Command = Verdict.Check
             Tree = "sha256:t1"
             GradedRunId = Some "r2"
-            FullSuite = false
-            ImpactFiltered = true
+            Scope = GradedScope.ImpactFiltered
             Suites = suites
             RunOrder = order
             RecordedAt = t0.AddMinutes 1.0 }
@@ -657,7 +647,7 @@ let ``an earlier impact failure is superseded by a later full run that passed it
     withStore (fun repo store ->
         let check =
             { confirmGreen with
-                Command = "check"
+                Command = Verdict.Check
                 GradedRunId = Some "r2"
                 Suites =
                     [ named "r1" "A.Tests" [ "A.x" ] [ "A.y" ]
@@ -677,12 +667,11 @@ let ``a baseline earned under one fshw binary still vouches for an impact check 
 
         let check =
             { confirmGreen with
-                Command = "check"
+                Command = Verdict.Check
                 Tree = "sha256:t1"
                 Producer = "fshw 2"
                 GradedRunId = Some "r2"
-                FullSuite = false
-                ImpactFiltered = true
+                Scope = GradedScope.ImpactFiltered
                 Suites = [ suite "r2" "A.Tests" 0 ]
                 RecordedAt = t0.AddMinutes 1.0 }
 
@@ -699,7 +688,6 @@ let ``a full-suite run whose publication did not conclude still earns each passi
                 Today = Class.Missing
                 TodayOutcome = "incomplete"
                 ExitCode = 2
-                Concluded = false
                 Suites = [ suite "r1" "A.Tests" 0; suite "r1" "B.Tests" 1 ] }
 
         let records = recordsOf incomplete projects
@@ -708,11 +696,10 @@ let ``a full-suite run whose publication did not conclude still earns each passi
 
         let check =
             { confirmGreen with
-                Command = "check"
+                Command = Verdict.Check
                 Tree = "sha256:t1"
                 GradedRunId = Some "r2"
-                FullSuite = false
-                ImpactFiltered = true
+                Scope = GradedScope.ImpactFiltered
                 Suites = [ suite "r2" "A.Tests" 0; suite "r2" "B.Tests" 0 ]
                 RecordedAt = t0.AddMinutes 1.0 }
 
@@ -723,9 +710,8 @@ let ``a full-suite run whose publication did not conclude still earns each passi
 let ``an unconcluded impact-filtered publication files nothing at all`` () =
     let o =
         { confirmGreen with
-            Concluded = false
-            FullSuite = false
-            ImpactFiltered = true }
+            Today = Class.Missing
+            Scope = GradedScope.ImpactFiltered }
 
     test <@ List.isEmpty (recordsOf o projects) @>
 
@@ -788,3 +774,31 @@ let ``test names are read from a report on disk, and a missing report reads as n
 
         test <@ Ctrf.tryReadTestNames (Path.Combine(dir, "absent.ctrf.json")) = None @>
         test <@ Ctrf.tryReadTestNames dir = None @>)
+
+[<Fact>]
+let ``a publication files each record once`` () =
+    // An impact check with an unselected project: its zero-test impact pass was listed twice,
+    // so the line's `recorded` count named one record two times.
+    let check =
+        { confirmGreen with
+            Command = Verdict.Check
+            Scope = GradedScope.ImpactFiltered
+            Suites = [ suite "r1" "A.Tests" 0 ] }
+
+    let records = recordsOf check projects
+    test <@ records |> List.countBy id |> List.forall (fun (_, n) -> n = 1) @>
+
+[<Fact>]
+let ``a direction and a class read back from their own tokens, and nothing else does`` () =
+    for d in
+        [ Direction.Agree
+          Direction.Looser
+          Direction.Stricter
+          Direction.RedVsMissing ] do
+        test <@ Direction.tryParse (Direction.token d) = Some d @>
+
+    for c in [ Class.Green; Class.Red; Class.Missing ] do
+        test <@ Class.tryParse (Class.token c) = Some c @>
+
+    test <@ Direction.tryParse "sideways" = None @>
+    test <@ Class.tryParse "amber" = None @>
