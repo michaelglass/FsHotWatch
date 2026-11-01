@@ -52,13 +52,13 @@ let internal classify
     (pidfileWritten: DateTime)
     (pidText: string)
     : DaemonState =
-    match Int32.TryParse(pidText.Trim()) with
-    | true, pid when pid > 0 ->
+    match FsHotWatch.PidFile.parse pidText with
+    | Some pid ->
         match processStart pid with
         | None -> DaemonState.Stale pid
         | Some started when startedBeforePidfile pidfileWritten started -> DaemonState.Live pid
         | Some _ -> DaemonState.Recycled pid
-    | _ -> DaemonState.Unreadable
+    | None -> DaemonState.Unreadable
 
 /// The live probe: the start time of the process holding `pid`, `None` when there is
 /// none. A process whose start time cannot be read (another user's) answers
@@ -88,7 +88,7 @@ let internal survey (processStart: int -> DateTime option) (repoRoot: string) : 
 
     (repoRoot :: workspaces)
     |> List.choose (fun root ->
-        let pidPath = Path.Combine(root, ".fshw", "daemon.pid")
+        let pidPath = FsHotWatch.PidFile.daemonPath root
 
         if File.Exists pidPath then
             let state =

@@ -1277,8 +1277,8 @@
     "DaemonEndpoint.fs": [
       {
         "line": 100,
-        "branch": 91,
-        "reason": "new file (AUTOMATION-1106: the recorded daemon socket path). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value. Measured 2026-10-30 on macOS by DaemonEndpointTests with coverage: line 100%, branch 91.6% (11/12, counting the recordedPid closure). Uncovered: the OperatingSystem.IsWindows() true edge of socketPath, unreachable on the macOS and Linux hosts that run the suite, so Linux measures the same."
+        "branch": 90,
+        "reason": "AUTOMATION-1445 moved the pid parse out of `resolve` into `PidFile.parse`, taking two covered branches with it: the file now measures 9/10 (90.0%, macOS, mise run ci 2026-11-01), and the one uncovered branch is still the Windows edge of socketPath. No branch lost coverage; the denominator shrank. Earlier: new file (AUTOMATION-1106: the recorded daemon socket path). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value. Measured 2026-10-30 on macOS by DaemonEndpointTests with coverage: line 100%, branch 91.6% (11/12, counting the recordedPid closure). Uncovered: the OperatingSystem.IsWindows() true edge of socketPath, unreachable on the macOS and Linux hosts that run the suite, so Linux measures the same."
       }
     ],
     "DaemonStartupFailure.fs": [
@@ -1622,6 +1622,20 @@
       "branch": 80,
       "reason": "new file (AUTOMATION-1368: fshw analytics over the outcome store and the shadow ledger). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-10-30 on macOS by mise run ci (test-direct): line 98.8% (317/321), branch 80.2% (69/86). Uncovered: the unparsable-timestamp arm of parseShadowLine and edges of the render and JSON matches. Pure computation plus file reads; platform-neutral."
     },
+    "PidFile.fs": [
+      {
+        "line": 100,
+        "branch": 62,
+        "reason": "New file (AUTOMATION-1445). Measured 2026-11-01 on macOS by the unit suite (mise run ci, test-direct): line 100%, branch 62.5% (5 of 8), rounded down. Uncovered: the exception-filter arms of `tryRead` the compiler emits for the two caught exception types.",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 62,
+        "reason": "New file (AUTOMATION-1445). Platform-neutral: no arm depends on the OS (File and Int32 parsing only); set to the macOS measurement (line 100%, branch 62.5%, 2026-11-01) and to be confirmed by the Linux CI run of this commit.",
+        "platform": "linux"
+      }
+    ],
     "Interruption.fs": [
       {
         "line": 91,

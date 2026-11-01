@@ -56,14 +56,7 @@ let private tryReadText (file: string) : string option =
 /// `daemon.pid` names a live process and the record is an absolute path; otherwise
 /// `pipeName`, resolved by this process as before.
 let resolve (processAlive: int -> bool) (repoRoot: string) (pipeName: string) : string =
-    let recordedPid =
-        tryReadText (Path.Combine(FsHwPaths.root repoRoot, "daemon.pid"))
-        |> Option.bind (fun text ->
-            match Int32.TryParse text with
-            | true, pid -> Some pid
-            | false, _ -> None)
-
-    match recordedPid with
+    match PidFile.tryReadDaemon repoRoot with
     | Some pid when processAlive pid ->
         match tryReadText (path repoRoot) with
         | Some recorded when Path.IsPathRooted recorded -> recorded

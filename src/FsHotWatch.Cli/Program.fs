@@ -1951,15 +1951,13 @@ let private daemonPidAlive (pid: int) : bool =
 /// not hold a positive number. `None` means "nothing to watch", never "nothing is
 /// running" — the callers keep those apart.
 let internal readDaemonPidWith (fileOps: FileOps) (repoRoot: string) : int option =
-    let pidPath = Path.Combine(repoRoot, ".fshw", "daemon.pid")
+    let pidPath = FsHotWatch.PidFile.daemonPath repoRoot
 
     if not (fileOps.FileExists pidPath) then
         None
     else
         try
-            match Int32.TryParse((fileOps.ReadAllText pidPath).Trim()) with
-            | true, pid when pid > 0 -> Some pid
-            | _ -> None
+            FsHotWatch.PidFile.parse (fileOps.ReadAllText pidPath)
         with _ ->
             None
 
