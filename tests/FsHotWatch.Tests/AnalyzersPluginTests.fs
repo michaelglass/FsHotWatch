@@ -500,6 +500,39 @@ let ``one live handler follows a rebuilt DLL: the set is reloaded and the key mo
         with _ ->
             ()
 
+[<Fact(Timeout = 15000)>]
+let ``the analyzer set is read once per dispatch batch, and again by the next one`` () =
+    // AUTOMATION-1437: reading and hashing every analyzer DLL was most of a cache replay
+    // (about 1.6 of 2.2 ms per file on this repository). Within one batch of queued events
+    // the set is read once, and the key says it reused that read; the next batch reads it.
+    let dir = analyzerBinWith "Batched" [| 0uy; 1uy; 2uy |]
+
+    try
+        let handler = create None [ dir ] None DiagnosticSeverity.Hint
+        let event = FileChecked(fakeResult $"{dir}/Subject.fs")
+
+        let keyIn batch =
+            FsHotWatch.PluginFramework.DispatchBatch.Within(
+                batch,
+                (fun () -> (handler.CacheKey.Value handler.Init) event)
+            )
+
+        let first, firstReused = keyIn 7L
+        System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "Batched.dll"), [| 9uy; 9uy; 9uy |])
+        let sameBatch, sameBatchReused = keyIn 7L
+        let nextBatch, nextBatchReused = keyIn 8L
+        let outside, outsideReused = keyIn 0L
+
+        test <@ first.IsSome && not firstReused @>
+        test <@ sameBatch = first && sameBatchReused @>
+        test <@ nextBatch <> first && not nextBatchReused @>
+        test <@ outside = nextBatch && not outsideReused @>
+    finally
+        try
+            System.IO.Directory.Delete(dir, true)
+        with _ ->
+            ()
+
 [<Fact(Timeout = 30000)>]
 let ``a refusal that changes cause is re-noticed; the key stays absent throughout`` () =
     withTempDir "az-refusal-change" (fun dir ->

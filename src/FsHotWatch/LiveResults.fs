@@ -168,6 +168,22 @@ type Bound internal (capacity: int, clock: unit -> TimeSpan) =
                     place.Release()
         }
 
+    /// `Hold` for a result that holds FCS objects. A `Replayed` result (ADR-059 §17) holds
+    /// none, only what its record filed, so it takes no place and never waits for one:
+    /// `publish` runs at once with a place that bounds nothing (AUTOMATION-1437). A restart
+    /// that answers its checks from records then publishes at the pace of the store, not
+    /// at the pace of the slowest plugin's fold. Every other result is held as `Hold` holds it.
+    member this.HoldFor(result: FsHotWatch.Events.FileCheckResult, publish: Place -> unit) : Async<unit> =
+        match result.CheckResults with
+        | FsHotWatch.Events.Replayed _ ->
+            async {
+                let place = Place ignore
+                place.Granted()
+                publish place
+            }
+        | FsHotWatch.Events.FullCheck _
+        | FsHotWatch.Events.ParseOnly -> this.Hold publish
+
     /// The live results now.
     member _.Status() : LiveResultsStatus =
         let admission = lane.Status()

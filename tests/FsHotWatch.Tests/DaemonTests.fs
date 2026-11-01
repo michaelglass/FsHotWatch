@@ -1886,6 +1886,124 @@ let ``a scan publishes no more results than its bound while a plugin has not com
         let final = daemon.Host.LiveResults.Status()
         test <@ final.Peak = 1 && final.Admitted = 3L @>)
 
+[<Fact(Timeout = 120000)>]
+let ``a scan that answers from check records publishes every replay while a plugin still holds the first`` () =
+    // AUTOMATION-1437: a replayed result holds no FCS objects, so ADR-054's bound has
+    // nothing to bound. A restart's replay used to go at the pace of the slowest plugin's
+    // fold: on a real repository it waited 6 s behind one plugin's unrelated work, then ran
+    // in lockstep with each plugin's per-file cache replay. Here a bound of one and a
+    // subscriber that never lets go of its first result: every replay is still published.
+    withTempDir "daemon-scan-replays-unbounded" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Replay.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+
+        let sources =
+            [ for i in 1..3 ->
+                  let path = Path.Combine(srcDir, $"Replay%d{i}.fs")
+                  File.WriteAllText(path, $"module Replay%d{i}\nlet value = \"%O{Guid.NewGuid()}\"\n")
+                  path ]
+
+        let loaded =
+            { minimalLoadedProject projectPath with
+                SourceFiles = sources }
+
+        let objDir = Path.Combine(srcDir, "obj")
+        Directory.CreateDirectory(objDir) |> ignore
+        File.WriteAllText(Path.Combine(objDir, "project.assets.json"), "{}")
+        let checker = sharedChecker.Value
+
+        let fcsOptions =
+            let options, _ =
+                checker.GetProjectOptionsFromScript(
+                    sources.Head,
+                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sources.Head))
+                )
+                |> Async.RunSynchronously
+
+            { options with
+                ProjectFileName = projectPath
+                SourceFiles = Array.ofList sources }
+
+        let daemonOver () =
+            let loader = SequencedWorkspaceLoader([ [ loaded ] ])
+            loader.Resume(0)
+
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                tmpDir
+                { oneShotDaemonOptions with
+                    RunMode = Daemon.RunMode.OneShot
+                    LiveResultBound = 1
+                    CheckRecords = true }
+                loader
+                (fun projects -> projects |> List.map (fun _ -> fcsOptions))
+                (fun _ _ _ _ _ -> failwith "this scan must not construct an ambient watcher")
+
+        // The first daemon checks every file and files its records.
+        do
+            use first = daemonOver ()
+            first.ScanAll() |> Async.RunSynchronously
+
+            test
+                <@
+                    first.Pipeline.CheckRecordsTally = Some
+                        "0 check(s) replayed from check records, 3 FCS check(s) started, 0 demanded by a plugin"
+                @>
+
+        use daemon = daemonOver ()
+
+        let gate =
+            TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+        let received = ref 0
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "slow-consumer"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | FileChecked _ ->
+                            Interlocked.Increment(&received.contents) |> ignore
+                            do! Async.AwaitTask gate.Task
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChecked ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        let scan = Async.StartAsTask(daemon.ScanAll())
+
+        try
+            waitUntil (fun () -> received.Value = 1) 60000
+            // The scan finishes with its plugin still holding the first replay.
+            test <@ scan.Wait(TimeSpan.FromSeconds 30.0) @>
+            test <@ received.Value = 1 @>
+
+            // Every answer was a replay. The subscriber caches nothing, so the framework
+            // demands a live check for each replay it folds (ADR-059 §17); that is its
+            // own work and not the scan's.
+            test
+                <@
+                    daemon.Pipeline.CheckRecordsTally
+                    |> Option.exists (fun tally ->
+                        tally.StartsWith("3 check(s) replayed from check records", StringComparison.Ordinal))
+                @>
+
+            // No place under the bound was taken for a replay.
+            test <@ daemon.Host.LiveResults.Status().Admitted = 0L @>
+        finally
+            gate.TrySetResult() |> ignore
+
+        waitUntil (fun () -> received.Value = 3) 10000)
+
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false, false)>]
