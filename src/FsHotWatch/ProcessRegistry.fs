@@ -273,6 +273,25 @@ let private leaksOf (child: IOwnedChild) (outcome: Termination) : LeakedTree lis
               Reason = $"%s{hung}, and escalation left it: %s{why}"
               At = DateTime.UtcNow })
 
+/// A kill escalation running in a scope (`beginEscalation`): the tree it escalates, when
+/// it began, and what it has established so far. The escalation writes its own outcome
+/// line when it finishes; this is what a shutdown that lands first can still say.
+type internal EscalationInFlight(root: int, what: string, began: DateTime) =
+    let mutable progress = "it had not yet read the process table"
+    let mutable booked = 0
+
+    member _.Root = root
+    member _.What = what
+    member _.Began = began
+
+    /// What the escalation has established so far, as a sentence fragment.
+    member _.Progress
+        with get () = Volatile.Read(&progress)
+        and set (value: string) = Volatile.Write(&progress, value)
+
+    /// True for the first caller only: the shutdown that books it, of the scopes it is in.
+    member _.TryBook() : bool = Interlocked.Exchange(&booked, 1) = 0
+
 /// Per-scope process tracker. Scoped via AsyncLocal so a daemon's spawned children
 /// register against that daemon's registry, not a process-wide global. This keeps
 /// `killAll` from clobbering unrelated work in parallel test runs.
@@ -295,6 +314,10 @@ type Registry internal (parent: Registry option, budgets: TeardownBudgets) =
     let noLaunchInFlight = new ManualResetEventSlim(true)
     // Append-only: a tree we could not account for is never un-leaked.
     let leaks = ConcurrentQueue<LeakedTree>()
+    // Kill escalations running in this scope (`beginEscalation`). Shutdown waits for them,
+    // bounded, and names any still running: the process may end before they can.
+    let escalations = HashSet<EscalationInFlight>(HashIdentity.Reference)
+    let noEscalationInFlight = new ManualResetEventSlim(true)
 
     new() = Registry(None, DefaultBudgets)
 
@@ -409,6 +432,47 @@ type Registry internal (parent: Registry option, budgets: TeardownBudgets) =
     /// Every tree we failed to account for, oldest first.
     member _.Leaks: LeakedTree list = List.ofSeq leaks
 
+    /// Note a kill escalation that has begun in this scope, and in the scopes it
+    /// forwards to, until `EndEscalation`.
+    member internal _.BeginEscalation(escalation: EscalationInFlight) : unit =
+        Locking.locked gate (fun () ->
+            escalations.Add escalation |> ignore
+            noEscalationInFlight.Reset())
+
+        parent |> Option.iter (fun owner -> owner.BeginEscalation escalation)
+
+    member internal _.EndEscalation(escalation: EscalationInFlight) : unit =
+        Locking.locked gate (fun () ->
+            escalations.Remove escalation |> ignore
+
+            if escalations.Count = 0 then
+                noEscalationInFlight.Set())
+
+        parent |> Option.iter (fun owner -> owner.EndEscalation escalation)
+
+    /// The escalations of `root` running in this scope.
+    member internal _.EscalationsOf(root: int) : EscalationInFlight list =
+        Locking.locked gate (fun () -> escalations |> Seq.filter (fun e -> e.Root = root) |> List.ofSeq)
+
+    /// Wait, at most `budget`, for the kill escalations running in this scope to finish:
+    /// each writes its own outcome line. One still running then is booked as a leak, with
+    /// what it had established, by the first scope to get there.
+    member private this.SettleEscalations(budget: TimeSpan) : unit =
+        if not (noEscalationInFlight.Wait budget) then
+            let now = DateTime.UtcNow
+
+            for e in Locking.locked gate (fun () -> List.ofSeq escalations) do
+                if e.TryBook() then
+                    let seconds = (now - e.Began).TotalSeconds
+
+                    this.ReportLeak
+                        { Pid = e.Root
+                          Description = e.What
+                          Reason =
+                            $"the shutdown came %.1f{seconds}s into the kill escalation of its tree and did not \
+                              wait past %s{string budget} for it to finish; by then it had %s{e.Progress}"
+                          At = now }
+
     /// Shut down: close admission and take the snapshot in ONE step, so a concurrent
     /// `Track` either belongs to the snapshot or observes the closure and reaps its own
     /// child. Then tear the snapshot down, bounded (see `TerminationBudget`).
@@ -446,6 +510,12 @@ type Registry internal (parent: Registry option, budgets: TeardownBudgets) =
                 "process-registry"
                 $"shutdown went ahead with %d{Locking.locked gate (fun () -> launching)} launch(es) still between \
                   spawn and admission after %s{string launchBudget}: whatever they started may outlive this scope."
+
+        // A kill that did not return is escalated on its own thread, and logs its outcome
+        // when done. A process that exits right after this shutdown would cut it off
+        // unreported (AUTOMATION-1425), so the shutdown waits for it, bounded, and books
+        // one still running with what it had established.
+        this.SettleEscalations budgets.Escalation
 
         // Shutdown is the LAST moment anyone looks. A tree we could not account for
         // is exactly what it must not swallow, so it is named here even though we
@@ -598,6 +668,35 @@ let reportLeak (pid: int) (description: string) (reason: string) =
         Logging.warn
             "process-registry"
             $"leaked pid %d{pid} (%s{description}) with no registry in scope — it cannot be named at shutdown either"
+
+
+/// Note, in the current scope, a kill escalation of the tree rooted at `root` (`what`
+/// names it) that has begun; disposing the result notes that it finished. A shutdown
+/// that lands in between waits for it, bounded, and names it if it is still running.
+/// With no registry in scope there is no shutdown to tell.
+let internal beginEscalation (root: int) (what: string) : IDisposable =
+    match currentOpt () with
+    | Some r ->
+        let escalation = EscalationInFlight(root, what, DateTime.UtcNow)
+        r.BeginEscalation escalation
+        let ended = ref 0
+
+        { new IDisposable with
+            member _.Dispose() =
+                if Interlocked.Exchange(ended, 1) = 0 then
+                    r.EndEscalation escalation }
+    | None ->
+        { new IDisposable with
+            member _.Dispose() = () }
+
+/// Record what the escalation of `root` running in the current scope has established
+/// so far (`progress`, a sentence fragment), for a shutdown that lands before it ends.
+let internal reportEscalationProgress (root: int) (progress: string) : unit =
+    match currentOpt () with
+    | Some r ->
+        for e in r.EscalationsOf root do
+            e.Progress <- progress
+    | None -> ()
 
 /// Every tree the current scope failed to account for, oldest first.
 let leaked () : LeakedTree list =

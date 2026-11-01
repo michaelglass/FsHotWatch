@@ -399,6 +399,66 @@ let ``a survivor of escalation is logged at ERROR, naming it`` () =
         Console.SetError(prevErr)
         FsHotWatch.Logging.setLogLevel original
 
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a shutdown that lands mid-escalation names what the escalation had killed and what it had not`` () =
+    // 100 ignores SIGTERM; 101 leaves on it. The escalation is held at its first poll
+    // pause, after SIGTERM went to both and 101 was seen gone, and the scope shuts down.
+    let os =
+        FakeOs(
+            [ row 100 1 false; row 101 100 false ],
+            Map [ 100, t0; 101, t0.AddSeconds 1.0 ],
+            fun pid signum -> if pid = 101 || signum = 9 then None else Some false
+        )
+
+    let paused = new Threading.ManualResetEventSlim(false)
+    let release = new Threading.ManualResetEventSlim(false)
+
+    let ops =
+        { os.Ops 3 with
+            Pause =
+                fun () ->
+                    paused.Set()
+                    release.Wait() }
+
+    let registry =
+        FsHotWatch.ProcessRegistry.Registry(
+            None,
+            { Termination = TimeSpan.FromMilliseconds 100.0
+              Grace = TimeSpan.FromMilliseconds 50.0
+              Escalation = TimeSpan.FromMilliseconds 100.0 }
+        )
+
+    let kill, gate = blockingKill ()
+
+    let teardown =
+        Threading.Tasks.Task.Run(fun () ->
+            use _ = FsHotWatch.ProcessRegistry.install registry
+
+            killTreeEscalatingWith
+                shortBudget
+                100
+                (fun () -> "`dotnet test` (pid 100)")
+                kill
+                (escalationWith ops (Ok root)))
+
+    try
+        Assert.True(paused.Wait FsHotWatch.Tests.TestHelpers.HangWaitMs, "the escalation never reached its poll")
+        registry.KillAll()
+
+        match registry.Leaks with
+        | [ leak ] ->
+            Assert.Equal(100, leak.Pid)
+            Assert.Contains("dotnet test", leak.Description)
+            Assert.Contains("SIGTERM→100", leak.Reason)
+            Assert.Contains("SIGTERM→101", leak.Reason)
+            Assert.Contains("exited [101]", leak.Reason)
+            Assert.Contains("not yet accounted for [100]", leak.Reason)
+        | other -> Assert.Fail $"expected the tree in escalation booked, got %A{other}"
+    finally
+        release.Set()
+        gate.Set()
+        teardown.Wait FsHotWatch.Tests.TestHelpers.HangWaitMs |> ignore
+
 // ---------------------------------------------------------------------------
 // Live fire: real children, the real OS operations, an injected kill that hangs.
 // ---------------------------------------------------------------------------

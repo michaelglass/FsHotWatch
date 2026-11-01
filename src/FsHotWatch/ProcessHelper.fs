@@ -589,9 +589,11 @@ let private sweep (ops: EscalationOps) (members: Tracked list) (ledger: Ledger) 
         l
 
 /// Send `signal` to every member a fresh sweep proves is still ours, then poll until
-/// nothing is left running or the attempts run out.
+/// nothing is left running or the attempts run out. `observe` is told what is established
+/// before every pause.
 let private signalRound
     (ops: EscalationOps)
+    (observe: Ledger -> Tracked list -> unit)
     (signum: int, name: string)
     (members: Tracked list)
     (ledger: Ledger)
@@ -609,6 +611,7 @@ let private signalRound
         if List.isEmpty (pendingIn s) || attempt >= ops.Attempts then
             s, l
         else
+            observe l (pendingIn s)
             ops.Pause()
             poll (attempt + 1) (pendingIn s) l
 
@@ -627,7 +630,7 @@ let private signalRound
 /// A descendant re-parented away before the escalation's snapshot (a double fork, or a
 /// child orphaned when its parent died) is not linked to the root any more, so it is not
 /// found here.
-let internal escalateWith (ops: EscalationOps) (root: OwnedPid) : Escalation =
+let internal escalateObservedWith (ops: EscalationOps) (observe: Escalation -> unit) (root: OwnedPid) : Escalation =
     let ledger =
         { Sent = []
           Exited = []
@@ -655,15 +658,24 @@ let internal escalateWith (ops: EscalationOps) (root: OwnedPid) : Escalation =
 
                 rootTracked :: descendants, ledger
 
+    // What is established so far, for `observe`: the members still running are pending.
+    let progress (l: Ledger) (pending: Tracked list) =
+        observe
+            { Root = root.Pid
+              Sent = List.rev l.Sent
+              Exited = List.rev l.Exited
+              Recycled = List.rev l.Recycled
+              Survivors = pending |> List.map (fun m -> m.Pid, "not yet accounted for") }
+
     let final, ledger =
         if List.isEmpty tracked then
             { Ours = []; Unproven = [] }, ledger
         else
-            let afterTerm, ledger = signalRound ops (15, "SIGTERM") tracked ledger
+            let afterTerm, ledger = signalRound ops progress (15, "SIGTERM") tracked ledger
 
             match pendingIn afterTerm with
             | [] -> afterTerm, ledger
-            | left -> signalRound ops (9, "SIGKILL") left ledger
+            | left -> signalRound ops progress (9, "SIGKILL") left ledger
 
     let refusals pid =
         ledger.Sent
@@ -683,6 +695,21 @@ let internal escalateWith (ops: EscalationOps) (root: OwnedPid) : Escalation =
       Exited = List.rev ledger.Exited
       Recycled = List.rev ledger.Recycled
       Survivors = survivors }
+
+/// `escalateObservedWith`, observing nothing.
+let internal escalateWith (ops: EscalationOps) (root: OwnedPid) : Escalation = escalateObservedWith ops ignore root
+
+/// An escalation still under way, as a sentence fragment: what was sent, what is gone,
+/// and the members not yet accounted for (`Survivors`, mid-flight).
+let internal describeEscalationProgress (e: Escalation) : string =
+    let pids (xs: int list) =
+        xs |> List.map string |> String.concat ", "
+
+    let sent =
+        e.Sent |> List.map (fun (p, name, _) -> $"%s{name}→%d{p}") |> String.concat ", "
+
+    $"sent [%s{sent}]; exited [%s{pids e.Exited}]; recycled, left alone [%s{pids e.Recycled}]; not yet accounted \
+      for [%s{pids (List.map fst e.Survivors)}]"
 
 /// Tear down a child's process tree WITHIN `budget` and SAY what happened — the whole
 /// of the kill policy, with the actual `Process.Kill` injected.
@@ -758,7 +785,11 @@ let internal killTreeEscalatingWith
                   %s{renderBudget budget}. Escalating: SIGTERM, then SIGKILL, to every member still running and \
                   still ours (pid and start time)."
 
-            let e = escalateNow ()
+            // Noted in the scope, so a shutdown that lands before it finishes names the
+            // tree and what was established (`ProcessRegistry.beginEscalation`).
+            let e =
+                use _ = ProcessRegistry.beginEscalation pid what
+                escalateNow ()
 
             let pids (xs: int list) =
                 xs |> List.map string |> String.concat ", "
@@ -1398,7 +1429,12 @@ let internal liveEscalationOps: EscalationOps =
 /// process.
 let internal escalationWith (ops: EscalationOps) (owned: Result<OwnedPid, string>) : (unit -> Escalation) option =
     match owned with
-    | Ok root -> Some(fun () -> escalateWith ops root)
+    | Ok root ->
+        // Progress goes to the current scope, for a shutdown that lands mid-escalation.
+        let observe e =
+            ProcessRegistry.reportEscalationProgress root.Pid (describeEscalationProgress e)
+
+        Some(fun () -> escalateObservedWith ops observe root)
     | Error _ -> None
 
 /// `escalationWith` the real OS.

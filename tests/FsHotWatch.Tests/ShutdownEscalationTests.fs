@@ -284,3 +284,78 @@ let ``LIVE: a real tree that ignores SIGTERM, behind a kill that hangs at shutdo
                 p.WaitForExit FsHotWatch.Tests.TestHelpers.HangWaitMs |> ignore
         finally
             p.Dispose()
+
+// ---------------------------------------------------------------------------
+// A shutdown that lands DURING a kill escalation (AUTOMATION-1425). The escalation's own
+// outcome line is written when it finishes; a shutdown that does not wait for it would
+// end the process first, and the tree would go unreported.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 10000)>]
+let ``a shutdown during a kill escalation names the tree, what it killed and what it had not`` () =
+    let lines, sink = captureLogs ()
+
+    try
+        let registry =
+            Registry(
+                None,
+                { fast with
+                    Escalation = TimeSpan.FromMilliseconds 100.0 }
+            )
+
+        use _ = install registry
+        use _escalation = beginEscalation 4242 "`dotnet test` (pid 4242)"
+        reportEscalationProgress 4242 "sent [SIGTERM→4242, SIGTERM→4243]; exited [4243]; not yet accounted for [4242]"
+
+        registry.KillAll()
+
+        match registry.Leaks with
+        | [ leak ] ->
+            Assert.Equal(4242, leak.Pid)
+            Assert.Contains("dotnet test", leak.Description)
+            Assert.Contains("kill escalation", leak.Reason)
+            Assert.Contains("exited [4243]", leak.Reason)
+            Assert.Contains("not yet accounted for [4242]", leak.Reason)
+        | other -> Assert.Fail $"expected the escalated tree booked, got %A{other}"
+
+        Assert.Contains(lines, fun line -> line.Contains "LEAKED process tree: pid 4242")
+    finally
+        sink.Dispose()
+
+[<Fact(Timeout = 10000)>]
+let ``POSITIVE CONTROL: a finished kill escalation leaves nothing for shutdown to name`` () =
+    let registry = Registry(None, fast)
+    use _ = install registry
+
+    do
+        use _escalation = beginEscalation 4242 "`dotnet test` (pid 4242)"
+        ()
+
+    registry.KillAll()
+    Assert.Empty(registry.Leaks)
+
+[<Fact(Timeout = 10000)>]
+let ``a kill escalation in an operation's scope is named once, by whichever shutdown books it`` () =
+    let daemon =
+        Registry(
+            None,
+            { fast with
+                Escalation = TimeSpan.FromMilliseconds 50.0 }
+        )
+
+    let operation =
+        Registry(
+            Some daemon,
+            { fast with
+                Escalation = TimeSpan.FromMilliseconds 50.0 }
+        )
+
+    use _ = install operation
+    use _escalation = beginEscalation 4242 "`dotnet test` (pid 4242)"
+
+    operation.KillAll()
+    daemon.KillAll()
+
+    Assert.Equal(1, operation.Leaks.Length)
+    // The operation's leak is forwarded to the daemon, which does not book it a second time.
+    Assert.Equal(1, daemon.Leaks.Length)

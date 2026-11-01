@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a shutdown that lands during a kill escalation names that tree (AUTOMATION-1425). A kill that
+  does not return is escalated (SIGTERM, then SIGKILL) on the thread that asked for it, which logs
+  the outcome when it finishes; a daemon that exited right after its shutdown cut that line off, and
+  nothing said what was killed and what survived. Shutdown now waits for an escalation in flight,
+  bounded by the escalation budget, and books one still running as LEAKED with what it had
+  established: the signals sent, the members gone, and the members not yet accounted for.
+
 - fix: the first daemon in a checkout files its projects' options when it wrote outside them while
   they were evaluated (AUTOMATION-1438, ADR-059 §24). On intelligence, test-prune's registration
   creates `coverage/` in the checkout root 0.26 s before the first evaluation starts, inside the
