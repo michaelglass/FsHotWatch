@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- refactor!: a `check` record's diagnostic severity is parsed where the record is read
+  (ADR-059 §17). `StoredDiagnostic.Severity` is an `FSharpDiagnosticSeverity`, not its `%A`
+  spelling, so a record naming a severity FCS does not have is a miss in
+  `CheckOutputs.tryOfJson`. Before, it was read as a record and threw `InvalidOperationException`
+  later, in `FileCheckResult.diagnosticsOfOutputs`, inside whichever plugin consumed the replay.
+  New: `StoredDiagnostic.severityToken` and `severityOfToken`. A record's bytes and key are
+  unchanged.
+
 - refactor!: a lookup verdict's requirement names parsed key values (ADR-059 §3).
   `LookupVerdict.Requirement.Alternatives` is an `ActionKey.KeyValue list list`, and `decide`
   takes a `KeyValue -> Outcome option` lookup. New: `ActionKey.KeyValue` (constructed only by
