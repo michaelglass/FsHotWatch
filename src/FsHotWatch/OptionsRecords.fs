@@ -93,6 +93,13 @@ type Request =
 /// set whose name starts with one of these is keyed.
 let envPrefixes = [ "DOTNET_"; "MSBUILD"; "NUGET_" ]
 
+/// The runtime's internal knobs (`DOTNET_INTERNAL_*`): they configure the CLR hosting the
+/// evaluation, never what MSBuild reads, so `envPrefixes` does not key them. fshw's detached
+/// launcher sets one for the daemon it starts (`DOTNET_INTERNAL_ThreadSuspendInjection`), so
+/// keying them split one evaluation across two start modes (AUTOMATION-1438). One the
+/// evaluation's files name is keyed like any other they name.
+let runtimeInternalPrefix = "DOTNET_INTERNAL_"
+
 let private ordinal (a: string) (b: string) = String.CompareOrdinal(a, b)
 
 let private digestOf (lines: string seq) =
@@ -129,15 +136,17 @@ let listingState (listing: Listing) : string =
 
 /// The variables of `environment` an evaluation that reads `names` depends on: those it
 /// names, in any case (MSBuild properties are case-insensitive), and those `envPrefixes`
-/// marks, as `env:<name>` labels over the value's digest.
+/// marks other than the runtime's internal knobs, as `env:<name>` labels over the value's
+/// digest.
 let environmentInputs (names: string list) (environment: (string * string) list) : (string * string) list =
     let wanted = HashSet<string>(names, StringComparer.OrdinalIgnoreCase)
 
     environment
     |> List.filter (fun (name, _) ->
         wanted.Contains name
-        || envPrefixes
-           |> List.exists (fun prefix -> name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+        || not (name.StartsWith(runtimeInternalPrefix, StringComparison.OrdinalIgnoreCase))
+           && envPrefixes
+              |> List.exists (fun prefix -> name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
     |> List.distinctBy fst
     |> List.map (fun (name, value) -> "env:" + name, ContentHash.ofText value)
 

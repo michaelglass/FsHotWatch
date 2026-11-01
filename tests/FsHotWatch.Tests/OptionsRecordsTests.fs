@@ -408,6 +408,40 @@ let ``a variable the evaluation reads as a property is keyed, and one it never r
 
         test <@ prefixed = 1 @>)
 
+// AUTOMATION-1438. Measured on intelligence: a daemon the gate starts through the detached
+// launcher runs with DOTNET_INTERNAL_ThreadSuspendInjection=0, which the launcher sets for
+// the daemon's own runtime, and a plainly started one runs without it. Every `DOTNET_*`
+// variable was keyed, so options filed in one start mode missed in the other ("inputs
+// moved: env:DOTNET_INTERNAL_ThreadSuspendInjection"). A runtime-internal knob configures
+// the process hosting MSBuild, never what MSBuild evaluates; one a project file names is
+// still read, and still keyed.
+[<Fact(Timeout = 120000)>]
+let ``options filed by a plainly started daemon replay in one the detached launcher started, and back`` () =
+    withTree (fun t ->
+        let launched = sameEnvironment @ [ "DOTNET_INTERNAL_ThreadSuspendInjection", "0" ]
+
+        let plainToLaunched, _ = restartAfter t ignore (request t) launched
+        test <@ plainToLaunched = 0 @>
+
+        let _, gate = daemonLoader t (request t) launched ignore None
+        gate.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        let counted, plain = daemonLoader t (request t) sameEnvironment ignore None
+        plain.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        test <@ counted.Loads = 0 @>)
+
+[<Fact>]
+let ``a runtime-internal variable is keyed only where the evaluation's files name it`` () =
+    let environment =
+        [ "DOTNET_INTERNAL_ThreadSuspendInjection", "0"; "DOTNET_ROOT", "/sdk" ]
+
+    test <@ environmentInputs [] environment |> List.map fst = [ "env:DOTNET_ROOT" ] @>
+
+    test
+        <@
+            environmentInputs [ "DOTNET_INTERNAL_ThreadSuspendInjection" ] environment
+            |> List.map fst = [ "env:DOTNET_INTERNAL_ThreadSuspendInjection"; "env:DOTNET_ROOT" ]
+        @>
+
 [<Fact(Timeout = 120000)>]
 let ``an input written while the projects were evaluated is never filed`` () =
     withTree (fun t ->

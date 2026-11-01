@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: options records no longer key the runtime's internal knobs (`DOTNET_INTERNAL_*`) unless the
+  evaluation's files name one (AUTOMATION-1438, ADR-059 §18). The detached launcher sets
+  `DOTNET_INTERNAL_ThreadSuspendInjection=0` for the daemon it starts, and every `DOTNET_*` variable
+  was keyed, so options filed by a gate-started daemon missed in a plainly started one, and the
+  reverse: a 10 s evaluation on a 25-project repository. The knob configures the process hosting
+  MSBuild, never what MSBuild reads.
+
 - feat: `DispatchBatch` lets a plugin's `CacheKey` share work that reads the disk across one
   batch of queued events (AUTOMATION-1437). A batch is the event a plugin's loop takes plus every
   message already waiting then, so the work is no older than any event it answers. A key that
