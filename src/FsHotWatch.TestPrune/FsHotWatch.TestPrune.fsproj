@@ -63,6 +63,7 @@
     <Compile Include="CoverageIngest.fs" />
     <Compile Include="PluginTypes.fs" />
     <Compile Include="RuntimeCoverageSelection.fs" />
+    <Compile Include="InputTrees.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 
