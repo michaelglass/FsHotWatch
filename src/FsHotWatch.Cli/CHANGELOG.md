@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- refactor!: one run-once scan runner. `RunOnceOutput.runOnceWithProgress`, a second runner with
+  no scan progress, is gone, and `runOnceAndReport` takes the runner as its first argument.
+  `fshw format --run-once`, its only user, now passes `ScanHeartbeat.runOnceWithProgress` as
+  every other run-once path does, so a long scan there also prints its progress to stderr.
+  `formatStalenessWarning` returns `string option` (`None` when nothing is stale) instead of an
+  empty-string sentinel.
+
 - refactor!: the thread-suspend setting is read from the environment once, into
   `ThreadSuspendInjection.Setting` (the runtime variable that applies and its value, and a
   non-blank opt-out). `launchOverride` and `startupLine` take a `Setting`, not an environment

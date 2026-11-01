@@ -4296,6 +4296,7 @@ let private executeCommandRendered
 
 
             RunOnceOutput.runOnceAndReport
+                ScanHeartbeat.runOnceWithProgress
                 (renderBlock mode (not noWarnFail))
                 noWarnFail
                 createDaemon
