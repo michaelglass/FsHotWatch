@@ -3505,7 +3505,10 @@ type Daemon
         beforeScanPublication: (FileCheckResult -> unit) ref
     ) =
 
-    let mutable disposed = false
+    // 0 until the first Dispose claims it. `Run`, `RunWithIpc` and the owner's `use` all
+    // dispose, possibly at once (a shutdown's `finally` beside the caller's): exactly one
+    // of them runs the teardown.
+    let disposeClaimed = ref 0
 
     // Settles when the scan `RunWithIpc` starts on serving has settled, however it ended.
     let startupScanSettled =
@@ -3649,9 +3652,7 @@ type Daemon
 
     interface IDisposable with
         member this.Dispose() =
-            if not disposed then
-                disposed <- true
-
+            if Interlocked.Exchange(disposeClaimed, 1) = 0 then
                 // Close admission first. Queued requests settle and live work is asked to
                 // cancel, so nothing can launch a child after the registry reaps. Live
                 // callbacks stay owned until they actually return.
