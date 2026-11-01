@@ -72,6 +72,7 @@
     <Compile Include="ReceiptTransitions.fs" />
     <Compile Include="SelectionAssembly.fs" />
     <Compile Include="OutstandingFailures.fs" />
+    <Compile Include="TestFilters.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 

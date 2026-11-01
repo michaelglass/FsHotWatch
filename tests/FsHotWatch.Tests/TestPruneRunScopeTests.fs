@@ -19,6 +19,7 @@ open FsHotWatch.Plugin
 open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.TestFilters
 open FsHotWatch.TestPrune.OutstandingFailures
 open FsHotWatch.TestPrune.SelectionAssembly
 open FsHotWatch.TestPrune.ReceiptTransitions

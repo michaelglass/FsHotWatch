@@ -1885,7 +1885,7 @@ let ``RerunFilter.render and buildFilterArgs emit the same token for a spaced cl
           AlwaysClasses = [] }
 
     let check =
-        FsHotWatch.TestPrune.TestPrunePlugin.buildFilterArgs config (Map.ofList [ "P", [ spaced ] ])
+        FsHotWatch.TestPrune.TestFilters.buildFilterArgs config (Map.ofList [ "P", [ spaced ] ])
 
     test <@ check = Some $"-- %s{rerun}" @>
     test <@ FsHotWatch.ProcessHelper.splitArgs rerun = Some [| "--filter-class"; spaced |] @>
