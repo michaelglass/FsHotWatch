@@ -359,7 +359,7 @@ let currentOutcomeKeys
     |> Map.toList
     |> List.choose (fun (project, key) ->
         match key with
-        | Ok key -> Some(project, (testActionKey key "full").Value)
+        | Ok key -> Some(project, (testActionKey key "full").Value.Text)
         | Error _ -> None)
     |> Map.ofList
 

@@ -11,10 +11,10 @@ open FsHotWatch.LookupVerdict
 let private key (name: string) =
     ActionKey.create "test" [ "name", name ]
 
-let private value = key >> ActionKey.valueOf
+let private value (name: string) = (key name).Value
 
 let private store (entries: (ActionKey.ActionKey * OutcomeStore.Outcome) list) =
-    let map = entries |> List.map (fun (k, o) -> ActionKey.valueOf k, o) |> Map.ofList
+    let map = entries |> List.map (fun (k, o) -> k.Value, o) |> Map.ofList
     fun (value: ActionKey.KeyValue) -> Map.tryFind value map
 
 let private pass = OutcomeStore.Outcome.Pass

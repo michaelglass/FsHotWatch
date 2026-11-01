@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- refactor!: an action key's value is a parsed `ActionKey.KeyValue`, and the outcome store takes
+  it (ADR-059 §2). `ActionKey.Value` is a `KeyValue`; `.Text` is the filed spelling. `Store.Lookup`,
+  `LookupWithOutputs`, `History` and `DirectoryOf` take a `KeyValue` or the `ActionKey` itself, and
+  `Gc` keeps and returns `KeyValue`s. The store no longer re-checks a value it is handed: text is
+  parsed where it enters, from a record directory's name, an options index record's
+  `optionsKey`, or a `test-scope` reply. An index record whose `optionsKey` is not a key now reads
+  as "the filed inputs are unreadable"; before, it was looked up and read as "the filed options
+  are gone". Either way it is a miss. `ActionKey.valueOf` is gone (use `.Value`). No key or record
+  byte changes.
+
 - refactor!: a check result carries exactly the FCS objects it has. `FileCheckResult.ParseResults`
   is gone; the parse travels in the state: `FullCheck of parse * check`, `ParseOnly of parse`, and
   `Replayed of CheckOutputs`, which has neither. A replayed result no longer carries a null parse

@@ -168,8 +168,8 @@ let ``a failed suite is red and records no baseline`` () =
                 Suites = [ suite "r1" "A.Tests" 1; suite "r1" "B.Tests" 0 ] }
 
         test <@ observeWith repo store None projects red = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>
-        test <@ store.Lookup (baselineKey "A.Tests").Value = None @>
-        test <@ store.Lookup (baselineKey "B.Tests").Value <> None @>)
+        test <@ store.Lookup(baselineKey "A.Tests") = None @>
+        test <@ store.Lookup(baselineKey "B.Tests") <> None @>)
 
 [<Fact>]
 let ``a failing plugin and a red diagnostic are both red`` () =
@@ -214,7 +214,7 @@ let ``an impact-filtered check is green on its selection plus each project's ful
 
         test
             <@
-                (store.Lookup (testKey check "B.Tests" ImpactScope).Value)
+                (store.Lookup(testKey check "B.Tests" ImpactScope))
                 |> Option.bind _.Counts
                 |> Option.map _.Total = Some 0
             @>)
@@ -510,7 +510,7 @@ let private freshTree =
         Tree = "sha256:fresh"
         Suites = []
         Plugins = []
-        OutcomeKeys = Map.ofList [ "A.Tests", ActionKey.valueOf kpA; "B.Tests", ActionKey.valueOf kpB ] }
+        OutcomeKeys = Map.ofList [ "A.Tests", kpA.Value; "B.Tests", kpB.Value ] }
 
 [<Fact>]
 let ``a project's K_P record satisfies its test requirement on a tree no publication recorded`` () =
@@ -529,7 +529,7 @@ let ``a K_P fail is red, and a project the daemon named no key for is still miss
 
         let onlyA =
             { freshTree with
-                OutcomeKeys = Map.ofList [ "A.Tests", ActionKey.valueOf kpA ] }
+                OutcomeKeys = Map.ofList [ "A.Tests", kpA.Value ] }
 
         test <@ observeWith repo store (Some kp) projects onlyA = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
 

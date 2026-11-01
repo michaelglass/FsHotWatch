@@ -635,7 +635,7 @@ let ``the second evaluation starts after the racy window has passed every write 
 
         loader.LoadProjects [ t.Project ] |> Seq.toList |> ignore
         test <@ inner.Loads = 2 @>
-        test <@ t.Store.Lookup((requestKey (request t)).Value) |> Option.isSome @>)
+        test <@ t.Store.Lookup(requestKey (request t)) |> Option.isSome @>)
 
 [<Fact(Timeout = 120000)>]
 let ``a project directory that changes on every evaluation is evaluated twice at most and never filed`` () =
@@ -927,7 +927,7 @@ let ``a lookup names why it misses: nothing filed, unreadable records, gone opti
 
         // The options under the filed key are gone (GC): a miss that says so.
         let key = optionsKey req inputs [ "KNOB", "1" ]
-        Directory.Delete(store.DirectoryOf key.Value, true)
+        Directory.Delete(store.DirectoryOf key, true)
         test <@ missed (tryReplay store req [ "KNOB", "1" ] DateTime.UtcNow) = "the filed options are gone" @>
 
         let record (k: ActionKey.ActionKey) (outputs: string) =
@@ -1119,11 +1119,10 @@ let ``a listing's kind keys under its token, and an index naming any other kind 
 
         test <@ file store req inputs projects [] DateTime.MinValue never = Filed @>
 
-        let filed =
-            (store.LookupWithOutputs (requestKey req).Value).Value |> snd |> Option.get
+        let filed = (store.LookupWithOutputs(requestKey req)).Value |> snd |> Option.get
 
         store.RecordWithOutputs(
-            { (store.Lookup (requestKey req).Value).Value with
+            { (store.Lookup(requestKey req)).Value with
                 RecordedAt = DateTimeOffset.UtcNow.AddMinutes 1.0 },
             Some(filed.Replace("\"kind\":\"files\"", "\"kind\":\"sockets\""))
         )
