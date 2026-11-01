@@ -30,6 +30,7 @@ open FsHotWatch.Events
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.RunLaunch
 open FsHotWatch.TestPrune.PluginTypes
 open FsHotWatch.TestPrune.CoverageArtifacts
 open TestPrune.Database

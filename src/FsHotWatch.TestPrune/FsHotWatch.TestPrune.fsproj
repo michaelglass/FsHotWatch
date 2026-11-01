@@ -66,6 +66,7 @@
     <Compile Include="InputTrees.fs" />
     <Compile Include="EvidenceReceipts.fs" />
     <Compile Include="PluginState.fs" />
+    <Compile Include="RunLaunch.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 
