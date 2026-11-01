@@ -4848,6 +4848,39 @@ type ReportEvidence =
     /// truncated report, malformed counters, a clean summary its rows do not account for).
     | ReportRequested of report: Result<Ctrf.VerdictReport, string>
 
+/// The lead sentence for a test host that died of `signal`, on macOS or not.
+///
+/// SIGABRT is the host aborting ITSELF: on .NET, the runtime ending the process when its
+/// exception dispatch fails (`SfiNextWorker` → `TerminateProcess` → `abort`), on a
+/// fail-fast or on an assertion, often without writing a word. Calling that "KILLED" sent
+/// readers after a killer that did not exist (AUTOMATION-1425). Every other signal here
+/// is delivered from outside.
+///
+/// A process that crashes rather than being killed leaves a macOS crash report, and that
+/// report is the only record of where it died: it names the native frames, and the time
+/// it was written matches the host's. SIGKILL and SIGTERM leave none.
+let internal describeSignalDeath (isMacOS: bool) (signal: TerminatingSignal) : string =
+    let exitCode = TerminatingSignal.SignalExitBase + signal.Number
+
+    let lead =
+        if signal.Number = 6 then
+            $"test host ABORTED itself (%s{signal.Name}, exit %d{exitCode}) — on .NET, the runtime ending the \
+              process (a failed exception dispatch, a fail-fast, an assertion), often with nothing written first"
+        else
+            $"test host was KILLED by %s{signal.Name} (exit %d{exitCode})"
+
+    let crashReport =
+        match signal.Number with
+        | 4
+        | 6
+        | 8
+        | 11 when isMacOS ->
+            " The OS kept a crash report naming where it died: ~/Library/Logs/DiagnosticReports/<host \
+             executable>-<time>.ips, moved to its Retired/ folder within hours."
+        | _ -> ""
+
+    $"%s{lead} — it never reached its own exit, so NOTHING was verified.%s{crashReport}"
+
 /// Decide a single project's verdict. The structured test report (when present and
 /// parseable) is AUTHORITATIVE for pass/fail; the process exit code is only a tie-break
 /// when there is no usable report. Exit-code-only produced false REDs: a test host that
@@ -4925,9 +4958,7 @@ let internal classifyTestOutcome
             | ReportRequested(Error reason) -> $" It wrote no usable report: %s{reason}."
             | NoReportRequested -> " No structured report was requested from this runner."
 
-        TestsErrored(
-            $"test host was KILLED by %s{signal.Name} (exit %d{TerminatingSignal.SignalExitBase + signal.Number})               — it never reached its own exit, so NOTHING was verified.%s{reportNote}"
-        )
+        TestsErrored(describeSignalDeath (System.OperatingSystem.IsMacOS()) signal + reportNote)
     | _, None ->
         let output = outputOf outcome
         let succeeded = isSucceeded outcome

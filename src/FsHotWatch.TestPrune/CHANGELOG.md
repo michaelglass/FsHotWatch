@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a test host that dies of SIGABRT is reported as having aborted itself, not as KILLED
+  (AUTOMATION-1425). On .NET that is the runtime ending the process, most often when its exception
+  dispatch fails (`SfiNextWorker` → `TerminateProcess` → `abort`), and it writes nothing first, so
+  the host looked killed by nobody. On macOS, a host that crashed (SIGABRT, SIGSEGV, SIGILL,
+  SIGFPE) is reported with where the OS kept its crash report, the one record of where it died.
+
 ## 0.13.0-alpha.101 - 2026-11-01
 
 - perf: a restart's first extension refresh runs beside the fold (AUTOMATION-1441). A new process

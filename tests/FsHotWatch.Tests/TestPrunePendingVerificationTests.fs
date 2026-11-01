@@ -1338,6 +1338,34 @@ let ``a SIGABRTed host is an abort even when it wrote a CLEAN report`` () =
     test <@ (TestResult.output result).Contains "SIGABRT" @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a SIGABRTed host is reported as having ABORTED itself, not as killed (AUTOMATION-1425)`` () =
+    // SIGABRT is what a .NET host raises on itself when the runtime ends the process (a
+    // failed exception dispatch, a fail-fast), often with nothing written first. "KILLED"
+    // sends the reader looking for a killer that does not exist.
+    let result =
+        classifyTestOutcome
+            (ReportRequested(rep 812 812 0 0 0))
+            false
+            TimeSpan.Zero
+            (ProcessOutcome.Failed(134, ProcessOutput.Drained ""))
+
+    let reason = TestResult.output result
+    test <@ TestResult.isErrored result @>
+    test <@ reason.Contains "ABORTED itself (SIGABRT, exit 134)" @>
+    test <@ not (reason.Contains "KILLED") @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``on macOS a host that died of a signal points at the crash report the OS kept`` () =
+    let abort: TerminatingSignal = { Number = 6; Name = "SIGABRT" }
+    let kill: TerminatingSignal = { Number = 9; Name = "SIGKILL" }
+
+    test <@ (describeSignalDeath true abort).Contains "~/Library/Logs/DiagnosticReports" @>
+    test <@ not ((describeSignalDeath false abort).Contains "DiagnosticReports") @>
+    // A SIGKILL leaves no crash report: nothing to point at.
+    test <@ not ((describeSignalDeath true kill).Contains "DiagnosticReports") @>
+    test <@ (describeSignalDeath true kill).StartsWith "test host was KILLED by SIGKILL (exit 137)" @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the dirty-shutdown flake (exit 7) is STILL green — no regression`` () =
     // The guard against over-reach. Exit 7 is MTP's dirty shutdown, a code the runner
     // CHOSE; it is not a signal death, so the clean report still decides. If the new arm
