@@ -19,6 +19,7 @@ open FsHotWatch.Plugin
 open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.PluginState
 open FsHotWatch.TestPrune.EvidenceReceipts
 open FsHotWatch.TestPrune.InputTrees
 open FsHotWatch.TestPrune.RuntimeCoverageSelection
