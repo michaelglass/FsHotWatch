@@ -23,7 +23,7 @@ let private fast =
 
 /// An owned child whose observation, kill and escalation are scripted. `kill` runs on
 /// the teardown's thread; a kill that blocks is the hung kill under test.
-type private FakeChild(pid: int, kill: unit -> unit, escalate: unit -> (int * string) list option) =
+type private FakeChild(pid: int, kill: unit -> unit, escalate: unit -> EscalationResult) =
     let mutable exited = false
     let mutable escalations = 0
 
@@ -72,7 +72,7 @@ let private shutDownWith (child: IOwnedChild) : Registry =
 
 [<Fact(Timeout = 10000)>]
 let ``POSITIVE CONTROL: a shutdown whose kill returns never escalates`` () =
-    let child = FakeChild(4242, ignore, (fun () -> Some []))
+    let child = FakeChild(4242, ignore, (fun () -> EscalationResult.TreeGone))
     let registry = shutDownWith child
 
     Assert.Equal(0, child.Escalations)
@@ -84,7 +84,7 @@ let ``a hung kill at shutdown is escalated, and a tree escalation saw leave is n
     let lines, sink = captureLogs ()
 
     try
-        let child = FakeChild(4242, kill, (fun () -> Some []))
+        let child = FakeChild(4242, kill, (fun () -> EscalationResult.TreeGone))
         let registry = shutDownWith child
 
         Assert.Equal(1, child.Escalations)
@@ -104,7 +104,8 @@ let ``a survivor of escalation at shutdown stays LEAKED and loud, each by its ow
             [ 4242, "still running after SIGKILL"
               4243, "its ownership could not be re-established" ]
 
-        let registry = shutDownWith (FakeChild(4242, kill, (fun () -> Some survivors)))
+        let registry =
+            shutDownWith (FakeChild(4242, kill, (fun () -> EscalationResult.Survived survivors)))
 
         match registry.Leaks with
         | [ first; second ] ->
@@ -126,7 +127,8 @@ let ``a hung kill with no recorded identity is LEAKED without escalating`` () =
     let kill, gate = hungKill ()
 
     try
-        let registry = shutDownWith (FakeChild(4242, kill, (fun () -> None)))
+        let registry =
+            shutDownWith (FakeChild(4242, kill, (fun () -> EscalationResult.NoIdentity)))
 
         match registry.Leaks with
         | [ leak ] ->
@@ -163,7 +165,7 @@ let ``an escalation that does not finish is not waited on past its budget`` () =
                 kill,
                 fun () ->
                     stuck.Wait()
-                    Some []
+                    EscalationResult.TreeGone
             )
 
         let registry =
@@ -192,7 +194,7 @@ let ``a child refused at admission whose kill hangs is escalated too`` () =
         registry.KillAll()
 
         let child =
-            FakeChild(4242, kill, (fun () -> Some [ 4243, "still running after SIGKILL" ]))
+            FakeChild(4242, kill, (fun () -> EscalationResult.Survived [ 4243, "still running after SIGKILL" ]))
 
         Assert.False(registry.AdmitChild(obj (), child))
         Assert.Equal(1, child.Escalations)
@@ -204,12 +206,23 @@ let ``a child refused at admission whose kill hangs is escalated too`` () =
         gate.Set()
 
 [<Fact>]
+let ``an escalation that left no member running is a gone tree, never an empty survivor list`` () =
+    Assert.Equal(EscalationResult.TreeGone, EscalationResult.ofSurvivors [])
+
+    Assert.Equal(
+        EscalationResult.Survived [ 4243, "still running after SIGKILL" ],
+        EscalationResult.ofSurvivors [ 4243, "still running after SIGKILL" ]
+    )
+
+[<Fact>]
 let ``no escalation leaves the child as it was`` () =
-    let child = FakeChild(4242, ignore, (fun () -> None)) :> IOwnedChild
+    let child =
+        FakeChild(4242, ignore, (fun () -> EscalationResult.NoIdentity)) :> IOwnedChild
+
     Assert.Same(child, escalatingWith None child)
     // A child registered by `Process` alone has no recorded identity to escalate against.
     use self = Process.GetCurrentProcess()
-    Assert.True((ownedProcess self).Escalate().IsNone)
+    Assert.Equal(EscalationResult.NoIdentity, (ownedProcess self).Escalate())
 
 // ---------------------------------------------------------------------------
 // Live fire: a real tree, the real escalation, an injected kill that hangs.
@@ -228,7 +241,7 @@ let private hangingKillOf (p: Process) (kill: unit -> unit) : IOwnedChild =
 
         member _.KillTree() = kill ()
         member _.WaitForExit milliseconds = p.WaitForExit milliseconds |> ignore
-        member _.Escalate() = None }
+        member _.Escalate() = EscalationResult.NoIdentity }
 
 // AUTOMATION-1354: this test once failed under a loaded full run, its 15 s escalation
 // unfinished. The cause is the one AUTOMATION-1312 measured for the kill-side LIVE tests:

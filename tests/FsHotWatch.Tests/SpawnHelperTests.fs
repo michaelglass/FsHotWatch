@@ -398,7 +398,7 @@ let ``output received before a reader attaches is replayed in order, and a broke
     owned.WaitForExit 10000
     Assert.Equal(1, owned.Pid)
     // The helper's child carries no identity of its own: the launcher adds the escalation.
-    Assert.True(owned.Escalate().IsNone)
+    Assert.Equal(ProcessRegistry.EscalationResult.NoIdentity, owned.Escalate())
 
     let seen = Collections.Generic.List<string>()
     let drained = child.Attach seen.Add
