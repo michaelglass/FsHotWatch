@@ -14,7 +14,6 @@ module FsHotWatch.Cli.Headroom
 open System
 open System.Diagnostics
 open System.IO
-open System.Runtime.InteropServices
 open FsHotWatch.IdleExit
 
 /// What a worktree's `.fshw/daemon.pid` says about its daemon.
@@ -120,27 +119,9 @@ let internal parseMemAvailable (meminfo: string) : int64 option =
 /// available) as bytes of `totalBytes`.
 let internal availableFromLevel (totalBytes: int64) (levelPercent: int) : int64 = totalBytes * int64 levelPercent / 100L
 
-[<DllImport("libc", EntryPoint = "sysctlbyname", SetLastError = true)>]
-extern int private sysctlByNameInt32(
-    string name,
-    int& value,
-    unativeint& length,
-    nativeint newValue,
-    unativeint newLength
-)
-
 /// `kern.memorystatus_level`, macOS only.
 let private macMemoryLevel () : int option =
-    let mutable level = 0
-    let mutable length = unativeint sizeof<int>
-
-    let status =
-        sysctlByNameInt32 ("kern.memorystatus_level", &level, &length, IntPtr.Zero, 0un)
-
-    if status = 0 && length = unativeint sizeof<int> then
-        Some level
-    else
-        None
+    readSysctlInt32 "kern.memorystatus_level"
 
 /// Available memory where the platform reports it: the kernel's level on macOS,
 /// `MemAvailable` on Linux, `None` elsewhere or when the read fails. The platform and

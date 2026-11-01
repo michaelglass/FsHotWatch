@@ -781,6 +781,15 @@ let ``a sysctl answer is a level only when the call succeeded with four bytes`` 
     test <@ decodeInt32Sysctl 0 eight 2 = None @>
 
 [<Fact>]
+let ``one sysctl reader serves every integer sysctl: the memory level headroom reports is a percentage`` () =
+    if OperatingSystem.IsMacOS() then
+        match readSysctlInt32 "kern.memorystatus_level" with
+        | Some level -> test <@ level >= 0 && level <= 100 @>
+        | None -> failwith "kern.memorystatus_level did not answer on macOS"
+
+        test <@ readSysctlInt32 "fshw.no.such.sysctl" = None @>
+
+[<Fact>]
 let ``the GC's high-load mark is pressure at or above it, never against a zero mark`` () =
     test <@ gcPressureFrom 100L 100L @>
     test <@ gcPressureFrom 100L 150L @>

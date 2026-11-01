@@ -88,15 +88,17 @@ let internal decodeInt32Sysctl (status: int) (length: unativeint) (value: int) :
     else
         None
 
+/// A 32-bit integer sysctl, read by name (`sysctlbyname`): `None` when the call fails or
+/// answers anything but four bytes. macOS and the BSDs only; the caller checks the platform.
+let internal readSysctlInt32 (name: string) : int option =
+    let mutable value = 0
+    let mutable length = unativeint sizeof<int>
+    let status = sysctlByNameInt32 (name, &value, &length, IntPtr.Zero, 0un)
+    decodeInt32Sysctl status length value
+
 /// `kern.memorystatus_vm_pressure_level` straight from the kernel. macOS only.
 let private sysctlKernelPressureLevel () : int option =
-    let mutable level = 0
-    let mutable length = unativeint sizeof<int>
-
-    let status =
-        sysctlByNameInt32 ("kern.memorystatus_vm_pressure_level", &level, &length, IntPtr.Zero, 0un)
-
-    decodeInt32Sysctl status length level
+    readSysctlInt32 "kern.memorystatus_vm_pressure_level"
 
 /// The kernel level with the platform and the probe passed in: the probe runs only on
 /// macOS, the one kernel that has this sysctl.
@@ -113,21 +115,6 @@ let readKernelPressureLevel () : int option =
 /// Warning (2) or critical (4) is pressure; normal (1) is not.
 let kernelLevelIsPressure (level: int) : bool = level >= 2
 
-/// Pure: the machine is under memory pressure. Where the kernel reports a level, the
-/// kernel decides — warning (2) or critical (4) is pressure, normal (1) is not — and
-/// the GC's mark is not consulted. Without a kernel level the GC's high-load mark
-/// decides. Both readings are passed in so the decision is testable without either.
-let pressureFrom (kernelLevel: int option) (gcPressure: unit -> bool) : bool =
-    match kernelLevel with
-    | Some level -> kernelLevelIsPressure level
-    | None -> gcPressure ()
-
-/// Read the live memory-pressure signal: the kernel's level on macOS, the GC's
-/// high-load mark elsewhere. Injected in the daemon wiring so the scheduler is
-/// unit-testable without a real machine under pressure.
-let readMemoryPressure () : bool =
-    pressureFrom (readKernelPressureLevel ()) readGcPressure
-
 /// One reading of the machine's memory pressure, kept with what it was read from, so a
 /// decision taken on it can say which reading that was.
 [<RequireQualifiedAccess>]
@@ -140,7 +127,8 @@ type PressureReading =
     | GcHighLoad of crossed: bool
 
 module PressureReading =
-    /// Whether the reading is pressure — the rule `pressureFrom` applies.
+    /// Whether the reading is pressure: a kernel level of warning (2) or critical (4), or,
+    /// with no kernel level, a crossed GC high-load mark. `pressureFrom` is this rule.
     let isPressure (reading: PressureReading) : bool =
         match reading with
         | PressureReading.KernelLevel level -> kernelLevelIsPressure level
@@ -171,6 +159,19 @@ let internal pressureReadingFrom (kernelLevel: int option) (gcPressure: unit -> 
 /// `pressureReadingFrom` over the live kernel level and GC mark.
 let readPressure () : PressureReading =
     pressureReadingFrom (readKernelPressureLevel ()) readGcPressure
+
+/// Pure: the machine is under memory pressure. Where the kernel reports a level, the
+/// kernel decides — warning (2) or critical (4) is pressure, normal (1) is not — and
+/// the GC's mark is not consulted. Without a kernel level the GC's high-load mark
+/// decides. Both readings are passed in so the decision is testable without either.
+/// The same rule as `PressureReading.isPressure`, over the reading `pressureReadingFrom` takes.
+let pressureFrom (kernelLevel: int option) (gcPressure: unit -> bool) : bool =
+    pressureReadingFrom kernelLevel gcPressure |> PressureReading.isPressure
+
+/// Read the live memory-pressure signal: the kernel's level on macOS, the GC's
+/// high-load mark elsewhere (`readPressure`, decided by `PressureReading.isPressure`).
+let readMemoryPressure () : bool =
+    readPressure () |> PressureReading.isPressure
 
 /// Pure: the sentence appended to a daemon-disconnect or aborted-check message
 /// when the MACHINE is under memory pressure.
