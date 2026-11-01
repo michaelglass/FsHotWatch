@@ -940,3 +940,35 @@ was never built. Every later start in that checkout saves a full evaluation.
   connection, and about 25 µs hashing that identity.
 
 Neither change decides anything (§18). Not measured on intelligence: that needs a release.
+
+## 24. Amendment (AUTOMATION-1438, again): a write outside the projects at the first start
+
+§22 did not hold on intelligence. At fshotwatch.cli 0.14.0-alpha.134, a cold `./build.fsx check`
+in a fresh workspace still filed nothing ("not filed: ...Intelligence.Build.AssemblyInfo.fs
+changed while the projects were evaluated", with no second evaluation), and the next plain
+`fshw start` evaluated for 12.2 s. The request key was the same in both modes: the box-wide store
+held no `options` or `options-inputs` record for that workspace from the gate's daemon at all.
+
+**Measured cause.** A sampler polled the change time of every directory that judges an absent
+input outside the projects (the ancestors' `Directory.Build.*`, `Directory.Packages.props` and
+`global.json`, home and the SDK included) while the gate ran in a fresh workspace. In the window
+the filing is judged from, exactly one changed: the checkout root, at 13:15:07.104, 0.26 s before
+the evaluation started, when `coverage/` appeared in it. test-prune's registration creates
+`<root>/<tests.coverageDir>/<project>/` for every test project as the first daemon registers its
+plugins, while discovery is already starting. The root is the directory the absent root-level
+`Directory.Packages.props` and `Directory.Build.targets` are judged by (§18), and it lies outside
+every requested project, so §22's second evaluation never ran. A later daemon finds `coverage/`
+there and creates nothing, which is why the next start filed and every start after it replayed.
+
+**Change.** An input that is not there when the filing is judged moved only because the directory
+above it did. It is now evaluated once more as a move inside the projects is: after the racy window
+has passed the end of the first load, and only once. That second evaluation reads whatever is
+there then and is judged by the same rule; a second move files nothing. A file that was read and
+then removed during the first evaluation is therefore never filed with that evaluation: the
+second one, which read it absent, is. A file outside the projects whose bytes changed is still not
+evaluated again: that is an edit, and its own file event re-discovers. "not filed" names an input
+outside the projects when one moved, and how many moved, so the next refusal of this kind names
+its directory.
+
+Not changed: an absent input is still judged by its directory, so an ancestor that keeps changing
+(a busy home directory) still costs a miss, now after two evaluations instead of one.
