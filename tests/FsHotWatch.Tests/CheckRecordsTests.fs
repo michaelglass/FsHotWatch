@@ -182,8 +182,17 @@ let ``a restart replays every filed check, equal to a forced re-check, without r
             | Some outputs -> outputs.Diagnostics |> List.map _.Severity
             | None -> []
 
-        test <@ severities tree.A2 |> List.contains "Error" @>
-        test <@ severities tree.B2 |> List.contains "Warning" @>
+        test
+            <@
+                severities tree.A2
+                |> List.contains FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error
+            @>
+
+        test
+            <@
+                severities tree.B2
+                |> List.contains FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning
+            @>
 
         let pipeline, counter = restart tree (Some store) toolchain tree.B
 
@@ -312,7 +321,7 @@ let private sampleOutputs (root: string) : CheckOutputs =
             EndLine = 3
             EndColumn = 9
             ErrorNumber = 1
-            Severity = "Error"
+            Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error
             Subcategory = "typecheck"
             Message = $"The type in %s{bFile} does not match \"int\"" }
           { FileName = "/elsewhere/C.fs"
@@ -321,7 +330,7 @@ let private sampleOutputs (root: string) : CheckOutputs =
             EndLine = 1
             EndColumn = 1
             ErrorNumber = 25
-            Severity = "Warning"
+            Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning
             Subcategory = "typecheck"
             Message = "Incomplete pattern matches" } ]
       FcsSignature = "fcs"
@@ -346,6 +355,9 @@ let ``outputs of another schema, or malformed, are a miss`` () =
     test <@ CheckRecords.CheckOutputs.tryOfJson None (text.Replace(CheckRecords.OutputsSchema, "other")) = None @>
     test <@ CheckRecords.CheckOutputs.tryOfJson None "{" = None @>
     test <@ CheckRecords.CheckOutputs.tryOfJson None $"""{{"schema":"%s{CheckRecords.OutputsSchema}"}}""" = None @>
+    // A severity FCS does not have is a miss where the record is read, never a throw where a
+    // replay is consumed.
+    test <@ CheckRecords.CheckOutputs.tryOfJson None (text.Replace("\"Warning\"", "\"Loud\"")) = None @>
     test <@ CheckRecords.CheckOutputs.hasErrors (sampleOutputs "/r") @>
 
     test

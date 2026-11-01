@@ -133,7 +133,7 @@ let ``a host with no checker installed refuses a demand, loudly; the installed o
     test <@ List.ofSeq seen = [ "full" ] @>
 
 [<Fact>]
-let ``replayed diagnostics are rebuilt at every severity, and an unknown one is refused`` () =
+let ``replayed diagnostics are rebuilt at every severity`` () =
     let diagnostic severity : StoredDiagnostic =
         { FileName = "/r/A.fs"
           StartLine = 2
@@ -141,7 +141,7 @@ let ``replayed diagnostics are rebuilt at every severity, and an unknown one is 
           EndLine = 2
           EndColumn = 9
           ErrorNumber = 25
-          Severity = severity
+          Severity = (StoredDiagnostic.severityOfToken severity).Value
           Subcategory = "typecheck"
           Message = "m" }
 
@@ -164,13 +164,6 @@ let ``replayed diagnostics are rebuilt at every severity, and an unknown one is 
                 && d.ErrorNumber = 25
                 && d.Subcategory = "typecheck"
                 && d.Message = "m")
-        @>
-
-    raises<System.InvalidOperationException>
-        <@
-            FileCheckResult.diagnosticsOfOutputs
-                { outputs with
-                    Diagnostics = [ diagnostic "Loud" ] }
         @>
 
 [<Fact>]
@@ -350,7 +343,7 @@ let ``a file's suppression is read only when its check has an error to judge`` (
           EndLine = 2
           EndColumn = 9
           ErrorNumber = code
-          Severity = severity
+          Severity = (StoredDiagnostic.severityOfToken severity).Value
           Subcategory = "typecheck"
           Message = $"m%d{code}" }
 
@@ -386,3 +379,15 @@ let ``a file's suppression is read only when its check has an error to judge`` (
     test <@ reads.Value = 1 @>
     test <@ not (refused [ 1 ] [ diagnostic "Error" 1 ]) @>
     test <@ reads.Value = 2 @>
+
+[<Fact>]
+let ``a stored severity's token is its FCS spelling, and only FCS's severities parse`` () =
+    for severity in
+        [ FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error
+          FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning
+          FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Info
+          FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Hidden ] do
+        test <@ StoredDiagnostic.severityToken severity = $"%A{severity}" @>
+        test <@ StoredDiagnostic.severityOfToken (StoredDiagnostic.severityToken severity) = Some severity @>
+
+    test <@ StoredDiagnostic.severityOfToken "Loud" = None @>

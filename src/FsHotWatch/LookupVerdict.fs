@@ -16,13 +16,13 @@ module FsHotWatch.LookupVerdict
 /// One required piece of evidence, by name, satisfied by any one of its alternatives.
 type Requirement =
     { Name: string
-      Alternatives: ActionKey.ActionKey list list }
+      Alternatives: ActionKey.KeyValue list list }
 
 module Requirement =
     /// A requirement one key satisfies.
     let single (name: string) (key: ActionKey.ActionKey) : Requirement =
         { Name = name
-          Alternatives = [ [ key ] ] }
+          Alternatives = [ [ ActionKey.valueOf key ] ] }
 
 [<RequireQualifiedAccess>]
 type Answer =
@@ -38,10 +38,8 @@ type private Status =
     | Failed
     | Undecided
 
-let private statusOf (lookup: string -> OutcomeStore.Outcome option) (r: Requirement) : Status =
-    let outcomes =
-        r.Alternatives
-        |> List.map (List.map (fun (k: ActionKey.ActionKey) -> lookup k.Value))
+let private statusOf (lookup: ActionKey.KeyValue -> OutcomeStore.Outcome option) (r: Requirement) : Status =
+    let outcomes = r.Alternatives |> List.map (List.map lookup)
 
     if outcomes |> List.exists (List.contains (Some OutcomeStore.Outcome.Fail)) then
         Status.Failed
@@ -57,7 +55,7 @@ let private statusOf (lookup: string -> OutcomeStore.Outcome option) (r: Require
 
 /// The lookup verdict of `requirements` against `lookup`, the newest recorded outcome of
 /// a key value (`OutcomeStore.Store.Lookup`).
-let decide (requirements: Requirement list) (lookup: string -> OutcomeStore.Outcome option) : Answer =
+let decide (requirements: Requirement list) (lookup: ActionKey.KeyValue -> OutcomeStore.Outcome option) : Answer =
     let statuses = requirements |> List.map (fun r -> r.Name, statusOf lookup r)
 
     let named (status: Status) =

@@ -71,7 +71,7 @@ type internal RecordingFileSystem() =
     let probe (path: string) =
         probes.TryAdd(fullPath path, ()) |> ignore
 
-    let listed (kind: string) (directory: string) (pattern: string) (option: SearchOption) =
+    let listed (kind: ListingKind) (directory: string) (pattern: string) (option: SearchOption) =
         listings.TryAdd(
             { Kind = kind
               Directory = fullPath directory
@@ -108,15 +108,15 @@ type internal RecordingFileSystem() =
         base.ReadFileAllBytes path
 
     override _.EnumerateFiles(path, searchPattern, searchOption) =
-        listed "files" path searchPattern searchOption
+        listed ListingKind.Files path searchPattern searchOption
         base.EnumerateFiles(path, searchPattern, searchOption)
 
     override _.EnumerateDirectories(path, searchPattern, searchOption) =
-        listed "directories" path searchPattern searchOption
+        listed ListingKind.Directories path searchPattern searchOption
         base.EnumerateDirectories(path, searchPattern, searchOption)
 
     override _.EnumerateFileSystemEntries(path, searchPattern, searchOption) =
-        listed "entries" path searchPattern searchOption
+        listed ListingKind.Entries path searchPattern searchOption
         base.EnumerateFileSystemEntries(path, searchPattern, searchOption)
 
     override _.GetAttributes(path) =

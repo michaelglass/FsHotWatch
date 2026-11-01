@@ -11,9 +11,11 @@ open FsHotWatch.LookupVerdict
 let private key (name: string) =
     ActionKey.create "test" [ "name", name ]
 
+let private value = key >> ActionKey.valueOf
+
 let private store (entries: (ActionKey.ActionKey * OutcomeStore.Outcome) list) =
-    let map = entries |> List.map (fun (k, o) -> k.Value, o) |> Map.ofList
-    fun (value: string) -> Map.tryFind value map
+    let map = entries |> List.map (fun (k, o) -> ActionKey.valueOf k, o) |> Map.ofList
+    fun (value: ActionKey.KeyValue) -> Map.tryFind value map
 
 let private pass = OutcomeStore.Outcome.Pass
 let private fail = OutcomeStore.Outcome.Fail
@@ -45,7 +47,7 @@ let ``a recorded fail is red and outranks a missing requirement`` () =
 let ``any one alternative whose keys all passed satisfies a requirement`` () =
     let req =
         { Name = "tests"
-          Alternatives = [ [ key "full" ]; [ key "impact"; key "baseline" ] ] }
+          Alternatives = [ [ value "full" ]; [ value "impact"; value "baseline" ] ] }
 
     test <@ decide [ req ] (store [ key "impact", pass; key "baseline", pass ]) = Answer.Green @>
     test <@ decide [ req ] (store [ key "full", pass ]) = Answer.Green @>
@@ -54,7 +56,7 @@ let ``any one alternative whose keys all passed satisfies a requirement`` () =
 let ``an alternative is satisfied only when ALL its keys passed`` () =
     let req =
         { Name = "tests"
-          Alternatives = [ [ key "full" ]; [ key "impact"; key "baseline" ] ] }
+          Alternatives = [ [ value "full" ]; [ value "impact"; value "baseline" ] ] }
 
     test <@ decide [ req ] (store [ key "impact", pass ]) = Answer.Missing [ "tests" ] @>
 
@@ -62,7 +64,7 @@ let ``an alternative is satisfied only when ALL its keys passed`` () =
 let ``a fail under one alternative is red even when another alternative passed`` () =
     let req =
         { Name = "tests"
-          Alternatives = [ [ key "full" ]; [ key "impact"; key "baseline" ] ] }
+          Alternatives = [ [ value "full" ]; [ value "impact"; value "baseline" ] ] }
 
     test
         <@

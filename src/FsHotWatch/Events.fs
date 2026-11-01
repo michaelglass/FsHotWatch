@@ -111,11 +111,27 @@ type StoredDiagnostic =
         EndLine: int
         EndColumn: int
         ErrorNumber: int
-        /// `%A` of `FSharpDiagnosticSeverity`, as `CheckCache.fcsCheckSignature` spells it.
-        Severity: string
+        /// Filed as its `%A` spelling, as `CheckCache.fcsCheckSignature` spells it
+        /// (`StoredDiagnostic.severityToken`), and parsed back by `severityOfToken`.
+        Severity: FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity
         Subcategory: string
         Message: string
     }
+
+module StoredDiagnostic =
+    open FSharp.Compiler.Diagnostics
+
+    /// A severity as a `check` record files it: its `%A` spelling.
+    let severityToken (severity: FSharpDiagnosticSeverity) : string = $"%A{severity}"
+
+    /// The severity a `check` record names; `None` for a name FCS has no severity for.
+    let severityOfToken (token: string) : FSharpDiagnosticSeverity option =
+        match token with
+        | "Error" -> Some FSharpDiagnosticSeverity.Error
+        | "Warning" -> Some FSharpDiagnosticSeverity.Warning
+        | "Info" -> Some FSharpDiagnosticSeverity.Info
+        | "Hidden" -> Some FSharpDiagnosticSeverity.Hidden
+        | _ -> None
 
 /// What a file's check produced, without FCS objects: what a `check` record files and a
 /// `Replayed` result carries.
@@ -228,14 +244,6 @@ module FileCheckResult =
     /// `FcsSuppression.blockingErrors`, the seal) reads a replay exactly as it read the check.
     let diagnosticsOfOutputs (outputs: CheckOutputs) : FSharp.Compiler.Diagnostics.FSharpDiagnostic[] =
         [| for d in outputs.Diagnostics ->
-               let severity =
-                   match d.Severity with
-                   | "Error" -> FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error
-                   | "Warning" -> FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning
-                   | "Info" -> FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Info
-                   | "Hidden" -> FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Hidden
-                   | other -> invalidOp $"a check record names an unknown diagnostic severity %s{other}"
-
                let range =
                    FSharp.Compiler.Text.Range.mkRange
                        d.FileName
@@ -243,7 +251,7 @@ module FileCheckResult =
                        (FSharp.Compiler.Text.Position.mkPos d.EndLine d.EndColumn)
 
                FSharp.Compiler.Diagnostics.FSharpDiagnostic.Create(
-                   severity,
+                   d.Severity,
                    d.Message,
                    d.ErrorNumber,
                    range,

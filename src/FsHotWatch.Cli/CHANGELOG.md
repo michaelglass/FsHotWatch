@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- refactor!: a `test-scope` reply's outcome keys are parsed where they are read.
+  `TestRunReport.OutcomeKeys` and `Observation.OutcomeKeys` hold `ActionKey.KeyValue`s, and
+  `IpcParsing.tryReadOutcomeKeys` drops a value that is not a key by failing to parse it, as it
+  dropped one before. The shadow requires a K_P key as the value it is, instead of wrapping it in
+  an `ActionKey` with no inputs.
+
+- refactor!: the shadow lookup verdict's observation admits only states a publication can be in
+  (ADR-059 §7). `Observation.FullSuite` and `Observation.ImpactFiltered`, two bools that could
+  both be true, are one `Observation.Scope: GradedScope` (`FullSuite`, `ImpactFiltered`,
+  `Unscoped`). `Observation.Command` is a `Verdict.Command`, not a string. `Observation.Concluded`
+  is gone: it is `ShadowVerdict.concluded`, derived from `Today`, so a publication can no longer
+  be green today and unconcluded. `ShadowVerdict.direction` returns a `Direction` union; new
+  `Direction.token`/`tryParse` and `Class.token`/`tryParse`. `fshw analytics` parses a shadow
+  line's direction and lookup class into those unions (`ShadowLine.Direction`, `ShadowLine.Lookup`,
+  `ShadowDay.Directions`), and a line naming any other token is counted unreadable. The log and
+  analytics JSON are unchanged.
+- fix: a shadow publication over an impact-filtered run filed each unselected project's zero-test
+  pass twice, so its log line's `recorded` count named those records two times. The store held
+  one copy either way (a record's name is its content's digest), and no lookup changes.
+
 - refactor!: `ConfirmTraces.unrecordedWarning` no longer takes the record policy: with
   `record: "off"` parsed as no `tests.traces` settings, every policy it could be given records.
 

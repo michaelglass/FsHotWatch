@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- refactor: `check`, `options` and `format` records are built by one function,
+  `OutcomeStore.Record.ofAction` (new): an action that ran no tests, untimed and outside any
+  test run. Each filed record is unchanged.
+
+- refactor!: an options index record's listing kind is parsed where it is read (ADR-059 §18).
+  `OptionsRecords.Listing.Kind` is a `ListingKind` (`Files`, `Directories`, `Entries`), not a
+  string. An index naming any other kind is "the filed inputs are unreadable"; before, it was
+  listed as files and keyed under a label no evaluation had read. Every key label and record is
+  spelled as before (`ListingKind.token`). New: `ListingKind.token`, `ListingKind.tryParse`.
+
+- refactor!: a `check` record's diagnostic severity is parsed where the record is read
+  (ADR-059 §17). `StoredDiagnostic.Severity` is an `FSharpDiagnosticSeverity`, not its `%A`
+  spelling, so a record naming a severity FCS does not have is a miss in
+  `CheckOutputs.tryOfJson`. Before, it was read as a record and threw `InvalidOperationException`
+  later, in `FileCheckResult.diagnosticsOfOutputs`, inside whichever plugin consumed the replay.
+  New: `StoredDiagnostic.severityToken` and `severityOfToken`. A record's bytes and key are
+  unchanged.
+
+- refactor!: a lookup verdict's requirement names parsed key values (ADR-059 §3).
+  `LookupVerdict.Requirement.Alternatives` is an `ActionKey.KeyValue list list`, and `decide`
+  takes a `KeyValue -> Outcome option` lookup. New: `ActionKey.KeyValue` (constructed only by
+  `KeyValue.tryParse`, which accepts exactly what `isValue` does, or by `ActionKey.valueOf` from a
+  created key). A requirement can no longer hold an
+  `ActionKey` whose value was never folded from its kind and inputs, which the shadow built for
+  each K_P key it was handed.
+
 - **BREAKING (API):** `IdleExit.IdleExitConfig.Minutes` and `IdleExit.PressureFloorConfig.Minutes` carry a
   `PositiveMinutes`, built only by `PositiveMinutes.tryCreate` (AUTOMATION-1445). A zero or negative
   window could be constructed and was discarded when resolved; it can no longer be built. Both

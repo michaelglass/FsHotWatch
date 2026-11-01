@@ -1031,6 +1031,6 @@ let ``a test-scope reply's outcome keys are read per project, and a reply withou
         parseTestRunReport (fullReply $""","outcomeKeys":{{"A.Tests":"%s{key}","B.Tests":"not a key"}}""")
 
     // A value that is not a key is dropped, never looked up.
-    test <@ report.OutcomeKeys = Some(Map.ofList [ "A.Tests", key ]) @>
+    test <@ report.OutcomeKeys = Some(Map.ofList [ "A.Tests", (FsHotWatch.ActionKey.KeyValue.tryParse key).Value ]) @>
     test <@ (parseTestRunReport (fullReply "")).OutcomeKeys = None @>
     test <@ (parseTestRunReport (fullReply ""","outcomeKeys":"oops" """)).OutcomeKeys = None @>

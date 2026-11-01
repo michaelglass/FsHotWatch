@@ -76,7 +76,7 @@ module CheckOutputs =
                             EndLine = d.EndLine
                             EndColumn = d.EndColumn
                             ErrorNumber = d.ErrorNumber
-                            Severity = $"%A{d.Severity}"
+                            Severity = d.Severity
                             Subcategory = d.Subcategory
                             Message = toReal d.Message } ]
                   FcsSignature = fcsCheckSignature result.CheckResults
@@ -85,7 +85,8 @@ module CheckOutputs =
 
     /// Whether any diagnostic is an error: the record's outcome.
     let hasErrors (outputs: CheckOutputs) =
-        outputs.Diagnostics |> List.exists (fun d -> d.Severity = "Error")
+        outputs.Diagnostics
+        |> List.exists (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
 
     let private rootOf (repoRoot: string option) =
         repoRoot
@@ -107,7 +108,7 @@ module CheckOutputs =
             e["endLine"] <- d.EndLine
             e["endColumn"] <- d.EndColumn
             e["number"] <- d.ErrorNumber
-            e["severity"] <- d.Severity
+            e["severity"] <- StoredDiagnostic.severityToken d.Severity
             e["subcategory"] <- d.Subcategory
             e["message"] <- relative d.Message
             diagnostics.Add e
@@ -134,6 +135,12 @@ module CheckOutputs =
                 None
             else
                 let str (el: JsonElement) (name: string) = el.GetProperty(name).GetString()
+
+                let severity (el: JsonElement) =
+                    match StoredDiagnostic.severityOfToken (str el "severity") with
+                    | Some severity -> severity
+                    | None -> raise (FormatException "a diagnostic names a severity FCS does not have")
+
                 let int (el: JsonElement) (name: string) = el.GetProperty(name).GetInt32()
 
                 Some
@@ -145,7 +152,7 @@ module CheckOutputs =
                                 EndLine = int e "endLine"
                                 EndColumn = int e "endColumn"
                                 ErrorNumber = int e "number"
-                                Severity = str e "severity"
+                                Severity = severity e
                                 Subcategory = str e "subcategory"
                                 Message = real (str e "message") } ]
                       FcsSignature = str o "fcsSignature"
@@ -281,20 +288,19 @@ let file
     (key: ActionKey.ActionKey)
     (outputs: CheckOutputs)
     : bool =
+    let outcome =
+        if CheckOutputs.hasErrors outputs then
+            OutcomeStore.Outcome.Fail
+        else
+            OutcomeStore.Outcome.Pass
+
     store.RecordWithOutputs(
-        { Key = key
-          Subject = CachePathIdentity.keyOf repoRoot file
-          Outcome =
-            if CheckOutputs.hasErrors outputs then
-                OutcomeStore.Outcome.Fail
-            else
-                OutcomeStore.Outcome.Pass
-          Counts = None
-          DurationMs = None
-          Producer =
-            { Binary = toolchain
-              Worktree = defaultArg repoRoot ""
-              RunId = None }
-          RecordedAt = DateTimeOffset.UtcNow },
+        OutcomeStore.Record.ofAction
+            key
+            (CachePathIdentity.keyOf repoRoot file)
+            outcome
+            toolchain
+            (defaultArg repoRoot "")
+            DateTimeOffset.UtcNow,
         Some(CheckOutputs.toJson repoRoot outputs)
     )

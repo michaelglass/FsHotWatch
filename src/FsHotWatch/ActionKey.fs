@@ -82,6 +82,26 @@ let isValue (value: string) : bool =
        |> Seq.skip Prefix.Length
        |> Seq.forall (fun c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))
 
+/// A key's value, parsed: text `isValue` accepts, and nothing else. A lookup that is handed
+/// one never asks again whether it names a key.
+[<Struct>]
+type KeyValue =
+    private
+    | KeyValue of string
+
+    /// The value as the store files it.
+    member this.Text =
+        let (KeyValue text) = this
+        text
+
+module KeyValue =
+    /// The key value `text` is; `None` for text no key could have.
+    let tryParse (text: string) : KeyValue option =
+        if isValue text then Some(KeyValue text) else None
+
+/// The value of `key`, which `create` folded, so it needs no check.
+let valueOf (key: ActionKey) : KeyValue = KeyValue key.Value
+
 /// The labels whose digest differs between `stored` and `current`: first the current
 /// labels that moved or are new, in label order, then the labels only `stored` has.
 let moved (stored: (string * string) list) (current: (string * string) list) : string list =
