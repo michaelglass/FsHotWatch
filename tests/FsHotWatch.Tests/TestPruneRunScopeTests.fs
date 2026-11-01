@@ -5015,7 +5015,11 @@ let ``a run that completes while the model is being re-discovered waits for it, 
 [<Fact(Timeout = 20000)>]
 let ``a narrower run that keeps the receipt leaves no revocation reason behind`` () =
     // `ReceiptRevoked` says why no receipt stands; a narrower run keeps one standing, so
-    // a reason recorded before it must not survive it for `test-scope` to report.
+    // no reason survives it for `test-scope` to report. A reason beside a standing receipt
+    // cannot be held at all (`HeldReceipt`); a narrower transition over a revoked one
+    // leaves neither.
+    test <@ ReceiptTransition.hold (HeldReceipt.Revoked "stale") ReceiptTransition.Narrower None = HeldReceipt.NoneYet @>
+
     withReceiptSource (fun repoRoot _ ->
         let handler =
             create ":memory:" repoRoot (Some [ projConfig "ProjA"; projConfig "ProjB" ]) None None None None []
@@ -5038,11 +5042,7 @@ let ``a narrower run that keeps the receipt leaves no revocation reason behind``
 
         let afterFull = handler.Update ctx handler.Init fullRun |> Async.RunSynchronously
 
-        let stale =
-            { afterFull with
-                ReceiptRevoked = Some "a manual test run replaced it" }
-
-        let final = handler.Update ctx stale narrowRun |> Async.RunSynchronously
+        let final = handler.Update ctx afterFull narrowRun |> Async.RunSynchronously
 
         test <@ final.EvidenceReceipt |> Option.map _.RunId = Some(runIdOfFinished fullRun) @>
         test <@ final.ReceiptRevoked = None @>)

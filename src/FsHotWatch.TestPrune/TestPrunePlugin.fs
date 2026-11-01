@@ -1871,6 +1871,20 @@ type TestEvidenceReceipt =
         SeedFanout: SeedFanoutReading
     }
 
+/// The test-evidence receipt a session holds, or why it holds none. One value, so a
+/// revocation reason never stands beside a receipt, and the tree entries a receipt was
+/// earned over never outlive it.
+[<RequireQualifiedAccess>]
+type HeldReceipt =
+    /// No run has earned or revoked a receipt in this session.
+    | NoneYet
+    /// A run earned it. `manifest` is the tree it was earned on, entries and all, so a
+    /// later launch can name what moved since (`SymbolFreeEdit`); `None` when that tree
+    /// could not be read.
+    | Standing of receipt: TestEvidenceReceipt * manifest: ReceiptTree option
+    /// It was taken away, for this reason, and none has been earned or kept since.
+    | Revoked of reason: string
+
 /// Why `test-scope` holds no evidence for the tree it is asked about, when the completion
 /// behind the reading selected tests and so names no `ZeroSelection`. Every one of these
 /// is a "no tests ran" a reader must be able to act on, so none may reach the wire as
@@ -2372,14 +2386,7 @@ type TestPruneState =
         /// Atomic receipt exposed by `test-scope`. A queued narrower drain may update
         /// status and failure state, but cannot split or downgrade a full-suite receipt
         /// earned earlier in the same top-level verification episode.
-        EvidenceReceipt: TestEvidenceReceipt option
-        /// The tree the receipt was earned on, entries and all, so a later launch can name
-        /// what moved since (`SymbolFreeEdit`). Read only while its identity is the
-        /// receipt's `InputTreeHash`.
-        EvidenceManifest: ReceiptTree option
-        /// Why the receipt was last taken away, while none has been earned or kept since.
-        /// `test-scope` says it when it has no evidence to serve.
-        ReceiptRevoked: string option
+        Receipt: HeldReceipt
         /// What the last completion EARNED for the current project model: the run, what it
         /// covered in full, and every reason it cannot support a green. Minted only by the
         /// completion fold, and published with this state (`IEarnedEvidenceState`).
@@ -2391,6 +2398,21 @@ type TestPruneState =
         /// never published as this daemon's evidence.
         RestoredEvidence: EarnedEvidence option
     }
+
+    /// The standing receipt, if one stands.
+    member this.EvidenceReceipt =
+        match this.Receipt with
+        | HeldReceipt.Standing(receipt, _) -> Some receipt
+        | HeldReceipt.NoneYet
+        | HeldReceipt.Revoked _ -> None
+
+    /// Why no receipt stands, when one was taken away. `test-scope` says it when it has
+    /// no evidence to serve.
+    member this.ReceiptRevoked =
+        match this.Receipt with
+        | HeldReceipt.Revoked reason -> Some reason
+        | HeldReceipt.NoneYet
+        | HeldReceipt.Standing _ -> None
 
     interface IEarnedEvidenceState with
         member this.EarnedEvidence =
@@ -2507,11 +2529,12 @@ module TestRunInputs =
           Earned = TestPruneState.coverageEvidence state
           EvidenceTree = state.EvidenceReceipt |> Option.bind (fun receipt -> receipt.InputTreeHash)
           EvidenceManifest =
-            state.EvidenceManifest
-            |> Option.filter (fun manifest ->
-                state.EvidenceReceipt
-                |> Option.exists (fun receipt ->
-                    ReceiptInputTree.matches receipt.InputTreeHash (Some manifest.Identity)))
+            match state.Receipt with
+            | HeldReceipt.Standing(receipt, manifest) ->
+                manifest
+                |> Option.filter (fun manifest -> ReceiptInputTree.matches receipt.InputTreeHash (Some manifest.Identity))
+            | HeldReceipt.NoneYet
+            | HeldReceipt.Revoked _ -> None
           SealedTree = state.SealedTree }
 
 /// Custom message posted from the async test runner back to the synchronous Custom
@@ -3777,6 +3800,19 @@ module ReceiptTransition =
         | ReceiptTransition.Noop
         | ReceiptTransition.Narrower -> previous
         | ReceiptTransition.Revoked _ -> None
+
+    /// The held receipt after a completion's `transition`: an earned receipt stands with
+    /// the tree it was earned on (`currentTree`), a revocation names its reason, a narrower
+    /// run keeps the receipt that stands, and a no-op keeps everything.
+    let hold (held: HeldReceipt) (transition: ReceiptTransition) (currentTree: ReceiptTree option) : HeldReceipt =
+        match transition, held with
+        | ReceiptTransition.Earned receipt, _ -> HeldReceipt.Standing(receipt, currentTree)
+        | ReceiptTransition.Revoked reason, _ -> HeldReceipt.Revoked reason
+        | ReceiptTransition.Noop, _
+        | ReceiptTransition.Narrower, HeldReceipt.Standing _ -> held
+        // `classify` names no narrower run without a standing receipt; were it to, nothing
+        // stands and no reason is held.
+        | ReceiptTransition.Narrower, (HeldReceipt.NoneYet | HeldReceipt.Revoked _) -> HeldReceipt.NoneYet
 
 /// One line per completion that answers, from the log alone, what a receipt refusal asks:
 /// which model the run was launched and completed under, which run the receipt now names
@@ -9312,9 +9348,7 @@ let internal createWithEvidenceAndQueries
           OutstandingFailures = loadedFailures
           LastCoverage = RunCoverage.none
           LastZeroSelection = ZeroSelection.NotAZero
-          EvidenceReceipt = None
-          EvidenceManifest = None
-          ReceiptRevoked = None
+          Receipt = HeldReceipt.NoneYet
           Earned = None
           RestoredEvidence = restoredEvidence }
 
@@ -11333,8 +11367,7 @@ let internal createWithEvidenceAndQueries
         ctx.ReportStatus(PluginStatus.failedNow message message TimeSpan.Zero)
 
         { endRun false state with
-            EvidenceReceipt = None
-            ReceiptRevoked = Some $"the test run could not start: %s{message}"
+            Receipt = HeldReceipt.Revoked $"the test run could not start: %s{message}"
             PendingForceRunProjects = Set.union state.PendingForceRunProjects owed
             Replies =
                 reply
@@ -11356,8 +11389,7 @@ let internal createWithEvidenceAndQueries
         match runTestHostExclusive ctx Set.empty (Some reply) workOf with
         | Claimed ->
             { state with
-                EvidenceReceipt = None
-                ReceiptRevoked = Some "a manual test run replaced it"
+                Receipt = HeldReceipt.Revoked "a manual test run replaced it"
                 InFlight =
                     Some
                         { Scope = LaunchedSelection
@@ -12798,19 +12830,7 @@ let internal createWithEvidenceAndQueries
                             OutstandingFailures = outstandingFailures
                             LastCoverage = coverage
                             LastZeroSelection = launch.ZeroSelection
-                            EvidenceReceipt = evidenceReceipt
-                            EvidenceManifest =
-                                match receiptTransition with
-                                | ReceiptTransition.Earned _ -> currentTree
-                                | ReceiptTransition.Revoked _ -> None
-                                | ReceiptTransition.Noop
-                                | ReceiptTransition.Narrower -> state.EvidenceManifest
-                            ReceiptRevoked =
-                                match receiptTransition with
-                                | ReceiptTransition.Revoked reason -> Some reason
-                                | ReceiptTransition.Earned _
-                                | ReceiptTransition.Narrower -> None
-                                | ReceiptTransition.Noop -> state.ReceiptRevoked
+                            Receipt = ReceiptTransition.hold state.Receipt receiptTransition currentTree
                             // Debt is scoped to exactly the run that was active when the
                             // BootScan cohort sealed. Failure keeps it durable, but must not
                             // let a later unrelated run claim it implicitly.

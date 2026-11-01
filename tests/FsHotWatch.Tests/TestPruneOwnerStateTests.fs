@@ -558,7 +558,7 @@ let ``a queued impact run whose debt was discharged launches nothing`` () =
     // What the completed run that discharged the debt leaves: evidence for this tree.
     let discharged =
         { handler.Init with
-            EvidenceReceipt = Some(receiptOver (ReceiptInputTree.read root)) }
+            Receipt = HeldReceipt.Standing(receiptOver (ReceiptInputTree.read root), None) }
 
     Assert.True(discharged.EvidenceReceipt.Value.InputTreeHash.IsSome, "the isolated root must be a readable tree")
 
@@ -581,7 +581,7 @@ let ``a queued impact run launches when the evidence does not cover the tree, th
 
     let moved =
         { handler.Init with
-            EvidenceReceipt = Some(receiptOver (Some "a tree that is gone")) }
+            Receipt = HeldReceipt.Standing(receiptOver (Some "a tree that is gone"), None) }
 
     for state in [ handler.Init; moved ] do
         let ctx, _, claims = launchRecordingCtx SharedClaimed

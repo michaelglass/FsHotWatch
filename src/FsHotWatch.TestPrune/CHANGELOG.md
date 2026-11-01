@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- refactor!: `TestPruneState` holds its test-evidence receipt as one `HeldReceipt` (`NoneYet`,
+  `Standing of receipt * manifest`, `Revoked of reason`) in place of `EvidenceReceipt`,
+  `EvidenceManifest` and `ReceiptRevoked`, so a revocation reason can no longer stand beside a
+  receipt and a manifest can no longer outlive its receipt. `EvidenceReceipt` and `ReceiptRevoked`
+  remain as read-only members; `ReceiptTransition.hold` applies a completion. `LastRunId`, which
+  nothing read, is removed.
+
 - refactor!: a `TraceSettings` always records, so a shadow selection always has traces to select
   from. `TraceRecordPolicy.RecordOff` is gone: `tests.traces.record: "off"` (or no `record`) now
   parses to no settings at all, which was already its whole effect. `TraceSettings.parseRecord` is
