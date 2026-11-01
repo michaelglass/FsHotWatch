@@ -2571,6 +2571,7 @@ let private processBatchAttempt
 
             // Each result waits for a place among the live results (ADR-054) outside the
             // publication lock, so a batch whose plugins have fallen behind waits for them.
+            // A replayed result holds no FCS objects and takes no place (`HoldFor`).
             let emitResults (results: FileCheckResult option array) =
                 async {
                     for result in results do
@@ -2581,22 +2582,25 @@ let private processBatchAttempt
                                 $"EmitFileChecked: %s{Path.GetFileName(AbsFilePath.value checkResult.File)}"
 
                             do!
-                                ctx.Host.LiveResults.Hold(fun place ->
-                                    publishCurrent (fun () ->
-                                        let checkResult =
-                                            { checkResult with
-                                                ModelGeneration = modelGenerationOf batchModel }
+                                ctx.Host.LiveResults.HoldFor(
+                                    checkResult,
+                                    fun place ->
+                                        publishCurrent (fun () ->
+                                            let checkResult =
+                                                { checkResult with
+                                                    ModelGeneration = modelGenerationOf batchModel }
 
-                                        dispatchedFiles.Add(checkResult.File)
-                                        // ADR-047: what a scan that captured an earlier epoch is judged against.
-                                        ctx.Snapshots.RecordPublished(
-                                            AbsFilePath.value checkResult.File,
-                                            ContentHash.ofText checkResult.Source,
-                                            checkResult.Upstream
-                                        )
+                                            dispatchedFiles.Add(checkResult.File)
+                                            // ADR-047: what a scan that captured an earlier epoch is judged against.
+                                            ctx.Snapshots.RecordPublished(
+                                                AbsFilePath.value checkResult.File,
+                                                ContentHash.ofText checkResult.Source,
+                                                checkResult.Upstream
+                                            )
 
-                                        ctx.Host.EmitFileChecked(checkResult, place)
-                                        reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult))
+                                            ctx.Host.EmitFileChecked(checkResult, place)
+                                            reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult)
+                                )
                         // Unlike the cold scan (see `runDependentChecks`), the batch
                         // path does NOT retry a cancelled (`None`) check. Batch
                         // cancellations are self-healing: `CancelPreviousCheck` only
@@ -4724,40 +4728,45 @@ let private performScan
                 // inside `publishCurrent`, which holds the discovery state lock. It
                 // first waits for a place among the live results (ADR-054), outside
                 // that lock, so a scan whose plugins have fallen behind waits for them
-                // instead of piling its results into their mailboxes.
+                // instead of piling its results into their mailboxes. A replayed result
+                // holds no FCS objects, so it takes no place and never waits (`HoldFor`).
                 let emitChecked (checkResult: FileCheckResult) =
                     let sourceHash = ContentHash.ofText checkResult.Source
                     ctx.BeforeScanPublication.Value checkResult
 
-                    host.LiveResults.Hold(fun place ->
-                        publishCurrent (fun () ->
-                            let checkResult =
-                                { checkResult with
-                                    ModelGeneration = modelGeneration }
+                    host.LiveResults.HoldFor(
+                        checkResult,
+                        fun place ->
+                            publishCurrent (fun () ->
+                                let checkResult =
+                                    { checkResult with
+                                        ModelGeneration = modelGeneration }
 
-                            // ADR-046: a cohort at a later epoch changed this file, and this
-                            // check read bytes the snapshot no longer holds. The cohort
-                            // publishes the current answer; this one is old work finishing
-                            // after new work: counted, not published.
-                            if
-                                ctx.Snapshots.Accepts(
-                                    capturedSnapshot,
-                                    AbsFilePath.value checkResult.File,
-                                    sourceHash,
-                                    checkResult.Upstream
-                                )
-                            then
-                                checkedCount <- checkedCount + 1
-                                dispatchedFiles.Add(checkResult.File)
-                                checkedSources[AbsFilePath.value checkResult.File] <- sourceHash
-                                host.EmitFileCheckedFor(consumers, checkResult, place)
-                                reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
+                                // ADR-046: a cohort at a later epoch changed this file, and this
+                                // check read bytes the snapshot no longer holds. The cohort
+                                // publishes the current answer; this one is old work finishing
+                                // after new work: counted, not published.
+                                if
+                                    ctx.Snapshots.Accepts(
+                                        capturedSnapshot,
+                                        AbsFilePath.value checkResult.File,
+                                        sourceHash,
+                                        checkResult.Upstream
+                                    )
+                                then
+                                    checkedCount <- checkedCount + 1
+                                    dispatchedFiles.Add(checkResult.File)
+                                    checkedSources[AbsFilePath.value checkResult.File] <- sourceHash
+                                    host.EmitFileCheckedFor(consumers, checkResult, place)
+                                    reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
 
-                            completed <- completed + 1
+                                completed <- completed + 1
 
-                            publish
-                                { scanning with
-                                    ScanState = scanProgress scanning.ScanState total completed System.DateTime.UtcNow }))
+                                publish
+                                    { scanning with
+                                        ScanState =
+                                            scanProgress scanning.ScanState total completed System.DateTime.UtcNow })
+                    )
 
                 let! outcome =
                     runDependentChecks

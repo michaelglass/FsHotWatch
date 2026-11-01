@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- perf: a replayed check result (`checkRecords`) is published without a place under the live-results
+  bound (AUTOMATION-1437, ADR-054). It holds no FCS objects, only what its record filed, so the
+  bound has nothing to bound in it. A restart that answered its checks from records published them
+  at the pace of the slowest plugin's fold: on a 2,674-file repository it waited about 6 s behind
+  one plugin's unrelated work, then ran in lockstep with each plugin's per-file cache replay.
+  `LiveResults.Bound.HoldFor` takes the result and holds a place only for a live one.
+
 ## 0.10.0-alpha.100 - 2026-10-31
 
 - fix: a file compiled into several projects of one tier is checked under the same project in
