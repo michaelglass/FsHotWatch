@@ -33,7 +33,8 @@ module ``parseArgs`` =
     let ``empty args returns Help`` () = test <@ cmd [||] = Ok Help @>
 
     [<Fact>]
-    let ``index command`` () = test <@ cmd [| "index" |] = Ok Index @>
+    let ``index command`` () =
+        test <@ cmd [| "index" |] = Ok(Index System.Environment.ProcessorCount) @>
 
     [<Fact>]
     let ``run command`` () = test <@ cmd [| "run" |] = Ok Run @>
@@ -53,23 +54,67 @@ module ``parseArgs`` =
 
     [<Fact>]
     let ``dead-code command with defaults`` () =
-        test <@ cmd [| "dead-code" |] = Ok(DeadCodeCmd(defaultEntryPatterns, false, false)) @>
+        test
+            <@
+                cmd [| "dead-code" |] = Ok(
+                    DeadCodeCmd
+                        { EntryPatterns = defaultEntryPatterns
+                          IncludeTests = false
+                          Verbose = false }
+                )
+            @>
 
     [<Fact>]
     let ``dead-code command with custom entry patterns`` () =
         let result = cmd [| "dead-code"; "--entry"; "*.main"; "--entry"; "*.Routes.*" |]
 
-        test <@ result = Ok(DeadCodeCmd([ "*.main"; "*.Routes.*" ], false, false)) @>
+        test
+            <@
+                result = Ok(
+                    DeadCodeCmd
+                        { EntryPatterns = [ "*.main"; "*.Routes.*" ]
+                          IncludeTests = false
+                          Verbose = false }
+                )
+            @>
 
     [<Fact>]
     let ``dead-code command with --include-tests`` () =
-        test <@ cmd [| "dead-code"; "--include-tests" |] = Ok(DeadCodeCmd(defaultEntryPatterns, true, false)) @>
+        test
+            <@
+                cmd [| "dead-code"; "--include-tests" |] = Ok(
+                    DeadCodeCmd
+                        { EntryPatterns = defaultEntryPatterns
+                          IncludeTests = true
+                          Verbose = false }
+                )
+            @>
 
     [<Fact>]
     let ``dead-code command with --entry and --include-tests`` () =
         let result = cmd [| "dead-code"; "--entry"; "*.main"; "--include-tests" |]
 
-        test <@ result = Ok(DeadCodeCmd([ "*.main" ], true, false)) @>
+        test
+            <@
+                result = Ok(
+                    DeadCodeCmd
+                        { EntryPatterns = [ "*.main" ]
+                          IncludeTests = true
+                          Verbose = false }
+                )
+            @>
+
+    [<Fact>]
+    let ``dead-code --verbose sets Verbose and keeps the default entry patterns`` () =
+        test
+            <@
+                cmd [| "dead-code"; "--verbose" |] = Ok(
+                    DeadCodeCmd
+                        { EntryPatterns = defaultEntryPatterns
+                          IncludeTests = false
+                          Verbose = true }
+                )
+            @>
 
     [<Fact>]
     let ``dead-code command with unknown flag returns Error`` () =
@@ -88,9 +133,8 @@ module ``parseArgs`` =
         test
             <@
                 result = Ok
-                    { Command = Index
-                      RepoRoot = Some "/some/path"
-                      Parallelism = System.Environment.ProcessorCount }
+                    { Command = Index System.Environment.ProcessorCount
+                      RepoRoot = Some "/some/path" }
             @>
 
     [<Fact>]
@@ -98,7 +142,7 @@ module ``parseArgs`` =
         let result = parseArgs [| "--parallelism"; "4"; "index" |]
 
         match result with
-        | Ok parsed -> test <@ parsed.Parallelism = 4 @>
+        | Ok parsed -> test <@ parsed.Command = Index 4 @>
         | Error msg -> failwith msg
 
     [<Fact>]
@@ -2148,8 +2192,7 @@ module ``runCommand`` =
         try
             let parsed =
                 { Command = Help
-                  RepoRoot = Some tmpDir
-                  Parallelism = 1 }
+                  RepoRoot = Some tmpDir }
 
             test <@ runCommand parsed = 0 @>
             test <@ sw.ToString().Contains("TestPrune") @>
@@ -2168,8 +2211,7 @@ module ``runCommand`` =
         try
             let parsed =
                 { Command = Help
-                  RepoRoot = Some tmpDir
-                  Parallelism = 1 }
+                  RepoRoot = Some tmpDir }
 
             let result = runCommand parsed
             test <@ result = 0 @>
@@ -2189,10 +2231,7 @@ module ``runCommand`` =
             // Precondition: nothing above the temp dir is a jj/git repository.
             test <@ findRepoRoot tmpDir = None @>
 
-            let parsed =
-                { Command = Status
-                  RepoRoot = None
-                  Parallelism = 1 }
+            let parsed = { Command = Status; RepoRoot = None }
 
             // Reaching the assertions at all proves the process was not hard-exited.
             test <@ runCommandFrom tmpDir parsed = 1 @>
@@ -2216,10 +2255,7 @@ module ``runCommand`` =
             // Precondition: nothing above the temp dir is a jj/git repository.
             test <@ findRepoRoot tmpDir = None @>
 
-            let parsed =
-                { Command = Help
-                  RepoRoot = None
-                  Parallelism = 1 }
+            let parsed = { Command = Help; RepoRoot = None }
 
             test <@ runCommandFrom tmpDir parsed = 0 @>
             test <@ out.ToString().Contains("TestPrune") @>
