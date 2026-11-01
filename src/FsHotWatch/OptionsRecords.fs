@@ -48,10 +48,34 @@ let OutputsSchema = "fshw-options-outputs-v1"
 [<Literal>]
 let InputsSchema = "fshw-options-inputs-v1"
 
-/// A directory listing the evaluation asked for: the entries `Directory.Enumerate*` gives
-/// for (`Directory`, `Pattern`, `Recursive`), of `Kind` "files", "directories" or "entries".
+/// Which entries a listing names: what `Directory.EnumerateFiles`, `EnumerateDirectories` or
+/// `EnumerateFileSystemEntries` gives.
+[<RequireQualifiedAccess>]
+type ListingKind =
+    | Files
+    | Directories
+    | Entries
+
+module ListingKind =
+    /// The kind as a key label and an index record name it.
+    let token =
+        function
+        | ListingKind.Files -> "files"
+        | ListingKind.Directories -> "directories"
+        | ListingKind.Entries -> "entries"
+
+    /// The kind an index record names; `None` for any other token.
+    let tryParse =
+        function
+        | "files" -> Some ListingKind.Files
+        | "directories" -> Some ListingKind.Directories
+        | "entries" -> Some ListingKind.Entries
+        | _ -> None
+
+/// A directory listing the evaluation asked for: the entries of `Kind` that
+/// `Directory.Enumerate*` gives for (`Directory`, `Pattern`, `Recursive`).
 type Listing =
-    { Kind: string
+    { Kind: ListingKind
       Directory: string
       Pattern: string
       Recursive: bool }
@@ -125,9 +149,9 @@ let listingState (listing: Listing) : string =
         else
             let entries =
                 match listing.Kind with
-                | "directories" -> Directory.EnumerateDirectories(listing.Directory, listing.Pattern)
-                | "entries" -> Directory.EnumerateFileSystemEntries(listing.Directory, listing.Pattern)
-                | _ -> Directory.EnumerateFiles(listing.Directory, listing.Pattern)
+                | ListingKind.Directories -> Directory.EnumerateDirectories(listing.Directory, listing.Pattern)
+                | ListingKind.Entries -> Directory.EnumerateFileSystemEntries(listing.Directory, listing.Pattern)
+                | ListingKind.Files -> Directory.EnumerateFiles(listing.Directory, listing.Pattern)
 
             "entries:"
             + digestOf (entries |> Seq.map (fun entry -> Path.GetRelativePath(listing.Directory, entry)))
@@ -162,7 +186,7 @@ let requestKey (request: Request) : ActionKey.ActionKey =
 
 let private listingLabel (listing: Listing) =
     let depth = if listing.Recursive then "**" else "*"
-    $"listing:%s{listing.Kind}:%s{depth}:%s{Path.Combine(listing.Directory, listing.Pattern)}"
+    $"listing:%s{ListingKind.token listing.Kind}:%s{depth}:%s{Path.Combine(listing.Directory, listing.Pattern)}"
 
 /// The key options evaluated from `inputs` for `request` are filed under, read from the
 /// disk and `environment` NOW: equal only while every input is byte-identical.
@@ -424,7 +448,7 @@ module private InputsJson =
             JsonArray(
                 [| for l in inputs.Listings ->
                        let e = JsonObject()
-                       e["kind"] <- l.Kind
+                       e["kind"] <- ListingKind.token l.Kind
                        e["directory"] <- l.Directory
                        e["pattern"] <- l.Pattern
                        e["recursive"] <- l.Recursive
@@ -449,7 +473,10 @@ module private InputsJson =
                       Probes = readStrings o "probes"
                       Listings =
                         [ for l in o.GetProperty("listings").EnumerateArray() ->
-                              { Kind = l.GetProperty("kind").GetString()
+                              { Kind =
+                                  match ListingKind.tryParse (l.GetProperty("kind").GetString()) with
+                                  | Some kind -> kind
+                                  | None -> raise (FormatException "a listing names a kind no listing has")
                                 Directory = l.GetProperty("directory").GetString()
                                 Pattern = l.GetProperty("pattern").GetString()
                                 Recursive = l.GetProperty("recursive").GetBoolean() } ]
@@ -459,7 +486,8 @@ module private InputsJson =
         with
         | :? JsonException
         | :? KeyNotFoundException
-        | :? InvalidOperationException -> None
+        | :? InvalidOperationException
+        | :? FormatException -> None
 
 /// What a lookup found.
 type Replay =

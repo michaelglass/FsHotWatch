@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- refactor!: an options index record's listing kind is parsed where it is read (ADR-059 §18).
+  `OptionsRecords.Listing.Kind` is a `ListingKind` (`Files`, `Directories`, `Entries`), not a
+  string. An index naming any other kind is "the filed inputs are unreadable"; before, it was
+  listed as files and keyed under a label no evaluation had read. Every key label and record is
+  spelled as before (`ListingKind.token`). New: `ListingKind.token`, `ListingKind.tryParse`.
+
 - refactor!: a `check` record's diagnostic severity is parsed where the record is read
   (ADR-059 §17). `StoredDiagnostic.Severity` is an `FSharpDiagnosticSeverity`, not its `%A`
   spelling, so a record naming a severity FCS does not have is a miss in

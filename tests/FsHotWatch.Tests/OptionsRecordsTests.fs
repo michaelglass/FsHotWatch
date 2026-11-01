@@ -876,7 +876,7 @@ let private syntheticInputs (root: string) : EvaluationInputs =
     { Reads = [ Path.Combine(root, "a.props"); Path.Combine(root, "b.props") ]
       Probes = [ Path.Combine(root, "missing", "deeper", "c.props"); "relative.props" ]
       Listings =
-        [ { Kind = "files"
+        [ { Kind = ListingKind.Files
             Directory = root
             Pattern = "*.props"
             Recursive = false } ]
@@ -997,21 +997,33 @@ let ``a listing is keyed by the names it holds, never by their bytes`` () =
                   Recursive = recursive }
 
         let before =
-            [ state "files" false; state "directories" false; state "entries" false ]
+            [ state ListingKind.Files false
+              state ListingKind.Directories false
+              state ListingKind.Entries false ]
 
         test <@ before |> List.distinct |> List.length = 3 @>
         // A tree MSBuild listed is never walked here; such an evaluation is not filed.
-        test <@ state "files" true = "recursive" @>
+        test <@ state ListingKind.Files true = "recursive" @>
         File.WriteAllText(Path.Combine(root, "b.txt"), "changed bytes")
 
-        test <@ [ state "files" false; state "directories" false; state "entries" false ] = before @>
+        test
+            <@
+                [ state ListingKind.Files false
+                  state ListingKind.Directories false
+                  state ListingKind.Entries false ] = before
+            @>
 
         File.WriteAllText(Path.Combine(root, "c.txt"), "c")
-        test <@ state "files" false <> before[0] && state "directories" false = before[1] @>
+
+        test
+            <@
+                state ListingKind.Files false <> before[0]
+                && state ListingKind.Directories false = before[1]
+            @>
 
         let gone =
             listingState
-                { Kind = "files"
+                { Kind = ListingKind.Files
                   Directory = Path.Combine(root, "nowhere")
                   Pattern = "*"
                   Recursive = false }
@@ -1020,7 +1032,7 @@ let ``a listing is keyed by the names it holds, never by their bytes`` () =
 
         let refused =
             listingState
-                { Kind = "files"
+                { Kind = ListingKind.Files
                   Directory = root
                   Pattern = "\u0000"
                   Recursive = false }
@@ -1064,7 +1076,9 @@ let ``the recording file system answers as the real one and records every questi
         test
             <@
                 fs.Listings |> List.map (fun l -> l.Kind, l.Pattern, l.Recursive) |> Set.ofList = set
-                    [ "files", "*.props", false; "directories", "*", false; "entries", "*", false ]
+                    [ ListingKind.Files, "*.props", false
+                      ListingKind.Directories, "*", false
+                      ListingKind.Entries, "*", false ]
             @>)
 
 [<Fact(Timeout = 120000)>]
@@ -1094,3 +1108,30 @@ let ``the wait for the racy window ends only once the clock is past it`` () =
     waitPast (fun () -> clock.Value) (fun ms -> clock.Value <- clock.Value.AddMilliseconds(float ms)) deadline
 
     test <@ clock.Value > deadline @>
+
+[<Fact>]
+let ``a listing's kind keys under its token, and an index naming any other kind is unreadable`` () =
+    withSynthetic (fun root store inputs req ->
+        // The label a files listing keys under: the token, then the depth, then the path.
+        let key = optionsKey req inputs []
+        let label = "listing:files:*:" + Path.Combine(root, "*.props")
+        test <@ key.Inputs |> List.exists (fun (l, _) -> l = label) @>
+
+        test <@ file store req inputs projects [] DateTime.MinValue never = Filed @>
+
+        let filed =
+            (store.LookupWithOutputs (requestKey req).Value).Value |> snd |> Option.get
+
+        store.RecordWithOutputs(
+            { (store.Lookup (requestKey req).Value).Value with
+                RecordedAt = DateTimeOffset.UtcNow.AddMinutes 1.0 },
+            Some(filed.Replace("\"kind\":\"files\"", "\"kind\":\"sockets\""))
+        )
+        |> ignore
+
+        test
+            <@
+                match tryReplay store req [] DateTime.UtcNow with
+                | Missed why -> why = "the filed inputs are unreadable"
+                | Replayed _ -> false
+            @>)
