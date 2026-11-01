@@ -115,6 +115,25 @@ let private observe (p: Process) : ExitObservation =
     with ex when isExpectedProcessException ex ->
         ExitObservation.Unobservable ex
 
+/// What escalating a kill that did not return established about a child's tree.
+[<RequireQualifiedAccess>]
+type internal EscalationResult =
+    /// No identity (pid and start time) was recorded at launch, so no signal could be
+    /// proven to reach OUR process: nothing was sent, and the tree is booked as leaked.
+    | NoIdentity
+    /// Every member of the tree is gone.
+    | TreeGone
+    /// These members were left running, or could not be proven ours or gone: each pid
+    /// with why. Never empty (`EscalationResult.ofSurvivors`).
+    | Survived of survivors: (int * string) list
+
+module internal EscalationResult =
+    /// An escalation's survivors as a result: none left is `TreeGone`.
+    let ofSurvivors (survivors: (int * string) list) : EscalationResult =
+        match survivors with
+        | [] -> EscalationResult.TreeGone
+        | _ -> EscalationResult.Survived survivors
+
 /// What a registry needs from a child it owns: to see whether it is still running, to
 /// kill its tree, and to wait for it. A child this process started is a `Process`
 /// (`ownedProcess`); a child a spawn helper started for us is reached through the helper
@@ -128,11 +147,8 @@ type internal IOwnedChild =
     /// Wait up to `milliseconds` for the child to exit.
     abstract WaitForExit: milliseconds: int -> unit
     /// Escalate a kill that did not return, against the identity recorded at launch (pid
-    /// and start time, never a name). `None` when no identity was recorded: no signal
-    /// could then be proven to reach OUR process, so the tree is left to be booked as
-    /// leaked. Otherwise the members escalation left running, or could not prove ours or
-    /// gone, each with why; empty means the tree is gone.
-    abstract Escalate: unit -> (int * string) list option
+    /// and start time, never a name).
+    abstract Escalate: unit -> EscalationResult
 
 /// A `Process` as an owned child. The pid is read now, while the caller holds a live
 /// handle, so a later disposal cannot erase it.
@@ -147,7 +163,7 @@ let internal ownedProcess (p: Process) : IOwnedChild =
         member _.WaitForExit milliseconds =
             p.WaitForExit(milliseconds: int) |> ignore
 
-        member _.Escalate() = None }
+        member _.Escalate() = EscalationResult.NoIdentity }
 
 /// `child`, escalating a kill that did not return through `escalate` (see
 /// `IOwnedChild.Escalate`). The registry compiles before the escalation does, so the
@@ -162,7 +178,9 @@ let internal escalatingWith (escalate: (unit -> (int * string) list) option) (ch
             member _.Observe() = child.Observe()
             member _.KillTree() = child.KillTree()
             member _.WaitForExit milliseconds = child.WaitForExit milliseconds
-            member _.Escalate() = Some(escalateNow ()) }
+
+            member _.Escalate() =
+                EscalationResult.ofSurvivors (escalateNow ()) }
 
 /// Kill one child's tree and wait, within the budget, for positive evidence of exit.
 let private terminateHandle (budget: TimeSpan) (child: IOwnedChild) : Termination =
@@ -197,14 +215,14 @@ let private waitAllWithin (budget: TimeSpan) (tasks: Task<Termination> array) =
 let private escalateHung (hung: string) (child: IOwnedChild) : Termination =
     try
         match child.Escalate() with
-        | None -> Termination.Uncertain hung
-        | Some [] ->
+        | EscalationResult.NoIdentity -> Termination.Uncertain hung
+        | EscalationResult.TreeGone ->
             Logging.warn
                 "process-registry"
                 $"ESCALATED tracked child pid %d{child.Pid} at teardown: %s{hung}, so its tree was sent SIGTERM,                   then SIGKILL, member by member (pid and start time). It is gone."
 
             Termination.Established
-        | Some survivors ->
+        | EscalationResult.Survived survivors ->
             let named =
                 survivors
                 |> List.map (fun (pid, why) -> $"pid %d{pid} (%s{why})")

@@ -119,19 +119,6 @@ let tryLockWorktree (worktreeRoot: string) : IDisposable option =
     with :? IOException ->
         None
 
-/// The pid a pid file records, if it is there and holds one.
-let private tryReadPid (pidFile: string) : int option =
-    try
-        match Int32.TryParse(File.ReadAllText(pidFile).Trim()) with
-        | true, pid -> Some pid
-        | _ -> None
-    with _ ->
-        None
-
-/// The pid a per-worktree daemon recorded, if it recorded one.
-let private recordedDaemonPid (worktreeRoot: string) : int option =
-    tryReadPid (Path.Combine(FsHwPaths.root worktreeRoot, "daemon.pid"))
-
 // ---------------------------------------------------------------------------
 // The host
 // ---------------------------------------------------------------------------
@@ -218,7 +205,7 @@ type RepositoryHost
                 refuse (AttachRefusal.ToolchainMismatch(toolchain, settings.Toolchain))
             else
                 match tryLockWorktree worktree.Root.Value with
-                | None -> refuse (AttachRefusal.WorktreeOwnedByDaemon(recordedDaemonPid worktree.Root.Value))
+                | None -> refuse (AttachRefusal.WorktreeOwnedByDaemon(PidFile.tryReadDaemon worktree.Root.Value))
                 | Some lock ->
                     let record = HostSessionRecord.path worktree.Root.Value
 
@@ -469,7 +456,7 @@ let internal runObservedOn
 
     match lock with
     | None ->
-        let pid = tryReadPid settings.Control.PidFile
+        let pid = PidFile.tryRead settings.Control.PidFile
         HostRun.AlreadyRunning pid
     | Some lock when Path.Exists settings.Control.VirtualRoot ->
         lock.Dispose()

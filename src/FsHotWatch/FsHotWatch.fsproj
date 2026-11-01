@@ -72,6 +72,7 @@
     <Compile Include="SpawnHelper.fs" />
     <Compile Include="ProcessHelper.fs" />
     <Compile Include="FsHwPaths.fs" />
+    <Compile Include="PidFile.fs" />
     <Compile Include="ContentHash.fs" />
     <Compile Include="ActionKey.fs" />
     <Compile Include="SnapshotEpoch.fs" />

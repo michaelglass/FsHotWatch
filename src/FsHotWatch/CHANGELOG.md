@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **BREAKING (API):** `IdleExit.IdleExitConfig.Minutes` and `IdleExit.PressureFloorConfig.Minutes` carry a
+  `PositiveMinutes`, built only by `PositiveMinutes.tryCreate` (AUTOMATION-1445). A zero or negative
+  window could be constructed and was discarded when resolved; it can no longer be built. Both
+  parsers (`.fshw.json` and `FSHW_IDLE_EXIT_MIN`) already read a non-positive number as disabled, so
+  configuration behaves as before. Code that built `Minutes n` builds `Minutes window` from
+  `PositiveMinutes.tryCreate n`.
+
+- refactor: `PidFile` reads a pid file in one place (AUTOMATION-1445). The daemon pid file was parsed
+  by four readers with three rules (any integer, a positive one, or a crash on text); the endpoint
+  resolver, `fshw headroom`, `fshw stop` and the repository host now share `PidFile.parse`, which
+  holds only a positive pid. New public module; nothing removed.
+
 - fix: a shutdown that lands during a kill escalation names that tree (AUTOMATION-1425). A kill that
   does not return is escalated (SIGTERM, then SIGKILL) on the thread that asked for it, which logs
   the outcome when it finishes; a daemon that exited right after its shutdown cut that line off, and

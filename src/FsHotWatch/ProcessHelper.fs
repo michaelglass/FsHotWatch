@@ -868,6 +868,17 @@ type internal TreeTeardown =
         Survivors: Result<ProcessRow list, string>
     }
 
+/// What a liveness probe established about a pid.
+[<RequireQualifiedAccess>]
+type internal Liveness =
+    /// A process holds the pid, whether or not it is ours to signal.
+    | Alive
+    /// No process holds the pid.
+    | Gone
+    /// The probe could not answer, with why. Every caller leans this toward "still
+    /// running": a false "it stopped" is the failure the probe exists to prevent.
+    | Unknown of reason: string
+
 /// Snapshot the tree, kill it, then poll each member's liveness until every one is
 /// gone or `settleAttempts` polls have been spent (`pause` between them) — and name
 /// whatever is left. A kill that RETURNED has only delivered signals; the poll is what
@@ -889,7 +900,7 @@ type internal TreeTeardown =
 /// injected so the throwing, blocking and survivor arms are all deterministic.
 let internal accountTeardownWith
     (readTable: unit -> Result<ProcessRow list, string>)
-    (isAlive: int -> Result<bool, string>)
+    (isAlive: int -> Liveness)
     (settleAttempts: int)
     (pause: unit -> unit)
     (rootPid: int)
@@ -912,9 +923,9 @@ let internal accountTeardownWith
         | [] -> Ok(List.rev alive)
         | m :: rest ->
             match isAlive m.Pid with
-            | Ok true -> stillAlive rest (m :: alive)
-            | Ok false -> stillAlive rest alive
-            | Error reason -> Error $"could not tell whether pid %d{m.Pid} is still running (%s{reason})"
+            | Liveness.Alive -> stillAlive rest (m :: alive)
+            | Liveness.Gone -> stillAlive rest alive
+            | Liveness.Unknown reason -> Error $"could not tell whether pid %d{m.Pid} is still running (%s{reason})"
 
     let rec settle attempt (members: ProcessRow list) =
         match stillAlive members [] with
@@ -939,7 +950,7 @@ let internal accountTeardownWith
 /// `accountTeardownWith` with no interrupt: the tree is killed outright.
 let internal accountTeardown
     (readTable: unit -> Result<ProcessRow list, string>)
-    (isAlive: int -> Result<bool, string>)
+    (isAlive: int -> Liveness)
     (settleAttempts: int)
     (pause: unit -> unit)
     (rootPid: int)
@@ -954,7 +965,7 @@ let internal accountTeardown
 let internal signalTree
     (signalName: string)
     (signal: int -> Result<unit, string>)
-    (isAlive: int -> Result<bool, string>)
+    (isAlive: int -> Liveness)
     (attempts: int)
     (pause: unit -> unit)
     (members: ProcessRow list)
@@ -973,7 +984,7 @@ let internal signalTree
             | Error reason -> Some(pid, reason)
             | Ok() -> None)
 
-    let running pid = isAlive pid <> Ok false
+    let running pid = isAlive pid <> Liveness.Gone
 
     let rec wait attempt =
         let left = signalled |> List.filter running
@@ -998,7 +1009,7 @@ let internal signalTree
 /// `signalTree` with SIGINT: the interrupt a build's teardown sends.
 let internal interruptTree
     (signal: int -> Result<unit, string>)
-    (isAlive: int -> Result<bool, string>)
+    (isAlive: int -> Liveness)
     (attempts: int)
     (pause: unit -> unit)
     (members: ProcessRow list)
@@ -1028,7 +1039,7 @@ let internal frontierOf (alive: ProcessRow list) : ProcessRow list =
 let internal stopDeepestFirst
     (signalName: string)
     (signal: int -> Result<unit, string>)
-    (isAlive: int -> Result<bool, string>)
+    (isAlive: int -> Liveness)
     (attempts: int)
     (step: int)
     (pause: unit -> unit)
@@ -1036,7 +1047,7 @@ let internal stopDeepestFirst
     : TreeInterrupt =
     let at = DateTime.UtcNow
     let clock = Stopwatch.StartNew()
-    let running (m: ProcessRow) = isAlive m.Pid <> Ok false
+    let running (m: ProcessRow) = isAlive m.Pid <> Liveness.Gone
 
     // `deepestSince`: the poll each member was first seen on the frontier. `sent`: every
     // signal sent, newest first.
@@ -1111,17 +1122,17 @@ module private Libc =
 /// Not `ps -p <pid>`: on macOS its EXIT CODE is 1 for a live pid it is not entitled to
 /// inspect, which would read a survivor as dead. Called directly, not via `kill -0`,
 /// so the settle poll spawns nothing on a box that is already overloaded.
-let internal isProcessAlive (pid: int) : Result<bool, string> =
+let internal isProcessAlive (pid: int) : Liveness =
     try
         if Libc.kill (pid, 0) = 0 then
-            Ok true
+            Liveness.Alive
         else
             match System.Runtime.InteropServices.Marshal.GetLastPInvokeError() with
-            | 3 -> Ok false // ESRCH
-            | 1 -> Ok true // EPERM
-            | errno -> Error $"kill(%d{pid}, 0) failed with errno %d{errno}"
+            | 3 -> Liveness.Gone // ESRCH
+            | 1 -> Liveness.Alive // EPERM
+            | errno -> Liveness.Unknown $"kill(%d{pid}, 0) failed with errno %d{errno}"
     with ex ->
-        Error $"kill(2) is unavailable: %s{ex.GetType().Name}: %s{ex.Message}"
+        Liveness.Unknown $"kill(2) is unavailable: %s{ex.GetType().Name}: %s{ex.Message}"
 
 /// `kill(pid, SIGINT)`: the signal a terminal's Ctrl+C sends, which MSBuild answers by
 /// cancelling the build and shutting its loggers down in order.

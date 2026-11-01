@@ -4,6 +4,19 @@ open System
 open System.Runtime.InteropServices
 open System.Threading
 
+/// A positive number of minutes: the only window idle-exit or its pressure floor can be
+/// given. Built only by `PositiveMinutes.tryCreate`, so a zero or negative window, which
+/// would fire at once, cannot be configured at all rather than being discarded later.
+type PositiveMinutes = private PositiveMinutes of int
+
+module PositiveMinutes =
+    /// `n` as a window, when it is positive.
+    let tryCreate (n: int) : PositiveMinutes option =
+        if n > 0 then Some(PositiveMinutes n) else None
+
+    /// The number of minutes.
+    let value (PositiveMinutes n) : int = n
+
 /// How the daemon's idle-exit feature is configured in `.fshw.json` via the
 /// `idleExitMin` key. The three cases are kept distinct (rather than collapsing
 /// absent into a default int) because the *absent* case has path-conditional
@@ -16,7 +29,7 @@ type IdleExitConfig =
     /// `idleExitMin: 0` or `idleExitMin: false`. Explicit opt-out everywhere.
     | Disabled
     /// `idleExitMin: N` (positive). Explicit opt-in everywhere, N-minute window.
-    | Minutes of int
+    | Minutes of PositiveMinutes
 
 /// The threshold AUTO mode applies to non-default workspaces.
 [<Literal>]
@@ -40,20 +53,18 @@ type PressureFloorConfig =
     | Disabled
     /// `pressureIdleFloorMin: N` (positive). Pressure shortens the window to
     /// `min(baseThreshold, N)`.
-    | Minutes of int
+    | Minutes of PositiveMinutes
 
 /// Resolve the effective pressure floor (in minutes) from its config.
 ///
 /// - `Absent`   → `Some 2` (default-on)
 /// - `Disabled` → `None` (no pressure-shortening)
-/// - `Minutes N` (N > 0) → `Some N`
-/// - `Minutes N` (N <= 0) → `None` (defensive: non-positive disables, never an
-///   instantly-firing floor)
+/// - `Minutes N` → `Some N`
 let resolvePressureFloor (config: PressureFloorConfig) : int option =
     match config with
     | PressureFloorConfig.Absent -> Some DefaultPressureFloorMin
     | PressureFloorConfig.Disabled -> None
-    | PressureFloorConfig.Minutes n -> if n > 0 then Some n else None
+    | PressureFloorConfig.Minutes n -> Some(PositiveMinutes.value n)
 
 /// Pure: the GC's high-load decision. True when `memoryLoad` has reached the GC's own
 /// `highLoadThreshold`. No percentage knob — we reuse the GC's high-load mark. A 0
@@ -88,15 +99,17 @@ let internal decodeInt32Sysctl (status: int) (length: unativeint) (value: int) :
     else
         None
 
+/// A 32-bit integer sysctl, read by name (`sysctlbyname`): `None` when the call fails or
+/// answers anything but four bytes. macOS and the BSDs only; the caller checks the platform.
+let internal readSysctlInt32 (name: string) : int option =
+    let mutable value = 0
+    let mutable length = unativeint sizeof<int>
+    let status = sysctlByNameInt32 (name, &value, &length, IntPtr.Zero, 0un)
+    decodeInt32Sysctl status length value
+
 /// `kern.memorystatus_vm_pressure_level` straight from the kernel. macOS only.
 let private sysctlKernelPressureLevel () : int option =
-    let mutable level = 0
-    let mutable length = unativeint sizeof<int>
-
-    let status =
-        sysctlByNameInt32 ("kern.memorystatus_vm_pressure_level", &level, &length, IntPtr.Zero, 0un)
-
-    decodeInt32Sysctl status length level
+    readSysctlInt32 "kern.memorystatus_vm_pressure_level"
 
 /// The kernel level with the platform and the probe passed in: the probe runs only on
 /// macOS, the one kernel that has this sysctl.
@@ -113,21 +126,6 @@ let readKernelPressureLevel () : int option =
 /// Warning (2) or critical (4) is pressure; normal (1) is not.
 let kernelLevelIsPressure (level: int) : bool = level >= 2
 
-/// Pure: the machine is under memory pressure. Where the kernel reports a level, the
-/// kernel decides — warning (2) or critical (4) is pressure, normal (1) is not — and
-/// the GC's mark is not consulted. Without a kernel level the GC's high-load mark
-/// decides. Both readings are passed in so the decision is testable without either.
-let pressureFrom (kernelLevel: int option) (gcPressure: unit -> bool) : bool =
-    match kernelLevel with
-    | Some level -> kernelLevelIsPressure level
-    | None -> gcPressure ()
-
-/// Read the live memory-pressure signal: the kernel's level on macOS, the GC's
-/// high-load mark elsewhere. Injected in the daemon wiring so the scheduler is
-/// unit-testable without a real machine under pressure.
-let readMemoryPressure () : bool =
-    pressureFrom (readKernelPressureLevel ()) readGcPressure
-
 /// One reading of the machine's memory pressure, kept with what it was read from, so a
 /// decision taken on it can say which reading that was.
 [<RequireQualifiedAccess>]
@@ -140,7 +138,8 @@ type PressureReading =
     | GcHighLoad of crossed: bool
 
 module PressureReading =
-    /// Whether the reading is pressure — the rule `pressureFrom` applies.
+    /// Whether the reading is pressure: a kernel level of warning (2) or critical (4), or,
+    /// with no kernel level, a crossed GC high-load mark. `pressureFrom` is this rule.
     let isPressure (reading: PressureReading) : bool =
         match reading with
         | PressureReading.KernelLevel level -> kernelLevelIsPressure level
@@ -171,6 +170,19 @@ let internal pressureReadingFrom (kernelLevel: int option) (gcPressure: unit -> 
 /// `pressureReadingFrom` over the live kernel level and GC mark.
 let readPressure () : PressureReading =
     pressureReadingFrom (readKernelPressureLevel ()) readGcPressure
+
+/// Pure: the machine is under memory pressure. Where the kernel reports a level, the
+/// kernel decides — warning (2) or critical (4) is pressure, normal (1) is not — and
+/// the GC's mark is not consulted. Without a kernel level the GC's high-load mark
+/// decides. Both readings are passed in so the decision is testable without either.
+/// The same rule as `PressureReading.isPressure`, over the reading `pressureReadingFrom` takes.
+let pressureFrom (kernelLevel: int option) (gcPressure: unit -> bool) : bool =
+    pressureReadingFrom kernelLevel gcPressure |> PressureReading.isPressure
+
+/// Read the live memory-pressure signal: the kernel's level on macOS, the GC's
+/// high-load mark elsewhere (`readPressure`, decided by `PressureReading.isPressure`).
+let readMemoryPressure () : bool =
+    readPressure () |> PressureReading.isPressure
 
 /// Pure: the sentence appended to a daemon-disconnect or aborted-check message
 /// when the MACHINE is under memory pressure.
@@ -223,9 +235,7 @@ let isNonDefaultWorkspace (repoRoot: string) : bool =
 ///
 /// - `Absent`  → `Some 30` iff `repoRoot` is a non-default workspace, else `None`
 /// - `Disabled`→ `None` everywhere (explicit opt-out beats AUTO)
-/// - `Minutes N` (N > 0) → `Some N` everywhere (explicit opt-in, path-agnostic)
-/// - `Minutes N` (N <= 0) → `None` (defensive: a non-positive explicit value is
-///   treated as disabled rather than an instantly-firing window)
+/// - `Minutes N` → `Some N` everywhere (explicit opt-in, path-agnostic)
 let resolveThreshold (config: IdleExitConfig) (repoRoot: string) : int option =
     match config with
     | IdleExitConfig.Absent ->
@@ -234,7 +244,7 @@ let resolveThreshold (config: IdleExitConfig) (repoRoot: string) : int option =
         else
             None
     | IdleExitConfig.Disabled -> None
-    | IdleExitConfig.Minutes n -> if n > 0 then Some n else None
+    | IdleExitConfig.Minutes n -> Some(PositiveMinutes.value n)
 
 /// The environment variable that overrides `.fshw.json`'s `idleExitMin` for the one
 /// daemon started with it. `.fshw.json` is shared and tracked, and an edit to it stops
@@ -271,8 +281,10 @@ let parseOverride (raw: string) : OverrideValue =
                 Globalization.CultureInfo.InvariantCulture
             )
         with
-        | true, n when n > 0 -> OverrideValue.Set(IdleExitConfig.Minutes n)
-        | true, _ -> OverrideValue.Set IdleExitConfig.Disabled
+        | true, n ->
+            match PositiveMinutes.tryCreate n with
+            | Some window -> OverrideValue.Set(IdleExitConfig.Minutes window)
+            | None -> OverrideValue.Set IdleExitConfig.Disabled
         | false, _ ->
             match value.ToLowerInvariant() with
             | "false"

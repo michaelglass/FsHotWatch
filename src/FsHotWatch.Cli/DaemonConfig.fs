@@ -1711,11 +1711,17 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
     // positive N → `minutes N`; a non-positive number / `false` / `true` →
     // `disabled` (`true` is rejected rather than treated as an implicit window —
     // documented as `number | false`); absent or any other kind → `fallback`.
-    let parseTristateMinutes (key: string) (minutes: int -> 'a) (disabled: 'a) (fallback: 'a) : 'a =
+    let parseTristateMinutes
+        (key: string)
+        (minutes: IdleExit.PositiveMinutes -> 'a)
+        (disabled: 'a)
+        (fallback: 'a)
+        : 'a =
         match root.TryGetProperty(key) with
         | true, v when v.ValueKind = JsonValueKind.Number ->
-            let n = v.GetInt32()
-            if n > 0 then minutes n else disabled
+            match IdleExit.PositiveMinutes.tryCreate (v.GetInt32()) with
+            | Some window -> minutes window
+            | None -> disabled
         | true, v when v.ValueKind = JsonValueKind.False -> disabled
         | true, v when v.ValueKind = JsonValueKind.True -> disabled
         | _ -> fallback

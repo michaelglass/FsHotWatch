@@ -14,7 +14,6 @@ module FsHotWatch.Cli.Headroom
 open System
 open System.Diagnostics
 open System.IO
-open System.Runtime.InteropServices
 open FsHotWatch.IdleExit
 
 /// What a worktree's `.fshw/daemon.pid` says about its daemon.
@@ -52,13 +51,13 @@ let internal classify
     (pidfileWritten: DateTime)
     (pidText: string)
     : DaemonState =
-    match Int32.TryParse(pidText.Trim()) with
-    | true, pid when pid > 0 ->
+    match FsHotWatch.PidFile.parse pidText with
+    | Some pid ->
         match processStart pid with
         | None -> DaemonState.Stale pid
         | Some started when startedBeforePidfile pidfileWritten started -> DaemonState.Live pid
         | Some _ -> DaemonState.Recycled pid
-    | _ -> DaemonState.Unreadable
+    | None -> DaemonState.Unreadable
 
 /// The live probe: the start time of the process holding `pid`, `None` when there is
 /// none. A process whose start time cannot be read (another user's) answers
@@ -88,7 +87,7 @@ let internal survey (processStart: int -> DateTime option) (repoRoot: string) : 
 
     (repoRoot :: workspaces)
     |> List.choose (fun root ->
-        let pidPath = Path.Combine(root, ".fshw", "daemon.pid")
+        let pidPath = FsHotWatch.PidFile.daemonPath root
 
         if File.Exists pidPath then
             let state =
@@ -120,27 +119,9 @@ let internal parseMemAvailable (meminfo: string) : int64 option =
 /// available) as bytes of `totalBytes`.
 let internal availableFromLevel (totalBytes: int64) (levelPercent: int) : int64 = totalBytes * int64 levelPercent / 100L
 
-[<DllImport("libc", EntryPoint = "sysctlbyname", SetLastError = true)>]
-extern int private sysctlByNameInt32(
-    string name,
-    int& value,
-    unativeint& length,
-    nativeint newValue,
-    unativeint newLength
-)
-
 /// `kern.memorystatus_level`, macOS only.
 let private macMemoryLevel () : int option =
-    let mutable level = 0
-    let mutable length = unativeint sizeof<int>
-
-    let status =
-        sysctlByNameInt32 ("kern.memorystatus_level", &level, &length, IntPtr.Zero, 0un)
-
-    if status = 0 && length = unativeint sizeof<int> then
-        Some level
-    else
-        None
+    readSysctlInt32 "kern.memorystatus_level"
 
 /// Available memory where the platform reports it: the kernel's level on macOS,
 /// `MemAvailable` on Linux, `None` elsewhere or when the read fails. The platform and

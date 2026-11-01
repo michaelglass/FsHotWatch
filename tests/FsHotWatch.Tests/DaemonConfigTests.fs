@@ -15,6 +15,10 @@ open FsHotWatch.Tests.WatchedDir
 
 let private defaults: DaemonConfiguration = defaultTestConfig ()
 
+/// A window the test knows is positive.
+let private window (n: int) : FsHotWatch.IdleExit.PositiveMinutes =
+    FsHotWatch.IdleExit.PositiveMinutes.tryCreate n |> Option.get
+
 // --- parseConfig: empty JSON ---
 
 [<Fact(Timeout = 15000)>]
@@ -319,7 +323,7 @@ let ``parseConfig idleExitMin absent yields Absent (AUTO)`` () =
 [<Fact(Timeout = 15000)>]
 let ``parseConfig idleExitMin positive yields Minutes`` () =
     let config = parseConfig """{"idleExitMin": 45}""" defaults
-    test <@ config.IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Minutes 45 @>
+    test <@ config.IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Minutes(window 45) @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig idleExitMin zero yields Disabled`` () =
@@ -356,7 +360,7 @@ let ``parseConfig pressureIdleFloorMin absent yields Absent (default 2)`` () =
 [<Fact(Timeout = 15000)>]
 let ``parseConfig pressureIdleFloorMin positive yields Minutes`` () =
     let config = parseConfig """{"pressureIdleFloorMin": 5}""" defaults
-    test <@ config.PressureIdleFloorMin = FsHotWatch.IdleExit.PressureFloorConfig.Minutes 5 @>
+    test <@ config.PressureIdleFloorMin = FsHotWatch.IdleExit.PressureFloorConfig.Minutes(window 5) @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig pressureIdleFloorMin zero yields Disabled`` () =
