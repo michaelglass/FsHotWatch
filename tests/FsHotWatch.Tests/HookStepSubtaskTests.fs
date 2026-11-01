@@ -15,6 +15,8 @@ open FsHotWatch.Cli.DaemonConfig
 open FsHotWatch.PluginHost
 open FsHotWatch.Daemon
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.SelectionAssembly
+open FsHotWatch.TestPrune.PluginTypes
 open FsHotWatch.Tests.TestHelpers
 
 /// Every step a tracker was handed, and which of them it has released.

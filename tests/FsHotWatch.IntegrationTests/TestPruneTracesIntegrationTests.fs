@@ -12,6 +12,8 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.TestPrune
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.SelectionAssembly
+open FsHotWatch.TestPrune.PluginTypes
 open TestPrune.Trace
 
 /// A scratch directory named by its real path. A build records the real path in its PDBs,

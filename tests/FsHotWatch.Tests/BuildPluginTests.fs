@@ -595,7 +595,7 @@ let ``file changes observed during a test host defer the build until that run co
                     ":memory:"
                     tmpDir
                     (Some
-                        [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "GatedTests"
+                        [ { FsHotWatch.TestPrune.PluginTypes.TestConfig.Project = "GatedTests"
                             Command = "sh"
                             // 1500 polls at 20ms is ~30s: twice this test's 15s xUnit budget.
                             // See `gatedWait` for why the cap is set relative to that budget.
@@ -605,7 +605,7 @@ let ``file changes observed during a test host defer the build until that run co
                             FilterTemplate = None
                             ClassJoin = " "
                             TimeoutSec = None
-                            ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                            ReportVerificationFormat = FsHotWatch.TestPrune.PluginTypes.AutoDetect
                             Starvation = None
                             CheckSkip = None
                             NameHungTests = false
@@ -746,7 +746,7 @@ let ``a force-run cancelled after it started still releases the build deferral``
                     ":memory:"
                     tmpDir
                     (Some
-                        [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "GatedTests"
+                        [ { FsHotWatch.TestPrune.PluginTypes.TestConfig.Project = "GatedTests"
                             Command = "sh"
                             Args = "-c \"" + gatedWait tmpDir release 1500 + "\""
                             Group = "default"
@@ -754,7 +754,7 @@ let ``a force-run cancelled after it started still releases the build deferral``
                             FilterTemplate = None
                             ClassJoin = " "
                             TimeoutSec = None
-                            ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                            ReportVerificationFormat = FsHotWatch.TestPrune.PluginTypes.AutoDetect
                             Starvation = None
                             CheckSkip = None
                             NameHungTests = false
@@ -889,7 +889,7 @@ let private manualTestWaitsForBuild () =
                     ":memory:"
                     tmpDir
                     (Some
-                        [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "ManualTests"
+                        [ { FsHotWatch.TestPrune.PluginTypes.TestConfig.Project = "ManualTests"
                             Command = "sh"
                             Args = testScript
                             Group = "default"
@@ -897,7 +897,7 @@ let private manualTestWaitsForBuild () =
                             FilterTemplate = None
                             ClassJoin = " "
                             TimeoutSec = None
-                            ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                            ReportVerificationFormat = FsHotWatch.TestPrune.PluginTypes.AutoDetect
                             Starvation = None
                             CheckSkip = None
                             NameHungTests = false
@@ -1020,7 +1020,7 @@ let ``failed build rejects queued and later manual hosts until a success drains 
                 ":memory:"
                 tmpDir
                 (Some
-                    [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "ManualTests"
+                    [ { FsHotWatch.TestPrune.PluginTypes.TestConfig.Project = "ManualTests"
                         Command = "sh"
                         Args = testScript
                         Group = "default"
@@ -1028,7 +1028,7 @@ let ``failed build rejects queued and later manual hosts until a success drains 
                         FilterTemplate = None
                         ClassJoin = " "
                         TimeoutSec = None
-                        ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                        ReportVerificationFormat = FsHotWatch.TestPrune.PluginTypes.AutoDetect
                         Starvation = None
                         CheckSkip = None
                         NameHungTests = false
@@ -1128,7 +1128,7 @@ let ``queued template build preserves changes for a second project root`` () =
                 ":memory:"
                 tmpDir
                 (Some
-                    [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "SlowTests"
+                    [ { FsHotWatch.TestPrune.PluginTypes.TestConfig.Project = "SlowTests"
                         Command = "sleep"
                         Args = "1"
                         Group = "default"
@@ -1136,7 +1136,7 @@ let ``queued template build preserves changes for a second project root`` () =
                         FilterTemplate = None
                         ClassJoin = " "
                         TimeoutSec = None
-                        ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                        ReportVerificationFormat = FsHotWatch.TestPrune.PluginTypes.AutoDetect
                         Starvation = None
                         CheckSkip = None
                         NameHungTests = false

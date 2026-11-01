@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- refactor!: `TestPrunePlugin` is being split along its seams into focused modules. Moved
+  definitions keep their names; a caller that qualified them as `TestPrunePlugin.X` now names
+  the new module: `CoverageArtifacts`, `CoverageIngest`, `PluginTypes`, `RuntimeCoverageSelection`,
+  `InputTrees`, `EvidenceReceipts`, `PluginState`, `RunLaunch`, `ExternalInputs`, `RunResults`,
+  `ReceiptTransitions`, `SelectionAssembly`, `OutstandingFailures`, `TestFilters`, `FailureReports`,
+  `RunnerArgs` and `TestReports`. Top-level `private` definitions the plugin still uses became
+  `internal`.
+
+- refactor!: `TestPruneState` holds its test-evidence receipt as one `HeldReceipt` (`NoneYet`,
+  `Standing of receipt * manifest`, `Revoked of reason`) in place of `EvidenceReceipt`,
+  `EvidenceManifest` and `ReceiptRevoked`, so a revocation reason can no longer stand beside a
+  receipt and a manifest can no longer outlive its receipt. `EvidenceReceipt` and `ReceiptRevoked`
+  remain as read-only members; `ReceiptTransition.hold` applies a completion. `LastRunId`, which
+  nothing read, is removed.
+
 - refactor!: a `TraceSettings` always records, so a shadow selection always has traces to select
   from. `TraceRecordPolicy.RecordOff` is gone: `tests.traces.record: "off"` (or no `record`) now
   parses to no settings at all, which was already its whole effect. `TraceSettings.parseRecord` is

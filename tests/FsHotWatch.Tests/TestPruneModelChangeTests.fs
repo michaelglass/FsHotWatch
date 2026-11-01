@@ -18,6 +18,14 @@ open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open FsHotWatch.TestPrune
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.SelectionAssembly
+open FsHotWatch.TestPrune.ReceiptTransitions
+open FsHotWatch.TestPrune.RunLaunch
+open FsHotWatch.TestPrune.PluginState
+open FsHotWatch.TestPrune.InputTrees
+open FsHotWatch.TestPrune.RuntimeCoverageSelection
+open FsHotWatch.TestPrune.PluginTypes
+open FsHotWatch.TestPrune.CoverageArtifacts
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.Tests.TestPrunePluginTestSupport
 

@@ -657,7 +657,7 @@ let private gatedTestHost (repoRoot: string) (release: string) =
             (System.IO.Path.Combine(repoRoot, "verdict.db"))
             repoRoot
             (Some
-                [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "GatedTests"
+                [ { FsHotWatch.TestPrune.PluginTypes.TestConfig.Project = "GatedTests"
                     Command = "sh"
                     Args = "-c \"" + gatedWait repoRoot release 1500 + "\""
                     Group = "default"
@@ -665,7 +665,7 @@ let private gatedTestHost (repoRoot: string) (release: string) =
                     FilterTemplate = None
                     ClassJoin = " "
                     TimeoutSec = None
-                    ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                    ReportVerificationFormat = FsHotWatch.TestPrune.PluginTypes.AutoDetect
                     Starvation = None
                     CheckSkip = None
                     NameHungTests = false

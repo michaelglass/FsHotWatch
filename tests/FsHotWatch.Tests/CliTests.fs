@@ -223,7 +223,7 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
               Coverage = cov
               CoverageArgsTemplate = None
               TimeoutSec = None
-              ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+              ReportVerificationFormat = FsHotWatch.TestPrune.PluginTypes.AutoDetect
               Starvation = None
               CheckSkip = None
               NameHungTests = false
@@ -1868,7 +1868,7 @@ let ``RerunFilter.render and buildFilterArgs emit the same token for a spaced cl
     let spaced = "Ns.Type+Every background job declares its idempotence"
     let rerun = RerunFilter.render [ FilterClass spaced ]
 
-    let config: FsHotWatch.TestPrune.TestPrunePlugin.TestConfig =
+    let config: FsHotWatch.TestPrune.PluginTypes.TestConfig =
         { Project = "P"
           Command = "dotnet"
           Args = "test"
@@ -1877,7 +1877,7 @@ let ``RerunFilter.render and buildFilterArgs emit the same token for a spaced cl
           FilterTemplate = Some "-- --filter-class {classes}"
           ClassJoin = " "
           TimeoutSec = None
-          ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+          ReportVerificationFormat = FsHotWatch.TestPrune.PluginTypes.AutoDetect
           Starvation = None
           CheckSkip = None
           NameHungTests = false
@@ -1885,7 +1885,7 @@ let ``RerunFilter.render and buildFilterArgs emit the same token for a spaced cl
           AlwaysClasses = [] }
 
     let check =
-        FsHotWatch.TestPrune.TestPrunePlugin.buildFilterArgs config (Map.ofList [ "P", [ spaced ] ])
+        FsHotWatch.TestPrune.TestFilters.buildFilterArgs config (Map.ofList [ "P", [ spaced ] ])
 
     test <@ check = Some $"-- %s{rerun}" @>
     test <@ FsHotWatch.ProcessHelper.splitArgs rerun = Some [| "--filter-class"; spaced |] @>

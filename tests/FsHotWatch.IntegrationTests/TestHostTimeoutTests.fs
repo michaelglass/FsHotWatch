@@ -8,6 +8,8 @@ open FsHotWatch.Events
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.SelectionAssembly
+open FsHotWatch.TestPrune.PluginTypes
 open FsHotWatch.Tests.TestHelpers
 
 // A test host killed at its timeout must be stopped in a way that lets coverage clean up.

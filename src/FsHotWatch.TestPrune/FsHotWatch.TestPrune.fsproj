@@ -59,6 +59,23 @@
     <Compile Include="CheckSkip.fs" />
     <Compile Include="TestEvidenceRun.fs" />
     <Compile Include="GroupSchedule.fs" />
+    <Compile Include="CoverageArtifacts.fs" />
+    <Compile Include="CoverageIngest.fs" />
+    <Compile Include="PluginTypes.fs" />
+    <Compile Include="RuntimeCoverageSelection.fs" />
+    <Compile Include="InputTrees.fs" />
+    <Compile Include="EvidenceReceipts.fs" />
+    <Compile Include="PluginState.fs" />
+    <Compile Include="RunLaunch.fs" />
+    <Compile Include="ExternalInputs.fs" />
+    <Compile Include="RunResults.fs" />
+    <Compile Include="ReceiptTransitions.fs" />
+    <Compile Include="SelectionAssembly.fs" />
+    <Compile Include="OutstandingFailures.fs" />
+    <Compile Include="TestFilters.fs" />
+    <Compile Include="FailureReports.fs" />
+    <Compile Include="RunnerArgs.fs" />
+    <Compile Include="TestReports.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 

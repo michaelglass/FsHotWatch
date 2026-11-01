@@ -20,6 +20,14 @@ open FsHotWatch.Plugin
 open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.TestReports
+open FsHotWatch.TestPrune.FailureReports
+open FsHotWatch.TestPrune.TestFilters
+open FsHotWatch.TestPrune.SelectionAssembly
+open FsHotWatch.TestPrune.RunResults
+open FsHotWatch.TestPrune.RunLaunch
+open FsHotWatch.TestPrune.PluginTypes
+open FsHotWatch.TestPrune.CoverageArtifacts
 open TestPrune.AstAnalyzer
 open TestPrune.Coverage
 open TestPrune.Database

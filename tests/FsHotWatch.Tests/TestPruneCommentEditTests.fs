@@ -12,6 +12,13 @@ open TestPrune.AstAnalyzer
 open FsHotWatch.Events
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.SelectionAssembly
+open FsHotWatch.TestPrune.ReceiptTransitions
+open FsHotWatch.TestPrune.RunResults
+open FsHotWatch.TestPrune.EvidenceReceipts
+open FsHotWatch.TestPrune.InputTrees
+open FsHotWatch.TestPrune.RuntimeCoverageSelection
+open FsHotWatch.TestPrune.PluginTypes
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.Tests.TestPrunePluginTestSupport
 open FsHotWatch.Cli.IpcParsing

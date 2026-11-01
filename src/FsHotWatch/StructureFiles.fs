@@ -8,7 +8,7 @@
 /// folds a hash of these files into its key, and a structural change is a guaranteed
 /// MISS.
 ///
-/// The list lived in two places at once — `TestPrunePlugin.structureFilePatterns` had
+/// The list lived in two places at once — `ExternalInputs.structureFilePatterns` had
 /// three entries, `BuildPlugin.BuildInputsHasher` had the project files only — and the
 /// two disagreed about `Directory.Build.props`, which is exactly the drift that lets one
 /// cache miss while the other replays. ONE list, here, in the assembly both reference.

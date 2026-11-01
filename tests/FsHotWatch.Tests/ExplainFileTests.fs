@@ -12,6 +12,10 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.TestPrune
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.SelectionAssembly
+open FsHotWatch.TestPrune.EvidenceReceipts
+open FsHotWatch.TestPrune.InputTrees
+open FsHotWatch.TestPrune.PluginTypes
 open FsHotWatch.Cli
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.Tests.TestPrunePluginTestSupport

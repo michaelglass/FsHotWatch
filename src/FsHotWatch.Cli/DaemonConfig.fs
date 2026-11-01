@@ -11,6 +11,11 @@ open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.ProcessHelper
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.FailureReports
+open FsHotWatch.TestPrune.SelectionAssembly
+open FsHotWatch.TestPrune.EvidenceReceipts
+open FsHotWatch.TestPrune.PluginTypes
+open FsHotWatch.TestPrune.CoverageArtifacts
 
 /// Cache backend for the FCS check pipeline.
 ///
@@ -331,7 +336,7 @@ let DefaultLogDir = "logs"
 /// when collecting coverage. `{output}` is substituted with the per-run
 /// baseline or partial file path, and `{repoRoot}` with the absolute repository
 /// root (`coverageArgsTemplateFor`). `None` means use the MTP-cobertura default
-/// (`FsHotWatch.TestPrune.TestPrunePlugin.DefaultCoverageArgsTemplate`).
+/// (`FsHotWatch.TestPrune.CoverageArtifacts.DefaultCoverageArgsTemplate`).
 /// For other test runners (coverlet.collector, AltCover, etc.), provide
 /// your own template.
 type TestProjectConfig =
@@ -2531,7 +2536,7 @@ let RepoRootPlaceholder = "{repoRoot}"
 let coverageArgsTemplateFor (repoRoot: string) (configured: string option) : string =
     let template =
         configured
-        |> Option.defaultValue FsHotWatch.TestPrune.TestPrunePlugin.DefaultCoverageArgsTemplate
+        |> Option.defaultValue FsHotWatch.TestPrune.CoverageArtifacts.DefaultCoverageArgsTemplate
 
     if template.Contains(RepoRootPlaceholder) then
         template.Replace(RepoRootPlaceholder, Path.TrimEndingDirectorySeparator(Path.GetFullPath repoRoot))
@@ -2803,12 +2808,14 @@ let registerPluginsIn
                         |> coverageArgsTemplateFor repoRoot
 
                     Some
-                        { FsHotWatch.TestPrune.TestPrunePlugin.CoveragePaths.Baseline =
+                        { FsHotWatch.TestPrune.CoverageArtifacts.CoveragePaths.Baseline =
                             Path.GetFullPath(
-                                Path.Combine(outputDir, FsHotWatch.TestPrune.TestPrunePlugin.BaselineName)
+                                Path.Combine(outputDir, FsHotWatch.TestPrune.CoverageArtifacts.BaselineName)
                             )
                           Partial =
-                            Path.GetFullPath(Path.Combine(outputDir, FsHotWatch.TestPrune.TestPrunePlugin.PartialName))
+                            Path.GetFullPath(
+                                Path.Combine(outputDir, FsHotWatch.TestPrune.CoverageArtifacts.PartialName)
+                            )
                           // Single SHARED cobertura for EVERY project: the TestPrune DB
                           // unions coverage across all test projects, then emits once to
                           // this one file (no per-project subdir) — what coverageratchet checks.
@@ -2817,7 +2824,7 @@ let registerPluginsIn
                                 Path.Combine(
                                     repoRoot,
                                     t.CoverageDir,
-                                    FsHotWatch.TestPrune.TestPrunePlugin.CoberturaName
+                                    FsHotWatch.TestPrune.CoverageArtifacts.CoberturaName
                                 )
                             )
                           IncludeInRatchet = projectsByName.[project].Coverage

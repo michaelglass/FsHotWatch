@@ -49,7 +49,7 @@ let private gatedDaemon (root: string) =
             (Path.Combine(root, "impact.db"))
             repoRoot
             (Some
-                [ { FsHotWatch.TestPrune.TestPrunePlugin.TestConfig.Project = "GatedTests"
+                [ { FsHotWatch.TestPrune.PluginTypes.TestConfig.Project = "GatedTests"
                     Command = "sh"
                     Args = $"-c \"touch '%s{started}'; " + gatedWait root release 1500 + "\""
                     Group = "default"
@@ -57,7 +57,7 @@ let private gatedDaemon (root: string) =
                     FilterTemplate = None
                     ClassJoin = " "
                     TimeoutSec = None
-                    ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect
+                    ReportVerificationFormat = FsHotWatch.TestPrune.PluginTypes.AutoDetect
                     Starvation = None
                     CheckSkip = None
                     NameHungTests = false

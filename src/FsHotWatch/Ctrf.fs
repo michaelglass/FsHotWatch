@@ -2,7 +2,7 @@
 ///
 /// fshw's runners (xUnit.v3 via Microsoft.Testing.Platform) emit CTRF when asked with
 /// `--report-ctrf`, and fshw reads it back as the AUTHORITATIVE pass/fail verdict (the
-/// process exit code is only a tie-break — see `TestPrunePlugin.classifyTestOutcome`).
+/// process exit code is only a tie-break — see `FailureReports.classifyTestOutcome`).
 ///
 /// `trySummary` is the one DIAGNOSTIC summary reader: the flakiness recorder and the
 /// status views read the same block through it, so they cannot disagree about what a

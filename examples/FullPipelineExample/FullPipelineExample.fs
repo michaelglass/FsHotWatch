@@ -21,6 +21,7 @@ open FsHotWatch.Coverage
 // inside each plugin's module, so open the ones whose types you construct.
 open FsHotWatch.Fantomas.FormatCheckPlugin
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.PluginTypes
 open FsHotWatch.FileCommand.FileCommandPlugin
 
 /// Wire every FsHotWatch plugin into one daemon and run it with IPC, so the

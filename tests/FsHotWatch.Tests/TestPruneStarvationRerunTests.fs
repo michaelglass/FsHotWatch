@@ -15,6 +15,9 @@ open Swensen.Unquote
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.SelectionAssembly
+open FsHotWatch.TestPrune.PluginTypes
+open FsHotWatch.TestPrune.CoverageArtifacts
 open FsHotWatch.Tests.TestPrunePluginTestSupport
 
 /// A project whose first launch hangs past its 2 s timeout and whose second exits 0:

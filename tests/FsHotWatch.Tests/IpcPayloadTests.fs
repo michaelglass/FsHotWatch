@@ -252,7 +252,7 @@ let ``GetDiagnostics payload carries nonzero unchecked count -> Incomplete cover
 // ---------------------------------------------------------------------------
 
 /// One ledger entry per "failing test", all sharing ONE detail string — exactly the
-/// shape `TestPrunePlugin.failuresOf` produced. Sharing the reference is the point:
+/// shape `TestReports.failuresOf` produced. Sharing the reference is the point:
 /// it costs one allocation to HOLD and `entries × |detail|` to SERIALIZE, which is
 /// why this defect is invisible in the daemon's own memory and fatal on the wire.
 let private ledgerOfSharedDetail (entries: int) (detailChars: int) : PluginHost =

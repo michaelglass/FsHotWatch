@@ -10,6 +10,8 @@ open System.IO
 open Microsoft.Data.Sqlite
 open Xunit
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.CoverageIngest
+open FsHotWatch.TestPrune.CoverageArtifacts
 open FsHotWatch.Tests.TestHelpers
 open TestPrune.AstAnalyzer
 open TestPrune.Coverage

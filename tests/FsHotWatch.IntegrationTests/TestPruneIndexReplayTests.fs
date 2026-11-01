@@ -13,6 +13,7 @@ open FsHotWatch.CheckPipeline
 open FsHotWatch.Tests.TestHelpers
 
 module TestPrunePlugin = FsHotWatch.TestPrune.TestPrunePlugin
+module PluginTypes = FsHotWatch.TestPrune.PluginTypes
 
 let private model generation =
     ProjectModel.ofCompleted
@@ -75,7 +76,7 @@ let private batch generation (files: string list) =
         ModelGeneration = Some generation }
 
 /// Project `P`, whose command records each run in `runs`.
-let private config root : TestPrunePlugin.TestConfig =
+let private config root : PluginTypes.TestConfig =
     let runs = Path.Combine(root, "runs")
 
     { Project = "P"
@@ -86,7 +87,7 @@ let private config root : TestPrunePlugin.TestConfig =
       FilterTemplate = None
       ClassJoin = " "
       TimeoutSec = None
-      ReportVerificationFormat = TestPrunePlugin.AutoDetect
+      ReportVerificationFormat = PluginTypes.AutoDetect
       Starvation = None
       CheckSkip = None
       NameHungTests = false

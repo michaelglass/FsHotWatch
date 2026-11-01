@@ -17,6 +17,8 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.SelectionAssembly
+open FsHotWatch.TestPrune.PluginTypes
 open TestPrune.Database
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.TestPrune
