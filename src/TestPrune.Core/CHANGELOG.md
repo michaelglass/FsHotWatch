@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- refactor: `AstAnalyzer.fs` is split along two seams that never touched its model:
+  `ScriptOptions` (project snapshots and standalone-script options) and the internal
+  `SharedLiterals` (which literals join a test to a producer, and the parse-tree walk that
+  finds them). `AstAnalyzer` keeps `getScriptOptions` and `createProjectSnapshot` as
+  forwarding entry points, so callers are unchanged. No behaviour change.
 - refactor: `Database` reads each row type through one reader (`TestMethodInfo` was built
   in four places, `SymbolInfo` in two), the per-region id sets reuse the name-set binder,
   `RecordCoverage` is `RecordCoverageBatch` of one row instead of a copy of it, and a
