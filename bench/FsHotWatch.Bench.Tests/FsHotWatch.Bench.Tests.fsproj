@@ -25,6 +25,7 @@
     <Compile Include="HashCostTests.fs" />
     <Compile Include="KeyCostTests.fs" />
     <Compile Include="TwoSessionHarnessTests.fs" />
+    <Compile Include="ReplayTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

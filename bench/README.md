@@ -45,6 +45,9 @@ $B key-cost --project src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj \
     --shape $'Frame: PathFrame.PathFrame option\n    }=>Frame: PathFrame.PathFrame option\n    }\n\n    member this.IsFramed = this.Frame.IsSome'
 ```
 
+`replay` replays a consuming repository's history to measure fshw's verdict machinery: see
+[History replay](#history-replay-verdict-machinery-evidence-from-a-consumers-history).
+
 `key-cost` checks every file twice before any edit: the first pass compiles and warms the
 JIT, the second is the baseline the edits are compared with.
 
@@ -70,6 +73,106 @@ cannot find the runtime without `DOTNET_ROOT`.
 | `--warm-cache` | keeps caches between repetitions. Without it, every repetition starts `--no-cache` with a fresh `FSHW_CACHE_HOME` and no `.fshw/cache` |
 | `--no-heap` | skips the heap walk (footprint only) |
 | `--allow-contended` | records on a busy box. Records are marked `contended`, and `summarize` leaves them out unless also given `--allow-contended` |
+
+## History replay: verdict-machinery evidence from a consumer's history
+
+`fshw-bench replay` produces, in one loop, the evidence that otherwise accrues only from
+real merges in a consuming repository:
+
+- the shadow lookup's agreement with today's verdict (ADR-059 §7–§8), by direction and class;
+- check-record replay against a forced re-check (ADR-059 §14, §17), on every tree replayed;
+- seeded faults, so trees with errors are covered, not only clean ones.
+
+```bash
+dotnet build bench/FsHotWatch.Bench/FsHotWatch.Bench.fsproj
+B="dotnet bench/FsHotWatch.Bench/bin/Debug/net10.0/fshw-bench.dll"
+
+# Replay the last 100 first-parent commits of main, oldest first.
+$B replay --target <repo> --workspace replay-1 --out <dir> \
+          --count 100 --from main@origin \
+          --check-cmd "dotnet fshw check" \
+          --faults faults.json --fault-every 10 --fault-offset 1 \
+          --before-check "<command that waits for an idle box>"
+
+# The summary of a run so far (also written to <dir>/summary.txt after every step).
+$B replay-summary <dir>
+```
+
+**What one step does.** For each commit of the range, oldest first, in a dedicated
+workspace (`<repo>/.workspaces/<name>`, created with `jj workspace add` when missing):
+
+1. Stop the workspace's daemon, discard the workspace's own uncommitted changes
+   (`jj restore`), and move it with `jj new <commit>`. The harness never moves a bookmark,
+   never pushes, and touches nothing outside that workspace.
+2. Run `--prepare`, if given. Use it to pin one fshw for the whole range (rewrite the tool
+   manifest there), so every tree is judged by the same binary rather than by whatever
+   each commit pinned.
+3. **Replay run:** run `--check-cmd` with `FSHW_CHECK_RECORDS=1` and
+   `FSHW_OPTIONS_RECORDS=1`, on a daemon started for it, so the check answers from the
+   records the previous step filed.
+4. **Forced run:** stop the daemon, then run `--check-cmd` again with both flags `0`: every
+   file is checked by FCS.
+5. Compare the two runs' diagnostics and findings (below), and append one line to
+   `<dir>/ledger.jsonl`.
+
+A **seeded-fault step** (a commit chosen by `--fault-every`/`--fault-offset`) appends one
+fault's text to its file before both runs, and discards it afterwards. A fault is
+detected when the replay run's verdict is `red`, its shadow lookup is `red`, the forced
+run's verdict is `red`, and the two runs' diagnostics agree. Faults rotate through the
+kinds in the file, one per sampled commit; `--all-kinds` seeds every kind at each one.
+
+```json
+[
+  { "kind": "type",     "file": "src/Lib/Thing.fs",      "append": "let seededTypeFault: int = \"no\"" },
+  { "kind": "test",     "file": "tests/Lib.Tests/T.fs",   "append": "[<Fact>]\nlet ``seeded failing test`` () = Assert.True false" },
+  { "kind": "analyzer", "file": "src/Lib/Thing.fs",      "append": "<a line your analyzers report at the fail-on severity>" }
+]
+```
+
+The appended text must compile where it lands (except the type fault), so choose a file
+that is a top-level `module`, and a test file whose opens cover the test.
+
+**What is captured per run** (under `<dir>/steps/<index>-<commit>-<phase>/<replay|forced>/`):
+the check's output, `verdict.json` when this run published one, the shadow lines it
+appended to `.fshw/shadow/lookup-verdict.jsonl`, the error ledger (`.fshw/errors/`, every
+plugin's diagnostics with their positions, made checkout-relative), `fshw findings --json`,
+`fshw status --agent`, and the daemon's `check-records` / `options-records` log lines.
+
+**What is compared.** The two runs' diagnostics, as a multiset, over the plugins in
+`--diff-plugins` (default `fcs,lint,analyzers,findings`). Test results are not compared:
+they are run-to-run evidence, not a function of the check records.
+
+**The summary** (`<dir>/summary.txt`) reports the commits replayed, the shadow lines by run,
+command and direction, every disagreement class (direction, command, both outcomes, and the
+kinds of requirement the lookup was missing or found failing), the replay-vs-forced
+diagnostic differences by plugin, clean trees whose two runs published different outcomes,
+and the seeded-fault detections by kind.
+
+**Resuming.** The first run resolves the range once and writes it to `<dir>/plan.json`. A
+later run with the same `--out` resumes from the first step the ledger has no line for, even
+if the branch has moved since. A step interrupted part-way leaves no line and is re-run whole;
+its workspace changes are discarded by the next step's `jj restore`. `--max-steps N` stops an
+invocation after N steps (exit 4) and the next one carries on. Only one harness may use an
+`--out` at a time (`replay.lock`).
+
+| option | default | effect |
+|---|---|---|
+| `--target` | | the consuming repository (jj) |
+| `--workspace` | | the dedicated workspace's name; its path is `<target>/.workspaces/<name>` unless `--workspace-path` |
+| `--revset` / `--count N --from <rev>` | | the range: any jj revset, or `first_ancestors(<rev>, N)` |
+| `--out` | `replay-<workspace>` | plan, ledger, summary and artifacts |
+| `--check-cmd` | `dotnet fshw check` | the consumer's gate, run in the workspace |
+| `--fshw` | `dotnet fshw` | how to invoke fshw in the workspace (`stop`, `findings`, `status`) |
+| `--prepare` | | run after each move, before a fault |
+| `--before-check` | | run before every check, e.g. a wait for idle CPU |
+| `--faults`, `--fault-every`, `--fault-offset`, `--all-kinds` | off | seeded-fault sampling |
+| `--timeout-min` | 120 | a run past it is killed with its process tree |
+| `--forced-every K` | 1 | run the forced re-check at the clean step of every K-th commit (and always at a seeded fault). A step without one still records its shadow lines |
+| `--no-forced` | | forced re-checks at seeded faults only |
+| `--daemon-log` | `logs/daemon.log` | where the workspace's daemon logs, for the records tally |
+
+Each step runs two cold daemons, so it costs about two cold checks of the consuming
+repository. Run it on a box that is not also the repository's merge machine.
 
 ## One repetition
 
