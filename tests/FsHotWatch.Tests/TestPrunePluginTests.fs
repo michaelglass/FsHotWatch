@@ -21,6 +21,7 @@ open FsHotWatch.Plugin
 open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.ExternalInputs
 open FsHotWatch.TestPrune.RunLaunch
 open FsHotWatch.TestPrune.PluginState
 open FsHotWatch.TestPrune.EvidenceReceipts
