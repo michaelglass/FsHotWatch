@@ -259,3 +259,28 @@ let ``a subscriber that fails a result gives its place back`` () =
 let ``a bound of less than one place is one place`` () =
     let bound = Bound 0
     test <@ bound.Capacity = 1 && bound.Status().Bound = 1 @>
+
+[<Fact(Timeout = 30000)>]
+let ``a live result, full or aborted, takes a place; a replay takes none`` () =
+    let admittedFor (state: FileCheckState) =
+        let bound = Bound 2
+
+        bound.HoldFor(
+            { fakeFileCheckResult "/tmp/A.fs" with
+                CheckResults = state },
+            ignore
+        )
+        |> Async.RunSynchronously
+
+        bound.Status().Admitted
+
+    let replayed =
+        Replayed
+            { Diagnostics = []
+              FcsSignature = "s"
+              UsedSignatures = None
+              ApiSignature = None }
+
+    test <@ admittedFor (fixtureParseOnly ()) = 1L @>
+    test <@ admittedFor (fixtureFullCheck ()) = 1L @>
+    test <@ admittedFor replayed = 0L @>

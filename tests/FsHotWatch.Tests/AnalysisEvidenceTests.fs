@@ -60,7 +60,7 @@ let private withCheckedText (source: string) action =
         match result.CheckResults with
         | FullCheck _ -> ()
         | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
-        | ParseOnly -> failwith "the fixture requires an actual completed type check"
+        | ParseOnly _ -> failwith "the fixture requires an actual completed type check"
 
         action
             root
@@ -290,7 +290,11 @@ let ``analysis proof refuses missing stale and failed file outcomes`` () =
         Assert.NotEmpty((proof (Map.ofList [ result.File, failed ])).FailureReasons)
 
         let parseOnly =
-            AnalysisFileEvidence.fromResult Set.empty { result with CheckResults = ParseOnly } (Ok())
+            AnalysisFileEvidence.fromResult
+                Set.empty
+                { result with
+                    CheckResults = fixtureParseOnly () }
+                (Ok())
 
         Assert.NotEmpty((proof (Map.ofList [ result.File, parseOnly ])).FailureReasons)
         // No model, or an invalid generation: no analysis claim.
@@ -449,13 +453,13 @@ let ``completed analysis distinguishes compiler warnings from missing or failed 
     withCheckedText "module Lib\nlet choose value = match value with | true -> 1\n" (fun _ result ->
         // Positive control: this source really does produce an incomplete-match WARNING.
         match result.CheckResults with
-        | FullCheck checkedResult ->
+        | FullCheck(_, checkedResult) ->
             Assert.Contains(
                 checkedResult.Diagnostics,
                 fun diagnostic -> diagnostic.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning
             )
         | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
-        | ParseOnly -> Assert.Fail "the fixture requires an actual completed type check"
+        | ParseOnly _ -> Assert.Fail "the fixture requires an actual completed type check"
 
         let outcome = AnalysisFileEvidence.fromResult Set.empty result (Ok())
 

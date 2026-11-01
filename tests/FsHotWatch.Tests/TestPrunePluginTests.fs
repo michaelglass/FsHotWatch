@@ -2310,14 +2310,14 @@ let ``a FullCheck whose parse failed is unanalysable, not analysed from a recove
 
         // The observation the ticket asked for: the check is NOT aborted. It is a
         // FullCheck whose parse had errors, the case `markUnanalysable` never saw.
-        test <@ checkedResult.ParseResults.ParseHadErrors @>
+        test <@ (FileCheckResult.requireParseResults "test" checkedResult).ParseHadErrors @>
 
         test
             <@
                 match checkedResult.CheckResults with
                 | FullCheck _ -> true
                 | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
-                | ParseOnly -> false
+                | ParseOnly _ -> false
             @>
 
         host.EmitFileChecked(stampFixture checkedResult)

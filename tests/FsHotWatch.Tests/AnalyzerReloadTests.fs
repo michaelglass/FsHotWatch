@@ -102,7 +102,6 @@ type private Warm(root: string, dirs: string list) =
         host.EmitFileChecked
             { fakeFileCheckResult file with
                 Source = "module Subject\n"
-                ParseResults = Unchecked.defaultof<_>
                 ProjectOptions = projectOptions
                 Version = version }
 

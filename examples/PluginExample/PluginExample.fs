@@ -38,7 +38,7 @@ let myPlugin: PluginHandler<MyState, MyMsg> =
                 | FileChecked result ->
                     let started = DateTime.UtcNow
 
-                    // result.ParseResults and result.CheckResults come from the
+                    // result.CheckResults (its parse and check) come from the
                     // warm FSharpChecker — no re-parsing needed.
                     printfn "Checked: %s" (AbsFilePath.value result.File)
 

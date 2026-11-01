@@ -150,7 +150,7 @@ let ``an analysis failure for a file that no longer exists is not reported as a 
         // ParseOnly is a genuine analysis failure: the handler's own `Error` arm.
         let failed =
             { checkForReal tmpDir "Deleted.fsx" "module Deleted\nlet n = 1\n" with
-                CheckResults = ParseOnly }
+                CheckResults = fixtureParseOnly () }
 
         let file = AbsFilePath.value failed.File
         let host = newHost tmpDir
@@ -166,7 +166,7 @@ let ``PositiveControl: a file that exists and genuinely fails analysis still rep
     withTempDir "warn-present" (fun tmpDir ->
         let failed =
             { checkForReal tmpDir "Broken.fsx" "module Broken\nlet n = 1\n" with
-                CheckResults = ParseOnly }
+                CheckResults = fixtureParseOnly () }
 
         let file = AbsFilePath.value failed.File
         let host = newHost tmpDir

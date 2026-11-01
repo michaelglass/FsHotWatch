@@ -3,7 +3,6 @@ module FsHotWatch.Tests.TestHelpers
 open System
 open System.Diagnostics
 open System.IO
-open System.Runtime.CompilerServices
 open System.Threading
 open FSharp.Compiler.CodeAnalysis
 open FsHotWatch.Events
@@ -13,10 +12,53 @@ open FsHotWatch.Events
 let sharedChecker =
     lazy FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
-/// A non-null FSharpParseFileResults built without invoking the constructor.
-/// Plugins under test that consume FileCheckResult never inspect parse fields.
-let dummyParseResults () : FSharpParseFileResults =
-    RuntimeHelpers.GetUninitializedObject(typeof<FSharpParseFileResults>) :?> FSharpParseFileResults
+/// A real parse and type check of a one-line script, made once and shared: the FCS objects a
+/// fixture result carries when the plugin under test only needs a live check to exist.
+let private fixtureChecked =
+    lazy
+        (let checker = sharedChecker.Value
+         let file = Path.Combine(Path.GetTempPath(), "fshw-fixture", "Fixture.fsx")
+
+         let source =
+             FSharp.Compiler.Text.SourceText.ofString "module Fixture\nlet value = 1\n"
+
+         let options, _ =
+             checker.GetProjectOptionsFromScript(file, source, assumeDotNetFramework = false)
+             |> Async.RunSynchronously
+
+         match
+             checker.ParseAndCheckFileInProject(file, 0, source, options)
+             |> Async.RunSynchronously
+         with
+         | parse, FSharpCheckFileAnswer.Succeeded check -> (parse, check), options
+         | _, FSharpCheckFileAnswer.Aborted -> failwith "the fixture script's check was aborted")
+
+/// A real parse of a one-line file, made once and shared; cheaper than `fixtureChecked`, so a
+/// fixture that is only parsed never pays for a type check.
+let private fixtureParsed =
+    lazy
+        (sharedChecker.Value.ParseFile(
+            "Fixture.fs",
+            FSharp.Compiler.Text.SourceText.ofString "module Fixture\nlet value = 1\n",
+            { FSharpParsingOptions.Default with
+                SourceFiles = [| "Fixture.fs" |] }
+         )
+         |> Async.RunSynchronously)
+
+/// The shared fixture's parse results.
+let fixtureParse () : FSharpParseFileResults = fixtureParsed.Value
+
+/// The shared fixture's type-check results.
+let fixtureCheck () : FSharpCheckFileResults = snd (fst fixtureChecked.Value)
+
+/// The project options the shared fixture was checked under.
+let fixtureOptions () : FSharpProjectOptions = snd fixtureChecked.Value
+
+/// A completed check of the shared fixture.
+let fixtureFullCheck () : FileCheckState = FullCheck(fst fixtureChecked.Value)
+
+/// An aborted check of the shared fixture: its parse alone.
+let fixtureParseOnly () : FileCheckState = ParseOnly(fixtureParse ())
 
 /// Every file matching `pattern` under `root`, recursively, as full paths — through
 /// `SafeWalk`, never `SearchOption.AllDirectories`, which follows directory symlinks
@@ -101,8 +143,7 @@ let createModelHost (checker: FSharpChecker) (repoRoot: string) =
 let fakeFileCheckResult (file: string) : FileCheckResult =
     { File = AbsFilePath.create file
       Source = "module Fake"
-      ParseResults = dummyParseResults ()
-      CheckResults = ParseOnly
+      CheckResults = fixtureParseOnly ()
       ProjectOptions = Unchecked.defaultof<_>
       Version = 0L
       ModelGeneration = Some fixtureModelGeneration
@@ -892,8 +933,7 @@ let checkDownstream (root: string) (layout: UpstreamLayout) (upSource: string) (
 
     { File = AbsFilePath.create down
       Source = downSource
-      ParseResults = parse
-      CheckResults = FullCheck check
+      CheckResults = FullCheck(parse, check)
       ProjectOptions = options
       Version = 0L
       ModelGeneration = None

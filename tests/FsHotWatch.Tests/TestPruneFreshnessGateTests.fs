@@ -144,7 +144,13 @@ let ``FileChecked analyzes its existing FCS payload without re-entering the chec
 [<Fact(Timeout = 15000)>]
 let ``hasFcsErrors returns false for ParseOnly`` () =
     test
-        <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors FsHotWatch.FcsSuppression.Suppression.none ParseOnly) @>
+        <@
+            not (
+                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    FsHotWatch.FcsSuppression.Suppression.none
+                    (fixtureParseOnly ())
+            )
+        @>
 
 [<Fact(Timeout = 30000)>]
 let ``hasFcsErrors returns true for source with type error`` () =
@@ -207,9 +213,9 @@ let f x =
         // Sanity: the source really does carry warning diagnostics.
         let diagnostics =
             match result.CheckResults with
-            | FullCheck cr -> cr.Diagnostics
+            | FullCheck(_, cr) -> cr.Diagnostics
             | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
-            | ParseOnly -> [||]
+            | ParseOnly _ -> [||]
 
         test <@ diagnostics.Length > 0 @>
 
@@ -255,13 +261,13 @@ let x : int = "not-an-int"
         // warning under #nowarn is the case the filter drops (`FcsSuppressionTests`).
         let hasErrorDiagnostic =
             match result.CheckResults with
-            | FullCheck cr ->
+            | FullCheck(_, cr) ->
                 cr.Diagnostics
                 |> Array.exists (fun d ->
                     d.ErrorNumber = 1
                     && d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
             | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
-            | ParseOnly -> false
+            | ParseOnly _ -> false
 
         test <@ hasErrorDiagnostic @>
 
@@ -289,9 +295,9 @@ let x : int = "not-an-int"
 
         let hasErrorDiagnostic =
             match result.CheckResults with
-            | FullCheck cr -> cr.Diagnostics |> Array.exists (fun d -> d.ErrorNumber = 1)
+            | FullCheck(_, cr) -> cr.Diagnostics |> Array.exists (fun d -> d.ErrorNumber = 1)
             | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
-            | ParseOnly -> false
+            | ParseOnly _ -> false
 
         test <@ hasErrorDiagnostic @>
 

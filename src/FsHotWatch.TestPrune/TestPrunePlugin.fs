@@ -7567,10 +7567,10 @@ let private executeTests
 /// FCS-error stream. `hasFcsErrors` is defined by it, so the count matches the gate.
 let internal fcsErrorCount (suppression: Suppression) (state: FileCheckState) : int =
     match state with
-    | FullCheck cr -> (blockingErrors suppression cr.Diagnostics).Length
+    | FullCheck(_, cr) -> (blockingErrors suppression cr.Diagnostics).Length
     // The diagnostics the filed check reported (ADR-059 §17).
     | Replayed outputs -> (blockingErrors suppression (FileCheckResult.diagnosticsOfOutputs outputs)).Length
-    | ParseOnly -> 0
+    | ParseOnly _ -> 0
 
 /// FCS cache-poisoning gate. A `FileChecked` whose FCS result reports any
 /// Error-severity diagnostic is untrustworthy: cold-start FCS sometimes returns
@@ -11806,7 +11806,7 @@ let internal createWithEvidenceAndQueries
                         // `"Lib"` matches both cases.
                         let projectName =
                             match result.CheckResults with
-                            | ParseOnly ->
+                            | ParseOnly _ ->
                                 // Analysis below fails explicitly before this identity is
                                 // consumed. Do not inspect ProjectOptions: an aborted FCS
                                 // check may not carry usable options either.
@@ -11855,15 +11855,15 @@ let internal createWithEvidenceAndQueries
 
                         let analysisResult =
                             match result.CheckResults with
-                            | FullCheck checkResults ->
+                            | FullCheck(parseResults, checkResults) ->
                                 analyzeSourceFromResults
                                     analysisFile
                                     result.Source
-                                    result.ParseResults
+                                    parseResults
                                     checkResults
                                     projectName
                             | Replayed _ -> raise (ReplayedResultException("test-prune symbol analysis", fileStr))
-                            | ParseOnly ->
+                            | ParseOnly _ ->
                                 Error
                                     "FCS produced parse-only results; full type-check results are required for impact analysis"
 

@@ -489,8 +489,7 @@ let ``registered plugin skips unsubscribed events`` () =
         DispatchFileChecked
             { File = AbsFilePath.create "/tmp/repo/Foo.fs"
               Source = ""
-              ParseResults = Unchecked.defaultof<_>
-              CheckResults = ParseOnly
+              CheckResults = fixtureParseOnly ()
               ProjectOptions = Unchecked.defaultof<_>
               Version = 0L
               ModelGeneration = None

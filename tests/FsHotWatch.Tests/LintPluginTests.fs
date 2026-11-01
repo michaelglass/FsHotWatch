@@ -80,11 +80,9 @@ let ``lint error path sets Failed status on null check results`` () =
     let handler = create None None None None
     host.RegisterHandler(handler)
 
-    // Explicitly null ParseResults to exercise the lint plugin's null-guard path.
     let fakeResult =
         { fakeFileCheckResult "/tmp/nonexistent/Fake.fs" with
-            Source = ""
-            ParseResults = Unchecked.defaultof<_> }
+            Source = "" }
 
     try
         host.EmitFileChecked(fakeResult)
@@ -120,36 +118,6 @@ let ``warnings command with args passes through`` () =
 
     test <@ result.IsSome @>
     test <@ result.Value.Contains("\"files\": 0") @>
-
-[<Fact(Timeout = 15000)>]
-let ``lint skips file with null ParseResults without crashing`` () =
-    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
-
-    let handler = create None None None None
-    host.RegisterHandler(handler)
-
-    let fakeResult =
-        { fakeFileCheckResult "/tmp/test/Empty.fs" with
-            Source = "module Empty"
-            ParseResults = Unchecked.defaultof<_> }
-
-    // Should not throw
-    host.EmitFileChecked(fakeResult)
-
-    waitUntil
-        (fun () ->
-            match host.GetStatus("lint") with
-            | Some _ -> true
-            | None -> false)
-        15000
-
-    let status = host.GetStatus("lint")
-    test <@ status.IsSome @>
-
-    // Should be Running (set at start of handler), not Failed
-    match status.Value with
-    | Failed(msg, _, _) -> Assert.Fail($"Should not fail -- got: %s{msg}")
-    | _ -> ()
 
 [<WallClock("product timeout under test: the work deliberately outlasts the product's own bound, and the assertion is the typed timeout outcome the product reports")>]
 [<Fact(Timeout = 20000)>]
@@ -685,7 +653,7 @@ let ``lint with a project config reaches a terminal status`` () =
         host.EmitFileChecked
             { fakeFileCheckResult file with
                 Source = source
-                ParseResults = parsed }
+                CheckResults = ParseOnly parsed }
 
         waitForTerminalStatus host "lint" 20000
 
@@ -718,7 +686,7 @@ let private lintThroughPlugin (dir: string) (configPath: string option) (fileNam
     host.EmitFileChecked
         { fakeFileCheckResult file with
             Source = source
-            ParseResults = parsed }
+            CheckResults = ParseOnly parsed }
 
     waitForTerminalStatus host "lint" 20000
 
@@ -943,7 +911,7 @@ let private lintAfterConfigEdit (dir: string) (edited: string) (fileName: string
     host.EmitFileChecked
         { fakeFileCheckResult file with
             Source = longSource
-            ParseResults = parsed }
+            CheckResults = ParseOnly parsed }
 
     waitForTerminalStatus host "lint" 20000
 

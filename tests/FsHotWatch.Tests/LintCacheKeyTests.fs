@@ -37,9 +37,9 @@ let private keyFor (root: string) (result: FileCheckResult) =
 let private typedLint (root: string) (result: FileCheckResult) =
     let typeCheckResults =
         match result.CheckResults with
-        | FullCheck r -> Some r
+        | FullCheck(_, r) -> Some r
         | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
-        | ParseOnly -> None
+        | ParseOnly _ -> None
 
     let lintParams =
         { Lint.OptionalLintParameters.Default with
@@ -48,7 +48,7 @@ let private typedLint (root: string) (result: FileCheckResult) =
     match
         Lint.lintParsedSource
             lintParams
-            { Ast = result.ParseResults.ParseTree
+            { Ast = (FileCheckResult.requireParseResults "test" result).ParseTree
               Source = result.Source
               TypeCheckResults = typeCheckResults
               ProjectCheckResults = None }
@@ -169,6 +169,6 @@ let ``a file whose used signatures cannot be described has no lint key`` () =
         let result =
             { fakeFileCheckResult file with
                 Source = "let x = 1\n"
-                CheckResults = FullCheck broken }
+                CheckResults = FullCheck(fixtureParse (), broken) }
 
         test <@ keyFor root result = None @>)

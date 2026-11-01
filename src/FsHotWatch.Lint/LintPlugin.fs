@@ -252,7 +252,7 @@ let create
                 FileCheckResult.requireTypedTree "lint" result
 
             let parsedInfo: Lint.ParsedFileInformation =
-                { Ast = result.ParseResults.ParseTree
+                { Ast = (FileCheckResult.requireParseResults "lint" result).ParseTree
                   Source = result.Source
                   TypeCheckResults = typeCheckResults
                   ProjectCheckResults = None }
@@ -318,77 +318,73 @@ let create
                                 fileStr
                                 $"linting {System.IO.Path.GetFileName fileStr}"
                                 (async {
-                                    if isNull (box result.ParseResults) then
-                                        Logging.warn "lint" $"Skipping %s{fileStr} — no parse results"
-                                        return state
-                                    else
-                                        // A runner that throws (FSharpLint's binary mismatch with
-                                        // FCS, a core failure surfaced by `lintReportingFailures`)
-                                        // is a FAILED lint for this file, named by its exception.
-                                        let lintOrError _ct =
-                                            try
-                                                Result.Ok(runLint result)
-                                            with ex ->
-                                                Result.Error ex
+                                    // A runner that throws (FSharpLint's binary mismatch with
+                                    // FCS, a core failure surfaced by `lintReportingFailures`)
+                                    // is a FAILED lint for this file, named by its exception.
+                                    let lintOrError _ct =
+                                        try
+                                            Result.Ok(runLint result)
+                                        with ex ->
+                                            Result.Error ex
 
-                                        let reportFailure (msg: string) =
-                                            ctx.ReportErrors fileStr [ ErrorEntry.error msg ]
+                                    let reportFailure (msg: string) =
+                                        ctx.ReportErrors fileStr [ ErrorEntry.error msg ]
 
-                                            ctx.ReportStatus(
-                                                PluginStatus.failedNow
-                                                    msg
-                                                    $"lint failed on {System.IO.Path.GetFileName fileStr}"
-                                                    (elapsed ())
-                                            )
-
-                                        match runWithCancellableTimeout lintTimeout lintOrError with
-                                        | WorkTimedOut after ->
-                                            let reason = $"timed out after %d{int after.TotalSeconds}s"
-                                            Logging.error "lint" $"Lint TIMED OUT for %s{fileStr}: %s{reason}"
-
-                                            PluginCtxHelpers.timedOutWith ctx "lint" reason after
-
-                                            return state
-                                        | WorkCompleted(Result.Ok(Lint.LintResult.Success warnings)) ->
-                                            Logging.debug
-                                                "lint"
-                                                $"Linted %s{System.IO.Path.GetFileName fileStr}: %d{warnings.Length} warnings"
-
-                                            let msgs = warnings |> List.map (fun w -> w.Details.Message)
-
-                                            let newWarnings = state.WarningsByFile |> Map.add result.File msgs
-
-                                            let entries =
-                                                warnings
-                                                |> List.map (fun w ->
-                                                    { Message = w.Details.Message
-                                                      Severity = DiagnosticSeverity.Warning
-                                                      Line = w.Details.Range.StartLine
-                                                      Column = w.Details.Range.StartColumn
-                                                      Code = None
-                                                      Detail = None })
-
-                                            PluginCtxHelpers.reportOrClearFile ctx fileStr entries
-
-                                            let newState = { WarningsByFile = newWarnings }
-
-                                            let totalIssues =
-                                                newWarnings |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)
-
-                                            PluginCtxHelpers.completeWith
-                                                ctx
-                                                $"linted {newWarnings.Count} files, {totalIssues} issues"
+                                        ctx.ReportStatus(
+                                            PluginStatus.failedNow
+                                                msg
+                                                $"lint failed on {System.IO.Path.GetFileName fileStr}"
                                                 (elapsed ())
+                                        )
 
-                                            return newState
-                                        | WorkCompleted(Result.Ok(Lint.LintResult.Failure failure)) ->
-                                            reportFailure $"Lint failed for %s{fileStr}: %s{failure.Description}"
-                                            return state
-                                        | WorkCompleted(Result.Error ex) ->
-                                            let msg = $"Lint failed for %s{fileStr}: %s{describeLintException ex}"
-                                            Logging.error "lint" msg
-                                            reportFailure msg
-                                            return state
+                                    match runWithCancellableTimeout lintTimeout lintOrError with
+                                    | WorkTimedOut after ->
+                                        let reason = $"timed out after %d{int after.TotalSeconds}s"
+                                        Logging.error "lint" $"Lint TIMED OUT for %s{fileStr}: %s{reason}"
+
+                                        PluginCtxHelpers.timedOutWith ctx "lint" reason after
+
+                                        return state
+                                    | WorkCompleted(Result.Ok(Lint.LintResult.Success warnings)) ->
+                                        Logging.debug
+                                            "lint"
+                                            $"Linted %s{System.IO.Path.GetFileName fileStr}: %d{warnings.Length} warnings"
+
+                                        let msgs = warnings |> List.map (fun w -> w.Details.Message)
+
+                                        let newWarnings = state.WarningsByFile |> Map.add result.File msgs
+
+                                        let entries =
+                                            warnings
+                                            |> List.map (fun w ->
+                                                { Message = w.Details.Message
+                                                  Severity = DiagnosticSeverity.Warning
+                                                  Line = w.Details.Range.StartLine
+                                                  Column = w.Details.Range.StartColumn
+                                                  Code = None
+                                                  Detail = None })
+
+                                        PluginCtxHelpers.reportOrClearFile ctx fileStr entries
+
+                                        let newState = { WarningsByFile = newWarnings }
+
+                                        let totalIssues =
+                                            newWarnings |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)
+
+                                        PluginCtxHelpers.completeWith
+                                            ctx
+                                            $"linted {newWarnings.Count} files, {totalIssues} issues"
+                                            (elapsed ())
+
+                                        return newState
+                                    | WorkCompleted(Result.Ok(Lint.LintResult.Failure failure)) ->
+                                        reportFailure $"Lint failed for %s{fileStr}: %s{failure.Description}"
+                                        return state
+                                    | WorkCompleted(Result.Error ex) ->
+                                        let msg = $"Lint failed for %s{fileStr}: %s{describeLintException ex}"
+                                        Logging.error "lint" msg
+                                        reportFailure msg
+                                        return state
                                 })
                 | _ -> return state
             }

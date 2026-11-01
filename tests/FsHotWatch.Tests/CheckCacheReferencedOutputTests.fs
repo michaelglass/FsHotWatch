@@ -124,7 +124,7 @@ let private pipelineOver
 /// The errors a full check of `file` reports through `pipeline`.
 let private errorsOf (pipeline: CheckPipeline) (file: string) =
     match pipeline.CheckFile(AbsFilePath.create file) |> Async.RunSynchronously with
-    | Some { CheckResults = FullCheck r } ->
+    | Some { CheckResults = FullCheck(_, r) } ->
         r.Diagnostics
         |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
         |> Array.length
