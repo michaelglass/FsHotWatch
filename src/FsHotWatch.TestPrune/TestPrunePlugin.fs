@@ -8635,6 +8635,68 @@ let internal createWithEvidenceAndQueries
     // flush indexes something or an extension failed (`FailedExtensions`).
     let extensionsUnrefreshed = ref true
 
+    // The refresh a restart owes before anything this process indexed (AUTOMATION-1441),
+    // running beside the fold: its answer, and how long it took. A restart's first flush is
+    // the `BuildCompleted` its scan dispatches before the checks; on a 2,674-file
+    // repository the refresh took 6 s, and every check result queued behind the build
+    // waited for it. A `FileChecked` reads neither the extensions' edges nor their failures,
+    // so it folds while the refresh runs. Every other event, a selection that queries the
+    // index, and a run launched in the meantime take its answer first (`joinRefresh`). It
+    // reads what the fold's own refresh would have: no flush writes the index until the
+    // answer is taken.
+    let refreshInFlight: Tasks.Task<ExtensionRefresh list * int64> option ref = ref None
+
+    /// The failures `outcomes` leave, from those before them: a refreshed extension
+    /// leaves the map, a failed one enters it.
+    let failuresAfter (outcomes: ExtensionRefresh list) (failed: Map<string, string>) =
+        outcomes
+        |> List.fold
+            (fun failed outcome ->
+                match outcome with
+                | ExtensionRefresh.Refreshed(name, _) -> Map.remove name failed
+                | ExtensionRefresh.Failed(name, ex) -> Map.add name ex.Message failed)
+            failed
+
+    /// Fold a refresh's outcomes into `state`: the log, the ledger, `FailedExtensions`.
+    let applyRefresh
+        (ctx: PluginCtx<TestPruneMsg>)
+        (outcomes: ExtensionRefresh list, refreshMs: int64)
+        (state: TestPruneState)
+        =
+        for outcome in outcomes do
+            match outcome with
+            | ExtensionRefresh.Refreshed(name, edgeCount) ->
+                ctx.ClearErrors(extensionLedgerKey name)
+                Logging.info "test-prune" (extensionStoredLine name edgeCount refreshMs)
+            | ExtensionRefresh.Failed(name, ex) ->
+                Logging.error
+                    "test-prune"
+                    $"Extension '%s{name}' failed: %s{ex.ToString()}; its previously stored edges are kept and every test project runs in full until it answers"
+
+                ctx.ReportErrors (extensionLedgerKey name) [ extensionFailedDiagnostic name ex.Message ]
+
+        { state with
+            FailedExtensions = failuresAfter outcomes state.FailedExtensions }
+
+    /// Run every extension and time the whole refresh: it runs them in one call.
+    let refreshTimed (exts: ITestPruneExtension list) () =
+        let refreshClock = Diagnostics.Stopwatch.StartNew()
+        let outcomes = refreshExtensionEdges db repoRoot exts
+        outcomes, refreshClock.ElapsedMilliseconds
+
+    /// Take the answer of the refresh running beside the fold, if one is, into `state`.
+    let joinRefresh (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
+        match refreshInFlight.Value with
+        | None -> state
+        | Some refresh ->
+            refreshInFlight.Value <- None
+
+            let answer =
+                use _ = ctx.DeclareBoundedWork "extension refresh" ImpactSelectionDeadline
+                refresh.GetAwaiter().GetResult()
+
+            applyRefresh ctx answer state
+
     // Flush pending analysis to DB and merge the runtime obligations it names.
     // Extensions (if any) then replace their COMPLETE edge sets via
     // `refreshExtensionEdges` — after the AST results are written, so they resolve
@@ -8681,6 +8743,9 @@ let internal createWithEvidenceAndQueries
 
         let indexedSomething = not state.PendingAnalysis.IsEmpty
 
+        // A refresh still running beside the fold reads the index this flush would write.
+        let state = joinRefresh ctx state
+
         let flushedState =
             flushPendingAnalysis
                 db
@@ -8707,35 +8772,15 @@ let internal createWithEvidenceAndQueries
                 ->
                 extensionsUnrefreshed.Value <- false
 
-                // Timed as a whole: the refresh runs every extension in one call. At info,
-                // because a refresh that holds the fold for minutes is otherwise invisible.
-                let refreshClock = Diagnostics.Stopwatch.StartNew()
-                let outcomes = refreshExtensionEdges db repoRoot exts
-                let refreshMs = refreshClock.ElapsedMilliseconds
-
-                let failedExtensions =
-                    outcomes
-                    |> List.fold
-                        (fun failed outcome ->
-                            match outcome with
-                            | ExtensionRefresh.Refreshed(name, edgeCount) ->
-                                ctx.ClearErrors(extensionLedgerKey name)
-                                Logging.info "test-prune" (extensionStoredLine name edgeCount refreshMs)
-                                Map.remove name failed
-                            | ExtensionRefresh.Failed(name, ex) ->
-                                Logging.error
-                                    "test-prune"
-                                    $"Extension '%s{name}' failed: %s{ex.ToString()}; its previously stored edges are kept and every test project runs in full until it answers"
-
-                                ctx.ReportErrors
-                                    (extensionLedgerKey name)
-                                    [ extensionFailedDiagnostic name ex.Message ]
-
-                                Map.add name ex.Message failed)
-                        flushedState.FailedExtensions
-
-                { flushedState with
-                    FailedExtensions = failedExtensions }
+                if not indexedSomething && flushedState.FailedExtensions.IsEmpty then
+                    // Owed only because this process has not refreshed: nothing it indexed
+                    // is in the answer, so it runs beside the fold (`refreshInFlight`).
+                    refreshInFlight.Value <- Some(Tasks.Task.Run(refreshTimed exts))
+                    flushedState
+                else
+                    // At info, because a refresh that holds the fold for minutes is
+                    // otherwise invisible.
+                    applyRefresh ctx (refreshTimed exts ()) flushedState
             | _ -> flushedState
 
         let runtimeSelection = runtimeCoverageSelection flushedState.ChangedFiles
@@ -9122,6 +9167,16 @@ let internal createWithEvidenceAndQueries
     /// discharges it.
     let flushAndQueryAffected (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
         let flushedState, runtimeObligations = flushPending ctx state
+
+        // A selection that queries the index follows the extensions' edges.
+        let flushedState =
+            if
+                Set.isEmpty flushedState.Debt.PendingQueue
+                && List.isEmpty flushedState.ChangedSymbols
+            then
+                flushedState
+            else
+                joinRefresh ctx flushedState
 
         if TestMode.skips FlushSelection flushedState.Mode then
             { flushedState with
@@ -11058,6 +11113,21 @@ let internal createWithEvidenceAndQueries
         (fanout: Set<string>)
         =
         let inputs = TestRunInputs.ofState launchState
+        // A refresh still running beside the fold: the run takes its failures before it
+        // reads anything, off the fold (AUTOMATION-1441).
+        let refreshing = refreshInFlight.Value
+
+        let withRefreshed (inputs: TestRunInputs) =
+            match refreshing with
+            | None -> async.Return inputs
+            | Some refresh ->
+                async {
+                    let! outcomes, _ = Async.AwaitTask refresh
+
+                    return
+                        { inputs with
+                            FailedExtensions = failuresAfter outcomes inputs.FailedExtensions }
+                }
 
         if not (TestMode.launchesOwedRuns inputs.Mode) then
             let detail =
@@ -11080,7 +11150,12 @@ let internal createWithEvidenceAndQueries
                 // result publishes only through the fold it returns, and the run it opened
                 // is closed by its withdrawal fold. A run the daemon owes is never cancelled.
                 runTestHostExclusive ctx fanout None (fun runCtx ->
-                    PluginWork.cooperativeSafe (runTestsWithImpact runCtx configs inputs hasCachedResults fanout))
+                    PluginWork.cooperativeSafe (
+                        async {
+                            let! inputs = withRefreshed inputs
+                            return! runTestsWithImpact runCtx configs inputs hasCachedResults fanout
+                        }
+                    ))
             with
             | Claimed ->
                 Some
@@ -11524,6 +11599,14 @@ let internal createWithEvidenceAndQueries
                 // Replies belong to the event that owes them; the previous event's were
                 // resolved when its state was published.
                 let state = { state with Replies = [] }
+
+                // Only a check result folds while a refresh runs beside the fold: every
+                // other event may read the extensions' edges or failures (AUTOMATION-1441).
+                let state =
+                    match event with
+                    | PluginEvent.FileChecked _ -> state
+                    | _ -> joinRefresh ctx state
+
                 let modelGeneration = observeModelGeneration ctx
                 reconcileFreshness modelGeneration
 
@@ -12299,6 +12382,15 @@ let internal createWithEvidenceAndQueries
                                 match testConfigs with
                                 | Some configs when not configs.IsEmpty ->
                                     let hasCachedResults = state.LastResults.IsSome
+
+                                    // Only a launch with a session baseline can wait for the
+                                    // diff, and whether it does reads the extensions'
+                                    // failures. Without one, the run takes them itself.
+                                    let stateWithAffected =
+                                        if hasCachedResults then
+                                            joinRefresh ctx stateWithAffected
+                                        else
+                                            stateWithAffected
 
                                     // Union this build's fanout with any pending
                                     // fanout deferred from a prior mid-run build,
