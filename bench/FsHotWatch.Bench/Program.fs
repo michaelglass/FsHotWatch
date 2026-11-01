@@ -24,6 +24,12 @@ let private usage =
   fshw-bench hash-cost [--iterations 1000] [--warmup 100]
   fshw-bench key-cost --project <fsproj> [--repo .]
                       [--edit-file <repo-relative path> [--body "<before>=><after>"] [--shape "<before>=><after>"]]
+  fshw-bench replay --target <repo> --workspace <name> [--revset <revset> | --count N [--from main@origin]]
+                    [--out <dir>] [--check-cmd "<cmd>"] [--fshw "dotnet fshw"] [--prepare "<cmd>"]
+                    [--before-check "<cmd>"] [--faults <json> --fault-every K [--fault-offset 0] [--all-kinds]]
+                    [--timeout-min 120] [--diff-plugins fcs,lint,analyzers,findings] [--forced-every 1 | --no-forced]
+                    [--daemon-log logs/daemon.log] [--max-steps N] [--workspace-path <dir>]
+  fshw-bench replay-summary <out dir>
 """
 
 /// Parse `--key value` / `--flag` arguments. Repeated keys accumulate.
@@ -275,6 +281,69 @@ let main argv =
             |> List.iter (printfn "%s")
 
             0
+    | "replay" ->
+        match one opts "target", one opts "workspace" with
+        | Some target, Some workspace ->
+            let target = Path.GetFullPath target
+
+            let count key fallback =
+                one opts key |> Option.map int |> Option.defaultValue fallback
+
+            let revset =
+                match one opts "revset", one opts "count" with
+                | Some r, _ -> Some r
+                | None, Some n ->
+                    let from = one opts "from" |> Option.defaultValue "main@origin"
+                    Some $"first_ancestors(%s{from}, %s{n})"
+                | None, None -> None
+
+            let faults =
+                match one opts "faults" with
+                | None -> []
+                | Some file ->
+                    match ReplayModel.Plan.faultsOfJson (File.ReadAllText file) with
+                    | Ok fs -> fs
+                    | Error e -> failwith e
+
+            ReplayRun.run
+                { Target = target
+                  Workspace =
+                    one opts "workspace-path"
+                    |> Option.map Path.GetFullPath
+                    |> Option.defaultValue (Path.Combine(target, ".workspaces", workspace))
+                  WorkspaceName = workspace
+                  Out =
+                    one opts "out"
+                    |> Option.map Path.GetFullPath
+                    |> Option.defaultValue (Path.GetFullPath $"replay-%s{workspace}")
+                  Revset = revset
+                  CheckCmd = one opts "check-cmd" |> Option.defaultValue "dotnet fshw check"
+                  Fshw = one opts "fshw" |> Option.defaultValue "dotnet fshw"
+                  PrepareCmd = one opts "prepare"
+                  BeforeCheckCmd = one opts "before-check"
+                  Faults = faults
+                  FaultEvery = count "fault-every" 0
+                  FaultOffset = count "fault-offset" 0
+                  AllKinds = flag opts "all-kinds"
+                  TimeoutMin = count "timeout-min" 120
+                  DiffPlugins =
+                    one opts "diff-plugins"
+                    |> Option.defaultValue "fcs,lint,analyzers,findings"
+                    |> fun s -> s.Split(',', StringSplitOptions.RemoveEmptyEntries) |> Set.ofArray
+                  ForcedEvery = if flag opts "no-forced" then 0 else count "forced-every" 1
+                  DaemonLog = one opts "daemon-log" |> Option.defaultValue "logs/daemon.log"
+                  MaxSteps = one opts "max-steps" |> Option.map int }
+        | _ ->
+            eprintf "%s" usage
+            2
+    | "replay-summary" ->
+        match positional with
+        | [ out ] ->
+            printfn "%s" (ReplayRun.writeSummary (Path.GetFullPath out))
+            0
+        | _ ->
+            eprintf "%s" usage
+            2
     | _ ->
         eprintf "%s" usage
         2
