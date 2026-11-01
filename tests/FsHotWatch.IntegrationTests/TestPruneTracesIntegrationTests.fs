@@ -12,6 +12,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.TestPrune
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.SelectionAssembly
 open FsHotWatch.TestPrune.PluginTypes
 open TestPrune.Trace
 

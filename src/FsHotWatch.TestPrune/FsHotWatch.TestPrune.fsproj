@@ -70,6 +70,7 @@
     <Compile Include="ExternalInputs.fs" />
     <Compile Include="RunResults.fs" />
     <Compile Include="ReceiptTransitions.fs" />
+    <Compile Include="SelectionAssembly.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 
