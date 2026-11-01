@@ -1663,6 +1663,244 @@
         "reason": "new file (AUTOMATION-975). Pure orchestration over the trace store with no platform-specific path; the macOS measurement (56/56 lines, 6/6 branches) is the floor until Linux CI measures it, then ratchet or explain any SDK branch attribution difference.",
         "platform": "linux"
       }
+    ],
+    "TestReports.fs": [
+      {
+        "line": 95,
+        "branch": 75,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 95.2%, branch 76.0% (117/154).",
+        "platform": "macos"
+      },
+      {
+        "line": 95,
+        "branch": 75,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 95.2%, branch 76.0% (117/154).",
+        "platform": "linux"
+      }
+    ],
+    "RunnerArgs.fs": [
+      {
+        "line": 96,
+        "branch": 83,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 96.4%, branch 83.2% (109/131).",
+        "platform": "macos"
+      },
+      {
+        "line": 96,
+        "branch": 83,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 96.4%, branch 83.2% (109/131).",
+        "platform": "linux"
+      }
+    ],
+    "FailureReports.fs": [
+      {
+        "line": 97,
+        "branch": 74,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 97.1%, branch 74.6% (91/122).",
+        "platform": "macos"
+      },
+      {
+        "line": 97,
+        "branch": 74,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 97.1%, branch 74.6% (91/122).",
+        "platform": "linux"
+      }
+    ],
+    "TestFilters.fs": [
+      {
+        "line": 96,
+        "branch": 85,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 97.0%, branch 85.7% (12/14).",
+        "platform": "macos"
+      },
+      {
+        "line": 96,
+        "branch": 85,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 97.0%, branch 85.7% (12/14).",
+        "platform": "linux"
+      }
+    ],
+    "OutstandingFailures.fs": [
+      {
+        "line": 91,
+        "branch": 85,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 91.4%, branch 85.5% (53/62).",
+        "platform": "macos"
+      },
+      {
+        "line": 91,
+        "branch": 85,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 91.4%, branch 85.5% (53/62).",
+        "platform": "linux"
+      }
+    ],
+    "SelectionAssembly.fs": [
+      {
+        "line": 93,
+        "branch": 75,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 93.4%, branch 75.7% (53/70).",
+        "platform": "macos"
+      },
+      {
+        "line": 93,
+        "branch": 75,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 93.4%, branch 75.7% (53/70).",
+        "platform": "linux"
+      }
+    ],
+    "ReceiptTransitions.fs": [
+      {
+        "line": 98,
+        "branch": 94,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 98.3%, branch 94.4% (118/125).",
+        "platform": "macos"
+      },
+      {
+        "line": 98,
+        "branch": 94,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 98.3%, branch 94.4% (118/125).",
+        "platform": "linux"
+      }
+    ],
+    "RunResults.fs": [
+      {
+        "line": 100,
+        "branch": 98,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 100.0%, branch 98.7% (75/76).",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 98,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 100.0%, branch 98.7% (75/76).",
+        "platform": "linux"
+      }
+    ],
+    "ExternalInputs.fs": [
+      {
+        "line": 87,
+        "branch": 64,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 87.4%, branch 64.7% (22/34).",
+        "platform": "macos"
+      },
+      {
+        "line": 87,
+        "branch": 64,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 87.4%, branch 64.7% (22/34).",
+        "platform": "linux"
+      }
+    ],
+    "RunLaunch.fs": [
+      {
+        "line": 86,
+        "branch": 80,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 87.0%, branch 80.0% (36/45).",
+        "platform": "macos"
+      },
+      {
+        "line": 86,
+        "branch": 80,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 87.0%, branch 80.0% (36/45).",
+        "platform": "linux"
+      }
+    ],
+    "PluginState.fs": [
+      {
+        "line": 100,
+        "branch": 95,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 100.0%, branch 95.0% (19/20).",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 95,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 100.0%, branch 95.0% (19/20).",
+        "platform": "linux"
+      }
+    ],
+    "InputTrees.fs": [
+      {
+        "line": 96,
+        "branch": 84,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 96.6%, branch 84.8% (56/66).",
+        "platform": "macos"
+      },
+      {
+        "line": 96,
+        "branch": 84,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 96.6%, branch 84.8% (56/66).",
+        "platform": "linux"
+      }
+    ],
+    "RuntimeCoverageSelection.fs": [
+      {
+        "line": 93,
+        "branch": 94,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 93.9%, branch 94.6% (53/56).",
+        "platform": "macos"
+      },
+      {
+        "line": 93,
+        "branch": 94,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 93.9%, branch 94.6% (53/56).",
+        "platform": "linux"
+      }
+    ],
+    "CoverageIngest.fs": [
+      {
+        "line": 98,
+        "branch": 76,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 98.0%, branch 76.8% (63/82).",
+        "platform": "macos"
+      },
+      {
+        "line": 98,
+        "branch": 76,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 98.0%, branch 76.8% (63/82).",
+        "platform": "linux"
+      }
+    ],
+    "CoverageArtifacts.fs": [
+      {
+        "line": 98,
+        "branch": 88,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 98.1%, branch 88.5% (46/52).",
+        "platform": "macos"
+      },
+      {
+        "line": 98,
+        "branch": 88,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 98.1%, branch 88.5% (46/52).",
+        "platform": "linux"
+      }
+    ],
+    "EvidenceReceipts.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 100.0%, branch 100.0% (30/30).",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 100.0%, branch 100.0% (30/30).",
+        "platform": "linux"
+      }
+    ],
+    "PluginTypes.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-01 on macOS by the unit suite (mise run test-direct): line 100.0%, branch 100.0% (10/10).",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 100.0%, branch 100.0% (10/10).",
+        "platform": "linux"
+      }
     ]
   },
   "countFloors": {
