@@ -12,6 +12,7 @@ open TestPrune.AstAnalyzer
 open FsHotWatch.Events
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.EvidenceReceipts
 open FsHotWatch.TestPrune.InputTrees
 open FsHotWatch.TestPrune.RuntimeCoverageSelection
 open FsHotWatch.TestPrune.PluginTypes

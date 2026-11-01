@@ -13,6 +13,7 @@ open System.Text.Json
 open TestPrune.Database
 open FsHotWatch.TestPrune
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.EvidenceReceipts
 open FsHotWatch.TestPrune.PluginTypes
 
 /// What `check` selects within, from `.fshw.json`'s `tests`.

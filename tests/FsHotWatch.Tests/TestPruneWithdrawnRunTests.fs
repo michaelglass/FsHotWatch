@@ -14,6 +14,7 @@ open FsHotWatch
 open FsHotWatch.Events
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.EvidenceReceipts
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.Tests.TestPrunePluginTestSupport
 open FsHotWatch.Cli.IpcParsing
