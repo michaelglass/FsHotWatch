@@ -7,6 +7,7 @@ open Swensen.Unquote
 open Microsoft.Data.Sqlite
 open TestPrune.AstAnalyzer
 open TestPrune.Database
+open TestPrune.Domain
 open TestPrune.Tests.TestHelpers
 
 let private openRawConnection (dbPath: string) =
@@ -2961,32 +2962,40 @@ module ``Runtime coverage with empty inputs`` =
             db.MergeRuntimeCoverage("A.Tests", Seq.empty)
             test <@ db.GetRuntimeCoverageProjects [ "src/Lib.fs" ] = [ "A.Tests" ] @>)
 
-/// `GetProjectKey` answers two reserved names besides project names, so a caller holding
-/// only the project-key lookup can ask about the index as a whole: whether the last
-/// attempt left it incomplete, and which completed attempt produced it.
-module ``GetProjectKey reserved lookup keys`` =
+/// `GetIndexState` answers for the index as a whole: whether the last attempt left it
+/// incomplete, and, when it is complete, which attempt completed it. A complete index
+/// always names its generation; there is no "complete, generation unknown".
+module ``GetIndexState`` =
 
     [<Fact>]
-    let ``incomplete-index key is set until an attempt completes, then absent`` () =
+    let ``an index is incomplete until an attempt completes it, then complete at that attempt's token`` () =
         withDb (fun db ->
-            test <@ db.GetProjectKey IndexIncompleteLookupKey = Some IndexIncompleteValue @>
+            test <@ db.GetIndexState() = IndexState.Incomplete @>
 
             let token = db.MarkIndexIncomplete()
-            test <@ db.GetProjectKey IndexIncompleteLookupKey = Some IndexIncompleteValue @>
+            test <@ db.GetIndexState() = IndexState.Incomplete @>
 
             test <@ db.CompleteIndex token @>
-            test <@ db.GetProjectKey IndexIncompleteLookupKey = None @>)
+            test <@ db.GetIndexState() = IndexState.Complete token @>)
 
     [<Fact>]
-    let ``generation key is the token of the attempt that completed the index`` () =
+    let ``a new attempt makes a completed index incomplete again`` () =
         withDb (fun db ->
-            test <@ db.GetProjectKey IndexGenerationLookupKey = None @>
+            let first = db.MarkIndexIncomplete()
+            test <@ db.CompleteIndex first @>
 
+            let second = db.MarkIndexIncomplete()
+            test <@ db.GetIndexState() = IndexState.Incomplete @>
+
+            test <@ db.CompleteIndex second @>
+            test <@ db.GetIndexState() = IndexState.Complete second @>)
+
+    [<Fact>]
+    let ``GetProjectKey answers only project names`` () =
+        withDb (fun db ->
             let token = db.MarkIndexIncomplete()
-            test <@ db.GetProjectKey IndexGenerationLookupKey = None @>
-
             test <@ db.CompleteIndex token @>
-            test <@ db.GetProjectKey IndexGenerationLookupKey = Some token @>)
+            test <@ db.GetProjectKey "\u0000testprune:index-generation" = None @>)
 
 /// SQLite fails a statement with `SQLITE_BUSY` once another connection has held the lock for
 /// the connection's busy timeout. That bound is set explicitly and named (`BusyTimeout`), and a

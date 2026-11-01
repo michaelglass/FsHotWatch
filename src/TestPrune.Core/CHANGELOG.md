@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **BREAKING (API):** the index's own state is a type, not two reserved project names.
+  `Ports.SymbolStore` gains `GetIndexState: unit -> Domain.IndexState`
+  (`Incomplete | Complete of generation`), answered by `Database.GetIndexState` in one
+  read; `GetProjectKey` answers only project names. A complete index always names the
+  attempt that completed it, so "complete, generation unknown" — what `InMemoryStore`
+  used to answer — cannot be expressed. A hand-built `SymbolStore` must supply the new
+  field. No selection change.
 - perf: `ImpactAnalysis.selectTests` reads runtime coverage once per changed file, not once
   per (project, file) pair, and reads the attribute index only when it will use it.
   `DependsOnFile`/`DependsOnGlob` attributes are parsed straight into their matcher. No

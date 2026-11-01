@@ -626,14 +626,14 @@ let analyzeChanges
     | Error msg -> Error msg
     | Ok diffText ->
         let changedFiles = parseChangedPaths diffText
-        let startingGeneration = store.GetProjectKey IndexGenerationLookupKey
-        let startingIncomplete = store.GetProjectKey IndexIncompleteLookupKey
+        let startingState = store.GetIndexState()
 
         auditSink.Post(timestamp (DiffParsedEvent changedFiles))
 
-        if startingIncomplete = Some IndexIncompleteValue then
+        match startingState with
+        | IndexState.Incomplete ->
             Ok(RunAll(AnalysisFailedFallback "previous index attempt was incomplete"), changedFiles)
-        else
+        | IndexState.Complete startingGeneration ->
             let selectionResult =
                 if changedFiles.IsEmpty then
                     RunSubset []
@@ -670,15 +670,10 @@ let analyzeChanges
 
                         selection
 
-            let endingGeneration = store.GetProjectKey IndexGenerationLookupKey
-            let endingIncomplete = store.GetProjectKey IndexIncompleteLookupKey
-
-            let indexBecameIncomplete = endingIncomplete = Some IndexIncompleteValue
-
-            if indexBecameIncomplete || endingGeneration <> startingGeneration then
-                Ok(RunAll(AnalysisFailedFallback "index changed while selecting tests"), changedFiles)
-            else
+            match store.GetIndexState() with
+            | IndexState.Complete endingGeneration when endingGeneration = startingGeneration ->
                 Ok(selectionResult, changedFiles)
+            | _ -> Ok(RunAll(AnalysisFailedFallback "index changed while selecting tests"), changedFiles)
 
 let private withAnalysis
     (getDiff: DiffProvider)

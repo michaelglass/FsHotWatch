@@ -12,6 +12,7 @@ type SymbolStore =
       GetTestMethodsInFile: string -> TestMethodInfo list
       GetFileKey: string -> string option
       GetProjectKey: string -> string option
+      GetIndexState: unit -> TestPrune.Domain.IndexState
       QueryAffectedTests: string list -> TestMethodInfo list
       GetRuntimeCoverageProjects: string list -> string list
       GetTestMethodsInProjects: string list -> TestMethodInfo list
@@ -43,6 +44,7 @@ let toSymbolStore (db: Database) : SymbolStore =
       GetTestMethodsInFile = db.GetTestMethodsInFile
       GetFileKey = db.GetFileKey
       GetProjectKey = db.GetProjectKey
+      GetIndexState = db.GetIndexState
       QueryAffectedTests = db.QueryAffectedTests
       GetRuntimeCoverageProjects = db.GetRuntimeCoverageProjects
       GetTestMethodsInProjects = db.GetTestMethodsInProjects

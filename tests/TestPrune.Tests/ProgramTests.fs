@@ -1681,21 +1681,18 @@ module ``runIndexWith`` =
             let inner =
                 Database.create (Path.Combine(tmpDir, ".test-prune.db")) |> toSymbolStore
 
-            let mutable generationReads = 0
+            let generationReads = ref 0
 
             let interleaved =
                 { inner with
-                    GetProjectKey =
-                        fun key ->
-                            if key = IndexGenerationLookupKey then
-                                generationReads <- generationReads + 1
+                    GetIndexState =
+                        fun () ->
+                            generationReads.Value <- generationReads.Value + 1
 
-                                if generationReads = 1 then
-                                    Some "generation-1"
-                                else
-                                    Some "generation-2"
+                            if generationReads.Value = 1 then
+                                IndexState.Complete "generation-1"
                             else
-                                inner.GetProjectKey key }
+                                IndexState.Complete "generation-2" }
 
             match analyzeChanges (fun () -> Ok "") tmpDir interleaved testChecker (createNoopSink ()) with
             | Ok(RunAll(AnalysisFailedFallback reason), _) ->

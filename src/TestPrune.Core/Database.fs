@@ -7,15 +7,6 @@ open System.Text.Json
 open Microsoft.Data.Sqlite
 open TestPrune.AstAnalyzer
 
-[<Literal>]
-let internal IndexIncompleteLookupKey = "\u0000testprune:index-incomplete"
-
-[<Literal>]
-let internal IndexGenerationLookupKey = "\u0000testprune:index-generation"
-
-[<Literal>]
-let internal IndexIncompleteValue = "\u0000testprune:incomplete"
-
 let private schema =
     """
     CREATE TABLE IF NOT EXISTS symbols (
@@ -1655,26 +1646,35 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
             readAll reader (fun r -> r.GetString(0)) |> Set.ofList
 
     /// Get the stored cache key for a project, or None if not yet indexed.
-    member this.GetProjectKey(projectName: string) : string option =
-        if projectName = IndexIncompleteLookupKey then
-            if this.IsIndexIncomplete() then
-                Some IndexIncompleteValue
-            else
-                None
-        elif projectName = IndexGenerationLookupKey then
-            use conn = openConnection dbPath
-            use cmd = conn.CreateCommand()
-            cmd.CommandText <- "SELECT value FROM index_metadata WHERE key = 'index_completed' LIMIT 1"
-            cmd.ExecuteScalar() |> Option.ofObj |> Option.map string
+    member _.GetProjectKey(projectName: string) : string option =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- "SELECT key FROM project_keys WHERE project_name = @projectName"
+        cmd.Parameters.AddWithValue("@projectName", projectName) |> ignore
+
+        use reader = cmd.ExecuteReader()
+
+        if reader.Read() then Some(reader.GetString(0)) else None
+
+    /// The index as a whole: incomplete while an attempt's marker is present or no attempt
+    /// has completed, otherwise complete at the token of the attempt that completed it.
+    /// One read, so the two facts cannot come from different moments.
+    member _.GetIndexState() : TestPrune.Domain.IndexState =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """SELECT
+                 EXISTS (SELECT 1 FROM index_metadata WHERE key = 'index_incomplete'),
+                 (SELECT value FROM index_metadata WHERE key = 'index_completed' LIMIT 1)"""
+
+        use reader = cmd.ExecuteReader()
+        reader.Read() |> ignore
+
+        if reader.GetInt64(0) = 1L || reader.IsDBNull(1) then
+            TestPrune.Domain.IndexState.Incomplete
         else
-            use conn = openConnection dbPath
-            use cmd = conn.CreateCommand()
-            cmd.CommandText <- "SELECT key FROM project_keys WHERE project_name = @projectName"
-            cmd.Parameters.AddWithValue("@projectName", projectName) |> ignore
-
-            use reader = cmd.ExecuteReader()
-
-            if reader.Read() then Some(reader.GetString(0)) else None
+            TestPrune.Domain.IndexState.Complete(reader.GetString(1))
 
     /// Persist a fail-closed marker when an index attempt cannot produce a complete graph.
     member internal _.MarkIndexIncomplete() : string =
@@ -1720,14 +1720,7 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
 
     /// Whether the last index attempt failed before producing a complete graph.
     member internal this.IsIndexIncomplete() : bool =
-        use conn = openConnection dbPath
-
-        scalarInt64
-            conn
-            """SELECT CASE
-                 WHEN EXISTS (SELECT 1 FROM index_metadata WHERE key = 'index_incomplete')
-                   OR NOT EXISTS (SELECT 1 FROM index_metadata WHERE key = 'index_completed')
-                 THEN 1 ELSE 0 END""" = 1L
+        this.GetIndexState() = TestPrune.Domain.IndexState.Incomplete
 
     /// Get the stored cache key for a source file, or None if not yet indexed.
     member _.GetFileKey(sourceFile: string) : string option =
