@@ -307,6 +307,22 @@ module Diagnostics =
         { OnlyReplay = minus r f
           OnlyForced = minus f r }
 
+    /// The test runs a `verdict.json` names, in its order: the CTRF reports a disagreement is
+    /// traced through, and which the workspace prunes as later runs land.
+    let verdictRunIds (verdictJson: string) : string list =
+        match tryParseNode verdictJson with
+        | Some root ->
+            match root["runs"] with
+            | :? JsonArray as runs ->
+                [ for r in runs do
+                      if not (isNull r) then
+                          match str r "runId" with
+                          | "" -> ()
+                          | id -> id ]
+                |> List.distinct
+            | _ -> []
+        | None -> []
+
     let agrees (diff: Diff) : bool =
         List.isEmpty diff.OnlyReplay && List.isEmpty diff.OnlyForced
 

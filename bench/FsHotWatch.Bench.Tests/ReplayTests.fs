@@ -435,3 +435,12 @@ let ``a forced run that published no verdict is not a verdict mismatch, only gre
 
     test <@ (Summary.summarize [ e 3 "incomplete" ]).VerdictMismatches = [] @>
     test <@ (Summary.summarize [ e 1 "red" ]).VerdictMismatches = [ "a", "green", "red" ] @>
+
+[<Fact>]
+let ``a verdict's test runs are named in the order it lists them, each once`` () =
+    let verdict =
+        """{"runs":[{"runId":"b","suites":[]},{"runId":"a","suites":[]},{"runId":"b"}],"runId":"b"}"""
+
+    test <@ Diagnostics.verdictRunIds verdict = [ "b"; "a" ] @>
+    test <@ Diagnostics.verdictRunIds "{}" = [] @>
+    test <@ Diagnostics.verdictRunIds "not json" = [] @>

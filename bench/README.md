@@ -136,7 +136,8 @@ that is a top-level `module`, and a test file whose opens cover the test.
 the check's output, `verdict.json` when this run published one, the shadow lines it
 appended to `.fshw/shadow/lookup-verdict.jsonl`, the error ledger (`.fshw/errors/`, every
 plugin's diagnostics with their positions, made checkout-relative), `fshw findings --json`,
-`fshw status --agent`, and the daemon's `check-records` / `options-records` log lines.
+`fshw status --agent`, the daemon's `check-records` / `options-records` log lines, and the CTRF
+reports of every test run the verdict names (the workspace prunes those as later runs land).
 
 **What is compared.** The two runs' diagnostics, as a multiset, over the plugins in
 `--diff-plugins` (default `fcs,lint,analyzers,findings`). Test results are not compared:
