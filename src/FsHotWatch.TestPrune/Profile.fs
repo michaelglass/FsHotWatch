@@ -230,7 +230,7 @@ let private completionShape =
 let private durationPart =
     Text.RegularExpressions.Regex(@"(\d+(?:\.\d+)?) ?(ms|s|m|h|d)", Text.RegularExpressions.RegexOptions.Compiled)
 
-/// The same CSI sequences `TestPrunePlugin.ConsoleText` removes: MTP colours the verb.
+/// The same CSI sequences `FailureReports.ConsoleText` removes: MTP colours the verb.
 let private ansiSequence =
     Text.RegularExpressions.Regex(@"\u001b\[[0-9;?]*[ -/]*[@-~]", Text.RegularExpressions.RegexOptions.Compiled)
 
