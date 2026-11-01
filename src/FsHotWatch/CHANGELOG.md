@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- refactor: `check`, `options` and `format` records are built by one function,
+  `OutcomeStore.Record.ofAction` (new): an action that ran no tests, untimed and outside any
+  test run. Each filed record is unchanged.
+
 - refactor!: an options index record's listing kind is parsed where it is read (ADR-059 §18).
   `OptionsRecords.Listing.Kind` is a `ListingKind` (`Files`, `Directories`, `Entries`), not a
   string. An index naming any other kind is "the filed inputs are unreadable"; before, it was

@@ -65,6 +65,28 @@ type Record =
         RecordedAt: DateTimeOffset
     }
 
+module Record =
+    /// The record of an action that ran no tests, untimed and outside any test run: a check,
+    /// an options evaluation, a format pass. `binary` names what produced it, `worktree` where.
+    let ofAction
+        (key: ActionKey.ActionKey)
+        (subject: string)
+        (outcome: Outcome)
+        (binary: string)
+        (worktree: string)
+        (recordedAt: DateTimeOffset)
+        : Record =
+        { Key = key
+          Subject = subject
+          Outcome = outcome
+          Counts = None
+          DurationMs = None
+          Producer =
+            { Binary = binary
+              Worktree = worktree
+              RunId = None }
+          RecordedAt = recordedAt }
+
 [<NoComparison; NoEquality>]
 type Settings =
     {

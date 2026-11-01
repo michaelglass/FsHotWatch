@@ -148,17 +148,15 @@ type FormatPreprocessor(?timeoutSec: int, ?runner: Runner, ?store: OutcomeStore.
 
         store
         |> Option.iter (fun store ->
-            store.Record
-                { Key = key
-                  Subject = FsHotWatch.CachePathIdentity.keyOf (Some repoRoot) file
-                  Outcome = OutcomeStore.Outcome.Pass
-                  Counts = None
-                  DurationMs = None
-                  Producer =
-                    { Binary = producer.Value
-                      Worktree = repoRoot
-                      RunId = None }
-                  RecordedAt = DateTimeOffset.UtcNow }
+            store.Record(
+                OutcomeStore.Record.ofAction
+                    key
+                    (FsHotWatch.CachePathIdentity.keyOf (Some repoRoot) file)
+                    OutcomeStore.Outcome.Pass
+                    producer.Value
+                    repoRoot
+                    DateTimeOffset.UtcNow
+            )
             |> ignore)
 
     interface IFsHotWatchPreprocessor with

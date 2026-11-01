@@ -256,3 +256,22 @@ let ``readAll of a directory that holds no store is empty`` () =
     withTempDir "outcomes-none" (fun dir ->
         let scan = readAll (Path.Combine(dir, "absent"))
         test <@ List.isEmpty scan.Records && scan.Unreadable = 0 @>)
+
+[<Fact>]
+let ``an action's record carries no test counts, duration or run, and what it was given`` () =
+    let key = keyFor "sha256:t"
+    let r = Record.ofAction key "src/A.fs" Outcome.Fail "fshw 1" "/w" t0
+
+    test
+        <@
+            r = { Key = key
+                  Subject = "src/A.fs"
+                  Outcome = Outcome.Fail
+                  Counts = None
+                  DurationMs = None
+                  Producer =
+                    { Binary = "fshw 1"
+                      Worktree = "/w"
+                      RunId = None }
+                  RecordedAt = t0 }
+        @>

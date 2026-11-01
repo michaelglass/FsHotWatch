@@ -585,16 +585,13 @@ let file
 
         let filedRecord (recordKey: ActionKey.ActionKey) (subject: string) (outputs: string) =
             store.RecordWithOutputs(
-                { Key = recordKey
-                  Subject = subject
-                  Outcome = OutcomeStore.Outcome.Pass
-                  Counts = None
-                  DurationMs = None
-                  Producer =
-                    { Binary = request.Toolchain
-                      Worktree = request.Root
-                      RunId = None }
-                  RecordedAt = DateTimeOffset.UtcNow },
+                OutcomeStore.Record.ofAction
+                    recordKey
+                    subject
+                    OutcomeStore.Outcome.Pass
+                    request.Toolchain
+                    request.Root
+                    DateTimeOffset.UtcNow,
                 Some outputs
             )
 
