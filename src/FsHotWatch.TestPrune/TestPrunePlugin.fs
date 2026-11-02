@@ -845,6 +845,76 @@ let internal prepareCommitIn
                 } }
     }
 
+/// Claim the "tests" key and the shared artifact lease for `work`. `owed` is the
+/// dependency fanout this launch consumes; an unavailable launch hands it back.
+///
+/// Result-first: the completion fold sheds only the symbols the run launched with, so
+/// a file check or build dispatched during the run stays owed whether it folds before
+/// the result or after it. Folding after can only cost a run: a BootScan cohort that
+/// would have joined a full run in flight (`joinsFullRun`) finds none and queues its
+/// own. It never lets less evidence discharge anything. The run emits test lifecycle
+/// events this plugin does not subscribe to. Without this, a result stuck behind a
+/// storm of checks holds the "tests" key, and its green, for as long as those folds
+/// take.
+let internal runTestHostExclusive
+    (ctx: PluginCtx<TestPruneMsg>)
+    (owed: Set<string>)
+    (reply: Tasks.TaskCompletionSource<string> option)
+    (workOf: PluginCtx<TestPruneMsg> -> Async<TestPruneMsg>)
+    =
+    // The run this launch started and has not closed. Its result's fold closes it; a
+    // launch whose result never folds — its work returned, but its test host's
+    // termination could not be established — closes it from its failure instead.
+    // Subscribers track every started run until its completion (Build defers every
+    // build while one is open), so a run left open wedges them for good.
+    let opened = ref None
+
+    let tracked =
+        { ctx with
+            EmitTestRunStarted =
+                fun started ->
+                    opened.Value <- Some started
+                    ctx.EmitTestRunStarted started
+            EmitTestRunCompleted =
+                fun completed ->
+                    match opened.Value with
+                    | Some started when started.RunId = completed.RunId -> opened.Value <- None
+                    | _ -> ()
+
+                    ctx.EmitTestRunCompleted completed }
+
+    let workFor =
+        function
+        | Ready ->
+            // Cancelled once every client that wanted it has gone (when `workOf` is
+            // cooperative-safe), it folds as withdrawn: it closes the run it opened and
+            // hands back what it consumed, so nothing of it is left in flight.
+            workOf tracked
+            |> PluginWork.onAbandon (fun () -> TestRunWithdrawn(owed, reply, opened.Value))
+            |> PluginWork.resultFirst
+        | Invalid reason -> PluginWork.resultFirst (async { return ArtifactsUnavailable(reason, owed, reply) })
+
+    // What this launch releases into the shared "build-artifacts" lease, which the
+    // next claimant is handed. Only a verdict ABOUT the artifacts may change it.
+    // A refusal that found them unusable carries that invalidity forward, so a
+    // failed build stays sticky until one succeeds. A test host that would not
+    // start says nothing about the build output: it releases the lease as valid,
+    // so the next launch on an unchanged tree runs instead of being refused — with
+    // the build named as the culprit — until something forces a real rebuild.
+    let classify =
+        function
+        | ArtifactsUnavailable(reason, _, _) -> Invalid reason
+        | TestHostUnavailable _ -> Ready
+        | _ -> Ready
+
+    let failureMessage (ex: exn) =
+        TestHostUnavailable(ex.Message, owed, reply, opened.Value)
+
+    match ctx.RunExclusiveShared "tests" "build-artifacts" workFor classify failureMessage with
+    | SharedClaimed
+    | SharedQueued -> Claimed
+    | LocalSlotBusy -> SlotBusy
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -926,75 +996,7 @@ let internal createWithEvidenceAndQueries
     let queries = queriesOf db
     let configuredTestProjects = testConfigs |> Option.defaultValue []
 
-    /// Claim the "tests" key and the shared artifact lease for `work`. `owed` is the
-    /// dependency fanout this launch consumes; an unavailable launch hands it back.
-    ///
-    /// Result-first: the completion fold sheds only the symbols the run launched with, so
-    /// a file check or build dispatched during the run stays owed whether it folds before
-    /// the result or after it. Folding after can only cost a run: a BootScan cohort that
-    /// would have joined a full run in flight (`joinsFullRun`) finds none and queues its
-    /// own. It never lets less evidence discharge anything. The run emits test lifecycle
-    /// events this plugin does not subscribe to. Without this, a result stuck behind a
-    /// storm of checks holds the "tests" key, and its green, for as long as those folds
-    /// take.
-    let runTestHostExclusive
-        (ctx: PluginCtx<TestPruneMsg>)
-        (owed: Set<string>)
-        (reply: Tasks.TaskCompletionSource<string> option)
-        (workOf: PluginCtx<TestPruneMsg> -> Async<TestPruneMsg>)
-        =
-        // The run this launch started and has not closed. Its result's fold closes it; a
-        // launch whose result never folds — its work returned, but its test host's
-        // termination could not be established — closes it from its failure instead.
-        // Subscribers track every started run until its completion (Build defers every
-        // build while one is open), so a run left open wedges them for good.
-        let opened = ref None
 
-        let tracked =
-            { ctx with
-                EmitTestRunStarted =
-                    fun started ->
-                        opened.Value <- Some started
-                        ctx.EmitTestRunStarted started
-                EmitTestRunCompleted =
-                    fun completed ->
-                        match opened.Value with
-                        | Some started when started.RunId = completed.RunId -> opened.Value <- None
-                        | _ -> ()
-
-                        ctx.EmitTestRunCompleted completed }
-
-        let workFor =
-            function
-            | Ready ->
-                // Cancelled once every client that wanted it has gone (when `workOf` is
-                // cooperative-safe), it folds as withdrawn: it closes the run it opened and
-                // hands back what it consumed, so nothing of it is left in flight.
-                workOf tracked
-                |> PluginWork.onAbandon (fun () -> TestRunWithdrawn(owed, reply, opened.Value))
-                |> PluginWork.resultFirst
-            | Invalid reason -> PluginWork.resultFirst (async { return ArtifactsUnavailable(reason, owed, reply) })
-
-        // What this launch releases into the shared "build-artifacts" lease, which the
-        // next claimant is handed. Only a verdict ABOUT the artifacts may change it.
-        // A refusal that found them unusable carries that invalidity forward, so a
-        // failed build stays sticky until one succeeds. A test host that would not
-        // start says nothing about the build output: it releases the lease as valid,
-        // so the next launch on an unchanged tree runs instead of being refused — with
-        // the build named as the culprit — until something forces a real rebuild.
-        let classify =
-            function
-            | ArtifactsUnavailable(reason, _, _) -> Invalid reason
-            | TestHostUnavailable _ -> Ready
-            | _ -> Ready
-
-        let failureMessage (ex: exn) =
-            TestHostUnavailable(ex.Message, owed, reply, opened.Value)
-
-        match ctx.RunExclusiveShared "tests" "build-artifacts" workFor classify failureMessage with
-        | SharedClaimed
-        | SharedQueued -> Claimed
-        | LocalSlotBusy -> SlotBusy
 
     // A recreated DB (schema bump) leaves the FCS check cache stale — see
     // `clearFcsCheckCache`.
