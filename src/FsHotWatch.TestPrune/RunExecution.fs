@@ -1185,6 +1185,80 @@ let internal launchWatchedWith
                 return Some result
     }
 
+/// One project's watched launch: its settled result, or `None` when the starvation re-run
+/// takes it.
+type internal WatchedLauncher = Threading.CancellationToken -> TestConfig -> Async<TestResult option>
+
+/// What running every scheduled group reads from its run (`runAllGroupsWith`).
+type internal GroupsEnv =
+    { ScheduledGroups: (string * TestConfig list) list
+      Processes: FsHotWatch.WorkScheduler.Lane option
+      MaxParallelProjects: int option
+      SkipProjectOf: TestConfig -> bool
+      SkippedResultOf: TestConfig -> string * TestResult
+      TryReuse: TestConfig -> bool
+      LaunchWatched: WatchedLauncher
+      FoldAndEmit: GroupFold }
+
+/// The normal path: every target certified fresh, so the groups launch in
+/// parallel (at most `maxParallelProjects` at a time) and fold their results into
+/// the shared accumulator as they finish, in whatever order that is.
+let internal runAllGroupsWith (env: GroupsEnv) () =
+    let scheduledGroups = env.ScheduledGroups
+    let processes = env.Processes
+    let maxParallelProjects = env.MaxParallelProjects
+    let skipProjectOf = env.SkipProjectOf
+    let skippedResultOf = env.SkippedResultOf
+    let tryReuse = env.TryReuse
+    let launchWatched = env.LaunchWatched
+    let foldAndEmit = env.FoldAndEmit
+
+    scheduledGroups
+    |> List.map (fun (_, groupConfigs) ->
+        // A group is charged the largest weight among its projects (ADR-053).
+        FsHotWatch.WorkScheduler.JobSpec.weighted
+            (groupConfigs |> List.map _.Weight |> List.fold max 1.0)
+            FsHotWatch.WorkScheduler.JobSpec.interactive,
+        async {
+            // The run's token: trace preparation (weave + JIT verification) stops
+            // when the run is cancelled.
+            let! runToken = Async.CancellationToken
+            let mutable results = []
+
+            for config in groupConfigs do
+                // FRESHNESS IS ALREADY SETTLED. The preflight above
+                // asked `ArtifactFreshness.stale` about every config in this run before
+                // the first spawn and refused the whole run if any answer was stale, so
+                // reaching this line means the bits match the sources. There is
+                // deliberately NO second freshness check here: a per-config gate inside
+                // the parallel body is precisely what let one group write its CTRF
+                // before another group's staleness had even been looked at.
+                //
+                // Template-based class filter (from impact analysis). When the map is
+                // non-empty but has no classes for this project, skip the project
+                // entirely (impact analysis found no relevant tests).
+                let filed = not (skipProjectOf config) && tryReuse config
+
+                match skipProjectOf config with
+                | true ->
+                    Logging.info "test-prune" $"Skipping %s{config.Project} — no affected classes"
+                    results <- skippedResultOf config :: results
+                | false when filed -> ()
+                | false ->
+                    let! settled = launchWatched runToken config
+
+                    match settled with
+                    | Some result -> results <- (config.Project, result) :: results
+                    | None -> ()
+
+            // Atomically fold this group's results into the shared
+            // accumulator and emit a cumulative snapshot. Groups that
+            // complete later will extend (never contradict) this one.
+            foldAndEmit results
+            return results
+        })
+    |> GroupSchedule.runAdmittedAs processes maxParallelProjects
+
 /// Execute test configs with optional affected classes for filtering. Handles beforeRun,
 /// coveragePaths, process execution, result storage. `rawFilter` is a passthrough filter
 /// string (from the run-tests command) that bypasses the template.
@@ -1590,55 +1664,17 @@ let internal executeTests
 
         let rerunStarved = rerunStarvedWith rerunEnv
 
-        /// The normal path: every target certified fresh, so the groups launch in
-        /// parallel (at most `maxParallelProjects` at a time) and fold their results into
-        /// the shared accumulator as they finish, in whatever order that is.
-        let runAllGroups () =
-            scheduledGroups
-            |> List.map (fun (_, groupConfigs) ->
-                // A group is charged the largest weight among its projects (ADR-053).
-                FsHotWatch.WorkScheduler.JobSpec.weighted
-                    (groupConfigs |> List.map _.Weight |> List.fold max 1.0)
-                    FsHotWatch.WorkScheduler.JobSpec.interactive,
-                async {
-                    // The run's token: trace preparation (weave + JIT verification) stops
-                    // when the run is cancelled.
-                    let! runToken = Async.CancellationToken
-                    let mutable results = []
+        let groupsEnv: GroupsEnv =
+            { ScheduledGroups = scheduledGroups
+              Processes = processes
+              MaxParallelProjects = maxParallelProjects
+              SkipProjectOf = skipProjectOf
+              SkippedResultOf = skippedResultOf
+              TryReuse = tryReuse
+              LaunchWatched = launchWatched
+              FoldAndEmit = foldAndEmit }
 
-                    for config in groupConfigs do
-                        // FRESHNESS IS ALREADY SETTLED. The preflight above
-                        // asked `ArtifactFreshness.stale` about every config in this run before
-                        // the first spawn and refused the whole run if any answer was stale, so
-                        // reaching this line means the bits match the sources. There is
-                        // deliberately NO second freshness check here: a per-config gate inside
-                        // the parallel body is precisely what let one group write its CTRF
-                        // before another group's staleness had even been looked at.
-                        //
-                        // Template-based class filter (from impact analysis). When the map is
-                        // non-empty but has no classes for this project, skip the project
-                        // entirely (impact analysis found no relevant tests).
-                        let filed = not (skipProjectOf config) && tryReuse config
-
-                        match skipProjectOf config with
-                        | true ->
-                            Logging.info "test-prune" $"Skipping %s{config.Project} — no affected classes"
-                            results <- skippedResultOf config :: results
-                        | false when filed -> ()
-                        | false ->
-                            let! settled = launchWatched runToken config
-
-                            match settled with
-                            | Some result -> results <- (config.Project, result) :: results
-                            | None -> ()
-
-                    // Atomically fold this group's results into the shared
-                    // accumulator and emit a cumulative snapshot. Groups that
-                    // complete later will extend (never contradict) this one.
-                    foldAndEmit results
-                    return results
-                })
-            |> GroupSchedule.runAdmittedAs processes maxParallelProjects
+        let runAllGroups () = runAllGroupsWith groupsEnv ()
 
         let! groupResults =
             if List.isEmpty preflight.Refusals then
