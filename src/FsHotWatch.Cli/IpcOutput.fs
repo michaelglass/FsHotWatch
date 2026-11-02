@@ -339,6 +339,11 @@ let private renderStatusMap (renderStatuses: Map<string, ParsedPluginStatus> -> 
         else
             0
 
+/// A reply that is a line of text, not JSON: printed as it is.
+let private renderText (payload: string) : int =
+    eprintfn "%s" payload
+    0
+
 let private renderPassed () =
     UI.success "Passed"
     0
@@ -366,9 +371,7 @@ let private renderPayload
             None
 
     match doc with
-    | None ->
-        eprintfn "%s" result
-        0
+    | None -> renderText result
     // Valid JSON that is not an object: every reply the daemon sends is one, so this is a
     // malformed reply, named as one, never an exception from a field read (AUTOMATION-1079).
     | Some doc when doc.RootElement.ValueKind <> JsonValueKind.Object ->
@@ -779,8 +782,18 @@ module PluginReplies =
         [ FsHotWatch.FileCommand.FileCommandReplies.StatusSchema,
           asStatusMap FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.tryParse ]
 
+    /// A reply its schema describes that is a line of text: printed as it is, as before.
+    let private asText (tryParse: string -> 'Reply option) (payload: string) : Render option =
+        tryParse payload |> Option.map (fun _ _ _ _ -> renderText payload)
+
+    let private coverage: (string * (string -> Render option)) list =
+        [ FsHotWatch.Coverage.CoverageReplies.StatusSchema,
+          asText FsHotWatch.Coverage.CoverageReplies.CoverageStatus.tryParse
+          FsHotWatch.Coverage.CoverageReplies.RatchetSchema,
+          asText FsHotWatch.Coverage.CoverageReplies.RatchetReply.tryParse ]
+
     let private renderers: Map<string, string -> Render option> =
-        Map.ofList (build @ lint @ format @ fileCommand)
+        Map.ofList (build @ lint @ format @ fileCommand @ coverage)
 
     /// The renderer for a `payload` of schema `id`; `None` for a schema this build does not
     /// know, or a payload it does not describe.

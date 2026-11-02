@@ -190,19 +190,22 @@ let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<C
                   if winner = (reply.Task :> System.Threading.Tasks.Task) then
                       return reply.Task.Result
                   else
-                      return
-                          "coverage-ratchet: did not complete within 5 minutes (a coverage check may be holding the slot); retry"
+                      return CoverageReplies.RatchetReply.serialize CoverageReplies.RatchetReply.TimedOut
               })
+          |> PluginCommand.typed CoverageReplies.RatchetSchema
 
           "coverage-status",
           PluginCommand.Observe(fun _ctx state _args ->
               async {
-                  return
+                  let status =
                       match state.LastCheckPassed with
-                      | None -> "coverage: no check run yet"
-                      | Some true -> "coverage: OK"
-                      | Some false -> "coverage: FAILED (run `fshw errors` for details)"
-              }) ]
+                      | None -> CoverageReplies.CoverageStatus.NotChecked
+                      | Some true -> CoverageReplies.CoverageStatus.Passed
+                      | Some false -> CoverageReplies.CoverageStatus.Failed
+
+                  return CoverageReplies.CoverageStatus.serialize status
+              })
+          |> PluginCommand.typed CoverageReplies.StatusSchema ]
       Update =
         fun ctx state event ->
             match event with
@@ -259,25 +262,29 @@ let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<C
                             try
                                 let xmlPaths = existingReports reports
 
-                                let message =
+                                let ratchet =
                                     if List.isEmpty xmlPaths then
                                         match reports with
-                                        | CoverageReports.SearchUnder _ ->
-                                            "coverage-ratchet: no coverage.cobertura.xml found"
-                                        | CoverageReports.Named _ ->
-                                            "coverage-ratchet: none of the named coverage reports exists"
+                                        | CoverageReports.SearchUnder _ -> CoverageReplies.RatchetReply.NoReportFound
+                                        | CoverageReports.Named _ -> CoverageReplies.RatchetReply.NoNamedReportExists
                                     else
                                         match readCoverage cfgPath xmlPaths with
-                                        | Result.Error reason -> $"coverage-ratchet failed: %s{reason}"
+                                        | Result.Error reason -> CoverageReplies.RatchetReply.Failed reason
                                         | Ok coverage ->
                                             let raw = loadRawConfig cfgPath
                                             saveRawConfig cfgPath (ratchetRaw raw coverage).Config
-                                            $"coverage-ratchet: thresholds updated in %s{cfgPath}"
+                                            CoverageReplies.RatchetReply.Updated cfgPath
+
+                                let message = CoverageReplies.RatchetReply.serialize ratchet
 
                                 reply.TrySetResult(message) |> ignore
                                 return RatchetDone(message, System.DateTime.UtcNow - runStarted)
                             with ex ->
-                                let message = $"coverage-ratchet failed: %s{ex.Message}"
+                                let message =
+                                    CoverageReplies.RatchetReply.serialize (
+                                        CoverageReplies.RatchetReply.Failed ex.Message
+                                    )
+
                                 reply.TrySetResult(message) |> ignore
                                 return RatchetDone(message, System.DateTime.UtcNow - runStarted)
                         finally

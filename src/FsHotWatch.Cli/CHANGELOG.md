@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- refactor: the CLI renders the coverage plugin's `coverage-status` and `coverage-ratchet`
+  replies by their declared schemas and prints the line as before. A payload either schema does
+  not describe is no verdict. Known and kept: a ratchet that failed or timed out still exits 0.
+
 - refactor: the CLI renders a file command's `<name>-status` reply by its declared schema, with
   the same output and exit code as before. A payload the schema does not describe is no verdict.
 

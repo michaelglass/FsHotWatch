@@ -216,3 +216,71 @@ let ``a typed file command status renders exactly as its shape did`` () =
 [<InlineData("""{"status":"passed"}""")>]
 let ``a file command status payload its schema does not describe is no verdict`` (payload: string) =
     refusesUndescribed "lint-docs-status" FsHotWatch.FileCommand.FileCommandReplies.StatusSchema payload
+
+let private coverageStatuses =
+    [ FsHotWatch.Coverage.CoverageReplies.CoverageStatus.NotChecked
+      FsHotWatch.Coverage.CoverageReplies.CoverageStatus.Passed
+      FsHotWatch.Coverage.CoverageReplies.CoverageStatus.Failed ]
+
+let private ratchetReplies =
+    [ FsHotWatch.Coverage.CoverageReplies.RatchetReply.NoReportFound
+      FsHotWatch.Coverage.CoverageReplies.RatchetReply.NoNamedReportExists
+      FsHotWatch.Coverage.CoverageReplies.RatchetReply.Updated "coverage-ratchet.json"
+      FsHotWatch.Coverage.CoverageReplies.RatchetReply.Failed "the report is not Cobertura"
+      FsHotWatch.Coverage.CoverageReplies.RatchetReply.TimedOut ]
+
+[<Fact(Timeout = 15000)>]
+let ``coverage-status is written as the text it always was, and read back as itself`` () =
+    let serialize = FsHotWatch.Coverage.CoverageReplies.CoverageStatus.serialize
+
+    test
+        <@
+            List.map serialize coverageStatuses = [ "coverage: no check run yet"
+                                                    "coverage: OK"
+                                                    "coverage: FAILED (run `fshw errors` for details)" ]
+        @>
+
+    for status in coverageStatuses do
+        test <@ FsHotWatch.Coverage.CoverageReplies.CoverageStatus.tryParse (serialize status) = Some status @>
+
+[<Fact(Timeout = 15000)>]
+let ``coverage-ratchet is written as the text it always was, and read back as itself`` () =
+    let serialize = FsHotWatch.Coverage.CoverageReplies.RatchetReply.serialize
+
+    test
+        <@
+            List.map serialize ratchetReplies = [ "coverage-ratchet: no coverage.cobertura.xml found"
+                                                  "coverage-ratchet: none of the named coverage reports exists"
+                                                  "coverage-ratchet: thresholds updated in coverage-ratchet.json"
+                                                  "coverage-ratchet failed: the report is not Cobertura"
+                                                  "coverage-ratchet: did not complete within 5 minutes (a coverage check may be holding the slot); retry" ]
+        @>
+
+    for reply in ratchetReplies do
+        test <@ FsHotWatch.Coverage.CoverageReplies.RatchetReply.tryParse (serialize reply) = Some reply @>
+
+[<Fact(Timeout = 15000)>]
+let ``a typed coverage reply renders exactly as its shape did`` () =
+    for status in coverageStatuses do
+        rendersAsSniffed
+            "coverage-status"
+            FsHotWatch.Coverage.CoverageReplies.StatusSchema
+            (FsHotWatch.Coverage.CoverageReplies.CoverageStatus.serialize status)
+
+    for reply in ratchetReplies do
+        rendersAsSniffed
+            "coverage-ratchet"
+            FsHotWatch.Coverage.CoverageReplies.RatchetSchema
+            (FsHotWatch.Coverage.CoverageReplies.RatchetReply.serialize reply)
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("coverage: maybe")>]
+[<InlineData("""{"status":"passed"}""")>]
+let ``a coverage-status payload its schema does not describe is no verdict`` (payload: string) =
+    refusesUndescribed "coverage-status" FsHotWatch.Coverage.CoverageReplies.StatusSchema payload
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("coverage-ratchet: done")>]
+[<InlineData("ratchet failed: x")>]
+let ``a coverage-ratchet payload its schema does not describe is no verdict`` (payload: string) =
+    refusesUndescribed "coverage-ratchet" FsHotWatch.Coverage.CoverageReplies.RatchetSchema payload
