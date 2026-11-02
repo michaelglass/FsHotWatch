@@ -198,6 +198,27 @@ let internal attachToFullRun (state: TestPruneState) =
                 else
                     Map.add symbol (revisionOf state.Debt symbol) captured) }
 
+/// Fold a refresh's outcomes into `state`: the log, the ledger, `FailedExtensions`.
+let internal applyRefresh
+    (ctx: PluginCtx<TestPruneMsg>)
+    (outcomes: ExtensionRefresh list, refreshMs: int64)
+    (state: TestPruneState)
+    =
+    for outcome in outcomes do
+        match outcome with
+        | ExtensionRefresh.Refreshed(name, edgeCount) ->
+            ctx.ClearErrors(extensionLedgerKey name)
+            Logging.info "test-prune" (extensionStoredLine name edgeCount refreshMs)
+        | ExtensionRefresh.Failed(name, ex) ->
+            Logging.error
+                "test-prune"
+                $"Extension '%s{name}' failed: %s{ex.ToString()}; its previously stored edges are kept and every test project runs in full until it answers"
+
+            ctx.ReportErrors (extensionLedgerKey name) [ extensionFailedDiagnostic name ex.Message ]
+
+    { state with
+        FailedExtensions = failuresAfter outcomes state.FailedExtensions }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -716,26 +737,6 @@ let internal createWithEvidenceAndQueries
     let extensionRefresh = ref ExtensionRefreshPhase.NeverRefreshed
 
 
-    /// Fold a refresh's outcomes into `state`: the log, the ledger, `FailedExtensions`.
-    let applyRefresh
-        (ctx: PluginCtx<TestPruneMsg>)
-        (outcomes: ExtensionRefresh list, refreshMs: int64)
-        (state: TestPruneState)
-        =
-        for outcome in outcomes do
-            match outcome with
-            | ExtensionRefresh.Refreshed(name, edgeCount) ->
-                ctx.ClearErrors(extensionLedgerKey name)
-                Logging.info "test-prune" (extensionStoredLine name edgeCount refreshMs)
-            | ExtensionRefresh.Failed(name, ex) ->
-                Logging.error
-                    "test-prune"
-                    $"Extension '%s{name}' failed: %s{ex.ToString()}; its previously stored edges are kept and every test project runs in full until it answers"
-
-                ctx.ReportErrors (extensionLedgerKey name) [ extensionFailedDiagnostic name ex.Message ]
-
-        { state with
-            FailedExtensions = failuresAfter outcomes state.FailedExtensions }
 
     /// Run every extension and time the whole refresh: it runs them in one call.
     let refreshTimed (exts: ITestPruneExtension list) () =
