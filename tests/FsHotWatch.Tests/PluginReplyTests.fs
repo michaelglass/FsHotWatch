@@ -413,11 +413,6 @@ let ``a typed analyzers reply renders exactly as its shape did`` () =
     test <@ exitCode = 0 @>
     test <@ text.Contains "analyzers: 2 loaded, 4 diagnostic(s) in 1 file(s)" @>
 
-    rendersAsSniffed
-        FsHotWatch.Analyzers.AnalyzerFindings.CommandName
-        FsHotWatch.Analyzers.AnalyzerFindings.ReplySchema
-        (FsHotWatch.Analyzers.AnalyzerFindings.serializeReply findingsReply)
-
 [<Theory(Timeout = 15000)>]
 [<InlineData("""{"analyzers":1,"files":0}""")>]
 [<InlineData("""{"count":1}""")>]
@@ -548,11 +543,6 @@ let ``a typed test-prune reply renders exactly as its shape did`` () =
         FsHotWatch.TestPrune.TestPruneReplies.SetScopeSchema
         (FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.serialize (TestPrune.S.ScopeRefused "no"))
 
-    rendersAsSniffed
-        "check-reach"
-        FsHotWatch.TestPrune.TestPruneReplies.CheckReachSchema
-        """{"recorded":false,"reason":"no run has completed"}"""
-
 /// AUTOMATION-1466: these printed an empty status display.
 [<Fact(Timeout = 15000)>]
 let ``set-scope and flaky-tests say what they answer`` () =
@@ -644,3 +634,137 @@ let ``a test-prune payload its schema does not describe is no verdict``
     (command: string, schema: string, payload: string)
     =
     refusesUndescribed command schema payload
+
+// AUTOMATION-1466 follow-up: the last three commands the CLI passthrough rendered as an empty
+// status display with exit 0. Each now says what it answered, with the exit code of the verb
+// that owns the same question.
+
+[<Fact(Timeout = 15000)>]
+let ``test-scope says what the last run covered, and an unknown scope is no verdict`` () =
+    let full =
+        renderedTyped
+            "test-scope"
+            FsHotWatch.TestPrune.TestPruneReplies.TestScopeSchema
+            """{"kind":"full","ranProjects":3,"totalProjects":3,"runId":"7843b74bf301422bbaf3b482d1d97834"}"""
+
+    test <@ fst full = 0 @>
+    test <@ (snd full).Contains "test scope: full suite (3/3 projects, unfiltered)" @>
+    test <@ (snd full).Contains "run 7843b74bf301422bbaf3b482d1d97834" @>
+
+    let running =
+        renderedTyped
+            "test-scope"
+            FsHotWatch.TestPrune.TestPruneReplies.TestScopeSchema
+            """{"kind":"running","runId":null}"""
+
+    test <@ fst running = NoVerdictExitCode @>
+    test <@ (snd running).Contains "the daemon did not report a test scope" @>
+
+let private reach (body: string) =
+    renderedTyped
+        "check-reach"
+        FsHotWatch.TestPrune.TestPruneReplies.CheckReachSchema
+        ("""{"recorded":true,"runId":"5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e",""" + body + "}")
+
+[<Fact(Timeout = 15000)>]
+let ``check-reach says what check would have reached, and an undecided reach is no verdict`` () =
+    let reached =
+        reach
+            """"kind":"filtered","ranProjects":2,"totalProjects":6,"reach":"reached-a-failure",
+               "failingSuites":["Lib.Tests"],"reason":null,
+               "conditionalFailureRecall":{"measured":true,"reached":3,"total":4,"threshold":1.0,
+                                           "acceptable":false,"reason":null}"""
+
+    test <@ fst reached = 0 @>
+
+    test
+        <@
+            (snd reached).Contains
+                "check reach for run 5f2b7c9d4e1a4f3b8c6d0e2a1b3c4d5e: check would have run impact-filtered (2/6 projects)"
+        @>
+
+    test <@ (snd reached).Contains "it reaches a failing test: Lib.Tests" @>
+    test <@ (snd reached).Contains "failure recall: 3 of 4 reached (threshold 100%, below it)" @>
+
+    let missed =
+        reach
+            """"kind":"filtered","ranProjects":1,"totalProjects":2,"reach":"reached-no-failure",
+               "failingSuites":[],
+               "missed":[{"project":"Jobs.Tests","class":"Jobs.ReflectionGuard","cause":"project-not-selected"}]"""
+
+    test <@ fst missed = 0 @>
+    test <@ (snd missed).Contains "it reaches none of the failing tests" @>
+    test <@ (snd missed).Contains "missed: Jobs.Tests :: Jobs.ReflectionGuard — project was not selected" @>
+
+    let causes =
+        reach
+            """"kind":"filtered","ranProjects":1,"totalProjects":2,"reach":"reached-no-failure",
+               "failingSuites":[],
+               "missed":[{"project":"Api.Tests","class":"Api.ContractTests","cause":"class-not-in-filter"},
+                         {"project":"Web.Tests","class":"Web.Pages","cause":"from-the-future"}],
+               "conditionalFailureRecall":{"measured":false,"reached":0,"total":0,"threshold":1.0,
+                                           "acceptable":null,"reason":"no failures reached"}"""
+
+    test <@ (snd causes).Contains "missed: Api.Tests :: Api.ContractTests — class was not in the generated filter" @>
+    test <@ (snd causes).Contains "missed: Web.Tests :: Web.Pages — cause 'from-the-future'" @>
+    test <@ (snd causes).Contains "failure recall not measurable: no failures reached" @>
+
+    let acceptable =
+        reach
+            """"kind":"filtered","ranProjects":2,"totalProjects":6,"reach":"reached-a-failure",
+               "failingSuites":["Lib.Tests"],
+               "conditionalFailureRecall":{"measured":true,"reached":4,"total":4,"threshold":1.0,
+                                           "acceptable":true,"reason":null}"""
+
+    test <@ (snd acceptable).Contains "failure recall: 4 of 4 reached (threshold 100%, at or above it)" @>
+
+    let nothing =
+        reach """"kind":"full","ranProjects":6,"totalProjects":6,"reach":"no-failures-to-reach","failingSuites":[]"""
+
+    test <@ fst nothing = 0 @>
+    test <@ (snd nothing).Contains "no test failed, so there was nothing to reach" @>
+
+    let unknown =
+        reach
+            """"kind":"full","ranProjects":6,"totalProjects":6,"reach":"unknown","reason":"a project-level red",
+               "failingSuites":[]"""
+
+    test <@ fst unknown = NoVerdictExitCode @>
+    test <@ (snd unknown).Contains "a project-level red" @>
+
+    let unrecorded =
+        renderedTyped
+            "check-reach"
+            FsHotWatch.TestPrune.TestPruneReplies.CheckReachSchema
+            """{"recorded":false,"reason":"no run has completed"}"""
+
+    test <@ fst unrecorded = NoVerdictExitCode @>
+    test <@ (snd unrecorded).Contains "no run has completed" @>
+
+[<Fact(Timeout = 15000)>]
+let ``analyzer-findings answers as fshw findings does, with its exit codes`` () =
+    FsHotWatch.Tests.TestHelpers.withTempDir "pa-findings" (fun root ->
+        let replyWith expected =
+            FsHotWatch.Analyzers.AnalyzerFindings.serializeReply
+                { findingsReply with
+                    ScopeRoot = Some root
+                    Expected = expected }
+
+        let clean =
+            renderedTyped
+                FsHotWatch.Analyzers.AnalyzerFindings.CommandName
+                FsHotWatch.Analyzers.AnalyzerFindings.ReplySchema
+                (replyWith [])
+
+        test <@ fst clean = FsHotWatch.Cli.Findings.Outcome.exitCode FsHotWatch.Cli.Findings.Clean @>
+        test <@ (snd clean).Contains "findings: clean" @>
+
+        let incomplete =
+            renderedTyped
+                FsHotWatch.Analyzers.AnalyzerFindings.CommandName
+                FsHotWatch.Analyzers.AnalyzerFindings.ReplySchema
+                (replyWith [ System.IO.Path.Combine(root, "src", "A.fs") ])
+
+        test <@ fst incomplete = FsHotWatch.Cli.Findings.Outcome.exitCode FsHotWatch.Cli.Findings.Incomplete @>
+        test <@ (snd incomplete).Contains "findings: incomplete" @>
+        test <@ (snd incomplete).Contains "missing: src/A.fs" @>)
