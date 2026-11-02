@@ -1899,6 +1899,73 @@ let private externPlaceholders
 
     externSymbols
 
+/// Keyed by simple (unqualified) name for O(log M) lookup rather than an O(M) scan per
+/// symbol. Each name maps to a LIST because one short name can occur more than once in a
+/// file (`let f` in two sibling nested modules); `Map.ofList` would be last-write-wins and
+/// silently sever the earlier binding's edges. Callers disambiguate by which range
+/// contains the use in question.
+let private groupRangesByName (ranges: (string * 'Span) list) : Map<string, 'Span list> =
+    ranges
+    |> List.groupBy fst
+    |> List.map (fun (n, rs) -> n, List.map snd rs)
+    |> Map.ofList
+
+/// From the candidate ranges sharing a short name, pick the narrowest one that contains
+/// the given use range, falling back to the first candidate for the rare case where the
+/// FCS use range sits just outside every AST binding range.
+let private pickRangeFor (useRange: range) (candidates: range list) : range option =
+    let containing =
+        candidates
+        |> List.filter (fun r -> useRange.StartLine >= r.StartLine && useRange.EndLine <= r.EndLine)
+
+    match containing with
+    | [] -> List.tryHead candidates
+    | _ -> containing |> List.minBy (fun r -> r.EndLine - r.StartLine) |> Some
+
+/// What `extractResults` reads from a file's syntax tree and text, collected once.
+type private SyntaxIndex =
+    {
+        /// Module bindings (with signature bindings) then type members: the binding ranges.
+        MemberBindingRanges: (string * range) list
+        /// Type definitions, with signature types.
+        TypeDefnRanges: (string * range) list
+        AllBindingRangeMap: Map<string, range list>
+        TypeDefnRangeMap: Map<string, range list>
+        /// Accessor properties and auto-properties, for hashing only: see
+        /// `collectPropertyRanges` for why they are not enclosing ranges.
+        PropertyRangeMap: Map<string, range list>
+        TypeShapes: TypeDefnShape list
+        SourceIndex: SourceIndex
+        UnionCaseRangeMap: Map<string, range list>
+    }
+
+let private indexSyntax (tree: ParsedInput) (source: string) : SyntaxIndex =
+    let signatureBindingRanges, signatureTypeRanges = collectSignatureRanges tree
+
+    let moduleBindingRanges = collectModuleBindingRanges tree @ signatureBindingRanges
+
+    let typeMemberRanges = collectTypeMemberRanges tree
+
+    let typeDefnRanges = collectTypeDefnRanges tree @ signatureTypeRanges
+
+    // Type definition ranges are deliberately NOT merged in here: they would shadow
+    // binding names (e.g. `type Config` vs `let config`) in the maps built below.
+    let memberBindingRanges = moduleBindingRanges @ typeMemberRanges
+
+    let typeShapes = collectTypeDefnShapes tree
+
+    { MemberBindingRanges = memberBindingRanges
+      TypeDefnRanges = typeDefnRanges
+      AllBindingRangeMap = groupRangesByName memberBindingRanges
+      TypeDefnRangeMap = groupRangesByName typeDefnRanges
+      PropertyRangeMap = groupRangesByName (collectPropertyRanges tree)
+      TypeShapes = typeShapes
+      SourceIndex = SourceIndex source
+      UnionCaseRangeMap =
+        typeShapes
+        |> List.collect (fun shape -> shape.Children |> List.filter _.IsCase |> List.map (fun c -> c.Name, c.Range))
+        |> groupRangesByName }
+
 /// Extract analysis results from parse and type-check results.
 let private extractResults
     (maxTraversalVisits: int)
@@ -1949,60 +2016,15 @@ let private extractResults
 
                 diagnosticResources sourceFileName stage
 
-            let signatureBindingRanges, signatureTypeRanges =
-                collectSignatureRanges parseResults.ParseTree
-
-            let moduleBindingRanges =
-                collectModuleBindingRanges parseResults.ParseTree @ signatureBindingRanges
-
-            let typeMemberRanges = collectTypeMemberRanges parseResults.ParseTree
-
-            let typeDefnRanges =
-                collectTypeDefnRanges parseResults.ParseTree @ signatureTypeRanges
-
-            // Type definition ranges are deliberately NOT merged in here: they would shadow
-            // binding names (e.g. `type Config` vs `let config`) in the maps built below.
-            let memberBindingRanges = moduleBindingRanges @ typeMemberRanges
-
-            // Keyed by simple (unqualified) name for O(log M) lookup rather than an O(M)
-            // scan per symbol. Each name maps to a LIST because one short name can occur
-            // more than once in a file (`let f` in two sibling nested modules); `Map.ofList`
-            // would be last-write-wins and silently sever the earlier binding's edges.
-            // Callers disambiguate by which range contains the use in question.
-            let groupRangesByName (ranges: (string * 'Span) list) : Map<string, 'Span list> =
-                ranges
-                |> List.groupBy fst
-                |> List.map (fun (n, rs) -> n, List.map snd rs)
-                |> Map.ofList
-
-            let allBindingRangeMap = groupRangesByName memberBindingRanges
-            let typeDefnRangeMap = groupRangesByName typeDefnRanges
-
-            // Accessor properties and auto-properties, for hashing only: see
-            // `collectPropertyRanges` for why they are not enclosing ranges.
-            let propertyRangeMap =
-                groupRangesByName (collectPropertyRanges parseResults.ParseTree)
-
-            // From the candidate ranges sharing a short name, pick the narrowest one that
-            // contains the given use range, falling back to the first candidate for the
-            // rare case where the FCS use range sits just outside every AST binding range.
-            let pickRangeFor (useRange: range) (candidates: range list) : range option =
-                let containing =
-                    candidates
-                    |> List.filter (fun r -> useRange.StartLine >= r.StartLine && useRange.EndLine <= r.EndLine)
-
-                match containing with
-                | [] -> List.tryHead candidates
-                | _ -> containing |> List.minBy (fun r -> r.EndLine - r.StartLine) |> Some
-
-            let typeShapes = collectTypeDefnShapes parseResults.ParseTree
-            let sourceIndex = SourceIndex source
-
-            let unionCaseRangeMap =
-                typeShapes
-                |> List.collect (fun shape ->
-                    shape.Children |> List.filter _.IsCase |> List.map (fun c -> c.Name, c.Range))
-                |> groupRangesByName
+            let syntax = indexSyntax parseResults.ParseTree source
+            let memberBindingRanges = syntax.MemberBindingRanges
+            let typeDefnRanges = syntax.TypeDefnRanges
+            let allBindingRangeMap = syntax.AllBindingRangeMap
+            let typeDefnRangeMap = syntax.TypeDefnRangeMap
+            let propertyRangeMap = syntax.PropertyRangeMap
+            let typeShapes = syntax.TypeShapes
+            let sourceIndex = syntax.SourceIndex
+            let unionCaseRangeMap = syntax.UnionCaseRangeMap
 
             let isTrackedSymbol (symbolInfo: SymbolInfo) =
                 match symbolInfo.Kind with
