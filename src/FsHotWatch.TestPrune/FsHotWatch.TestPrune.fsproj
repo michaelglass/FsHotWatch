@@ -81,6 +81,8 @@
     <Compile Include="PluginCommands.fs" />
     <Compile Include="IndexMaintenance.fs" />
     <Compile Include="RunSupport.fs" />
+    <Compile Include="ProjectLaunch.fs" />
+    <Compile Include="RunGroups.fs" />
     <Compile Include="RunExecution.fs" />
     <Compile Include="AffectedSelection.fs" />
     <Compile Include="ImpactRun.fs" />
