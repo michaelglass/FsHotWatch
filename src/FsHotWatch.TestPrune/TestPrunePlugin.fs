@@ -313,6 +313,18 @@ let internal coveringOfIn (queries: ImpactQueries) (symbols: string seq) : strin
             |> Map.tryFind symbol
             |> Option.defaultValue Set.empty
 
+/// Whether a `FileChecked` cache hit may stand in for analysing `result`
+/// (`IndexedAnalysis`): the index holds exactly this analysis, and no other is pending
+/// for the file. Analysis-only daemons keep the plain key.
+/// The analysis identity the index holds for a file (`IndexedAnalysis`). An index that
+/// cannot be read holds nothing it can vouch for.
+let internal indexedKeyIn (db: Database) (relPath: string) : string option =
+    try
+        db.GetFileKey relPath
+    with ex ->
+        Logging.debug "test-prune" $"index identity unreadable for %s{relPath}: %s{ex.Message}"
+        None
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -412,17 +424,7 @@ let internal createWithEvidenceAndQueries
 
     let tryRepairSchemaDrift ex = tryRepairSchemaDrift dbPath ex
 
-    /// Whether a `FileChecked` cache hit may stand in for analysing `result`
-    /// (`IndexedAnalysis`): the index holds exactly this analysis, and no other is pending
-    /// for the file. Analysis-only daemons keep the plain key.
-    /// The analysis identity the index holds for a file (`IndexedAnalysis`). An index that
-    /// cannot be read holds nothing it can vouch for.
-    let indexedKey (relPath: string) : string option =
-        try
-            db.GetFileKey relPath
-        with ex ->
-            Logging.debug "test-prune" $"index identity unreadable for %s{relPath}: %s{ex.Message}"
-            None
+    let indexedKey = indexedKeyIn db
 
     let mayReplay (pending: Map<string, string>) (result: FileCheckResult) : bool =
         testConfigs |> Option.forall List.isEmpty
