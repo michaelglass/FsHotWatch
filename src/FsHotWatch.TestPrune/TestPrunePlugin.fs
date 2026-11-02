@@ -180,6 +180,56 @@ type internal TraceRunHost =
         IndexFold: IndexFold
     }
 
+/// What a run's parallel project launches collect, as one value. Everything but `Results`
+/// is used SERIALLY once the parallel section ends, so no two launches race on a database
+/// write, a shared output file or a history file's read-modify-write.
+type internal RunCollection =
+    {
+        /// The run-wide results, built up as groups complete. Per-group deltas are emitted
+        /// as TestProgress; the whole map is carried by TestRunCompleted (and returned to a
+        /// caller with no host).
+        Results: Map<string, TestResult>
+        /// Raw-cobertura inputs, newest first, each with its project and ratchet intent;
+        /// ingested and emitted once, after the parallel section.
+        CoverageInputs: CoverageInput list
+        /// Projects whose coverage receipt could not be read, newest first.
+        CoverageFailures: CoverageIngestFailure list
+        /// Per-test flakiness records, in arrival order. `Flakiness.appendRecords` parses
+        /// and rewrites the whole history file, so it runs once, not once per project.
+        Flakiness: Flakiness.TestRunRecord list
+        /// Each launched project's trace decision, newest first: one writer to one store.
+        TraceRuns: TracedProjectRun list
+        /// The projects whose stored evidence this run filed instead of launching them.
+        Materialized: Map<string, TestEvidenceStore.Entry>
+        /// Timeouts held back on a starved box, newest first, to re-run alone at the end.
+        Starved: (TestConfig * Starvation.TimedOut * Starvation.Reading) list
+    }
+
+/// One run's `RunCollection`, read and updated under a single lock. An update and the
+/// action after it (`UpdateThen`) run under that lock together, so concurrent group
+/// completions emit their progress in the order they were folded.
+type internal RunCollector() =
+    let gate = obj ()
+
+    let mutable current: RunCollection =
+        { Results = Map.empty
+          CoverageInputs = []
+          CoverageFailures = []
+          Flakiness = []
+          TraceRuns = []
+          Materialized = Map.empty
+          Starved = [] }
+
+    member _.Update(f: RunCollection -> RunCollection) : unit =
+        lock gate (fun () -> current <- f current)
+
+    member _.UpdateThen(f: RunCollection -> RunCollection, after: unit -> unit) : unit =
+        lock gate (fun () ->
+            current <- f current
+            after ())
+
+    member _.Read(f: RunCollection -> 'a) : 'a = lock gate (fun () -> f current)
+
 /// Execute test configs with optional affected classes for filtering. Handles beforeRun,
 /// coveragePaths, process execution, result storage. `rawFilter` is a passthrough filter
 /// string (from the run-tests command) that bypasses the template.
@@ -361,37 +411,10 @@ let private executeTests
         let skippedResultOf (config: TestConfig) =
             config.Project, TestsPassed("", true, TimeSpan.Zero)
 
-        // Cumulative results built up as groups complete. Mutable under a lock
-        // so concurrent group completions see a consistent prefix-chain. Per-
-        // group deltas are emitted via TestProgress; the final cumulative is
-        // carried by TestRunCompleted (and returned to non-daemon callers).
-        let mutable cumulative: Map<string, TestResult> = Map.empty
-        let accumulatorLock = obj ()
-
-        // Raw-cobertura ingest inputs collected across the parallel per-project
-        // runs. Each entry retains the producing project and ratchet intent.
-        // Ingest+emit runs SERIALLY after
-        // Async.Parallel completes so concurrent group completions never race on
-        // the DB write or the single shared output file.
-        let mutable coverageInputs: CoverageInput list = []
-        let mutable coverageReceiptFailures: CoverageIngestFailure list = []
-        let coverageRawPathsLock = obj ()
-
-        // Per-test flakiness records, COLLECTED here and written ONCE after the
-        // parallel section — exactly like `coverageRawPaths` above, and for both of
-        // the same reasons. `Flakiness.appendRecords` is a full parse + full rewrite
-        // of the whole history file, so a per-config call from inside the parallel
-        // group body would mean one parse+rewrite cycle per project, AND a
-        // read-modify-write racing itself across parallel groups (two projects
-        // finishing together each load the same history, and the second writer drops
-        // the first's records).
-        let mutable flakinessRecords: Flakiness.TestRunRecord list = []
-        let flakinessLock = obj ()
-
-        // Each launched project's trace decision, ingested SERIALLY after the parallel
-        // section, beside coverage and for the same reason: one writer to one store.
-        let mutable traceRuns: TracedProjectRun list = []
-        let traceRunsLock = obj ()
+        // What the parallel project launches collect, under one lock (`RunCollector`): the
+        // run-wide results, and the coverage, flakiness, trace, evidence and starvation
+        // records that are used SERIALLY once the parallel section ends.
+        let collected = RunCollector()
 
         /// Write a line to the plugin's activity log when there is a host to write to.
         /// One binding for the whole run: the preflight, the refusal path and the per-
@@ -400,15 +423,17 @@ let private executeTests
         let logToCtx msg = ctx |> Option.iter (fun c -> c.Log msg)
 
         let foldAndEmit (groupOutput: (string * TestResult) list) =
-            lock accumulatorLock (fun () ->
-                for (k, v) in groupOutput do
-                    cumulative <- Map.add k v cumulative
-
-                ctx
-                |> Option.iter (fun c ->
-                    c.EmitTestProgress
-                        { RunId = runId
-                          NewResults = Map.ofList groupOutput }))
+            collected.UpdateThen(
+                (fun c ->
+                    { c with
+                        Results = groupOutput |> List.fold (fun acc (k, v) -> Map.add k v acc) c.Results }),
+                fun () ->
+                    ctx
+                    |> Option.iter (fun c ->
+                        c.EmitTestProgress
+                            { RunId = runId
+                              NewResults = Map.ofList groupOutput })
+            )
 
         // STALE-ARTIFACT PREFLIGHT. The freshness question is pure
         // file I/O and is answerable in seconds, so it is asked about EVERY config
@@ -434,8 +459,6 @@ let private executeTests
                     configs |> List.exists (fun c -> c.Project = project && not (skipProjectOf c))
                     && (not (coveragePathsByProject.ContainsKey project) || Option.isSome entry.Coverage))
 
-        let mutable materialized: Map<string, TestEvidenceStore.Entry> = Map.empty
-        let materializedLock = obj ()
 
         /// File `entry` as this run's evidence for `config`; `false` when it could not be
         /// filed, and then the project is launched like any other. A filed project reports
@@ -461,13 +484,16 @@ let private executeTests
                         File.WriteAllText(paths.Baseline, content)
                         File.WriteAllText(runCoveragePath runDir config.Project, content)
 
-                        lock coverageRawPathsLock (fun () ->
-                            coverageInputs <-
-                                coverageInput config.Project paths.IncludeInRatchet paths.Baseline
-                                :: coverageInputs)
+                        collected.Update(fun c ->
+                            { c with
+                                CoverageInputs =
+                                    coverageInput config.Project paths.IncludeInRatchet paths.Baseline
+                                    :: c.CoverageInputs })
                     | _ -> ()
 
-                    lock materializedLock (fun () -> materialized <- Map.add config.Project entry materialized)
+                    collected.Update(fun c ->
+                        { c with
+                            Materialized = Map.add config.Project entry c.Materialized })
 
                     let line =
                         $"%s{config.Project}: %s{TestEvidenceRun.Provenance.describe (TestEvidenceRun.Provenance.ofEntry entry)}"
@@ -1136,9 +1162,13 @@ let private executeTests
                     |> Option.map (coverageReceiptFromReceipt (TestResult.verifiedGreen result))
                 with
                 | Some(CoverageReceiptAccepted input) ->
-                    lock coverageRawPathsLock (fun () -> coverageInputs <- input :: coverageInputs)
+                    collected.Update(fun c ->
+                        { c with
+                            CoverageInputs = input :: c.CoverageInputs })
                 | Some(CoverageReceiptFailed failure) ->
-                    lock coverageRawPathsLock (fun () -> coverageReceiptFailures <- failure :: coverageReceiptFailures)
+                    collected.Update(fun c ->
+                        { c with
+                            CoverageFailures = failure :: c.CoverageFailures })
                 | Some CoverageReceiptAbsent
                 | None -> ()
 
@@ -1159,7 +1189,9 @@ let private executeTests
                         let records = Flakiness.parseCtrfTests json
 
                         if not records.IsEmpty then
-                            lock flakinessLock (fun () -> flakinessRecords <- flakinessRecords @ records)
+                            collected.Update(fun c ->
+                                { c with
+                                    Flakiness = c.Flakiness @ records })
                     with
                     | :? IOException
                     | :? UnauthorizedAccessException
@@ -1183,7 +1215,9 @@ let private executeTests
                           Filtered = wasFiltered
                           CtrfPath = ctrfPath }
 
-                    lock traceRunsLock (fun () -> traceRuns <- traced :: traceRuns)
+                    collected.Update(fun c ->
+                        { c with
+                            TraceRuns = traced :: c.TraceRuns })
 
                 return result, reportJson
             }
@@ -1191,10 +1225,6 @@ let private executeTests
         // STARVATION. A project that declared `starvation` is sampled while it runs; a
         // timeout on a starved box is held back from the group's results and re-run alone
         // once every group has finished (`rerunStarved`). See `Starvation`.
-        let mutable starvedProjects: (TestConfig * Starvation.TimedOut * Starvation.Reading) list =
-            []
-
-        let starvedLock = obj ()
 
         /// `launchProjectOrRaise`, with a launch stall answered as THIS project's result.
         ///
@@ -1272,8 +1302,9 @@ let private executeTests
                         Logging.warn "test-prune" line
                         logToCtx line
 
-                        lock starvedLock (fun () ->
-                            starvedProjects <- (config, timedOut, firstReading) :: starvedProjects)
+                        collected.Update(fun c ->
+                            { c with
+                                Starved = (config, timedOut, firstReading) :: c.Starved })
 
                         return None
                     | Starvation.Report why ->
@@ -1290,7 +1321,7 @@ let private executeTests
         /// project is the re-run's; `<Project>.starved.json` records both attempts.
         let rerunStarved () : Async<(string * TestResult) list> =
             async {
-                let pending = lock starvedLock (fun () -> List.rev starvedProjects)
+                let pending = collected.Read(fun c -> List.rev c.Starved)
                 let! runToken = Async.CancellationToken
                 let mutable rerun = []
 
@@ -1311,8 +1342,9 @@ let private executeTests
 
                     // The first attempt's trace, if any, describes a run that is no longer
                     // the project's result.
-                    lock traceRunsLock (fun () ->
-                        traceRuns <- traceRuns |> List.filter (fun t -> t.Project <> config.Project))
+                    collected.Update(fun c ->
+                        { c with
+                            TraceRuns = c.TraceRuns |> List.filter (fun t -> t.Project <> config.Project) })
 
                     // PREFLIGHTED LIKE ANY LAUNCH. The run-wide preflight certified this
                     // tree before the first attempt, not after it. A first attempt torn down
@@ -1446,7 +1478,7 @@ let private executeTests
                 refuseWholeRun ()
 
         // groupResults is the per-group return values; we ignore it because
-        // `cumulative` (populated under the lock inside foldAndEmit) is the
+        // `collected.Results` (populated under the lock inside foldAndEmit) is the
         // canonical run-wide aggregate.
         groupResults |> ignore
 
@@ -1463,7 +1495,7 @@ let private executeTests
         // filed report and coverage are withdrawn and it reports a deferral, so this run
         // cannot go green on it and the next one launches it. A project that really ran
         // publishes its green only when it qualifies (`TestEvidenceRun.qualifies`).
-        let reusedNow = lock materializedLock (fun () -> materialized)
+        let reusedNow = collected.Read _.Materialized
 
         let reconciled =
             evidence
@@ -1478,8 +1510,9 @@ let private executeTests
                 logToCtx $"{project}: {reason}"
                 TestEvidenceRun.deleteQuietly (Path.Combine(runDir, project + Ctrf.ReportSuffix))
 
-                lock coverageRawPathsLock (fun () ->
-                    coverageInputs <- coverageInputs |> List.filter (fun i -> i.Project <> project))
+                collected.Update(fun c ->
+                    { c with
+                        CoverageInputs = c.CoverageInputs |> List.filter (fun i -> i.Project <> project) })
 
             let reported =
                 (r.Withdrawn |> List.map (fun (project, reason) -> project, TestsDeferred reason))
@@ -1493,9 +1526,11 @@ let private executeTests
                            TimeSpan.Zero
                        )))
 
-            lock accumulatorLock (fun () ->
-                for (project, result) in reported do
-                    cumulative <- Map.add project result cumulative))
+            collected.Update(fun c ->
+                { c with
+                    Results =
+                        reported
+                        |> List.fold (fun acc (project, result) -> Map.add project result acc) c.Results }))
 
         let evidenceHeld: Map<string, TestEvidenceRun.Provenance> =
             reconciled
@@ -1508,7 +1543,7 @@ let private executeTests
         // cobertura file. Done here, outside Async.Parallel, so there is no
         // DB-write contention and no file-write race on the shared output.
         let collectedInputs, receiptFailures =
-            lock coverageRawPathsLock (fun () -> List.rev coverageInputs, List.rev coverageReceiptFailures)
+            collected.Read(fun c -> List.rev c.CoverageInputs, List.rev c.CoverageFailures)
 
         let receiptFailures =
             receiptFailures
@@ -1540,14 +1575,16 @@ let private executeTests
             for failure in coverageFailures do
                 coverageIngestFailed failure
 
-            lock accumulatorLock (fun () -> cumulative <- applyCoverageIngestFailures coverageFailures cumulative)
+            collected.Update(fun c ->
+                { c with
+                    Results = applyCoverageIngestFailures coverageFailures c.Results })
 
         // TEST EVIDENCE: publish. Only now are this run's own results final — a project
         // whose coverage did not ingest is no longer green — so only now may a green leave
         // this checkout.
         reconciled
         |> Option.iter (fun (plan, r) ->
-            let finalNow = lock accumulatorLock (fun () -> cumulative)
+            let finalNow = collected.Read _.Results
 
             // A project re-run under starvation is not published: its green was earned on a
             // second attempt, which the stored evidence could not say.
@@ -1582,7 +1619,7 @@ let private executeTests
         // with every project's records — not one per project, and not racing itself
         // from inside Async.Parallel. Best-effort: the history is a diagnostic, so a
         // failure to record it must never fail the run that produced it.
-        let collectedFlakiness = lock flakinessLock (fun () -> flakinessRecords)
+        let collectedFlakiness = collected.Read _.Flakiness
 
         if not collectedFlakiness.IsEmpty then
             try
@@ -1601,7 +1638,7 @@ let private executeTests
         // changed result.
         match traces with
         | Some host ->
-            let runs = lock traceRunsLock (fun () -> List.rev traceRuns)
+            let runs = collected.Read(fun c -> List.rev c.TraceRuns)
 
             do!
                 TraceRun.ingestAll
@@ -1622,7 +1659,7 @@ let private executeTests
 
         sw.Stop()
 
-        let finalResults = lock accumulatorLock (fun () -> cumulative)
+        let finalResults = collected.Read _.Results
 
         let testResults =
             { Results = finalResults
@@ -2123,6 +2160,20 @@ let internal cacheKeyFor
                       "fcs-signature", fcsSignature ]
             )
     | _ -> None
+
+/// Where this process's extension refresh stands. One value, so a refresh can never be
+/// running beside the fold while the process still reads as never having refreshed.
+[<RequireQualifiedAccess>]
+type internal ExtensionRefreshPhase =
+    /// No refresh yet: the stored edges were written by an earlier process, over a tree
+    /// that may differ, so the first flush owes one.
+    | NeverRefreshed
+    /// The restart's first refresh, running beside the fold (AUTOMATION-1441): its answer,
+    /// and how long it took, once it finishes.
+    | RunningBesideFold of Tasks.Task<ExtensionRefresh list * int64>
+    /// This process has refreshed. A later flush refreshes again only when it indexed
+    /// something or an extension failed (`FailedExtensions`).
+    | Refreshed
 
 /// The impact queries the plugin runs against its index, in one place, so a test can
 /// count them per handler instance.
@@ -2755,13 +2806,9 @@ let internal createWithEvidenceAndQueries
         |> Seq.map (fun s -> Set.difference (owedTo s) runnableProjects)
         |> Set.unionMany
 
-    // True until this process's first extension refresh: the stored edges were written by
-    // an earlier process, over a tree that may differ. After that, a refresh is owed when a
-    // flush indexes something or an extension failed (`FailedExtensions`).
-    let extensionsUnrefreshed = ref true
-
-    // The refresh a restart owes before anything this process indexed (AUTOMATION-1441),
-    // running beside the fold: its answer, and how long it took. A restart's first flush is
+    // This process's extension refresh (`ExtensionRefreshPhase`). The refresh a restart owes
+    // before anything this process indexed (AUTOMATION-1441) runs beside the fold: its
+    // answer, and how long it took. A restart's first flush is
     // the `BuildCompleted` its scan dispatches before the checks; on a 2,674-file
     // repository the refresh took 6 s, and every check result queued behind the build
     // waited for it. A `FileChecked` reads neither the extensions' edges nor their failures,
@@ -2769,7 +2816,10 @@ let internal createWithEvidenceAndQueries
     // index, and a run launched in the meantime take its answer first (`joinRefresh`). It
     // reads what the fold's own refresh would have: no flush writes the index until the
     // answer is taken.
-    let refreshInFlight: Tasks.Task<ExtensionRefresh list * int64> option ref = ref None
+    //
+    // A ref rather than state the fold returns: a flush that throws returns the state from
+    // before it, and a refresh it already started must still be joined, once.
+    let extensionRefresh = ref ExtensionRefreshPhase.NeverRefreshed
 
     /// The failures `outcomes` leave, from those before them: a refreshed extension
     /// leaves the map, a failed one enters it.
@@ -2811,10 +2861,11 @@ let internal createWithEvidenceAndQueries
 
     /// Take the answer of the refresh running beside the fold, if one is, into `state`.
     let joinRefresh (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
-        match refreshInFlight.Value with
-        | None -> state
-        | Some refresh ->
-            refreshInFlight.Value <- None
+        match extensionRefresh.Value with
+        | ExtensionRefreshPhase.NeverRefreshed
+        | ExtensionRefreshPhase.Refreshed -> state
+        | ExtensionRefreshPhase.RunningBesideFold refresh ->
+            extensionRefresh.Value <- ExtensionRefreshPhase.Refreshed
 
             let answer =
                 use _ = ctx.DeclareBoundedWork "extension refresh" ImpactSelectionDeadline
@@ -2892,17 +2943,18 @@ let internal createWithEvidenceAndQueries
             | Some exts when
                 not exts.IsEmpty
                 && (indexedSomething
-                    || extensionsUnrefreshed.Value
+                    || extensionRefresh.Value = ExtensionRefreshPhase.NeverRefreshed
                     || not flushedState.FailedExtensions.IsEmpty)
                 ->
-                extensionsUnrefreshed.Value <- false
-
                 if not indexedSomething && flushedState.FailedExtensions.IsEmpty then
                     // Owed only because this process has not refreshed: nothing it indexed
-                    // is in the answer, so it runs beside the fold (`refreshInFlight`).
-                    refreshInFlight.Value <- Some(Tasks.Task.Run(refreshTimed exts))
+                    // is in the answer, so it runs beside the fold.
+                    extensionRefresh.Value <- ExtensionRefreshPhase.RunningBesideFold(Tasks.Task.Run(refreshTimed exts))
+
                     flushedState
                 else
+                    extensionRefresh.Value <- ExtensionRefreshPhase.Refreshed
+
                     // At info, because a refresh that holds the fold for minutes is
                     // otherwise invisible.
                     applyRefresh ctx (refreshTimed exts ()) flushedState
@@ -5237,7 +5289,11 @@ let internal createWithEvidenceAndQueries
         let inputs = TestRunInputs.ofState launchState
         // A refresh still running beside the fold: the run takes its failures before it
         // reads anything, off the fold (AUTOMATION-1441).
-        let refreshing = refreshInFlight.Value
+        let refreshing =
+            match extensionRefresh.Value with
+            | ExtensionRefreshPhase.RunningBesideFold refresh -> Some refresh
+            | ExtensionRefreshPhase.NeverRefreshed
+            | ExtensionRefreshPhase.Refreshed -> None
 
         let withRefreshed (inputs: TestRunInputs) =
             match refreshing with
