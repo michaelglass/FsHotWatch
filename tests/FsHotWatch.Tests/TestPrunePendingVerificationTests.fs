@@ -20,6 +20,8 @@ open FsHotWatch.Plugin
 open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.ProjectLaunch
+open FsHotWatch.TestPrune.RunGroups
 open FsHotWatch.TestPrune.RunExecution
 open FsHotWatch.TestPrune.IndexMaintenance
 open FsHotWatch.TestPrune.TestReports

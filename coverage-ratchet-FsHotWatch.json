@@ -2095,6 +2095,34 @@
         "reason": "Moved out of ImpactRun.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 95.9%, branch 93/102.",
         "platform": "linux"
       }
+    ],
+    "ProjectLaunch.fs": [
+      {
+        "line": 95,
+        "branch": 80,
+        "reason": "Moved out of RunExecution.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 95.3%, branch 95/118. Inspected: the try/with blocks that left executeTests' async (the flakiness append, the deleted CTRF report) are now compiled exception filters, whose uncovered sides are the same error paths that were uncovered inside the async; every other partially covered line is unchanged.",
+        "platform": "macos"
+      },
+      {
+        "line": 95,
+        "branch": 80,
+        "reason": "Moved out of RunExecution.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 95.3%, branch 95/118. Inspected: the try/with blocks that left executeTests' async (the flakiness append, the deleted CTRF report) are now compiled exception filters, whose uncovered sides are the same error paths that were uncovered inside the async; every other partially covered line is unchanged.",
+        "platform": "linux"
+      }
+    ],
+    "RunGroups.fs": [
+      {
+        "line": 97,
+        "branch": 76,
+        "reason": "Moved out of RunExecution.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 97.98%, branch 39/51. Inspected: LaunchStalledException's handler in launchProjectGuarded is now a compiled exception filter whose other side is the same uncovered path as before the move; every other partially covered line is unchanged.",
+        "platform": "macos"
+      },
+      {
+        "line": 97,
+        "branch": 76,
+        "reason": "Moved out of RunExecution.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 97.98%, branch 39/51. Inspected: LaunchStalledException's handler in launchProjectGuarded is now a compiled exception filter whose other side is the same uncovered path as before the move; every other partially covered line is unchanged.",
+        "platform": "linux"
+      }
     ]
   },
   "countFloors": {

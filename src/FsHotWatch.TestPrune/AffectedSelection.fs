@@ -46,6 +46,8 @@ open FsHotWatch.TestPrune.PluginQueries
 open FsHotWatch.TestPrune.PluginCommands
 open FsHotWatch.TestPrune.IndexMaintenance
 open FsHotWatch.TestPrune.RunSupport
+open FsHotWatch.TestPrune.ProjectLaunch
+open FsHotWatch.TestPrune.RunGroups
 open FsHotWatch.TestPrune.RunExecution
 
 /// What impact selection reads from the plugin that runs it: its index and queries, the

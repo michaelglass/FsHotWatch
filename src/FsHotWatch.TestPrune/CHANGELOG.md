@@ -15,7 +15,8 @@
   `InputTrees`, `EvidenceReceipts`, `PluginState`, `RunLaunch`, `ExternalInputs`, `RunResults`,
   `ReceiptTransitions`, `SelectionAssembly`, `OutstandingFailures`, `TestFilters`, `FailureReports`,
   `RunnerArgs`, `TestReports`, `PluginQueries`, `PluginCommands` (the IPC commands, over a
-  `CommandEnv`), `IndexMaintenance`, `RunSupport`, `RunExecution` (`executeTests`), `AffectedSelection` (impact selection, over a
+  `CommandEnv`), `IndexMaintenance`, `RunSupport`, `RunExecution` (`executeTests` and its run-level stages), `ProjectLaunch` (one project's launch, over a
+  `ProjectLaunchEnv`), `RunGroups` (the run's group stages), `AffectedSelection` (impact selection, over a
   `SelectionEnv`), `ImpactLaunch` (an impact run's grouped `RunEnv` and its launch stages), `ImpactRun` (the
   run itself), and the plugin's event
   handlers over explicit envs: `FileCheckedHandler`, `CheckHandlers` (`BatchChecked` and

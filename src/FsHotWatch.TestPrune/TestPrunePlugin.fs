@@ -45,6 +45,8 @@ open FsHotWatch.TestPrune.PluginQueries
 open FsHotWatch.TestPrune.PluginCommands
 open FsHotWatch.TestPrune.IndexMaintenance
 open FsHotWatch.TestPrune.RunSupport
+open FsHotWatch.TestPrune.ProjectLaunch
+open FsHotWatch.TestPrune.RunGroups
 open FsHotWatch.TestPrune.RunExecution
 open FsHotWatch.TestPrune.AffectedSelection
 open FsHotWatch.TestPrune.ImpactLaunch
