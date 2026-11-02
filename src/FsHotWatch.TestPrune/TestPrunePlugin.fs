@@ -246,6 +246,17 @@ let internal baselineInvalidReasonIn (runnableProjects: Set<string>) (debt: Veri
         | None -> Some FullSuiteBaseline.absentReason
         | Some baseline -> FullSuiteBaseline.staleness runnableProjects baseline
 
+/// The unconfigured projects `owedTo` still waits on for `symbols`, for a message
+/// that has to name them.
+let internal owedElsewhereIn
+    (runnableProjects: Set<string>)
+    (owedTo: string -> Set<string>)
+    (symbols: string seq)
+    : Set<string> =
+    symbols
+    |> Seq.map (fun s -> Set.difference (owedTo s) runnableProjects)
+    |> Set.unionMany
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -726,12 +737,7 @@ let internal createWithEvidenceAndQueries
                 |> Map.tryFind symbol
                 |> Option.defaultValue Set.empty
 
-    /// The unconfigured projects `owedTo` still waits on for `symbols`, for a message
-    /// that has to name them.
-    let owedElsewhere (owedTo: string -> Set<string>) (symbols: string seq) : Set<string> =
-        symbols
-        |> Seq.map (fun s -> Set.difference (owedTo s) runnableProjects)
-        |> Set.unionMany
+    let owedElsewhere = owedElsewhereIn runnableProjects
 
     // This process's extension refresh (`ExtensionRefreshPhase`). The refresh a restart owes
     // before anything this process indexed (AUTOMATION-1441) runs beside the fold: its
