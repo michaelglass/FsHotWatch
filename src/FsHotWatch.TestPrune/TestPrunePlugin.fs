@@ -411,6 +411,20 @@ let internal endRunFrom (initialMode: TestMode) (executedAny: bool) (state: Test
         InFlight = None
         Mode = mode }
 
+/// The one question every skip in this plugin is really asking: is the
+/// needs-testing queue PROVABLY empty? Unknown debt is never `true` here — an empty
+/// queue we could not read is not an empty queue.
+///
+/// An absent or stale full-suite baseline is owed work too — the
+/// tests a filtered run skips have nothing to be equivalent TO until one exists —
+/// so it is folded in here rather than checked beside this at each skip site.
+let internal nothingOwedUnder (baselineInvalidReason: VerificationDebt -> string option) (debt: VerificationDebt) =
+    Set.isEmpty debt.PendingQueue
+    && Map.isEmpty debt.RuntimeObligations
+    && Map.isEmpty debt.CoverageNotIngested
+    && not debt.RecoveryOutstanding
+    && Option.isNone (baselineInvalidReason debt)
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -672,19 +686,7 @@ let internal createWithEvidenceAndQueries
 
     let baselineInvalidReason = baselineInvalidReasonIn runnableProjects
 
-    /// The one question every skip in this plugin is really asking: is the
-    /// needs-testing queue PROVABLY empty? Unknown debt is never `true` here — an empty
-    /// queue we could not read is not an empty queue.
-    ///
-    /// An absent or stale full-suite baseline is owed work too — the
-    /// tests a filtered run skips have nothing to be equivalent TO until one exists —
-    /// so it is folded in here rather than checked beside this at each skip site.
-    let nothingOwed (debt: VerificationDebt) =
-        Set.isEmpty debt.PendingQueue
-        && Map.isEmpty debt.RuntimeObligations
-        && Map.isEmpty debt.CoverageNotIngested
-        && not debt.RecoveryOutstanding
-        && Option.isNone (baselineInvalidReason debt)
+    let nothingOwed = nothingOwedUnder baselineInvalidReason
 
     /// What a drain is FOR, in words. Unknown debt cannot be counted, so it is named.
     let owedDescription (debt: VerificationDebt) =
