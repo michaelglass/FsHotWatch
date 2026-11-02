@@ -101,6 +101,22 @@ let internal enqueuePending (symbols: string list) (debt: VerificationDebt) =
                 (debt.SymbolRevisions, symbols)
                 ||> List.fold (fun revisions s -> Map.add s revision revisions) }
 
+/// Hold a launch while the host discovers its project model (`ObservedModel.awaitDiscovery`),
+/// so the run is launched under the model it completes under. Called inside the launch's
+/// exclusive work, before anything about the model is read.
+let internal awaitDiscoveryBeforeLaunch (ctx: PluginCtx<TestPruneMsg>) =
+    async {
+        match ctx.ProjectGraph.ObserveModel() with
+        | FsHotWatch.ProjectModel.Observation.Rediscovering generation ->
+            Logging.info
+                "test-prune"
+                $"project discovery (generation %d{generation}) is in flight; waiting for it before launching"
+        | _ -> ()
+
+        let! wait = ObservedModel.awaitDiscovery ctx.ProjectGraph
+        ObservedModel.reportDiscoveryWait (Logging.warn "test-prune") (Logging.info "test-prune") wait
+    }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -930,21 +946,6 @@ let internal createWithEvidenceAndQueries
 
                 Some plan)
 
-    /// Hold a launch while the host discovers its project model (`ObservedModel.awaitDiscovery`),
-    /// so the run is launched under the model it completes under. Called inside the launch's
-    /// exclusive work, before anything about the model is read.
-    let awaitDiscoveryBeforeLaunch (ctx: PluginCtx<TestPruneMsg>) =
-        async {
-            match ctx.ProjectGraph.ObserveModel() with
-            | FsHotWatch.ProjectModel.Observation.Rediscovering generation ->
-                Logging.info
-                    "test-prune"
-                    $"project discovery (generation %d{generation}) is in flight; waiting for it before launching"
-            | _ -> ()
-
-            let! wait = ObservedModel.awaitDiscovery ctx.ProjectGraph
-            ObservedModel.reportDiscoveryWait (Logging.warn "test-prune") (Logging.info "test-prune") wait
-        }
 
     /// A launch, named by the model it was selected under and what it selected, so the
     /// completion line (`describeCompletionEvidence`) can be read against it.
