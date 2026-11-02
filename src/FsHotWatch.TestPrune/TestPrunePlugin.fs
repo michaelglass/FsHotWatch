@@ -41,6 +41,7 @@ open FsHotWatch.TestPrune.TestFilters
 open FsHotWatch.TestPrune.FailureReports
 open FsHotWatch.TestPrune.RunnerArgs
 open FsHotWatch.TestPrune.TestReports
+open FsHotWatch.TestPrune.PluginQueries
 
 
 
@@ -2193,39 +2194,6 @@ type internal FreshnessView =
     { Store: FileFreshness.Store
       ReconciledAt: int64 option }
 
-/// The impact queries the plugin runs against its index, in one place, so a test can
-/// count them per handler instance.
-type internal ImpactQueries =
-    {
-        /// The tests `QueryAffectedTests` selects for a set of changed symbols.
-        AffectedTests: string list -> TestMethodInfo list
-        /// For each symbol, the test projects its single-seed query would select from.
-        CoveringProjectsBySeed: string list -> Map<string, Set<string>>
-        /// Every test project the index holds a test method for. Not a covering query:
-        /// one scan, whatever is queued. `None` when the index cannot be read this way
-        /// (an in-memory index is private to the connection that made it).
-        IndexedTestProjects: unit -> Set<string> option
-    }
-
-module internal ImpactQueries =
-    let private indexedTestProjects (db: Database) () : Set<string> option =
-        try
-            use conn = db.OpenConnection()
-            use query = conn.CreateCommand()
-            query.CommandText <- "SELECT DISTINCT test_project FROM test_methods;"
-            use reader = query.ExecuteReader()
-
-            [ while reader.Read() do
-                  reader.GetString 0 ]
-            |> Set.ofList
-            |> Some
-        with :? Microsoft.Data.Sqlite.SqliteException ->
-            None
-
-    let ofDatabase (db: Database) : ImpactQueries =
-        { AffectedTests = db.QueryAffectedTests
-          CoveringProjectsBySeed = db.QueryCoveringProjectsBySeed
-          IndexedTestProjects = indexedTestProjects db }
 
 /// What the plugin's IPC commands read from the plugin that builds them: its fixed
 /// configuration, and the questions only it can answer.
