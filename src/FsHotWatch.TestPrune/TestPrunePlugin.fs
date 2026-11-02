@@ -325,6 +325,12 @@ let internal indexedKeyIn (db: Database) (relPath: string) : string option =
         Logging.debug "test-prune" $"index identity unreadable for %s{relPath}: %s{ex.Message}"
         None
 
+/// Run every extension and time the whole refresh: it runs them in one call.
+let internal refreshTimedIn (db: Database) (repoRoot: string) (exts: ITestPruneExtension list) () =
+    let refreshClock = Diagnostics.Stopwatch.StartNew()
+    let outcomes = refreshExtensionEdges db repoRoot exts
+    outcomes, refreshClock.ElapsedMilliseconds
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -766,11 +772,7 @@ let internal createWithEvidenceAndQueries
 
 
 
-    /// Run every extension and time the whole refresh: it runs them in one call.
-    let refreshTimed (exts: ITestPruneExtension list) () =
-        let refreshClock = Diagnostics.Stopwatch.StartNew()
-        let outcomes = refreshExtensionEdges db repoRoot exts
-        outcomes, refreshClock.ElapsedMilliseconds
+    let refreshTimed = refreshTimedIn db repoRoot
 
     /// Take the answer of the refresh running beside the fold, if one is, into `state`.
     let joinRefresh (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
