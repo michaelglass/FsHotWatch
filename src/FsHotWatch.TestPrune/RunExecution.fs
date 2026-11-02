@@ -457,6 +457,72 @@ let internal decideTracing
 
     decided
 
+/// A finished run's test evidence, reconciled (`reconcileEvidence`).
+type internal ReconciledEvidence =
+    { ReusedNow: Map<string, TestEvidenceStore.Entry>
+      Reconciled: (TestEvidenceRun.Plan * TestEvidenceRun.Reconciled) option
+      EvidenceHeld: Map<string, TestEvidenceRun.Provenance> }
+
+/// Re-key every reused project at completion: a reuse whose key moved is withdrawn and
+/// deferred, and a held one reports its provenance as a pass.
+let internal reconcileEvidence
+    (collected: RunCollector)
+    (logToCtx: string -> unit)
+    (evidence: TestEvidenceRun.Plan option)
+    (repoRoot: string)
+    (runDir: string)
+    : ReconciledEvidence =
+    // TEST EVIDENCE, at completion. One fresh walk keys every candidate again. A reuse
+    // whose key moved while the run was in flight no longer describes this tree: its
+    // filed report and coverage are withdrawn and it reports a deferral, so this run
+    // cannot go green on it and the next one launches it. A project that really ran
+    // publishes its green only when it qualifies (`TestEvidenceRun.qualifies`).
+    let reusedNow = collected.Read _.Materialized
+
+    let reconciled =
+        evidence
+        |> Option.map (fun plan -> plan, TestEvidenceRun.reconcile plan repoRoot reusedNow)
+
+    // A withdrawn reuse takes back everything it filed and reports a deferral; a held one
+    // reports its green now, and only now.
+    reconciled
+    |> Option.iter (fun (_, r) ->
+        for (project, reason) in r.Withdrawn do
+            Logging.warn "test-prune" $"%s{project}: %s{reason}"
+            logToCtx $"{project}: {reason}"
+            TestEvidenceRun.deleteQuietly (Path.Combine(runDir, project + Ctrf.ReportSuffix))
+
+            collected.Update(fun c ->
+                { c with
+                    CoverageInputs = c.CoverageInputs |> List.filter (fun i -> i.Project <> project) })
+
+        let reported =
+            (r.Withdrawn |> List.map (fun (project, reason) -> project, TestsDeferred reason))
+            @ (r.Held
+               |> Map.toList
+               |> List.map (fun (project, entry) ->
+                   project,
+                   TestsPassed(
+                       TestEvidenceRun.Provenance.describe (TestEvidenceRun.Provenance.ofEntry entry),
+                       false,
+                       TimeSpan.Zero
+                   )))
+
+        collected.Update(fun c ->
+            { c with
+                Results =
+                    reported
+                    |> List.fold (fun acc (project, result) -> Map.add project result acc) c.Results }))
+
+    let evidenceHeld: Map<string, TestEvidenceRun.Provenance> =
+        reconciled
+        |> Option.map (fun (_, r) -> r.Held |> Map.map (fun _ entry -> TestEvidenceRun.Provenance.ofEntry entry))
+        |> Option.defaultValue Map.empty
+
+    { ReusedNow = reusedNow
+      Reconciled = reconciled
+      EvidenceHeld = evidenceHeld }
+
 /// A finished run's coverage, ingested: invalidate what failed its receipt, ingest and emit
 /// the cobertura, and report every failure as that project's debt.
 let internal ingestRunCoverage
@@ -1695,52 +1761,12 @@ let internal executeTests
 
         let rerunProjects = rerunResults |> List.map fst |> Set.ofList
 
-        // TEST EVIDENCE, at completion. One fresh walk keys every candidate again. A reuse
-        // whose key moved while the run was in flight no longer describes this tree: its
-        // filed report and coverage are withdrawn and it reports a deferral, so this run
-        // cannot go green on it and the next one launches it. A project that really ran
-        // publishes its green only when it qualifies (`TestEvidenceRun.qualifies`).
-        let reusedNow = collected.Read _.Materialized
+        let reconciledEvidence =
+            reconcileEvidence collected logToCtx evidence repoRoot runDir
 
-        let reconciled =
-            evidence
-            |> Option.map (fun plan -> plan, TestEvidenceRun.reconcile plan repoRoot reusedNow)
-
-        // A withdrawn reuse takes back everything it filed and reports a deferral; a held one
-        // reports its green now, and only now.
-        reconciled
-        |> Option.iter (fun (_, r) ->
-            for (project, reason) in r.Withdrawn do
-                Logging.warn "test-prune" $"%s{project}: %s{reason}"
-                logToCtx $"{project}: {reason}"
-                TestEvidenceRun.deleteQuietly (Path.Combine(runDir, project + Ctrf.ReportSuffix))
-
-                collected.Update(fun c ->
-                    { c with
-                        CoverageInputs = c.CoverageInputs |> List.filter (fun i -> i.Project <> project) })
-
-            let reported =
-                (r.Withdrawn |> List.map (fun (project, reason) -> project, TestsDeferred reason))
-                @ (r.Held
-                   |> Map.toList
-                   |> List.map (fun (project, entry) ->
-                       project,
-                       TestsPassed(
-                           TestEvidenceRun.Provenance.describe (TestEvidenceRun.Provenance.ofEntry entry),
-                           false,
-                           TimeSpan.Zero
-                       )))
-
-            collected.Update(fun c ->
-                { c with
-                    Results =
-                        reported
-                        |> List.fold (fun acc (project, result) -> Map.add project result acc) c.Results }))
-
-        let evidenceHeld: Map<string, TestEvidenceRun.Provenance> =
-            reconciled
-            |> Option.map (fun (_, r) -> r.Held |> Map.map (fun _ entry -> TestEvidenceRun.Provenance.ofEntry entry))
-            |> Option.defaultValue Map.empty
+        let reusedNow = reconciledEvidence.ReusedNow
+        let reconciled = reconciledEvidence.Reconciled
+        let evidenceHeld = reconciledEvidence.EvidenceHeld
 
         ingestRunCoverage
             collected
