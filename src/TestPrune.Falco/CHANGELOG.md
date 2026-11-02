@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.0.5 - 2026-11-02
+
 - refactor: `AnalyzeEdges` memoises each file's symbols once (a handler file and a test file
   shared one store read only when they were looked up through the same cache), a
   declaration candidate carries its kind (`ClassDeclaration | ModuleDeclaration of hasBody`)

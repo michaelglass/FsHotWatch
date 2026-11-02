@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-11-02
+
 - fix: `ReadsFrom`/`WritesTo` arguments are read through TestPrune.Core's `AttributeArgs`, so a
   table or column name holding a comma, a quote or a backslash reads back whole
   (AUTOMATION-1452). It was split on commas and stripped of quotes. An unreadable payload is

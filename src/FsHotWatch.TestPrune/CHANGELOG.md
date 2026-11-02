@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.102 - 2026-11-02
+
 - feat: the test-prune commands declare their reply schemas: `run-tests` and `test-results`
   (`test-prune/run-v1`), `set-scope`, `test-scope`, `check-reach`, `affected-tests`,
   `changed-files` and `flaky-tests` (`test-prune/<command>-v1`). The new `TestPruneReplies`

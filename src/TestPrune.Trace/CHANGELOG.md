@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0 - 2026-11-02
+
 - feat: `Mutation.toJson`, the report as plain data a JSON serializer can write (`MutationReportJson`,
   `SampleJson`), and
   `Mutation.outcomeName`, the name the report and its JSON give an outcome.

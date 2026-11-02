@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.135 - 2026-11-02
+
 - fix: the CLI passthrough of the last three commands that printed an empty status display now
   says what they answered (AUTOMATION-1466 follow-up).
   - `analyzer-findings` is judged against the disk and rendered as `fshw findings` renders it, with

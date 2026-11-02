@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.53 - 2026-11-02
+
 - feat: `build-status` and `force-rebuild` declare their reply schemas (`build/build-status-v1`,
   `build/force-rebuild-v1`). The new `BuildReplies` module holds each reply as a type
   (`BuildStatus` is `Passed`, `Failed` or `NotRun`; `ForceRebuild` is `Forced`), with the
