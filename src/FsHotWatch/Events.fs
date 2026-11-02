@@ -147,13 +147,14 @@ type CheckOutputs =
     }
 
 /// Whether a file was fully type-checked, only parsed (check aborted), or answered from a
-/// filed `check` record (ADR-059 §17).
+/// filed `check` record (ADR-059 §17). Each case carries exactly the FCS objects it has: a
+/// live check its parse and typed results, an aborted one its parse, a replay neither.
 [<NoComparison>]
 type FileCheckState =
-    | FullCheck of FSharpCheckFileResults
-    | ParseOnly
+    | FullCheck of parse: FSharpParseFileResults * check: FSharpCheckFileResults
+    | ParseOnly of parse: FSharpParseFileResults
     /// The outputs of a check filed earlier for exactly these inputs. Carries NO FCS
-    /// objects: `FileCheckResult.ParseResults` is null for it. A plugin never receives one
+    /// objects. A plugin never receives one
     /// in `Update` — the framework serves it from the plugin's cache or demands a real
     /// check (`PluginHostServices.DemandCheck`) — and code that needs the typed tree must
     /// match it and fail loudly (`FileCheckResult.requireTypedTree`), never assume.
@@ -181,9 +182,8 @@ type FileCheckResult =
         File: AbsFilePath
         /// Source text of the file at check time.
         Source: string
-        /// FCS parse results (AST).
-        ParseResults: FSharpParseFileResults
-        /// FCS type-check results. ParseOnly if check was aborted.
+        /// FCS results: the parse and type check, the parse alone if the check was aborted,
+        /// or a filed record's outputs.
         CheckResults: FileCheckState
         /// FSharpProjectOptions used when checking this file.
         ProjectOptions: FSharpProjectOptions
@@ -193,7 +193,7 @@ type FileCheckResult =
         /// `None` when no daemon discovery captured it (a bare pipeline check).
         ModelGeneration: int64 option
         /// The frame the file was checked under, when it was checked at a virtual root:
-        /// paths inside `ParseResults` and `CheckResults` are then virtual, and this maps
+        /// paths inside `CheckResults` are then virtual, and this maps
         /// them to the worktree. `None`: they are the worktree's own.
         Frame: PathFrame.PathFrame option
         /// Each referenced assembly the check read from the repository's import store:
@@ -262,17 +262,25 @@ module FileCheckResult =
     /// complete.
     let diagnostics (result: FileCheckResult) : FSharp.Compiler.Diagnostics.FSharpDiagnostic[] option =
         match result.CheckResults with
-        | FullCheck results -> Some results.Diagnostics
+        | FullCheck(_, results) -> Some results.Diagnostics
         | Replayed outputs -> Some(diagnosticsOfOutputs outputs)
-        | ParseOnly -> None
+        | ParseOnly _ -> None
 
     /// The typed tree of a full check, for `consumer`; None for an aborted check. A
     /// replayed result has none, and asking for it is a defect in the caller, not a
     /// degraded answer: it throws `ReplayedResultException` naming the consumer.
     let requireTypedTree (consumer: string) (result: FileCheckResult) : FSharpCheckFileResults option =
         match result.CheckResults with
-        | FullCheck results -> Some results
-        | ParseOnly -> None
+        | FullCheck(_, results) -> Some results
+        | ParseOnly _ -> None
+        | Replayed _ -> raise (ReplayedResultException(consumer, AbsFilePath.value result.File))
+
+    /// The parse tree of a live check, full or aborted, for `consumer`. A replayed result has
+    /// none, and asking for it throws `ReplayedResultException`, as `requireTypedTree` does.
+    let requireParseResults (consumer: string) (result: FileCheckResult) : FSharpParseFileResults =
+        match result.CheckResults with
+        | FullCheck(parse, _)
+        | ParseOnly parse -> parse
         | Replayed _ -> raise (ReplayedResultException(consumer, AbsFilePath.value result.File))
 
 /// Result of checking all files in a project.

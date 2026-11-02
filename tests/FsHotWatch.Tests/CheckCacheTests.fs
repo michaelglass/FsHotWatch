@@ -294,8 +294,7 @@ let private makeTestResult (file: string) (version: int64) : CachedCheck =
     { Result =
         { File = AbsFilePath.create (Path.Combine("/repo", file))
           Source = "test"
-          ParseResults = Unchecked.defaultof<_>
-          CheckResults = ParseOnly
+          CheckResults = fixtureParseOnly ()
           ProjectOptions = Unchecked.defaultof<_>
           Version = version
           ModelGeneration = None
@@ -402,8 +401,8 @@ let ``InMemoryCheckCache clear removes all entries`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``fcsCheckSignature returns parse-only marker for ParseOnly`` () =
-    let sig1 = fcsCheckSignature ParseOnly
-    let sig2 = fcsCheckSignature ParseOnly
+    let sig1 = fcsCheckSignature (fixtureParseOnly ())
+    let sig2 = fcsCheckSignature (fixtureParseOnly ())
     Assert.Equal("parse-only", sig1)
     Assert.Equal(sig1, sig2)
 
@@ -411,14 +410,14 @@ let ``fcsCheckSignature returns parse-only marker for ParseOnly`` () =
 let ``fcsCheckSignature differs between ParseOnly and FullCheck`` () =
     // Plugin caches must invalidate when FCS moves between parse-only and
     // full-check: the lint result depends on whether type info was available.
-    let parseOnly = fcsCheckSignature ParseOnly
-    let fullCheckNull = fcsCheckSignature (FullCheck(Unchecked.defaultof<_>))
-    Assert.NotEqual<string>(parseOnly, fullCheckNull)
+    let parseOnly = fcsCheckSignature (fixtureParseOnly ())
+    let fullCheck = fcsCheckSignature (fixtureFullCheck ())
+    Assert.NotEqual<string>(parseOnly, fullCheck)
 
 [<Fact(Timeout = 15000)>]
-let ``fcsCheckSignature is stable across calls with same null FullCheck`` () =
-    let s1 = fcsCheckSignature (FullCheck(Unchecked.defaultof<_>))
-    let s2 = fcsCheckSignature (FullCheck(Unchecked.defaultof<_>))
+let ``fcsCheckSignature is stable across calls with the same FullCheck`` () =
+    let s1 = fcsCheckSignature (fixtureFullCheck ())
+    let s2 = fcsCheckSignature (fixtureFullCheck ())
     Assert.Equal(s1, s2)
 
 // --- hashDiagnosticSignatures (extracted for testability without FCS) ---

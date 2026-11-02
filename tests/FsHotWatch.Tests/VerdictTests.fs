@@ -852,8 +852,8 @@ let ``every check outcome maps to a file outcome — and only Clean is green`` (
         | Verdict.Incomplete _ -> true
         | _ -> false
 
-    test <@ incomplete (CheckVerdict.CheckOutcome.Incomplete 3) @>
-    test <@ incomplete (CheckVerdict.CheckOutcome.Incomplete -1) @>
+    test <@ incomplete (CheckVerdict.CheckOutcome.Incomplete(CheckVerdict.Unverified.Files 3)) @>
+    test <@ incomplete (CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed) @>
     // "Waiting on build" is INCOMPLETE (exit 2), never Red or Green: a deferred project is
     // a retry signal, not a test failure.
     test <@ incomplete (CheckVerdict.CheckOutcome.WaitingOnBuild []) @>
@@ -2590,7 +2590,7 @@ let ``publishVerdict RETURNS the exit code it wrote, so a caller cannot compute 
         // expression, so changing one without the other fails here.
         for outcome in
             [ (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
-              CheckVerdict.CheckOutcome.Incomplete -1 ] do
+              CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed ] do
             let returned = publishedFor outcome
 
             match Verdict.read root with

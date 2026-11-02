@@ -180,7 +180,7 @@ let ``verdict: clean + Complete -> Clean`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: clean + Incomplete -> Incomplete`` () =
-    test <@ verdict InnerLoop (inputs false (Incomplete 3) anyScope) = CheckOutcome.Incomplete 3 @>
+    test <@ verdict InnerLoop (inputs false (Incomplete 3) anyScope) = CheckOutcome.Incomplete(Unverified.Files 3) @>
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: clean + Unknown -> Incomplete (Unknown never reads as Clean)`` () =
@@ -200,7 +200,7 @@ let ``exitCode: FailuresFound -> 1`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``exitCode: Incomplete -> 2`` () =
-    test <@ exitCode (CheckOutcome.Incomplete 4) = 2 @>
+    test <@ exitCode (CheckOutcome.Incomplete(Unverified.Files 4)) = 2 @>
 
 [<Fact(Timeout = 15000)>]
 let ``Unknown coverage with no failures never yields exit 0`` () =
@@ -227,7 +227,7 @@ let ``an incomplete read is Incomplete, carrying its own count`` () =
     // Was: `converge: no progress (5,5,5) -> Incomplete` and `bounded to 3 attempts when
     // shrinking but never complete`. Both scripted a sequence whose answer was the FIRST
     // read's; the loop just took longer to say so.
-    test <@ verdict InnerLoop (inputs false (Incomplete 5) anyScope) = CheckOutcome.Incomplete 5 @>
+    test <@ verdict InnerLoop (inputs false (Incomplete 5) anyScope) = CheckOutcome.Incomplete(Unverified.Files 5) @>
     test <@ exitCode (verdict InnerLoop (inputs false (Incomplete 5) anyScope)) = 2 @>
 
 [<Fact(Timeout = 15000)>]
@@ -252,7 +252,7 @@ let ``Unknown coverage is Incomplete and never Clean, with no sentinel to rank i
     // coverage any more: `verdict` reads `Unknown` as `Incomplete -1` directly, which is
     // "the daemon did not report a count", and that is exit 2 rather than a green.
     let outcome = verdict InnerLoop (inputs false Unknown anyScope)
-    test <@ outcome = CheckOutcome.Incomplete -1 @>
+    test <@ outcome = CheckOutcome.Incomplete Unverified.Unconfirmed @>
     test <@ exitCode outcome = 2 @>
     test <@ outcome <> CheckOutcome.Clean BaselineFixtures.baseline @>
 
@@ -310,7 +310,12 @@ let ``Confirmation: real failures still short-circuit ahead of scope`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``Confirmation: incomplete coverage still outranks scope`` () =
-    test <@ verdict Confirmation (inputs false (Incomplete 7) (FullSuite(4, None))) = CheckOutcome.Incomplete 7 @>
+    test
+        <@
+            verdict Confirmation (inputs false (Incomplete 7) (FullSuite(4, None))) = CheckOutcome.Incomplete(
+                Unverified.Files 7
+            )
+        @>
 
 [<Fact(Timeout = 15000)>]
 let ``InnerLoop: an impact-filtered run IS Clean — that is what filtering is for`` () =
@@ -361,7 +366,7 @@ let ``exitCode: UnearnedScope is its own code, distinct from failure and incompl
     test <@ unearned = 3 @>
     test <@ unearned <> exitCode (CheckOutcome.Clean BaselineFixtures.baseline) @>
     test <@ unearned <> exitCode CheckOutcome.FailuresFound @>
-    test <@ unearned <> exitCode (CheckOutcome.Incomplete 1) @>
+    test <@ unearned <> exitCode (CheckOutcome.Incomplete(Unverified.Files 1)) @>
 
 [<Fact(Timeout = 15000)>]
 let ``a Confirmation cannot scan its way out of an unearned scope`` () =
@@ -544,7 +549,7 @@ let ``InnerLoop: a scope read that FAULTED is never Clean — it cannot rule out
     test <@ verdict InnerLoop (inputs true Complete faulted) = CheckOutcome.FailuresFound @>
 
     // ...as does incomplete coverage, which is the more specific complaint.
-    test <@ verdict InnerLoop (inputs false (Incomplete 3) faulted) = CheckOutcome.Incomplete 3 @>
+    test <@ verdict InnerLoop (inputs false (Incomplete 3) faulted) = CheckOutcome.Incomplete(Unverified.Files 3) @>
 
 [<Fact(Timeout = 15000)>]
 let ``InnerLoop: an ABSENT scope is still Clean — the split may not punish a tests-less repo`` () =
@@ -565,9 +570,9 @@ let ``InnerLoop: an ABSENT scope is still Clean — the split may not punish a t
 [<Fact(Timeout = 10000)>]
 let ``each coverage case is read for what it says, not ranked against another read`` () =
     test <@ verdict InnerLoop (inputs false Complete anyScope) = CheckOutcome.Clean BaselineFixtures.baseline @>
-    test <@ verdict InnerLoop (inputs false (Incomplete 7) anyScope) = CheckOutcome.Incomplete 7 @>
+    test <@ verdict InnerLoop (inputs false (Incomplete 7) anyScope) = CheckOutcome.Incomplete(Unverified.Files 7) @>
     // Not "maximally unchecked" — simply not a count the daemon reported.
-    test <@ verdict InnerLoop (inputs false Unknown anyScope) = CheckOutcome.Incomplete -1 @>
+    test <@ verdict InnerLoop (inputs false Unknown anyScope) = CheckOutcome.Incomplete Unverified.Unconfirmed @>
 
 // ----------------------------------------------------------------------------
 // QA rework — a red must be EARNED, exactly as a green must.
@@ -692,7 +697,7 @@ let ``stale daemon state is the answer, not something to re-scan`` () =
             UnattributableDiagnostics = 0
             Coverage = Incomplete 5 }
 
-    test <@ verdict Confirmation incomplete = CheckOutcome.Incomplete 5 @>
+    test <@ verdict Confirmation incomplete = CheckOutcome.Incomplete(Unverified.Files 5) @>
 
 // ----------------------------------------------------------------------------
 // "waiting on build" is TWO causes, and they need opposite remedies.
@@ -918,7 +923,7 @@ let ``exitCode: ResultUnreceived -> 7, and never a code that claims something ab
     test
         <@
             exitCode (CheckOutcome.ResultUnreceived "x")
-            <> exitCode (CheckOutcome.Incomplete -1)
+            <> exitCode (CheckOutcome.Incomplete Unverified.Unconfirmed)
         @>
 
     test
@@ -1342,3 +1347,9 @@ let ``a --fresh green graded from a run this confirm did not launch is NoNewRun,
     // A red keeps its own reason: it is already no green.
     test
         <@ requireNewRun Freshness.RequireNewRun false "run 22" CheckOutcome.FailuresFound = CheckOutcome.FailuresFound @>
+
+[<Fact>]
+let ``an unchecked count names files only when it names at least one`` () =
+    test <@ Unverified.ofCount 3 = Unverified.Files 3 @>
+    test <@ Unverified.ofCount 0 = Unverified.Unconfirmed @>
+    test <@ Unverified.ofCount -1 = Unverified.Unconfirmed @>

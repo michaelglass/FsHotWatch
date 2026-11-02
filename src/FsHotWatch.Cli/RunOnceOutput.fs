@@ -113,10 +113,10 @@ let runInfoOfFileCommands
               RepoRoot = repoRoot
               Args = fc.Args }))
 
-/// Returns "" for an empty input so callers can `if s <> "" then eprintfn "%s" s`.
-let formatStalenessWarning (stale: (string * string list) list) : string =
+/// The warning for `stale` inputs; `None` when nothing is stale.
+let formatStalenessWarning (stale: (string * string list) list) : string option =
     if List.isEmpty stale then
-        ""
+        None
     else
         let sb = StringBuilder()
 
@@ -129,7 +129,7 @@ let formatStalenessWarning (stale: (string * string list) list) : string =
 
             sb.AppendLine($"  → run `fshw rerun %s{plugin}` to refresh") |> ignore
 
-        sb.ToString().TrimEnd('\n', '\r')
+        Some(sb.ToString().TrimEnd('\n', '\r'))
 
 /// The label a rendered entry carries, or `None` for a severity that is not rendered.
 let private actionableLabel (severity: DiagnosticSeverity) : string option =
@@ -234,10 +234,6 @@ let withRunOnceDisplay (run: unit -> 'a) : 'a =
     else
         run ()
 
-/// Run a daemon's RunOnce with live progress display to stderr.
-let runOnceWithProgress (daemon: FsHotWatch.Daemon.Daemon) : Map<string, PluginStatus> =
-    withRunOnceDisplay (fun () -> daemon.RunOnce() |> Async.RunSynchronously)
-
 /// Build a parsed-status map from the daemon's host, for use by the progress renderer.
 let snapshotHost (host: FsHotWatch.PluginHost.PluginHost) (statuses: Map<string, PluginStatus>) =
     let counts = host.GetDiagnosticCountsByPlugin()
@@ -252,8 +248,10 @@ let snapshotHost (host: FsHotWatch.PluginHost.PluginHost) (statuses: Map<string,
           LastRun = snap.LastRun
           Diagnostics = Map.tryFind name counts |> Option.defaultValue DiagnosticCounts.empty })
 
-/// Run a daemon in run-once mode and report results.
+/// Run a daemon in run-once mode through `runOnce` (`ScanHeartbeat.runOnceWithProgress`,
+/// as every other run-once path), and report results.
 let runOnceAndReport
+    (runOnce: FsHotWatch.Daemon.Daemon -> Map<string, PluginStatus>)
     (renderSummary: Map<string, ParsedPluginStatus> -> string)
     (noWarnFail: bool)
     (createDaemon: string -> FsHotWatch.Daemon.Daemon)
@@ -267,7 +265,7 @@ let runOnceAndReport
 
         let daemon = createDaemon repoRoot
         DaemonConfig.registerRunOncePlugins daemon repoRoot config
-        let statuses = runOnceWithProgress daemon
+        let statuses = runOnce daemon
         daemon.Host.PruneVanishedErrors(System.IO.File.Exists) |> ignore
 
         let allErrors =
@@ -296,9 +294,6 @@ let runOnceAndReport
         let staleInputs =
             runInfoOfFileCommands repoRoot config parsed |> detectStalePluginInputs
 
-        let stalenessWarning = formatStalenessWarning staleInputs
-
-        if stalenessWarning <> "" then
-            eprintfn "%s" stalenessWarning
+        formatStalenessWarning staleInputs |> Option.iter (eprintfn "%s")
 
         if failCount > 0 then 1 else 0

@@ -60,6 +60,10 @@ type private ControlledWorkspaceLoader(resultsByAttempt: Types.ProjectOptions li
 
 open FsHotWatch.Tests.TestHelpers
 
+/// A run-once scan with no progress reporting.
+let private runPlain (daemon: FsHotWatch.Daemon.Daemon) =
+    daemon.RunOnce() |> Async.RunSynchronously
+
 let private minimalWorkspaceProject (projectPath: string) : Types.ProjectOptions =
     { ProjectId = None
       ProjectFileName = projectPath
@@ -203,12 +207,12 @@ let ``runInfoOfFileCommands describes the file commands that ran, and skips the 
     test <@ runInfoOfFileCommands "/repo" config statuses = expected @>
 
 [<Fact(Timeout = 15000)>]
-let ``formatStalenessWarning is empty for no stale plugins`` () =
-    test <@ formatStalenessWarning [] = "" @>
+let ``formatStalenessWarning says nothing for no stale plugins`` () =
+    test <@ formatStalenessWarning [] = None @>
 
 [<Fact(Timeout = 15000)>]
 let ``formatStalenessWarning names the plugin, file, and rerun hint`` () =
-    let warning = formatStalenessWarning [ "ratchet", [ "/tmp/cfg.json" ] ]
+    let warning = (formatStalenessWarning [ "ratchet", [ "/tmp/cfg.json" ] ]).Value
     test <@ warning.Contains("ratchet") @>
     test <@ warning.Contains("/tmp/cfg.json") @>
     test <@ warning.Contains("rerun") @>
@@ -568,7 +572,8 @@ let ``runOnceAndReport returns 2 when no projects are discovered`` () =
                 Lint = false
                 Cache = NoCache }
 
-        let exitCode = runOnceAndReport (fun _ -> "") false createDaemon tmpDir config None
+        let exitCode =
+            runOnceAndReport runPlain (fun _ -> "") false createDaemon tmpDir config None
 
         test <@ exitCode = 2 @>)
 
@@ -645,7 +650,7 @@ let ``runOnceAndReport renders the statuses of the plugins the run registered`` 
             "format: clean"
 
         let exitCode =
-            runOnceAndReport render false createDaemon repoRoot (noTestProjectsConfig ()) (Some "format")
+            runOnceAndReport runPlain render false createDaemon repoRoot (noTestProjectsConfig ()) (Some "format")
 
         test <@ exitCode = 0 @>
         test <@ rendered |> Seq.exactlyOne |> List.contains "format-check" @>)
@@ -735,6 +740,7 @@ let ``format --run-once completes without constructing a file watcher`` () =
     withProjectOnlyRepo "runonce-format-no-watcher" (fun repoRoot ->
         let exitCode =
             runOnceAndReport
+                runPlain
                 (fun _ -> "")
                 false
                 (hostFor (FsHotWatch.Cli.Program.Command.Format [ FsHotWatch.Cli.Program.RunOnce ]))
@@ -757,6 +763,7 @@ let ``generic run-once report prunes a late vanished diagnostic before grading``
     withProjectOnlyRepo "runonce-report-rename" (fun repoRoot ->
         let exitCode =
             runOnceAndReport
+                runPlain
                 (fun _ -> "")
                 false
                 daemonWithLateVanishedDiagnostic
@@ -859,8 +866,7 @@ let ``run-once grades the one scan it ran: an unchecked file is Incomplete, with
                     daemon.Host.EmitFileChecked(
                         { File = AbsFilePath.create file
                           Source = ""
-                          ParseResults = Unchecked.defaultof<_>
-                          CheckResults = FullCheck(Unchecked.defaultof<_>)
+                          CheckResults = fixtureFullCheck ()
                           ProjectOptions = Unchecked.defaultof<_>
                           Version = 0L
                           ModelGeneration = None
@@ -1076,7 +1082,7 @@ let ``confirm one-shot accepts full evidence from its initial scan without a sec
 
         let runScan daemon =
             scanCount <- scanCount + 1
-            runOnceWithProgress daemon
+            runPlain daemon
 
         let exitCode =
             FsHotWatch.Cli.RunOnceCheck.runOnceAndVerdictWith

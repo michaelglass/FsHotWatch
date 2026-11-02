@@ -21,11 +21,11 @@ let ``a key is a function of its kind and labelled inputs only, not their order`
 [<Fact>]
 let ``a key value is the documented prefix and a lowercase sha256`` () =
     let k = ActionKey.create "plugin" [ "name", "lint" ]
-    test <@ k.Value.StartsWith ActionKey.Prefix @>
-    test <@ k.Value.Length = ActionKey.Prefix.Length + 64 @>
-    test <@ ActionKey.isValue k.Value @>
+    test <@ k.Value.Text.StartsWith ActionKey.Prefix @>
+    test <@ k.Value.Text.Length = ActionKey.Prefix.Length + 64 @>
+    test <@ ActionKey.isValue k.Value.Text @>
     test <@ not (ActionKey.isValue "ak1:xyz") @>
-    test <@ not (ActionKey.isValue (k.Value.ToUpperInvariant())) @>
+    test <@ not (ActionKey.isValue (k.Value.Text.ToUpperInvariant())) @>
 
 [<Fact>]
 let ``the recipe is the documented byte stream`` () =
@@ -35,8 +35,9 @@ let ``the recipe is the documented byte stream`` () =
 
     test
         <@
-            (ActionKey.create "plugin" [ "tree", "sha256:t"; "name", "lint" ]).Value = ActionKey.Prefix
-                                                                                       + ContentHash.ofText expected
+            (ActionKey.create "plugin" [ "tree", "sha256:t"; "name", "lint" ]).Value.Text = ActionKey.Prefix
+                                                                                            + ContentHash.ofText
+                                                                                                expected
         @>
 
 [<Fact>]
@@ -88,8 +89,8 @@ let ``moved names every label whose digest differs, including one present on one
 [<Fact>]
 let ``a key value parses only from text a key could have, and a created key's value always parses`` () =
     let k = ActionKey.create "plugin" [ "name", "lint" ]
-    test <@ ActionKey.KeyValue.tryParse k.Value = Some(ActionKey.valueOf k) @>
-    test <@ (ActionKey.valueOf k).Text = k.Value @>
+    test <@ ActionKey.KeyValue.tryParse k.Value.Text = Some k.Value @>
+    test <@ k.Value.Text.StartsWith ActionKey.Prefix @>
     test <@ ActionKey.KeyValue.tryParse "ak1:xyz" = None @>
-    test <@ ActionKey.KeyValue.tryParse (k.Value.ToUpperInvariant()) = None @>
+    test <@ ActionKey.KeyValue.tryParse (k.Value.Text.ToUpperInvariant()) = None @>
     test <@ ActionKey.KeyValue.tryParse null = None @>

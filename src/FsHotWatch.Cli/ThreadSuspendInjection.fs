@@ -35,44 +35,53 @@ let OptOutEnvVar = "FSHW_THREAD_SUSPEND_INJECTION"
 
 let private isSet (value: string) = not (String.IsNullOrWhiteSpace value)
 
+/// What an environment says about thread-suspend injection, read once, so nothing after
+/// the read asks whether a value is set or trims it again.
+type Setting =
+    {
+        /// The variable the runtime honours (`DOTNET_` before `COMPlus_`) and its trimmed
+        /// value; `None` when neither is set, and injection is on by default.
+        Configured: (string * string) option
+        /// `FSHW_THREAD_SUSPEND_INJECTION`, trimmed; `None` when unset or blank.
+        OptOut: string option
+    }
+
+module Setting =
+    let private valueOf (getEnv: string -> string) (name: string) =
+        match getEnv name with
+        | value when isSet value -> Some(value.Trim())
+        | _ -> None
+
+    /// The setting `getEnv` describes.
+    let read (getEnv: string -> string) : Setting =
+        { Configured =
+            [ RuntimeVariable; LegacyRuntimeVariable ]
+            |> List.tryPick (fun name -> valueOf getEnv name |> Option.map (fun value -> name, value))
+          OptOut = valueOf getEnv OptOutEnvVar }
+
 /// The variable and value to add to a launched daemon's environment, or `None` when
 /// the launch keeps the environment it inherits: off macOS, when the user set either
 /// runtime variable, or when the opt-out asks for the runtime default.
-let launchOverride (isMacOS: bool) (getEnv: string -> string) : (string * string) option =
-    if
-        not isMacOS
-        || isSet (getEnv RuntimeVariable)
-        || isSet (getEnv LegacyRuntimeVariable)
-        || (getEnv OptOutEnvVar |> Option.ofObj |> Option.map _.Trim()) = Some "1"
-    then
+let launchOverride (isMacOS: bool) (setting: Setting) : (string * string) option =
+    if not isMacOS || setting.Configured.IsSome || setting.OptOut = Some "1" then
         None
     else
         Some(RuntimeVariable, "0")
 
-/// The mode THIS process runs in, read from its own environment: the variable the
-/// runtime honours (`DOTNET_` before `COMPlus_`) and its value, or `None` when neither
-/// is set and injection is on by default.
-let private effectiveSetting (getEnv: string -> string) : (string * string) option =
-    [ RuntimeVariable; LegacyRuntimeVariable ]
-    |> List.tryPick (fun name ->
-        match getEnv name with
-        | value when isSet value -> Some(name, value.Trim())
-        | _ -> None)
-
 /// The startup log line naming the thread-suspend mode this process runs in and the
 /// OS it runs on. Printed on every platform, so a log from anywhere says which mode
 /// produced it.
-let startupLine (osDescription: string) (getEnv: string -> string) : string =
+let startupLine (osDescription: string) (setting: Setting) : string =
     let mode =
-        match effectiveSetting getEnv with
+        match setting.Configured with
         | Some(name, "0") -> $"injection disabled (%s{name}=0)"
         | Some(name, value) -> $"injection enabled (%s{name}=%s{value})"
         | None -> "injection enabled (runtime default)"
 
     let optOut =
-        match getEnv OptOutEnvVar with
-        | value when isSet value -> $", %s{OptOutEnvVar}=%s{value.Trim()}"
-        | _ -> ""
+        match setting.OptOut with
+        | Some value -> $", %s{OptOutEnvVar}=%s{value}"
+        | None -> ""
 
     $"thread-suspend: %s{mode}%s{optOut}; os: %s{osDescription}"
 
@@ -123,31 +132,29 @@ let osDescription () : string =
 /// This process's OWN mode cannot change: the runtime read the variable when it started,
 /// and `runtimeconfig.json` does not reach this knob (measured: a `configProperties` entry
 /// changes `System.GC.Server` but not `EnableHWIntrinsic`, a knob read the same way). So
-/// the result is the environment as it was, for `startupLine` to describe this process.
-let inheritByChildren (isMacOS: bool) (getEnv: string -> string) (setEnv: string -> string -> unit) : string -> string =
-    let own =
-        [ RuntimeVariable; LegacyRuntimeVariable; OptOutEnvVar ]
-        |> List.map (fun name -> name, getEnv name)
-        |> Map.ofList
+/// the result is the setting as it was, for `startupLine` to describe this process.
+let inheritByChildren (isMacOS: bool) (getEnv: string -> string) (setEnv: string -> string -> unit) : Setting =
+    let own = Setting.read getEnv
 
-    launchOverride isMacOS getEnv
+    launchOverride isMacOS own
     |> Option.iter (fun (name, value) -> setEnv name value)
 
-    fun name ->
-        match Map.tryFind name own with
-        | Some value -> value
-        | None -> getEnv name
+    own
 
-/// This process's own thread-suspend variables, as its runtime started with them:
-/// `install` replaces it with the view `inheritByChildren` returns.
-let mutable private ownEnvironment: string -> string =
-    Environment.GetEnvironmentVariable
+/// This process's own setting, as its runtime started with it: `install` records it
+/// before it changes the environment children inherit.
+let mutable private own: Setting option = None
 
-/// The environment `startupLine` describes this process from.
-let ownGetEnv (name: string) : string = ownEnvironment name
+/// The setting `startupLine` describes this process from.
+let ownSetting () : Setting =
+    match own with
+    | Some setting -> setting
+    | None -> Setting.read Environment.GetEnvironmentVariable
 
 /// `inheritByChildren` on this process, once, before it starts anything.
 let install () : unit =
-    ownEnvironment <-
-        inheritByChildren (OperatingSystem.IsMacOS()) Environment.GetEnvironmentVariable (fun name value ->
-            Environment.SetEnvironmentVariable(name, value))
+    own <-
+        Some(
+            inheritByChildren (OperatingSystem.IsMacOS()) Environment.GetEnvironmentVariable (fun name value ->
+                Environment.SetEnvironmentVariable(name, value))
+        )

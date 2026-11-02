@@ -66,15 +66,14 @@ let private typedCheck =
                 checker.ParseAndCheckFileInProject(file, 0, sourceText, options)
                 |> Async.RunSynchronously
             with
-            | _, FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Succeeded results -> FullCheck results
+            | parse, FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Succeeded results -> FullCheck(parse, results)
             | _, FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Aborted -> failwith "FCS aborted the fixture check"))
 
 /// A check of `file` as it is on disk now, typed or parse-only.
 let private checkedFromDisk (repoRoot: string) (typed: bool) (file: string) =
     { fakeFileCheckResult file with
         Source = File.ReadAllText file
-        ParseResults = Unchecked.defaultof<_>
-        CheckResults = if typed then typedCheck.Value else ParseOnly
+        CheckResults = if typed then typedCheck.Value else (fixtureParseOnly ())
         ProjectOptions = fixtureProjectOptions repoRoot }
 
 /// A host whose model's checkable files are `files`, running the analyzers plugin over

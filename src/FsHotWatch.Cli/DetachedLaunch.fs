@@ -234,7 +234,7 @@ let internal helperStartInfo
     psi.RedirectStandardInput <- true
     psi.RedirectStandardError <- true
 
-    ThreadSuspendInjection.launchOverride isMacOS getEnv
+    ThreadSuspendInjection.launchOverride isMacOS (ThreadSuspendInjection.Setting.read getEnv)
     |> Option.iter (fun (name, value) -> psi.Environment[name] <- value)
 
     psi

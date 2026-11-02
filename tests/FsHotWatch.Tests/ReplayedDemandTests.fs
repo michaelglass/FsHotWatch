@@ -32,7 +32,7 @@ let private recordingHandler (seen: ConcurrentQueue<string>) : PluginHandler<uni
                     seen.Enqueue(
                         match result.CheckResults with
                         | FullCheck _ -> "full"
-                        | ParseOnly -> "parse-only"
+                        | ParseOnly _ -> "parse-only"
                         | Replayed _ -> "replayed"
                     )
                 | _ -> ()
@@ -61,7 +61,7 @@ let ``a replayed check with no cached answer is demanded live, and Update sees o
                         return
                             Some
                                 { replayed with
-                                    CheckResults = FullCheck Unchecked.defaultof<_> }
+                                    CheckResults = TestHelpers.fixtureFullCheck () }
                     } }
 
     let registration = registerHandler services (recordingHandler seen)
@@ -125,7 +125,7 @@ let ``a host with no checker installed refuses a demand, loudly; the installed o
             return
                 Some
                     { replayed with
-                        CheckResults = FullCheck Unchecked.defaultof<_> }
+                        CheckResults = TestHelpers.fixtureFullCheck () }
         })
 
     host.EmitFileChecked(replayedResult "/tmp/repo/B.fs")
@@ -245,14 +245,14 @@ let ``a state that refuses to read a file's entry still writes it, and a refused
                         return
                             Some
                                 { replayed with
-                                    CheckResults = FullCheck Unchecked.defaultof<_> }
+                                    CheckResults = TestHelpers.fixtureFullCheck () }
                     } }
 
     let registration = registerHandler services handler
     // No model published: an unstamped check is cacheable.
     let live =
         { TestHelpers.fakeFileCheckResult file with
-            CheckResults = FullCheck Unchecked.defaultof<_>
+            CheckResults = TestHelpers.fixtureFullCheck ()
             ModelGeneration = None }
 
     let replay =
@@ -316,7 +316,7 @@ let ``a replayed check of a file the plugin never inspects is answered without a
                         return
                             Some
                                 { replayed with
-                                    CheckResults = FullCheck Unchecked.defaultof<_> }
+                                    CheckResults = TestHelpers.fixtureFullCheck () }
                     } }
 
     let registration = registerHandler services handler
@@ -391,3 +391,11 @@ let ``a stored severity's token is its FCS spelling, and only FCS's severities p
         test <@ StoredDiagnostic.severityOfToken (StoredDiagnostic.severityToken severity) = Some severity @>
 
     test <@ StoredDiagnostic.severityOfToken "Loud" = None @>
+
+[<Fact>]
+let ``a live check's parse is handed out, and a replay's refused`` () =
+    let parse = TestHelpers.fixtureParse ()
+    let live = TestHelpers.fakeFileCheckResult "/tmp/repo/A.fs"
+    test <@ obj.ReferenceEquals(FileCheckResult.requireParseResults "a test" live, parse) @>
+
+    raises<ReplayedResultException> <@ FileCheckResult.requireParseResults "a test" (replayedResult "/tmp/repo/A.fs") @>

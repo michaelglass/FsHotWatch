@@ -180,7 +180,7 @@ let measure (repo: string) (project: string) (edits: Edit list) : string list =
                 let source = textOf file
                 checkClock.Start()
 
-                let _, answer =
+                let parse, answer =
                     checker.ParseAndCheckFileInProject(file, snapshotOf options)
                     |> Async.RunSynchronously
 
@@ -188,8 +188,8 @@ let measure (repo: string) (project: string) (edits: Edit list) : string list =
 
                 let state =
                     match answer with
-                    | FSharpCheckFileAnswer.Succeeded results -> FullCheck results
-                    | FSharpCheckFileAnswer.Aborted -> ParseOnly
+                    | FSharpCheckFileAnswer.Succeeded results -> FullCheck(parse, results)
+                    | FSharpCheckFileAnswer.Aborted -> ParseOnly parse
 
                 let started = Stopwatch.GetTimestamp()
 

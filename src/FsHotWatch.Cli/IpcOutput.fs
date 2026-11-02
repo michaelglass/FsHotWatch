@@ -1280,13 +1280,15 @@ let private publishVerdictWithReason
                 VerdictTerminal.fail reason
 
                 Verdict.Incomplete reason,
-                CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1),
+                CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed),
                 [ downgradeCause "tree" reason ]
             // Handed in, not decided here: a terminal infrastructure failure arrives with
             // its own diagnosis and its caller's reporting. This function does not add a
             // cause it did not find.
             | Some reason, _ ->
-                Verdict.Incomplete reason, CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1), []
+                Verdict.Incomplete reason,
+                CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed),
+                []
             // A tree that held still — and, on the abort paths, a check that never
             // settled at all. `NeverSettled` cannot be what makes a verdict incomplete:
             // the abort already did, and both callers that reach here hand in an
@@ -1302,7 +1304,7 @@ let private publishVerdictWithReason
                     VerdictTerminal.fail reason
 
                     Verdict.Incomplete reason,
-                    CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1),
+                    CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed),
                     [ downgradeCause "receipt" reason ]
                 | _ ->
                     Verdict.outcomeOfCheck (DaemonConfig.DaemonLog.forRepo repoRoot) outcome,
@@ -1599,7 +1601,7 @@ let internal publishTerminalIncompleteForInvocation
         (IpcParsing.ProjectModelReading.NotReported
             "the run ended on an infrastructure failure before the project model could be read")
         settledTree
-        (CheckVerdict.CheckOutcome.Incomplete -1)
+        (CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed)
         (Some reason)
 
 /// `publishTerminalIncompleteForInvocation` for a publish that no CLI bracket wraps.
@@ -1780,6 +1782,29 @@ let pollAndRenderForInvocation
     // daemon is precisely the "the escalated run never completed" sample, and dropping the
     // record there would make it indistinguishable from a confirm that never escalated.
     let impactScoped: Verdict.ImpactScopedRun option ref = ref None
+
+    // The verdict an abort below publishes, from the last state read. The daemon is gone,
+    // wedged or out of memory, so it is not asked for a projection: an escalation's
+    // EXECUTED reading is already in hand and is exactly the "the escalated run never
+    // completed" sample, and without one there is nothing to offer, and the verdict says so.
+    // `unreadableReach` says why recall could not be read.
+    let publishAbort (unreadableReach: string) (outcome: CheckVerdict.CheckOutcome) : int =
+        publishVerdictForInvocation
+            invocation
+            repoRoot
+            excludePatterns
+            checkMode
+            noWarnFail
+            finalRun.Value
+            (match impactScoped.Value with
+             | Some reading -> Verdict.ExecutedReading(reading, IpcParsing.ReachUnavailable unreadableReach)
+             | None -> Verdict.NoReading)
+            finalStatuses.Value
+            finalEvidence.Value
+            finalCauses.Value
+            finalModel.Value
+            settledTree.Value
+            outcome
 
     try
         withProgress "Scanning" "Scanning..." (fun () -> waitForScan () |> ignore)
@@ -1966,28 +1991,8 @@ let pollAndRenderForInvocation
         let reason = ex.Message
 
         let abortExitCode =
-            publishVerdictForInvocation
-                invocation
-                repoRoot
-                excludePatterns
-                checkMode
-                noWarnFail
-                finalRun.Value
-                // Same reasoning as the two aborts below: an escalation's EXECUTED
-                // reading is already in hand; asking the daemon for a fresh projection
-                // on a path that just failed for want of memory is the last thing to do.
-                (match impactScoped.Value with
-                 | Some reading ->
-                     Verdict.ExecutedReading(
-                         reading,
-                         IpcParsing.ReachUnavailable "the check ran out of memory before recall could be read"
-                     )
-                 | None -> Verdict.NoReading)
-                finalStatuses.Value
-                finalEvidence.Value
-                finalCauses.Value
-                finalModel.Value
-                settledTree.Value
+            publishAbort
+                "the check ran out of memory before recall could be read"
                 (CheckVerdict.CheckOutcome.ResultUnreceived reason)
 
         UI.fail (Verdict.CheckProse.resultUnreceived reason)
@@ -1999,30 +2004,9 @@ let pollAndRenderForInvocation
         // the recovery path.
         // Return the code the verdict FILE records, not a literal.
         let abortExitCode =
-            publishVerdictForInvocation
-                invocation
-                repoRoot
-                excludePatterns
-                checkMode
-                noWarnFail
-                finalRun.Value
-                // The daemon is gone or wedged — asking it for a projection would hang or
-                // throw. An escalation's EXECUTED reading is already in hand and is
-                // exactly the "the escalated run never completed" sample; without one
-                // there is nothing to offer, and the verdict says so.
-                (match impactScoped.Value with
-                 | Some reading ->
-                     Verdict.ExecutedReading(
-                         reading,
-                         IpcParsing.ReachUnavailable "the escalated confirm aborted before recall could be read"
-                     )
-                 | None -> Verdict.NoReading)
-                finalStatuses.Value
-                finalEvidence.Value
-                finalCauses.Value
-                finalModel.Value
-                settledTree.Value
-                (CheckVerdict.CheckOutcome.Incomplete -1)
+            publishAbort
+                "the escalated confirm aborted before recall could be read"
+                (CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed)
 
         UI.fail
             $"Check aborted: %s{ex.Message}\nA plugin overran the verdict deadline and is likely wedged — inspect %s{DaemonConfig.DaemonLog.forRepo repoRoot}, then `fshw stop` to reclaim the daemon. If the suite legitimately needs longer, raise FSHW_VERDICT_DEADLINE_SEC."
@@ -2031,30 +2015,9 @@ let pollAndRenderForInvocation
     | ex when isDaemonShutdownDuringWait ex ->
         // Return the code the verdict FILE records, not a literal.
         let abortExitCode =
-            publishVerdictForInvocation
-                invocation
-                repoRoot
-                excludePatterns
-                checkMode
-                noWarnFail
-                finalRun.Value
-                // The daemon is gone or wedged — asking it for a projection would hang or
-                // throw. An escalation's EXECUTED reading is already in hand and is
-                // exactly the "the escalated run never completed" sample; without one
-                // there is nothing to offer, and the verdict says so.
-                (match impactScoped.Value with
-                 | Some reading ->
-                     Verdict.ExecutedReading(
-                         reading,
-                         IpcParsing.ReachUnavailable "the escalated confirm aborted before recall could be read"
-                     )
-                 | None -> Verdict.NoReading)
-                finalStatuses.Value
-                finalEvidence.Value
-                finalCauses.Value
-                finalModel.Value
-                settledTree.Value
-                (CheckVerdict.CheckOutcome.Incomplete -1)
+            publishAbort
+                "the escalated confirm aborted before recall could be read"
+                (CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed)
 
         // A daemon squeezed out by machine memory pressure dies exactly here, and
         // the message above names the SYMPTOM. Naming the pressure turns "the

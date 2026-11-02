@@ -127,7 +127,7 @@ let private checkB2 (tree: Tree) =
         tree.Pipeline.CheckFile(AbsFilePath.create (Path.Combine(tree.Dir, "B2.fs")))
         |> Async.RunSynchronously
     with
-    | Some { CheckResults = FullCheck r } ->
+    | Some { CheckResults = FullCheck(_, r) } ->
         r.Diagnostics
         |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
         |> Array.map (fun d -> d.Message)
@@ -588,7 +588,7 @@ let private makeGeneratedTree (dir: string) =
 [<Runtime.CompilerServices.MethodImpl(Runtime.CompilerServices.MethodImplOptions.NoInlining)>]
 let private errorsOf (tree: GeneratedTree) (path: string) =
     match tree.Pipeline.CheckFile(AbsFilePath.create path) |> Async.RunSynchronously with
-    | Some { CheckResults = FullCheck r } ->
+    | Some { CheckResults = FullCheck(_, r) } ->
         r.Diagnostics
         |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
         |> Array.map (fun d -> d.Message)

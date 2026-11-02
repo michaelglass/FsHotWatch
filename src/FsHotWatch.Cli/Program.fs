@@ -3383,7 +3383,7 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
             "%s"
             (ThreadSuspendInjection.startupLine
                 (ThreadSuspendInjection.osDescription ())
-                ThreadSuspendInjection.ownGetEnv)
+                (ThreadSuspendInjection.ownSetting ()))
 
         let pool = FsHotWatch.SharedWatchPool.WatchPool()
 
@@ -3943,7 +3943,7 @@ let private executeCommandRendered
                             "%s"
                             (ThreadSuspendInjection.startupLine
                                 (ThreadSuspendInjection.osDescription ())
-                                ThreadSuspendInjection.ownGetEnv)
+                                (ThreadSuspendInjection.ownSetting ()))
 
                         // Before the daemon exists, so the helper forks from a small process;
                         // disposed after the daemon stops. Off unless FSHW_SPAWN_HELPER=1.
@@ -4296,6 +4296,7 @@ let private executeCommandRendered
 
 
             RunOnceOutput.runOnceAndReport
+                ScanHeartbeat.runOnceWithProgress
                 (renderBlock mode (not noWarnFail))
                 noWarnFail
                 createDaemon

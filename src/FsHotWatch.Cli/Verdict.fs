@@ -1005,16 +1005,15 @@ module CheckProse =
     /// `daemonLog` is the daemon log the words send the reader to (`DaemonConfig.DaemonLog`).
     let explainOutcome (daemonLog: string) (outcome: CheckVerdict.CheckOutcome) : string option =
         match outcome with
-        | CheckVerdict.CheckOutcome.Incomplete n ->
+        | CheckVerdict.CheckOutcome.Incomplete unverified ->
             // No re-scan count to report any more, and no parameter to carry one: both
             // paths now decide from ONE settled read, so there is no second attempt whose
             // number a reader could act on. A parameter only ever passed `None` is a
             // vocabulary kept alive by nothing.
             let detail =
-                if n > 0 then
-                    $"%d{n} file(s) could not be checked"
-                else
-                    "coverage could not be confirmed"
+                match unverified with
+                | CheckVerdict.Unverified.Files n -> $"%d{n} file(s) could not be checked"
+                | CheckVerdict.Unverified.Unconfirmed -> "coverage could not be confirmed"
 
             Some $"Check incomplete: %s{detail}"
         // Non-green, but "could not complete", never a red — see `CheckOutcome`. A
@@ -1069,11 +1068,10 @@ let outcomeOfCheck (daemonLog: string) (outcome: CheckVerdict.CheckOutcome) : Ou
     // baseline so a consumer of `verdict.json` reads "re-run" rather than "tests failed".
     | CheckVerdict.CheckOutcome.NoBaseline reason -> Incomplete(CheckProse.noBaseline reason)
     | CheckVerdict.CheckOutcome.FailuresFound -> Red
-    | CheckVerdict.CheckOutcome.Incomplete n ->
-        if n > 0 then
-            Incomplete $"%d{n} file(s) could not be checked"
-        else
-            Incomplete "coverage could not be confirmed"
+    | CheckVerdict.CheckOutcome.Incomplete(CheckVerdict.Unverified.Files n) ->
+        Incomplete $"%d{n} file(s) could not be checked"
+    | CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed ->
+        Incomplete "coverage could not be confirmed"
     | CheckVerdict.CheckOutcome.WaitingOnBuild [] ->
         // A DISTINCT `incomplete` reason in `.fshw/verdict.json` — the deploy
         // preflight reads the structured outcome (`incomplete`, exit 2), never the
@@ -2626,7 +2624,7 @@ let private terminalVerdict
 
 /// The exit code of a verdict that records an invocation which did not finish.
 let incompleteExitCode =
-    CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1)
+    CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed)
 
 /// The run ended before the daemon was contacted — its top-level `beforeRun` refused it,
 /// or a signal stopped it there — with `exitCode` as the run's own exit. Nothing else
@@ -3481,7 +3479,10 @@ let read (repoRoot: string) : Reading =
                         if isUnexplainedRed rehydrated then
                             { rehydrated with
                                 outcome = Incomplete UnexplainedRedReason
-                                exitCode = CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete 0) }
+                                exitCode =
+                                    CheckVerdict.exitCode (
+                                        CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed
+                                    ) }
                         else
                             rehydrated
 

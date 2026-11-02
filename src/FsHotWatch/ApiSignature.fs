@@ -271,11 +271,10 @@ let private declarationsOf (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFil
 /// The text `ofCheck` hashes, or None when the file has no signature of its own.
 let signatureText (source: string) (checkResults: FileCheckState) : string option =
     match checkResults with
-    | ParseOnly -> None
+    | ParseOnly _ -> None
     | Replayed _ -> raise (ReplayedResultException("ApiSignature.signatureText", "(a replayed check)"))
     | _ when assemblyAttribute.IsMatch source -> None
-    | FullCheck results when isNull (box results) -> None
-    | FullCheck results ->
+    | FullCheck(_, results) ->
         // FCS can throw from a symbol property on partially-checked code. A file it cannot
         // describe has no signature, so its content stands in.
         try

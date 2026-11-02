@@ -116,7 +116,8 @@ type FormatPreprocessor(?timeoutSec: int, ?runner: Runner, ?store: OutcomeStore.
     let runner = defaultArg runner dotnetToolRunner
 
     /// file → the key of the bytes the pinned tool last left unchanged.
-    let settled = System.Collections.Concurrent.ConcurrentDictionary<string, string>()
+    let settled =
+        System.Collections.Concurrent.ConcurrentDictionary<string, ActionKey.KeyValue>()
 
     /// file → why the pinned tool last failed to process it (could not parse it, or never
     /// finished). Every pass hands these back to the tool, whether or not its batch holds
@@ -136,7 +137,7 @@ type FormatPreprocessor(?timeoutSec: int, ?runner: Runner, ?store: OutcomeStore.
         match settled.TryGetValue file with
         | true, prior when prior = key.Value -> true
         | _ ->
-            match store |> Option.bind (fun store -> store.Lookup key.Value) with
+            match store |> Option.bind (fun store -> store.Lookup key) with
             | Some record when record.Outcome = OutcomeStore.Outcome.Pass ->
                 settled[file] <- key.Value
                 true
