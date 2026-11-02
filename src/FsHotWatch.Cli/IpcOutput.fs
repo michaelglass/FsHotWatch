@@ -754,11 +754,6 @@ let private renderPayload
 module PluginReplies =
     type Render = ProgressRenderer.RenderMode -> (Map<string, ParsedPluginStatus> -> string list) -> bool -> int
 
-    /// A reply its schema describes, rendered as the status map its shape was always read as.
-    let private asStatusMap (tryParse: string -> 'Reply option) (payload: string) : Render option =
-        tryParse payload
-        |> Option.map (fun _ _ renderStatuses _ -> renderStatusMap renderStatuses payload)
-
     let private build: (string * (string -> Render option)) list =
         let buildStatus payload =
             FsHotWatch.Build.BuildReplies.BuildStatus.tryParse payload
@@ -863,8 +858,27 @@ module PluginReplies =
                       reply.Files
 
                   0))
+          // AUTOMATION-1466: this printed an empty status display. It is the reply `fshw
+          // findings` judges, so it is judged against the disk the same way, rendered and
+          // exited with that verb's codes.
           FsHotWatch.Analyzers.AnalyzerFindings.ReplySchema,
-          asStatusMap (FsHotWatch.Analyzers.AnalyzerFindings.tryParseReply >> Result.toOption) ]
+          (fun payload ->
+              FsHotWatch.Analyzers.AnalyzerFindings.tryParseReply payload
+              |> Result.toOption
+              |> Option.map (fun reply _ _ noWarnFail ->
+                  let answer =
+                      Findings.ofReply
+                          (fun r -> FsHotWatch.Analyzers.AnalyzerFindings.diskView r.ScopeRoot)
+                          (not noWarnFail)
+                          reply
+
+                  let root =
+                      reply.ScopeRoot |> Option.defaultWith System.IO.Directory.GetCurrentDirectory
+
+                  for line in Findings.render root answer do
+                      printfn "%s" line
+
+                  Findings.Outcome.exitCode answer.Outcome)) ]
 
     let private testPrune: (string * (string -> Render option)) list =
         let run payload =
@@ -931,31 +945,84 @@ module PluginReplies =
                 | [] -> listing "changed files" []
                 | _ -> listing "changed file(s)" files)
 
-        // Read by the reader the verdict uses, then rendered by its shape, as before.
-        let byShape (describes: string -> bool) payload : Render option =
-            if describes payload then
-                Some(fun mode renderStatuses noWarnFail -> renderPayload mode renderStatuses noWarnFail payload)
-            else
-                None
-
+        // Both are read by the readers the verdict uses (AUTOMATION-1466: they printed an empty
+        // status display). A scope the daemon did not report, and a reach that was not
+        // recorded or not decided, are no verdict, as they are to the verdict.
         let testScope payload =
-            match (parseTestRunReport payload).Scope with
-            | ScopeUnreadable _ -> false
-            | _ -> true
+            let report = parseTestRunReport payload
 
-        // `parseCheckReach` is total and fail-closed, so it reads every payload as something;
-        // the schema describes the replies that say whether a reach was recorded.
+            match report.Scope with
+            | ScopeUnreadable _ -> None
+            | ScopeUnknown -> Some(fun _ _ _ -> renderNoVerdict $"test scope: %s{TestScope.describe ScopeUnknown}")
+            | scope ->
+                Some(fun _ _ _ ->
+                    eprintfn "test scope: %s" (TestScope.describe scope)
+                    report.RunId |> Option.iter (fun run -> eprintfn "  run %s" (run.ToString "N"))
+                    0)
+
         let checkReach payload =
-            FsHotWatch.Json.tryReadDocument (fun root -> FsHotWatch.Json.tryBool root "recorded") payload
-            |> Option.isSome
+            // `parseCheckReach` is total and fail-closed, so it reads every payload as
+            // something; the schema describes the replies that say whether a reach was
+            // recorded.
+            let says =
+                FsHotWatch.Json.tryReadDocument (fun root -> FsHotWatch.Json.tryBool root "recorded") payload
+
+            match says, parseCheckReach payload with
+            | None, _ -> None
+            | Some _, ReachUnavailable why -> Some(fun _ _ _ -> renderNoVerdict $"no check reach: %s{why}")
+            | Some _, ReachRecorded report ->
+                let run =
+                    report.RunId
+                    |> Option.map (fun id -> " for run " + id.ToString "N")
+                    |> Option.defaultValue ""
+
+                let headline =
+                    $"check reach%s{run}: check would have run %s{TestScope.describe report.Scope}"
+
+                Some(fun _ _ _ ->
+                    match report.Reach with
+                    | ReachUnknown why -> renderNoVerdict $"%s{headline}; its reach is unknown: %s{why}"
+                    | reach ->
+                        eprintfn "%s" headline
+
+                        match reach with
+                        | ReachedAFailure suites ->
+                            eprintfn "  it reaches a failing test: %s" (String.concat ", " suites)
+                        | ReachedNoFailure missed ->
+                            eprintfn "  it reaches none of the failing tests"
+
+                            for failure in missed do
+                                let cause =
+                                    match failure.Cause with
+                                    | ProjectNotSelected -> "project was not selected"
+                                    | ClassNotInFilter -> "class was not in the generated filter"
+                                    | UnknownMissCause token -> $"cause '%s{token}'"
+
+                                eprintfn "  missed: %s :: %s — %s" failure.Project failure.Class cause
+                        | NoFailuresToReach -> eprintfn "  no test failed, so there was nothing to reach"
+                        | ReachUnknown _ -> ()
+
+                        match report.Recall with
+                        | FailureRecallMeasured(reached, total, threshold, acceptable) ->
+                            let verdict = if acceptable then "at or above it" else "below it"
+
+                            eprintfn
+                                "  failure recall: %d of %d reached (threshold %.0f%%, %s)"
+                                reached
+                                total
+                                (threshold * 100.0)
+                                verdict
+                        | FailureRecallNotMeasurable why -> eprintfn "  failure recall not measurable: %s" why
+
+                        0)
 
         [ FsHotWatch.TestPrune.TestPruneReplies.RunSchema, run
           FsHotWatch.TestPrune.TestPruneReplies.SetScopeSchema, setScope
           FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema, affectedTests
           FsHotWatch.TestPrune.TestPruneReplies.ChangedFilesSchema, changedFiles
           FsHotWatch.TestPrune.TestPruneReplies.FlakyTestsSchema, flakyTests
-          FsHotWatch.TestPrune.TestPruneReplies.TestScopeSchema, byShape testScope
-          FsHotWatch.TestPrune.TestPruneReplies.CheckReachSchema, byShape checkReach ]
+          FsHotWatch.TestPrune.TestPruneReplies.TestScopeSchema, testScope
+          FsHotWatch.TestPrune.TestPruneReplies.CheckReachSchema, checkReach ]
 
     let private renderers: Map<string, string -> Render option> =
         Map.ofList (build @ lint @ format @ fileCommand @ coverage @ analyzers @ testPrune)

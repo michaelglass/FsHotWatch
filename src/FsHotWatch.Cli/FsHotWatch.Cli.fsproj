@@ -71,13 +71,13 @@
         <Compile Include="ConfirmTraces.fs" />
         <Compile Include="ProgressRenderer.fs" />
         <Compile Include="SettleHeartbeat.fs" />
+        <Compile Include="Findings.fs" />
         <Compile Include="IpcOutput.fs" />
         <Compile Include="ScanHeartbeat.fs" />
         <Compile Include="SourceRef.fs" />
         <Compile Include="RunOnceCheck.fs" />
         <Compile Include="DeadCode.fs" />
         <Compile Include="Explain.fs" />
-        <Compile Include="Findings.fs" />
         <Compile Include="Headroom.fs" />
         <Compile Include="Program.fs" />
     </ItemGroup>

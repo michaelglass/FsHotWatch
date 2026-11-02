@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- fix: the CLI passthrough of the last three commands that printed an empty status display now
+  says what they answered (AUTOMATION-1466 follow-up).
+  - `analyzer-findings` is judged against the disk and rendered as `fshw findings` renders it, with
+    the same exit codes (0 clean, 1 failing findings, 2 incomplete, 4 stale, 6 refused). New:
+    `Findings.ofReply`.
+  - `test-scope` says what the last run covered and names the run. A scope the daemon did not
+    report is no verdict (3).
+  - `check-reach` says what `check` would have run, which failing tests it would have reached or
+    missed, and its failure recall. A reach that was not recorded or not decided is no verdict
+    (3).
+  - With these, every plugin command has its own renderer, and no typed reply is read as a
+    status map.
+
 - fix: the informational replies say what they answer instead of printing an empty status display
   (AUTOMATION-1466).
   - `warnings` gives the lint warning count and the number of files. It exits 1 when there are
