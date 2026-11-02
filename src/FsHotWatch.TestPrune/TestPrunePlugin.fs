@@ -760,6 +760,53 @@ let internal requestTestRunWith
 
         state
 
+/// Launch the run a session that launches only requested runs held back, now that a
+/// command has asked for it. `state` is already armed (`TestMode.armOwedRun`). Flushed
+/// first, like a build's launch, so changes folded since the hold are selected; the
+/// launch then applies every widening a build's would — the missing baseline, the
+/// evidence gap, quarantined reds.
+let internal launchRequestedWith
+    (flushAndQueryAffectedBounded: StateStep)
+    (launchImpactRun: ImpactLauncher)
+    (testConfigs: TestConfig list option)
+    (tryRepairSchemaDrift: exn -> unit)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (state: TestPruneState)
+    =
+    match testConfigs with
+    | Some configs when not configs.IsEmpty ->
+        match
+            (try
+                Ok(flushAndQueryAffectedBounded ctx state)
+             with ex ->
+                 Error ex)
+        with
+        | Error ex ->
+            Logging.error "test-prune" $"flushAndQueryAffected (requested run) failed: %s{ex.Message}"
+            tryRepairSchemaDrift ex
+
+            ctx.ReportStatus(
+                PluginStatus.failedNow ex.Message $"requested run flush failed: %s{ex.Message}" TimeSpan.Zero
+            )
+
+            state
+        | Ok flushed ->
+            Logging.info "test-prune" "A command asked for the owed test run: launching the run this session held"
+            let fanout = flushed.PendingForceRunProjects
+
+            let launchState =
+                { flushed with
+                    PendingForceRunProjects = Set.empty
+                    OwedRunHeld = false }
+
+            match launchImpactRun ctx configs launchState flushed.LastResults.IsSome fanout with
+            | Some launched -> launched
+            | None when joinsFullRun flushed false -> attachToFullRun { flushed with OwedRunHeld = false }
+            | None ->
+                enqueueImpactRun ctx
+                { flushed with OwedRunHeld = false }
+    | _ -> state
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1459,45 +1506,8 @@ let internal createWithEvidenceAndQueries
                     rerunState
         | _ -> state
 
-    /// Launch the run a session that launches only requested runs held back, now that a
-    /// command has asked for it. `state` is already armed (`TestMode.armOwedRun`). Flushed
-    /// first, like a build's launch, so changes folded since the hold are selected; the
-    /// launch then applies every widening a build's would — the missing baseline, the
-    /// evidence gap, quarantined reds.
-    let launchRequested (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
-        match testConfigs with
-        | Some configs when not configs.IsEmpty ->
-            match
-                (try
-                    Ok(flushAndQueryAffectedBounded ctx state)
-                 with ex ->
-                     Error ex)
-            with
-            | Error ex ->
-                Logging.error "test-prune" $"flushAndQueryAffected (requested run) failed: %s{ex.Message}"
-                tryRepairSchemaDrift ex
-
-                ctx.ReportStatus(
-                    PluginStatus.failedNow ex.Message $"requested run flush failed: %s{ex.Message}" TimeSpan.Zero
-                )
-
-                state
-            | Ok flushed ->
-                Logging.info "test-prune" "A command asked for the owed test run: launching the run this session held"
-                let fanout = flushed.PendingForceRunProjects
-
-                let launchState =
-                    { flushed with
-                        PendingForceRunProjects = Set.empty
-                        OwedRunHeld = false }
-
-                match launchImpactRun ctx configs launchState flushed.LastResults.IsSome fanout with
-                | Some launched -> launched
-                | None when joinsFullRun flushed false -> attachToFullRun { flushed with OwedRunHeld = false }
-                | None ->
-                    enqueueImpactRun ctx
-                    { flushed with OwedRunHeld = false }
-        | _ -> state
+    let launchRequested =
+        launchRequestedWith flushAndQueryAffectedBounded launchImpactRun testConfigs tryRepairSchemaDrift
 
 
     let launchHeld = launchHeldWith launchImpactRun testConfigs
