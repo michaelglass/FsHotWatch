@@ -16,7 +16,9 @@
   `ReceiptTransitions`, `SelectionAssembly`, `OutstandingFailures`, `TestFilters`, `FailureReports`,
   `RunnerArgs`, `TestReports`, `PluginQueries`, `PluginCommands` (the IPC commands, over a
   `CommandEnv`), `IndexMaintenance`, `RunSupport`, `RunExecution` (`executeTests`), `AffectedSelection` (impact selection, over a
-  `SelectionEnv`) and `ImpactRun` (an impact run, over a grouped `RunEnv`). Top-level
+  `SelectionEnv`), `ImpactRun` (an impact run, over a grouped `RunEnv`), and the plugin's event
+  handlers over explicit envs: `FileCheckedHandler`, `CheckHandlers` (`BatchChecked` and
+  `BuildCompleted`) and `RunFinished` (a run's completion). Top-level
   `private` definitions the plugin still uses became `internal`; `Flakiness.historyPath` replaces
   the plugin's private history path.
 

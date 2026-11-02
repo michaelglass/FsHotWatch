@@ -2039,6 +2039,48 @@
         "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 96.0%, branch 100/110.",
         "platform": "linux"
       }
+    ],
+    "FileCheckedHandler.fs": [
+      {
+        "line": 97,
+        "branch": 93,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 97.6%, branch 28/30.",
+        "platform": "macos"
+      },
+      {
+        "line": 97,
+        "branch": 93,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 97.6%, branch 28/30.",
+        "platform": "linux"
+      }
+    ],
+    "CheckHandlers.fs": [
+      {
+        "line": 85,
+        "branch": 87,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 85.3%, branch 49/56; the uncovered lines are the handlers' error and timing paths, which were uncovered inside TestPrunePlugin.fs before the move.",
+        "platform": "macos"
+      },
+      {
+        "line": 85,
+        "branch": 87,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 85.3%, branch 49/56; the uncovered lines are the handlers' error and timing paths, which were uncovered inside TestPrunePlugin.fs before the move.",
+        "platform": "linux"
+      }
+    ],
+    "RunFinished.fs": [
+      {
+        "line": 93,
+        "branch": 89,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 93.8%, branch 196/220.",
+        "platform": "macos"
+      },
+      {
+        "line": 93,
+        "branch": 89,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 93.8%, branch 196/220.",
+        "platform": "linux"
+      }
     ]
   },
   "countFloors": {
