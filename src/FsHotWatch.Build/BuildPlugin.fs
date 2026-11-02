@@ -2,7 +2,6 @@ module FsHotWatch.Build.BuildPlugin
 
 open System
 open System.IO
-open System.Text.Json
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Logging
@@ -2165,34 +2164,24 @@ let internal createArmedWith
                       ctx.EnqueueExclusiveIntent "force-rebuild" (Some "force-rebuild") ForceRebuildRequested
                       |> Async.AwaitTask
 
-                  return JsonSerializer.Serialize({| status = "ok"; forced = true |})
+                  return BuildReplies.ForceRebuild.serialize BuildReplies.ForceRebuild.Forced
               })
+          |> PluginCommand.typed BuildReplies.ForceRebuildSchema
           "build-status",
           PluginCommand.Observe(fun _ctx state _args ->
               async {
-                  let lastResult = Lifecycle.value state.LastBuild
+                  let status =
+                      match Lifecycle.value state.LastBuild with
+                      | Some(BuildPassed(output, _)) -> BuildReplies.BuildStatus.Passed(truncateOutput 200 output)
+                      | Some(BuildArtifactsStale(stale, _)) ->
+                          BuildReplies.BuildStatus.Failed(staleDiagnostic stale |> truncateOutput 200)
+                      | Some(BuildOutputFailed outputs) ->
+                          BuildReplies.BuildStatus.Failed(outputs |> String.concat "\n" |> truncateOutput 200)
+                      | None -> BuildReplies.BuildStatus.NotRun
 
-                  match lastResult with
-                  | Some(BuildPassed(output, _)) ->
-                      return
-                          JsonSerializer.Serialize(
-                              {| status = "passed"
-                                 output = truncateOutput 200 output |}
-                          )
-                  | Some(BuildArtifactsStale(stale, _)) ->
-                      return
-                          JsonSerializer.Serialize(
-                              {| status = "failed"
-                                 output = staleDiagnostic stale |> truncateOutput 200 |}
-                          )
-                  | Some(BuildOutputFailed outputs) ->
-                      return
-                          JsonSerializer.Serialize(
-                              {| status = "failed"
-                                 output = outputs |> String.concat "\n" |> truncateOutput 200 |}
-                          )
-                  | None -> return JsonSerializer.Serialize({| status = "not run" |})
-              }) ]
+                  return BuildReplies.BuildStatus.serialize status
+              })
+          |> PluginCommand.typed BuildReplies.BuildStatusSchema ]
       Subscriptions =
         // Deliberately NOT `BatchChecked`: every source change drives a real
         // MSBuild build, so there is no test-only-skip phase to wait on the FCS

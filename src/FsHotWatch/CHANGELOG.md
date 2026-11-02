@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `Json.tryBool` reads a boolean field, and `Json.tryReadDocument` applies a reader to the
+  root of a text that parses as JSON and returns `None` for one that does not.
+
 - refactor!: a plugin command declares the schema of its reply. New `Plugin.ReplySchema`
   (`Typed` with a versioned id the plugin owns, or `Raw` with the reason it is free-form) and
   `PluginCommand.Declared`, built by `PluginCommand.typed` and `PluginCommand.raw`. A command that

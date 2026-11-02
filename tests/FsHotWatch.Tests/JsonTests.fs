@@ -27,4 +27,34 @@ let ``a field of the wrong kind or out of range reads as absent`` () =
     test <@ FsHotWatch.Json.tryInt el "big" = None @>
     test <@ FsHotWatch.Json.tryInt64 el "big" = Some 9999999999L @>
     test <@ FsHotWatch.Json.tryInt el "frac" = None @>
+    test <@ FsHotWatch.Json.tryInt64 el "frac" = None @>
     test <@ FsHotWatch.Json.tryInt el "missing" = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``a boolean field reads as its value, and any other kind as absent`` () =
+    let el = parse """{"t":true,"f":false,"s":"true","n":1}"""
+
+    test <@ FsHotWatch.Json.tryBool el "t" = Some true @>
+    test <@ FsHotWatch.Json.tryBool el "f" = Some false @>
+    test <@ FsHotWatch.Json.tryBool el "s" = None @>
+    test <@ FsHotWatch.Json.tryBool el "n" = None @>
+    test <@ FsHotWatch.Json.tryBool el "missing" = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``a document is read when it parses, and is absent when it does not`` () =
+    let readS =
+        FsHotWatch.Json.tryReadDocument (fun root -> FsHotWatch.Json.tryString root "s")
+
+    test <@ readS """{"s":"a"}""" = Some "a" @>
+    test <@ readS """{"n":1}""" = None @>
+    test <@ readS "not json" = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``an exception other than a parse failure propagates from a document read`` () =
+    let readS =
+        FsHotWatch.Json.tryReadDocument (fun root -> FsHotWatch.Json.tryString root "s")
+
+    raises<System.ArgumentNullException> <@ readS null @>
+
+    raises<System.InvalidOperationException>
+        <@ FsHotWatch.Json.tryReadDocument (fun _ -> invalidOp "a reader's own failure") "{}" @>

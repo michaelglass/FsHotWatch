@@ -307,6 +307,46 @@ let busyRerunLines (daemonMessage: string option) : string list =
       $"  Exit %d{RerunTimedOutExitCode} (in flight): the run may still finish in the daemon; `fshw status test-prune` shows it." ]
 
 
+/// A reply read as the daemon's diagnostics: its counts, files and statuses.
+let private renderDiagnosticsReply
+    (mode: ProgressRenderer.RenderMode)
+    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
+    (noWarnFail: bool)
+    (payload: string)
+    : int =
+    let resp = parseDiagnosticsResponse payload
+    eprintfn "%s" (formatDiagnosticsResponse mode renderStatuses resp)
+    exitCodeFromResponse noWarnFail resp
+
+/// A reply read as plugin statuses: each object-valued member a plugin's status.
+let private renderStatusMap (renderStatuses: Map<string, ParsedPluginStatus> -> string list) (payload: string) : int =
+    match parsePluginStatuses payload with
+    // The daemon answered and we could not read the answer. That is not "no plugins are
+    // failing" — it is not an answer. Exit non-zero: a status nobody could read must never
+    // be the basis of a zero exit code.
+    | Result.Error reason ->
+        UI.fail $"could not read the daemon's status: %s{reason}"
+        1
+    | Result.Ok parsed ->
+        let lines = renderStatuses parsed
+        let output = String.concat "\n" lines
+        eprintfn "%s" output
+
+        // The SAME predicate the verdict decides on, so `fshw status` and `fshw check` cannot
+        // disagree about whether a plugin failed.
+        if CheckVerdict.CheckInputs.anyPluginFailed parsed then
+            1
+        else
+            0
+
+let private renderPassed () =
+    UI.success "Passed"
+    0
+
+let private renderFailed () =
+    UI.fail "Failed"
+    1
+
 /// Render what a reply carries: a plugin command's output, the statuses after a re-run, or
 /// a format summary (status JSON or plain text). The payload is plugin-defined.
 let private renderPayload
@@ -343,11 +383,7 @@ let private renderPayload
         let root = doc.RootElement
 
         match FsHotWatch.Json.tryProp root "count" with
-        | Some _ ->
-            let resp = parseDiagnosticsResponse result
-            let output = formatDiagnosticsResponse mode renderStatuses resp
-            eprintfn "%s" output
-            exitCodeFromResponse noWarnFail resp
+        | Some _ -> renderDiagnosticsReply mode renderStatuses noWarnFail result
         | None ->
 
             match FsHotWatch.Json.tryProp root "error" with
@@ -363,12 +399,8 @@ let private renderPayload
             | None ->
 
                 match FsHotWatch.Json.tryProp root "status" with
-                | Some v when v.ValueKind = JsonValueKind.String && v.GetString() = "failed" ->
-                    UI.fail "Failed"
-                    1
-                | Some v when v.ValueKind = JsonValueKind.String && v.GetString() = "passed" ->
-                    UI.success "Passed"
-                    0
+                | Some v when v.ValueKind = JsonValueKind.String && v.GetString() = "failed" -> renderFailed ()
+                | Some v when v.ValueKind = JsonValueKind.String && v.GetString() = "passed" -> renderPassed ()
                 | Some v when v.ValueKind = JsonValueKind.String && v.GetString() = "busy" ->
                     // The force-rerun did not produce a result within its
                     // budget (a prior run holds the slot, or the queued run
@@ -705,53 +737,34 @@ let private renderPayload
                                 // rather than silently landing on a green.
                                 UI.fail "internal: unhandled coverage case — no verdict"
                                 3
-                    | _ ->
+                    | _ -> renderStatusMap renderStatuses result
 
-                        match parsePluginStatuses result with
-                        // The daemon answered and we could not read the answer. That is
-                        // not "no plugins are failing" — it is not an answer. Exit
-                        // non-zero: a status nobody could read must never be the basis
-                        // of a zero exit code.
-                        | Result.Error reason ->
-                            UI.fail $"could not read the daemon's status: %s{reason}"
-                            1
-                        | Result.Ok parsed ->
-                            let lines = renderStatuses parsed
-                            let output = String.concat "\n" lines
-                            eprintfn "%s" output
-
-                            // The SAME predicate the verdict decides on, so `fshw status`
-                            // and `fshw check` cannot disagree about whether a plugin failed.
-                            if CheckVerdict.CheckInputs.anyPluginFailed parsed then
-                                1
-                            else
-                                0
-
-/// Render live plugin-status progress until `isSettled` reports the host has
-/// reached its authoritative verdict. Pure of the scan trigger — the caller
-/// decides whether/when to wait for a scan first.
-///
-/// SOUNDNESS: the loop termination is `isSettled`, NOT a predicate over the status map.
-/// Such a predicate treats `Idle` as quiescent and never consults the host's
-/// inflight/busy state, so it concludes "settled" while a downstream plugin
-/// (test-prune) still has a `BuildCompleted` event queued in its mailbox (status
-/// observably `Idle`, handler not yet run) or while it is mid-run with a non-empty
-/// pending-verification queue — which exits 0 having computed N affected tests BEFORE
-/// the test-prune run's verdict was captured. The authoritative settle is the daemon's
-/// `WaitForComplete` RPC (`waitForVerdict`, which rests only when the host owns no work
-/// AND something has earned evidence for the current project model), so `isSettled` is
-/// wired to that RPC's completion. The status reads here are for RENDERING ONLY and never
-/// decide the verdict.
-///
-/// The clock, the pause between readings, the line sink and the interactive switch are
-/// the caller's, so the reporting of a long wait is testable without one.
 /// The renderers of the plugin reply schemas this build knows, by schema id: each parses its
 /// payload into the plugin's reply type and renders that. A payload its schema does not
 /// describe is `None`, as an unknown schema is.
 module PluginReplies =
     type Render = ProgressRenderer.RenderMode -> (Map<string, ParsedPluginStatus> -> string list) -> bool -> int
 
-    let private renderers: Map<string, string -> Render option> = Map.empty
+    let private build: (string * (string -> Render option)) list =
+        let buildStatus payload =
+            FsHotWatch.Build.BuildReplies.BuildStatus.tryParse payload
+            |> Option.map (fun status _ renderStatuses _ ->
+                match status with
+                | FsHotWatch.Build.BuildReplies.BuildStatus.Passed _ -> renderPassed ()
+                | FsHotWatch.Build.BuildReplies.BuildStatus.Failed _ -> renderFailed ()
+                // Read as a status map, as its shape always was: it holds no plugin's status.
+                | FsHotWatch.Build.BuildReplies.BuildStatus.NotRun -> renderStatusMap renderStatuses payload)
+
+        let forceRebuild payload =
+            FsHotWatch.Build.BuildReplies.ForceRebuild.tryParse payload
+            // Read as a status map, as its shape always was: it holds no plugin's status.
+            |> Option.map (fun FsHotWatch.Build.BuildReplies.ForceRebuild.Forced _ renderStatuses _ ->
+                renderStatusMap renderStatuses payload)
+
+        [ FsHotWatch.Build.BuildReplies.BuildStatusSchema, buildStatus
+          FsHotWatch.Build.BuildReplies.ForceRebuildSchema, forceRebuild ]
+
+    let private renderers: Map<string, string -> Render option> = Map.ofList build
 
     /// The renderer for a `payload` of schema `id`; `None` for a schema this build does not
     /// know, or a payload it does not describe.
@@ -800,6 +813,24 @@ let renderIpcResult
         VerdictTerminal.fail FsHotWatch.Ipc.CommandReply.untaggedMessage
         NoVerdictExitCode
 
+/// Render live plugin-status progress until `isSettled` reports the host has
+/// reached its authoritative verdict. Pure of the scan trigger — the caller
+/// decides whether/when to wait for a scan first.
+///
+/// SOUNDNESS: the loop termination is `isSettled`, NOT a predicate over the status map.
+/// Such a predicate treats `Idle` as quiescent and never consults the host's
+/// inflight/busy state, so it concludes "settled" while a downstream plugin
+/// (test-prune) still has a `BuildCompleted` event queued in its mailbox (status
+/// observably `Idle`, handler not yet run) or while it is mid-run with a non-empty
+/// pending-verification queue — which exits 0 having computed N affected tests BEFORE
+/// the test-prune run's verdict was captured. The authoritative settle is the daemon's
+/// `WaitForComplete` RPC (`waitForVerdict`, which rests only when the host owns no work
+/// AND something has earned evidence for the current project model), so `isSettled` is
+/// wired to that RPC's completion. The status reads here are for RENDERING ONLY and never
+/// decide the verdict.
+///
+/// The clock, the pause between readings, the line sink and the interactive switch are
+/// the caller's, so the reporting of a long wait is testable without one.
 let internal pollUntilSettledWith
     (now: unit -> DateTime)
     (pause: unit -> unit)

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- refactor: the CLI renders `build-status` and `force-rebuild` replies by their declared schemas,
+  with the same output and exit codes as before. A payload either schema does not describe is
+  no verdict.
+
 - refactor!: a plugin command's reply is rendered by the schema its plugin declares.
   `renderCommandReply` sends an output declared `Typed` to that schema's renderer
   (`IpcOutput.PluginReplies`). A schema this build does not know, or a payload its schema does
