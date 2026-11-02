@@ -21,7 +21,8 @@
   run itself), and the plugin's event
   handlers over explicit envs: `FileCheckedHandler`, `CheckHandlers` (`BatchChecked` and
   `BuildCompleted`), `RunFinished` (a run's completion), `CompletionStages` (its stages) and
-  `RunOutcomeReport` (its terminal status). Top-level
+  `RunOutcomeReport` (its terminal status), `PluginFold` (the fold and cache key) and `PluginRuns` (the
+  plugin's run steps). Top-level
   `private` definitions the plugin still uses became `internal`; `Flakiness.historyPath` replaces
   the plugin's private history path.
 
