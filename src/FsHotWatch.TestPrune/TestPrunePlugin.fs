@@ -331,6 +331,23 @@ let internal refreshTimedIn (db: Database) (repoRoot: string) (exts: ITestPruneE
     let outcomes = refreshExtensionEdges db repoRoot exts
     outcomes, refreshClock.ElapsedMilliseconds
 
+/// Write the queue before the analysis flush advances the durable symbol snapshot:
+/// once the snapshot advances, a symbol missing from the durable queue can no longer
+/// be re-detected after a crash. Only ever ADDS to what is on disk — the state it
+/// writes is the published queue plus this event's enqueues — so writing it before
+/// publication can over-test, never under-test.
+///
+/// Unknown debt is not written: the unreadable file is the honest record until the
+/// recovering full suite publishes a new one.
+let internal persistQueueAdditionsIn (repoRoot: string) (debt: VerificationDebt) =
+    if not debt.RecoveryOutstanding then
+        try
+            PendingVerification.save repoRoot debt.PendingQueue
+        with ex ->
+            Logging.warn
+                "test-prune"
+                $"failed to persist pending-verification queue before the analysis flush: %s{ex.Message}; the queue is published with this event's state"
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -642,22 +659,7 @@ let internal createWithEvidenceAndQueries
                 $"%d{queued} symbol(s) awaiting verification + a full suite to earn the baseline (%s{reason})%s{notIngested}"
             | None -> $"%d{queued} symbol(s) awaiting verification%s{notIngested}"
 
-    /// Write the queue before the analysis flush advances the durable symbol snapshot:
-    /// once the snapshot advances, a symbol missing from the durable queue can no longer
-    /// be re-detected after a crash. Only ever ADDS to what is on disk — the state it
-    /// writes is the published queue plus this event's enqueues — so writing it before
-    /// publication can over-test, never under-test.
-    ///
-    /// Unknown debt is not written: the unreadable file is the honest record until the
-    /// recovering full suite publishes a new one.
-    let persistQueueAdditions (debt: VerificationDebt) =
-        if not debt.RecoveryOutstanding then
-            try
-                PendingVerification.save repoRoot debt.PendingQueue
-            with ex ->
-                Logging.warn
-                    "test-prune"
-                    $"failed to persist pending-verification queue before the analysis flush: %s{ex.Message}; the queue is published with this event's state"
+    let persistQueueAdditions = persistQueueAdditionsIn repoRoot
 
 
 
