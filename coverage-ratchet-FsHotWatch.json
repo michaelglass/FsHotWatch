@@ -135,15 +135,15 @@
     ],
     "TestPrunePlugin.fs": [
       {
-        "line": 92,
+        "line": 91,
         "branch": 84,
-        "reason": "Re-measured 2026-11-02 after AUTOMATION-1448 split the Update fold into named handlers: line 92.8% (2169/2338), branch 88.0% (581/660), rounded down. Branch coverage is unchanged by that commit (581/660 before and after); the line figure fell because the old figure was inflated, not because coverage was lost. In the single 2,140-line fold, sequence points spanned whole comment blocks, so coverlet counted 2,032 lines of the arms (comments included) at 95.8%. As separate handlers the same code is 1,000 instrumented lines at 91.9%. Inspected line by line: the uncovered lines are error and timing paths (trace-shadow completion, deferred-build status, flush failures) that were uncovered before too.",
+        "reason": "Re-measured 2026-11-02 after AUTOMATION-1448 split the Update fold into named handlers: line 92.8% (2169/2338), branch 88.0% (581/660), rounded down. Branch coverage is unchanged by that commit (581/660 before and after); the line figure fell because the old figure was inflated, not because coverage was lost. In the single 2,140-line fold, sequence points spanned whole comment blocks, so coverlet counted 2,032 lines of the arms (comments included) at 95.8%. As separate handlers the same code is 1,000 instrumented lines at 91.9%. Inspected line by line: the uncovered lines are error and timing paths (trace-shadow completion, deferred-build status, flush failures) that were uncovered before too. Lowered from 92 to 91 after inspection (AUTOMATION-1448 group 10): the fold, cache key and run steps that moved to PluginFold and PluginRuns were better covered than what stays, so the remainder's ratio fell to 91.4% (831/910 lines). Across the three files 96 lines are uncovered, against 92 in TestPrunePlugin.fs before the move.",
         "platform": "macos"
       },
       {
-        "line": 92,
+        "line": 91,
         "branch": 84,
-        "reason": "Re-measured 2026-11-02 after AUTOMATION-1448 split the Update fold into named handlers: line 92.8% (2169/2338), branch 88.0% (581/660), rounded down. Branch coverage is unchanged by that commit (581/660 before and after); the line figure fell because the old figure was inflated, not because coverage was lost. In the single 2,140-line fold, sequence points spanned whole comment blocks, so coverlet counted 2,032 lines of the arms (comments included) at 95.8%. As separate handlers the same code is 1,000 instrumented lines at 91.9%. Inspected line by line: the uncovered lines are error and timing paths (trace-shadow completion, deferred-build status, flush failures) that were uncovered before too. Linux takes the same paths; equal to the macOS floor, as before.",
+        "reason": "Re-measured 2026-11-02 after AUTOMATION-1448 split the Update fold into named handlers: line 92.8% (2169/2338), branch 88.0% (581/660), rounded down. Branch coverage is unchanged by that commit (581/660 before and after); the line figure fell because the old figure was inflated, not because coverage was lost. In the single 2,140-line fold, sequence points spanned whole comment blocks, so coverlet counted 2,032 lines of the arms (comments included) at 95.8%. As separate handlers the same code is 1,000 instrumented lines at 91.9%. Inspected line by line: the uncovered lines are error and timing paths (trace-shadow completion, deferred-build status, flush failures) that were uncovered before too. Linux takes the same paths; equal to the macOS floor, as before. Lowered from 92 to 91 after inspection (AUTOMATION-1448 group 10): the fold, cache key and run steps that moved to PluginFold and PluginRuns were better covered than what stays, so the remainder's ratio fell to 91.4% (831/910 lines). Across the three files 96 lines are uncovered, against 92 in TestPrunePlugin.fs before the move.",
         "platform": "linux"
       }
     ],
@@ -2149,6 +2149,34 @@
         "line": 91,
         "branch": 86,
         "reason": "Moved out of RunFinished.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 91.6%, branch 57/66. With CompletionStages and RunFinished the family covers 199 of 224 branches, as RunFinished.fs did before the split.",
+        "platform": "linux"
+      }
+    ],
+    "PluginRuns.fs": [
+      {
+        "line": 98,
+        "branch": 89,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 98.7%, branch 73/82.",
+        "platform": "macos"
+      },
+      {
+        "line": 98,
+        "branch": 89,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 98.7%, branch 73/82.",
+        "platform": "linux"
+      }
+    ],
+    "PluginFold.fs": [
+      {
+        "line": 93,
+        "branch": 85,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 93.1%, branch 75/88.",
+        "platform": "macos"
+      },
+      {
+        "line": 93,
+        "branch": 85,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 93.1%, branch 75/88.",
         "platform": "linux"
       }
     ]
