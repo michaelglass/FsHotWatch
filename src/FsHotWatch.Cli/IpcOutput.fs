@@ -766,10 +766,16 @@ module PluginReplies =
         [ FsHotWatch.Lint.LintReplies.WarningsSchema, asStatusMap FsHotWatch.Lint.LintReplies.Warnings.tryParse ]
 
     let private format: (string * (string -> Render option)) list =
+        // Which files are unformatted, failing when any are (AUTOMATION-1466: this was read as
+        // a diagnostics response, whose `files` is an object, and threw).
         let unformatted payload =
             FsHotWatch.Fantomas.FormatReplies.Unformatted.tryParse payload
-            |> Option.map (fun _ mode renderStatuses noWarnFail ->
-                renderDiagnosticsReply mode renderStatuses noWarnFail payload)
+            |> Option.map (fun reply _ _ _ ->
+                if reply.Count = 0 then
+                    UI.success "no unformatted files"
+                    0
+                else
+                    renderRefusal $"%d{reply.Count} unformatted file(s): %s{reply.Files}")
 
         [ FsHotWatch.Fantomas.FormatReplies.UnformattedSchema, unformatted ]
 

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: `fshw unformatted` says which files are unformatted. It exits 1 when any are, and prints
+  "no unformatted files" with exit 0 when none are (AUTOMATION-1466). It used to throw on every
+  reply, because the reply was read as a diagnostics response, and the passthrough reported the
+  throw as a daemon error.
+
 - fix: the coverage replies exit by what they say (AUTOMATION-1465). They all used to exit 0, so a
   ratchet that failed and a coverage check that failed both read as a green.
   - `coverage-ratchet` exits 1 when it failed or found no coverage report to ratchet from, and 6

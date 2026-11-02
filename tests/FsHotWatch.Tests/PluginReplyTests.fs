@@ -49,6 +49,14 @@ let private rendersAsSniffed (command: string) (schema: string) (payload: string
     for noWarnFail in [ false; true ] do
         test <@ rendered noWarnFail typed = rendered noWarnFail sniffed @>
 
+/// The exit code and text of rendering `payload` under its declared schema; a throw fails the test.
+let private renderedTyped (command: string) (schema: string) (payload: string) : int * string =
+    match
+        rendered false (FsHotWatch.Ipc.declaredOutputReply command (FsHotWatch.Plugin.ReplySchema.Typed schema) payload)
+    with
+    | Ok rendering -> rendering
+    | Error(kind, message) -> failwith $"rendering %s{payload} threw %s{kind}: %s{message}"
+
 /// A payload its declared schema does not describe is no verdict, naming the schema.
 let private refusesUndescribed (command: string) (schema: string) (payload: string) =
     match
@@ -158,34 +166,34 @@ let ``an unformatted file whose path needs escaping reads back as itself`` () =
         @>
 
 [<Fact(Timeout = 15000)>]
-let ``a typed unformatted reply renders exactly as its shape did`` () =
-    for count, files in [ 0, ""; 2, "src/A.fs, src/B.fs" ] do
-        rendersAsSniffed
+let ``an unformatted reply says which files are unformatted, and fails when any are`` () =
+    // AUTOMATION-1466: this used to throw, because the reply was read as a diagnostics
+    // response whose `files` is an object.
+    let clean =
+        renderedTyped
             "unformatted"
             FsHotWatch.Fantomas.FormatReplies.UnformattedSchema
-            (FsHotWatch.Fantomas.FormatReplies.Unformatted.serialize { Count = count; Files = files })
+            (FsHotWatch.Fantomas.FormatReplies.Unformatted.serialize { Count = 0; Files = "" })
+
+    test <@ fst clean = 0 @>
+    test <@ (snd clean).Contains "no unformatted files" @>
+
+    let dirty =
+        renderedTyped
+            "unformatted"
+            FsHotWatch.Fantomas.FormatReplies.UnformattedSchema
+            (FsHotWatch.Fantomas.FormatReplies.Unformatted.serialize
+                { Count = 2
+                  Files = "src/A.fs, src/B.fs" })
+
+    test <@ fst dirty = 1 @>
+    test <@ (snd dirty).Contains "2 unformatted file(s): src/A.fs, src/B.fs" @>
 
 [<Theory(Timeout = 15000)>]
 [<InlineData("""{"count": 2}""")>]
 [<InlineData("""{"files": "a.fs"}""")>]
 let ``an unformatted payload its schema does not describe is no verdict`` (payload: string) =
     refusesUndescribed "unformatted" FsHotWatch.Fantomas.FormatReplies.UnformattedSchema payload
-
-/// A defect this change keeps rather than fixes: the CLI reads an `unformatted` reply, by its
-/// `count`, as a diagnostics response, whose `files` is an object of per-file entries. The
-/// reply's `files` is a joined string, so rendering it throws, typed or read by its shape.
-/// Pinned so that fixing it is a visible change.
-[<Fact(Timeout = 15000)>]
-let ``rendering an unformatted reply throws, as it did before it was typed`` () =
-    let reply =
-        FsHotWatch.Ipc.declaredOutputReply
-            "unformatted"
-            (FsHotWatch.Plugin.ReplySchema.Typed FsHotWatch.Fantomas.FormatReplies.UnformattedSchema)
-            (FsHotWatch.Fantomas.FormatReplies.Unformatted.serialize { Count = 0; Files = "" })
-
-    match rendered false reply with
-    | Error(kind, _) -> test <@ kind = typeof<InvalidOperationException>.FullName @>
-    | Ok(exitCode, text) -> failwith $"expected the known throw, got exit %d{exitCode}: %s{text}"
 
 let private commandStatuses =
     [ FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.Passed
