@@ -147,6 +147,17 @@ let internal logLaunch (kind: string) (mode: TestMode) (launch: TestRunLaunch) =
         "test-prune"
         $"Launching %s{kind} run under project model generation %s{ObservedModel.describe launch.ModelGeneration} (%s{scope}, %d{Map.count launch.Selection} project(s) selected)"
 
+/// The failures `outcomes` leave, from those before them: a refreshed extension
+/// leaves the map, a failed one enters it.
+let internal failuresAfter (outcomes: ExtensionRefresh list) (failed: Map<string, string>) =
+    outcomes
+    |> List.fold
+        (fun failed outcome ->
+            match outcome with
+            | ExtensionRefresh.Refreshed(name, _) -> Map.remove name failed
+            | ExtensionRefresh.Failed(name, ex) -> Map.add name ex.Message failed)
+        failed
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -677,16 +688,6 @@ let internal createWithEvidenceAndQueries
     // before it, and a refresh it already started must still be joined, once.
     let extensionRefresh = ref ExtensionRefreshPhase.NeverRefreshed
 
-    /// The failures `outcomes` leave, from those before them: a refreshed extension
-    /// leaves the map, a failed one enters it.
-    let failuresAfter (outcomes: ExtensionRefresh list) (failed: Map<string, string>) =
-        outcomes
-        |> List.fold
-            (fun failed outcome ->
-                match outcome with
-                | ExtensionRefresh.Refreshed(name, _) -> Map.remove name failed
-                | ExtensionRefresh.Failed(name, ex) -> Map.add name ex.Message failed)
-            failed
 
     /// Fold a refresh's outcomes into `state`: the log, the ledger, `FailedExtensions`.
     let applyRefresh
