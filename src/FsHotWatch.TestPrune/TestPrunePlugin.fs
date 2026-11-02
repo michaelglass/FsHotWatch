@@ -105,6 +105,310 @@ type internal FreshnessView =
 
 
 
+/// A handler for one checked file under the current model.
+type internal FileCheckedFold =
+    PluginCtx<TestPruneMsg> -> TestPruneState -> int64 option -> FileCheckResult -> Async<TestPruneState>
+
+/// A handler for a sealed batch under the current model.
+type internal BatchCheckedFold =
+    PluginCtx<TestPruneMsg> -> TestPruneState -> int64 option -> BatchChecked -> Async<TestPruneState>
+
+/// A handler for a run's completion.
+type internal RunFinishedFold =
+    PluginCtx<TestPruneMsg>
+        -> TestPruneState
+        -> TestPruneMsg
+        -> TestRunStarted
+        -> TestRunCompleted
+        -> TestRunLaunch
+        -> Async<TestPruneState>
+
+/// A requested run's launch.
+type internal RunRequester =
+    PluginCtx<TestPruneMsg>
+        -> TestPruneState
+        -> TestConfig list
+        -> string option
+        -> Tasks.TaskCompletionSource<string>
+        -> TestPruneState
+
+/// A requested run that cannot launch: its status, and what it owes back.
+type internal UnavailableRun =
+    PluginCtx<TestPruneMsg>
+        -> TestPruneState
+        -> string
+        -> Set<string>
+        -> Tasks.TaskCompletionSource<string> option
+        -> TestPruneState
+
+/// The event handlers the fold dispatches to (`updateWith`).
+type internal EventHandlers =
+    { OnFileChecked: FileCheckedFold
+      OnBatchChecked: BatchCheckedFold
+      OnBuildCompleted: PluginCtx<TestPruneMsg> -> TestPruneState -> BuildResult -> Async<TestPruneState>
+      OnRunFinished: RunFinishedFold }
+
+/// The run lifecycle steps the fold takes directly (`updateWith`).
+type internal FoldSteps =
+    { EndRun: bool -> TestPruneState -> TestPruneState
+      ImpactRun: StateStep
+      JoinRefresh: StateStep
+      LaunchHeld: PluginCtx<TestPruneMsg> -> TestPruneState -> string -> TestPruneState
+      LaunchRequested: StateStep
+      RequestTestRun: RunRequester
+      UnavailableRun: UnavailableRun }
+
+/// What the plugin's fold reads (`updateWith`). The freshness view is reconciled through
+/// `ReconcileFreshness` when the fold calls it.
+type internal UpdateEnv =
+    { RepoRoot: string
+      TestConfigs: TestConfig list option
+      RunnableProjects: Set<string>
+      IndexedKey: string -> string option
+      ObserveModelGeneration: PluginCtx<TestPruneMsg> -> int64 option
+      ReconcileFreshness: int64 option -> unit
+      Handlers: EventHandlers
+      Steps: FoldSteps }
+
+/// The fold: each event, after the refresh it may need, to the handler for its kind.
+let internal updateWith
+    (env: UpdateEnv)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (state: TestPruneState)
+    (event: PluginEvent<TestPruneMsg>)
+    =
+    let repoRoot = env.RepoRoot
+    let testConfigs = env.TestConfigs
+    let runnableProjects = env.RunnableProjects
+    let indexedKey = env.IndexedKey
+    let observeModelGeneration = env.ObserveModelGeneration
+    let reconcileFreshness = env.ReconcileFreshness
+    let onFileChecked = env.Handlers.OnFileChecked
+    let onBatchChecked = env.Handlers.OnBatchChecked
+    let onBuildCompleted = env.Handlers.OnBuildCompleted
+    let onRunFinished = env.Handlers.OnRunFinished
+    let endRun = env.Steps.EndRun
+    let impactRun = env.Steps.ImpactRun
+    let joinRefresh = env.Steps.JoinRefresh
+    let launchHeld = env.Steps.LaunchHeld
+    let launchRequested = env.Steps.LaunchRequested
+    let requestTestRun = env.Steps.RequestTestRun
+    let unavailableRun = env.Steps.UnavailableRun
+
+    async {
+        // Replies belong to the event that owes them; the previous event's were
+        // resolved when its state was published.
+        let state = { state with Replies = [] }
+
+        // Only a check result folds while a refresh runs beside the fold: every
+        // other event may read the extensions' edges or failures (AUTOMATION-1441).
+        let state =
+            match event with
+            | PluginEvent.FileChecked _ -> state
+            | _ -> joinRefresh ctx state
+
+        let modelGeneration = observeModelGeneration ctx
+        reconcileFreshness modelGeneration
+
+        let state =
+            if
+                state.AnalysisModelGeneration <> modelGeneration
+                && not state.PendingAnalysis.IsEmpty
+            then
+                // Pending compiler results belong to the model they were accepted
+                // under. Retire them before a flush can write them into another
+                // model's symbol index. Their changed symbols stay owed, and the
+                // index can no longer vouch for what covers them, so every runnable
+                // project owes a run.
+                // Outcomes already recorded for the current model stay: a replayed
+                // `FileChecked` records one without passing through this fold, and
+                // dropping it here left the seal refusing a file no later check
+                // re-analysed (AUTOMATION-1415).
+                let currentOutcomes =
+                    AnalysisFileEvidence.forModel modelGeneration state.AnalysisFiles
+
+                Logging.info
+                    "test-prune"
+                    $"project model changed (%A{state.AnalysisModelGeneration} -> %A{modelGeneration}); retiring %d{state.PendingAnalysis.Count} project(s) of pending analysis, keeping %d{currentOutcomes.Count} file outcome(s) already recorded for the current model"
+
+                // The retired analyses never reached the index. Where it does not
+                // already hold the same analysis, it cannot vouch for the file
+                // until the file is analysed and flushed again, and nothing this
+                // process cached for it may replay.
+                let retired =
+                    state.PendingIdentities
+                    |> Map.filter (fun relPath identity -> indexedKey relPath <> Some identity)
+                    |> Map.keys
+                    |> Set.ofSeq
+
+                { state with
+                    PendingAnalysis = Map.empty
+                    PendingIdentities = Map.empty
+                    Unindexed = Set.union state.Unindexed retired
+                    AnalysisModelGeneration = modelGeneration
+                    AnalysisFiles = currentOutcomes
+                    CohortSeal = None
+                    AnalysisReceipt = None
+                    PendingForceRunProjects = Set.union state.PendingForceRunProjects runnableProjects }
+            else
+                state
+
+        // Analysis folds only a result or seal published against the model this host
+        // publishes now. One from a replaced model was admitted before the
+        // replacement, and its cohort is retried against the current model. One
+        // with no model was captured against none, so it cannot describe this one.
+        let notCurrent (published: int64 option) =
+            published.IsNone || published <> modelGeneration
+
+        // Recorded before any arm can return early: whether a moved path is an
+        // edit or the run's own write depends only on the watcher having seen it.
+        let state =
+            match event, state.InFlight with
+            | PluginEvent.FileChecked result, Some run ->
+                let relPath =
+                    Path.GetRelativePath(repoRoot, AbsFilePath.value result.File).Replace('\\', '/')
+
+                Logging.debug "test-prune" $"watcher reported %s{relPath} during the in-flight run"
+
+                { state with
+                    InFlight =
+                        Some
+                            { run with
+                                WatcherReported = Set.add relPath run.WatcherReported } }
+            | _ -> state
+
+        match event with
+        | PluginEvent.FileChecked result when notCurrent result.ModelGeneration ->
+            Logging.info
+                "test-prune"
+                $"ignoring FileChecked for %s{AbsFilePath.value result.File} from model %A{result.ModelGeneration}; current %A{modelGeneration}"
+
+            return state
+        | PluginEvent.BatchChecked batch when notCurrent batch.ModelGeneration ->
+            Logging.info
+                "test-prune"
+                $"ignoring BatchChecked from model %A{batch.ModelGeneration}; current %A{modelGeneration}"
+
+            return state
+        | PluginEvent.FileChecked result -> return! onFileChecked ctx state modelGeneration result
+
+        | PluginEvent.BatchChecked batch -> return! onBatchChecked ctx state modelGeneration batch
+
+        | PluginEvent.BuildCompleted buildResult -> return! onBuildCompleted ctx state buildResult
+
+        | Custom(TestsFinished(started, launchedCompletion, launchedAs) as message)
+        | Custom(CommandTestsFinished(started, launchedCompletion, launchedAs, _, _) as message) ->
+            return! onRunFinished ctx state message started launchedCompletion launchedAs
+        | Custom(ArtifactsUnavailable(reason, owed, reply)) ->
+            let message =
+                $"Tests did not run because the preceding build left invalid artifacts: %s{reason}"
+
+            return unavailableRun ctx state message owed reply
+
+        | Custom(TestHostUnavailable(reason, owed, reply, None)) ->
+            let message = $"Tests did not run because the test host could not start: %s{reason}"
+            return unavailableRun ctx state message owed reply
+
+        // The run started and its result is gone, so it proves nothing: it ends
+        // Aborted, and what it would have discharged stays owed.
+        | Custom(TestHostUnavailable(reason, owed, reply, Some started)) ->
+            let _, completed = abortedRunLifecycle (Some started) reason
+            ctx.EmitTestRunCompleted completed
+            let message = $"The test run's result was discarded: %s{reason}"
+            return unavailableRun ctx state message owed reply
+
+        // Nobody is left to read this run, so it reports nothing: the status its
+        // `Running` displaced is already back. It closes what it opened, ends the
+        // run in flight, and hands back the fanout it consumed. The rest of its debt
+        // was never discharged, so whatever next wants a run launches with it.
+        | Custom(TestRunWithdrawn(owed, reply, opened)) ->
+            let reason = "every client that wanted the run has gone"
+
+            opened
+            |> Option.iter (fun started ->
+                let _, completed = abortedRunLifecycle (Some started) reason
+                ctx.EmitTestRunCompleted completed)
+
+            reply
+            |> Option.iter (fun target -> target.TrySetResult(JsonSerializer.Serialize {| error = reason |}) |> ignore)
+
+            return
+                { endRun false state with
+                    PendingForceRunProjects = Set.union state.PendingForceRunProjects owed
+                    DebtDuringFullRun = Map.empty }
+
+        | Custom OwedRunRequested ->
+            if TestMode.launchesOwedRuns state.Mode then
+                return state
+            else
+                let armed =
+                    { state with
+                        Mode = TestMode.armOwedRun state.Mode }
+
+                if state.OwedRunHeld then
+                    return launchRequested ctx armed
+                else
+                    Logging.info
+                        "test-prune"
+                        "A command asked for the owed test run: none is held yet, so the next build's run launches"
+
+                    return armed
+
+        | Custom(ScopeRequested mode) ->
+            if TestMode.requestsFullSuite mode then
+                Logging.info
+                    "test-prune"
+                    "Scope set to FULL SUITE — impact filtering disabled for subsequent runs in this daemon session"
+            else
+                Logging.info "test-prune" "Scope set to IMPACT-FILTERED (inner-loop default)"
+
+            return { state with Mode = mode }
+
+        | Custom(RuntimeCoverageFailed(project, reason)) ->
+            // What is unknown is what THIS project's tests reach on the tree they ran
+            // on, so it is this project's debt, not the suite's.
+            Logging.warn
+                "test-prune"
+                $"runtime coverage for %s{project} could not be ingested: %s{reason}; %s{project} runs in full until a run of it ingests"
+
+            return
+                { state with
+                    Debt =
+                        { state.Debt with
+                            CoverageNotIngested = Map.add project reason state.Debt.CoverageNotIngested } }
+
+        | Custom ImpactRunRequested -> return impactRun ctx state
+        | Custom(DiffWaitExpired id) ->
+            match state.AwaitingDiff with
+            | Some held when held.Id = id ->
+                Logging.warn
+                    "test-prune"
+                    $"No check results were folded within %.0f{DiffWait.bound.TotalSeconds}s of the build that held its launch for them"
+
+                return launchHeld ctx state "its wait expired, so it selects without the diff"
+            | _ -> return state
+
+        | Custom(RunTestsRequested(configs, filter, reply)) -> return requestTestRun ctx state configs filter reply
+
+        | Custom(IndexFoldProbe folded) ->
+            folded.TrySetResult() |> ignore
+            return state
+
+        | Custom(RunFailedTestsRequested(filter, reply)) ->
+            match failedTestConfigs (defaultArg testConfigs []) state.LastResults state.OutstandingFailures with
+            | Error msg ->
+                reply.TrySetResult(JsonSerializer.Serialize({| error = msg |})) |> ignore
+                return state
+            | Ok [] ->
+                reply.TrySetResult(JsonSerializer.Serialize({| error = "no matching test projects" |}))
+                |> ignore
+
+                return state
+            | Ok configs -> return requestTestRun ctx state configs filter reply
+
+        | _ -> return state
+    }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1960,225 +2264,32 @@ let internal createWithEvidenceAndQueries
     let onFileChecked ctx state modelGeneration result =
         onFileCheckedWith fileCheckedEnv ctx state modelGeneration result
 
+    let updateEnv: UpdateEnv =
+        { RepoRoot = repoRoot
+          TestConfigs = testConfigs
+          RunnableProjects = runnableProjects
+          IndexedKey = indexedKey
+          ObserveModelGeneration = observeModelGeneration
+          ReconcileFreshness = reconcileFreshness
+          Handlers =
+            { OnFileChecked = onFileChecked
+              OnBatchChecked = onBatchChecked
+              OnBuildCompleted = onBuildCompleted
+              OnRunFinished = onRunFinished }
+          Steps =
+            { EndRun = endRun
+              ImpactRun = impactRun
+              JoinRefresh = joinRefresh
+              LaunchHeld = launchHeld
+              LaunchRequested = launchRequested
+              RequestTestRun = requestTestRun
+              UnavailableRun = unavailableRun } }
+
+    let update ctx state event = updateWith updateEnv ctx state event
+
     { Name = PluginName.create FsHotWatch.PluginActivity.TestPrunePluginName
       Init = initialState
-      Update =
-        fun ctx state event ->
-            async {
-                // Replies belong to the event that owes them; the previous event's were
-                // resolved when its state was published.
-                let state = { state with Replies = [] }
-
-                // Only a check result folds while a refresh runs beside the fold: every
-                // other event may read the extensions' edges or failures (AUTOMATION-1441).
-                let state =
-                    match event with
-                    | PluginEvent.FileChecked _ -> state
-                    | _ -> joinRefresh ctx state
-
-                let modelGeneration = observeModelGeneration ctx
-                reconcileFreshness modelGeneration
-
-                let state =
-                    if
-                        state.AnalysisModelGeneration <> modelGeneration
-                        && not state.PendingAnalysis.IsEmpty
-                    then
-                        // Pending compiler results belong to the model they were accepted
-                        // under. Retire them before a flush can write them into another
-                        // model's symbol index. Their changed symbols stay owed, and the
-                        // index can no longer vouch for what covers them, so every runnable
-                        // project owes a run.
-                        // Outcomes already recorded for the current model stay: a replayed
-                        // `FileChecked` records one without passing through this fold, and
-                        // dropping it here left the seal refusing a file no later check
-                        // re-analysed (AUTOMATION-1415).
-                        let currentOutcomes =
-                            AnalysisFileEvidence.forModel modelGeneration state.AnalysisFiles
-
-                        Logging.info
-                            "test-prune"
-                            $"project model changed (%A{state.AnalysisModelGeneration} -> %A{modelGeneration}); retiring %d{state.PendingAnalysis.Count} project(s) of pending analysis, keeping %d{currentOutcomes.Count} file outcome(s) already recorded for the current model"
-
-                        // The retired analyses never reached the index. Where it does not
-                        // already hold the same analysis, it cannot vouch for the file
-                        // until the file is analysed and flushed again, and nothing this
-                        // process cached for it may replay.
-                        let retired =
-                            state.PendingIdentities
-                            |> Map.filter (fun relPath identity -> indexedKey relPath <> Some identity)
-                            |> Map.keys
-                            |> Set.ofSeq
-
-                        { state with
-                            PendingAnalysis = Map.empty
-                            PendingIdentities = Map.empty
-                            Unindexed = Set.union state.Unindexed retired
-                            AnalysisModelGeneration = modelGeneration
-                            AnalysisFiles = currentOutcomes
-                            CohortSeal = None
-                            AnalysisReceipt = None
-                            PendingForceRunProjects = Set.union state.PendingForceRunProjects runnableProjects }
-                    else
-                        state
-
-                // Analysis folds only a result or seal published against the model this host
-                // publishes now. One from a replaced model was admitted before the
-                // replacement, and its cohort is retried against the current model. One
-                // with no model was captured against none, so it cannot describe this one.
-                let notCurrent (published: int64 option) =
-                    published.IsNone || published <> modelGeneration
-
-                // Recorded before any arm can return early: whether a moved path is an
-                // edit or the run's own write depends only on the watcher having seen it.
-                let state =
-                    match event, state.InFlight with
-                    | PluginEvent.FileChecked result, Some run ->
-                        let relPath =
-                            Path.GetRelativePath(repoRoot, AbsFilePath.value result.File).Replace('\\', '/')
-
-                        Logging.debug "test-prune" $"watcher reported %s{relPath} during the in-flight run"
-
-                        { state with
-                            InFlight =
-                                Some
-                                    { run with
-                                        WatcherReported = Set.add relPath run.WatcherReported } }
-                    | _ -> state
-
-                match event with
-                | PluginEvent.FileChecked result when notCurrent result.ModelGeneration ->
-                    Logging.info
-                        "test-prune"
-                        $"ignoring FileChecked for %s{AbsFilePath.value result.File} from model %A{result.ModelGeneration}; current %A{modelGeneration}"
-
-                    return state
-                | PluginEvent.BatchChecked batch when notCurrent batch.ModelGeneration ->
-                    Logging.info
-                        "test-prune"
-                        $"ignoring BatchChecked from model %A{batch.ModelGeneration}; current %A{modelGeneration}"
-
-                    return state
-                | PluginEvent.FileChecked result -> return! onFileChecked ctx state modelGeneration result
-
-                | PluginEvent.BatchChecked batch -> return! onBatchChecked ctx state modelGeneration batch
-
-                | PluginEvent.BuildCompleted buildResult -> return! onBuildCompleted ctx state buildResult
-
-                | Custom(TestsFinished(started, launchedCompletion, launchedAs) as message)
-                | Custom(CommandTestsFinished(started, launchedCompletion, launchedAs, _, _) as message) ->
-                    return! onRunFinished ctx state message started launchedCompletion launchedAs
-                | Custom(ArtifactsUnavailable(reason, owed, reply)) ->
-                    let message =
-                        $"Tests did not run because the preceding build left invalid artifacts: %s{reason}"
-
-                    return unavailableRun ctx state message owed reply
-
-                | Custom(TestHostUnavailable(reason, owed, reply, None)) ->
-                    let message = $"Tests did not run because the test host could not start: %s{reason}"
-                    return unavailableRun ctx state message owed reply
-
-                // The run started and its result is gone, so it proves nothing: it ends
-                // Aborted, and what it would have discharged stays owed.
-                | Custom(TestHostUnavailable(reason, owed, reply, Some started)) ->
-                    let _, completed = abortedRunLifecycle (Some started) reason
-                    ctx.EmitTestRunCompleted completed
-                    let message = $"The test run's result was discarded: %s{reason}"
-                    return unavailableRun ctx state message owed reply
-
-                // Nobody is left to read this run, so it reports nothing: the status its
-                // `Running` displaced is already back. It closes what it opened, ends the
-                // run in flight, and hands back the fanout it consumed. The rest of its debt
-                // was never discharged, so whatever next wants a run launches with it.
-                | Custom(TestRunWithdrawn(owed, reply, opened)) ->
-                    let reason = "every client that wanted the run has gone"
-
-                    opened
-                    |> Option.iter (fun started ->
-                        let _, completed = abortedRunLifecycle (Some started) reason
-                        ctx.EmitTestRunCompleted completed)
-
-                    reply
-                    |> Option.iter (fun target ->
-                        target.TrySetResult(JsonSerializer.Serialize {| error = reason |}) |> ignore)
-
-                    return
-                        { endRun false state with
-                            PendingForceRunProjects = Set.union state.PendingForceRunProjects owed
-                            DebtDuringFullRun = Map.empty }
-
-                | Custom OwedRunRequested ->
-                    if TestMode.launchesOwedRuns state.Mode then
-                        return state
-                    else
-                        let armed =
-                            { state with
-                                Mode = TestMode.armOwedRun state.Mode }
-
-                        if state.OwedRunHeld then
-                            return launchRequested ctx armed
-                        else
-                            Logging.info
-                                "test-prune"
-                                "A command asked for the owed test run: none is held yet, so the next build's run launches"
-
-                            return armed
-
-                | Custom(ScopeRequested mode) ->
-                    if TestMode.requestsFullSuite mode then
-                        Logging.info
-                            "test-prune"
-                            "Scope set to FULL SUITE — impact filtering disabled for subsequent runs in this daemon session"
-                    else
-                        Logging.info "test-prune" "Scope set to IMPACT-FILTERED (inner-loop default)"
-
-                    return { state with Mode = mode }
-
-                | Custom(RuntimeCoverageFailed(project, reason)) ->
-                    // What is unknown is what THIS project's tests reach on the tree they ran
-                    // on, so it is this project's debt, not the suite's.
-                    Logging.warn
-                        "test-prune"
-                        $"runtime coverage for %s{project} could not be ingested: %s{reason}; %s{project} runs in full until a run of it ingests"
-
-                    return
-                        { state with
-                            Debt =
-                                { state.Debt with
-                                    CoverageNotIngested = Map.add project reason state.Debt.CoverageNotIngested } }
-
-                | Custom ImpactRunRequested -> return impactRun ctx state
-                | Custom(DiffWaitExpired id) ->
-                    match state.AwaitingDiff with
-                    | Some held when held.Id = id ->
-                        Logging.warn
-                            "test-prune"
-                            $"No check results were folded within %.0f{DiffWait.bound.TotalSeconds}s of the build that held its launch for them"
-
-                        return launchHeld ctx state "its wait expired, so it selects without the diff"
-                    | _ -> return state
-
-                | Custom(RunTestsRequested(configs, filter, reply)) ->
-                    return requestTestRun ctx state configs filter reply
-
-                | Custom(IndexFoldProbe folded) ->
-                    folded.TrySetResult() |> ignore
-                    return state
-
-                | Custom(RunFailedTestsRequested(filter, reply)) ->
-                    match failedTestConfigs (defaultArg testConfigs []) state.LastResults state.OutstandingFailures with
-                    | Error msg ->
-                        reply.TrySetResult(JsonSerializer.Serialize({| error = msg |})) |> ignore
-                        return state
-                    | Ok [] ->
-                        reply.TrySetResult(JsonSerializer.Serialize({| error = "no matching test projects" |}))
-                        |> ignore
-
-                        return state
-                    | Ok configs -> return requestTestRun ctx state configs filter reply
-
-                | _ -> return state
-            }
+      Update = update
       PrepareCommit = Some prepareCommit
       Commands = allCommands
       Subscriptions =
