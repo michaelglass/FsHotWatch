@@ -220,15 +220,9 @@ type ReplayedResultException(consumer: string, file: string) =
 
 module FileCheckResult =
     /// What suppresses `result`'s diagnostics: `configured` codes, the file's `#nowarn`,
-    /// read against the compiler flags it was checked under (`FcsSuppression`). An aborted
-    /// check may carry no project options; it is read as checked under no flags.
+    /// read against the compiler flags it was checked under (`FcsSuppression`).
     let suppression (configured: Set<int>) (result: FileCheckResult) : FcsSuppression.Suppression =
-        let flags =
-            match box result.ProjectOptions with
-            | null -> Array.empty
-            | _ -> result.ProjectOptions.OtherOptions
-
-        FcsSuppression.Suppression.forFile configured flags result.Source
+        FcsSuppression.Suppression.forFile configured result.ProjectOptions.OtherOptions result.Source
 
     /// `text` from `result`'s check (a diagnostic's message) as the worktree reads it:
     /// its virtual paths made real, and each store path of a placed reference replaced

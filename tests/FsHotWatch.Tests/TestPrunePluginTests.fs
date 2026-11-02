@@ -647,7 +647,7 @@ let ``FileChecked exception while tests running surfaces in the ledger without s
         if not (runningWait.Wait(TimeSpan.FromSeconds 10.0)) then
             Assert.Fail("test run never reached Running — cannot exercise the mid-run path")
 
-        // `fakeFileCheckResult` carries ProjectOptions = Unchecked.defaultof<_>, so the
+        // `fakeFileCheckResult` carries ProjectOptions = fixtureOptions (), so the
         // FileChecked branch of Update throws a NullReferenceException.
         let fakeFile = Path.Combine(tmpDir, "Lib.fs")
         File.WriteAllText(fakeFile, "module Lib\n")

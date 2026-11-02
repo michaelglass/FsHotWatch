@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- refactor: a check result's project options are never null. `FileCheckResult.suppression` and the in-memory check cache no longer guard against a null `ProjectOptions`: every result the pipeline builds carries the options it was checked under. Test fixtures use the shared fixture script's real options; the few tests of a description that throws inject the null explicitly (`TestHelpers.withUndescribableOptions`).
+
 - refactor!: an action key's value is a parsed `ActionKey.KeyValue`, and the outcome store takes
   it (ADR-059 §2). `ActionKey.Value` is a `KeyValue`; `.Text` is the filed spelling. `Store.Lookup`,
   `LookupWithOutputs`, `History` and `DirectoryOf` take a `KeyValue` or the `ActionKey` itself, and

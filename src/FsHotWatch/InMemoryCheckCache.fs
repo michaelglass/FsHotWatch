@@ -57,12 +57,7 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
 
     let slotOf (entry: CachedCheck) =
         let result = entry.Result
-        // Test fixtures pass null options; they share one project slot.
-        let project =
-            if isNull (box result.ProjectOptions) then
-                ""
-            else
-                result.ProjectOptions.ProjectFileName
+        let project = result.ProjectOptions.ProjectFileName
 
         struct (AbsFilePath.value result.File, project)
 

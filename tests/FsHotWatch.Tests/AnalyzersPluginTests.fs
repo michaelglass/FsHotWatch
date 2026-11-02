@@ -19,9 +19,12 @@ let private compositeFileKey (repoRoot: string) (file: string) =
     FsHotWatch.CachePathIdentity.keyOf (Some repoRoot) file
 
 
+/// A result the analyzers cannot build a context for (no project options), so an analysis
+/// of it CRASHES: several tests below use that crash as the evidence the worker ran.
 let private fakeResult file =
     { fakeFileCheckResult file with
         Source = "let x = 1" }
+    |> withUndescribableOptions
 
 [<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
@@ -180,7 +183,7 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
         { File = AbsFilePath.create "/tmp/nonexistent/Fake.fs"
           Source = "let x = 1"
           CheckResults = fixtureParseOnly ()
-          ProjectOptions = Unchecked.defaultof<_>
+          ProjectOptions = Unchecked.defaultof<_> // fault injection: the analysis must crash (below)
           Version = 0L
           ModelGeneration = Some fixtureModelGeneration
           Frame = None

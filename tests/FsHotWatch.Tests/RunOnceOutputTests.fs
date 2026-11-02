@@ -867,7 +867,7 @@ let ``run-once grades the one scan it ran: an unchecked file is Incomplete, with
                         { File = AbsFilePath.create file
                           Source = ""
                           CheckResults = fixtureFullCheck ()
-                          ProjectOptions = Unchecked.defaultof<_>
+                          ProjectOptions = fixtureOptions ()
                           Version = 0L
                           ModelGeneration = None
                           Frame = None

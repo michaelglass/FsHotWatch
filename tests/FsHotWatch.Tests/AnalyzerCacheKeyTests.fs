@@ -251,7 +251,8 @@ let ``an upstream shape change this file cannot see still hits`` () =
 [<Fact(Timeout = 15000)>]
 let ``a file whose used signatures cannot be described has no analyzers key`` () =
     withTempDir "undescribable" (fun root ->
-        // A check result with no state throws from every query.
+        // Fault injection: a check result with no state, under no project options, so the
+        // walk that describes its used signatures throws.
         let broken =
             System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(
                 typeof<FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults>
@@ -261,5 +262,6 @@ let ``a file whose used signatures cannot be described has no analyzers key`` ()
         let result =
             { resultIn root with
                 CheckResults = FullCheck(fixtureParse (), broken) }
+            |> withUndescribableOptions
 
         test <@ keyFor (Some root) DiagnosticSeverity.Hint result = None @>)

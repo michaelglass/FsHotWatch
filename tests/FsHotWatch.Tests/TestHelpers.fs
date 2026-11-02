@@ -12,25 +12,34 @@ open FsHotWatch.Events
 let sharedChecker =
     lazy FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
-/// A real parse and type check of a one-line script, made once and shared: the FCS objects a
+let private fixtureFile =
+    Path.Combine(Path.GetTempPath(), "fshw-fixture", "Fixture.fsx")
+
+let private fixtureSource =
+    FSharp.Compiler.Text.SourceText.ofString "module Fixture\nlet value = 1\n"
+
+/// The project options of a one-line script, made once and shared: what a fixture result
+/// was checked under when the plugin under test only needs options to exist.
+let private fixtureScriptOptions =
+    lazy
+        (sharedChecker.Value.GetProjectOptionsFromScript(fixtureFile, fixtureSource, assumeDotNetFramework = false)
+         |> Async.RunSynchronously
+         |> fst)
+
+/// A real parse and type check of that script, made once and shared: the FCS objects a
 /// fixture result carries when the plugin under test only needs a live check to exist.
 let private fixtureChecked =
     lazy
         (let checker = sharedChecker.Value
-         let file = Path.Combine(Path.GetTempPath(), "fshw-fixture", "Fixture.fsx")
-
-         let source =
-             FSharp.Compiler.Text.SourceText.ofString "module Fixture\nlet value = 1\n"
-
-         let options, _ =
-             checker.GetProjectOptionsFromScript(file, source, assumeDotNetFramework = false)
-             |> Async.RunSynchronously
+         let file = fixtureFile
+         let source = fixtureSource
+         let options = fixtureScriptOptions.Value
 
          match
              checker.ParseAndCheckFileInProject(file, 0, source, options)
              |> Async.RunSynchronously
          with
-         | parse, FSharpCheckFileAnswer.Succeeded check -> (parse, check), options
+         | parse, FSharpCheckFileAnswer.Succeeded check -> parse, check
          | _, FSharpCheckFileAnswer.Aborted -> failwith "the fixture script's check was aborted")
 
 /// A real parse of a one-line file, made once and shared; cheaper than `fixtureChecked`, so a
@@ -49,13 +58,13 @@ let private fixtureParsed =
 let fixtureParse () : FSharpParseFileResults = fixtureParsed.Value
 
 /// The shared fixture's type-check results.
-let fixtureCheck () : FSharpCheckFileResults = snd (fst fixtureChecked.Value)
+let fixtureCheck () : FSharpCheckFileResults = snd fixtureChecked.Value
 
 /// The project options the shared fixture was checked under.
-let fixtureOptions () : FSharpProjectOptions = snd fixtureChecked.Value
+let fixtureOptions () : FSharpProjectOptions = fixtureScriptOptions.Value
 
 /// A completed check of the shared fixture.
-let fixtureFullCheck () : FileCheckState = FullCheck(fst fixtureChecked.Value)
+let fixtureFullCheck () : FileCheckState = FullCheck fixtureChecked.Value
 
 /// An aborted check of the shared fixture: its parse alone.
 let fixtureParseOnly () : FileCheckState = ParseOnly(fixtureParse ())
@@ -138,13 +147,21 @@ let createModelHost (checker: FSharpChecker) (repoRoot: string) =
     host.WorkStore.PublishProjectModel fixtureModel
     host
 
+/// FAULT INJECTION, never a default: `result` with no project options, so anything that
+/// describes the check from its options (the used-signature walk, the analyzers' context)
+/// throws. Production always checks under the options it registered; a test of the path a
+/// throwing description takes uses this to reach it.
+let withUndescribableOptions (result: FileCheckResult) : FileCheckResult =
+    { result with
+        ProjectOptions = Unchecked.defaultof<_> }
+
 /// Build a FileCheckResult with safe-uninitialized FCS parts. Lets plugin tests
 /// fire FileChecked events without spinning up real FCS.
 let fakeFileCheckResult (file: string) : FileCheckResult =
     { File = AbsFilePath.create file
       Source = "module Fake"
       CheckResults = fixtureParseOnly ()
-      ProjectOptions = Unchecked.defaultof<_>
+      ProjectOptions = fixtureOptions ()
       Version = 0L
       ModelGeneration = Some fixtureModelGeneration
       Frame = None
