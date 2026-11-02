@@ -698,6 +698,256 @@ let internal onBatchCheckedWith
                     return flushedState
     }
 
+/// What `onBuildCompletedWith` reads from the plugin.
+type internal BuildCompletedEnv =
+    { RepoRoot: string
+      TestConfigs: TestConfig list option
+      Launch: LaunchSteps
+      HoldForDiff: StateStep
+      JoinRefresh: StateStep
+      LaunchScopeOf: TestRunInputs -> LaunchScope
+      ObserveModelGeneration: PluginCtx<TestPruneMsg> -> int64 option }
+
+/// A completed build: flush, select, and launch or hold the impact run it owes.
+let internal onBuildCompletedWith
+    (env: BuildCompletedEnv)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (state: TestPruneState)
+    (buildResult: BuildResult)
+    =
+    let repoRoot = env.RepoRoot
+    let testConfigs = env.TestConfigs
+    let attachToFullRun = env.Launch.AttachToFullRun
+    let enqueueImpactRun = env.Launch.EnqueueImpactRun
+    let flushAndQueryAffectedBounded = env.Launch.FlushAndQueryAffectedBounded
+    let joinsFullRun = env.Launch.JoinsFullRun
+    let launchImpactRun = env.Launch.LaunchImpactRun
+    let nothingOwed = env.Launch.NothingOwed
+    let tryRepairSchemaDrift = env.Launch.TryRepairSchemaDrift
+    let holdForDiff = env.HoldForDiff
+    let joinRefresh = env.JoinRefresh
+    let launchScopeOf = env.LaunchScopeOf
+    let observeModelGeneration = env.ObserveModelGeneration
+
+    async {
+        match buildResult with
+        | BuildSucceeded ->
+            // Record that BuildCompleted has fired this session, so subsequent
+            // FileChecked events may promote the freshness sidecar to clean.
+            // Set unconditionally across both the queued-rerun and run-now
+            // branches: the gate asks whether the build has realized the
+            // reference graph, not whether tests are queued.
+            let state =
+                { state with
+                    BuildCompletedInThisSession = true }
+
+            // ── Dependency-fanout fingerprint (computed for EVERY
+            // build, before the running/idle split, so the prior
+            // fingerprint always advances and a mid-run dependency
+            // change is never lost). Fingerprint each test project from
+            // its referenced projects' non-symbol inputs + own package
+            // versions (DependencyFanout). A project whose fingerprint moved
+            // since the last build had a dependency/binary change the
+            // symbol diff can't see → force-run it. An empty graph
+            // (tests / no graph wired) yields no fanout, so the
+            // symbol-precise path is unchanged.
+            let fsprojByName =
+                ctx.ProjectGraph.GetAllProjects()
+                |> List.map (fun p -> Path.GetFileNameWithoutExtension p, p)
+                |> Map.ofList
+
+            let currentFingerprints =
+                match testConfigs with
+                | Some configs ->
+                    let fingerprint = DependencyFanout.fingerprinter ctx.ProjectGraph
+
+                    configs
+                    |> List.choose (fun c ->
+                        Map.tryFind c.Project fsprojByName
+                        |> Option.map (fun fsproj -> c.Project, fsproj))
+                    |> List.map (fun (name, fsproj) -> name, fingerprint fsproj)
+                    |> Map.ofList
+                | None -> Map.empty
+
+            let fanoutNow =
+                DependencyFanout.changedProjects state.PriorProjectFingerprints currentFingerprints
+
+            if not (Set.isEmpty fanoutNow) then
+                Logging.info
+                    "test-prune"
+                    $"Dependency fanout: %d{Set.count fanoutNow} test project(s) had a \
+                      dependency-fingerprint change — force-running: \
+                      %s{describeAll (Set.toList fanoutNow)}"
+            else
+                // Say that nothing fanned out, and say what was examined to
+                // reach that conclusion. "No dependency changed" and
+                // "fingerprinting never ran" otherwise produce identical
+                // logs, so an inert `computeProjectFingerprint` — the safety
+                // net against binary-only changes silently OFF — reads as a
+                // healthy quiet run. Zero fingerprints computed, or zero
+                // graph projects, means inert rather than clean.
+                Logging.info
+                    "test-prune"
+                    $"Dependency fanout: none — \
+                      %d{currentFingerprints.Count} project fingerprint(s) computed, \
+                      %d{fsprojByName.Count} project(s) in the graph, \
+                      %d{state.PriorProjectFingerprints.Count} prior fingerprint(s) to compare against"
+
+            // Advance the baseline on every build; carry any not-yet-run
+            // fanout in the pending set (consumed by the queued rerun).
+            let state =
+                { state with
+                    PriorProjectFingerprints =
+                        DependencyFanout.advance state.PriorProjectFingerprints currentFingerprints }
+
+            // Asked BEFORE selection: a held key refuses the claim, and
+            // selection is the expensive step (a flush and an impact query
+            // over the whole index), so selecting only to be refused is
+            // wasted work. A fold of a finished run holds the key as surely
+            // as a live run does. The claim below still handles `SlotBusy`
+            // for a key taken after this read.
+            let heldBy =
+                match ctx.SlotHolder "tests" with
+                | SlotHolder.Free -> None
+                | SlotHolder.LiveRun -> Some "tests already running"
+                | SlotHolder.Fold -> Some "tests key held by an uncommitted fold"
+
+            match heldBy with
+            | Some reason when joinsFullRun state false ->
+                // A pass-through full run takes what is owed: no run follows
+                // it. The fanout is kept for whatever launches next.
+                ctx.Log $"  ↳ attached to the full run (%s{reason})"
+
+                Logging.info
+                    "test-prune"
+                    $"BuildSucceeded received during a full-suite run (%s{reason}) — attaching debt to that run"
+
+                return
+                    { attachToFullRun state with
+                        PendingForceRunProjects = Set.union state.PendingForceRunProjects fanoutNow }
+            | Some reason ->
+                // The leading two spaces nest this under the in-flight test
+                // run in the activity-fold `recent:` view (the renderer
+                // already indents every tail entry by 8), so it does not read
+                // as a sibling of the test-result lines.
+                ctx.Log $"  ↳ queued re-run (%s{reason})"
+
+                Logging.info
+                    "test-prune"
+                    $"BuildSucceeded received but %s{reason} — will re-run after, without selecting now"
+
+                // Stash the fanout so the rerun runs it (don't lose a
+                // mid-run dependency change).
+                enqueueImpactRun ctx
+
+                return
+                    { state with
+                        PendingForceRunProjects = Set.union state.PendingForceRunProjects fanoutNow }
+            | None ->
+                Logging.info "test-prune" "BuildSucceeded: starting test run"
+
+                // Flush/query before announcing Running so the reported status never
+                // lies: announcing Running before the flush would flash Running even
+                // on a schema-drifted DB.
+                // The framework catches uncaught throws and forces Failed as a
+                // defense-in-depth net; we still trap locally here so we can run
+                // the schema-drift self-heal and preserve the idle transition.
+                match
+                    (try
+                        Ok(flushAndQueryAffectedBounded ctx state)
+                     with ex ->
+                         Error ex)
+                with
+                | Error ex ->
+                    Logging.error "test-prune" $"flushAndQueryAffected failed: %s{ex.Message}"
+                    tryRepairSchemaDrift ex
+
+                    ctx.ReportStatus(PluginStatus.failedNow ex.Message $"flush failed: %s{ex.Message}" TimeSpan.Zero)
+
+                    return state
+                | Ok stateWithAffected ->
+                    match testConfigs with
+                    | Some configs when not configs.IsEmpty ->
+                        let hasCachedResults = state.LastResults.IsSome
+
+                        // Only a launch with a session baseline can wait for the
+                        // diff, and whether it does reads the extensions'
+                        // failures. Without one, the run takes them itself.
+                        let stateWithAffected =
+                            if hasCachedResults then
+                                joinRefresh ctx stateWithAffected
+                            else
+                                stateWithAffected
+
+                        // Union this build's fanout with any pending
+                        // fanout deferred from a prior mid-run build,
+                        // then clear the pending set (it's being run).
+                        let forceRunProjects = Set.union fanoutNow stateWithAffected.PendingForceRunProjects
+
+                        let launchState =
+                            { stateWithAffected with
+                                PendingForceRunProjects = Set.empty }
+
+                        let launchInputs = TestRunInputs.ofState launchState
+
+                        let awaitsDiff =
+                            DiffWait.awaits
+                                { HasSessionBaseline = hasCachedResults
+                                  HasModel = (observeModelGeneration ctx).IsSome
+                                  OwesNothing = nothingOwed launchInputs.Debt
+                                  RunsInFullAnyway =
+                                    Set.unionMany
+                                        [ forceRunProjects
+                                          EarnedEvidence.wholeProjectGap
+                                              (observeModelGeneration ctx)
+                                              (ObservedModel.inputs ctx.ProjectGraph)
+                                              (fullSuiteProjects configs)
+                                              launchInputs.Earned ]
+                                  RunsSomethingAnyway =
+                                    not (
+                                        List.isEmpty launchInputs.OutstandingFailures
+                                        && Map.isEmpty launchInputs.UnanalyzableFiles
+                                        && Set.isEmpty launchInputs.Unindexed
+                                        && Map.isEmpty launchInputs.FailedExtensions
+                                    )
+                                  FoldedChanges = UncoveredChanges.isAll launchInputs.ChangedSymbolsAllUncovered
+                                  Scope = launchScopeOf launchInputs
+                                  EvidenceTree = launchInputs.EvidenceTree
+                                  CurrentTree = ReceiptInputTree.read repoRoot
+                                  SealedTree = launchState.SealedTree }
+
+                        if awaitsDiff then
+                            return holdForDiff ctx launchState
+                        else
+                            match launchImpactRun ctx configs launchState hasCachedResults forceRunProjects with
+                            | Some launched -> return launched
+                            | None when joinsFullRun stateWithAffected false ->
+                                // The key is held by a pass-through full run whose
+                                // result is not folded yet: it takes the debt.
+                                Logging.info
+                                    "test-prune"
+                                    "BuildSucceeded: tests slot held by a full-suite run — attaching debt to that run"
+
+                                return
+                                    { attachToFullRun stateWithAffected with
+                                        PendingForceRunProjects = forceRunProjects }
+                            | None ->
+                                // The key is held without a live run: a result fold
+                                // or an intent. Same treatment: queue the rerun behind
+                                // it, retain the un-consumed fanout.
+                                Logging.info "test-prune" "BuildSucceeded: tests slot already held — queueing re-run"
+
+                                enqueueImpactRun ctx
+
+                                return
+                                    { stateWithAffected with
+                                        PendingForceRunProjects = forceRunProjects }
+                    | _ ->
+                        // No test configs — flush only; nothing to run.
+                        return stateWithAffected
+        | BuildFailed _ -> return state
+    }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -3654,231 +3904,6 @@ let internal createWithEvidenceAndQueries
         // launches with this debt.
         }
 
-    /// A completed build: flush, select, and launch or hold the impact run it owes.
-    let onBuildCompleted (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (buildResult: BuildResult) =
-        async {
-            match buildResult with
-            | BuildSucceeded ->
-                // Record that BuildCompleted has fired this session, so subsequent
-                // FileChecked events may promote the freshness sidecar to clean.
-                // Set unconditionally across both the queued-rerun and run-now
-                // branches: the gate asks whether the build has realized the
-                // reference graph, not whether tests are queued.
-                let state =
-                    { state with
-                        BuildCompletedInThisSession = true }
-
-                // ── Dependency-fanout fingerprint (computed for EVERY
-                // build, before the running/idle split, so the prior
-                // fingerprint always advances and a mid-run dependency
-                // change is never lost). Fingerprint each test project from
-                // its referenced projects' non-symbol inputs + own package
-                // versions (DependencyFanout). A project whose fingerprint moved
-                // since the last build had a dependency/binary change the
-                // symbol diff can't see → force-run it. An empty graph
-                // (tests / no graph wired) yields no fanout, so the
-                // symbol-precise path is unchanged.
-                let fsprojByName =
-                    ctx.ProjectGraph.GetAllProjects()
-                    |> List.map (fun p -> Path.GetFileNameWithoutExtension p, p)
-                    |> Map.ofList
-
-                let currentFingerprints =
-                    match testConfigs with
-                    | Some configs ->
-                        let fingerprint = DependencyFanout.fingerprinter ctx.ProjectGraph
-
-                        configs
-                        |> List.choose (fun c ->
-                            Map.tryFind c.Project fsprojByName
-                            |> Option.map (fun fsproj -> c.Project, fsproj))
-                        |> List.map (fun (name, fsproj) -> name, fingerprint fsproj)
-                        |> Map.ofList
-                    | None -> Map.empty
-
-                let fanoutNow =
-                    DependencyFanout.changedProjects state.PriorProjectFingerprints currentFingerprints
-
-                if not (Set.isEmpty fanoutNow) then
-                    Logging.info
-                        "test-prune"
-                        $"Dependency fanout: %d{Set.count fanoutNow} test project(s) had a \
-                          dependency-fingerprint change — force-running: \
-                          %s{describeAll (Set.toList fanoutNow)}"
-                else
-                    // Say that nothing fanned out, and say what was examined to
-                    // reach that conclusion. "No dependency changed" and
-                    // "fingerprinting never ran" otherwise produce identical
-                    // logs, so an inert `computeProjectFingerprint` — the safety
-                    // net against binary-only changes silently OFF — reads as a
-                    // healthy quiet run. Zero fingerprints computed, or zero
-                    // graph projects, means inert rather than clean.
-                    Logging.info
-                        "test-prune"
-                        $"Dependency fanout: none — \
-                          %d{currentFingerprints.Count} project fingerprint(s) computed, \
-                          %d{fsprojByName.Count} project(s) in the graph, \
-                          %d{state.PriorProjectFingerprints.Count} prior fingerprint(s) to compare against"
-
-                // Advance the baseline on every build; carry any not-yet-run
-                // fanout in the pending set (consumed by the queued rerun).
-                let state =
-                    { state with
-                        PriorProjectFingerprints =
-                            DependencyFanout.advance state.PriorProjectFingerprints currentFingerprints }
-
-                // Asked BEFORE selection: a held key refuses the claim, and
-                // selection is the expensive step (a flush and an impact query
-                // over the whole index), so selecting only to be refused is
-                // wasted work. A fold of a finished run holds the key as surely
-                // as a live run does. The claim below still handles `SlotBusy`
-                // for a key taken after this read.
-                let heldBy =
-                    match ctx.SlotHolder "tests" with
-                    | SlotHolder.Free -> None
-                    | SlotHolder.LiveRun -> Some "tests already running"
-                    | SlotHolder.Fold -> Some "tests key held by an uncommitted fold"
-
-                match heldBy with
-                | Some reason when joinsFullRun state false ->
-                    // A pass-through full run takes what is owed: no run follows
-                    // it. The fanout is kept for whatever launches next.
-                    ctx.Log $"  ↳ attached to the full run (%s{reason})"
-
-                    Logging.info
-                        "test-prune"
-                        $"BuildSucceeded received during a full-suite run (%s{reason}) — attaching debt to that run"
-
-                    return
-                        { attachToFullRun state with
-                            PendingForceRunProjects = Set.union state.PendingForceRunProjects fanoutNow }
-                | Some reason ->
-                    // The leading two spaces nest this under the in-flight test
-                    // run in the activity-fold `recent:` view (the renderer
-                    // already indents every tail entry by 8), so it does not read
-                    // as a sibling of the test-result lines.
-                    ctx.Log $"  ↳ queued re-run (%s{reason})"
-
-                    Logging.info
-                        "test-prune"
-                        $"BuildSucceeded received but %s{reason} — will re-run after, without selecting now"
-
-                    // Stash the fanout so the rerun runs it (don't lose a
-                    // mid-run dependency change).
-                    enqueueImpactRun ctx
-
-                    return
-                        { state with
-                            PendingForceRunProjects = Set.union state.PendingForceRunProjects fanoutNow }
-                | None ->
-                    Logging.info "test-prune" "BuildSucceeded: starting test run"
-
-                    // Flush/query before announcing Running so the reported status never
-                    // lies: announcing Running before the flush would flash Running even
-                    // on a schema-drifted DB.
-                    // The framework catches uncaught throws and forces Failed as a
-                    // defense-in-depth net; we still trap locally here so we can run
-                    // the schema-drift self-heal and preserve the idle transition.
-                    match
-                        (try
-                            Ok(flushAndQueryAffectedBounded ctx state)
-                         with ex ->
-                             Error ex)
-                    with
-                    | Error ex ->
-                        Logging.error "test-prune" $"flushAndQueryAffected failed: %s{ex.Message}"
-                        tryRepairSchemaDrift ex
-
-                        ctx.ReportStatus(
-                            PluginStatus.failedNow ex.Message $"flush failed: %s{ex.Message}" TimeSpan.Zero
-                        )
-
-                        return state
-                    | Ok stateWithAffected ->
-                        match testConfigs with
-                        | Some configs when not configs.IsEmpty ->
-                            let hasCachedResults = state.LastResults.IsSome
-
-                            // Only a launch with a session baseline can wait for the
-                            // diff, and whether it does reads the extensions'
-                            // failures. Without one, the run takes them itself.
-                            let stateWithAffected =
-                                if hasCachedResults then
-                                    joinRefresh ctx stateWithAffected
-                                else
-                                    stateWithAffected
-
-                            // Union this build's fanout with any pending
-                            // fanout deferred from a prior mid-run build,
-                            // then clear the pending set (it's being run).
-                            let forceRunProjects = Set.union fanoutNow stateWithAffected.PendingForceRunProjects
-
-                            let launchState =
-                                { stateWithAffected with
-                                    PendingForceRunProjects = Set.empty }
-
-                            let launchInputs = TestRunInputs.ofState launchState
-
-                            let awaitsDiff =
-                                DiffWait.awaits
-                                    { HasSessionBaseline = hasCachedResults
-                                      HasModel = (observeModelGeneration ctx).IsSome
-                                      OwesNothing = nothingOwed launchInputs.Debt
-                                      RunsInFullAnyway =
-                                        Set.unionMany
-                                            [ forceRunProjects
-                                              EarnedEvidence.wholeProjectGap
-                                                  (observeModelGeneration ctx)
-                                                  (ObservedModel.inputs ctx.ProjectGraph)
-                                                  (fullSuiteProjects configs)
-                                                  launchInputs.Earned ]
-                                      RunsSomethingAnyway =
-                                        not (
-                                            List.isEmpty launchInputs.OutstandingFailures
-                                            && Map.isEmpty launchInputs.UnanalyzableFiles
-                                            && Set.isEmpty launchInputs.Unindexed
-                                            && Map.isEmpty launchInputs.FailedExtensions
-                                        )
-                                      FoldedChanges = UncoveredChanges.isAll launchInputs.ChangedSymbolsAllUncovered
-                                      Scope = launchScopeOf launchInputs
-                                      EvidenceTree = launchInputs.EvidenceTree
-                                      CurrentTree = ReceiptInputTree.read repoRoot
-                                      SealedTree = launchState.SealedTree }
-
-                            if awaitsDiff then
-                                return holdForDiff ctx launchState
-                            else
-                                match launchImpactRun ctx configs launchState hasCachedResults forceRunProjects with
-                                | Some launched -> return launched
-                                | None when joinsFullRun stateWithAffected false ->
-                                    // The key is held by a pass-through full run whose
-                                    // result is not folded yet: it takes the debt.
-                                    Logging.info
-                                        "test-prune"
-                                        "BuildSucceeded: tests slot held by a full-suite run — attaching debt to that run"
-
-                                    return
-                                        { attachToFullRun stateWithAffected with
-                                            PendingForceRunProjects = forceRunProjects }
-                                | None ->
-                                    // The key is held without a live run: a result fold
-                                    // or an intent. Same treatment: queue the rerun behind
-                                    // it, retain the un-consumed fanout.
-                                    Logging.info
-                                        "test-prune"
-                                        "BuildSucceeded: tests slot already held — queueing re-run"
-
-                                    enqueueImpactRun ctx
-
-                                    return
-                                        { stateWithAffected with
-                                            PendingForceRunProjects = forceRunProjects }
-                        | _ ->
-                            // No test configs — flush only; nothing to run.
-                            return stateWithAffected
-            | BuildFailed _ -> return state
-        }
-
     let launchSteps: LaunchSteps =
         { AttachToFullRun = attachToFullRun
           EnqueueImpactRun = enqueueImpactRun
@@ -3887,6 +3912,18 @@ let internal createWithEvidenceAndQueries
           LaunchImpactRun = launchImpactRun
           NothingOwed = nothingOwed
           TryRepairSchemaDrift = tryRepairSchemaDrift }
+
+    let buildCompletedEnv: BuildCompletedEnv =
+        { RepoRoot = repoRoot
+          TestConfigs = testConfigs
+          Launch = launchSteps
+          HoldForDiff = holdForDiff
+          JoinRefresh = joinRefresh
+          LaunchScopeOf = launchScopeOf
+          ObserveModelGeneration = observeModelGeneration }
+
+    let onBuildCompleted ctx state buildResult =
+        onBuildCompletedWith buildCompletedEnv ctx state buildResult
 
     let batchCheckedEnv: BatchCheckedEnv =
         { RepoRoot = repoRoot
