@@ -1130,6 +1130,61 @@ let internal refuseWholeRunWith (env: RefusalEnv) () =
         return [| results |]
     }
 
+/// One project's launch: its result and CTRF report text.
+type internal ProjectLauncher = Threading.CancellationToken -> TestConfig -> Async<TestResult * string option>
+
+/// What watching one project's launch reads from its run (`launchWatchedWith`).
+type internal WatchEnv =
+    { Collected: RunCollector
+      LogToCtx: string -> unit
+      LaunchProject: ProjectLauncher
+      LaunchSampled: SampledLauncher
+      SelectionOf: TestConfig -> string list option }
+
+/// Launch `config`'s project; `None` when it timed out under starvation and is
+/// held back for its re-run alone.
+let internal launchWatchedWith
+    (env: WatchEnv)
+    (runToken: Threading.CancellationToken)
+    (config: TestConfig)
+    : Async<TestResult option> =
+    let collected = env.Collected
+    let logToCtx = env.LogToCtx
+    let launchProject = env.LaunchProject
+    let launchSampled = env.LaunchSampled
+    let selectionOf = env.SelectionOf
+
+    async {
+        match config.Starvation with
+        | None ->
+            let! result, _ = launchProject runToken config
+            return Some result
+        | Some policy ->
+            let! result, reportJson, reading = launchSampled runToken config
+
+            match Starvation.decide (Some policy) (selectionOf config) result reportJson reading with
+            | Starvation.RerunAlone(timedOut, firstReading) ->
+                let line =
+                    $"%s{config.Project}: %s{Starvation.TimedOut.describe timedOut} under CPU starvation \
+                      (%s{Starvation.Reading.describe policy firstReading}); re-running it ALONE once the \
+                      rest of the run has finished — its re-run is the result reported"
+
+                Logging.warn "test-prune" line
+                logToCtx line
+
+                collected.Update(fun c ->
+                    { c with
+                        Starved = (config, timedOut, firstReading) :: c.Starved })
+
+                return None
+            | Starvation.Report why ->
+                why
+                |> Option.iter (fun reason ->
+                    Logging.info "test-prune" $"%s{config.Project}: starvation declared; %s{reason}")
+
+                return Some result
+    }
+
 /// Execute test configs with optional affected classes for filtering. Handles beforeRun,
 /// coveragePaths, process execution, result storage. `rawFilter` is a passthrough filter
 /// string (from the run-tests command) that bypasses the template.
@@ -1516,39 +1571,15 @@ let internal executeTests
                 return result, reportJson, reading
             }
 
-        /// Launch `config`'s project; `None` when it timed out under starvation and is
-        /// held back for its re-run alone.
-        let launchWatched (runToken: Threading.CancellationToken) (config: TestConfig) : Async<TestResult option> =
-            async {
-                match config.Starvation with
-                | None ->
-                    let! result, _ = launchProject runToken config
-                    return Some result
-                | Some policy ->
-                    let! result, reportJson, reading = launchSampled runToken config
+        let watchEnv: WatchEnv =
+            { Collected = collected
+              LogToCtx = logToCtx
+              LaunchProject = launchProject
+              LaunchSampled = launchSampled
+              SelectionOf = selectionOf }
 
-                    match Starvation.decide (Some policy) (selectionOf config) result reportJson reading with
-                    | Starvation.RerunAlone(timedOut, firstReading) ->
-                        let line =
-                            $"%s{config.Project}: %s{Starvation.TimedOut.describe timedOut} under CPU starvation \
-                              (%s{Starvation.Reading.describe policy firstReading}); re-running it ALONE once the \
-                              rest of the run has finished — its re-run is the result reported"
-
-                        Logging.warn "test-prune" line
-                        logToCtx line
-
-                        collected.Update(fun c ->
-                            { c with
-                                Starved = (config, timedOut, firstReading) :: c.Starved })
-
-                        return None
-                    | Starvation.Report why ->
-                        why
-                        |> Option.iter (fun reason ->
-                            Logging.info "test-prune" $"%s{config.Project}: starvation declared; %s{reason}")
-
-                        return Some result
-            }
+        let launchWatched runToken config =
+            launchWatchedWith watchEnv runToken config
 
         let rerunEnv: RerunEnv =
             { RepoRoot = repoRoot
