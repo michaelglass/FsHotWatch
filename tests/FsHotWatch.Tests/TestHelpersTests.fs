@@ -399,3 +399,37 @@ let ``every wait for a daemon to serve IPC goes through awaitServing`` () =
         |> List.ofArray
 
     Assert.True(List.isEmpty offenders, $"these waits poll a daemon's IPC with their own budget: %A{offenders}")
+
+// A loaded full gate left `.fshw/logs/projinfo` behind a deleted scratch tree
+// (WorkingDirectoryDeletionTests, 2026-11-02). The daemon's discovery was still writing its
+// project options there after the evaluation the teardown waited for had ended, and the
+// teardown gave up after ten 25 ms retries. Ten tries 25 ms apart measure the box, not the
+// writer. A writer that stops must always find the tree gone afterwards.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``deleteTempDir outlasts a writer that keeps the tree busy for longer than a moment`` () =
+    let root = Path.Combine(Path.GetTempPath(), $"fshw-busy-delete-{Guid.NewGuid():N}")
+    let logs = Path.Combine(root, ".fshw", "logs")
+    Directory.CreateDirectory logs |> ignore
+    use writing = new ManualResetEventSlim(false)
+
+    let writer =
+        Thread(fun () ->
+            let until = DateTime.UtcNow.AddSeconds 1.5
+            let mutable n = 0
+            let mutable gone = false
+
+            while not gone && DateTime.UtcNow < until do
+                try
+                    File.WriteAllText(Path.Combine(logs, $"opts-%d{n % 8}.txt"), "options")
+                    n <- n + 1
+                    writing.Set()
+                with
+                | :? DirectoryNotFoundException -> gone <- true
+                // A write racing the delete of its own file: the writer keeps going.
+                | :? IOException -> ())
+
+    writer.Start()
+    test <@ writing.Wait(HangWait) @>
+    deleteTempDir root
+    test <@ writer.Join(HangWait) @>
+    test <@ not (Directory.Exists root) @>

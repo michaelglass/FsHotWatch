@@ -729,12 +729,14 @@ let withEnv (name: string) (value: string option) (body: unit -> unit) =
 /// `finally`, so it propagates unchanged.
 [<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
 let private deleteTempDirResilient (tmpDir: string) =
-    let mutable remaining = 10
+    // Until the tree is gone, or `HangWaitMs` passes. A writer that is still draining (a
+    // daemon's discovery writing project options after the evaluation a teardown waited
+    // for) stops on its own; ten 25 ms tries measured the box, not the writer, and a loaded
+    // gate outlasted them (2026-11-02).
+    let deadline = DateTime.UtcNow.AddMilliseconds(float HangWaitMs)
     let mutable deleted = false
 
-    while not deleted && remaining > 0 do
-        remaining <- remaining - 1
-
+    while not deleted do
         try
             if Directory.Exists(tmpDir) then
                 Directory.Delete(tmpDir, true)
@@ -743,9 +745,9 @@ let private deleteTempDirResilient (tmpDir: string) =
         with
         | :? IOException
         | :? UnauthorizedAccessException ->
-            // A not-yet-drained daemon is still writing into the tree. On the final
-            // attempt, give up: leaking a scratch temp dir beats failing the test.
-            if remaining = 0 then
+            // A not-yet-drained daemon is still writing into the tree. Past the budget,
+            // give up: leaking a scratch temp dir beats failing the test.
+            if DateTime.UtcNow >= deadline then
                 deleted <- true
             else
                 System.Threading.Thread.Sleep(25)
