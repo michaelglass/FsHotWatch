@@ -63,6 +63,29 @@ open FsHotWatch.TestPrune.PluginFold
 
 
 
+/// Hold a build's launch for its tree's check results (`DiffWait`), and post its
+/// expiry. The mailbox is not blocked: the `BatchChecked` it waits for is delivered
+/// through it.
+let internal holdForDiff (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
+    let held =
+        { Id = Guid.NewGuid()
+          Since = DateTime.UtcNow }
+
+    Logging.info
+        "test-prune"
+        $"BuildSucceeded: the check results for the tree this build compiled are not folded yet, so its symbol diff is unknown — holding the launch for the next BatchChecked (at most %.0f{DiffWait.bound.TotalSeconds}s)"
+
+    Tasks.Task
+        .Delay(DiffWait.bound)
+        .ContinueWith(fun (_: Tasks.Task) ->
+            try
+                ctx.Post(DiffWaitExpired held.Id)
+            with ex ->
+                Logging.debug "test-prune" $"held launch expiry not delivered: %s{ex.Message}")
+    |> ignore
+
+    { state with AwaitingDiff = Some held }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1310,28 +1333,6 @@ let internal createWithEvidenceAndQueries
                     { flushed with OwedRunHeld = false }
         | _ -> state
 
-    /// Hold a build's launch for its tree's check results (`DiffWait`), and post its
-    /// expiry. The mailbox is not blocked: the `BatchChecked` it waits for is delivered
-    /// through it.
-    let holdForDiff (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
-        let held =
-            { Id = Guid.NewGuid()
-              Since = DateTime.UtcNow }
-
-        Logging.info
-            "test-prune"
-            $"BuildSucceeded: the check results for the tree this build compiled are not folded yet, so its symbol diff is unknown — holding the launch for the next BatchChecked (at most %.0f{DiffWait.bound.TotalSeconds}s)"
-
-        Tasks.Task
-            .Delay(DiffWait.bound)
-            .ContinueWith(fun (_: Tasks.Task) ->
-                try
-                    ctx.Post(DiffWaitExpired held.Id)
-                with ex ->
-                    Logging.debug "test-prune" $"held launch expiry not delivered: %s{ex.Message}")
-        |> ignore
-
-        { state with AwaitingDiff = Some held }
 
     /// Launch the run a build held back (`holdForDiff`), selected from the state it is
     /// delivered into, where the diff has now folded, or the wait expired without it.
