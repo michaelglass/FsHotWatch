@@ -186,6 +186,18 @@ let internal revisionOf (debt: VerificationDebt) (symbol: string) : int64 =
 let internal observeModelGeneration (ctx: PluginCtx<TestPruneMsg>) =
     ObservedModel.generation ctx.ProjectGraph
 
+/// Attach what is owed to the full run in flight. The FIRST captured revision stands:
+/// a later attach must not advance a symbol past an edit the held run never built.
+let internal attachToFullRun (state: TestPruneState) =
+    { state with
+        DebtDuringFullRun =
+            (state.DebtDuringFullRun, state.Debt.PendingQueue)
+            ||> Set.fold (fun captured symbol ->
+                if Map.containsKey symbol captured then
+                    captured
+                else
+                    Map.add symbol (revisionOf state.Debt symbol) captured) }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1155,17 +1167,6 @@ let internal createWithEvidenceAndQueries
                 AffectedTests = Analyzed [] }
         | _ -> state
 
-    /// Attach what is owed to the full run in flight. The FIRST captured revision stands:
-    /// a later attach must not advance a symbol past an edit the held run never built.
-    let attachToFullRun (state: TestPruneState) =
-        { state with
-            DebtDuringFullRun =
-                (state.DebtDuringFullRun, state.Debt.PendingQueue)
-                ||> Set.fold (fun captured symbol ->
-                    if Map.containsKey symbol captured then
-                        captured
-                    else
-                        Map.add symbol (revisionOf state.Debt symbol) captured) }
 
     /// The run in flight has concluded: forget it, and end the pass-through it ran for
     /// when it executed at least one project to a verdict (`TestMode.afterRun`).
