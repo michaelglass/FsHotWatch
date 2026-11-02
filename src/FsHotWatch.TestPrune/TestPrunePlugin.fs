@@ -219,6 +219,12 @@ let internal applyRefresh
     { state with
         FailedExtensions = failuresAfter outcomes state.FailedExtensions }
 
+/// Owe one impact run after whatever holds the "tests" key. Coalesced: however many
+/// triggers arrive while the key is held, one run is queued, and it decides against
+/// the state it is delivered into (`impactRun`).
+let internal enqueueImpactRun (ctx: PluginCtx<TestPruneMsg>) =
+    ctx.EnqueueExclusiveIntent "tests" (Some "impact") ImpactRunRequested |> ignore
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1063,11 +1069,6 @@ let internal createWithEvidenceAndQueries
               Queries = queries }
 
 
-    /// Owe one impact run after whatever holds the "tests" key. Coalesced: however many
-    /// triggers arrive while the key is held, one run is queued, and it decides against
-    /// the state it is delivered into (`impactRun`).
-    let enqueueImpactRun (ctx: PluginCtx<TestPruneMsg>) =
-        ctx.EnqueueExclusiveIntent "tests" (Some "impact") ImpactRunRequested |> ignore
 
     /// What a launch from `inputs` will execute: the widenings `runTestsWithImpact`
     /// applies to every project.
