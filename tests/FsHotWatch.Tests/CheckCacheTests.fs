@@ -429,37 +429,37 @@ let private mkSig line col errNo sev msg : DiagnosticSignature =
       Severity = sev
       Message = msg }
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hashDiagnosticSignatures empty sequence is stable`` () =
     let h1 = hashDiagnosticSignatures Seq.empty
     let h2 = hashDiagnosticSignatures Seq.empty
     Assert.Equal(h1, h2)
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hashDiagnosticSignatures differs across distinct diagnostics`` () =
     let h1 = hashDiagnosticSignatures [ mkSig 1 2 100 "Error" "type mismatch" ]
     let h2 = hashDiagnosticSignatures [ mkSig 1 2 101 "Error" "type mismatch" ]
     Assert.NotEqual<string>(h1, h2)
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hashDiagnosticSignatures is order-independent (sorted internally)`` () =
     let a = mkSig 1 2 100 "Error" "first"
     let b = mkSig 5 8 200 "Warning" "second"
     Assert.Equal(hashDiagnosticSignatures [ a; b ], hashDiagnosticSignatures [ b; a ])
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hashDiagnosticSignatures distinguishes severity changes`` () =
     let warn = mkSig 1 2 100 "Warning" "msg"
     let err = mkSig 1 2 100 "Error" "msg"
     Assert.NotEqual<string>(hashDiagnosticSignatures [ warn ], hashDiagnosticSignatures [ err ])
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hashDiagnosticSignatures distinguishes message text changes`` () =
     let a = mkSig 1 2 100 "Error" "type int but expected string"
     let b = mkSig 1 2 100 "Error" "type string but expected int"
     Assert.NotEqual<string>(hashDiagnosticSignatures [ a ], hashDiagnosticSignatures [ b ])
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hashDiagnosticSignatures stable when same diagnostic list given twice`` () =
     let diags =
         [ mkSig 1 1 100 "Error" "a"
@@ -470,7 +470,7 @@ let ``hashDiagnosticSignatures stable when same diagnostic list given twice`` ()
 
 // --- F1 regression: diagnostic-hash failures must not collide on a magic string ---
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hashDiagnosticsOrFailure folds exception class so distinct failures don't collide`` () =
     // F1 (docs/plans/2026-05-02-error-handling-audit.md): returning the literal
     // "full-check-error" for every failure mode gave two distinct exceptions the
@@ -487,7 +487,7 @@ let ``hashDiagnosticsOrFailure folds exception class so distinct failures don't 
     Assert.NotEqual<string>("full-check-error", h1)
     Assert.NotEqual<string>("full-check-error", h2)
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hashDiagnosticsOrFailure is deterministic across calls for the same failure`` () =
     let throwInvalidOp () : DiagnosticSignature seq =
         raise (System.InvalidOperationException "stable-message")
@@ -496,7 +496,7 @@ let ``hashDiagnosticsOrFailure is deterministic across calls for the same failur
     let h2 = hashDiagnosticsOrFailure throwInvalidOp
     Assert.Equal<string>(h1, h2)
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hashDiagnosticsOrFailure success path differs from any failure hash`` () =
     let success () : DiagnosticSignature seq = seq { mkSig 1 2 100 "Error" "ok" }
 

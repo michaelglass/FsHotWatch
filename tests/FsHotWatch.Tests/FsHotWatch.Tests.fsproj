@@ -204,6 +204,7 @@
     <Compile Include="TestPruneWalkPolicyTests.fs" />
     <Compile Include="TestPruneSchemaQuarantineTests.fs" />
     <Compile Include="TestModeSeamTests.fs" />
+    <Compile Include="HangCapFloorTests.fs" />
     <Compile Include="TracedLaunchTests.fs" />
     <Compile Include="TestPruneTracesTests.fs" />
     <Compile Include="TestPruneTracesPluginTests.fs" />

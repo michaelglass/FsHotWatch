@@ -406,7 +406,7 @@ let ``enumerateEntries is lazy — an early-stopping caller never walks the rest
 // runs, so it asks this instead — and the two must be the same rule, or a lookup
 // and a walk disagree about what a source is.
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isBuildOutput classifies obj and bin items under the project`` () =
     let projDir = Path.Combine("/repo", "src", "MyLib")
 
@@ -415,7 +415,7 @@ let ``isBuildOutput classifies obj and bin items under the project`` () =
 
     test <@ SafeWalk.isBuildOutput projDir (Path.Combine(projDir, "bin", "Debug", "net10.0", "MyLib.dll")) @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isBuildOutput leaves authored sources alone, in the project or beside it`` () =
     let projDir = Path.Combine("/repo", "src", "MyLib")
 
@@ -424,7 +424,7 @@ let ``isBuildOutput leaves authored sources alone, in the project or beside it``
     // A linked compile item from a sibling project — still authored.
     test <@ not (SafeWalk.isBuildOutput projDir (Path.Combine("/repo", "src", "Other", "Shared.fs"))) @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isBuildOutput ignores bin and obj ABOVE the project directory`` () =
     // The trap. Answering over the absolute path would classify every file of a repo
     // checked out under such a directory as build output — and a caller asking "is
@@ -437,7 +437,7 @@ let ``isBuildOutput ignores bin and obj ABOVE the project directory`` () =
     let binRooted = Path.Combine("/bin", "checkout", "src", "MyLib")
     test <@ not (SafeWalk.isBuildOutput binRooted (Path.Combine(binRooted, "Lib.fs"))) @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``SourceExcludedDirs is stated in terms of BuildOutputDirs`` () =
     // One fact, two consumers. A walk that pruned `obj/` while a lookup did not is
     // exactly the drift cost two releases to find.

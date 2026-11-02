@@ -2500,7 +2500,7 @@ let ``FcsSuppressedCodes Some resolves to that Set`` () =
 // Dispatch is now `/bin/sh -c` (unix) or `cmd /C` (windows).
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``shellInvocation wraps with /bin/sh -c`` () =
     let (cmd, args) =
         FsHotWatch.Cli.DaemonConfig.shellInvocation "echo hi && echo there"
@@ -2509,7 +2509,7 @@ let ``shellInvocation wraps with /bin/sh -c`` () =
     test <@ args.StartsWith("-c ") @>
     test <@ args.Contains("echo hi && echo there") @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``shellInvocation escapes double quotes in the passed command`` () =
     // Inside the -c string, embedded double quotes must be backslash-escaped
     // so the outer `"..."` quoting the whole command stays balanced.
@@ -2563,7 +2563,7 @@ let ``a beforeRun hook whose grandchild holds the stdout pipe still returns`` ()
 
 // --- resolveExistingPathsWithRetry ---
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``resolveExistingPathsWithRetry returns all paths when all exist on first attempt`` () =
     let mutable sleepCount = 0
     let dirExists _ = true
@@ -2574,7 +2574,7 @@ let ``resolveExistingPathsWithRetry returns all paths when all exist on first at
     test <@ result = [ "/a"; "/b"; "/c" ] @>
     test <@ sleepCount = 0 @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``resolveExistingPathsWithRetry retries when paths transiently missing`` () =
     // Simulate a workspace race: 1st batch reports false, 2nd reports true.
     let mutable callsBeforeSucceed = 3 // 3 paths × 1 batch = 3 calls before flipping
@@ -2594,7 +2594,7 @@ let ``resolveExistingPathsWithRetry retries when paths transiently missing`` () 
     test <@ result.Length = 3 @>
     test <@ sleepCount >= 1 @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``resolveExistingPathsWithRetry gives up after 3 attempts when paths still missing`` () =
     let mutable sleepCount = 0
     let dirExists _ = false
@@ -2605,7 +2605,7 @@ let ``resolveExistingPathsWithRetry gives up after 3 attempts when paths still m
     test <@ List.isEmpty result @>
     test <@ sleepCount = 3 @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``resolveExistingPathsWithRetry returns subset when some paths permanently missing`` () =
     let mutable sleepCount = 0
     let dirExists path = path = "/exists"
@@ -2617,7 +2617,7 @@ let ``resolveExistingPathsWithRetry returns subset when some paths permanently m
     test <@ result = [ "/exists" ] @>
     test <@ sleepCount = 3 @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``resolveExistingPathsWithRetry handles empty input without sleeping`` () =
     let mutable sleepCount = 0
     let dirExists _ = false
@@ -2629,7 +2629,7 @@ let ``resolveExistingPathsWithRetry handles empty input without sleeping`` () =
 
 // --- analyzerPathFailures: per-path fail-loud guard for silent-skip paths ---
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``analyzerPathFailures fires per-path: one path loads, one loads zero`` () =
     // The shape the old aggregate (total == 0) guard MISSED: some paths load, one
     // silently loads 0.
@@ -2645,7 +2645,7 @@ let ``analyzerPathFailures fires per-path: one path loads, one loads zero`` () =
     test <@ not (result.Value.Contains("/repo/good/bin")) @>
     test <@ result.Value.Contains(".fshw.json analyzers.paths") @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``analyzerPathFailures fires when every configured path loads zero`` () =
     let single = analyzerPathFailures [ "/repo/a/bin", 0 ]
     test <@ single.IsSome @>
@@ -2659,13 +2659,13 @@ let ``analyzerPathFailures fires when every configured path loads zero`` () =
     test <@ multiple.Value.Contains("/repo/b/bin") @>
     test <@ multiple.Value.Contains("/repo/c/bin") @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``analyzerPathFailures silent when every configured path loads at least one`` () =
     test <@ (analyzerPathFailures [ "/repo/a/bin", 1 ]).IsNone @>
     test <@ (analyzerPathFailures [ "/repo/a/bin", 2; "/repo/b/bin", 1 ]).IsNone @>
     test <@ (analyzerPathFailures [ "/repo/a/bin", 5; "/repo/b/bin", 7 ]).IsNone @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``analyzerPathFailures silent when analyzers unconfigured`` () =
     test <@ (analyzerPathFailures []).IsNone @>
 
