@@ -430,6 +430,162 @@ let internal reportRunOutcome (ctx: PluginCtx<TestPruneMsg>) (facts: RunOutcomeF
                         results.Elapsed
                 )
 
+/// What a completion's earned evidence is decided from (`earnedEvidenceOf`).
+type internal CompletionEvidenceFacts =
+    { State: TestPruneState
+      Started: TestRunStarted
+      Completed: TestRunCompleted
+      Launch: TestRunLaunch
+      Debt: VerificationDebt
+      RunnableProjects: Set<string>
+      Aborted: bool
+      ExecutedFullSuite: bool
+      ProjectPassed: string -> bool
+      Unanalyzable: Map<string, UnanalyzableFile>
+      OutstandingFailures: OutstandingFailure list
+      CurrentInputTree: string option
+      CurrentInputs: Map<string, string> option
+      CurrentModelGeneration: int64 option
+      ReceiptTransition: ReceiptTransition
+      EvidenceReceipt: TestEvidenceReceipt option
+      StandingEvidence: EarnedEvidence option }
+
+/// The evidence a completion earns, or keeps from the standing receipt, and the log line
+/// that describes it.
+let internal earnedEvidenceOf (ctx: PluginCtx<TestPruneMsg>) (facts: CompletionEvidenceFacts) : EarnedEvidence option =
+    let state = facts.State
+    let started = facts.Started
+    let completed = facts.Completed
+    let launch = facts.Launch
+    let debt = facts.Debt
+    let runnableProjects = facts.RunnableProjects
+    let aborted = facts.Aborted
+    let executedFullSuite = facts.ExecutedFullSuite
+    let projectPassed = facts.ProjectPassed
+    let unanalyzable = facts.Unanalyzable
+    let outstandingFailures = facts.OutstandingFailures
+    let currentInputTree = facts.CurrentInputTree
+    let currentInputs = facts.CurrentInputs
+    let currentModelGeneration = facts.CurrentModelGeneration
+    let receiptTransition = facts.ReceiptTransition
+    let evidenceReceipt = facts.EvidenceReceipt
+    let standingEvidence = facts.StandingEvidence
+
+    // What this completion EARNED. What it left OWED is a refusal it
+    // carries: a proof that records a red is still a proof of what ran.
+    //
+    // Owed is what THIS run did not cover, not everything the queue holds
+    // at this instant. A cold tree queues obligations while the run is
+    // already executing — the build fires the full suite first and the
+    // scan's file events land during it — so they are absent from the
+    // launch snapshot and survive the launch-scoped retirement above. A run
+    // that executed every runnable project IN FULL and passed, over the
+    // tree it launched against, covered those files whenever they were
+    // queued; refusing them turned a green check into exit 2 with nothing
+    // failing anywhere. A run that did not (a project absent, failed, or
+    // filtered) covers nothing extra, and every one of them still refuses.
+    let coveredEverythingRunnable =
+        executedFullSuite
+        && ReceiptInputTree.matches launch.InputTreeHash currentInputTree
+        && runnableProjects |> Set.forall projectPassed
+
+    let owedSymbols =
+        if coveredEverythingRunnable then
+            Set.empty
+        else
+            debt.PendingQueue
+
+    let owedRuntimeObligations =
+        if coveredEverythingRunnable then
+            0
+        else
+            debt.RuntimeObligations |> Map.values |> Seq.sumBy Map.count
+
+    let pendingObligations =
+        Set.count owedSymbols
+        + owedRuntimeObligations
+        + unanalyzable.Count
+        + outstandingFailures.Length
+        + Map.count debt.CoverageNotIngested
+        + (if debt.RecoveryOutstanding then 1 else 0)
+
+    // A completion that leaves the receipt standing — a narrower run, or a
+    // quiet one that found the tree already verified — leaves the evidence
+    // THAT receipt's run earned standing with it: the verdict grades the
+    // receipt's run and looks its evidence up by run id. Under a model,
+    // `classify` keeps a receipt only when this evidence is held.
+    //
+    // Including a quiet completion that folds while an obligation is owed
+    // (symbols a scan delivered while it was in flight). It used to publish
+    // an evidence of its own, refusing for the obligation, beside the
+    // receipt it kept: the two named different runs, and the narrower run
+    // that then discharged the obligation found no evidence for the
+    // receipt's run to keep and published its own, so `check` graded the
+    // full suite and found nothing vouching for it.
+    //
+    // A receipt that covers the whole suite on the tree it is bound to has
+    // run every test that tree has, so an obligation owed on that same tree
+    // is one it already verified, as it is after a narrower run. A
+    // narrower receipt cannot say so: its evidence refuses for what is owed.
+    let keptWithReceipt =
+        match receiptTransition, evidenceReceipt with
+        | ReceiptTransition.Noop, Some receipt when
+            pendingObligations > 0
+            && not (RunCoverage.coversWholeSuite (Set.toList runnableProjects) receipt.Coverage)
+            ->
+            standingEvidence
+            |> Option.map (
+                EarnedEvidence.withRefusals [ $"%d{pendingObligations} verification obligation(s) remain pending" ]
+            )
+        | ReceiptTransition.Noop, _
+        | ReceiptTransition.Narrower, _ -> standingEvidence
+        | ReceiptTransition.Earned _, _
+        | ReceiptTransition.Revoked _, _ -> None
+
+    let earned =
+        match keptWithReceipt, completed.Verification with
+        | Some kept, _ -> Some kept
+        | None, NoProjectsSelected when
+            pendingObligations = 0
+            && not aborted
+            && launch.ZeroSelection <> ZeroSelection.NotAZero
+            && launch.ModelGeneration = currentModelGeneration
+            ->
+            // Nothing needed running, so this completion proves nothing new.
+            // The evidence it was already verified by stands, while it belongs
+            // to the current model.
+            EarnedEvidence.retainedForZeroSelection currentModelGeneration currentInputs state.Earned
+        | None, NoProjectsSelected
+        | None, AllZeroMatch _
+        | None, NothingExecuted
+        | None, Ran _ ->
+            EarnedEvidence.fromCompletion
+                started.RunId
+                launch.ModelGeneration
+                currentModelGeneration
+                currentInputs
+                (ObservedModel.projectFiles ctx.ProjectGraph)
+                runnableProjects
+                pendingObligations
+                (TestPruneState.coverageEvidence state)
+                completed
+
+    Logging.info
+        "test-prune"
+        (describeCompletionEvidence
+            completed.RunId
+            launch.ModelGeneration
+            currentModelGeneration
+            receiptTransition
+            evidenceReceipt
+            earned)
+
+    match receiptEvidenceMismatch currentModelGeneration evidenceReceipt earned with
+    | Some mismatch -> Logging.warn "test-prune" mismatch
+    | None -> ()
+
+    earned
+
 /// The debt accounting a run's completion reads (`commitPending`, `debtScope` and the rest).
 type internal CompletionDebt =
     { CommitPending: Set<string> -> VerificationDebt -> VerificationDebt
@@ -1063,118 +1219,26 @@ let internal onRunFinishedWith
             else
                 debt
 
-        // What this completion EARNED. What it left OWED is a refusal it
-        // carries: a proof that records a red is still a proof of what ran.
-        //
-        // Owed is what THIS run did not cover, not everything the queue holds
-        // at this instant. A cold tree queues obligations while the run is
-        // already executing — the build fires the full suite first and the
-        // scan's file events land during it — so they are absent from the
-        // launch snapshot and survive the launch-scoped retirement above. A run
-        // that executed every runnable project IN FULL and passed, over the
-        // tree it launched against, covered those files whenever they were
-        // queued; refusing them turned a green check into exit 2 with nothing
-        // failing anywhere. A run that did not (a project absent, failed, or
-        // filtered) covers nothing extra, and every one of them still refuses.
-        let coveredEverythingRunnable =
-            executedFullSuite
-            && ReceiptInputTree.matches launch.InputTreeHash currentInputTree
-            && runnableProjects |> Set.forall projectPassed
-
-        let owedSymbols =
-            if coveredEverythingRunnable then
-                Set.empty
-            else
-                debt.PendingQueue
-
-        let owedRuntimeObligations =
-            if coveredEverythingRunnable then
-                0
-            else
-                debt.RuntimeObligations |> Map.values |> Seq.sumBy Map.count
-
-        let pendingObligations =
-            Set.count owedSymbols
-            + owedRuntimeObligations
-            + unanalyzable.Count
-            + outstandingFailures.Length
-            + Map.count debt.CoverageNotIngested
-            + (if debt.RecoveryOutstanding then 1 else 0)
-
-        // A completion that leaves the receipt standing — a narrower run, or a
-        // quiet one that found the tree already verified — leaves the evidence
-        // THAT receipt's run earned standing with it: the verdict grades the
-        // receipt's run and looks its evidence up by run id. Under a model,
-        // `classify` keeps a receipt only when this evidence is held.
-        //
-        // Including a quiet completion that folds while an obligation is owed
-        // (symbols a scan delivered while it was in flight). It used to publish
-        // an evidence of its own, refusing for the obligation, beside the
-        // receipt it kept: the two named different runs, and the narrower run
-        // that then discharged the obligation found no evidence for the
-        // receipt's run to keep and published its own, so `check` graded the
-        // full suite and found nothing vouching for it.
-        //
-        // A receipt that covers the whole suite on the tree it is bound to has
-        // run every test that tree has, so an obligation owed on that same tree
-        // is one it already verified, as it is after a narrower run. A
-        // narrower receipt cannot say so: its evidence refuses for what is owed.
-        let keptWithReceipt =
-            match receiptTransition, evidenceReceipt with
-            | ReceiptTransition.Noop, Some receipt when
-                pendingObligations > 0
-                && not (RunCoverage.coversWholeSuite (Set.toList runnableProjects) receipt.Coverage)
-                ->
-                standingEvidence
-                |> Option.map (
-                    EarnedEvidence.withRefusals [ $"%d{pendingObligations} verification obligation(s) remain pending" ]
-                )
-            | ReceiptTransition.Noop, _
-            | ReceiptTransition.Narrower, _ -> standingEvidence
-            | ReceiptTransition.Earned _, _
-            | ReceiptTransition.Revoked _, _ -> None
-
         let earned =
-            match keptWithReceipt, completed.Verification with
-            | Some kept, _ -> Some kept
-            | None, NoProjectsSelected when
-                pendingObligations = 0
-                && not aborted
-                && launch.ZeroSelection <> ZeroSelection.NotAZero
-                && launch.ModelGeneration = currentModelGeneration
-                ->
-                // Nothing needed running, so this completion proves nothing new.
-                // The evidence it was already verified by stands, while it belongs
-                // to the current model.
-                EarnedEvidence.retainedForZeroSelection currentModelGeneration currentInputs state.Earned
-            | None, NoProjectsSelected
-            | None, AllZeroMatch _
-            | None, NothingExecuted
-            | None, Ran _ ->
-                EarnedEvidence.fromCompletion
-                    started.RunId
-                    launch.ModelGeneration
-                    currentModelGeneration
-                    currentInputs
-                    (ObservedModel.projectFiles ctx.ProjectGraph)
-                    runnableProjects
-                    pendingObligations
-                    (TestPruneState.coverageEvidence state)
-                    completed
-
-        Logging.info
-            "test-prune"
-            (describeCompletionEvidence
-                completed.RunId
-                launch.ModelGeneration
-                currentModelGeneration
-                receiptTransition
-                evidenceReceipt
-                earned)
-
-        match receiptEvidenceMismatch currentModelGeneration evidenceReceipt earned with
-        | Some mismatch -> Logging.warn "test-prune" mismatch
-        | None -> ()
+            earnedEvidenceOf
+                ctx
+                { State = state
+                  Started = started
+                  Completed = completed
+                  Launch = launch
+                  Debt = debt
+                  RunnableProjects = runnableProjects
+                  Aborted = aborted
+                  ExecutedFullSuite = executedFullSuite
+                  ProjectPassed = projectPassed
+                  Unanalyzable = unanalyzable
+                  OutstandingFailures = outstandingFailures
+                  CurrentInputTree = currentInputTree
+                  CurrentInputs = currentInputs
+                  CurrentModelGeneration = currentModelGeneration
+                  ReceiptTransition = receiptTransition
+                  EvidenceReceipt = evidenceReceipt
+                  StandingEvidence = standingEvidence }
 
         let state =
             { state with
