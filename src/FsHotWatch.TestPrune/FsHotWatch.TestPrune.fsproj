@@ -80,6 +80,7 @@
     <Compile Include="PluginCommands.fs" />
     <Compile Include="IndexMaintenance.fs" />
     <Compile Include="RunSupport.fs" />
+    <Compile Include="RunExecution.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 
