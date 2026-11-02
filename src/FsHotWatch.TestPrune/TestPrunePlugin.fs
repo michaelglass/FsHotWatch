@@ -297,6 +297,22 @@ let internal debtScopeIn
             projects
             |> Set.filter (fun project -> Set.contains project runnableProjects || not (declaredExcluded project))
 
+/// The test projects covering each symbol a classification pass is about: what its
+/// single-seed `QueryAffectedTests` would select from. One grouped query answers all
+/// of `symbols`, run the first time any symbol is asked about and never when none is.
+/// A symbol outside `symbols` is answered by a grouped query of its own.
+let internal coveringOfIn (queries: ImpactQueries) (symbols: string seq) : string -> Set<string> =
+    let known = symbols |> Seq.distinct |> List.ofSeq
+    let grouped = lazy (queries.CoveringProjectsBySeed known)
+
+    fun symbol ->
+        match Map.tryFind symbol grouped.Value with
+        | Some projects -> projects
+        | None ->
+            queries.CoveringProjectsBySeed [ symbol ]
+            |> Map.tryFind symbol
+            |> Option.defaultValue Set.empty
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -727,21 +743,7 @@ let internal createWithEvidenceAndQueries
     let lazyDebtScope (covering: string -> Set<string>) =
         debtScope (lazy (resolveExcludedProjects ())) covering
 
-    /// The test projects covering each symbol a classification pass is about: what its
-    /// single-seed `QueryAffectedTests` would select from. One grouped query answers all
-    /// of `symbols`, run the first time any symbol is asked about and never when none is.
-    /// A symbol outside `symbols` is answered by a grouped query of its own.
-    let coveringOf (symbols: string seq) : string -> Set<string> =
-        let known = symbols |> Seq.distinct |> List.ofSeq
-        let grouped = lazy (queries.CoveringProjectsBySeed known)
-
-        fun symbol ->
-            match Map.tryFind symbol grouped.Value with
-            | Some projects -> projects
-            | None ->
-                queries.CoveringProjectsBySeed [ symbol ]
-                |> Map.tryFind symbol
-                |> Option.defaultValue Set.empty
+    let coveringOf = coveringOfIn queries
 
     let owedElsewhere = owedElsewhereIn runnableProjects
 
