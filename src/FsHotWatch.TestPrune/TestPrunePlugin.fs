@@ -2175,6 +2175,18 @@ type internal ExtensionRefreshPhase =
     /// something or an extension failed (`FailedExtensions`).
     | Refreshed
 
+/// How far a requested run's work has got, for the path that closes it when it is
+/// cancelled: a run it started must be completed, and a run it returned is closed by the
+/// fold of what it returned.
+[<RequireQualifiedAccess>]
+type internal RequestedRunProgress =
+    /// No run started yet.
+    | NotStarted
+    /// This run started and has not returned.
+    | Started of TestRunStarted
+    /// The work returned its result; the fold closes the run.
+    | Returned
+
 /// The file-freshness sidecar a plugin holds, with the project model generation it was
 /// last reconciled against (`None` before the first). Read and replaced as one value.
 type internal FreshnessView =
@@ -4514,11 +4526,16 @@ let internal createWithEvidenceAndQueries
             logLaunch "forced" mode commandLaunch
             logSelectedBy commandLaunch
 
-            let mutable emittedStart: TestRunStarted option = None
-            let mutable returned = false
+            let mutable progress = RequestedRunProgress.NotStarted
+
+            let emittedStart () =
+                match progress with
+                | RequestedRunProgress.Started started -> Some started
+                | RequestedRunProgress.NotStarted
+                | RequestedRunProgress.Returned -> None
 
             let emitStarted started =
-                emittedStart <- Some started
+                progress <- RequestedRunProgress.Started started
                 ctx.EmitTestRunStarted started
 
             try
@@ -4565,7 +4582,7 @@ let internal createWithEvidenceAndQueries
                     // delivers it: the synchronous handler does the error reporting and
                     // status updates a bare emit would skip, and the reply is resolved
                     // only once that completion is published.
-                    returned <- true
+                    progress <- RequestedRunProgress.Returned
 
                     return
                         CommandTestsFinished(
@@ -4584,12 +4601,12 @@ let internal createWithEvidenceAndQueries
                     // lifecycle drives the TestsFinished handler to a Failed
                     // status.
                     Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
-                    let started, completed = abortedRunLifecycle emittedStart ex.Message
+                    let started, completed = abortedRunLifecycle (emittedStart ()) ex.Message
 
-                    if emittedStart.IsNone then
+                    if (emittedStart ()).IsNone then
                         emitStarted started
 
-                    returned <- true
+                    progress <- RequestedRunProgress.Returned
 
                     return
                         CommandTestsFinished(
@@ -4602,20 +4619,20 @@ let internal createWithEvidenceAndQueries
             finally
                 // Cancellation — daemon teardown, or every client that asked for this run
                 // has gone — skips `with` but runs `finally`, and no completion will fold.
-                if not returned then
-                    let reason = "the run was cancelled before it completed"
+                let reason = "the run was cancelled before it completed"
 
-                    // Close the run this work opened. Subscribers track every started run
-                    // until its completion (Build defers every build while one is live),
-                    // so a started run must end. `Aborted` with no results is evidence of
-                    // nothing: it is never a pass.
-                    match emittedStart with
-                    | Some started ->
-                        let _, completed = abortedRunLifecycle (Some started) reason
-                        ctx.EmitTestRunCompleted completed
-                    | None -> ()
-
+                // Close the run this work opened. Subscribers track every started run
+                // until its completion (Build defers every build while one is live),
+                // so a started run must end. `Aborted` with no results is evidence of
+                // nothing: it is never a pass.
+                match progress with
+                | RequestedRunProgress.Returned -> ()
+                | RequestedRunProgress.Started started ->
+                    let _, completed = abortedRunLifecycle (Some started) reason
+                    ctx.EmitTestRunCompleted completed
                     // Never leave a client that is still waiting on a reply that cannot come.
+                    reply.TrySetResult(JsonSerializer.Serialize({| error = reason |})) |> ignore
+                | RequestedRunProgress.NotStarted ->
                     reply.TrySetResult(JsonSerializer.Serialize({| error = reason |})) |> ignore
         }
 
