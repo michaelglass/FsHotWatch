@@ -105,6 +105,183 @@ type internal RunEnv =
         BumpSeedAges: string list -> unit
     }
 
+/// What an impact run widens to before it selects anything (`widenLaunch`).
+type internal LaunchWidenings =
+    { ScopeIsFullSuite: bool
+      LedgerUnreadable: bool
+      BaselineInvalid: string option
+      CoarseGaps: Set<string>
+      LaunchedRuntimeObligations: RuntimeCoverageObligations
+      RuntimeForceProjects: Set<string>
+      EvidenceGap: Set<string>
+      FullSuiteCause: FullSuiteCause
+      ForceRunProjects: Set<string>
+      LaunchedSymbols: Set<string>
+      LaunchedRevisions: Map<string, int64> }
+
+/// The widenings every impact launch applies, logged, and the symbols and revisions it launches against.
+let internal widenLaunch
+    (env: RunEnv)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (configs: TestConfig list)
+    (inputs: TestRunInputs)
+    (fanoutProjects: Set<string>)
+    : LaunchWidenings =
+    let baselineInvalidReason = env.Debt.BaselineInvalidReason
+    let revisionOf = env.Debt.RevisionOf
+    let observeModelGeneration = env.Launch.ObserveModelGeneration
+
+    // The single chokepoint every launch path funnels through (BatchChecked
+    // drain, BuildCompleted, deferred rerun). Both widenings live here rather
+    // than at each call site, so no future launch path can forget one and
+    // quietly reintroduce a filtered run where an unfiltered one was owed.
+    //
+    //  * full-suite scope: run EVERY project, unfiltered.
+    //  * unanalysable files: run every project, because a
+    //    selection made without them cannot be trusted.
+    //  * an UNREADABLE pending-verification ledger: run every
+    //    project, because the ledger names what is still owed, and a selection
+    //    made without it cannot be trusted either. Same shape as 113: the
+    //    missing input is a SAFETY input, so its absence widens rather than
+    //    narrows.
+    //  * NO VALID FULL-SUITE BASELINE: run every project,
+    //    because the tests a filtered run skips have nothing to be equivalent
+    //    to. A cold repository earns its baseline here; a repository whose
+    //    `tests.projects` grew re-earns it. Same shape as 150.
+    let scopeIsFullSuite = TestMode.requestsFullSuite inputs.Mode
+    let ledgerUnreadable = inputs.Debt.RecoveryOutstanding
+    let baselineInvalid = baselineInvalidReason inputs.Debt
+
+    // The coarse fallback only needs to know WHICH files are unanalysable; the
+    // map's values exist so the ledger projection can re-report their
+    // diagnostics.
+    let unanalyzablePaths = inputs.UnanalyzableFiles |> Map.keys |> Set.ofSeq
+
+    // A failed extension is a hole in the graph exactly as an unanalysable file
+    // is: its stored edges describe an older tree. Same coarse fallback.
+    let coarseGaps =
+        inputs.FailedExtensions
+        |> Map.keys
+        |> Seq.map extensionLedgerKey
+        |> Set.ofSeq
+        |> Set.union unanalyzablePaths
+        |> Set.union inputs.Unindexed
+
+    let launchedRuntimeObligations = inputs.Debt.RuntimeObligations
+
+    // A project whose runtime coverage did not ingest runs in full too: what its tests
+    // reach is not known, so no runtime selection of it can be trusted.
+    let runtimeForceProjects =
+        launchedRuntimeObligations
+        |> Map.values
+        |> Seq.collect Map.keys
+        |> Set.ofSeq
+        |> Set.union (
+            inputs.Debt.CoverageNotIngested
+            |> Map.keys
+            |> Set.ofSeq
+            |> Set.intersect (fullSuiteProjects configs)
+        )
+
+    // A project with no whole-project run under the current model can only be
+    // vouched for by running it in full: filtered or skipped, it is a refusal in
+    // the evidence this run earns, and a later run that selects nothing keeps that
+    // refusal. After a model change or a restart, this is every project the
+    // current model has not yet seen run whole.
+    let evidenceGap =
+        EarnedEvidence.wholeProjectGap
+            (observeModelGeneration ctx)
+            (ObservedModel.inputs ctx.ProjectGraph)
+            (fullSuiteProjects configs)
+            inputs.Earned
+
+    let fullSuiteCause =
+        fullSuiteCauseOf
+            scopeIsFullSuite
+            ledgerUnreadable
+            (Option.isSome baselineInvalid)
+            (not (Set.isEmpty coarseGaps))
+            (Set.isSubset (fullSuiteProjects configs) evidenceGap)
+
+    let forceRunProjects =
+        let widened = coarseFallbackProjects configs coarseGaps fanoutProjects
+        let widened = Set.union widened runtimeForceProjects
+        let widened = Set.union widened evidenceGap
+
+        if scopeIsFullSuite || ledgerUnreadable || Option.isSome baselineInvalid then
+            Set.union widened (fullSuiteProjects configs)
+        else
+            widened
+
+    if scopeIsFullSuite then
+        Logging.info
+            "test-prune"
+            "Scope: FULL SUITE — impact filtering is disabled for this run; every configured test project runs in full"
+
+    if not (Set.isEmpty evidenceGap) then
+        let names = evidenceGap |> Set.toList |> String.concat ", "
+
+        Logging.info
+            "test-prune"
+            $"Evidence gap: %d{Set.count evidenceGap} project(s) have no whole-project run under the current project model (%s{names}) — running them in full, so this run's evidence can support a green"
+
+    match baselineInvalid with
+    | Some reason when not ledgerUnreadable ->
+        Logging.info
+            "test-prune"
+            $"Scope: FULL SUITE (no valid full-suite baseline) — %s{reason}. Every configured test project runs in full; impact filtering resumes once this run has accounted for every project."
+    | _ -> ()
+
+    if ledgerUnreadable then
+        Logging.warn
+            "test-prune"
+            $"Scope: FULL SUITE (verification debt unknown: %s{describeUnknownDebt inputs.Debt.UnknownDebt}) — what still needs testing is not known, so this run cannot know what it owes. It runs EVERY configured test project in full rather than trust an impact selection made without that record. Impact filtering resumes once a full suite passes."
+
+    if not (Map.isEmpty inputs.FailedExtensions) then
+        let names = inputs.FailedExtensions |> Map.keys |> String.concat ", "
+
+        Logging.warn
+            "test-prune"
+            $"%d{inputs.FailedExtensions.Count} test-impact extension(s) failed their last refresh (%s{names}) — their edges describe an older tree, so this run falls back to EVERY test project in full rather than trusting a selection made over them"
+
+    if not (Set.isEmpty inputs.Unindexed) then
+        Logging.warn
+            "test-prune"
+            $"%d{Set.count inputs.Unindexed} file(s) whose analysis a project-model change retired are not in the impact index yet (%s{describeAll (Set.toList inputs.Unindexed)}) — this run falls back to EVERY test project in full until they are analysed again"
+
+    if not (Set.isEmpty unanalyzablePaths) then
+        let names = unanalyzablePaths |> Set.toList |> String.concat ", "
+
+        Logging.warn
+            "test-prune"
+            $"%d{Set.count unanalyzablePaths} file(s) could not be analysed (%s{names}) — their symbols are missing from the impact graph, so this run falls back to EVERY test project in full rather than trusting a selection made without them"
+
+    // The queue snapshot this run is LAUNCHED against — the durable
+    // queue UNION the in-memory hot view. Captured here (not read from
+    // state at completion time) because mid-run BatchChecked flushes
+    // mutate both; the synchronous TestsFinished handler commits ONLY
+    // these symbols and leaves mid-run arrivals queued for the rerun.
+    let launchedSymbols =
+        Set.union inputs.Debt.PendingQueue (Set.ofList inputs.ChangedSymbols)
+
+    let launchedRevisions =
+        launchedSymbols
+        |> Set.toList
+        |> List.map (fun symbol -> symbol, revisionOf inputs.Debt symbol)
+        |> Map.ofList
+
+    { ScopeIsFullSuite = scopeIsFullSuite
+      LedgerUnreadable = ledgerUnreadable
+      BaselineInvalid = baselineInvalid
+      CoarseGaps = coarseGaps
+      LaunchedRuntimeObligations = launchedRuntimeObligations
+      RuntimeForceProjects = runtimeForceProjects
+      EvidenceGap = evidenceGap
+      FullSuiteCause = fullSuiteCause
+      ForceRunProjects = forceRunProjects
+      LaunchedSymbols = launchedSymbols
+      LaunchedRevisions = launchedRevisions }
+
 let internal runTestsWithImpactWith
     (env: RunEnv)
     (ctx: PluginCtx<TestPruneMsg>)
@@ -142,8 +319,6 @@ let internal runTestsWithImpactWith
     let coveringOf = env.Debt.CoveringOf
     let lazyDebtScope = env.Debt.DebtScope
     let nothingOwed = env.Debt.NothingOwed
-    let revisionOf = env.Debt.RevisionOf
-    let baselineInvalidReason = env.Debt.BaselineInvalidReason
     let awaitDiscoveryBeforeLaunch = env.Launch.AwaitDiscovery
     let compileInputsOf = env.Launch.CompileInputsOf
     let coverageIngestFailed = env.Launch.CoverageIngestFailed
@@ -163,144 +338,18 @@ let internal runTestsWithImpactWith
             emittedStart <- Some started
             ctx.EmitTestRunStarted started
 
-        // The single chokepoint every launch path funnels through (BatchChecked
-        // drain, BuildCompleted, deferred rerun). Both widenings live here rather
-        // than at each call site, so no future launch path can forget one and
-        // quietly reintroduce a filtered run where an unfiltered one was owed.
-        //
-        //  * full-suite scope: run EVERY project, unfiltered.
-        //  * unanalysable files: run every project, because a
-        //    selection made without them cannot be trusted.
-        //  * an UNREADABLE pending-verification ledger: run every
-        //    project, because the ledger names what is still owed, and a selection
-        //    made without it cannot be trusted either. Same shape as 113: the
-        //    missing input is a SAFETY input, so its absence widens rather than
-        //    narrows.
-        //  * NO VALID FULL-SUITE BASELINE: run every project,
-        //    because the tests a filtered run skips have nothing to be equivalent
-        //    to. A cold repository earns its baseline here; a repository whose
-        //    `tests.projects` grew re-earns it. Same shape as 150.
-        let scopeIsFullSuite = TestMode.requestsFullSuite inputs.Mode
-        let ledgerUnreadable = inputs.Debt.RecoveryOutstanding
-        let baselineInvalid = baselineInvalidReason inputs.Debt
-
-        // The coarse fallback only needs to know WHICH files are unanalysable; the
-        // map's values exist so the ledger projection can re-report their
-        // diagnostics.
-        let unanalyzablePaths = inputs.UnanalyzableFiles |> Map.keys |> Set.ofSeq
-
-        // A failed extension is a hole in the graph exactly as an unanalysable file
-        // is: its stored edges describe an older tree. Same coarse fallback.
-        let coarseGaps =
-            inputs.FailedExtensions
-            |> Map.keys
-            |> Seq.map extensionLedgerKey
-            |> Set.ofSeq
-            |> Set.union unanalyzablePaths
-            |> Set.union inputs.Unindexed
-
-        let launchedRuntimeObligations = inputs.Debt.RuntimeObligations
-
-        // A project whose runtime coverage did not ingest runs in full too: what its tests
-        // reach is not known, so no runtime selection of it can be trusted.
-        let runtimeForceProjects =
-            launchedRuntimeObligations
-            |> Map.values
-            |> Seq.collect Map.keys
-            |> Set.ofSeq
-            |> Set.union (
-                inputs.Debt.CoverageNotIngested
-                |> Map.keys
-                |> Set.ofSeq
-                |> Set.intersect (fullSuiteProjects configs)
-            )
-
-        // A project with no whole-project run under the current model can only be
-        // vouched for by running it in full: filtered or skipped, it is a refusal in
-        // the evidence this run earns, and a later run that selects nothing keeps that
-        // refusal. After a model change or a restart, this is every project the
-        // current model has not yet seen run whole.
-        let evidenceGap =
-            EarnedEvidence.wholeProjectGap
-                (observeModelGeneration ctx)
-                (ObservedModel.inputs ctx.ProjectGraph)
-                (fullSuiteProjects configs)
-                inputs.Earned
-
-        let fullSuiteCause =
-            fullSuiteCauseOf
-                scopeIsFullSuite
-                ledgerUnreadable
-                (Option.isSome baselineInvalid)
-                (not (Set.isEmpty coarseGaps))
-                (Set.isSubset (fullSuiteProjects configs) evidenceGap)
-
-        let forceRunProjects =
-            let widened = coarseFallbackProjects configs coarseGaps fanoutProjects
-            let widened = Set.union widened runtimeForceProjects
-            let widened = Set.union widened evidenceGap
-
-            if scopeIsFullSuite || ledgerUnreadable || Option.isSome baselineInvalid then
-                Set.union widened (fullSuiteProjects configs)
-            else
-                widened
-
-        if scopeIsFullSuite then
-            Logging.info
-                "test-prune"
-                "Scope: FULL SUITE — impact filtering is disabled for this run; every configured test project runs in full"
-
-        if not (Set.isEmpty evidenceGap) then
-            let names = evidenceGap |> Set.toList |> String.concat ", "
-
-            Logging.info
-                "test-prune"
-                $"Evidence gap: %d{Set.count evidenceGap} project(s) have no whole-project run under the current project model (%s{names}) — running them in full, so this run's evidence can support a green"
-
-        match baselineInvalid with
-        | Some reason when not ledgerUnreadable ->
-            Logging.info
-                "test-prune"
-                $"Scope: FULL SUITE (no valid full-suite baseline) — %s{reason}. Every configured test project runs in full; impact filtering resumes once this run has accounted for every project."
-        | _ -> ()
-
-        if ledgerUnreadable then
-            Logging.warn
-                "test-prune"
-                $"Scope: FULL SUITE (verification debt unknown: %s{describeUnknownDebt inputs.Debt.UnknownDebt}) — what still needs testing is not known, so this run cannot know what it owes. It runs EVERY configured test project in full rather than trust an impact selection made without that record. Impact filtering resumes once a full suite passes."
-
-        if not (Map.isEmpty inputs.FailedExtensions) then
-            let names = inputs.FailedExtensions |> Map.keys |> String.concat ", "
-
-            Logging.warn
-                "test-prune"
-                $"%d{inputs.FailedExtensions.Count} test-impact extension(s) failed their last refresh (%s{names}) — their edges describe an older tree, so this run falls back to EVERY test project in full rather than trusting a selection made over them"
-
-        if not (Set.isEmpty inputs.Unindexed) then
-            Logging.warn
-                "test-prune"
-                $"%d{Set.count inputs.Unindexed} file(s) whose analysis a project-model change retired are not in the impact index yet (%s{describeAll (Set.toList inputs.Unindexed)}) — this run falls back to EVERY test project in full until they are analysed again"
-
-        if not (Set.isEmpty unanalyzablePaths) then
-            let names = unanalyzablePaths |> Set.toList |> String.concat ", "
-
-            Logging.warn
-                "test-prune"
-                $"%d{Set.count unanalyzablePaths} file(s) could not be analysed (%s{names}) — their symbols are missing from the impact graph, so this run falls back to EVERY test project in full rather than trusting a selection made without them"
-
-        // The queue snapshot this run is LAUNCHED against — the durable
-        // queue UNION the in-memory hot view. Captured here (not read from
-        // state at completion time) because mid-run BatchChecked flushes
-        // mutate both; the synchronous TestsFinished handler commits ONLY
-        // these symbols and leaves mid-run arrivals queued for the rerun.
-        let launchedSymbols =
-            Set.union inputs.Debt.PendingQueue (Set.ofList inputs.ChangedSymbols)
-
-        let launchedRevisions =
-            launchedSymbols
-            |> Set.toList
-            |> List.map (fun symbol -> symbol, revisionOf inputs.Debt symbol)
-            |> Map.ofList
+        let widenings = widenLaunch env ctx configs inputs fanoutProjects
+        let scopeIsFullSuite = widenings.ScopeIsFullSuite
+        let ledgerUnreadable = widenings.LedgerUnreadable
+        let baselineInvalid = widenings.BaselineInvalid
+        let coarseGaps = widenings.CoarseGaps
+        let launchedRuntimeObligations = widenings.LaunchedRuntimeObligations
+        let runtimeForceProjects = widenings.RuntimeForceProjects
+        let evidenceGap = widenings.EvidenceGap
+        let fullSuiteCause = widenings.FullSuiteCause
+        let forceRunProjects = widenings.ForceRunProjects
+        let launchedSymbols = widenings.LaunchedSymbols
+        let launchedRevisions = widenings.LaunchedRevisions
 
         // Advance the poisoned-seed counters HERE, at the launch of
         // a test RUN, so the count means what `PoisonSeedRuns` and the warning text
