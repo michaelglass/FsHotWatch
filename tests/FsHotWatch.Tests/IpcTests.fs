@@ -337,7 +337,7 @@ let ``server responds to RunCommandFor, naming the invocation it asks for`` () =
             IpcClient.runCommandFor pipeName "invocation-3" "greet" "claude"
             |> Async.RunSynchronously
 
-        test <@ result = "hello claude" @>
+        test <@ result = commandOutputReply "greet" "hello claude" @>
         test <@ List.ofSeq looked = [ "invocation-3" ] @>
     finally
         cts.Cancel()
@@ -469,7 +469,7 @@ let ``RunCommand returns unknown command for non-existent command`` () =
 
         // 0.6.0 strict-CLI: unknown command comes back as a distinguishable JSON
         // sentinel (not a plain string) so the CLI can fail hard on it.
-        test <@ isUnknownCommandReply result @>
+        test <@ CommandReply.parse result = ReplyReading.Tagged(CommandReply.UnknownCommand "no-such-command") @>
     finally
         cts.Cancel()
 
@@ -787,7 +787,7 @@ let ``DaemonRpcTarget.RunCommand returns unknown command for missing command`` (
         |> Async.AwaitTask
         |> Async.RunSynchronously
 
-    test <@ isUnknownCommandReply result @>
+    test <@ CommandReply.parse result = ReplyReading.Tagged(CommandReply.UnknownCommand "nonexistent") @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
@@ -816,7 +816,7 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
     let result1 =
         target.RunCommand("hello", "") |> Async.AwaitTask |> Async.RunSynchronously
 
-    test <@ result1 = "hello world" @>
+    test <@ result1 = commandOutputReply "hello" "hello world" @>
 
     // Exercises the else branch of argsJson parsing.
     let result2 =
@@ -824,7 +824,7 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
         |> Async.AwaitTask
         |> Async.RunSynchronously
 
-    test <@ result2 = "hello test-arg" @>
+    test <@ result2 = commandOutputReply "hello" "hello test-arg" @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` () =
@@ -1220,7 +1220,7 @@ let ``DaemonRpcTarget.FormatAll delegates to config`` () =
 
     let target = DaemonRpcTarget(config)
     let result = target.FormatAll().Result
-    test <@ result = "formatted 5 files" @>
+    test <@ CommandReply.parse result = ReplyReading.Tagged(CommandReply.Formatted "formatted 5 files") @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.RerunPlugin delegates to config`` () =
@@ -1239,7 +1239,7 @@ let ``DaemonRpcTarget.RerunPlugin delegates to config`` () =
     let target = DaemonRpcTarget(config)
     let result = target.RerunPlugin("coverage-ratchet").Result
     // Returns GetStatus payload (empty map "{}" when no plugins registered aside from mocks).
-    test <@ result = "{}" @>
+    test <@ CommandReply.parse result = ReplyReading.Tagged(CommandReply.Statuses "{}") @>
     test <@ capturedName = "coverage-ratchet" @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
@@ -1252,8 +1252,13 @@ let ``DaemonRpcTarget.RerunPlugin returns error payload when plugin has no patte
 
     let target = DaemonRpcTarget(config)
     let result = target.RerunPlugin("missing").Result
-    test <@ result.Contains("error") @>
-    test <@ result.Contains("missing") @>
+
+    test
+        <@
+            match CommandReply.parse result with
+            | ReplyReading.Tagged(CommandReply.Refused reason) -> reason.Contains("missing")
+            | _ -> false
+        @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =

@@ -109,7 +109,7 @@ let private spawnThenStop
     (stop: unit -> unit)
     =
     let reply = call ()
-    test <@ reply = "started" @>
+    test <@ reply = FsHotWatch.Ipc.commandOutputReply "spawn" "started" @>
 
     let pid =
         match waitUntilTrue (fun () -> (readPid pidFile).IsSome) 20000, readPid pidFile with

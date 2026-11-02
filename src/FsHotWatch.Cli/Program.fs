@@ -1266,12 +1266,17 @@ let internal forceRealBuild (ipc: IpcOps) (pipeName: string) : unit =
         let reply =
             ipc.RunCommand pipeName ForceRebuildCommand "{}" |> Async.RunSynchronously
 
-        if FsHotWatch.Ipc.isUnknownCommandReply reply then
+        match FsHotWatch.Ipc.CommandReply.parse reply with
+        | FsHotWatch.Ipc.ReplyReading.Tagged(FsHotWatch.Ipc.CommandReply.UnknownCommand _) ->
             FsHotWatch.Logging.warn
                 "cli-confirm"
                 $"the daemon has no `%s{ForceRebuildCommand}` command — a cached build cannot be forced"
-        else
-            FsHotWatch.Logging.debug "cli-confirm" $"force-rebuild reply: %s{reply}"
+        | FsHotWatch.Ipc.ReplyReading.Unrecognised _ ->
+            FsHotWatch.Logging.warn
+                "cli-confirm"
+                $"the forced rebuild request was not understood: %s{FsHotWatch.Ipc.CommandReply.untaggedMessage}"
+        | FsHotWatch.Ipc.ReplyReading.Tagged reply ->
+            FsHotWatch.Logging.debug "cli-confirm" $"force-rebuild reply: %A{reply}"
     with ex ->
         FsHotWatch.Logging.warn "cli-confirm" $"the forced rebuild request failed: %s{ex.Message}"
 
@@ -4272,7 +4277,11 @@ let private executeCommandRendered
 
                         match result with
                         | Some json ->
-                            IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail json
+                            IpcOutput.renderCommandReply
+                                mode
+                                (renderLines mode (not noWarnFail))
+                                noWarnFail
+                                (FsHotWatch.Ipc.CommandReply.Output(IpcParsing.RunTestsCommand, json))
                         | None ->
                             // Same answer as the daemon's unknown-command reply: nothing
                             // ran, so no verdict (AUTOMATION-1337).
@@ -4796,10 +4805,9 @@ let executePluginCommand
     try
         let result = ipc.RunCommand pipeName cmd argsStr |> Async.RunSynchronously
 
-        if FsHotWatch.Ipc.isUnknownCommandReply result then
-            NotRecognized
-        else
-            Handled(IpcOutput.renderIpcResult mode (renderLines mode true) false result)
+        match FsHotWatch.Ipc.CommandReply.parse result with
+        | FsHotWatch.Ipc.ReplyReading.Tagged(FsHotWatch.Ipc.CommandReply.UnknownCommand _) -> NotRecognized
+        | _ -> Handled(IpcOutput.renderIpcResult mode (renderLines mode true) false result)
     with ex ->
         reportDaemonError daemonLog ex
         DaemonUnavailable

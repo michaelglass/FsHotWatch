@@ -116,7 +116,13 @@ let private idle (host: PluginHost) =
 /// way a CLI does once the reply is in.
 let private askThenCloseConnection (probe: Probe) (connection: CancellationTokenSource) (ask: unit -> Task<string>) =
     let reply = ask ()
-    test <@ reply.Wait bound && reply.Result = "asked" @>
+
+    test
+        <@
+            reply.Wait bound
+            && reply.Result = FsHotWatch.Ipc.commandOutputReply "ask" "asked"
+        @>
+
     test <@ probe.Started.Task.Wait bound @>
     connection.Cancel()
 

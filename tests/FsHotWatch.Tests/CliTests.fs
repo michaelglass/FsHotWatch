@@ -441,13 +441,35 @@ let ``classifyParse root unknown command yields RootUnknownCommand with raw rest
     | other -> failwith $"expected RootUnknownCommand, got %A{other}"
 
 [<Fact(Timeout = 15000)>]
-let ``unknownCommandReply round-trips through isUnknownCommandReply`` () =
-    test <@ FsHotWatch.Ipc.isUnknownCommandReply (FsHotWatch.Ipc.unknownCommandReply "bogus") @>
-    // The sentinel carries the command name so a consumer can render it.
-    test <@ (FsHotWatch.Ipc.unknownCommandReply "bogus").Contains("bogus") @>
-    test <@ not (FsHotWatch.Ipc.isUnknownCommandReply """{"status":"passed"}""") @>
-    test <@ not (FsHotWatch.Ipc.isUnknownCommandReply "plain text") @>
-    test <@ not (FsHotWatch.Ipc.isUnknownCommandReply null) @>
+let ``every command reply reads back from its own wire form`` () =
+    let replies =
+        [ FsHotWatch.Ipc.CommandReply.Output("run-tests", """{"status":"passed"}""")
+          FsHotWatch.Ipc.CommandReply.Output("greet", "hello")
+          FsHotWatch.Ipc.CommandReply.UnknownCommand "bogus"
+          FsHotWatch.Ipc.CommandReply.Statuses "{}"
+          FsHotWatch.Ipc.CommandReply.Refused "no pattern"
+          FsHotWatch.Ipc.CommandReply.Formatted "formatted 0 files" ]
+
+    for reply in replies do
+        test
+            <@
+                FsHotWatch.Ipc.CommandReply.parse (FsHotWatch.Ipc.CommandReply.toJson reply) = FsHotWatch.Ipc.ReplyReading.Tagged
+                    reply
+            @>
+
+[<Fact(Timeout = 15000)>]
+let ``an untagged reply, as a daemon of another fshw build sends, is unrecognised, never output`` () =
+    // What an older daemon sent: a plugin's raw JSON, plain text, its unknown-command
+    // sentinel, and a re-run's refusal.
+    for old in
+        [ """{"status":"passed"}"""
+          "plain text"
+          "fshw-unknown-command:bogus"
+          """{"error":"no pattern"}"""
+          """{"schema":"fshw-reply-v1","kind":"output"}""" ] do
+        test <@ FsHotWatch.Ipc.CommandReply.parse old = FsHotWatch.Ipc.ReplyReading.Unrecognised old @>
+
+    test <@ FsHotWatch.Ipc.CommandReply.parse null = FsHotWatch.Ipc.ReplyReading.Unrecognised null @>
 
 // --- GlobalSpec.Parse tests ---
 
@@ -855,16 +877,25 @@ let ``CLI command proxying works against running daemon`` () =
         let result =
             IpcClient.runCommand pipeName "greet" "Claude" |> Async.RunSynchronously
 
-        test <@ result.Contains("hello Claude") @>
+        test
+            <@
+                FsHotWatch.Ipc.CommandReply.parse result = FsHotWatch.Ipc.ReplyReading.Tagged(
+                    FsHotWatch.Ipc.CommandReply.Output("greet", "hello Claude")
+                )
+            @>
 
-        // An unrecognized command comes back as the distinguishable unknown-command sentinel
-        // rather than a plain echo, so the CLI can fail hard on it.
+        // An unrecognized command comes back as a distinguishable tagged reply rather than a
+        // plain echo, so the CLI can fail hard on it.
         let unknown =
             IpcClient.runCommand pipeName "definitely-not-a-command" ""
             |> Async.RunSynchronously
 
-        test <@ FsHotWatch.Ipc.isUnknownCommandReply unknown @>
-        test <@ not (FsHotWatch.Ipc.isUnknownCommandReply "hello Claude") @>
+        test
+            <@
+                FsHotWatch.Ipc.CommandReply.parse unknown = FsHotWatch.Ipc.ReplyReading.Tagged(
+                    FsHotWatch.Ipc.CommandReply.UnknownCommand "definitely-not-a-command"
+                )
+            @>
     finally
         cts.Cancel()
 
@@ -890,6 +921,35 @@ let private fakeConfig: DaemonConfiguration =
 /// renders no plugin at all.
 let private completedStatusJson =
     """{"plugin": {"status": "Completed at 2026-01-01T00:00:00Z", "subtasks": [], "activityTail": [], "lastRun": null}}"""
+
+/// `ipc` as the daemon answers: a command's raw output, a format summary and a re-run's
+/// statuses go out tagged (`Ipc.CommandReply`). A fake that already answers tagged (an
+/// unknown command) is passed through as it is.
+let private daemonTagged (ipc: IpcOps) : IpcOps =
+    let tag (wrap: string -> string) (reply: Async<string>) =
+        async {
+            let! text = reply
+
+            return
+                match FsHotWatch.Ipc.CommandReply.parse text with
+                | FsHotWatch.Ipc.ReplyReading.Tagged _ -> text
+                | FsHotWatch.Ipc.ReplyReading.Unrecognised _ -> wrap text
+        }
+
+    { ipc with
+        RunCommand = fun pipe name args -> ipc.RunCommand pipe name args |> tag (FsHotWatch.Ipc.commandOutputReply name)
+        RunCommandFor =
+            fun pipe id name args ->
+                ipc.RunCommandFor pipe id name args
+                |> tag (FsHotWatch.Ipc.commandOutputReply name)
+        FormatAll =
+            fun pipe ->
+                ipc.FormatAll pipe
+                |> tag (fun text -> FsHotWatch.Ipc.CommandReply.toJson (FsHotWatch.Ipc.CommandReply.Formatted text))
+        RerunPlugin =
+            fun pipe plugin ->
+                ipc.RerunPlugin pipe plugin
+                |> tag (fun text -> FsHotWatch.Ipc.CommandReply.toJson (FsHotWatch.Ipc.CommandReply.Statuses text)) }
 
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
@@ -941,7 +1001,7 @@ let private exec (ipc: IpcOps) (command: Command) : int =
         executeCommand
             ""
             (fun _ -> Unchecked.defaultof<_>)
-            ipc
+            (daemonTagged ipc)
             repoRoot
             "pipe"
             command
@@ -983,7 +1043,7 @@ let ``executeCommand Stop calls shutdown and reports the daemon gone`` () =
             executeCommand
                 ""
                 (fun _ -> Unchecked.defaultof<_>)
-                ipc
+                (daemonTagged ipc)
                 tmpDir
                 "pipe"
                 (Stop [])
@@ -1093,7 +1153,7 @@ let ``executePluginCommand proxies a recognized command to IPC`` () =
                     async {
                         cmdName <- cmd
                         argsSeen <- args
-                        return "result"
+                        return FsHotWatch.Ipc.commandOutputReply cmd "result"
                     } }
 
     let result =
@@ -1145,7 +1205,7 @@ let ``executePluginCommand reports DaemonUnavailable when IPC throws (no hint)``
 let ``forwardRootUnknownCommand returns the daemon exit code when handled`` () =
     let ipc =
         { fakeIpc () with
-            RunCommand = fun _ _ _ -> async { return "ran" } }
+            RunCommand = fun _ name _ -> async { return FsHotWatch.Ipc.commandOutputReply name "ran" } }
 
     let mutable renderCalled = false
 
@@ -1266,7 +1326,7 @@ let ``executeCommand Check exits 2 when no projects are discovered`` () =
             executeCommand
                 ""
                 (fun _ -> Unchecked.defaultof<_>)
-                ipc
+                (daemonTagged ipc)
                 tmpDir
                 "fshw-test-pipe"
                 (Check [])
@@ -1384,7 +1444,7 @@ let ``executeCommand Start fails closed when the native FSEvents stream is refus
                     (daemonWithNativeStream
                         (fun _ -> Interlocked.Increment(&produced.contents) |> ignore)
                         alwaysRefused)
-                    ipc
+                    (daemonTagged ipc)
                     tmpDir
                     "fshw-test-pipe-refused"
                     Start
@@ -1440,7 +1500,7 @@ let ``executeCommand Start fails closed when the native FSEvents stream is refus
                 executeCommand
                     ""
                     secondCreateDaemon
-                    ipc
+                    (daemonTagged ipc)
                     tmpDir
                     "fshw-test-pipe-refused"
                     Start
@@ -1486,7 +1546,7 @@ let ``executeCommand Start records the socket it listens on and removes the reco
                 executeCommand
                     ""
                     createDaemon
-                    ipc
+                    (daemonTagged ipc)
                     tmpDir
                     "fshw-test-pipe-endpoint"
                     Start
@@ -1775,7 +1835,7 @@ let ``executeCommand Check retries a startup connect race then succeeds`` () =
             executeCommand
                 ""
                 (fun _ -> Unchecked.defaultof<_>)
-                ipc
+                (daemonTagged ipc)
                 tmpDir
                 "fshw-test-pipe"
                 (Check [])
@@ -2143,7 +2203,7 @@ let private runRerun (daemonRunning: bool) (seed: string -> unit) (flags: RerunF
                 executeCommand
                     ""
                     createDaemon
-                    ipc
+                    (daemonTagged ipc)
                     repoRoot
                     "pipe"
                     (TestRerun flags)
@@ -2460,7 +2520,7 @@ let ``executeCommand Invalidate with no daemon running clears both persisted sto
                 executeCommand
                     ""
                     (fun _ -> Unchecked.defaultof<_>)
-                    ipc
+                    (daemonTagged ipc)
                     repoRoot
                     "pipe"
                     Invalidate
@@ -2492,7 +2552,7 @@ let private withStartupFailure command =
         executeCommand
             ""
             (fun _ -> Unchecked.defaultof<_>)
-            ipc
+            (daemonTagged ipc)
             tmpDir
             "pipe"
             command
@@ -2656,7 +2716,7 @@ let ``check against a daemon with NO recorded identity replaces it and runs on t
             executeCommand
                 ""
                 (fun _ -> Unchecked.defaultof<_>)
-                ipc
+                (daemonTagged ipc)
                 tmpDir
                 "fshw-test-pipe"
                 (Check [])
@@ -2699,7 +2759,7 @@ let ``check against a daemon built from a DIFFERENT binary replaces it and runs 
                 executeCommand
                     ""
                     (fun _ -> Unchecked.defaultof<_>)
-                    ipc
+                    (daemonTagged ipc)
                     tmpDir
                     "fshw-test-pipe"
                     (Check [])
@@ -2728,7 +2788,7 @@ let ``check against a HEALTHY daemon never restarts it — the warm cache surviv
             executeCommand
                 ""
                 (fun _ -> Unchecked.defaultof<_>)
-                ipc
+                (daemonTagged ipc)
                 tmpDir
                 "fshw-test-pipe"
                 (Check [])
@@ -2756,7 +2816,7 @@ let ``status names a stale-binary daemon instead of presenting its output as cur
                 executeCommand
                     ""
                     (fun _ -> Unchecked.defaultof<_>)
-                    ipc
+                    (daemonTagged ipc)
                     tmpDir
                     "pipe"
                     (Status(None, []))
@@ -2801,7 +2861,7 @@ let ``a corrupted IPC reply restarts the daemon and retries the command automati
                 executeCommand
                     ""
                     (fun _ -> Unchecked.defaultof<_>)
-                    ipc
+                    (daemonTagged ipc)
                     tmpDir
                     "pipe"
                     (Status(None, []))
@@ -2850,7 +2910,7 @@ let ``a client OOM names the client and leaves the workspace daemon owned and re
                 executeCommand
                     ""
                     (fun _ -> Unchecked.defaultof<_>)
-                    ipc
+                    (daemonTagged ipc)
                     tmpDir
                     "pipe"
                     (Status(None, []))
@@ -2868,7 +2928,7 @@ let ``a client OOM names the client and leaves the workspace daemon owned and re
             executeCommand
                 ""
                 (fun _ -> Unchecked.defaultof<_>)
-                ipc
+                (daemonTagged ipc)
                 tmpDir
                 "pipe"
                 (Status(None, []))
@@ -2894,7 +2954,7 @@ let ``a stale daemon-pid file is cleaned up on the next command`` () =
         executeCommand
             ""
             (fun _ -> Unchecked.defaultof<_>)
-            (fakeDaemonIpc tmpDir d)
+            (daemonTagged (fakeDaemonIpc tmpDir d))
             tmpDir
             "pipe"
             (Status(None, []))
@@ -2946,7 +3006,7 @@ let ``the next command reports that the daemon restarted ITSELF over a wedge`` (
                 executeCommand
                     ""
                     (fun _ -> Unchecked.defaultof<_>)
-                    (fakeDaemonIpc tmpDir d)
+                    (daemonTagged (fakeDaemonIpc tmpDir d))
                     tmpDir
                     "pipe"
                     (Status(None, []))
@@ -3274,9 +3334,11 @@ let ``readTestRun asks the daemon for the command named test-scope`` () =
                         seen <- (name, args) :: seen
 
                         return
-                            """{"kind":"full","ranProjects":6,"totalProjects":6"""
-                            + BaselineFixtures.replyFragment
-                            + "}"
+                            FsHotWatch.Ipc.commandOutputReply
+                                name
+                                ("""{"kind":"full","ranProjects":6,"totalProjects":6"""
+                                 + BaselineFixtures.replyFragment
+                                 + "}")
                     } }
 
     let run = readTestRun ipc "pipe"
@@ -3399,7 +3461,7 @@ let ``both transports say and decide the same thing for the same scope-command a
                                 match answer with
                                 | Absent -> FsHotWatch.Ipc.unknownCommandReply name
                                 | Throws -> failwith "boom"
-                                | Replies -> reply
+                                | Replies -> FsHotWatch.Ipc.commandOutputReply name reply
                         } }
 
         // A log line's timestamp is the one thing two calls may not share.
@@ -3493,7 +3555,7 @@ let ``requestOwedRun sends set-scope with a PARSEABLE {"scope":"owed"} payload``
                 fun _ invocation name args ->
                     async {
                         seen <- (invocation, name, args) :: seen
-                        return """{"scope":"owed"}"""
+                        return FsHotWatch.Ipc.commandOutputReply name """{"scope":"owed"}"""
                     } }
 
     requestOwedRun ipc "pipe" "invocation-7"
@@ -3565,7 +3627,11 @@ let ``a zero-match refusal names the filter and every project it searched`` () =
 
     let stderr, exitCode =
         captureBothStreams (fun () ->
-            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+            FsHotWatch.Cli.IpcOutput.renderIpcResult
+                FsHotWatch.Cli.ProgressRenderer.Verbose
+                (fun _ -> [])
+                false
+                (FsHotWatch.Ipc.commandOutputReply "run-tests" json))
 
     test <@ exitCode = 3 @>
     test <@ stderr.Contains("--filter-class *JudgeIntegrationTests") @>
@@ -3582,7 +3648,11 @@ let ``a refusal from a daemon that reports no filter says so, rather than claimi
 
     let stderr, exitCode =
         captureBothStreams (fun () ->
-            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+            FsHotWatch.Cli.IpcOutput.renderIpcResult
+                FsHotWatch.Cli.ProgressRenderer.Verbose
+                (fun _ -> [])
+                false
+                (FsHotWatch.Ipc.commandOutputReply "run-tests" json))
 
     test <@ exitCode = 3 @>
     test <@ stderr.Contains("not reported") @>
@@ -3601,7 +3671,11 @@ let ``a searched-project list is CAPPED, and says how many it left out`` () =
 
     let stderr, exitCode =
         captureBothStreams (fun () ->
-            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+            FsHotWatch.Cli.IpcOutput.renderIpcResult
+                FsHotWatch.Cli.ProgressRenderer.Verbose
+                (fun _ -> [])
+                false
+                (FsHotWatch.Ipc.commandOutputReply "run-tests" json))
 
     test <@ exitCode = 3 @>
     test <@ stderr.Contains("P1 (no-tests-matched)") @>
@@ -3617,7 +3691,11 @@ let ``a mixed no-op refusal names each project and the status that made it a no-
 
     let stderr, exitCode =
         captureBothStreams (fun () ->
-            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+            FsHotWatch.Cli.IpcOutput.renderIpcResult
+                FsHotWatch.Cli.ProgressRenderer.Verbose
+                (fun _ -> [])
+                false
+                (FsHotWatch.Ipc.commandOutputReply "run-tests" json))
 
     test <@ exitCode = 3 @>
     test <@ stderr.Contains("A (no-tests-matched)") @>
@@ -3633,7 +3711,11 @@ let ``a passing run does NOT print the search evidence`` () =
 
     let stderr, exitCode =
         captureBothStreams (fun () ->
-            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+            FsHotWatch.Cli.IpcOutput.renderIpcResult
+                FsHotWatch.Cli.ProgressRenderer.Verbose
+                (fun _ -> [])
+                false
+                (FsHotWatch.Ipc.commandOutputReply "run-tests" json))
 
     test <@ exitCode = 0 @>
     test <@ not (stderr.Contains("Searched:")) @>
@@ -3657,7 +3739,11 @@ let ``a passing project cannot hide another selected project's missing result`` 
 
     let output, exitCode =
         captureBothStreams (fun () ->
-            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+            FsHotWatch.Cli.IpcOutput.renderIpcResult
+                FsHotWatch.Cli.ProgressRenderer.Verbose
+                (fun _ -> [])
+                false
+                (FsHotWatch.Ipc.commandOutputReply "run-tests" json))
 
     test <@ exitCode = expectedExit @>
     test <@ not (output.Contains("Tests passed")) @>
@@ -3670,7 +3756,11 @@ let ``filtered zero-match siblings do not invalidate an actual passing selection
 
     let output, exitCode =
         captureBothStreams (fun () ->
-            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+            FsHotWatch.Cli.IpcOutput.renderIpcResult
+                FsHotWatch.Cli.ProgressRenderer.Verbose
+                (fun _ -> [])
+                false
+                (FsHotWatch.Ipc.commandOutputReply "run-tests" json))
 
     test <@ exitCode = 0 @>
     test <@ output.Contains("Tests passed") @>
@@ -3688,7 +3778,11 @@ let ``a passing test-rerun prints total, succeeded and failed for every project 
 
     let stderr, exitCode =
         captureBothStreams (fun () ->
-            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+            FsHotWatch.Cli.IpcOutput.renderIpcResult
+                FsHotWatch.Cli.ProgressRenderer.Verbose
+                (fun _ -> [])
+                false
+                (FsHotWatch.Ipc.commandOutputReply "run-tests" json))
 
     test <@ exitCode = 0 @>
     test <@ stderr.Contains("Unit [passed] — total 12, 12 succeeded, 0 failed") @>
@@ -3704,7 +3798,11 @@ let ``a project with NO test report says so, rather than printing zeros`` () =
 
     let stderr, _ =
         captureBothStreams (fun () ->
-            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+            FsHotWatch.Cli.IpcOutput.renderIpcResult
+                FsHotWatch.Cli.ProgressRenderer.Verbose
+                (fun _ -> [])
+                false
+                (FsHotWatch.Ipc.commandOutputReply "run-tests" json))
 
     test <@ stderr.Contains("no test report — counts unknown (not zero)") @>
     test <@ not (stderr.Contains("total 0")) @>
@@ -3719,7 +3817,11 @@ let ``a zero-match project reports its real total of zero, beside the refusal`` 
 
     let stderr, exitCode =
         captureBothStreams (fun () ->
-            FsHotWatch.Cli.IpcOutput.renderIpcResult FsHotWatch.Cli.ProgressRenderer.Verbose (fun _ -> []) false json)
+            FsHotWatch.Cli.IpcOutput.renderIpcResult
+                FsHotWatch.Cli.ProgressRenderer.Verbose
+                (fun _ -> [])
+                false
+                (FsHotWatch.Ipc.commandOutputReply "run-tests" json))
 
     test <@ exitCode = 3 @>
     test <@ stderr.Contains("P [no-tests-matched] — total 0, 0 succeeded, 0 failed") @>
@@ -4049,3 +4151,42 @@ let ``every scan progress reads back from its own answer, with its wedge report`
         """{"schema":"fshw-scan-status-v1","state":"checking","completed":1}"""
 
     test <@ FsHotWatch.ScanProgress.parse malformed = FsHotWatch.ScanProgress.Reading.Unrecognised malformed @>
+
+[<Fact(Timeout = 15000)>]
+let ``a scope command answered untagged, or with a reply that is not its output, throws naming it`` () =
+    let send (reply: string) =
+        FsHotWatch.Cli.ScopeCommands.overIpc (fun _ _ -> reply) IpcParsing.TestScopeCommand ""
+
+    let untagged =
+        Assert.Throws<InvalidOperationException>(fun () -> send """{"kind":"full"}""" |> ignore)
+
+    test <@ untagged.Message.Contains "another fshw build" @>
+
+    let refused =
+        Assert.Throws<InvalidOperationException>(fun () ->
+            send (FsHotWatch.Ipc.CommandReply.toJson (FsHotWatch.Ipc.CommandReply.Refused "no"))
+            |> ignore)
+
+    test <@ refused.Message.Contains IpcParsing.TestScopeCommand @>
+    test <@ send (FsHotWatch.Ipc.unknownCommandReply IpcParsing.TestScopeCommand) = None @>
+    test <@ send (FsHotWatch.Ipc.commandOutputReply IpcParsing.TestScopeCommand "{}") = Some "{}" @>
+
+[<Fact(Timeout = 15000)>]
+let ``check-reach names the graded run it asks about, and asks for the newest without one`` () =
+    let asked = ResizeArray<string * string>()
+
+    let send: FsHotWatch.Cli.ScopeCommands.Send =
+        fun name args ->
+            asked.Add((name, args))
+            None
+
+    let graded = Guid.NewGuid()
+    FsHotWatch.Cli.ScopeCommands.readCheckReach send (Some graded) |> ignore
+    FsHotWatch.Cli.ScopeCommands.readCheckReach send None |> ignore
+
+    let expected =
+        [ IpcParsing.CheckReachCommand, graded.ToString "N"
+          IpcParsing.CheckReachCommand, "" ]
+
+    let seen = List.ofSeq asked
+    test <@ seen = expected @>

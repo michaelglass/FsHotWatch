@@ -66,11 +66,18 @@ type private Fake(running: bool, replies: string list, onDisk: string) =
             fun () ->
                 this.Reads <- this.Reads + 1
 
+                // The daemon tags a command's output (`Ipc.CommandReply`); a scripted reply that is
+                // already tagged (an unknown command) goes out as it is.
+                let tagged (reply: string) =
+                    match FsHotWatch.Ipc.CommandReply.parse reply with
+                    | FsHotWatch.Ipc.ReplyReading.Tagged _ -> reply
+                    | FsHotWatch.Ipc.ReplyReading.Unrecognised _ -> FsHotWatch.Ipc.commandOutputReply CommandName reply
+
                 match replies with
-                | [ last ] -> last
+                | [ last ] -> tagged last
                 | next :: rest ->
                     replies <- rest
-                    next
+                    tagged next
                 | [] -> failwith "no reply scripted"
           TreeHash = fun () -> tree "sha256:tree"
           Disk =
@@ -376,3 +383,31 @@ let ``a stale answer lists its stale files in the JSON`` () =
     test <@ root["staleFiles"].AsArray() |> Seq.map _.GetValue<string>() |> Seq.toList = [ "src/A.fs" ] @>
     test <@ root["findings"].AsArray().Count = 0 @>
     test <@ Outcome.token NoDaemon = "no-daemon" && Outcome.token Incomplete = "incomplete" @>
+
+[<Fact(Timeout = 15000)>]
+let ``an untagged reply, from a daemon of another fshw build, is refused, never answered`` () =
+    let fake = Fake(true, [], "a")
+
+    let seams =
+        { fake.Seams with
+            ReadReply = fun () -> replyJson "a" [] }
+
+    let refused = answer seams once
+    test <@ refused.Outcome = Refused @>
+    test <@ refused.Reasons |> List.exists (fun r -> r.Contains "another fshw build") @>
+
+[<Fact(Timeout = 15000)>]
+let ``a tagged reply that is not the command's output is refused, naming what came back`` () =
+    let fake = Fake(true, [], "a")
+
+    for reply in
+        [ FsHotWatch.Ipc.CommandReply.Formatted "formatted 0 files"
+          FsHotWatch.Ipc.CommandReply.Statuses "{}"
+          FsHotWatch.Ipc.CommandReply.Refused "no" ] do
+        let seams =
+            { fake.Seams with
+                ReadReply = fun () -> FsHotWatch.Ipc.CommandReply.toJson reply }
+
+        let refused = answer seams once
+        test <@ refused.Outcome = Refused @>
+        test <@ refused.Reasons |> List.exists (fun r -> r.Contains "not its output") @>

@@ -829,7 +829,15 @@ let ``a legacy daemon, a hosted session, and one sharing its checker observe the
 
         test <@ hosted.StateFiles = legacy.StateFiles @>
         test <@ hosted.ScanMetrics = legacy.ScanMetrics @>
-        test <@ legacy.PluginCommand.StartsWith "{\"files\"" @>
+
+        test
+            <@
+                (match FsHotWatch.Ipc.CommandReply.parse legacy.PluginCommand with
+                 | FsHotWatch.Ipc.ReplyReading.Tagged(FsHotWatch.Ipc.CommandReply.Output(_, output)) ->
+                     output.StartsWith "{\"files\""
+                 | _ -> false)
+            @>
+
         test <@ hosted.PluginCommand = legacy.PluginCommand @>
 
         // The same run through a checker a sibling session shares.

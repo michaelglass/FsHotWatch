@@ -21,24 +21,108 @@ open FsHotWatch.ErrorLedger
 
 let private severityToString = DiagnosticSeverity.toString
 
-/// Distinctive prefix marking the `RunCommand` reply as "the plugin host did not
-/// recognize this command" (host `RunCommand` returned `None`). A fixed sentinel
-/// rather than free-form JSON so the CLI can detect it with a total
-/// `String.StartsWith` check. Real plugin commands return their own textual or
-/// JSON payloads and never emit this `fshw-`-namespaced control reply.
-[<Literal>]
-let UnknownCommandSentinelPrefix = "fshw-unknown-command:"
+/// The reply to a command-shaped RPC (`RunCommand`, `RunCommandFor`, `FormatAll`,
+/// `RerunPlugin`), tagged on the wire so a client parses it ONCE, at the boundary, and
+/// matches on what it is instead of probing a payload for the fields it happens to have.
+[<RequireQualifiedAccess>]
+type CommandReply =
+    /// A plugin command's own output: plugin-defined text or JSON.
+    | Output of command: string * output: string
+    /// No registered plugin serves the command, so nothing ran.
+    | UnknownCommand of command: string
+    /// The plugin statuses after a re-run (`GetStatus`'s JSON).
+    | Statuses of json: string
+    /// The daemon refused the request, and why.
+    | Refused of reason: string
+    /// What a format pass did.
+    | Formatted of summary: string
 
-/// Sentinel returned by `RunCommand` over IPC when the daemon's plugin host does not
-/// recognize the requested command. Carries the command name so the consumer can
-/// render an actionable error without re-deriving it.
-let unknownCommandReply (name: string) : string = UnknownCommandSentinelPrefix + name
+/// What a client made of a command reply.
+[<RequireQualifiedAccess>]
+type ReplyReading =
+    | Tagged of CommandReply
+    /// Not a reply in this format: a daemon from another fshw build, which answers untagged,
+    /// or a malformed reply. Never read as output, a pass or a refusal.
+    | Unrecognised of reply: string
 
-/// True when `reply` is the `RunCommand` unknown-command sentinel produced by
-/// `unknownCommandReply`. Total — any other (real) plugin output returns false.
-let isUnknownCommandReply (reply: string) : bool =
-    not (isNull reply)
-    && reply.StartsWith(UnknownCommandSentinelPrefix, StringComparison.Ordinal)
+module CommandReply =
+    /// Names the wire format. A reply that does not name it is not one.
+    [<Literal>]
+    let Schema = "fshw-reply-v1"
+
+    /// What a client says of a reply it cannot parse: the daemon is from another fshw build.
+    let untaggedMessage =
+        "the daemon's reply carries no fshw reply tag: it comes from another fshw build, so it is not read as output, a pass or a refusal; `fshw stop` restarts the daemon from this build — no verdict"
+
+    /// `reply` on the wire.
+    let toJson (reply: CommandReply) : string =
+        let o = Nodes.JsonObject()
+        o["schema"] <- Schema
+
+        match reply with
+        | CommandReply.Output(command, output) ->
+            o["kind"] <- "output"
+            o["command"] <- command
+            o["output"] <- output
+        | CommandReply.UnknownCommand command ->
+            o["kind"] <- "unknown-command"
+            o["command"] <- command
+        | CommandReply.Statuses json ->
+            o["kind"] <- "statuses"
+            o["statuses"] <- json
+        | CommandReply.Refused reason ->
+            o["kind"] <- "refused"
+            o["reason"] <- reason
+        | CommandReply.Formatted summary ->
+            o["kind"] <- "formatted"
+            o["summary"] <- summary
+
+        o.ToJsonString()
+
+    /// The reply a tagged object states; `None` for one that states none.
+    let private replyOf (o: JsonElement) : CommandReply option =
+        let field = Json.tryString o
+
+        match field "kind" with
+        | Some "output" ->
+            match field "command", field "output" with
+            | Some command, Some output -> Some(CommandReply.Output(command, output))
+            | _ -> None
+        | Some "unknown-command" -> field "command" |> Option.map CommandReply.UnknownCommand
+        | Some "statuses" -> field "statuses" |> Option.map CommandReply.Statuses
+        | Some "refused" -> field "reason" |> Option.map CommandReply.Refused
+        | Some "formatted" -> field "summary" |> Option.map CommandReply.Formatted
+        | _ -> None
+
+    /// The reply `text` is; anything that is not exactly this format is `Unrecognised`.
+    let parse (text: string) : ReplyReading =
+        let reply =
+            if isNull text then
+                None
+            else
+                try
+                    use doc = JsonDocument.Parse text
+                    let o = doc.RootElement
+
+                    if o.ValueKind = JsonValueKind.Object && Json.tryString o "schema" = Some Schema then
+                        replyOf o
+                    else
+                        None
+                with :? JsonException ->
+                    None
+
+        match reply with
+        | Some reply -> ReplyReading.Tagged reply
+        | None -> ReplyReading.Unrecognised text
+
+/// The reply `RunCommand` sends when the daemon's plugin host does not recognise the
+/// command, as it goes on the wire.
+let unknownCommandReply (name: string) : string =
+    CommandReply.toJson (CommandReply.UnknownCommand name)
+
+/// The reply `RunCommand` sends for a plugin command's `output`, as it goes on the wire.
+let commandOutputReply (name: string) (output: string) : string =
+    CommandReply.toJson (CommandReply.Output(name, output))
 
 /// Default hard bound on a `WaitForComplete` verdict wait when the client
 /// imposes no timeout of its own. Deliberately generous — a legitimate cold
@@ -327,7 +411,7 @@ type DaemonRpcTarget
             let! result = Async.StartAsTask(config.Host.RunCommand(name, args), cancellationToken = requester)
 
             match result with
-            | Some r -> return r
+            | Some r -> return commandOutputReply name r
             | None -> return unknownCommandReply name
         }
 
@@ -377,7 +461,7 @@ type DaemonRpcTarget
         | None -> "{}"
 
     /// Runs a registered command by name and returns the result, or the
-    /// `unknownCommandReply` sentinel when the plugin host doesn't recognize it.
+    /// `unknownCommandReply` when the plugin host doesn't recognize it, tagged (`CommandReply`).
     member _.RunCommand(name: string, argsJson: string) : Task<string> =
         // The command's own async runs under the disconnect token, so whatever it does
         // inline stops at its next cancellation point once its client is gone. Work it
@@ -672,8 +756,8 @@ type DaemonRpcTarget
                 match! config.RerunPlugin name |> Async.StartAsTask with
                 | Result.Ok() ->
                     let! _ = this.WaitForComplete(0)
-                    return this.GetStatus()
-                | Result.Error msg -> return JsonSerializer.Serialize {| error = msg |}
+                    return CommandReply.toJson (CommandReply.Statuses(this.GetStatus()))
+                | Result.Error msg -> return CommandReply.toJson (CommandReply.Refused msg)
             })
 
     /// Invalidate every cached plugin task result without stopping the daemon.
@@ -706,7 +790,7 @@ type DaemonRpcTarget
         trackedTask "FormatAll" (fun _ ->
             task {
                 let! result = config.FormatAll() |> Async.StartAsTask
-                return result
+                return CommandReply.toJson (CommandReply.Formatted result)
             })
 
 /// IPC server that listens on a named pipe and exposes plugin host methods via StreamJsonRpc.

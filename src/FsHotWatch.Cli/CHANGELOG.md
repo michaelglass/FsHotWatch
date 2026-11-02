@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- refactor!: a command reply is parsed once, where it arrives, and matched on what it is.
+  `IpcOutput.renderIpcResult` parses the daemon's reply; the new `renderCommandReply` renders a
+  parsed one. `ScopeCommands.overIpc`, `findings`, the forced rebuild and plugin commands all
+  parse through `Ipc.CommandReply`. A reply without the tag comes from a daemon of another fshw
+  build. It is no verdict (exit 3), and the message names the mismatch and `fshw stop`. It is never
+  read as output, a pass or a refusal; `findings` refuses it, and a scope command throws naming
+  it. A plugin command's own output is still plugin-defined and is rendered as before.
+
 - refactor!: scan progress is parsed, not scraped. `IpcOutput.scanProgressLine` takes a
   `ScanProgress.Reading`, and `ScanHeartbeat.waitReporting` reads one. A `ScanStatus` answer this
   build cannot parse (an untagged line from a daemon of another fshw build) is `Unrecognised`, and

@@ -20,13 +20,16 @@ open FsHotWatch.Cli.IpcParsing
 /// decide what a throw means.
 type Send = string -> string -> string option
 
-/// The daemon's transport: `runCommand` is the IPC `RunCommand` bound to a pipe.
-/// Its unknown-command sentinel is the wire spelling of `None`.
+/// The daemon's transport: `runCommand` is the IPC `RunCommand` bound to a pipe. Its reply
+/// is parsed here: an unknown command is `None`; a reply that is not this build's tagged
+/// format, or not a command's output, THROWS, naming what came back.
 let overIpc (runCommand: string -> string -> string) : Send =
     fun name args ->
-        let reply = runCommand name args
-
-        if Ipc.isUnknownCommandReply reply then None else Some reply
+        match Ipc.CommandReply.parse (runCommand name args) with
+        | Ipc.ReplyReading.Tagged(Ipc.CommandReply.Output(_, output)) -> Some output
+        | Ipc.ReplyReading.Tagged(Ipc.CommandReply.UnknownCommand _) -> None
+        | Ipc.ReplyReading.Tagged other -> invalidOp $"`%s{name}` answered %A{other}, not a command's output"
+        | Ipc.ReplyReading.Unrecognised _ -> invalidOp $"`%s{name}`: %s{Ipc.CommandReply.untaggedMessage}"
 
 /// The in-process transport. Maps `""` to NO args exactly as the daemon's IPC handler
 /// does (`Ipc.fs` `RunCommand`), so a command sees the same `args` array whichever way

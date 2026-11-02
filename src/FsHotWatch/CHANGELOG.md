@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- refactor!: command replies are tagged on the wire. `RunCommand`, `RunCommandFor`, `FormatAll`
+  and `RerunPlugin` answer `Ipc.CommandReply` as `fshw-reply-v1` JSON. The cases:
+  - `Output`: a plugin command's own output;
+  - `UnknownCommand`: replaces the `fshw-unknown-command:` sentinel;
+  - `Statuses`: a re-run's statuses;
+  - `Refused`: replaces a re-run's `{"error": …}`;
+  - `Formatted`: a format summary.
+
+  `CommandReply.parse` reads a reply into `ReplyReading.Tagged` or `Unrecognised`; an untagged
+  reply, as a daemon of another fshw build sends, is the latter. `Ipc.isUnknownCommandReply` and
+  `UnknownCommandSentinelPrefix` are gone. `unknownCommandReply` and the new `commandOutputReply`
+  build the tagged wire form.
+
 - refactor!: the `ScanStatus` answer is typed. New `ScanProgress` module: a `Progress` union
   (`Idle`, `Discovering`, `Checking` with counts, elapsed time and cache hits/misses, and
   `Complete` with registered and unchecked counts), `render` (the exact line `status` and
