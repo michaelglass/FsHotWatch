@@ -182,6 +182,10 @@ let internal joinsFullRun (state: TestPruneState) (bootScan: bool) =
 let internal revisionOf (debt: VerificationDebt) (symbol: string) : int64 =
     debt.SymbolRevisions |> Map.tryFind symbol |> Option.defaultValue 0L
 
+/// The generation of the model the host currently publishes, when it is available.
+let internal observeModelGeneration (ctx: PluginCtx<TestPruneMsg>) =
+    ObservedModel.generation ctx.ProjectGraph
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -919,9 +923,6 @@ let internal createWithEvidenceAndQueries
           Earned = None
           RestoredEvidence = restoredEvidence }
 
-    /// The generation of the model the host currently publishes, when it is available.
-    let observeModelGeneration (ctx: PluginCtx<TestPruneMsg>) =
-        ObservedModel.generation ctx.ProjectGraph
 
     /// Each configured test project's `.fsproj` and compile-input identity now.
     let observeTestInputs (ctx: PluginCtx<TestPruneMsg>) =
