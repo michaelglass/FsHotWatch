@@ -117,6 +117,23 @@ let internal awaitDiscoveryBeforeLaunch (ctx: PluginCtx<TestPruneMsg>) =
         ObservedModel.reportDiscoveryWait (Logging.warn "test-prune") (Logging.info "test-prune") wait
     }
 
+/// The evidence candidates of `configs`: each project the model knows a `.fsproj` for, with
+/// its reference closure and keyed configuration.
+let internal evidenceCandidates
+    (graph: ProjectGraphAccessor)
+    (configs: TestConfig list)
+    : TestEvidenceRun.Candidate list =
+    let files = ObservedModel.projectFiles graph
+
+    configs
+    |> List.choose (fun config ->
+        Map.tryFind config.Project files
+        |> Option.map (fun fsproj ->
+            { TestEvidenceRun.Candidate.Project = config.Project
+              ProjectFile = fsproj
+              Closure = TestEvidenceRun.closureOf graph.GetProjectReferences fsproj
+              TestConfig = canonicalTestConfig config }))
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -885,19 +902,6 @@ let internal createWithEvidenceAndQueries
     let observeTestInputs (ctx: PluginCtx<TestPruneMsg>) =
         ObservedModel.testInputs ctx.ProjectGraph (defaultArg testConfigs [] |> List.map _.Project)
 
-    /// The evidence candidates of `configs`: each project the model knows a `.fsproj` for, with
-    /// its reference closure and keyed configuration.
-    let evidenceCandidates (graph: ProjectGraphAccessor) (configs: TestConfig list) : TestEvidenceRun.Candidate list =
-        let files = ObservedModel.projectFiles graph
-
-        configs
-        |> List.choose (fun config ->
-            Map.tryFind config.Project files
-            |> Option.map (fun fsproj ->
-                { TestEvidenceRun.Candidate.Project = config.Project
-                  ProjectFile = fsproj
-                  Closure = TestEvidenceRun.closureOf graph.GetProjectReferences fsproj
-                  TestConfig = canonicalTestConfig config }))
 
     /// The outcome-store key of each configured project's full run over the tree as it is now
     /// (ADR-059 step 7b), for the `test-scope` reply. Empty without a store or without the
