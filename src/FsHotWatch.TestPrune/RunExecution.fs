@@ -874,6 +874,131 @@ let internal launchProjectWith
                   ProjectCoverageLaunch = projectCoverageLaunch }
     }
 
+/// One project launched under a starvation sampler: its result, CTRF report text and the
+/// load reading taken while it ran.
+type internal SampledLauncher =
+    Threading.CancellationToken -> TestConfig -> Async<TestResult * string option * Starvation.Reading>
+
+/// What the starvation re-run reads from its run (`rerunStarvedWith`).
+type internal RerunEnv =
+    { RepoRoot: string
+      RunDir: string
+      Collected: RunCollector
+      LogToCtx: string -> unit
+      LaunchSampled: SampledLauncher }
+
+/// Re-run every held-back project, one at a time, after every group has finished:
+/// alone, as far as this run is concerned. The first attempt's report, log and
+/// timeout marker are set aside first, so the run directory's report for the
+/// project is the re-run's; `<Project>.starved.json` records both attempts.
+let internal rerunStarvedWith (env: RerunEnv) () : Async<(string * TestResult) list> =
+    let repoRoot = env.RepoRoot
+    let runDir = env.RunDir
+    let collected = env.Collected
+    let logToCtx = env.LogToCtx
+    let launchSampled = env.LaunchSampled
+
+    async {
+        let pending = collected.Read(fun c -> List.rev c.Starved)
+        let! runToken = Async.CancellationToken
+        let mutable rerun = []
+
+        for (config, timedOut, firstReading) in pending do
+            let policy =
+                config.Starvation |> Option.defaultValue (Starvation.Policy.rerunAlone [])
+
+            // `runCoveragePath`'s suffix: the copy of the raw coverage a run keeps.
+            Starvation.setAside
+                runDir
+                config.Project
+                [ Ctrf.ReportSuffix
+                  RunLog.Suffix
+                  TimeoutMarker.Suffix
+                  Profile.Suffix
+                  ".coverage.cobertura.xml" ]
+            |> ignore
+
+            // The first attempt's trace, if any, describes a run that is no longer
+            // the project's result.
+            collected.Update(fun c ->
+                { c with
+                    TraceRuns = c.TraceRuns |> List.filter (fun t -> t.Project <> config.Project) })
+
+            // PREFLIGHTED LIKE ANY LAUNCH. The run-wide preflight certified this
+            // tree before the first attempt, not after it. A first attempt torn down
+            // with its whole tree takes the coverage controller with it before it puts
+            // back the assemblies it instrumented in this project's output, and a
+            // coverage run over an instrumented copy passes and writes an empty report
+            // (land entry 224: 56,724 -> 0 covered entries). The copies the build made
+            // are repaired from their origins first, and a tree this cannot certify
+            // is not launched: its re-run is deferred, never a pass.
+            let refusal =
+                deriveProjectBin config.Args repoRoot
+                |> Option.bind (fun target ->
+                    let checkedTree =
+                        StaleArtifactPreflight.run repoRoot DateTime.UtcNow [ config.Project, target ]
+
+                    for repaired in checkedTree.Healed do
+                        let line =
+                            $"%s{config.Project}: repaired %s{repaired} before its re-run alone (the first \
+                              attempt's teardown left it differing from the build's copy)"
+
+                        Logging.warn "test-prune" line
+                        logToCtx line
+
+                    checkedTree.Refusals |> List.tryHead |> Option.map _.Reason)
+
+            let! result, reading =
+                match refusal with
+                | Some reason ->
+                    async {
+                        Logging.warn "test-prune" $"%s{config.Project}: not re-run alone — %s{reason}"
+                        logToCtx $"{config.Project}: not re-run alone — {reason}"
+
+                        let notLaunched: Starvation.Reading =
+                            { Cores = Environment.ProcessorCount
+                              Samples = [] }
+
+                        return TestsDeferred reason, notLaunched
+                    }
+                | None ->
+                    async {
+                        let! result, _, reading = launchSampled runToken config
+                        return result, reading
+                    }
+
+            let outcome =
+                match result with
+                | TestsPassed _ -> "passed"
+                | TestsFailed _ -> "failed"
+                | TestsTimedOut _ -> "timed out again"
+                | TestsErrored _ -> "aborted"
+                | TestsDeferred _ -> "was deferred"
+                | TestsNoMatch _ -> "matched no test"
+
+            let record: Starvation.Record =
+                { Project = config.Project
+                  TimedOut = timedOut
+                  FirstAttempt = firstReading
+                  Rerun = reading
+                  RerunOutcome = outcome
+                  PassedAlone = TestResult.verifiedGreen result
+                  AttemptDir = Path.Combine(runDir, Starvation.AttemptDirName) }
+
+            Starvation.write policy runDir record
+            let line = Starvation.summary record
+
+            if record.PassedAlone then
+                Logging.warn "test-prune" line
+            else
+                Logging.error "test-prune" line
+
+            logToCtx line
+            rerun <- (config.Project, result) :: rerun
+
+        return List.rev rerun
+    }
+
 /// Execute test configs with optional affected classes for filtering. Handles beforeRun,
 /// coveragePaths, process execution, result storage. `rawFilter` is a passthrough filter
 /// string (from the run-tests command) that bypasses the template.
@@ -1370,111 +1495,14 @@ let internal executeTests
                         return Some result
             }
 
-        /// Re-run every held-back project, one at a time, after every group has finished:
-        /// alone, as far as this run is concerned. The first attempt's report, log and
-        /// timeout marker are set aside first, so the run directory's report for the
-        /// project is the re-run's; `<Project>.starved.json` records both attempts.
-        let rerunStarved () : Async<(string * TestResult) list> =
-            async {
-                let pending = collected.Read(fun c -> List.rev c.Starved)
-                let! runToken = Async.CancellationToken
-                let mutable rerun = []
+        let rerunEnv: RerunEnv =
+            { RepoRoot = repoRoot
+              RunDir = runDir
+              Collected = collected
+              LogToCtx = logToCtx
+              LaunchSampled = launchSampled }
 
-                for (config, timedOut, firstReading) in pending do
-                    let policy =
-                        config.Starvation |> Option.defaultValue (Starvation.Policy.rerunAlone [])
-
-                    // `runCoveragePath`'s suffix: the copy of the raw coverage a run keeps.
-                    Starvation.setAside
-                        runDir
-                        config.Project
-                        [ Ctrf.ReportSuffix
-                          RunLog.Suffix
-                          TimeoutMarker.Suffix
-                          Profile.Suffix
-                          ".coverage.cobertura.xml" ]
-                    |> ignore
-
-                    // The first attempt's trace, if any, describes a run that is no longer
-                    // the project's result.
-                    collected.Update(fun c ->
-                        { c with
-                            TraceRuns = c.TraceRuns |> List.filter (fun t -> t.Project <> config.Project) })
-
-                    // PREFLIGHTED LIKE ANY LAUNCH. The run-wide preflight certified this
-                    // tree before the first attempt, not after it. A first attempt torn down
-                    // with its whole tree takes the coverage controller with it before it puts
-                    // back the assemblies it instrumented in this project's output, and a
-                    // coverage run over an instrumented copy passes and writes an empty report
-                    // (land entry 224: 56,724 -> 0 covered entries). The copies the build made
-                    // are repaired from their origins first, and a tree this cannot certify
-                    // is not launched: its re-run is deferred, never a pass.
-                    let refusal =
-                        deriveProjectBin config.Args repoRoot
-                        |> Option.bind (fun target ->
-                            let checkedTree =
-                                StaleArtifactPreflight.run repoRoot DateTime.UtcNow [ config.Project, target ]
-
-                            for repaired in checkedTree.Healed do
-                                let line =
-                                    $"%s{config.Project}: repaired %s{repaired} before its re-run alone (the first \
-                                      attempt's teardown left it differing from the build's copy)"
-
-                                Logging.warn "test-prune" line
-                                logToCtx line
-
-                            checkedTree.Refusals |> List.tryHead |> Option.map _.Reason)
-
-                    let! result, reading =
-                        match refusal with
-                        | Some reason ->
-                            async {
-                                Logging.warn "test-prune" $"%s{config.Project}: not re-run alone — %s{reason}"
-                                logToCtx $"{config.Project}: not re-run alone — {reason}"
-
-                                let notLaunched: Starvation.Reading =
-                                    { Cores = Environment.ProcessorCount
-                                      Samples = [] }
-
-                                return TestsDeferred reason, notLaunched
-                            }
-                        | None ->
-                            async {
-                                let! result, _, reading = launchSampled runToken config
-                                return result, reading
-                            }
-
-                    let outcome =
-                        match result with
-                        | TestsPassed _ -> "passed"
-                        | TestsFailed _ -> "failed"
-                        | TestsTimedOut _ -> "timed out again"
-                        | TestsErrored _ -> "aborted"
-                        | TestsDeferred _ -> "was deferred"
-                        | TestsNoMatch _ -> "matched no test"
-
-                    let record: Starvation.Record =
-                        { Project = config.Project
-                          TimedOut = timedOut
-                          FirstAttempt = firstReading
-                          Rerun = reading
-                          RerunOutcome = outcome
-                          PassedAlone = TestResult.verifiedGreen result
-                          AttemptDir = Path.Combine(runDir, Starvation.AttemptDirName) }
-
-                    Starvation.write policy runDir record
-                    let line = Starvation.summary record
-
-                    if record.PassedAlone then
-                        Logging.warn "test-prune" line
-                    else
-                        Logging.error "test-prune" line
-
-                    logToCtx line
-                    rerun <- (config.Project, result) :: rerun
-
-                return List.rev rerun
-            }
+        let rerunStarved = rerunStarvedWith rerunEnv
 
         /// The normal path: every target certified fresh, so the groups launch in
         /// parallel (at most `maxParallelProjects` at a time) and fold their results into
