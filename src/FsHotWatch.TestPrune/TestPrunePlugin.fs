@@ -747,6 +747,104 @@ let internal commandForceRunWith
                 reply.TrySetResult(JsonSerializer.Serialize({| error = reason |})) |> ignore
     }
 
+/// Make a candidate's durable debt the record a restart reads, then publish it.
+///
+/// The marker goes first and comes off only in `Finalize`, after the candidate is
+/// published: a restart that finds it cannot know which sidecars describe a published
+/// state, and treats what is owed as unknown. Only what changed is written, unless an
+/// earlier publication left the marker, in which case every sidecar is rewritten from
+/// this candidate. While the debt is unknown nothing is written, the marker included: the unreadable
+/// record is the honest one until a full suite recovers it.
+///
+/// Replies owed by the candidate are resolved last, so a command never acknowledges an
+/// outcome that is not published.
+let internal prepareCommitIn
+    (repoRoot: string)
+    (debtPublicationPath: string)
+    (prior: TestPruneState)
+    (candidate: TestPruneState)
+    =
+    async {
+        let changed (read: TestPruneState -> 'T) =
+            not (obj.ReferenceEquals(read prior, read candidate))
+            && read prior <> read candidate
+
+        let queueChanged = changed (fun state -> state.Debt.PendingQueue)
+        let failuresChanged = changed (fun state -> state.OutstandingFailures)
+        let obligationsChanged = changed (fun state -> state.Debt.RuntimeObligations)
+        let baselineChanged = changed (fun state -> state.Debt.Baseline)
+        let recoveryChanged = changed (fun state -> state.Debt.RecoveryOutstanding)
+        let notIngestedChanged = changed (fun state -> state.Debt.CoverageNotIngested)
+        let interrupted = File.Exists debtPublicationPath
+
+        let publishes =
+            interrupted
+            || queueChanged
+            || failuresChanged
+            || obligationsChanged
+            || baselineChanged
+            || recoveryChanged
+            || notIngestedChanged
+
+        // While the debt is unknown nothing is written: the unreadable record is the
+        // honest one until a full suite recovers it. No publication begins then, so
+        // no marker is written either. One written then outlived the session, since
+        // only a recovered state removes it, and the next daemon read an unfinished
+        // publication that never happened. A marker an earlier publication left
+        // stays, because the sidecars on disk are still that publication's.
+        if publishes && not candidate.Debt.RecoveryOutstanding then
+            FsHwPaths.atomicWriteAllText debtPublicationPath "verification debt publication in progress"
+            let rewrite = interrupted || recoveryChanged
+
+            if rewrite || queueChanged then
+                PendingVerification.save repoRoot candidate.Debt.PendingQueue
+
+            if rewrite || failuresChanged then
+                OutstandingFailure.save repoRoot candidate.OutstandingFailures
+
+            if rewrite || obligationsChanged then
+                saveRuntimeCoverageObligations repoRoot candidate.Debt.RuntimeObligations
+
+            if rewrite || notIngestedChanged then
+                CoverageNotIngested.save repoRoot candidate.Debt.CoverageNotIngested
+
+            match candidate.Debt.Baseline with
+            | Some baseline when rewrite || baselineChanged -> FullSuiteBaseline.save repoRoot baseline
+            | _ -> ()
+
+        // Evidence, not debt: it records which projects ran whole over which compile
+        // inputs, which stays true whatever is owed. A state that earned none leaves
+        // the last record standing, since every entry is checked against the compile
+        // inputs of the daemon that reads it.
+        if changed (fun state -> state.Earned) then
+            match candidate.Earned |> Option.map EarnedEvidence.wholeProjectInputs with
+            | Some record when not (Map.isEmpty record) -> WholeProjectEvidence.save repoRoot record
+            | _ -> ()
+
+        return
+            { Finalize =
+                async {
+                    if not candidate.Debt.RecoveryOutstanding then
+                        // The runtime marker is written by a run before its failure
+                        // reaches this owner, so only the state that recovered from
+                        // unknown debt may remove it.
+                        let markers =
+                            if recoveryChanged then
+                                [ runtimeCoverageRecoveryPath repoRoot; debtPublicationPath ]
+                            else
+                                [ debtPublicationPath ]
+
+                        // `File.Delete` of an absent file is a no-op, but not in an
+                        // absent directory: a repository that never wrote debt has none.
+                        for marker in markers do
+                            if File.Exists marker then
+                                File.Delete marker
+
+                    for reply, response in candidate.Replies do
+                        reply.TrySetResult response |> ignore
+                } }
+    }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -2265,98 +2363,7 @@ let internal createWithEvidenceAndQueries
                 state
         | _ -> state
 
-    /// Make a candidate's durable debt the record a restart reads, then publish it.
-    ///
-    /// The marker goes first and comes off only in `Finalize`, after the candidate is
-    /// published: a restart that finds it cannot know which sidecars describe a published
-    /// state, and treats what is owed as unknown. Only what changed is written, unless an
-    /// earlier publication left the marker, in which case every sidecar is rewritten from
-    /// this candidate. While the debt is unknown nothing is written, the marker included: the unreadable
-    /// record is the honest one until a full suite recovers it.
-    ///
-    /// Replies owed by the candidate are resolved last, so a command never acknowledges an
-    /// outcome that is not published.
-    let prepareCommit (prior: TestPruneState) (candidate: TestPruneState) =
-        async {
-            let changed (read: TestPruneState -> 'T) =
-                not (obj.ReferenceEquals(read prior, read candidate))
-                && read prior <> read candidate
-
-            let queueChanged = changed (fun state -> state.Debt.PendingQueue)
-            let failuresChanged = changed (fun state -> state.OutstandingFailures)
-            let obligationsChanged = changed (fun state -> state.Debt.RuntimeObligations)
-            let baselineChanged = changed (fun state -> state.Debt.Baseline)
-            let recoveryChanged = changed (fun state -> state.Debt.RecoveryOutstanding)
-            let notIngestedChanged = changed (fun state -> state.Debt.CoverageNotIngested)
-            let interrupted = File.Exists debtPublicationPath
-
-            let publishes =
-                interrupted
-                || queueChanged
-                || failuresChanged
-                || obligationsChanged
-                || baselineChanged
-                || recoveryChanged
-                || notIngestedChanged
-
-            // While the debt is unknown nothing is written: the unreadable record is the
-            // honest one until a full suite recovers it. No publication begins then, so
-            // no marker is written either. One written then outlived the session, since
-            // only a recovered state removes it, and the next daemon read an unfinished
-            // publication that never happened. A marker an earlier publication left
-            // stays, because the sidecars on disk are still that publication's.
-            if publishes && not candidate.Debt.RecoveryOutstanding then
-                FsHwPaths.atomicWriteAllText debtPublicationPath "verification debt publication in progress"
-                let rewrite = interrupted || recoveryChanged
-
-                if rewrite || queueChanged then
-                    PendingVerification.save repoRoot candidate.Debt.PendingQueue
-
-                if rewrite || failuresChanged then
-                    OutstandingFailure.save repoRoot candidate.OutstandingFailures
-
-                if rewrite || obligationsChanged then
-                    saveRuntimeCoverageObligations repoRoot candidate.Debt.RuntimeObligations
-
-                if rewrite || notIngestedChanged then
-                    CoverageNotIngested.save repoRoot candidate.Debt.CoverageNotIngested
-
-                match candidate.Debt.Baseline with
-                | Some baseline when rewrite || baselineChanged -> FullSuiteBaseline.save repoRoot baseline
-                | _ -> ()
-
-            // Evidence, not debt: it records which projects ran whole over which compile
-            // inputs, which stays true whatever is owed. A state that earned none leaves
-            // the last record standing, since every entry is checked against the compile
-            // inputs of the daemon that reads it.
-            if changed (fun state -> state.Earned) then
-                match candidate.Earned |> Option.map EarnedEvidence.wholeProjectInputs with
-                | Some record when not (Map.isEmpty record) -> WholeProjectEvidence.save repoRoot record
-                | _ -> ()
-
-            return
-                { Finalize =
-                    async {
-                        if not candidate.Debt.RecoveryOutstanding then
-                            // The runtime marker is written by a run before its failure
-                            // reaches this owner, so only the state that recovered from
-                            // unknown debt may remove it.
-                            let markers =
-                                if recoveryChanged then
-                                    [ runtimeCoverageRecoveryPath repoRoot; debtPublicationPath ]
-                                else
-                                    [ debtPublicationPath ]
-
-                            // `File.Delete` of an absent file is a no-op, but not in an
-                            // absent directory: a repository that never wrote debt has none.
-                            for marker in markers do
-                                if File.Exists marker then
-                                    File.Delete marker
-
-                        for reply, response in candidate.Replies do
-                            reply.TrySetResult response |> ignore
-                    } }
-        }
+    let prepareCommit = prepareCommitIn repoRoot debtPublicationPath
 
     let runFinishedEnv: RunFinishedEnv =
         { RepoRoot = repoRoot
