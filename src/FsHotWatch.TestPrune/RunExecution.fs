@@ -1419,6 +1419,17 @@ let internal launchSampledWith
         return result, reportJson, reading
     }
 
+/// The classes the run filtered `config`'s project to; `None` when it runs in full
+/// or under a raw filter, whose classes are not known.
+let internal selectionIn
+    (rawFilter: string option)
+    (affectedClassesByProject: Map<string, string list>)
+    (config: TestConfig)
+    : string list option =
+    match rawFilter, Map.tryFind config.Project affectedClassesByProject with
+    | None, Some(_ :: _ as classes) -> Some classes
+    | _ -> None
+
 /// Execute test configs with optional affected classes for filtering. Handles beforeRun,
 /// coveragePaths, process execution, result storage. `rawFilter` is a passthrough filter
 /// string (from the run-tests command) that bypasses the template.
@@ -1725,12 +1736,7 @@ let internal executeTests
 
         let launchProject = launchProjectGuarded launchProjectOrRaise logToCtx
 
-        /// The classes the run filtered `config`'s project to; `None` when it runs in full
-        /// or under a raw filter, whose classes are not known.
-        let selectionOf (config: TestConfig) : string list option =
-            match rawFilter, Map.tryFind config.Project affectedClassesByProject with
-            | None, Some(_ :: _ as classes) -> Some classes
-            | _ -> None
+        let selectionOf = selectionIn rawFilter affectedClassesByProject
 
         let launchSampled = launchSampledWith launchProject
 
