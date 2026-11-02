@@ -1653,6 +1653,117 @@ let internal parseErrorDiagnostics (parseResults: FSharpParseFileResults) : FSha
     parseResults.Diagnostics
     |> Array.filter (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
 
+// FCS attribute and fixture reads extractResults makes per entity and member. Each read is
+// fallible (see `tryName`), so each one answers None or [] rather than throw.
+
+// Resolve a type to its declaring-entity full name, or None for generic
+// parameters / types without a type definition.
+let private tryFullName (t: FSharpType) : string option =
+    try
+        if t.HasTypeDefinition && not t.IsGenericParameter then
+            Some(entityName t.TypeDefinition)
+        else
+            None
+    with _ ->
+        None
+
+// The payload stored in `symbol_attributes.args_json` (see `AttributeArgs`). An
+// attribute whose arguments FCS cannot read stores none, as before.
+let private serializeAttributeArgs (attr: FSharpAttribute) : string =
+    let values =
+        try
+            attr.ConstructorArguments |> Seq.map snd |> List.ofSeq
+        with _ ->
+            []
+
+    AttributeArgs.serialize values
+
+let private firstStringArg (attr: FSharpAttribute) : string option =
+    try
+        attr.ConstructorArguments
+        |> Seq.tryHead
+        |> Option.bind (fun (_, value) ->
+            match value with
+            | :? string as s -> Some s
+            | _ -> None)
+    with _ ->
+        None
+
+// Pull T out of an `IClassFixture<T>` or `ICollectionFixture<T>` interface
+// declaration. Used both for direct fixture edges on test methods and for
+// resolving `[<CollectionDefinition>]` classes to their fixture.
+let private fixtureInterfaceArg (acceptName: string -> bool) (iface: FSharpType) : string option =
+    try
+        if
+            iface.HasTypeDefinition
+            && iface.GenericArguments.Count = 1
+            && acceptName iface.TypeDefinition.DisplayName
+        then
+            tryFullName iface.GenericArguments[0]
+        else
+            None
+    with _ ->
+        None
+
+// Fixture types that should be linked directly to each test method on the
+// class: primary-ctor parameter types + IClassFixture<T>/ICollectionFixture<T>
+// interface args. Memoized per entity so a class with N test methods walks
+// its members/interfaces once instead of N times.
+
+
+let private collectFixtureTypesWith
+    (fixtureCache: System.Collections.Generic.Dictionary<string, string list>)
+    (entity: FSharpEntity)
+    : string list =
+    let key =
+        try
+            entity.FullName
+        with _ ->
+            ""
+
+    match fixtureCache.TryGetValue(key) with
+    | true, cached -> cached
+    | false, _ ->
+        let fromCtorParams =
+            try
+                entity.MembersFunctionsAndValues
+                |> Seq.filter (fun m ->
+                    try
+                        m.IsConstructor
+                    with _ ->
+                        false)
+                |> Seq.collect (fun m ->
+                    try
+                        m.CurriedParameterGroups
+                        |> Seq.concat
+                        |> Seq.choose (fun p -> tryFullName p.Type)
+                    with _ ->
+                        Seq.empty)
+                |> Seq.toList
+            with _ ->
+                []
+
+        let fromInterfaces =
+            try
+                entity.DeclaredInterfaces
+                |> Seq.choose (fixtureInterfaceArg (fun n -> n = IClassFixtureName || n = ICollectionFixtureName))
+                |> Seq.toList
+            with _ ->
+                []
+
+        let result = fromCtorParams @ fromInterfaces |> List.distinct
+        fixtureCache[key] <- result
+        result
+
+// Resolve the single ICollectionFixture<T> arg of a [<CollectionDefinition>]
+// class to T's full name.
+let private collectionFixtureFromInterfaces (entity: FSharpEntity) : string option =
+    try
+        entity.DeclaredInterfaces
+        |> Seq.tryPick (fixtureInterfaceArg (fun n -> n = ICollectionFixtureName))
+    with _ ->
+        None
+
 /// Extract analysis results from parse and type-check results.
 let private extractResults
     (maxTraversalVisits: int)
@@ -2033,112 +2144,9 @@ let private extractResults
 
             trace "dependencies"
 
-            // Resolve a type to its declaring-entity full name, or None for generic
-            // parameters / types without a type definition.
-            let tryFullName (t: FSharpType) : string option =
-                try
-                    if t.HasTypeDefinition && not t.IsGenericParameter then
-                        Some(entityName t.TypeDefinition)
-                    else
-                        None
-                with _ ->
-                    None
-
-            // The payload stored in `symbol_attributes.args_json` (see `AttributeArgs`). An
-            // attribute whose arguments FCS cannot read stores none, as before.
-            let serializeAttributeArgs (attr: FSharpAttribute) : string =
-                let values =
-                    try
-                        attr.ConstructorArguments |> Seq.map snd |> List.ofSeq
-                    with _ ->
-                        []
-
-                AttributeArgs.serialize values
-
-            let firstStringArg (attr: FSharpAttribute) : string option =
-                try
-                    attr.ConstructorArguments
-                    |> Seq.tryHead
-                    |> Option.bind (fun (_, value) ->
-                        match value with
-                        | :? string as s -> Some s
-                        | _ -> None)
-                with _ ->
-                    None
-
-            // Pull T out of an `IClassFixture<T>` or `ICollectionFixture<T>` interface
-            // declaration. Used both for direct fixture edges on test methods and for
-            // resolving `[<CollectionDefinition>]` classes to their fixture.
-            let fixtureInterfaceArg (acceptName: string -> bool) (iface: FSharpType) : string option =
-                try
-                    if
-                        iface.HasTypeDefinition
-                        && iface.GenericArguments.Count = 1
-                        && acceptName iface.TypeDefinition.DisplayName
-                    then
-                        tryFullName iface.GenericArguments[0]
-                    else
-                        None
-                with _ ->
-                    None
-
-            // Fixture types that should be linked directly to each test method on the
-            // class: primary-ctor parameter types + IClassFixture<T>/ICollectionFixture<T>
-            // interface args. Memoized per entity so a class with N test methods walks
-            // its members/interfaces once instead of N times.
-            let fixtureCache = System.Collections.Generic.Dictionary<string, string list>()
-
-            let collectFixtureTypes (entity: FSharpEntity) : string list =
-                let key =
-                    try
-                        entity.FullName
-                    with _ ->
-                        ""
-
-                match fixtureCache.TryGetValue(key) with
-                | true, cached -> cached
-                | false, _ ->
-                    let fromCtorParams =
-                        try
-                            entity.MembersFunctionsAndValues
-                            |> Seq.filter (fun m ->
-                                try
-                                    m.IsConstructor
-                                with _ ->
-                                    false)
-                            |> Seq.collect (fun m ->
-                                try
-                                    m.CurriedParameterGroups
-                                    |> Seq.concat
-                                    |> Seq.choose (fun p -> tryFullName p.Type)
-                                with _ ->
-                                    Seq.empty)
-                            |> Seq.toList
-                        with _ ->
-                            []
-
-                    let fromInterfaces =
-                        try
-                            entity.DeclaredInterfaces
-                            |> Seq.choose (
-                                fixtureInterfaceArg (fun n -> n = IClassFixtureName || n = ICollectionFixtureName)
-                            )
-                            |> Seq.toList
-                        with _ ->
-                            []
-
-                    let result = fromCtorParams @ fromInterfaces |> List.distinct
-                    fixtureCache[key] <- result
-                    result
-
-            // Resolve the single ICollectionFixture<T> arg of a [<CollectionDefinition>]
-            // class to T's full name.
-            let collectionFixtureFromInterfaces (entity: FSharpEntity) : string option =
-                try
-                    entity.DeclaredInterfaces
-                    |> Seq.tryPick (fixtureInterfaceArg (fun n -> n = ICollectionFixtureName))
-                with _ ->
-                    None
+            // Fixture types per entity, memoized for this file (see `collectFixtureTypesWith`).
+            let collectFixtureTypes =
+                collectFixtureTypesWith (System.Collections.Generic.Dictionary<string, string list>())
 
             // Pre-pass over entity definitions: capture entity-level attributes (the
             // MFV-only loop below misses them) and catalog xUnit collection fixtures so
