@@ -348,6 +348,22 @@ let internal persistQueueAdditionsIn (repoRoot: string) (debt: VerificationDebt)
                 "test-prune"
                 $"failed to persist pending-verification queue before the analysis flush: %s{ex.Message}; the queue is published with this event's state"
 
+/// Records, durably and before the run returns, that a project's runtime coverage did
+/// not ingest, then tells the owner through a message. A record that cannot be written
+/// is logged; the message still makes this session owe the project.
+let internal coverageIngestFailedIn (repoRoot: string) (ctx: PluginCtx<TestPruneMsg>) (failure: CoverageIngestFailure) =
+    try
+        armCoverageNotIngested
+            (fun () -> ctx.Post(RuntimeCoverageFailed(failure.Project, failure.Reason)))
+            (CoverageNotIngested.sidecarPath repoRoot)
+            failure
+    with ex ->
+        ctx.Post(RuntimeCoverageFailed(failure.Project, failure.Reason))
+
+        Logging.error
+            "test-prune"
+            $"failed to durably record that the runtime coverage of %s{failure.Project} did not ingest (%s{CoverageNotIngested.sidecarPath repoRoot}): %s{ex.Message}"
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -571,21 +587,7 @@ let internal createWithEvidenceAndQueries
 
             Map.empty, Some reason
 
-    /// Records, durably and before the run returns, that a project's runtime coverage did
-    /// not ingest, then tells the owner through a message. A record that cannot be written
-    /// is logged; the message still makes this session owe the project.
-    let coverageIngestFailed (ctx: PluginCtx<TestPruneMsg>) (failure: CoverageIngestFailure) =
-        try
-            armCoverageNotIngested
-                (fun () -> ctx.Post(RuntimeCoverageFailed(failure.Project, failure.Reason)))
-                (CoverageNotIngested.sidecarPath repoRoot)
-                failure
-        with ex ->
-            ctx.Post(RuntimeCoverageFailed(failure.Project, failure.Reason))
-
-            Logging.error
-                "test-prune"
-                $"failed to durably record that the runtime coverage of %s{failure.Project} did not ingest (%s{CoverageNotIngested.sidecarPath repoRoot}): %s{ex.Message}"
+    let coverageIngestFailed = coverageIngestFailedIn repoRoot
 
     /// How many CONSECUTIVE flush cycles each currently-queued symbol
     /// has seeded, so a symbol that is pinned AND selecting wide can be named out loud
