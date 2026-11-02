@@ -753,6 +753,71 @@ let internal assembleLaunch
       ExcludedByProject = excludedByProject
       Launch = launch }
 
+/// The zero-affected skip: an impact run with nothing to verify finishes green with a
+/// degenerate lifecycle that executed nothing, so it covers and clears nothing.
+let internal zeroAffectedSkip
+    (emitStarted: TestRunStarted -> unit)
+    (inputs: TestRunInputs)
+    (launch: TestRunLaunch)
+    (nothingToVerify: bool)
+    : Async<TestPruneMsg> =
+    async {
+        if nothingToVerify then
+            Logging.info
+                "test-prune"
+                "Every changed symbol has no covering test — nothing to verify, skipping tests (green, 0 ran)"
+        else
+            Logging.info
+                "test-prune"
+                "No affected classes, no dependency fanout, empty pending queue, baseline exists — skipping tests"
+
+        // Build a degenerate lifecycle (Started → Completed with empty
+        // Results). Start fires immediately; the synchronous Custom handler
+        // emits completion inside the cache-write capture window.
+        let runId = Guid.NewGuid()
+
+        let started: TestRunStarted =
+            { RunId = runId
+              StartedAt = DateTime.UtcNow }
+
+        emitStarted started
+
+        let completed: TestRunCompleted =
+            { RunId = runId
+              TotalElapsed = TimeSpan.Zero
+              Outcome = Normal
+              Results = Map.empty
+              // Impact analysis selected no project, so none was invoked.
+              // Stated rather than inferred, and the
+              // outcome is `Normal`, so it reaches consumers that filter
+              // on `Outcome`.
+              Verification = NoProjectsSelected }
+
+        // The skip EXECUTES NOTHING, so it covers nothing and may clear
+        // nothing. Empty results already yield an empty
+        // `RunCoverage`; the empty selection says so at the source too, so
+        // the "0 affected, green, 0 ran" path can never be mistaken for
+        // evidence about a project.
+        return
+            TestsFinished(
+                started,
+                completed,
+                { launch with
+                    Selection = Map.empty
+                    SelectedBy = []
+                    SeedFanout = SeedFanoutReading.NoSelection
+                    // Executed nothing, so it neither covers nor projects
+                    // anything.
+                    WouldHaveRun = None
+                    Reused = Map.empty
+                    ZeroSelection =
+                        (match inputs.ChangedSymbolsAllUncovered with
+                         | UncoveredChanges.AllUncovered(symbols, unrunnable) ->
+                             ZeroSelection.ChangesUncovered(symbols, unrunnable)
+                         | UncoveredChanges.No -> ZeroSelection.AlreadyVerified) }
+            )
+    }
+
 let internal runTestsWithImpactWith
     (env: RunEnv)
     (ctx: PluginCtx<TestPruneMsg>)
@@ -877,60 +942,7 @@ let internal runTestsWithImpactWith
                 totalClasses = 0 && Set.isEmpty forceRunProjects && not hasQuarantinedFailures
 
             if nothingForced && not alwaysOnly && (baselineEquivalent || nothingToVerify) then
-                if nothingToVerify then
-                    Logging.info
-                        "test-prune"
-                        "Every changed symbol has no covering test — nothing to verify, skipping tests (green, 0 ran)"
-                else
-                    Logging.info
-                        "test-prune"
-                        "No affected classes, no dependency fanout, empty pending queue, baseline exists — skipping tests"
-
-                // Build a degenerate lifecycle (Started → Completed with empty
-                // Results). Start fires immediately; the synchronous Custom handler
-                // emits completion inside the cache-write capture window.
-                let runId = Guid.NewGuid()
-
-                let started: TestRunStarted =
-                    { RunId = runId
-                      StartedAt = DateTime.UtcNow }
-
-                emitStarted started
-
-                let completed: TestRunCompleted =
-                    { RunId = runId
-                      TotalElapsed = TimeSpan.Zero
-                      Outcome = Normal
-                      Results = Map.empty
-                      // Impact analysis selected no project, so none was invoked.
-                      // Stated rather than inferred, and the
-                      // outcome is `Normal`, so it reaches consumers that filter
-                      // on `Outcome`.
-                      Verification = NoProjectsSelected }
-
-                // The skip EXECUTES NOTHING, so it covers nothing and may clear
-                // nothing. Empty results already yield an empty
-                // `RunCoverage`; the empty selection says so at the source too, so
-                // the "0 affected, green, 0 ran" path can never be mistaken for
-                // evidence about a project.
-                return
-                    TestsFinished(
-                        started,
-                        completed,
-                        { launch with
-                            Selection = Map.empty
-                            SelectedBy = []
-                            SeedFanout = SeedFanoutReading.NoSelection
-                            // Executed nothing, so it neither covers nor projects
-                            // anything.
-                            WouldHaveRun = None
-                            Reused = Map.empty
-                            ZeroSelection =
-                                (match inputs.ChangedSymbolsAllUncovered with
-                                 | UncoveredChanges.AllUncovered(symbols, unrunnable) ->
-                                     ZeroSelection.ChangesUncovered(symbols, unrunnable)
-                                 | UncoveredChanges.No -> ZeroSelection.AlreadyVerified) }
-                    )
+                return! zeroAffectedSkip emitStarted inputs launch nothingToVerify
             else
                 logSelectedBy launch
 
