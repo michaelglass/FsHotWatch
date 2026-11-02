@@ -1187,6 +1187,72 @@ let internal initialStateOf
       Earned = None
       RestoredEvidence = restoredEvidence }
 
+/// The plugin's file-freshness view (`freshnessCellIn`): one cell, read and written only
+/// through these functions.
+type internal FreshnessCell =
+    { Read: unit -> FileFreshness.Store
+      Write: FileFreshness.Store -> unit
+      Reconcile: int64 option -> unit }
+
+/// Per-file FCS freshness sidecar, loaded once at plugin construction from
+/// `.fshw/test-prune/file-freshness.json` and updated incrementally on each
+/// FileChecked. Survives daemon restarts so a cross-restart replay can decide which
+/// files' stored symbols are trustworthy enough to run detectChanges against. Held with
+/// the project model generation it was last reconciled against, as one value.
+///
+/// Closure-local mutable cell + Volatile: only the Update handler reads and writes it.
+let internal freshnessCellIn (repoRoot: string) : FreshnessCell =
+    let mutable freshness: FreshnessView =
+        { Store = FileFreshness.load repoRoot
+          ReconciledAt = None }
+
+    /// The sidecar as it stands.
+    let freshnessStore () = (Volatile.Read(&freshness)).Store
+
+
+    let updateFreshness (newStore: FileFreshness.Store) =
+        Volatile.Write(
+            &freshness,
+            { Volatile.Read(&freshness) with
+                Store = newStore }
+        )
+
+        try
+            FileFreshness.save repoRoot newStore
+        with ex ->
+            Logging.warn
+                "test-prune"
+                $"failed to persist file-freshness sidecar: %s{ex.Message}; in-memory state still updated"
+
+    // A file deleted together with its compile entry is unregistered by the re-evaluation
+    // that publishes the next model, so it gets no FileChecked and no `stamp` forgets it;
+    // the model moving is the event that says such a file may be gone.
+    let reconcileFreshness (modelGeneration: int64 option) =
+        let current = Volatile.Read(&freshness)
+
+        match modelGeneration with
+        | Some generation when modelGeneration <> current.ReconciledAt ->
+            Volatile.Write(
+                &freshness,
+                { current with
+                    ReconciledAt = modelGeneration }
+            )
+
+            let kept, dropped = FileFreshness.dropGone repoRoot current.Store
+
+            if not dropped.IsEmpty then
+                for relPath in dropped do
+                    Logging.info
+                        "test-prune"
+                        $"%s{relPath} no longer exists; dropping its freshness record (project model generation %d{generation})"
+
+                updateFreshness kept
+        | _ -> ()
+
+    { Read = freshnessStore
+      Write = updateFreshness
+      Reconcile = reconcileFreshness }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1431,19 +1497,10 @@ let internal createWithEvidenceAndQueries
     let flushAndQueryAffectedBounded =
         flushAndQueryAffectedBoundedWith flushAndQueryAffected
 
-    // Per-file FCS freshness sidecar, loaded once at plugin construction from
-    // `.fshw/test-prune/file-freshness.json` and updated incrementally on each
-    // FileChecked. Survives daemon restarts so a cross-restart replay can decide which
-    // files' stored symbols are trustworthy enough to run detectChanges against. Held with
-    // the project model generation it was last reconciled against, as one value.
-    //
-    // Closure-local mutable cell + Volatile: only the Update handler reads and writes it.
-    let mutable freshness: FreshnessView =
-        { Store = FileFreshness.load repoRoot
-          ReconciledAt = None }
-
-    /// The sidecar as it stands.
-    let freshnessStore () = (Volatile.Read(&freshness)).Store
+    let freshness = freshnessCellIn repoRoot
+    let freshnessStore = freshness.Read
+    let updateFreshness = freshness.Write
+    let reconcileFreshness = freshness.Reconcile
 
     /// The clock `storedRowsExist: bool` did not have. Rows written
     /// seconds ago by this session's own scan are not a baseline; diffing the current
@@ -1451,45 +1508,6 @@ let internal createWithEvidenceAndQueries
     /// changed", and selects zero test projects — on a diff that ADDS tests. See
     /// `FileFreshness.PriorRowLedger`, which owns the rule.
     let priorRows = FileFreshness.PriorRowLedger()
-
-    let updateFreshness (newStore: FileFreshness.Store) =
-        Volatile.Write(
-            &freshness,
-            { Volatile.Read(&freshness) with
-                Store = newStore }
-        )
-
-        try
-            FileFreshness.save repoRoot newStore
-        with ex ->
-            Logging.warn
-                "test-prune"
-                $"failed to persist file-freshness sidecar: %s{ex.Message}; in-memory state still updated"
-
-    // A file deleted together with its compile entry is unregistered by the re-evaluation
-    // that publishes the next model, so it gets no FileChecked and no `stamp` forgets it;
-    // the model moving is the event that says such a file may be gone.
-    let reconcileFreshness (modelGeneration: int64 option) =
-        let current = Volatile.Read(&freshness)
-
-        match modelGeneration with
-        | Some generation when modelGeneration <> current.ReconciledAt ->
-            Volatile.Write(
-                &freshness,
-                { current with
-                    ReconciledAt = modelGeneration }
-            )
-
-            let kept, dropped = FileFreshness.dropGone repoRoot current.Store
-
-            if not dropped.IsEmpty then
-                for relPath in dropped do
-                    Logging.info
-                        "test-prune"
-                        $"%s{relPath} no longer exists; dropping its freshness record (project model generation %d{generation})"
-
-                updateFreshness kept
-        | _ -> ()
 
     let initialState = initialStateOf initialMode mayReplay loadedDebt restored
 
