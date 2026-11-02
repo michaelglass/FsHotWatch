@@ -675,6 +675,41 @@ let internal flushAndQueryAffectedBoundedWith
     use _declaration = ctx.DeclareBoundedWork "impact selection" ImpactSelectionDeadline
     flushAndQueryAffected ctx state
 
+/// Launch the run a build held back (`holdForDiff`), selected from the state it is
+/// delivered into, where the diff has now folded, or the wait expired without it.
+let internal launchHeldWith
+    (launchImpactRun: ImpactLauncher)
+    (testConfigs: TestConfig list option)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (state: TestPruneState)
+    (why: string)
+    =
+    let waited =
+        state.AwaitingDiff
+        |> Option.map (fun held -> (DateTime.UtcNow - held.Since).TotalSeconds)
+        |> Option.defaultValue 0.0
+
+    let state = { state with AwaitingDiff = None }
+
+    match testConfigs with
+    | Some configs when not configs.IsEmpty ->
+        Logging.info "test-prune" $"Launching the build's held run after %.1f{waited}s: %s{why}"
+        let fanout = state.PendingForceRunProjects
+
+        let launchState =
+            { state with
+                PendingForceRunProjects = Set.empty }
+
+        match launchImpactRun ctx configs launchState state.LastResults.IsSome fanout with
+        | Some launched -> launched
+        | None when joinsFullRun state false -> attachToFullRun state
+        | None ->
+            // A run that claimed the key after the build describes the built tree.
+            Logging.info "test-prune" "  ↳ tests slot already held — queueing re-run"
+            enqueueImpactRun ctx
+            state
+    | _ -> state
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1442,34 +1477,7 @@ let internal createWithEvidenceAndQueries
         | _ -> state
 
 
-    /// Launch the run a build held back (`holdForDiff`), selected from the state it is
-    /// delivered into, where the diff has now folded, or the wait expired without it.
-    let launchHeld (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (why: string) =
-        let waited =
-            state.AwaitingDiff
-            |> Option.map (fun held -> (DateTime.UtcNow - held.Since).TotalSeconds)
-            |> Option.defaultValue 0.0
-
-        let state = { state with AwaitingDiff = None }
-
-        match testConfigs with
-        | Some configs when not configs.IsEmpty ->
-            Logging.info "test-prune" $"Launching the build's held run after %.1f{waited}s: %s{why}"
-            let fanout = state.PendingForceRunProjects
-
-            let launchState =
-                { state with
-                    PendingForceRunProjects = Set.empty }
-
-            match launchImpactRun ctx configs launchState state.LastResults.IsSome fanout with
-            | Some launched -> launched
-            | None when joinsFullRun state false -> attachToFullRun state
-            | None ->
-                // A run that claimed the key after the build describes the built tree.
-                Logging.info "test-prune" "  ↳ tests slot already held — queueing re-run"
-                enqueueImpactRun ctx
-                state
-        | _ -> state
+    let launchHeld = launchHeldWith launchImpactRun testConfigs
 
     let prepareCommit = prepareCommitIn repoRoot debtPublicationPath
 
