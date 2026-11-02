@@ -294,6 +294,27 @@ let ``command reports Failed status on exception`` () =
 
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
+
+[<Fact(Timeout = 15000)>]
+let ``the status command declares its reply schema`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let handler =
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "declared")
+            (fileTrigger (fun _ -> false))
+            "echo"
+            "hello"
+            "/tmp"
+            None
+
+    host.RegisterHandler(handler)
+
+    let reply = host.RunCommandReply("declared-status", [||]) |> Async.RunSynchronously
+    let declared = reply |> Option.map fst
+
+    test <@ declared = Some(ReplySchema.Typed FsHotWatch.FileCommand.FileCommandReplies.StatusSchema) @>
+
 [<Fact(Timeout = 20000)>]
 let ``status command returns not run when no files matched`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"

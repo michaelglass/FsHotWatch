@@ -775,8 +775,12 @@ module PluginReplies =
 
         [ FsHotWatch.Fantomas.FormatReplies.UnformattedSchema, unformatted ]
 
+    let private fileCommand: (string * (string -> Render option)) list =
+        [ FsHotWatch.FileCommand.FileCommandReplies.StatusSchema,
+          asStatusMap FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.tryParse ]
+
     let private renderers: Map<string, string -> Render option> =
-        Map.ofList (build @ lint @ format)
+        Map.ofList (build @ lint @ format @ fileCommand)
 
     /// The renderer for a `payload` of schema `id`; `None` for a schema this build does not
     /// know, or a payload it does not describe.

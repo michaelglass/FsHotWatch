@@ -186,3 +186,33 @@ let ``rendering an unformatted reply throws, as it did before it was typed`` () 
     match rendered false reply with
     | Error(kind, _) -> test <@ kind = typeof<InvalidOperationException>.FullName @>
     | Ok(exitCode, text) -> failwith $"expected the known throw, got exit %d{exitCode}: %s{text}"
+
+let private commandStatuses =
+    [ FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.Passed
+      FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.Failed
+      FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.NotRun ]
+
+[<Fact(Timeout = 15000)>]
+let ``a file command's status is written as the JSON it always was, and read back as itself`` () =
+    let serialize = FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.serialize
+
+    test <@ serialize FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.Passed = """{"passed":true}""" @>
+    test <@ serialize FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.Failed = """{"passed":false}""" @>
+    test <@ serialize FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.NotRun = """{"status":"not run"}""" @>
+
+    for status in commandStatuses do
+        test <@ FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.tryParse (serialize status) = Some status @>
+
+[<Fact(Timeout = 15000)>]
+let ``a typed file command status renders exactly as its shape did`` () =
+    for status in commandStatuses do
+        rendersAsSniffed
+            "lint-docs-status"
+            FsHotWatch.FileCommand.FileCommandReplies.StatusSchema
+            (FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.serialize status)
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("""{"passed":"yes"}""")>]
+[<InlineData("""{"status":"passed"}""")>]
+let ``a file command status payload its schema does not describe is no verdict`` (payload: string) =
+    refusesUndescribed "lint-docs-status" FsHotWatch.FileCommand.FileCommandReplies.StatusSchema payload

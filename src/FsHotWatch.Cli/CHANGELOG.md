@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- refactor: the CLI renders a file command's `<name>-status` reply by its declared schema, with
+  the same output and exit code as before. A payload the schema does not describe is no verdict.
+
 - refactor: the CLI renders the format-check `unformatted` reply by its declared schema, as
   before. A payload the schema does not describe is no verdict. Known and kept: rendering an
   `unformatted` reply throws, typed or not, because it is read as a diagnostics response whose
