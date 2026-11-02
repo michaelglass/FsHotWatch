@@ -188,6 +188,230 @@ let internal launchArgsOf
       CtrfPath = ctrfPath
       FinalArgs = finalArgs }
 
+/// One project's finished launch, as `projectResultOf` reads it.
+type internal FinishedLaunch =
+    { Config: TestConfig
+      RunDir: string
+      Traces: TraceRunHost option
+      Collected: RunCollector
+      LogToCtx: string -> unit
+      ProcessResult: ProcessOutcome
+      DetectApphostMissing: ProcessOutcome -> bool
+      ProjectSw: Stopwatch
+      Profile: Profile.Recorder
+      RunLog: RunLog.Handle
+      TraceDecision: TraceDecision ref
+      WasFiltered: bool
+      CtrfPath: string option
+      ProjectCoverageLaunch: CoverageArtifactLaunch option }
+
+/// Interpret one project's finished launch and report it: its result from the process
+/// outcome and CTRF report, the console and log lines, the collected report and trace.
+let internal projectResultOf (launched: FinishedLaunch) : TestResult * string option =
+    let config = launched.Config
+    let runDir = launched.RunDir
+    let traces = launched.Traces
+    let collected = launched.Collected
+    let logToCtx = launched.LogToCtx
+    let processResult = launched.ProcessResult
+    let detectApphostMissing = launched.DetectApphostMissing
+    let projectSw = launched.ProjectSw
+    let profile = launched.Profile
+    let runLog = launched.RunLog
+    let traceDecision = launched.TraceDecision
+    let wasFiltered = launched.WasFiltered
+    let ctrfPath = launched.CtrfPath
+    let projectCoverageLaunch = launched.ProjectCoverageLaunch
+
+    let projectElapsed = projectSw.Elapsed
+
+    let apphostMissing = detectApphostMissing processResult
+
+    // A filtered run that matched zero tests in this project is
+    // not a failure (see `isZeroTestsUnderFilter`) — treat it
+    // like an impact-skip.
+    let zeroTestsUnderFilter = isZeroTestsUnderFilter wasFiltered processResult
+
+    let output = outputOf processResult
+
+    // Read the structured report ONCE (when one was requested
+    // from a capable runner). It is BOTH the authoritative
+    // pass/fail signal (summary counts) AND the flakiness
+    // source (per-test records). Read BEFORE the verdict so
+    // the REPORT — not the exit code — decides green/red.
+    let reportJson =
+        match ctrfPath with
+        | Some p ->
+            try
+                Some(File.ReadAllText p)
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException -> None
+        | None -> None
+
+    let reportEvidence =
+        match ctrfPath, reportJson with
+        | None, _ -> NoReportRequested
+        | Some _, Some json -> ReportRequested(Ctrf.tryVerdictReport json)
+        | Some p, None -> ReportRequested(Error $"no readable report at %s{p}")
+
+    let result =
+        if apphostMissing then
+            // Tests NEVER RAN — the apphost wasn't produced.
+            // A dedicated `TestsDeferred`, NOT a pass
+            // (`verdict` = `NothingVerified` → never a silent
+            // false-green) and NOT a real failure: surfaced as an honest
+            // "waiting on build" diagnostic. Carries no
+            // elapsed/wasFiltered, so it never lowers a
+            // coverage baseline.
+            TestsDeferred "apphost not produced; tests did not run"
+        elif zeroTestsUnderFilter then
+            // Not a failure — per project, a filter selecting
+            // nothing is not that project's fault, so it is never
+            // reported as one. Its own case (rather than a passing
+            // result wearing a marker prefix) so that every fold
+            // must decide it; see `TestResult.verdict` and
+            // `verificationOf`.
+            TestsNoMatch(output, projectElapsed)
+        else
+            classifyTestOutcome reportEvidence wasFiltered projectElapsed processResult
+
+    Profile.finish
+        profile
+        (Profile.outcomeOf result)
+        (match ctrfPath, reportJson with
+         | Some _, Some json -> Ok(Profile.classTimings json)
+         | None, _ -> Error "no report: this runner was not asked for CTRF"
+         | Some _, None ->
+             match result with
+             | TestsTimedOut(_, after, _, _) ->
+                 Error $"no report: the host was killed at its %d{int after.TotalSeconds}s timeout"
+             | _ -> Error "no report: the host wrote none")
+
+    // Log driven off the AUTHORITATIVE verdict (not the raw
+    // exit code) so the console line can never disagree with
+    // the recorded result.
+    match result with
+    | TestsDeferred _ ->
+        logToCtx $"{config.Project}: waiting on build (apphost not yet produced)"
+
+        Logging.warn
+            "test-prune"
+            $"%s{config.Project}: apphost still missing after retry — surfacing as 'waiting on build', not FAILED (a build-ordering issue, never a test failure)"
+    | TestsNoMatch _ ->
+        logToCtx $"{config.Project}: no tests matched the filter — skipped"
+
+        Logging.info
+            "test-prune"
+            $"%s{config.Project}: no tests matched the active filter — skipped, not FAILED (a filtered run that selects nothing here is not a test failure)"
+    | TestsPassed _ ->
+        logToCtx $"{config.Project}: passed"
+        Logging.info "test-prune" $"%s{config.Project}: PASSED"
+    | TestsErrored reason ->
+        logToCtx $"{config.Project}: ABORTED (nothing verified) — {reason}"
+
+        Logging.error
+            "test-prune"
+            $"%s{config.Project}: ABORTED — %s{reason} Nothing was verified; this is NOT a test failure and NOT a pass — re-run (e.g. `dotnet fshw test-rerun`)."
+    | TestsFailed _ ->
+        logToCtx $"{config.Project}: failed"
+        Logging.error "test-prune" $"%s{config.Project}: FAILED"
+    | TestsTimedOut(_, after, _, _) ->
+        logToCtx $"{config.Project}: timed out (infrastructure)"
+
+        Logging.error "test-prune" $"%s{config.Project}: TIMED OUT (infrastructure) after %d{int after.TotalSeconds}s"
+
+    // Report the outcome in full. The two reports are DIFFERENT
+    // documents on purpose: a failure report
+    // counts the runner's `failed ...` lines and calls them
+    // failures, which is true of a run that finished and false —
+    // expensively, alarmingly false — of one that was killed
+    // holding a half-written transcript.
+    match result with
+    | TestsFailed _
+    | TestsTimedOut _ ->
+        let ctrfFailedRows =
+            reportJson |> Option.map failedRowsOfReport |> Option.defaultValue []
+
+        for line in formatFailureReport (RedRunEnding.ofResult result) ctrfFailedRows config.Project runLog.Ref output do
+            Logging.error "test-prune" line
+    | TestsErrored reason ->
+        for line in formatAbortReport config.Project runLog.Ref reason output do
+            Logging.error "test-prune" line
+    | TestsPassed _
+    | TestsDeferred _
+    | TestsNoMatch _ -> ()
+
+    projectCoverageLaunch |> Option.iter (keepRunCoverage runDir)
+
+    // Collect this project's raw runner cobertura for SERIAL
+    // ingest after Async.Parallel (a parallel DB write +
+    // shared-file write would race). A run that never executed
+    // (apphost missing) contributes NO input, so a partial file
+    // cannot lower coverage.
+    match
+        projectCoverageLaunch
+        |> Option.map (coverageReceiptFromReceipt (TestResult.verifiedGreen result))
+    with
+    | Some(CoverageReceiptAccepted input) ->
+        collected.Update(fun c ->
+            { c with
+                CoverageInputs = input :: c.CoverageInputs })
+    | Some(CoverageReceiptFailed failure) ->
+        collected.Update(fun c ->
+            { c with
+                CoverageFailures = failure :: c.CoverageFailures })
+    | Some CoverageReceiptAbsent
+    | None -> ()
+
+    // Per-test flakiness tracking: reuse the report content
+    // already read for the verdict; COLLECT this project's
+    // per-test records for the single post-parallel write (see
+    // `flakinessRecords`). Best-effort — exceptions never fail
+    // the run.
+    //
+    // The report is RETAINED — the verdict file POINTS at these
+    // reports rather than deleting them once their records are
+    // folded into the flakiness history. `Ctrf.tidyRunsDir`
+    // (post-run) keeps the newest few per project, so retention
+    // stays bounded.
+    match ctrfPath, reportJson with
+    | Some _, Some json ->
+        try
+            let records = Flakiness.parseCtrfTests json
+
+            if not records.IsEmpty then
+                collected.Update(fun c ->
+                    { c with
+                        Flakiness = c.Flakiness @ records })
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException
+        | :? JsonException as ex -> Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}"
+    | Some p, None ->
+        // Report requested but unreadable (missing — the host
+        // aborted before flushing — or locked). Nothing to retain;
+        // its ABSENCE already drove the Errored verdict.
+        try
+            File.Delete p
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException -> ()
+    | None, _ -> ()
+
+    if Option.isSome traces then
+        let traced: TracedProjectRun =
+            { Project = config.Project
+              Decision = traceDecision.Value
+              Filtered = wasFiltered
+              CtrfPath = ctrfPath }
+
+        collected.Update(fun c ->
+            { c with
+                TraceRuns = traced :: c.TraceRuns })
+
+    result, reportJson
+
 /// Execute test configs with optional affected classes for filtering. Handles beforeRun,
 /// coveragePaths, process execution, result storage. `rawFilter` is a passthrough filter
 /// string (from the run-tests command) that bypasses the template.
@@ -880,203 +1104,23 @@ let internal executeTests
                     }
 
                 projectSw.Stop()
-                let projectElapsed = projectSw.Elapsed
 
-                let apphostMissing = detectApphostMissing processResult
-
-                // A filtered run that matched zero tests in this project is
-                // not a failure (see `isZeroTestsUnderFilter`) — treat it
-                // like an impact-skip.
-                let zeroTestsUnderFilter = isZeroTestsUnderFilter wasFiltered processResult
-
-                let output = outputOf processResult
-
-                // Read the structured report ONCE (when one was requested
-                // from a capable runner). It is BOTH the authoritative
-                // pass/fail signal (summary counts) AND the flakiness
-                // source (per-test records). Read BEFORE the verdict so
-                // the REPORT — not the exit code — decides green/red.
-                let reportJson =
-                    match ctrfPath with
-                    | Some p ->
-                        try
-                            Some(File.ReadAllText p)
-                        with
-                        | :? IOException
-                        | :? UnauthorizedAccessException -> None
-                    | None -> None
-
-                let reportEvidence =
-                    match ctrfPath, reportJson with
-                    | None, _ -> NoReportRequested
-                    | Some _, Some json -> ReportRequested(Ctrf.tryVerdictReport json)
-                    | Some p, None -> ReportRequested(Error $"no readable report at %s{p}")
-
-                let result =
-                    if apphostMissing then
-                        // Tests NEVER RAN — the apphost wasn't produced.
-                        // A dedicated `TestsDeferred`, NOT a pass
-                        // (`verdict` = `NothingVerified` → never a silent
-                        // false-green) and NOT a real failure: surfaced as an honest
-                        // "waiting on build" diagnostic. Carries no
-                        // elapsed/wasFiltered, so it never lowers a
-                        // coverage baseline.
-                        TestsDeferred "apphost not produced; tests did not run"
-                    elif zeroTestsUnderFilter then
-                        // Not a failure — per project, a filter selecting
-                        // nothing is not that project's fault, so it is never
-                        // reported as one. Its own case (rather than a passing
-                        // result wearing a marker prefix) so that every fold
-                        // must decide it; see `TestResult.verdict` and
-                        // `verificationOf`.
-                        TestsNoMatch(output, projectElapsed)
-                    else
-                        classifyTestOutcome reportEvidence wasFiltered projectElapsed processResult
-
-                Profile.finish
-                    profile
-                    (Profile.outcomeOf result)
-                    (match ctrfPath, reportJson with
-                     | Some _, Some json -> Ok(Profile.classTimings json)
-                     | None, _ -> Error "no report: this runner was not asked for CTRF"
-                     | Some _, None ->
-                         match result with
-                         | TestsTimedOut(_, after, _, _) ->
-                             Error $"no report: the host was killed at its %d{int after.TotalSeconds}s timeout"
-                         | _ -> Error "no report: the host wrote none")
-
-                // Log driven off the AUTHORITATIVE verdict (not the raw
-                // exit code) so the console line can never disagree with
-                // the recorded result.
-                match result with
-                | TestsDeferred _ ->
-                    logToCtx $"{config.Project}: waiting on build (apphost not yet produced)"
-
-                    Logging.warn
-                        "test-prune"
-                        $"%s{config.Project}: apphost still missing after retry — surfacing as 'waiting on build', not FAILED (a build-ordering issue, never a test failure)"
-                | TestsNoMatch _ ->
-                    logToCtx $"{config.Project}: no tests matched the filter — skipped"
-
-                    Logging.info
-                        "test-prune"
-                        $"%s{config.Project}: no tests matched the active filter — skipped, not FAILED (a filtered run that selects nothing here is not a test failure)"
-                | TestsPassed _ ->
-                    logToCtx $"{config.Project}: passed"
-                    Logging.info "test-prune" $"%s{config.Project}: PASSED"
-                | TestsErrored reason ->
-                    logToCtx $"{config.Project}: ABORTED (nothing verified) — {reason}"
-
-                    Logging.error
-                        "test-prune"
-                        $"%s{config.Project}: ABORTED — %s{reason} Nothing was verified; this is NOT a test failure and NOT a pass — re-run (e.g. `dotnet fshw test-rerun`)."
-                | TestsFailed _ ->
-                    logToCtx $"{config.Project}: failed"
-                    Logging.error "test-prune" $"%s{config.Project}: FAILED"
-                | TestsTimedOut(_, after, _, _) ->
-                    logToCtx $"{config.Project}: timed out (infrastructure)"
-
-                    Logging.error
-                        "test-prune"
-                        $"%s{config.Project}: TIMED OUT (infrastructure) after %d{int after.TotalSeconds}s"
-
-                // Report the outcome in full. The two reports are DIFFERENT
-                // documents on purpose: a failure report
-                // counts the runner's `failed ...` lines and calls them
-                // failures, which is true of a run that finished and false —
-                // expensively, alarmingly false — of one that was killed
-                // holding a half-written transcript.
-                match result with
-                | TestsFailed _
-                | TestsTimedOut _ ->
-                    let ctrfFailedRows =
-                        reportJson |> Option.map failedRowsOfReport |> Option.defaultValue []
-
-                    for line in
-                        formatFailureReport
-                            (RedRunEnding.ofResult result)
-                            ctrfFailedRows
-                            config.Project
-                            runLog.Ref
-                            output do
-                        Logging.error "test-prune" line
-                | TestsErrored reason ->
-                    for line in formatAbortReport config.Project runLog.Ref reason output do
-                        Logging.error "test-prune" line
-                | TestsPassed _
-                | TestsDeferred _
-                | TestsNoMatch _ -> ()
-
-                projectCoverageLaunch |> Option.iter (keepRunCoverage runDir)
-
-                // Collect this project's raw runner cobertura for SERIAL
-                // ingest after Async.Parallel (a parallel DB write +
-                // shared-file write would race). A run that never executed
-                // (apphost missing) contributes NO input, so a partial file
-                // cannot lower coverage.
-                match
-                    projectCoverageLaunch
-                    |> Option.map (coverageReceiptFromReceipt (TestResult.verifiedGreen result))
-                with
-                | Some(CoverageReceiptAccepted input) ->
-                    collected.Update(fun c ->
-                        { c with
-                            CoverageInputs = input :: c.CoverageInputs })
-                | Some(CoverageReceiptFailed failure) ->
-                    collected.Update(fun c ->
-                        { c with
-                            CoverageFailures = failure :: c.CoverageFailures })
-                | Some CoverageReceiptAbsent
-                | None -> ()
-
-                // Per-test flakiness tracking: reuse the report content
-                // already read for the verdict; COLLECT this project's
-                // per-test records for the single post-parallel write (see
-                // `flakinessRecords`). Best-effort — exceptions never fail
-                // the run.
-                //
-                // The report is RETAINED — the verdict file POINTS at these
-                // reports rather than deleting them once their records are
-                // folded into the flakiness history. `Ctrf.tidyRunsDir`
-                // (post-run) keeps the newest few per project, so retention
-                // stays bounded.
-                match ctrfPath, reportJson with
-                | Some _, Some json ->
-                    try
-                        let records = Flakiness.parseCtrfTests json
-
-                        if not records.IsEmpty then
-                            collected.Update(fun c ->
-                                { c with
-                                    Flakiness = c.Flakiness @ records })
-                    with
-                    | :? IOException
-                    | :? UnauthorizedAccessException
-                    | :? JsonException as ex ->
-                        Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}"
-                | Some p, None ->
-                    // Report requested but unreadable (missing — the host
-                    // aborted before flushing — or locked). Nothing to retain;
-                    // its ABSENCE already drove the Errored verdict.
-                    try
-                        File.Delete p
-                    with
-                    | :? IOException
-                    | :? UnauthorizedAccessException -> ()
-                | None, _ -> ()
-
-                if Option.isSome traces then
-                    let traced: TracedProjectRun =
-                        { Project = config.Project
-                          Decision = traceDecision.Value
-                          Filtered = wasFiltered
-                          CtrfPath = ctrfPath }
-
-                    collected.Update(fun c ->
-                        { c with
-                            TraceRuns = traced :: c.TraceRuns })
-
-                return result, reportJson
+                return
+                    projectResultOf
+                        { Config = config
+                          RunDir = runDir
+                          Traces = traces
+                          Collected = collected
+                          LogToCtx = logToCtx
+                          ProcessResult = processResult
+                          DetectApphostMissing = detectApphostMissing
+                          ProjectSw = projectSw
+                          Profile = profile
+                          RunLog = runLog
+                          TraceDecision = traceDecision
+                          WasFiltered = wasFiltered
+                          CtrfPath = ctrfPath
+                          ProjectCoverageLaunch = projectCoverageLaunch }
             }
 
         // STARVATION. A project that declared `starvation` is sampled while it runs; a
