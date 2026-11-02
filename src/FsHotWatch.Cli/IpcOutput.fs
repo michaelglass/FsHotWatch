@@ -1280,13 +1280,15 @@ let private publishVerdictWithReason
                 VerdictTerminal.fail reason
 
                 Verdict.Incomplete reason,
-                CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1),
+                CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed),
                 [ downgradeCause "tree" reason ]
             // Handed in, not decided here: a terminal infrastructure failure arrives with
             // its own diagnosis and its caller's reporting. This function does not add a
             // cause it did not find.
             | Some reason, _ ->
-                Verdict.Incomplete reason, CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1), []
+                Verdict.Incomplete reason,
+                CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed),
+                []
             // A tree that held still — and, on the abort paths, a check that never
             // settled at all. `NeverSettled` cannot be what makes a verdict incomplete:
             // the abort already did, and both callers that reach here hand in an
@@ -1302,7 +1304,7 @@ let private publishVerdictWithReason
                     VerdictTerminal.fail reason
 
                     Verdict.Incomplete reason,
-                    CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1),
+                    CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed),
                     [ downgradeCause "receipt" reason ]
                 | _ ->
                     Verdict.outcomeOfCheck (DaemonConfig.DaemonLog.forRepo repoRoot) outcome,
@@ -1599,7 +1601,7 @@ let internal publishTerminalIncompleteForInvocation
         (IpcParsing.ProjectModelReading.NotReported
             "the run ended on an infrastructure failure before the project model could be read")
         settledTree
-        (CheckVerdict.CheckOutcome.Incomplete -1)
+        (CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed)
         (Some reason)
 
 /// `publishTerminalIncompleteForInvocation` for a publish that no CLI bracket wraps.
@@ -2004,7 +2006,7 @@ let pollAndRenderForInvocation
         let abortExitCode =
             publishAbort
                 "the escalated confirm aborted before recall could be read"
-                (CheckVerdict.CheckOutcome.Incomplete -1)
+                (CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed)
 
         UI.fail
             $"Check aborted: %s{ex.Message}\nA plugin overran the verdict deadline and is likely wedged — inspect %s{DaemonConfig.DaemonLog.forRepo repoRoot}, then `fshw stop` to reclaim the daemon. If the suite legitimately needs longer, raise FSHW_VERDICT_DEADLINE_SEC."
@@ -2015,7 +2017,7 @@ let pollAndRenderForInvocation
         let abortExitCode =
             publishAbort
                 "the escalated confirm aborted before recall could be read"
-                (CheckVerdict.CheckOutcome.Incomplete -1)
+                (CheckVerdict.CheckOutcome.Incomplete CheckVerdict.Unverified.Unconfirmed)
 
         // A daemon squeezed out by machine memory pressure dies exactly here, and
         // the message above names the SYMPTOM. Naming the pressure turns "the

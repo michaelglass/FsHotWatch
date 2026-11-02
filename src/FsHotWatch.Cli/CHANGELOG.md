@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- refactor!: `CheckVerdict.CheckOutcome.Incomplete` carries an `Unverified`
+  (`Files of count`, at least one, or `Unconfirmed`) instead of an `int` in which `-1` and `0`
+  meant "no count known". New: `CheckVerdict.Unverified.ofCount`. The prose, verdict file and
+  exit codes are unchanged.
+
 - refactor!: one run-once scan runner. `RunOnceOutput.runOnceWithProgress`, a second runner with
   no scan progress, is gone, and `runOnceAndReport` takes the runner as its first argument.
   `fshw format --run-once`, its only user, now passes `ScanHeartbeat.runOnceWithProgress` as
