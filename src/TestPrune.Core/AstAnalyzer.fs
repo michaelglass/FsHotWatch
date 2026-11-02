@@ -2047,6 +2047,82 @@ let private enclosingResolver
 
     findEnclosing
 
+/// The edges a file's symbol uses contribute, each from the tracked definition enclosing
+/// the use. Also what FCS classified each edge target as (the extern pass needs it as
+/// evidence) and how many uses had no enclosing definition (their edges are dropped).
+let private useEdges
+    (allUses: FSharpSymbolUse list)
+    (findEnclosing: range -> SymbolInfo option)
+    (genericEdgesForSymbol: FSharpSymbol -> string list)
+    : Dependency list * System.Collections.Generic.Dictionary<string, SymbolKind> * int =
+    let mutable droppedEdgeCount = 0
+
+    // What FCS said each edge TARGET is, recorded where the target was classified.
+    // The extern placeholder pass below needs this: `Module` is the one kind the
+    // `symbols_full_name_is_qualified` CHECK lets through unqualified, so choosing
+    // it must be evidence, never a guess from the shape of the string.
+    let classifiedTargetKinds =
+        System.Collections.Generic.Dictionary<string, SymbolKind>()
+
+    let dependencies =
+        allUses
+        |> List.collect (fun u ->
+            if u.IsFromDefinition then
+                []
+            else
+                // `FSharpField` uses (record construction `{ Name = "Alice" }`) are
+                // not covered by classifySymbol.
+                let fieldRecordEdge =
+                    match u.Symbol with
+                    | :? FSharpField ->
+                        match tryGetRecordTypeFromField u.Symbol with
+                        | Some recName ->
+                            match findEnclosing u.Range with
+                            | Some enclosingSi when enclosingSi.FullName <> recName ->
+                                [ coreEdge UsesType enclosingSi.FullName recName ]
+                            | _ -> []
+                        | None -> []
+                    | _ -> []
+
+                match classifySymbol u.Symbol with
+                | None -> fieldRecordEdge
+                | Some(usedKind, usedFullName) ->
+                    classifiedTargetKinds[usedFullName] <- usedKind
+
+                    match findEnclosing u.Range with
+                    | None ->
+                        droppedEdgeCount <- droppedEdgeCount + 1
+                        fieldRecordEdge
+                    | Some enclosingSi ->
+                        if enclosingSi.FullName = usedFullName then
+                            fieldRecordEdge
+                        else
+                            let primary =
+                                coreEdge (classifyDependency u.Symbol) enclosingSi.FullName usedFullName
+
+                            // A type edge to anything but the two ends of the primary edge.
+                            let usesTypeOtherThanEnds (typeName: string) =
+                                if typeName = enclosingSi.FullName || typeName = usedFullName then
+                                    None
+                                else
+                                    Some(coreEdge UsesType enclosingSi.FullName typeName)
+
+                            let parentEdge = tryGetUnionParentType u.Symbol |> Option.bind usesTypeOtherThanEnds
+
+                            let genericArgEdges =
+                                genericEdgesForSymbol u.Symbol |> List.choose usesTypeOtherThanEnds
+
+                            let recordTypeEdge =
+                                tryGetRecordTypeFromField u.Symbol |> Option.bind usesTypeOtherThanEnds
+
+                            primary :: (parentEdge |> Option.toList)
+                            @ genericArgEdges
+                            @ (recordTypeEdge |> Option.toList))
+        |> Seq.distinct
+        |> Seq.toList
+
+    dependencies, classifiedTargetKinds, droppedEdgeCount
+
 /// Extract analysis results from parse and type-check results.
 let private extractResults
     (maxTraversalVisits: int)
@@ -2245,72 +2321,8 @@ let private extractResults
 
             let findEnclosing = enclosingResolver syntax definitions
 
-            let mutable droppedEdgeCount = 0
-
-            // What FCS said each edge TARGET is, recorded where the target was classified.
-            // The extern placeholder pass below needs this: `Module` is the one kind the
-            // `symbols_full_name_is_qualified` CHECK lets through unqualified, so choosing
-            // it must be evidence, never a guess from the shape of the string.
-            let classifiedTargetKinds =
-                System.Collections.Generic.Dictionary<string, SymbolKind>()
-
-            let dependencies =
-                allUses
-                |> List.collect (fun u ->
-                    if u.IsFromDefinition then
-                        []
-                    else
-                        // `FSharpField` uses (record construction `{ Name = "Alice" }`) are
-                        // not covered by classifySymbol.
-                        let fieldRecordEdge =
-                            match u.Symbol with
-                            | :? FSharpField ->
-                                match tryGetRecordTypeFromField u.Symbol with
-                                | Some recName ->
-                                    match findEnclosing u.Range with
-                                    | Some enclosingSi when enclosingSi.FullName <> recName ->
-                                        [ coreEdge UsesType enclosingSi.FullName recName ]
-                                    | _ -> []
-                                | None -> []
-                            | _ -> []
-
-                        match classifySymbol u.Symbol with
-                        | None -> fieldRecordEdge
-                        | Some(usedKind, usedFullName) ->
-                            classifiedTargetKinds[usedFullName] <- usedKind
-
-                            match findEnclosing u.Range with
-                            | None ->
-                                droppedEdgeCount <- droppedEdgeCount + 1
-                                fieldRecordEdge
-                            | Some enclosingSi ->
-                                if enclosingSi.FullName = usedFullName then
-                                    fieldRecordEdge
-                                else
-                                    let primary =
-                                        coreEdge (classifyDependency u.Symbol) enclosingSi.FullName usedFullName
-
-                                    // A type edge to anything but the two ends of the primary edge.
-                                    let usesTypeOtherThanEnds (typeName: string) =
-                                        if typeName = enclosingSi.FullName || typeName = usedFullName then
-                                            None
-                                        else
-                                            Some(coreEdge UsesType enclosingSi.FullName typeName)
-
-                                    let parentEdge =
-                                        tryGetUnionParentType u.Symbol |> Option.bind usesTypeOtherThanEnds
-
-                                    let genericArgEdges =
-                                        genericEdgesForSymbol u.Symbol |> List.choose usesTypeOtherThanEnds
-
-                                    let recordTypeEdge =
-                                        tryGetRecordTypeFromField u.Symbol |> Option.bind usesTypeOtherThanEnds
-
-                                    primary :: (parentEdge |> Option.toList)
-                                    @ genericArgEdges
-                                    @ (recordTypeEdge |> Option.toList))
-                |> Seq.distinct
-                |> Seq.toList
+            let dependencies, classifiedTargetKinds, droppedEdgeCount =
+                useEdges allUses findEnclosing genericEdgesForSymbol
 
             trace "dependencies"
 
