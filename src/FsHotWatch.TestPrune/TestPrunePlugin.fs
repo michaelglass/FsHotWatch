@@ -409,6 +409,141 @@ let internal updateWith
         | _ -> return state
     }
 
+/// What the plugin's cache key reads (`cacheKeyWith`).
+type internal CacheKeyEnv =
+    { RepoRoot: string
+      RunnableProjects: Set<string>
+      DependsOn: string list
+      BaselineInvalidReason: VerificationDebt -> string option }
+
+/// Pure-content cache key, built by the lifted `cacheKeyFor` so the per-arm input
+/// dependencies are structural rather than a convention. The thunks are this
+/// closure's live state; `cacheKeyFor` decides which arm forces which — and
+/// `FileChecked`, the per-file probe, forces none.
+let internal cacheKeyWith
+    (env: CacheKeyEnv)
+    (state: TestPruneState)
+    (event: PluginEvent<TestPruneMsg>)
+    : ContentHash option =
+    let repoRoot = env.RepoRoot
+    let runnableProjects = env.RunnableProjects
+    let dependsOn = env.DependsOn
+    let baselineInvalidReason = env.BaselineInvalidReason
+
+    let changedSymbolsHash () =
+        state.ChangedSymbols
+        |> List.distinct
+        |> List.sort
+        |> String.concat "|"
+        |> FsHotWatch.CheckCache.sha256Hex
+
+    // The persisted needs-testing queue. `None` = empty, which both omits the
+    // merkle entry (keeping the empty-queue green fast-path key byte-stable) and,
+    // on BuildCompleted, is what makes the event cacheable at all: a green that
+    // left symbols queued must re-run, never replay.
+    let pendingQueueHash () =
+        if state.Debt.RecoveryOutstanding then
+            // An unreadable ledger is outstanding debt whose
+            // membership is unknown. `None` would assert "provably nothing owed"
+            // and make BuildCompleted cacheable, so a cached green written over
+            // this same content merkle would replay with no test process running.
+            // `Some` refuses cache participation outright, as a non-empty queue
+            // does. A constant rather than a hash — there is nothing to hash.
+            Some "unreadable-ledger"
+        elif not (Map.isEmpty state.Debt.CoverageNotIngested) then
+            // A project owes a whole-project run that ingests: a cached green
+            // cannot pay it. Refused as a non-empty queue is.
+            let owed = state.Debt.CoverageNotIngested |> Map.keys |> String.concat ","
+
+            Some $"coverage-not-ingested:%s{owed}|%s{PendingVerification.hash state.Debt.PendingQueue}"
+        elif Set.isEmpty state.Debt.PendingQueue then
+            None
+        else
+            Some(PendingVerification.hash state.Debt.PendingQueue)
+
+    // External-dependency salt: a content hash of the files matched by the
+    // configured `dependsOn` globs. Editing a matched file (a DB migration
+    // that changes the TEST database schema but no test SOURCE) changes this
+    // hash → cache miss → genuine re-run. `None` when unconfigured or when
+    // the globs match nothing, so the entry is omitted and existing on-disk
+    // caches keep hitting.
+    let dependsOnHash () =
+        match externalDependencyHash repoRoot dependsOn with
+        | "" -> None
+        | h -> Some h
+
+    // A full-suite run must never REPLAY an impact-filtered run's
+    // cached verdict. Salting the key with the requested scope makes that
+    // impossible rather than merely unlikely.
+    let fullSuiteScopeHash () =
+        // A run widened by a missing baseline is a full-suite
+        // run too, and must not replay a filtered run's cached verdict.
+        if
+            TestMode.requestsFullSuite state.Mode
+            || Option.isSome (baselineInvalidReason state.Debt)
+        then
+            Some "full"
+        else
+            None
+
+    // No cache participation while a red no covering run has
+    // passed is outstanding.
+    let hasOutstandingFailures () =
+        not (List.isEmpty state.OutstandingFailures)
+
+    // No cache participation on BuildCompleted until a run in
+    // THIS process has covered something.
+    //
+    // ANALYSIS-ONLY IS EXEMPT. With no runnable test projects this plugin makes no
+    // test claim at all — its terminal status is a symbol-analysis summary — so
+    // there is no verdict to launder, and gating it would throw away a working
+    // cache to guard an assertion it never makes.
+    let sessionHasTestEvidence () =
+        Set.isEmpty runnableProjects
+        || not (Set.isEmpty (RunCoverage.coveredProjects state.LastCoverage))
+
+    // A full-repo walk of the project files, so it is a thunk
+    // like the rest: `FileChecked` fires once per file on every scan and must
+    // not pay for an input it never splices.
+    let structureHash () = projectStructureHash repoRoot
+
+    match event with
+    // Dependency fanout still owed: the launch that runs it is this handler's, so
+    // no replay AND no write, as for a non-empty pending queue. A replayed green
+    // would skip the only event that launches it, and the fanout is not a key
+    // input, so a later lookup could not tell the entry from one that ran it.
+    | BuildCompleted _
+    | Custom(TestsFinished _) when not (Set.isEmpty state.PendingForceRunProjects) -> None
+    // A full-suite request earns its evidence from a real run, never a replay. The
+    // run's own entry is still written, from its `TestsFinished` window.
+    | BuildCompleted _ when TestMode.requestsFullSuite state.Mode -> None
+    // A session that launches no owed run has no build outcome to replay or record.
+    | BuildCompleted _ when not (TestMode.launchesOwedRuns state.Mode) -> None
+    // No receipt binds the tree as it is now. The key names the changed symbols
+    // and the project files, not the bytes, so an edit that changes neither (a
+    // comment) computes the key of the green it follows. A replay would skip the
+    // handler, and with it the only run that can earn evidence for this tree.
+    | BuildCompleted BuildSucceeded when
+        not (Set.isEmpty runnableProjects)
+        && not (
+            state.EvidenceReceipt
+            |> Option.exists (fun evidence ->
+                ReceiptInputTree.matches evidence.InputTreeHash (ReceiptInputTree.read repoRoot))
+        )
+        ->
+        None
+    | _ ->
+        cacheKeyFor
+            changedSymbolsHash
+            pendingQueueHash
+            dependsOnHash
+            structureHash
+            fullSuiteScopeHash
+            (fun () -> ReceiptInputTree.read repoRoot)
+            hasOutstandingFailures
+            sessionHasTestEvidence
+            event
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -2306,126 +2441,13 @@ let internal createWithEvidenceAndQueries
             [ SubscribeFileChecked; SubscribeBatchChecked; SubscribeBuildCompleted ]
         )
       CacheKey =
-        // Pure-content cache key, built by the lifted `cacheKeyFor` so the per-arm input
-        // dependencies are structural rather than a convention. The thunks are this
-        // closure's live state; `cacheKeyFor` decides which arm forces which — and
-        // `FileChecked`, the per-file probe, forces none.
-        let cacheKey (state: TestPruneState) (event: PluginEvent<TestPruneMsg>) : ContentHash option =
-            let changedSymbolsHash () =
-                state.ChangedSymbols
-                |> List.distinct
-                |> List.sort
-                |> String.concat "|"
-                |> FsHotWatch.CheckCache.sha256Hex
-
-            // The persisted needs-testing queue. `None` = empty, which both omits the
-            // merkle entry (keeping the empty-queue green fast-path key byte-stable) and,
-            // on BuildCompleted, is what makes the event cacheable at all: a green that
-            // left symbols queued must re-run, never replay.
-            let pendingQueueHash () =
-                if state.Debt.RecoveryOutstanding then
-                    // An unreadable ledger is outstanding debt whose
-                    // membership is unknown. `None` would assert "provably nothing owed"
-                    // and make BuildCompleted cacheable, so a cached green written over
-                    // this same content merkle would replay with no test process running.
-                    // `Some` refuses cache participation outright, as a non-empty queue
-                    // does. A constant rather than a hash — there is nothing to hash.
-                    Some "unreadable-ledger"
-                elif not (Map.isEmpty state.Debt.CoverageNotIngested) then
-                    // A project owes a whole-project run that ingests: a cached green
-                    // cannot pay it. Refused as a non-empty queue is.
-                    let owed = state.Debt.CoverageNotIngested |> Map.keys |> String.concat ","
-
-                    Some $"coverage-not-ingested:%s{owed}|%s{PendingVerification.hash state.Debt.PendingQueue}"
-                elif Set.isEmpty state.Debt.PendingQueue then
-                    None
-                else
-                    Some(PendingVerification.hash state.Debt.PendingQueue)
-
-            // External-dependency salt: a content hash of the files matched by the
-            // configured `dependsOn` globs. Editing a matched file (a DB migration
-            // that changes the TEST database schema but no test SOURCE) changes this
-            // hash → cache miss → genuine re-run. `None` when unconfigured or when
-            // the globs match nothing, so the entry is omitted and existing on-disk
-            // caches keep hitting.
-            let dependsOnHash () =
-                match externalDependencyHash repoRoot dependsOn with
-                | "" -> None
-                | h -> Some h
-
-            // A full-suite run must never REPLAY an impact-filtered run's
-            // cached verdict. Salting the key with the requested scope makes that
-            // impossible rather than merely unlikely.
-            let fullSuiteScopeHash () =
-                // A run widened by a missing baseline is a full-suite
-                // run too, and must not replay a filtered run's cached verdict.
-                if
-                    TestMode.requestsFullSuite state.Mode
-                    || Option.isSome (baselineInvalidReason state.Debt)
-                then
-                    Some "full"
-                else
-                    None
-
-            // No cache participation while a red no covering run has
-            // passed is outstanding.
-            let hasOutstandingFailures () =
-                not (List.isEmpty state.OutstandingFailures)
-
-            // No cache participation on BuildCompleted until a run in
-            // THIS process has covered something.
-            //
-            // ANALYSIS-ONLY IS EXEMPT. With no runnable test projects this plugin makes no
-            // test claim at all — its terminal status is a symbol-analysis summary — so
-            // there is no verdict to launder, and gating it would throw away a working
-            // cache to guard an assertion it never makes.
-            let sessionHasTestEvidence () =
-                Set.isEmpty runnableProjects
-                || not (Set.isEmpty (RunCoverage.coveredProjects state.LastCoverage))
-
-            // A full-repo walk of the project files, so it is a thunk
-            // like the rest: `FileChecked` fires once per file on every scan and must
-            // not pay for an input it never splices.
-            let structureHash () = projectStructureHash repoRoot
-
-            match event with
-            // Dependency fanout still owed: the launch that runs it is this handler's, so
-            // no replay AND no write, as for a non-empty pending queue. A replayed green
-            // would skip the only event that launches it, and the fanout is not a key
-            // input, so a later lookup could not tell the entry from one that ran it.
-            | BuildCompleted _
-            | Custom(TestsFinished _) when not (Set.isEmpty state.PendingForceRunProjects) -> None
-            // A full-suite request earns its evidence from a real run, never a replay. The
-            // run's own entry is still written, from its `TestsFinished` window.
-            | BuildCompleted _ when TestMode.requestsFullSuite state.Mode -> None
-            // A session that launches no owed run has no build outcome to replay or record.
-            | BuildCompleted _ when not (TestMode.launchesOwedRuns state.Mode) -> None
-            // No receipt binds the tree as it is now. The key names the changed symbols
-            // and the project files, not the bytes, so an edit that changes neither (a
-            // comment) computes the key of the green it follows. A replay would skip the
-            // handler, and with it the only run that can earn evidence for this tree.
-            | BuildCompleted BuildSucceeded when
-                not (Set.isEmpty runnableProjects)
-                && not (
-                    state.EvidenceReceipt
-                    |> Option.exists (fun evidence ->
-                        ReceiptInputTree.matches evidence.InputTreeHash (ReceiptInputTree.read repoRoot))
-                )
-                ->
-                None
-            | _ ->
-                cacheKeyFor
-                    changedSymbolsHash
-                    pendingQueueHash
-                    dependsOnHash
-                    structureHash
-                    fullSuiteScopeHash
-                    (fun () -> ReceiptInputTree.read repoRoot)
-                    hasOutstandingFailures
-                    sessionHasTestEvidence
-                    event
-
-        Some cacheKey
+        Some(
+            cacheKeyWith
+                { RepoRoot = repoRoot
+                  RunnableProjects = runnableProjects
+                  DependsOn = dependsOn
+                  BaselineInvalidReason = baselineInvalidReason }
+        )
       Teardown = None }
 
 /// `createWithQueries` over the plugin's own index.
