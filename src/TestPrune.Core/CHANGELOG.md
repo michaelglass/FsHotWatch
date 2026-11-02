@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- refactor: `AstAnalyzer.extractResults` (865 lines) is a sequence of named stages, each a
+  module-level function of what it reads: `indexSyntax` (one walk of the declarations
+  feeds every syntax collector, where five walks ran), `trackedDefinitions`,
+  `enclosingResolver`, `useEdges`, `catalogEntities`, `memberFacts`,
+  `collectionSynthesis`, `sharedLiteralBridges` and `externPlaceholders`. Each stage was
+  landed only after indexing a frozen copy of this repository produced a byte-identical
+  dump of every stored symbol, occurrence, edge, test method and attribute. No behaviour
+  or API change.
 - fix: an attribute argument holding a backslash or a quote is stored so that it reads back
   as itself (AUTOMATION-1452). `symbol_attributes.args_json` was assembled by hand with no
   escaping; `DependsOnFile("data\\cases.json")` stored a payload no JSON reader accepts, and

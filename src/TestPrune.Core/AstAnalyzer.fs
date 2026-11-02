@@ -1117,50 +1117,43 @@ let private propertyMemberRange (memberDefn: SynMemberDefn) : (string * range) o
 /// Walk the parsed AST to collect each accessor property and auto-property with its full
 /// range (see `propertyMemberRange`). Used to hash a property over its whole text and to
 /// cut it out of its type's header; it is NOT an enclosing range for edge attribution.
-let internal collectPropertyRanges (tree: ParsedInput) : (string * range) list =
-    let results = ResizeArray()
-
+let private visitPropertyRanges (results: ResizeArray<string * range>) (decl: SynModuleDecl) =
     let rec walkMember (memberDefn: SynMemberDefn) =
         match memberDefn with
         | SynMemberDefn.Interface(members = Some members) -> List.iter walkMember members
         // INT-WILDCARD-001:ok — `propertyMemberRange` picks out the property forms.
         | _ -> propertyMemberRange memberDefn |> Option.iter results.Add
 
-    walkImplDecls tree (fun decl ->
-        match decl with
-        | SynModuleDecl.Types(typeDefns = typeDefns) ->
-            for SynTypeDefn(typeRepr = typeRepr; members = extraMembers) in typeDefns do
-                List.iter walkMember extraMembers
+    match decl with
+    | SynModuleDecl.Types(typeDefns = typeDefns) ->
+        for SynTypeDefn(typeRepr = typeRepr; members = extraMembers) in typeDefns do
+            List.iter walkMember extraMembers
 
-                match typeRepr with
-                | SynTypeDefnRepr.ObjectModel(members = members) -> List.iter walkMember members
-                | _ -> () // INT-WILDCARD-001:ok — records and unions declare properties only in `with` members
-        | SynModuleDecl.Exception(exnDefn = SynExceptionDefn(members = members)) -> List.iter walkMember members
-        | _ -> ()) // INT-WILDCARD-001:ok — only types and exceptions declare properties
-
-    results |> Seq.toList
+            match typeRepr with
+            | SynTypeDefnRepr.ObjectModel(members = members) -> List.iter walkMember members
+            | _ -> () // INT-WILDCARD-001:ok — records and unions declare properties only in `with` members
+    | SynModuleDecl.Exception(exnDefn = SynExceptionDefn(members = members)) -> List.iter walkMember members
+    | _ -> () // INT-WILDCARD-001:ok — only types and exceptions declare properties
 
 /// Walk the parsed AST to collect module-level binding names and their full ranges.
 /// Each binding's range covers from the `let` keyword to the end of its body,
 /// which correctly encompasses nested local bindings.
+let private visitModuleBindingRanges (results: ResizeArray<string * range>) (decl: SynModuleDecl) =
+    match decl with
+    | SynModuleDecl.Let(bindings = bindings) ->
+        for binding in bindings do
+            addBindingRange extractBindingName results binding
+    | _ -> ()
+
 let collectModuleBindingRanges (tree: ParsedInput) : (string * range) list =
     let results = ResizeArray()
-
-    walkImplDecls tree (fun decl ->
-        match decl with
-        | SynModuleDecl.Let(bindings = bindings) ->
-            for binding in bindings do
-                addBindingRange extractBindingName results binding
-        | _ -> ())
-
+    walkImplDecls tree (visitModuleBindingRanges results)
     results |> Seq.toList
 
 /// Walk the parsed AST to collect type member binding names and their full ranges.
 /// This enables `findEnclosing` to attribute symbol uses inside type members
 /// (e.g. class-based xUnit test methods) to the correct enclosing member.
-let collectTypeMemberRanges (tree: ParsedInput) : (string * range) list =
-    let results = ResizeArray()
-
+let private visitTypeMemberRanges (results: ResizeArray<string * range>) (decl: SynModuleDecl) =
     let rec walkMember (memberDefn: SynMemberDefn) =
         match memberDefn with
         | SynMemberDefn.Member(memberDefn = binding) -> addBindingRange extractMemberName results binding
@@ -1190,46 +1183,48 @@ let collectTypeMemberRanges (tree: ParsedInput) : (string * range) list =
         // one of these exclusions together with the compensating hash change.
         //
         // Accessor properties and auto-properties are hashed over their whole text by
-        // `collectPropertyRanges`, but are deliberately NOT enclosing ranges here. An
+        // `visitPropertyRanges`, but are deliberately NOT enclosing ranges here. An
         // auto-property's initializer runs when the type is CONSTRUCTED, so a use inside
         // it must stay attributed to the type (whose constructors' callers depend on it),
         // not to a property nobody may ever read.
         | _ -> ()
 
-    walkImplDecls tree (fun decl ->
-        match decl with
-        | SynModuleDecl.Types(typeDefns = typeDefns) ->
-            for SynTypeDefn(typeRepr = typeRepr; members = extraMembers) in typeDefns do
-                for m in extraMembers do
-                    walkMember m
-
-                match typeRepr with
-                | SynTypeDefnRepr.ObjectModel(members = members) ->
-                    for m in members do
-                        walkMember m
-                | _ -> ()
-        | SynModuleDecl.Exception(exnDefn = SynExceptionDefn(members = members)) ->
-            for m in members do
+    match decl with
+    | SynModuleDecl.Types(typeDefns = typeDefns) ->
+        for SynTypeDefn(typeRepr = typeRepr; members = extraMembers) in typeDefns do
+            for m in extraMembers do
                 walkMember m
-        | _ -> ())
 
+            match typeRepr with
+            | SynTypeDefnRepr.ObjectModel(members = members) ->
+                for m in members do
+                    walkMember m
+            | _ -> ()
+    | SynModuleDecl.Exception(exnDefn = SynExceptionDefn(members = members)) ->
+        for m in members do
+            walkMember m
+    | _ -> ()
+
+let collectTypeMemberRanges (tree: ParsedInput) : (string * range) list =
+    let results = ResizeArray()
+    walkImplDecls tree (visitTypeMemberRanges results)
     results |> Seq.toList
 
 /// Walk the parsed AST to collect type definition names and their full ranges.
 /// Each type's range covers from the `type` keyword through all cases/fields/members.
+let private visitTypeDefnRanges (results: ResizeArray<string * range>) (decl: SynModuleDecl) =
+    match decl with
+    | SynModuleDecl.Types(typeDefns = typeDefns) ->
+        for SynTypeDefn(typeInfo = SynComponentInfo(longId = ids); range = fullRange) in typeDefns do
+            let name = ids |> List.map (fun id -> id.idText) |> String.concat "."
+            results.Add(name, fullRange)
+    | SynModuleDecl.Exception(exnDefn = exceptionDefinition; range = fullRange) ->
+        results.Add(exceptionName exceptionDefinition, fullRange)
+    | _ -> ()
+
 let collectTypeDefnRanges (tree: ParsedInput) : (string * range) list =
     let results = ResizeArray()
-
-    walkImplDecls tree (fun decl ->
-        match decl with
-        | SynModuleDecl.Types(typeDefns = typeDefns) ->
-            for SynTypeDefn(typeInfo = SynComponentInfo(longId = ids); range = fullRange) in typeDefns do
-                let name = ids |> List.map (fun id -> id.idText) |> String.concat "."
-                results.Add(name, fullRange)
-        | SynModuleDecl.Exception(exnDefn = exceptionDefinition; range = fullRange) ->
-            results.Add(exceptionName exceptionDefinition, fullRange)
-        | _ -> ())
-
+    walkImplDecls tree (visitTypeDefnRanges results)
     results |> Seq.toList
 
 /// A span of a type definition that one of the type's own symbols hashes: a union case
@@ -1261,9 +1256,7 @@ let private isStructAttribute (attributes: SynAttributes) =
             | None -> false))
 
 /// Walk the parsed AST to collect each type definition with its union cases and members.
-let internal collectTypeDefnShapes (tree: ParsedInput) : TypeDefnShape list =
-    let results = ResizeArray()
-
+let private visitTypeDefnShapes (results: ResizeArray<TypeDefnShape>) (decl: SynModuleDecl) =
     let rec walkMember (children: ResizeArray<TypeChild>) (memberDefn: SynMemberDefn) =
         match memberDefn with
         | SynMemberDefn.Member(
@@ -1295,54 +1288,50 @@ let internal collectTypeDefnShapes (tree: ParsedInput) : TypeDefnShape list =
         |> Seq.sortBy (fun c -> c.Range.StartLine, c.Range.StartColumn)
         |> Seq.toList
 
-    walkImplDecls tree (fun decl ->
-        match decl with
-        | SynModuleDecl.Types(typeDefns = typeDefns) ->
-            for SynTypeDefn(
-                typeInfo = SynComponentInfo(attributes = attributes; longId = ids)
-                typeRepr = typeRepr
-                members = extraMembers
-                range = fullRange) in typeDefns do
-                let children = ResizeArray<TypeChild>()
-                let walkMember = walkMember children
-
-                match typeRepr with
-                | SynTypeDefnRepr.Simple(SynTypeDefnSimpleRepr.Union(unionCases = cases), _) ->
-                    for SynUnionCase(attributes = caseAttributes; ident = SynIdent(id, _); range = caseRange) in cases do
-                        children.Add
-                            { Name = id.idText
-                              Range = rangeWithAttributes caseAttributes caseRange
-                              IsCase = true }
-                | SynTypeDefnRepr.ObjectModel(members = members) ->
-                    for m in members do
-                        walkMember m
-                | _ -> () // INT-WILDCARD-001:ok — records, enums and abbreviations are all header
-
-                for m in extraMembers do
-                    walkMember m
-
-                results.Add
-                    { Name = ids |> List.map (fun id -> id.idText) |> String.concat "."
-                      Range = rangeWithAttributes attributes fullRange
-                      IsStruct = isStructAttribute attributes
-                      Children = sortedChildren children }
-        // An exception's header is its name and fields, like a record's; its members are
-        // children, cut out when their own symbols hash them.
-        | SynModuleDecl.Exception(
-            exnDefn = SynExceptionDefn(members = members) as exceptionDefinition; range = fullRange) ->
+    match decl with
+    | SynModuleDecl.Types(typeDefns = typeDefns) ->
+        for SynTypeDefn(
+            typeInfo = SynComponentInfo(attributes = attributes; longId = ids)
+            typeRepr = typeRepr
+            members = extraMembers
+            range = fullRange) in typeDefns do
             let children = ResizeArray<TypeChild>()
+            let walkMember = walkMember children
 
-            for m in members do
-                walkMember children m
+            match typeRepr with
+            | SynTypeDefnRepr.Simple(SynTypeDefnSimpleRepr.Union(unionCases = cases), _) ->
+                for SynUnionCase(attributes = caseAttributes; ident = SynIdent(id, _); range = caseRange) in cases do
+                    children.Add
+                        { Name = id.idText
+                          Range = rangeWithAttributes caseAttributes caseRange
+                          IsCase = true }
+            | SynTypeDefnRepr.ObjectModel(members = members) ->
+                for m in members do
+                    walkMember m
+            | _ -> () // INT-WILDCARD-001:ok — records, enums and abbreviations are all header
+
+            for m in extraMembers do
+                walkMember m
 
             results.Add
-                { Name = exceptionName exceptionDefinition
-                  Range = rangeWithAttributes (exceptionAttributes exceptionDefinition) fullRange
-                  IsStruct = false
+                { Name = ids |> List.map (fun id -> id.idText) |> String.concat "."
+                  Range = rangeWithAttributes attributes fullRange
+                  IsStruct = isStructAttribute attributes
                   Children = sortedChildren children }
-        | _ -> ())
+    // An exception's header is its name and fields, like a record's; its members are
+    // children, cut out when their own symbols hash them.
+    | SynModuleDecl.Exception(exnDefn = SynExceptionDefn(members = members) as exceptionDefinition; range = fullRange) ->
+        let children = ResizeArray<TypeChild>()
 
-    results |> Seq.toList
+        for m in members do
+            walkMember children m
+
+        results.Add
+            { Name = exceptionName exceptionDefinition
+              Range = rangeWithAttributes (exceptionAttributes exceptionDefinition) fullRange
+              IsStruct = false
+              Children = sortedChildren children }
+    | _ -> ()
 
 /// Signature syntax has declarations rather than implementation bindings. Its full
 /// ranges include multiline types and constraints, which FCS identifier ranges omit.
@@ -1932,7 +1921,7 @@ type private SyntaxIndex =
         AllBindingRangeMap: Map<string, range list>
         TypeDefnRangeMap: Map<string, range list>
         /// Accessor properties and auto-properties, for hashing only: see
-        /// `collectPropertyRanges` for why they are not enclosing ranges.
+        /// `visitPropertyRanges` for why they are not enclosing ranges.
         PropertyRangeMap: Map<string, range list>
         TypeShapes: TypeDefnShape list
         SourceIndex: SourceIndex
@@ -1942,23 +1931,39 @@ type private SyntaxIndex =
 let private indexSyntax (tree: ParsedInput) (source: string) : SyntaxIndex =
     let signatureBindingRanges, signatureTypeRanges = collectSignatureRanges tree
 
-    let moduleBindingRanges = collectModuleBindingRanges tree @ signatureBindingRanges
+    // One walk of the implementation declarations feeds every collector, each into its own
+    // list in declaration order, exactly as its own walk would (`collectModuleBindingRanges`
+    // and the rest remain for callers that need only one).
+    let moduleBindings = ResizeArray()
+    let typeMembers = ResizeArray()
+    let typeDefns = ResizeArray()
+    let properties = ResizeArray()
+    let shapes = ResizeArray()
 
-    let typeMemberRanges = collectTypeMemberRanges tree
+    walkImplDecls tree (fun decl ->
+        visitModuleBindingRanges moduleBindings decl
+        visitTypeMemberRanges typeMembers decl
+        visitTypeDefnRanges typeDefns decl
+        visitPropertyRanges properties decl
+        visitTypeDefnShapes shapes decl)
 
-    let typeDefnRanges = collectTypeDefnRanges tree @ signatureTypeRanges
+    let moduleBindingRanges = List.ofSeq moduleBindings @ signatureBindingRanges
+
+    let typeMemberRanges = List.ofSeq typeMembers
+
+    let typeDefnRanges = List.ofSeq typeDefns @ signatureTypeRanges
 
     // Type definition ranges are deliberately NOT merged in here: they would shadow
     // binding names (e.g. `type Config` vs `let config`) in the maps built below.
     let memberBindingRanges = moduleBindingRanges @ typeMemberRanges
 
-    let typeShapes = collectTypeDefnShapes tree
+    let typeShapes = List.ofSeq shapes
 
     { MemberBindingRanges = memberBindingRanges
       TypeDefnRanges = typeDefnRanges
       AllBindingRangeMap = groupRangesByName memberBindingRanges
       TypeDefnRangeMap = groupRangesByName typeDefnRanges
-      PropertyRangeMap = groupRangesByName (collectPropertyRanges tree)
+      PropertyRangeMap = groupRangesByName (List.ofSeq properties)
       TypeShapes = typeShapes
       SourceIndex = SourceIndex source
       UnionCaseRangeMap =
