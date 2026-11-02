@@ -2179,6 +2179,34 @@
         "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 93.1%, branch 75/88.",
         "platform": "linux"
       }
+    ],
+    "PluginSteps.fs": [
+      {
+        "line": 89,
+        "branch": 84,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 89.7%, branch 106/126. With PluginStartup and TestPrunePlugin the three files cover 160 of 184 branches, as TestPrunePlugin.fs did before the split.",
+        "platform": "macos"
+      },
+      {
+        "line": 89,
+        "branch": 84,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 89.7%, branch 106/126. With PluginStartup and TestPrunePlugin the three files cover 160 of 184 branches, as TestPrunePlugin.fs did before the split.",
+        "platform": "linux"
+      }
+    ],
+    "PluginStartup.fs": [
+      {
+        "line": 95,
+        "branch": 97,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 95.7%, branch 37/38. With PluginSteps and TestPrunePlugin the three files cover 160 of 184 branches, as TestPrunePlugin.fs did before the split.",
+        "platform": "macos"
+      },
+      {
+        "line": 95,
+        "branch": 97,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 95.7%, branch 37/38. With PluginSteps and TestPrunePlugin the three files cover 160 of 184 branches, as TestPrunePlugin.fs did before the split.",
+        "platform": "linux"
+      }
     ]
   },
   "countFloors": {
