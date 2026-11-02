@@ -935,78 +935,26 @@ let internal dischargeCoveredBootScanWith
             AffectedTests = Analyzed [] }
     | _ -> state
 
-/// Create a TestPrune plugin handler using the declarative plugin framework.
-/// `buildExtensions` receives the plugin's own `Database` so extensions that
-/// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
-/// queries against — structurally prevents the caller from wiring an extension
-/// to a different DB than the plugin's. `queriesOf` builds the impact queries over that
-/// same DB.
-let internal createWithEvidenceAndQueries
-    // The box-wide test-evidence store this plugin reuses from and publishes to;
-    // `None` (the kill switch, or no store) runs exactly as without one.
-    (evidence: TestEvidenceRun.Wiring option)
-    (queriesOf: Database -> ImpactQueries)
-    (launchDeadline: TimeSpan)
-    // `tests.maxParallelProjects`: at most this many test groups in flight; `None` for all.
-    (maxParallelProjects: int option)
-    // The declared exclusions: indexed test-project name -> written reason. Called once
-    // per debt classification (flush, launch, completion), so a caller can re-resolve
-    // them against the current project inventory. A throw is a refusal to classify, and
-    // leaves the debt owed.
-    (resolveExcludedProjects: unit -> Map<string, string>)
-    (dbPath: string)
-    // The edges the impact walk follows (`tests.selection`). `WalkPolicy.FollowAll`
-    // follows every edge.
-    (walkPolicy: TestPrune.Domain.WalkPolicy)
-    (repoRoot: string)
-    (testConfigs: TestConfig list option)
-    (buildExtensions: (Database -> ITestPruneExtension list) option)
-    (beforeRun: (Guid -> HookStep.Tracker -> unit) option)
-    (afterRun: (TestResults -> unit) option)
-    (coveragePaths: (string -> CoveragePaths option) option)
-    // `dependsOn`: repo-root-relative globs naming EXTERNAL inputs (DB
-    // migrations, generated files, schemas) that the symbol-diff cache key can't
-    // see. Their content hash salts the BuildCompleted cache key so editing one
-    // forces a genuine re-run instead of replaying a stale verdict. `[]` → no
-    // salt (key byte-identical to the pre-feature key).
-    (dependsOn: string list)
-    // `tests.traces`: `None` records nothing and launches every project as configured.
-    (traces: TraceWiring option)
-    // The mode the session starts in: `TestMode.initial` for a daemon,
-    // `TestMode.startingWith false` for a host that runs only what a command requests.
-    (initialMode: TestMode)
-    =
-    let compileInputsOf = compileInputsOfIn repoRoot
+/// What a plugin restores from its sidecars at start (`restorePersisted`), each with the
+/// reason it could not be read, when it could not.
+type internal RestoredState =
+    { LoadedQueue: PendingVerification.LoadedQueue
+      LedgerUnreadableReason: string option
+      DebtPublicationPath: string
+      InterruptedPublication: bool
+      LoadedFailures: OutstandingFailure list
+      FailuresUnreadableReason: string option
+      LoadedBaseline: FullSuiteBaseline.Baseline option
+      RestoredEvidence: EarnedEvidence option
+      LoadedRuntimeObligations: RuntimeCoverageObligations
+      RuntimeObligationsUnreadableReason: string option
+      LoadedNotIngested: CoverageNotIngested.Record
+      NotIngestedUnreadableReason: string option }
 
-    let tracesFor = tracesForIn repoRoot traces
-
-    let db = openOwnIndex dbPath walkPolicy
-    let busyTimeout = dbBusyTimeout db
-    let queries = queriesOf db
-    let configuredTestProjects = testConfigs |> Option.defaultValue []
-
-
-
-    // A recreated DB (schema bump) leaves the FCS check cache stale — see
-    // `clearFcsCheckCache`.
-    if db.WasRecreated then
-        try
-            let cleared = clearFcsCheckCache repoRoot
-
-            Logging.warn
-                "test-prune"
-                $"TestPrune DB was recreated (schema change) — cleared %d{cleared} FCS check-cache entries so every file re-indexes on this scan."
-        with ex ->
-            Logging.error "test-prune" $"failed to clear the FCS check cache after a DB recreate: %s{ex.Message}"
-
-    let extensions = buildExtensions |> Option.map (fun f -> f db)
-
-    let tryRepairSchemaDrift ex = tryRepairSchemaDrift dbPath ex
-
-    let indexedKey = indexedKeyIn db
-
-    let mayReplay = mayReplayIn indexedKey repoRoot testConfigs
-
+/// Restore the plugin's sidecars: the pending queue, the publication marker, outstanding
+/// failures, the full-suite baseline, whole-project evidence, runtime obligations and
+/// coverage that was not ingested.
+let internal restorePersisted (repoRoot: string) : RestoredState =
     // Durable "needs-testing" queue (plugin-owned sidecar). The set of changed
     // symbols not yet proven test-equivalent to the last green run. Loaded once
     // at construction so a restart with a non-empty queue re-flags those
@@ -1120,6 +1068,105 @@ let internal createWithEvidenceAndQueries
                 $"the record of runtime coverage that did not ingest (%s{CoverageNotIngested.sidecarPath repoRoot}) EXISTS but could not be read: %s{reason}. Which projects are owed is UNKNOWN; widening to the full suite until a full suite passes."
 
             Map.empty, Some reason
+
+    { LoadedQueue = loadedQueue
+      LedgerUnreadableReason = ledgerUnreadableReason
+      DebtPublicationPath = debtPublicationPath
+      InterruptedPublication = interruptedPublication
+      LoadedFailures = loadedFailures
+      FailuresUnreadableReason = failuresUnreadableReason
+      LoadedBaseline = loadedBaseline
+      RestoredEvidence = restoredEvidence
+      LoadedRuntimeObligations = loadedRuntimeObligations
+      RuntimeObligationsUnreadableReason = runtimeObligationsUnreadableReason
+      LoadedNotIngested = loadedNotIngested
+      NotIngestedUnreadableReason = notIngestedUnreadableReason }
+
+/// Create a TestPrune plugin handler using the declarative plugin framework.
+/// `buildExtensions` receives the plugin's own `Database` so extensions that
+/// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
+/// queries against — structurally prevents the caller from wiring an extension
+/// to a different DB than the plugin's. `queriesOf` builds the impact queries over that
+/// same DB.
+let internal createWithEvidenceAndQueries
+    // The box-wide test-evidence store this plugin reuses from and publishes to;
+    // `None` (the kill switch, or no store) runs exactly as without one.
+    (evidence: TestEvidenceRun.Wiring option)
+    (queriesOf: Database -> ImpactQueries)
+    (launchDeadline: TimeSpan)
+    // `tests.maxParallelProjects`: at most this many test groups in flight; `None` for all.
+    (maxParallelProjects: int option)
+    // The declared exclusions: indexed test-project name -> written reason. Called once
+    // per debt classification (flush, launch, completion), so a caller can re-resolve
+    // them against the current project inventory. A throw is a refusal to classify, and
+    // leaves the debt owed.
+    (resolveExcludedProjects: unit -> Map<string, string>)
+    (dbPath: string)
+    // The edges the impact walk follows (`tests.selection`). `WalkPolicy.FollowAll`
+    // follows every edge.
+    (walkPolicy: TestPrune.Domain.WalkPolicy)
+    (repoRoot: string)
+    (testConfigs: TestConfig list option)
+    (buildExtensions: (Database -> ITestPruneExtension list) option)
+    (beforeRun: (Guid -> HookStep.Tracker -> unit) option)
+    (afterRun: (TestResults -> unit) option)
+    (coveragePaths: (string -> CoveragePaths option) option)
+    // `dependsOn`: repo-root-relative globs naming EXTERNAL inputs (DB
+    // migrations, generated files, schemas) that the symbol-diff cache key can't
+    // see. Their content hash salts the BuildCompleted cache key so editing one
+    // forces a genuine re-run instead of replaying a stale verdict. `[]` → no
+    // salt (key byte-identical to the pre-feature key).
+    (dependsOn: string list)
+    // `tests.traces`: `None` records nothing and launches every project as configured.
+    (traces: TraceWiring option)
+    // The mode the session starts in: `TestMode.initial` for a daemon,
+    // `TestMode.startingWith false` for a host that runs only what a command requests.
+    (initialMode: TestMode)
+    =
+    let compileInputsOf = compileInputsOfIn repoRoot
+
+    let tracesFor = tracesForIn repoRoot traces
+
+    let db = openOwnIndex dbPath walkPolicy
+    let busyTimeout = dbBusyTimeout db
+    let queries = queriesOf db
+    let configuredTestProjects = testConfigs |> Option.defaultValue []
+
+
+
+    // A recreated DB (schema bump) leaves the FCS check cache stale — see
+    // `clearFcsCheckCache`.
+    if db.WasRecreated then
+        try
+            let cleared = clearFcsCheckCache repoRoot
+
+            Logging.warn
+                "test-prune"
+                $"TestPrune DB was recreated (schema change) — cleared %d{cleared} FCS check-cache entries so every file re-indexes on this scan."
+        with ex ->
+            Logging.error "test-prune" $"failed to clear the FCS check cache after a DB recreate: %s{ex.Message}"
+
+    let extensions = buildExtensions |> Option.map (fun f -> f db)
+
+    let tryRepairSchemaDrift ex = tryRepairSchemaDrift dbPath ex
+
+    let indexedKey = indexedKeyIn db
+
+    let mayReplay = mayReplayIn indexedKey repoRoot testConfigs
+
+    let restored = restorePersisted repoRoot
+    let loadedQueue = restored.LoadedQueue
+    let ledgerUnreadableReason = restored.LedgerUnreadableReason
+    let debtPublicationPath = restored.DebtPublicationPath
+    let interruptedPublication = restored.InterruptedPublication
+    let loadedFailures = restored.LoadedFailures
+    let failuresUnreadableReason = restored.FailuresUnreadableReason
+    let loadedBaseline = restored.LoadedBaseline
+    let restoredEvidence = restored.RestoredEvidence
+    let loadedRuntimeObligations = restored.LoadedRuntimeObligations
+    let runtimeObligationsUnreadableReason = restored.RuntimeObligationsUnreadableReason
+    let loadedNotIngested = restored.LoadedNotIngested
+    let notIngestedUnreadableReason = restored.NotIngestedUnreadableReason
 
     let coverageIngestFailed = coverageIngestFailedIn repoRoot
 
