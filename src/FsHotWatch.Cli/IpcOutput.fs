@@ -770,10 +770,30 @@ module PluginReplies =
 
         [ FsHotWatch.Build.BuildReplies.BuildStatusSchema, buildStatus
           FsHotWatch.Build.BuildReplies.ForceRebuildSchema,
-          asStatusMap FsHotWatch.Build.BuildReplies.ForceRebuild.tryParse ]
+          (fun payload ->
+              FsHotWatch.Build.BuildReplies.ForceRebuild.tryParse payload
+              |> Option.map (fun _ _ _ _ ->
+                  UI.success "the next build runs for real, not from the cache"
+                  0)) ]
 
     let private lint: (string * (string -> Render option)) list =
-        [ FsHotWatch.Lint.LintReplies.WarningsSchema, asStatusMap FsHotWatch.Lint.LintReplies.Warnings.tryParse ]
+        // Lint warnings fail unless warnings are excused, as they do in `fshw check`.
+        let warnings payload =
+            FsHotWatch.Lint.LintReplies.Warnings.tryParse payload
+            |> Option.map (fun reply _ _ noWarnFail ->
+                if reply.Warnings = 0 then
+                    UI.success "lint: no warnings"
+                    0
+                else
+                    let line = $"lint: %d{reply.Warnings} warning(s) in %d{reply.Files} file(s)"
+
+                    if noWarnFail then
+                        UI.warn line
+                        0
+                    else
+                        renderRefusal line)
+
+        [ FsHotWatch.Lint.LintReplies.WarningsSchema, warnings ]
 
     let private format: (string * (string -> Render option)) list =
         // Which files are unformatted, failing when any are (AUTOMATION-1466: this was read as
@@ -832,7 +852,17 @@ module PluginReplies =
 
     let private analyzers: (string * (string -> Render option)) list =
         [ FsHotWatch.Analyzers.AnalyzerReplies.DiagnosticsSchema,
-          asStatusMap FsHotWatch.Analyzers.AnalyzerReplies.Diagnostics.tryParse
+          // It counts findings of every severity, so it reports and does not decide.
+          (fun payload ->
+              FsHotWatch.Analyzers.AnalyzerReplies.Diagnostics.tryParse payload
+              |> Option.map (fun reply _ _ _ ->
+                  eprintfn
+                      "analyzers: %d loaded, %d diagnostic(s) in %d file(s)"
+                      reply.Analyzers
+                      reply.Diagnostics
+                      reply.Files
+
+                  0))
           FsHotWatch.Analyzers.AnalyzerFindings.ReplySchema,
           asStatusMap (FsHotWatch.Analyzers.AnalyzerFindings.tryParseReply >> Result.toOption) ]
 
@@ -854,9 +884,11 @@ module PluginReplies =
 
         let setScope payload =
             FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.tryParse payload
-            |> Option.map (fun reply _ renderStatuses _ ->
+            |> Option.map (fun reply _ _ _ ->
                 match reply with
-                | FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.ScopeSet _ -> renderStatusMap renderStatuses payload
+                | FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.ScopeSet scope ->
+                    eprintfn "test scope set to %s" scope
+                    0
                 | FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.ScopeRefused error -> renderRefusal error)
 
         // A listing: its items, or that there are none. AUTOMATION-1466: these answer with a
@@ -871,6 +903,16 @@ module PluginReplies =
                     eprintfn "  · %s" item
 
             0
+
+        let flakyTests payload =
+            FsHotWatch.TestPrune.TestPruneReplies.FlakyTests.tryParse payload
+            |> Option.map (fun tests _ _ _ ->
+                match tests with
+                | [] -> listing "flaky tests recorded" []
+                | _ ->
+                    tests
+                    |> List.map (fun t -> $"%s{t.Name}: %.0f{t.Flakiness * 100.0}%% flaky over %d{t.Runs} run(s)")
+                    |> listing "flaky test(s)")
 
         let affectedTests payload =
             FsHotWatch.TestPrune.TestPruneReplies.AffectedTests.tryParse payload
@@ -911,8 +953,7 @@ module PluginReplies =
           FsHotWatch.TestPrune.TestPruneReplies.SetScopeSchema, setScope
           FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema, affectedTests
           FsHotWatch.TestPrune.TestPruneReplies.ChangedFilesSchema, changedFiles
-          FsHotWatch.TestPrune.TestPruneReplies.FlakyTestsSchema,
-          asStatusMap FsHotWatch.TestPrune.TestPruneReplies.FlakyTests.tryParse
+          FsHotWatch.TestPrune.TestPruneReplies.FlakyTestsSchema, flakyTests
           FsHotWatch.TestPrune.TestPruneReplies.TestScopeSchema, byShape testScope
           FsHotWatch.TestPrune.TestPruneReplies.CheckReachSchema, byShape checkReach ]
 

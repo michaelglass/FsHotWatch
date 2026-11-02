@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: the informational replies say what they answer instead of printing an empty status display
+  (AUTOMATION-1466).
+  - `warnings` gives the lint warning count and the number of files. It exits 1 when there are
+    warnings, unless warnings are excused, as in `fshw check`.
+  - `diagnostics` gives the analyzers loaded and the findings per file. It exits 0, because it
+    counts every severity and `fshw check` is what decides.
+  - `force-rebuild` says the next build runs for real, not from the cache.
+  - `set-scope` names the scope it set.
+  - `flaky-tests` lists each test with its flakiness and run count.
+
 - fix: status replies with no settled answer exit by what they say instead of printing an empty
   status display with exit 0 (AUTOMATION-1466).
   - `build-status` before any build: no verdict (3).

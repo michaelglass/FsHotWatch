@@ -103,7 +103,14 @@ let ``a build that has not run is no verdict`` () =
     test <@ exitCode = NoVerdictExitCode @>
     test <@ text.Contains "the build has not run yet" @>
 
-    rendersAsSniffed "force-rebuild" ForceRebuildSchema (ForceRebuild.serialize ForceRebuild.Forced)
+[<Fact(Timeout = 15000)>]
+let ``force-rebuild says the next build is forced`` () =
+    // AUTOMATION-1466: this printed an empty status display.
+    let exitCode, text =
+        renderedTyped "force-rebuild" ForceRebuildSchema (ForceRebuild.serialize ForceRebuild.Forced)
+
+    test <@ exitCode = 0 @>
+    test <@ text.Contains "the next build runs for real, not from the cache" @>
 
 [<Theory(Timeout = 15000)>]
 [<InlineData("""{"status":"passed"}""")>]
@@ -131,12 +138,33 @@ let ``warnings is written as the JSON it always was, and read back as itself`` (
         @>
 
 [<Fact(Timeout = 15000)>]
-let ``a typed warnings reply renders exactly as its shape did`` () =
-    for files, warnings in [ 0, 0; 3, 11 ] do
-        rendersAsSniffed
-            "warnings"
-            FsHotWatch.Lint.LintReplies.WarningsSchema
-            (FsHotWatch.Lint.LintReplies.Warnings.serialize { Files = files; Warnings = warnings })
+let ``a warnings reply says how many there are, and fails when there are any`` () =
+    // AUTOMATION-1466: this printed an empty status display and exited 0. Lint warnings fail
+    // unless warnings are excused, as they do in `fshw check`.
+    let render noWarnFail (files, warnings) =
+        let payload =
+            FsHotWatch.Lint.LintReplies.Warnings.serialize { Files = files; Warnings = warnings }
+
+        match
+            rendered
+                noWarnFail
+                (FsHotWatch.Ipc.declaredOutputReply
+                    "warnings"
+                    (FsHotWatch.Plugin.ReplySchema.Typed FsHotWatch.Lint.LintReplies.WarningsSchema)
+                    payload)
+        with
+        | Ok rendering -> rendering
+        | Error(kind, message) -> failwith $"rendering %s{payload} threw %s{kind}: %s{message}"
+
+    let clean = render false (0, 0)
+    test <@ fst clean = 0 @>
+    test <@ (snd clean).Contains "lint: no warnings" @>
+
+    let dirty = render false (3, 11)
+    test <@ fst dirty = 1 @>
+    test <@ (snd dirty).Contains "lint: 11 warning(s) in 3 file(s)" @>
+
+    test <@ fst (render true (3, 11)) = 0 @>
 
 [<Theory(Timeout = 15000)>]
 [<InlineData("""{"files": 2}""")>]
@@ -371,13 +399,19 @@ let private findingsReply: FsHotWatch.Analyzers.AnalyzerFindings.Reply =
 
 [<Fact(Timeout = 15000)>]
 let ``a typed analyzers reply renders exactly as its shape did`` () =
-    rendersAsSniffed
-        "diagnostics"
-        FsHotWatch.Analyzers.AnalyzerReplies.DiagnosticsSchema
-        (FsHotWatch.Analyzers.AnalyzerReplies.Diagnostics.serialize
-            { Analyzers = 1
-              Files = 0
-              Diagnostics = 0 })
+    // AUTOMATION-1466: this printed an empty status display. It counts findings of every
+    // severity, so it reports and does not decide: `fshw check` does.
+    let exitCode, text =
+        renderedTyped
+            "diagnostics"
+            FsHotWatch.Analyzers.AnalyzerReplies.DiagnosticsSchema
+            (FsHotWatch.Analyzers.AnalyzerReplies.Diagnostics.serialize
+                { Analyzers = 2
+                  Files = 1
+                  Diagnostics = 4 })
+
+    test <@ exitCode = 0 @>
+    test <@ text.Contains "analyzers: 2 loaded, 4 diagnostic(s) in 1 file(s)" @>
 
     rendersAsSniffed
         FsHotWatch.Analyzers.AnalyzerFindings.CommandName
@@ -509,21 +543,39 @@ let ``a typed test-prune reply renders exactly as its shape did`` () =
             rendersAsSniffed "run-tests" replies payload
             rendersAsSniffed "test-results" replies payload
 
-    for reply in TestPrune.scopeReplies do
-        rendersAsSniffed
-            "set-scope"
-            FsHotWatch.TestPrune.TestPruneReplies.SetScopeSchema
-            (FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.serialize reply)
-
     rendersAsSniffed
-        "flaky-tests"
-        FsHotWatch.TestPrune.TestPruneReplies.FlakyTestsSchema
-        """{"tests":[{"flakiness":0.25,"name":"Tests.A.works","runs":8}]}"""
+        "set-scope"
+        FsHotWatch.TestPrune.TestPruneReplies.SetScopeSchema
+        (FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.serialize (TestPrune.S.ScopeRefused "no"))
 
     rendersAsSniffed
         "check-reach"
         FsHotWatch.TestPrune.TestPruneReplies.CheckReachSchema
         """{"recorded":false,"reason":"no run has completed"}"""
+
+/// AUTOMATION-1466: these printed an empty status display.
+[<Fact(Timeout = 15000)>]
+let ``set-scope and flaky-tests say what they answer`` () =
+    let scope =
+        renderedTyped
+            "set-scope"
+            FsHotWatch.TestPrune.TestPruneReplies.SetScopeSchema
+            (FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.serialize (TestPrune.S.ScopeSet "full"))
+
+    test <@ scope = (0, "test scope set to full\n") @>
+
+    let flaky =
+        renderedTyped
+            "flaky-tests"
+            FsHotWatch.TestPrune.TestPruneReplies.FlakyTestsSchema
+            """{"tests":[{"flakiness":0.25,"name":"Tests.A.works","runs":8}]}"""
+
+    test <@ flaky = (0, "1 flaky test(s):\n  · Tests.A.works: 25% flaky over 8 run(s)\n") @>
+
+    let noneFlaky =
+        renderedTyped "flaky-tests" FsHotWatch.TestPrune.TestPruneReplies.FlakyTestsSchema """{"tests":[]}"""
+
+    test <@ noneFlaky = (0, "no flaky tests recorded\n") @>
 
 /// AUTOMATION-1466: both answer with a JSON array, which the CLI used to refuse as "not a JSON
 /// object" (no verdict). They are listings, so they list, and exit 0.
