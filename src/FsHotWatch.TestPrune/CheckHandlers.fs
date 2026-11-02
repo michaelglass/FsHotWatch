@@ -48,6 +48,7 @@ open FsHotWatch.TestPrune.IndexMaintenance
 open FsHotWatch.TestPrune.RunSupport
 open FsHotWatch.TestPrune.RunExecution
 open FsHotWatch.TestPrune.AffectedSelection
+open FsHotWatch.TestPrune.ImpactLaunch
 open FsHotWatch.TestPrune.ImpactRun
 open FsHotWatch.TestPrune.FileCheckedHandler
 
