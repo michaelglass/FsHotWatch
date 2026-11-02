@@ -364,6 +364,23 @@ let internal coverageIngestFailedIn (repoRoot: string) (ctx: PluginCtx<TestPrune
             "test-prune"
             $"failed to durably record that the runtime coverage of %s{failure.Project} did not ingest (%s{CoverageNotIngested.sidecarPath repoRoot}): %s{ex.Message}"
 
+/// Which cause selected each project of a run that is about to execute. Logged once
+/// the run is past the zero-affected skip, which executes nothing and selects nothing.
+let internal logSelectedByIn (repoRoot: string) (launch: TestRunLaunch) =
+    Logging.info "test-prune" $"Selected by: %s{ProjectAttribution.describe launch.SelectedBy}"
+
+    // Priced before it runs, from the class durations the newest runs recorded
+    // (`SelectionPrice`). A diagnostic: a price that cannot be read never stops a run.
+    try
+        let book =
+            SelectionPrice.Book.ofRunsDir SelectionPrice.DefaultWindow (FsHotWatch.Ctrf.reportsDir repoRoot)
+
+        Logging.info
+            "test-prune"
+            $"Priced: %s{SelectionPrice.describe (SelectionPrice.price book (askedOf launch.Selection))}"
+    with ex ->
+        Logging.warn "test-prune" $"Priced: not priced — %s{ex.Message}"
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1023,22 +1040,7 @@ let internal createWithEvidenceAndQueries
 
 
 
-    /// Which cause selected each project of a run that is about to execute. Logged once
-    /// the run is past the zero-affected skip, which executes nothing and selects nothing.
-    let logSelectedBy (launch: TestRunLaunch) =
-        Logging.info "test-prune" $"Selected by: %s{ProjectAttribution.describe launch.SelectedBy}"
-
-        // Priced before it runs, from the class durations the newest runs recorded
-        // (`SelectionPrice`). A diagnostic: a price that cannot be read never stops a run.
-        try
-            let book =
-                SelectionPrice.Book.ofRunsDir SelectionPrice.DefaultWindow (FsHotWatch.Ctrf.reportsDir repoRoot)
-
-            Logging.info
-                "test-prune"
-                $"Priced: %s{SelectionPrice.describe (SelectionPrice.price book (askedOf launch.Selection))}"
-        with ex ->
-            Logging.warn "test-prune" $"Priced: not priced — %s{ex.Message}"
+    let logSelectedBy = logSelectedByIn repoRoot
 
     /// Returns the `TestsFinished` message the framework's RunExclusive posts back to the
     /// agent; the synchronous `Custom(TestsFinished)` handler emits `TestRunCompleted`
