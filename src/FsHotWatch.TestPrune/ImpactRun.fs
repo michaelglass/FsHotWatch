@@ -529,6 +529,230 @@ let internal selectForLaunch
       NarrowedSeeds = narrowedSeeds
       AlwaysOnly = alwaysOnly }
 
+/// The run an impact launch assembled (`assembleLaunch`).
+type internal LaunchAssembly =
+    { EvidencePlan: TestEvidenceRun.Plan option
+      ExcludedByProject: Map<string, string list>
+      Launch: TestRunLaunch }
+
+/// Assemble the run an impact launch starts: the test-evidence plan, the check-skip
+/// decisions, the selection and its attribution, what a full run would have run, and the
+/// launch record.
+let internal assembleLaunch
+    (env: RunEnv)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (configs: TestConfig list)
+    (inputs: TestRunInputs)
+    (hasCachedResults: bool)
+    (fanoutProjects: Set<string>)
+    (widenings: LaunchWidenings)
+    (selected: LaunchSelection)
+    : LaunchAssembly =
+    let evidencePlanFor = env.Launch.EvidencePlanFor
+    let observeModelGeneration = env.Launch.ObserveModelGeneration
+    let observeTestInputs = env.Launch.ObserveTestInputs
+    let scopeIsFullSuite = widenings.ScopeIsFullSuite
+    let ledgerUnreadable = widenings.LedgerUnreadable
+    let baselineInvalid = widenings.BaselineInvalid
+    let coarseGaps = widenings.CoarseGaps
+    let launchedRuntimeObligations = widenings.LaunchedRuntimeObligations
+    let runtimeForceProjects = widenings.RuntimeForceProjects
+    let evidenceGap = widenings.EvidenceGap
+    let fullSuiteCause = widenings.FullSuiteCause
+    let launchedSymbols = widenings.LaunchedSymbols
+    let launchedRevisions = widenings.LaunchedRevisions
+    let coveringProjectsBySymbol = selected.CoveringProjectsBySymbol
+    let symbolAffectedByProject = selected.SymbolAffectedByProject
+    let traceShadow = selected.TraceShadow
+    let quarantinedAffectedByProject = selected.QuarantinedAffectedByProject
+    let affectedByProject = selected.AffectedByProject
+    let inputTree = selected.InputTree
+    let symbolFreeEdit = selected.SymbolFreeEdit
+    let narrowedSeeds = selected.NarrowedSeeds
+
+    // TEST EVIDENCE, at launch: AFTER selection, so it can only take away
+    // launches the selector chose, never add a green it did not. Keyed now,
+    // before `beforeRun` touches anything. Every run keys (so its greens can be
+    // published); only a run that owes nothing a reuse cannot pay looks
+    // anything up. `confirm` owes a run of everything. A run owed a
+    // full-suite baseline owes one only running can earn: a green is graded
+    // relative to it, so a checkout that reused instead would answer "no
+    // verdict" for as long as the evidence lasted. An unreadable ledger is
+    // owed a full suite that passed.
+    let evidenceLookups =
+        not scopeIsFullSuite && not ledgerUnreadable && Option.isNone baselineInvalid
+
+    let evidencePlan =
+        evidencePlanFor
+            ctx
+            configs
+            (fun project -> Map.isEmpty affectedByProject || Map.containsKey project affectedByProject)
+            evidenceLookups
+            inputs.OutstandingFailures
+
+    /// The run's SCOPE, in the same shape `executeTests`
+    /// will actually honour, captured on the launch so the completion
+    /// handler knows what this run is entitled to clear.
+    ///
+    /// Mirrors `executeTests`' own reading of `affectedClassesByProject`
+    /// EXACTLY, which is why it is derived from that map and not
+    /// re-decided: an EMPTY map means "no selection" → every project runs
+    /// in full; a NON-empty map means a project present with `[]` runs in
+    /// full, a project present with classes runs filtered, and a project
+    /// ABSENT is skipped entirely (and recorded as a filtered pass that
+    /// proves nothing — the laundering vector).
+    let wholeSelection: Map<string, ProjectSelection> =
+        selectionOf configs affectedByProject
+
+    // CHECK-SKIP CLASSES. A project this launch takes whole only for widenings
+    // its `checkSkipOn` lists runs without its `checkSkipClasses`, under its
+    // exclude filter; any other reason runs them. `confirm` is such a reason, so
+    // it never skips. The classes the run selected by name always run.
+    let checkSkipWidenings: CheckSkipLaunch.Widenings =
+        { FullSuiteRequested = scopeIsFullSuite
+          LedgerUnreadable = ledgerUnreadable
+          NoFullSuiteBaseline = Option.isSome baselineInvalid
+          CoarseGaps = not (Set.isEmpty coarseGaps)
+          EvidenceGap = evidenceGap
+          DependencyFanout = fanoutProjects
+          RuntimeCoverage = runtimeForceProjects
+          ProjectLevelReds =
+            quarantinedAffectedByProject
+            |> Map.filter (fun _ classes -> List.isEmpty classes)
+            |> Map.keys
+            |> Set.ofSeq
+          EmptySelection =
+            if Map.isEmpty affectedByProject then
+                Some(
+                    zeroAffectedWidening
+                        hasCachedResults
+                        inputs.Debt.UnknownDebt
+                        (Set.count inputs.Debt.PendingQueue)
+                        inputs.Debt.RuntimeObligations
+                        (inputs.Debt.CoverageNotIngested |> Map.keys |> Set.ofSeq)
+                        (List.length inputs.OutstandingFailures)
+                        baselineInvalid
+                        evidenceGap
+                        (not (ReceiptInputTree.matches inputs.EvidenceTree (inputTree |> Option.map _.Identity)))
+                )
+            else
+                None }
+
+    let namedClasses: Map<string, Set<string>> =
+        let symbolFreeClasses =
+            match symbolFreeEdit with
+            | Some(SymbolFreeEdit.Covering(_, _, classes)) -> classes
+            | _ -> Map.empty
+
+        [ quarantinedAffectedByProject; AlwaysClasses.only configs; symbolFreeClasses ]
+        |> List.collect Map.toList
+        |> List.groupBy fst
+        |> List.map (fun (project, entries) -> project, entries |> List.collect snd |> Set.ofList)
+        |> Map.ofList
+
+    let checkSkipDecisions =
+        CheckSkipLaunch.decide configs checkSkipWidenings namedClasses wholeSelection
+
+    let excludedByProject = CheckSkipLaunch.excludedOf checkSkipDecisions
+
+    for line in CheckSkipLaunch.describe checkSkipDecisions do
+        Logging.info "test-prune" line
+
+    let selection: Map<string, ProjectSelection> =
+        CheckSkipLaunch.narrow excludedByProject wholeSelection
+
+
+    // Which cause put each project in this run. Every source is kept apart
+    // up to here; unioned, a wide selection cannot be told from an honest one.
+    let selectedBy =
+        let everyProject = fullSuiteProjects configs
+
+        let sources: SelectionSources =
+            { FullSuite =
+                if scopeIsFullSuite || ledgerUnreadable || Option.isSome baselineInvalid then
+                    everyProject
+                else
+                    Set.empty
+              CoarseFallback = if Set.isEmpty coarseGaps then Set.empty else everyProject
+              EvidenceGap = evidenceGap
+              DependencyFanout = fanoutProjects
+              RuntimeCoverage = runtimeForceProjects
+              OutstandingFailure =
+                quarantinedAffectedByProject
+                |> Map.filter (fun project classes -> Map.tryFind project symbolAffectedByProject <> Some classes)
+                |> Map.keys
+                |> Set.ofSeq
+              ChangedSymbols = symbolAffectedByProject |> Map.keys |> Set.ofSeq
+              SymbolFreeEdit =
+                match symbolFreeEdit with
+                | Some(SymbolFreeEdit.Covering(_, _, classes)) -> classes |> Map.keys |> Set.ofSeq
+                | _ -> Set.empty
+              AlwaysClasses = AlwaysClasses.only configs |> Map.keys |> Set.ofSeq }
+
+        SelectionAttribution.attribute sources affectedByProject selection
+        |> CheckSkipLaunch.attribute excludedByProject
+
+    // The SAME derivation with the full-suite widening taken
+    // back out — what `check` would have launched over this tree, this
+    // instant. Every OTHER widening stays: the coarse fallback
+    // for unanalysable files and the unreadable-ledger fallback
+    // apply to the inner loop too, so removing them would project a selection
+    // narrower than the one `check` actually uses and manufacture misses the
+    // selector never made.
+    //
+    // Computed here, at the chokepoint, and NOT re-derived later: by
+    // completion the symbol queue has moved on, which is exactly why the
+    // reading was previously unrecoverable.
+    let wouldHaveRun: Map<string, ProjectSelection> option =
+        if not scopeIsFullSuite then
+            // Nothing was widened past — the run IS the impact selection, and
+            // there is no second reading to project.
+            None
+        else
+            wouldHaveRunSelection
+                configs
+                quarantinedAffectedByProject
+                (Set.union (coarseFallbackProjects configs coarseGaps fanoutProjects) evidenceGap)
+                runtimeForceProjects
+                ledgerUnreadable
+            // What `check` would have left out of the projects it took whole:
+            // the same decision, without the full-suite widening.
+            |> fun projected ->
+                let checkWidenings =
+                    { checkSkipWidenings with
+                        FullSuiteRequested = false
+                        NoFullSuiteBaseline = false
+                        EmptySelection = None }
+
+                CheckSkipLaunch.narrow
+                    (CheckSkipLaunch.excludedOf (CheckSkipLaunch.decide configs checkWidenings namedClasses projected))
+                    projected
+            |> Some
+
+    let launch =
+        { InputTree = inputTree
+          ModelGeneration = observeModelGeneration ctx
+          ProjectInputs = observeTestInputs ctx
+          Symbols = launchedSymbols
+          SymbolRevisions = launchedRevisions
+          ChangedFiles = inputs.ChangedFiles
+          TestHostStartedAt = None
+          CoveringProjectsBySymbol = coveringProjectsBySymbol
+          RuntimeProjectsByFile = launchedRuntimeObligations
+          Selection = selection
+          WouldHaveRun = wouldHaveRun
+          Reused = Map.empty
+          Seeds = narrowedSeeds |> Option.defaultValue inputs.Seeds
+          ZeroSelection = ZeroSelection.NotAZero
+          FullSuiteCause = fullSuiteCause
+          SelectedBy = selectedBy
+          SeedFanout = inputs.SeedFanout
+          TraceShadow = traceShadow }
+
+    { EvidencePlan = evidencePlan
+      ExcludedByProject = excludedByProject
+      Launch = launch }
+
 let internal runTestsWithImpactWith
     (env: RunEnv)
     (ctx: PluginCtx<TestPruneMsg>)
@@ -564,7 +788,6 @@ let internal runTestsWithImpactWith
     let awaitDiscoveryBeforeLaunch = env.Launch.AwaitDiscovery
     let compileInputsOf = env.Launch.CompileInputsOf
     let coverageIngestFailed = env.Launch.CoverageIngestFailed
-    let evidencePlanFor = env.Launch.EvidencePlanFor
     let logLaunch = env.Launch.LogLaunch
     let logSelectedBy = env.Launch.LogSelectedBy
     let observeModelGeneration = env.Launch.ObserveModelGeneration
@@ -581,12 +804,8 @@ let internal runTestsWithImpactWith
             ctx.EmitTestRunStarted started
 
         let widenings = widenLaunch env ctx configs inputs fanoutProjects
-        let scopeIsFullSuite = widenings.ScopeIsFullSuite
-        let ledgerUnreadable = widenings.LedgerUnreadable
         let baselineInvalid = widenings.BaselineInvalid
-        let coarseGaps = widenings.CoarseGaps
         let launchedRuntimeObligations = widenings.LaunchedRuntimeObligations
-        let runtimeForceProjects = widenings.RuntimeForceProjects
         let evidenceGap = widenings.EvidenceGap
         let fullSuiteCause = widenings.FullSuiteCause
         let forceRunProjects = widenings.ForceRunProjects
@@ -601,198 +820,18 @@ let internal runTestsWithImpactWith
 
         try
             let selected = selectForLaunch env ctx configs inputs hasCachedResults widenings
-            let coveringProjectsBySymbol = selected.CoveringProjectsBySymbol
-            let symbolAffectedByProject = selected.SymbolAffectedByProject
-            let traceShadow = selected.TraceShadow
-            let quarantinedAffectedByProject = selected.QuarantinedAffectedByProject
             let affectedByProject = selected.AffectedByProject
             let totalClasses = selected.TotalClasses
-            let inputTree = selected.InputTree
             let symbolFreeEdit = selected.SymbolFreeEdit
             let narrowedSeeds = selected.NarrowedSeeds
             let alwaysOnly = selected.AlwaysOnly
 
-            // TEST EVIDENCE, at launch: AFTER selection, so it can only take away
-            // launches the selector chose, never add a green it did not. Keyed now,
-            // before `beforeRun` touches anything. Every run keys (so its greens can be
-            // published); only a run that owes nothing a reuse cannot pay looks
-            // anything up. `confirm` owes a run of everything. A run owed a
-            // full-suite baseline owes one only running can earn: a green is graded
-            // relative to it, so a checkout that reused instead would answer "no
-            // verdict" for as long as the evidence lasted. An unreadable ledger is
-            // owed a full suite that passed.
-            let evidenceLookups =
-                not scopeIsFullSuite && not ledgerUnreadable && Option.isNone baselineInvalid
+            let assembled =
+                assembleLaunch env ctx configs inputs hasCachedResults fanoutProjects widenings selected
 
-            let evidencePlan =
-                evidencePlanFor
-                    ctx
-                    configs
-                    (fun project -> Map.isEmpty affectedByProject || Map.containsKey project affectedByProject)
-                    evidenceLookups
-                    inputs.OutstandingFailures
-
-            /// The run's SCOPE, in the same shape `executeTests`
-            /// will actually honour, captured on the launch so the completion
-            /// handler knows what this run is entitled to clear.
-            ///
-            /// Mirrors `executeTests`' own reading of `affectedClassesByProject`
-            /// EXACTLY, which is why it is derived from that map and not
-            /// re-decided: an EMPTY map means "no selection" → every project runs
-            /// in full; a NON-empty map means a project present with `[]` runs in
-            /// full, a project present with classes runs filtered, and a project
-            /// ABSENT is skipped entirely (and recorded as a filtered pass that
-            /// proves nothing — the laundering vector).
-            let wholeSelection: Map<string, ProjectSelection> =
-                selectionOf configs affectedByProject
-
-            // CHECK-SKIP CLASSES. A project this launch takes whole only for widenings
-            // its `checkSkipOn` lists runs without its `checkSkipClasses`, under its
-            // exclude filter; any other reason runs them. `confirm` is such a reason, so
-            // it never skips. The classes the run selected by name always run.
-            let checkSkipWidenings: CheckSkipLaunch.Widenings =
-                { FullSuiteRequested = scopeIsFullSuite
-                  LedgerUnreadable = ledgerUnreadable
-                  NoFullSuiteBaseline = Option.isSome baselineInvalid
-                  CoarseGaps = not (Set.isEmpty coarseGaps)
-                  EvidenceGap = evidenceGap
-                  DependencyFanout = fanoutProjects
-                  RuntimeCoverage = runtimeForceProjects
-                  ProjectLevelReds =
-                    quarantinedAffectedByProject
-                    |> Map.filter (fun _ classes -> List.isEmpty classes)
-                    |> Map.keys
-                    |> Set.ofSeq
-                  EmptySelection =
-                    if Map.isEmpty affectedByProject then
-                        Some(
-                            zeroAffectedWidening
-                                hasCachedResults
-                                inputs.Debt.UnknownDebt
-                                (Set.count inputs.Debt.PendingQueue)
-                                inputs.Debt.RuntimeObligations
-                                (inputs.Debt.CoverageNotIngested |> Map.keys |> Set.ofSeq)
-                                (List.length inputs.OutstandingFailures)
-                                baselineInvalid
-                                evidenceGap
-                                (not (ReceiptInputTree.matches inputs.EvidenceTree (inputTree |> Option.map _.Identity)))
-                        )
-                    else
-                        None }
-
-            let namedClasses: Map<string, Set<string>> =
-                let symbolFreeClasses =
-                    match symbolFreeEdit with
-                    | Some(SymbolFreeEdit.Covering(_, _, classes)) -> classes
-                    | _ -> Map.empty
-
-                [ quarantinedAffectedByProject; AlwaysClasses.only configs; symbolFreeClasses ]
-                |> List.collect Map.toList
-                |> List.groupBy fst
-                |> List.map (fun (project, entries) -> project, entries |> List.collect snd |> Set.ofList)
-                |> Map.ofList
-
-            let checkSkipDecisions =
-                CheckSkipLaunch.decide configs checkSkipWidenings namedClasses wholeSelection
-
-            let excludedByProject = CheckSkipLaunch.excludedOf checkSkipDecisions
-
-            for line in CheckSkipLaunch.describe checkSkipDecisions do
-                Logging.info "test-prune" line
-
-            let selection: Map<string, ProjectSelection> =
-                CheckSkipLaunch.narrow excludedByProject wholeSelection
-
-
-            // Which cause put each project in this run. Every source is kept apart
-            // up to here; unioned, a wide selection cannot be told from an honest one.
-            let selectedBy =
-                let everyProject = fullSuiteProjects configs
-
-                let sources: SelectionSources =
-                    { FullSuite =
-                        if scopeIsFullSuite || ledgerUnreadable || Option.isSome baselineInvalid then
-                            everyProject
-                        else
-                            Set.empty
-                      CoarseFallback = if Set.isEmpty coarseGaps then Set.empty else everyProject
-                      EvidenceGap = evidenceGap
-                      DependencyFanout = fanoutProjects
-                      RuntimeCoverage = runtimeForceProjects
-                      OutstandingFailure =
-                        quarantinedAffectedByProject
-                        |> Map.filter (fun project classes ->
-                            Map.tryFind project symbolAffectedByProject <> Some classes)
-                        |> Map.keys
-                        |> Set.ofSeq
-                      ChangedSymbols = symbolAffectedByProject |> Map.keys |> Set.ofSeq
-                      SymbolFreeEdit =
-                        match symbolFreeEdit with
-                        | Some(SymbolFreeEdit.Covering(_, _, classes)) -> classes |> Map.keys |> Set.ofSeq
-                        | _ -> Set.empty
-                      AlwaysClasses = AlwaysClasses.only configs |> Map.keys |> Set.ofSeq }
-
-                SelectionAttribution.attribute sources affectedByProject selection
-                |> CheckSkipLaunch.attribute excludedByProject
-
-            // The SAME derivation with the full-suite widening taken
-            // back out — what `check` would have launched over this tree, this
-            // instant. Every OTHER widening stays: the coarse fallback
-            // for unanalysable files and the unreadable-ledger fallback
-            // apply to the inner loop too, so removing them would project a selection
-            // narrower than the one `check` actually uses and manufacture misses the
-            // selector never made.
-            //
-            // Computed here, at the chokepoint, and NOT re-derived later: by
-            // completion the symbol queue has moved on, which is exactly why the
-            // reading was previously unrecoverable.
-            let wouldHaveRun: Map<string, ProjectSelection> option =
-                if not scopeIsFullSuite then
-                    // Nothing was widened past — the run IS the impact selection, and
-                    // there is no second reading to project.
-                    None
-                else
-                    wouldHaveRunSelection
-                        configs
-                        quarantinedAffectedByProject
-                        (Set.union (coarseFallbackProjects configs coarseGaps fanoutProjects) evidenceGap)
-                        runtimeForceProjects
-                        ledgerUnreadable
-                    // What `check` would have left out of the projects it took whole:
-                    // the same decision, without the full-suite widening.
-                    |> fun projected ->
-                        let checkWidenings =
-                            { checkSkipWidenings with
-                                FullSuiteRequested = false
-                                NoFullSuiteBaseline = false
-                                EmptySelection = None }
-
-                        CheckSkipLaunch.narrow
-                            (CheckSkipLaunch.excludedOf (
-                                CheckSkipLaunch.decide configs checkWidenings namedClasses projected
-                            ))
-                            projected
-                    |> Some
-
-            let launch =
-                { InputTree = inputTree
-                  ModelGeneration = observeModelGeneration ctx
-                  ProjectInputs = observeTestInputs ctx
-                  Symbols = launchedSymbols
-                  SymbolRevisions = launchedRevisions
-                  ChangedFiles = inputs.ChangedFiles
-                  TestHostStartedAt = None
-                  CoveringProjectsBySymbol = coveringProjectsBySymbol
-                  RuntimeProjectsByFile = launchedRuntimeObligations
-                  Selection = selection
-                  WouldHaveRun = wouldHaveRun
-                  Reused = Map.empty
-                  Seeds = narrowedSeeds |> Option.defaultValue inputs.Seeds
-                  ZeroSelection = ZeroSelection.NotAZero
-                  FullSuiteCause = fullSuiteCause
-                  SelectedBy = selectedBy
-                  SeedFanout = inputs.SeedFanout
-                  TraceShadow = traceShadow }
+            let evidencePlan = assembled.EvidencePlan
+            let excludedByProject = assembled.ExcludedByProject
+            let launch = assembled.Launch
 
             logLaunch "impact" inputs.Mode launch
 
