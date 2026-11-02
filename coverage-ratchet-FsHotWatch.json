@@ -1971,6 +1971,34 @@
         "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 100.0%, branch 6/10.",
         "platform": "linux"
       }
+    ],
+    "AffectedSelection.fs": [
+      {
+        "line": 93,
+        "branch": 94,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 94.0%, branch 49/52.",
+        "platform": "macos"
+      },
+      {
+        "line": 93,
+        "branch": 94,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 94.0%, branch 49/52.",
+        "platform": "linux"
+      }
+    ],
+    "ImpactRun.fs": [
+      {
+        "line": 95,
+        "branch": 90,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 96.0%, branch 100/110.",
+        "platform": "macos"
+      },
+      {
+        "line": 95,
+        "branch": 90,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 96.0%, branch 100/110.",
+        "platform": "linux"
+      }
     ]
   },
   "countFloors": {
