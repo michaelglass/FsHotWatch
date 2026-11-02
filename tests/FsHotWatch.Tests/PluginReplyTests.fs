@@ -342,3 +342,151 @@ let ``an analyzer-findings payload its schema does not describe is no verdict`` 
         FsHotWatch.Analyzers.AnalyzerFindings.CommandName
         FsHotWatch.Analyzers.AnalyzerFindings.ReplySchema
         payload
+
+module private TestPrune =
+    type R = FsHotWatch.TestPrune.TestPruneReplies.RunReply
+    type S = FsHotWatch.TestPrune.TestPruneReplies.ScopeReply
+
+    let report (projects: string) (extra: string) =
+        $"""{{"coverage":"ran","elapsed":"1.0s","filter":null,"noTestsMatched":false%s{extra},"projects":[%s{projects}]}}"""
+
+    let passedProject =
+        """{"project":"Tests","status":"passed","output":"ok","elapsedMs":10,"counts":{"total":3,"succeeded":3,"failed":0,"skipped":0,"other":0}}"""
+
+    let failedProject =
+        """{"project":"Tests","status":"failed","output":"boom","elapsedMs":10,"counts":null}"""
+
+    let runReplies =
+        [ R.Report(report passedProject "")
+          R.Report(report failedProject "")
+          R.Report(report "" "")
+          R.Busy
+              "the test run did not produce a result within 600s (still queued or running); retry, or raise --wait-sec"
+          R.Refused "no matching test projects"
+          R.Running
+          R.Settling
+          R.NotRun ]
+
+    let scopeReplies =
+        [ S.ScopeSet "full"
+          S.ScopeRefused "unknown scope 'x' (expected 'full', 'impact' or 'owed')" ]
+
+[<Fact(Timeout = 15000)>]
+let ``a run reply is written as the JSON it always was, and read back as itself`` () =
+    let serialize = FsHotWatch.TestPrune.TestPruneReplies.RunReply.serialize
+
+    test <@ serialize TestPrune.R.Running = """{"status":"running"}""" @>
+    test <@ serialize TestPrune.R.Settling = """{"status":"settling"}""" @>
+    test <@ serialize TestPrune.R.NotRun = """{"status":"not run"}""" @>
+    test <@ serialize (TestPrune.R.Refused "no") = """{"error":"no"}""" @>
+    test <@ serialize (TestPrune.R.Busy "wait") = """{"message":"wait","status":"busy"}""" @>
+
+    for reply in TestPrune.runReplies do
+        test <@ FsHotWatch.TestPrune.TestPruneReplies.RunReply.tryParse (serialize reply) = Some reply @>
+
+[<Fact(Timeout = 15000)>]
+let ``a scope reply is written as the JSON it always was, and read back as itself`` () =
+    let serialize = FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.serialize
+
+    test <@ serialize (TestPrune.S.ScopeSet "owed") = """{"scope":"owed"}""" @>
+    test <@ serialize (TestPrune.S.ScopeRefused "no") = """{"error":"no"}""" @>
+
+    for reply in TestPrune.scopeReplies do
+        test <@ FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.tryParse (serialize reply) = Some reply @>
+
+[<Fact(Timeout = 15000)>]
+let ``the listing replies are written as the JSON they always were, and read back as themselves`` () =
+    let tests: FsHotWatch.TestPrune.TestPruneReplies.AffectedTest list =
+        [ { Project = "Tests"
+            Class = "Tests.A"
+            Method = "works" } ]
+
+    let flaky: FsHotWatch.TestPrune.TestPruneReplies.FlakyTest list =
+        [ { Name = "Tests.A.works"
+            Flakiness = 0.25
+            Runs = 8 } ]
+
+    test
+        <@
+            FsHotWatch.TestPrune.TestPruneReplies.AffectedTests.serialize tests = """[{"class":"Tests.A","method":"works","project":"Tests"}]"""
+        @>
+
+    test <@ FsHotWatch.TestPrune.TestPruneReplies.ChangedFiles.serialize [ "src/A.fs" ] = """["src/A.fs"]""" @>
+
+    test
+        <@
+            FsHotWatch.TestPrune.TestPruneReplies.FlakyTests.serialize flaky = """{"tests":[{"flakiness":0.25,"name":"Tests.A.works","runs":8}]}"""
+        @>
+
+    test
+        <@
+            FsHotWatch.TestPrune.TestPruneReplies.AffectedTests.tryParse (
+                FsHotWatch.TestPrune.TestPruneReplies.AffectedTests.serialize tests
+            ) = Some tests
+        @>
+
+    test
+        <@
+            FsHotWatch.TestPrune.TestPruneReplies.ChangedFiles.tryParse (
+                FsHotWatch.TestPrune.TestPruneReplies.ChangedFiles.serialize [ "src/A.fs" ]
+            ) = Some [ "src/A.fs" ]
+        @>
+
+    test
+        <@
+            FsHotWatch.TestPrune.TestPruneReplies.FlakyTests.tryParse (
+                FsHotWatch.TestPrune.TestPruneReplies.FlakyTests.serialize flaky
+            ) = Some flaky
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``a typed test-prune reply renders exactly as its shape did`` () =
+    let replies = FsHotWatch.TestPrune.TestPruneReplies.RunSchema
+
+    for reply in TestPrune.runReplies do
+        let payload = FsHotWatch.TestPrune.TestPruneReplies.RunReply.serialize reply
+        rendersAsSniffed "run-tests" replies payload
+        rendersAsSniffed "test-results" replies payload
+
+    for reply in TestPrune.scopeReplies do
+        rendersAsSniffed
+            "set-scope"
+            FsHotWatch.TestPrune.TestPruneReplies.SetScopeSchema
+            (FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.serialize reply)
+
+    rendersAsSniffed
+        "affected-tests"
+        FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema
+        """[{"class":"Tests.A","method":"works","project":"Tests"}]"""
+
+    rendersAsSniffed "affected-tests" FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema "[]"
+    rendersAsSniffed "changed-files" FsHotWatch.TestPrune.TestPruneReplies.ChangedFilesSchema """["src/A.fs"]"""
+
+    rendersAsSniffed
+        "flaky-tests"
+        FsHotWatch.TestPrune.TestPruneReplies.FlakyTestsSchema
+        """{"tests":[{"flakiness":0.25,"name":"Tests.A.works","runs":8}]}"""
+
+    rendersAsSniffed
+        "check-reach"
+        FsHotWatch.TestPrune.TestPruneReplies.CheckReachSchema
+        """{"recorded":false,"reason":"no run has completed"}"""
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("run-tests", "test-prune/run-v1", """{"status":"exploded"}""")>]
+[<InlineData("run-tests", "test-prune/run-v1", """{"count":1,"projects":[]}""")>]
+[<InlineData("set-scope", "test-prune/set-scope-v1", """{"scope":3}""")>]
+[<InlineData("affected-tests", "test-prune/affected-tests-v1", """{"tests":[]}""")>]
+[<InlineData("changed-files", "test-prune/changed-files-v1", """[1]""")>]
+[<InlineData("flaky-tests", "test-prune/flaky-tests-v1", """{"tests":[{"name":"x"}]}""")>]
+[<InlineData("test-scope", "test-prune/test-scope-v1", "not json")>]
+[<InlineData("check-reach", "test-prune/check-reach-v1", """{"reason":"x"}""")>]
+[<InlineData("run-tests", "test-prune/run-v1", """{"elapsed":"1.0s"}""")>]
+[<InlineData("run-tests", "test-prune/run-v1", """{"projects":3}""")>]
+[<InlineData("affected-tests", "test-prune/affected-tests-v1", """[{"project":"Tests"}]""")>]
+[<InlineData("changed-files", "test-prune/changed-files-v1", """{"files":[]}""")>]
+[<InlineData("flaky-tests", "test-prune/flaky-tests-v1", """{"tests":3}""")>]
+let ``a test-prune payload its schema does not describe is no verdict``
+    (command: string, schema: string, payload: string)
+    =
+    refusesUndescribed command schema payload

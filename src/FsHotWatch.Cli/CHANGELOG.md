@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- refactor: the CLI renders the test-prune replies by their declared schemas, with the same
+  output and exit codes as before. A run report, a busy run and a refusal go to their own
+  renderers, now separate functions (`renderRunReport`, `renderBusy`, `renderRefusal`). A
+  payload a schema does not describe is no verdict. `test-scope` and `check-reach` are gated
+  by their schemas and still rendered by their shape. Known and kept: `affected-tests` and
+  `changed-files` answer with JSON arrays, which the CLI refuses as "not a JSON object"
+  (no verdict).
+
 - refactor: the CLI renders the analyzers plugin's `diagnostics` and `analyzer-findings`
   replies by their declared schemas, with the same output and exit code as before. A payload
   either schema does not describe is no verdict.
