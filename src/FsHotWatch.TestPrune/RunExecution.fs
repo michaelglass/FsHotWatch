@@ -47,6 +47,147 @@ open FsHotWatch.TestPrune.PluginCommands
 open FsHotWatch.TestPrune.IndexMaintenance
 open FsHotWatch.TestPrune.RunSupport
 
+/// A project's launch arguments (`launchArgsOf`): its filter, coverage and CTRF switches.
+type internal ProjectLaunchArgs =
+    { ExtraArgs: ResizeArray<string>
+      WasFiltered: bool
+      ProjectCoverageLaunch: CoverageArtifactLaunch option
+      CtrfPath: string option
+      FinalArgs: string }
+
+/// The arguments one project launches with: the class filter the selection names, the
+/// coverage collector, the CTRF report switch and xUnit's long-running report, appended to
+/// its configured args.
+let internal launchArgsOf
+    (repoRoot: string)
+    (runDir: string)
+    (affectedClassesByProject: Map<string, string list>)
+    (excludedClassesByProject: Map<string, string list>)
+    (rawFilter: string option)
+    (coveragePathsByProject: Map<string, CoveragePaths>)
+    (config: TestConfig)
+    : ProjectLaunchArgs =
+    let extraArgs = ResizeArray<string>()
+
+    // A project the selection runs whole may still leave out its
+    // `checkSkipClasses`; a class filter, when there is one, already names
+    // every class that runs.
+    let filterArgs =
+        buildFilterArgs config affectedClassesByProject
+        |> Option.orElseWith (fun () ->
+            excludedClassesByProject
+            |> Map.tryFind config.Project
+            |> Option.bind (buildExcludeArgs config))
+
+    match filterArgs with
+    | Some f -> extraArgs.Add(f)
+    | None -> ()
+
+    // Raw passthrough filter (from run-tests command)
+    match rawFilter with
+    | Some f -> extraArgs.Add(f)
+    | None -> ()
+
+    let wasFiltered = Option.isSome filterArgs || Option.isSome rawFilter
+
+    // Resolve per-project coverage paths (if coverage is configured for
+    // this project). wasFiltered determines which file coverlet writes
+    // to; the post-test step reads those files back to produce cobertura.
+    let projectCoveragePaths = Map.tryFind config.Project coveragePathsByProject
+
+    let projectCoverageLaunch =
+        projectCoveragePaths
+        |> Option.map (fun paths ->
+            let rawPath = if wasFiltered then paths.Partial else paths.Baseline
+
+            let launch =
+                prepareCoverageArtifact config.Project paths.IncludeInRatchet wasFiltered rawPath
+
+            extraArgs.Add(buildCoverageArgs paths wasFiltered)
+            launch)
+
+    // xUnit's runner supports a major-specific CTRF switch, which fshw
+    // reads back as the AUTHORITATIVE pass/fail verdict (and for
+    // flakiness history). An UNSUPPORTED `--report-*` flag is
+    // FATAL (the runner exits "invalid command line" and runs
+    // zero tests), so injection is scoped: `Disabled` never
+    // injects, `Ctrf` always does, `AutoDetect` injects iff the
+    // runner's restored package graph resolves to a supported xUnit
+    // major. Forced `Ctrf` keeps the xUnit 3 switches as its fallback
+    // for explicitly-configured custom runners, but uses the resolved
+    // xUnit 4 switches whenever the project graph identifies v4.
+    let ctrfRunnerFamily =
+        match config.ReportVerificationFormat with
+        | Disabled -> None
+        | Ctrf -> detectCtrfRunnerFamily config.Args repoRoot |> Option.orElse (Some Xunit3)
+        | AutoDetect -> detectCtrfRunnerFamily config.Args repoRoot
+
+    // ONE DIRECTORY PER RUN. A run's reports live in
+    // `.fshw/test-runs/<runId>/` and nothing else does, so membership is
+    // a fact about where a file IS, never an inference from its mtime.
+    //
+    // The run-dir is created whether or not any project reports, so an
+    // executed run that produced nothing leaves an EMPTY DIRECTORY —
+    // distinguishable from a run that never happened.
+    let ctrfPath =
+        match ctrfRunnerFamily with
+        | Some family ->
+            Directory.CreateDirectory(runDir) |> ignore
+            // The dir already names the run, so the file need only name
+            // the project. No guid to guess at, nothing to parse.
+            let ctrfName = $"{config.Project}{Ctrf.ReportSuffix}"
+
+            extraArgs.Add(ctrfArguments family ctrfName runDir)
+
+            // A result line per test on the console, so a host killed before it
+            // writes this report still leaves its classes in the profile.
+            detailedOutputArgument config.Args |> Option.iter extraArgs.Add
+
+            // xUnit's report of a test still running past a threshold, so a host
+            // killed at its timeout still names the test it was running. Its config
+            // is the project's own with diagnostic messages on; a project whose
+            // config cannot be found or read gets nothing injected. Only for a project
+            // that asks (`nameHungTests`): xUnit's monitor holds a pool thread for the
+            // whole run, which a diagnostic must not impose (AUTOMATION-1353).
+            let ownConfig =
+                if config.NameHungTests then
+                    projectTestConfigFor config.Args repoRoot
+                else
+                    None
+
+            match ownConfig with
+            | Some own ->
+                match diagnosticsTestConfig own with
+                | Ok text ->
+                    let configPath = Path.Combine(runDir, $"{config.Project}.testconfig.json")
+
+                    match longRunningArguments config.Args configPath (longRunningSeconds config.TimeoutSec) with
+                    | Some args ->
+                        File.WriteAllText(configPath, text)
+                        extraArgs.Add args
+                    | None -> ()
+                | Error why ->
+                    Logging.info
+                        "test-prune"
+                        $"%s{config.Project}: not asking xUnit for long-running reports — its testconfig.json %s{why}"
+            | None -> ()
+
+            Some(Path.Combine(runDir, ctrfName))
+        | None -> None
+
+    let finalArgs =
+        if extraArgs.Count > 0 then
+            let extra = String.concat " " extraArgs
+            $"%s{config.Args} %s{extra}"
+        else
+            config.Args
+
+    { ExtraArgs = extraArgs
+      WasFiltered = wasFiltered
+      ProjectCoverageLaunch = projectCoverageLaunch
+      CtrfPath = ctrfPath
+      FinalArgs = finalArgs }
+
 /// Execute test configs with optional affected classes for filtering. Handles beforeRun,
 /// coveragePaths, process execution, result storage. `rawFilter` is a passthrough filter
 /// string (from the run-tests command) that bypasses the template.
@@ -443,122 +584,21 @@ let internal executeTests
             : Async<TestResult * string option> =
             async {
                 // Collect extra args (filter + coverage) to append
-                let extraArgs = ResizeArray<string>()
-
-                // A project the selection runs whole may still leave out its
-                // `checkSkipClasses`; a class filter, when there is one, already names
-                // every class that runs.
-                let filterArgs =
-                    buildFilterArgs config affectedClassesByProject
-                    |> Option.orElseWith (fun () ->
+                let launchArgs =
+                    launchArgsOf
+                        repoRoot
+                        runDir
+                        affectedClassesByProject
                         excludedClassesByProject
-                        |> Map.tryFind config.Project
-                        |> Option.bind (buildExcludeArgs config))
+                        rawFilter
+                        coveragePathsByProject
+                        config
 
-                match filterArgs with
-                | Some f -> extraArgs.Add(f)
-                | None -> ()
-
-                // Raw passthrough filter (from run-tests command)
-                match rawFilter with
-                | Some f -> extraArgs.Add(f)
-                | None -> ()
-
-                let wasFiltered = Option.isSome filterArgs || Option.isSome rawFilter
-
-                // Resolve per-project coverage paths (if coverage is configured for
-                // this project). wasFiltered determines which file coverlet writes
-                // to; the post-test step reads those files back to produce cobertura.
-                let projectCoveragePaths = Map.tryFind config.Project coveragePathsByProject
-
-                let projectCoverageLaunch =
-                    projectCoveragePaths
-                    |> Option.map (fun paths ->
-                        let rawPath = if wasFiltered then paths.Partial else paths.Baseline
-
-                        let launch =
-                            prepareCoverageArtifact config.Project paths.IncludeInRatchet wasFiltered rawPath
-
-                        extraArgs.Add(buildCoverageArgs paths wasFiltered)
-                        launch)
-
-                // xUnit's runner supports a major-specific CTRF switch, which fshw
-                // reads back as the AUTHORITATIVE pass/fail verdict (and for
-                // flakiness history). An UNSUPPORTED `--report-*` flag is
-                // FATAL (the runner exits "invalid command line" and runs
-                // zero tests), so injection is scoped: `Disabled` never
-                // injects, `Ctrf` always does, `AutoDetect` injects iff the
-                // runner's restored package graph resolves to a supported xUnit
-                // major. Forced `Ctrf` keeps the xUnit 3 switches as its fallback
-                // for explicitly-configured custom runners, but uses the resolved
-                // xUnit 4 switches whenever the project graph identifies v4.
-                let ctrfRunnerFamily =
-                    match config.ReportVerificationFormat with
-                    | Disabled -> None
-                    | Ctrf -> detectCtrfRunnerFamily config.Args repoRoot |> Option.orElse (Some Xunit3)
-                    | AutoDetect -> detectCtrfRunnerFamily config.Args repoRoot
-
-                // ONE DIRECTORY PER RUN. A run's reports live in
-                // `.fshw/test-runs/<runId>/` and nothing else does, so membership is
-                // a fact about where a file IS, never an inference from its mtime.
-                //
-                // The run-dir is created whether or not any project reports, so an
-                // executed run that produced nothing leaves an EMPTY DIRECTORY —
-                // distinguishable from a run that never happened.
-                let ctrfPath =
-                    match ctrfRunnerFamily with
-                    | Some family ->
-                        Directory.CreateDirectory(runDir) |> ignore
-                        // The dir already names the run, so the file need only name
-                        // the project. No guid to guess at, nothing to parse.
-                        let ctrfName = $"{config.Project}{Ctrf.ReportSuffix}"
-
-                        extraArgs.Add(ctrfArguments family ctrfName runDir)
-
-                        // A result line per test on the console, so a host killed before it
-                        // writes this report still leaves its classes in the profile.
-                        detailedOutputArgument config.Args |> Option.iter extraArgs.Add
-
-                        // xUnit's report of a test still running past a threshold, so a host
-                        // killed at its timeout still names the test it was running. Its config
-                        // is the project's own with diagnostic messages on; a project whose
-                        // config cannot be found or read gets nothing injected. Only for a project
-                        // that asks (`nameHungTests`): xUnit's monitor holds a pool thread for the
-                        // whole run, which a diagnostic must not impose (AUTOMATION-1353).
-                        let ownConfig =
-                            if config.NameHungTests then
-                                projectTestConfigFor config.Args repoRoot
-                            else
-                                None
-
-                        match ownConfig with
-                        | Some own ->
-                            match diagnosticsTestConfig own with
-                            | Ok text ->
-                                let configPath = Path.Combine(runDir, $"{config.Project}.testconfig.json")
-
-                                match
-                                    longRunningArguments config.Args configPath (longRunningSeconds config.TimeoutSec)
-                                with
-                                | Some args ->
-                                    File.WriteAllText(configPath, text)
-                                    extraArgs.Add args
-                                | None -> ()
-                            | Error why ->
-                                Logging.info
-                                    "test-prune"
-                                    $"%s{config.Project}: not asking xUnit for long-running reports — its testconfig.json %s{why}"
-                        | None -> ()
-
-                        Some(Path.Combine(runDir, ctrfName))
-                    | None -> None
-
-                let finalArgs =
-                    if extraArgs.Count > 0 then
-                        let extra = String.concat " " extraArgs
-                        $"%s{config.Args} %s{extra}"
-                    else
-                        config.Args
+                let extraArgs = launchArgs.ExtraArgs
+                let wasFiltered = launchArgs.WasFiltered
+                let projectCoverageLaunch = launchArgs.ProjectCoverageLaunch
+                let ctrfPath = launchArgs.CtrfPath
+                let finalArgs = launchArgs.FinalArgs
 
                 // TRACES. Decided here, after the preflight certified the build
                 // output fresh and before the spawn: a traced project launches its
