@@ -8,6 +8,8 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.TestPrune.PluginRuns
 open FsHotWatch.TestPrune.PluginFold
+open FsHotWatch.TestPrune.PluginSteps
+open FsHotWatch.TestPrune.PluginStartup
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.Tests.TestHelpers
 
