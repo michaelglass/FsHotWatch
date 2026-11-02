@@ -86,6 +86,21 @@ let internal holdForDiff (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) 
 
     { state with AwaitingDiff = Some held }
 
+/// Add `symbols` to the queue at one new revision, including a re-edit of a symbol
+/// already queued: a run captured before it cannot have built it.
+let internal enqueuePending (symbols: string list) (debt: VerificationDebt) =
+    if symbols.IsEmpty then
+        debt
+    else
+        let revision = debt.Revision + 1L
+
+        { debt with
+            PendingQueue = (debt.PendingQueue, symbols) ||> List.fold (fun q s -> Set.add s q)
+            Revision = revision
+            SymbolRevisions =
+                (debt.SymbolRevisions, symbols)
+                ||> List.fold (fun revisions s -> Map.add s revision revisions) }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -444,20 +459,6 @@ let internal createWithEvidenceAndQueries
     let revisionOf (debt: VerificationDebt) (symbol: string) : int64 =
         debt.SymbolRevisions |> Map.tryFind symbol |> Option.defaultValue 0L
 
-    /// Add `symbols` to the queue at one new revision, including a re-edit of a symbol
-    /// already queued: a run captured before it cannot have built it.
-    let enqueuePending (symbols: string list) (debt: VerificationDebt) =
-        if symbols.IsEmpty then
-            debt
-        else
-            let revision = debt.Revision + 1L
-
-            { debt with
-                PendingQueue = (debt.PendingQueue, symbols) ||> List.fold (fun q s -> Set.add s q)
-                Revision = revision
-                SymbolRevisions =
-                    (debt.SymbolRevisions, symbols)
-                    ||> List.fold (fun revisions s -> Map.add s revision revisions) }
 
     /// Remove `symbols` from the queue: a covering run passed them, or they have no
     /// covering test. Durable once the state carrying it is prepared.
