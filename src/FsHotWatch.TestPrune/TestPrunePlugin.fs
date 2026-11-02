@@ -465,6 +465,26 @@ let internal logRedStandsWith (owedDescription: VerificationDebt -> string) (tri
         "test-prune"
         $"%s{trigger}: %s{owedDescription state.Debt} — all of it was in the run that concluded red over this same tree, so a launch would only retry it; that result stands until the tree or what is owed moves (AUTOMATION-1373)"
 
+/// Whether an owed launch now would only retry the red run that concluded last
+/// (AUTOMATION-1373). That run launched against every symbol owed now, each at the
+/// revision it is at now, over the tree there is now, and no dependency fanout has
+/// arrived since: the same selection over the same bytes. Its red is the answer for
+/// those inputs. Under CPU starvation a retry costs as long as the run did, and every
+/// cohort that folded while it ran had queued one, so a gate never converged.
+///
+/// Not launching can never make a green: the debt stays owed, the red stays standing.
+/// An edit, a newly owed symbol, a fanout, or a full suite requested moves one of these
+/// and launches as before. A run that executed nothing is no conclusion and is retried.
+let internal onlyRetriesRedIn (repoRoot: string) (state: TestPruneState) =
+    match state.LastRed with
+    | Some red ->
+        not (TestMode.requestsFullSuite state.Mode)
+        && Set.isEmpty state.PendingForceRunProjects
+        && Set.union state.Debt.PendingQueue (Set.ofList state.ChangedSymbols)
+           |> Set.forall (fun symbol -> Map.tryFind symbol red.SymbolRevisions = Some(revisionOf state.Debt symbol))
+        && ReceiptInputTree.matches (Some red.Tree) (ReceiptInputTree.read repoRoot)
+    | None -> false
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1162,25 +1182,7 @@ let internal createWithEvidenceAndQueries
         launchImpactRunWith impactLaunchEnv ctx configs launchState hasCachedResults fanout
 
 
-    /// Whether an owed launch now would only retry the red run that concluded last
-    /// (AUTOMATION-1373). That run launched against every symbol owed now, each at the
-    /// revision it is at now, over the tree there is now, and no dependency fanout has
-    /// arrived since: the same selection over the same bytes. Its red is the answer for
-    /// those inputs. Under CPU starvation a retry costs as long as the run did, and every
-    /// cohort that folded while it ran had queued one, so a gate never converged.
-    ///
-    /// Not launching can never make a green: the debt stays owed, the red stays standing.
-    /// An edit, a newly owed symbol, a fanout, or a full suite requested moves one of these
-    /// and launches as before. A run that executed nothing is no conclusion and is retried.
-    let onlyRetriesRed (state: TestPruneState) =
-        match state.LastRed with
-        | Some red ->
-            not (TestMode.requestsFullSuite state.Mode)
-            && Set.isEmpty state.PendingForceRunProjects
-            && Set.union state.Debt.PendingQueue (Set.ofList state.ChangedSymbols)
-               |> Set.forall (fun symbol -> Map.tryFind symbol red.SymbolRevisions = Some(revisionOf state.Debt symbol))
-            && ReceiptInputTree.matches (Some red.Tree) (ReceiptInputTree.read repoRoot)
-        | None -> false
+    let onlyRetriesRed = onlyRetriesRedIn repoRoot
 
     let logRedStands = logRedStandsWith owedDescription
 
