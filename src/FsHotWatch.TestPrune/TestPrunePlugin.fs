@@ -459,6 +459,12 @@ let internal owedDescriptionUnder (baselineInvalidReason: VerificationDebt -> st
             $"%d{queued} symbol(s) awaiting verification + a full suite to earn the baseline (%s{reason})%s{notIngested}"
         | None -> $"%d{queued} symbol(s) awaiting verification%s{notIngested}"
 
+/// Say why an owed launch was not made (`onlyRetriesRed`).
+let internal logRedStandsWith (owedDescription: VerificationDebt -> string) (trigger: string) (state: TestPruneState) =
+    Logging.info
+        "test-prune"
+        $"%s{trigger}: %s{owedDescription state.Debt} — all of it was in the run that concluded red over this same tree, so a launch would only retry it; that result stands until the tree or what is owed moves (AUTOMATION-1373)"
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1176,11 +1182,7 @@ let internal createWithEvidenceAndQueries
             && ReceiptInputTree.matches (Some red.Tree) (ReceiptInputTree.read repoRoot)
         | None -> false
 
-    /// Say why an owed launch was not made (`onlyRetriesRed`).
-    let logRedStands (trigger: string) (state: TestPruneState) =
-        Logging.info
-            "test-prune"
-            $"%s{trigger}: %s{owedDescription state.Debt} — all of it was in the run that concluded red over this same tree, so a launch would only retry it; that result stands until the tree or what is owed moves (AUTOMATION-1373)"
+    let logRedStands = logRedStandsWith owedDescription
 
     /// Discharge what a BootScan cohort owes when the last completed run already covered
     /// it: that run passed every runnable project in full over the tree and model the
