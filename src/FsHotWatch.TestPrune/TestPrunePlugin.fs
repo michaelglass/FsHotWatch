@@ -1053,6 +1053,98 @@ let internal flushPendingWith (env: FlushEnv) (ctx: PluginCtx<TestPruneMsg>) (st
 
     flushedState, runtimeObligations
 
+/// An impact run, launched over `RunEnv` (`runTestsWithImpactWith`, partially applied).
+type internal ImpactRunner =
+    PluginCtx<TestPruneMsg> -> TestConfig list -> TestRunInputs -> bool -> Set<string> -> Async<TestPruneMsg>
+
+/// What launching an impact run reads from the plugin (`launchImpactRunWith`). The refresh
+/// phase is the plugin's cell, read when the launch runs.
+type internal ImpactLaunchEnv =
+    { RefreshPhase: ExtensionRefreshPhase ref
+      FailuresAfter: ExtensionRefresh list -> Map<string, string> -> Map<string, string>
+      LaunchScopeOf: TestRunInputs -> LaunchScope
+      RunTestsWithImpact: ImpactRunner }
+
+/// Claim the "tests" key for an impact launch from `launchState`. `Some` carries the
+/// state recording what the claimed run will execute; `None` means the key is held.
+///
+/// A session that launches only requested runs (`TestMode.launchesOwedRuns`) claims
+/// nothing: the debt stays owed, the fanout is kept, and the status says no run was
+/// launched, so a settle does not wait on a run that will never start. A requested run
+/// holding the key keeps its own status.
+let internal launchImpactRunWith
+    (env: ImpactLaunchEnv)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (configs: TestConfig list)
+    (launchState: TestPruneState)
+    (hasCachedResults: bool)
+    (fanout: Set<string>)
+    =
+    let extensionRefresh = env.RefreshPhase
+    let failuresAfter = env.FailuresAfter
+    let launchScopeOf = env.LaunchScopeOf
+    let runTestsWithImpact = env.RunTestsWithImpact
+
+    let inputs = TestRunInputs.ofState launchState
+    // A refresh still running beside the fold: the run takes its failures before it
+    // reads anything, off the fold (AUTOMATION-1441).
+    let refreshing =
+        match extensionRefresh.Value with
+        | ExtensionRefreshPhase.RunningBesideFold refresh -> Some refresh
+        | ExtensionRefreshPhase.NeverRefreshed
+        | ExtensionRefreshPhase.Refreshed -> None
+
+    let withRefreshed (inputs: TestRunInputs) =
+        match refreshing with
+        | None -> async.Return inputs
+        | Some refresh ->
+            async {
+                let! outcomes, _ = Async.AwaitTask refresh
+
+                return
+                    { inputs with
+                        FailedExtensions = failuresAfter outcomes inputs.FailedExtensions }
+            }
+
+    if not (TestMode.launchesOwedRuns inputs.Mode) then
+        let detail =
+            "no owed test run launched: this session runs only the tests a command requests"
+
+        Logging.info "test-prune" detail
+
+        if ctx.SlotHolder "tests" = SlotHolder.Free then
+            ctx.ReportStatus(PluginStatus.verifiedNothingNow detail TimeSpan.Zero)
+
+        Some
+            { launchState with
+                AwaitingDiff = None
+                OwedRunHeld = true
+                PendingForceRunProjects = Set.union launchState.PendingForceRunProjects fanout }
+    else
+        match
+            // Cooperative-safe: a run held only by clients is cancelled once they have
+            // all gone. Its test hosts run in its own process scope (reaped), its
+            // result publishes only through the fold it returns, and the run it opened
+            // is closed by its withdrawal fold. A run the daemon owes is never cancelled.
+            runTestHostExclusive ctx fanout None (fun runCtx ->
+                PluginWork.cooperativeSafe (
+                    async {
+                        let! inputs = withRefreshed inputs
+                        return! runTestsWithImpact runCtx configs inputs hasCachedResults fanout
+                    }
+                ))
+        with
+        | Claimed ->
+            Some
+                { launchState with
+                    AwaitingDiff = None
+                    InFlight =
+                        Some
+                            { Scope = launchScopeOf inputs
+                              Mode = inputs.Mode
+                              WatcherReported = Set.empty } }
+        | SlotBusy -> None
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -2015,79 +2107,14 @@ let internal createWithEvidenceAndQueries
         else
             LaunchedSelection
 
-    /// Claim the "tests" key for an impact launch from `launchState`. `Some` carries the
-    /// state recording what the claimed run will execute; `None` means the key is held.
-    ///
-    /// A session that launches only requested runs (`TestMode.launchesOwedRuns`) claims
-    /// nothing: the debt stays owed, the fanout is kept, and the status says no run was
-    /// launched, so a settle does not wait on a run that will never start. A requested run
-    /// holding the key keeps its own status.
-    let launchImpactRun
-        (ctx: PluginCtx<TestPruneMsg>)
-        (configs: TestConfig list)
-        (launchState: TestPruneState)
-        (hasCachedResults: bool)
-        (fanout: Set<string>)
-        =
-        let inputs = TestRunInputs.ofState launchState
-        // A refresh still running beside the fold: the run takes its failures before it
-        // reads anything, off the fold (AUTOMATION-1441).
-        let refreshing =
-            match extensionRefresh.Value with
-            | ExtensionRefreshPhase.RunningBesideFold refresh -> Some refresh
-            | ExtensionRefreshPhase.NeverRefreshed
-            | ExtensionRefreshPhase.Refreshed -> None
+    let impactLaunchEnv: ImpactLaunchEnv =
+        { RefreshPhase = extensionRefresh
+          FailuresAfter = failuresAfter
+          LaunchScopeOf = launchScopeOf
+          RunTestsWithImpact = runTestsWithImpact }
 
-        let withRefreshed (inputs: TestRunInputs) =
-            match refreshing with
-            | None -> async.Return inputs
-            | Some refresh ->
-                async {
-                    let! outcomes, _ = Async.AwaitTask refresh
-
-                    return
-                        { inputs with
-                            FailedExtensions = failuresAfter outcomes inputs.FailedExtensions }
-                }
-
-        if not (TestMode.launchesOwedRuns inputs.Mode) then
-            let detail =
-                "no owed test run launched: this session runs only the tests a command requests"
-
-            Logging.info "test-prune" detail
-
-            if ctx.SlotHolder "tests" = SlotHolder.Free then
-                ctx.ReportStatus(PluginStatus.verifiedNothingNow detail TimeSpan.Zero)
-
-            Some
-                { launchState with
-                    AwaitingDiff = None
-                    OwedRunHeld = true
-                    PendingForceRunProjects = Set.union launchState.PendingForceRunProjects fanout }
-        else
-            match
-                // Cooperative-safe: a run held only by clients is cancelled once they have
-                // all gone. Its test hosts run in its own process scope (reaped), its
-                // result publishes only through the fold it returns, and the run it opened
-                // is closed by its withdrawal fold. A run the daemon owes is never cancelled.
-                runTestHostExclusive ctx fanout None (fun runCtx ->
-                    PluginWork.cooperativeSafe (
-                        async {
-                            let! inputs = withRefreshed inputs
-                            return! runTestsWithImpact runCtx configs inputs hasCachedResults fanout
-                        }
-                    ))
-            with
-            | Claimed ->
-                Some
-                    { launchState with
-                        AwaitingDiff = None
-                        InFlight =
-                            Some
-                                { Scope = launchScopeOf inputs
-                                  Mode = inputs.Mode
-                                  WatcherReported = Set.empty } }
-            | SlotBusy -> None
+    let launchImpactRun ctx configs launchState hasCachedResults fanout =
+        launchImpactRunWith impactLaunchEnv ctx configs launchState hasCachedResults fanout
 
     /// Whether debt found while the key is held joins the run holding it instead of
     /// queueing another. Only a full-suite run can take it. Under pass-through it takes
