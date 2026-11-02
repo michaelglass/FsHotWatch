@@ -457,6 +457,103 @@ let internal decideTracing
 
     decided
 
+/// A finished run's coverage, ingested: invalidate what failed its receipt, ingest and emit
+/// the cobertura, and report every failure as that project's debt.
+let internal ingestRunCoverage
+    (collected: RunCollector)
+    (logToCtx: string -> unit)
+    (runId: Guid)
+    db
+    repoRoot
+    runDir
+    enabledRatchetProjects
+    configuredCoverageOutput
+    coverageIngestFailed
+    (coveragePathsByProject: Map<string, CoveragePaths>)
+    (launchTree: ReceiptTree option)
+    (reconciled: (TestEvidenceRun.Plan * TestEvidenceRun.Reconciled) option)
+    (rerunProjects: Set<string>)
+    reusedNow
+    =
+    // Coverage: now that ALL projects have finished, serially ingest each
+    // project's raw runner cobertura into the TestPrune DB (max-merged,
+    // symbol-relative) and emit the FULL DB ONCE to the single shared
+    // cobertura file. Done here, outside Async.Parallel, so there is no
+    // DB-write contention and no file-write race on the shared output.
+    let collectedInputs, receiptFailures =
+        collected.Read(fun c -> List.rev c.CoverageInputs, List.rev c.CoverageFailures)
+
+    let receiptFailures =
+        receiptFailures
+        |> List.map (fun failure ->
+            try
+                invalidateCoverageReceiptFailure db failure
+                failure
+            with ex ->
+                { failure with
+                    Reason =
+                        $"%s{failure.Reason}; prior coverage invalidation failed (%s{ex.GetType().Name}: %s{ex.Message})" })
+
+    let coverageOutcome =
+        ingestAndEmitCoverageForProjects
+            db
+            repoRoot
+            (runId.ToString("N"))
+            enabledRatchetProjects
+            configuredCoverageOutput
+            collectedInputs
+
+    // Coverage missing (AUTOMATION-1371): the prior rows were kept; the run says so.
+    for missing in coverageOutcome.CoverageMissing do
+        logToCtx $"%s{missing.Project}: %s{missing.Reason}; its prior runtime coverage is kept"
+
+    let coverageFailures = receiptFailures @ coverageIngestFailures coverageOutcome
+
+    if not coverageFailures.IsEmpty then
+        for failure in coverageFailures do
+            coverageIngestFailed failure
+
+        collected.Update(fun c ->
+            { c with
+                Results = applyCoverageIngestFailures coverageFailures c.Results })
+
+    // TEST EVIDENCE: publish. Only now are this run's own results final — a project
+    // whose coverage did not ingest is no longer green — so only now may a green leave
+    // this checkout.
+    reconciled
+    |> Option.iter (fun (plan, r) ->
+        let finalNow = collected.Read _.Results
+
+        // A project re-run under starvation is not published: its green was earned on a
+        // second attempt, which the stored evidence could not say.
+        let runOf (candidate: TestEvidenceRun.Candidate) : TestEvidenceRun.ProducedRun option =
+            Map.tryFind candidate.Project finalNow
+            |> Option.filter (fun _ -> not (rerunProjects.Contains candidate.Project))
+            |> Option.map (fun result ->
+                let coveragePath = runCoveragePath runDir candidate.Project
+
+                { Project = candidate.Project
+                  Result = result
+                  Report = TestEvidenceRun.readIfPresent (Path.Combine(runDir, candidate.Project + Ctrf.ReportSuffix))
+                  CoverageRequired = coveragePathsByProject.ContainsKey candidate.Project
+                  Coverage =
+                    TestEvidenceRun.readIfPresent coveragePath
+                    |> Option.map (fun text -> coveragePath, text) })
+
+        let producer: TestEvidenceStore.Producer =
+            { Worktree = Path.GetFullPath repoRoot
+              RunId = runId.ToString("N")
+              TreeHash = launchTree |> Option.map _.Identity |> Option.defaultValue "unbound"
+              ProducerHash = plan.Wiring.ProducerHash
+              EarnedAt = DateTimeOffset.UtcNow }
+
+        let written = TestEvidenceRun.publish plan repoRoot r reusedNow runOf producer
+        let tally = TestEvidenceRun.tally plan r written
+        Logging.info "test-prune" tally
+        logToCtx tally)
+
+    ()
+
 /// Whether a failed launch found its apphost missing: from the project's own bin when it
 /// can be derived (`tryApphostPresent`), else from the output (`looksLikeApphostMissing`).
 let internal apphostMissingIn (repoRoot: string) (config: TestConfig) (outcome: ProcessOutcome) : bool =
@@ -1495,83 +1592,21 @@ let internal executeTests
             |> Option.map (fun (_, r) -> r.Held |> Map.map (fun _ entry -> TestEvidenceRun.Provenance.ofEntry entry))
             |> Option.defaultValue Map.empty
 
-        // Coverage: now that ALL projects have finished, serially ingest each
-        // project's raw runner cobertura into the TestPrune DB (max-merged,
-        // symbol-relative) and emit the FULL DB ONCE to the single shared
-        // cobertura file. Done here, outside Async.Parallel, so there is no
-        // DB-write contention and no file-write race on the shared output.
-        let collectedInputs, receiptFailures =
-            collected.Read(fun c -> List.rev c.CoverageInputs, List.rev c.CoverageFailures)
-
-        let receiptFailures =
-            receiptFailures
-            |> List.map (fun failure ->
-                try
-                    invalidateCoverageReceiptFailure db failure
-                    failure
-                with ex ->
-                    { failure with
-                        Reason =
-                            $"%s{failure.Reason}; prior coverage invalidation failed (%s{ex.GetType().Name}: %s{ex.Message})" })
-
-        let coverageOutcome =
-            ingestAndEmitCoverageForProjects
-                db
-                repoRoot
-                (runId.ToString("N"))
-                enabledRatchetProjects
-                configuredCoverageOutput
-                collectedInputs
-
-        // Coverage missing (AUTOMATION-1371): the prior rows were kept; the run says so.
-        for missing in coverageOutcome.CoverageMissing do
-            logToCtx $"%s{missing.Project}: %s{missing.Reason}; its prior runtime coverage is kept"
-
-        let coverageFailures = receiptFailures @ coverageIngestFailures coverageOutcome
-
-        if not coverageFailures.IsEmpty then
-            for failure in coverageFailures do
-                coverageIngestFailed failure
-
-            collected.Update(fun c ->
-                { c with
-                    Results = applyCoverageIngestFailures coverageFailures c.Results })
-
-        // TEST EVIDENCE: publish. Only now are this run's own results final — a project
-        // whose coverage did not ingest is no longer green — so only now may a green leave
-        // this checkout.
-        reconciled
-        |> Option.iter (fun (plan, r) ->
-            let finalNow = collected.Read _.Results
-
-            // A project re-run under starvation is not published: its green was earned on a
-            // second attempt, which the stored evidence could not say.
-            let runOf (candidate: TestEvidenceRun.Candidate) : TestEvidenceRun.ProducedRun option =
-                Map.tryFind candidate.Project finalNow
-                |> Option.filter (fun _ -> not (rerunProjects.Contains candidate.Project))
-                |> Option.map (fun result ->
-                    let coveragePath = runCoveragePath runDir candidate.Project
-
-                    { Project = candidate.Project
-                      Result = result
-                      Report =
-                        TestEvidenceRun.readIfPresent (Path.Combine(runDir, candidate.Project + Ctrf.ReportSuffix))
-                      CoverageRequired = coveragePathsByProject.ContainsKey candidate.Project
-                      Coverage =
-                        TestEvidenceRun.readIfPresent coveragePath
-                        |> Option.map (fun text -> coveragePath, text) })
-
-            let producer: TestEvidenceStore.Producer =
-                { Worktree = Path.GetFullPath repoRoot
-                  RunId = runId.ToString("N")
-                  TreeHash = launchTree |> Option.map _.Identity |> Option.defaultValue "unbound"
-                  ProducerHash = plan.Wiring.ProducerHash
-                  EarnedAt = DateTimeOffset.UtcNow }
-
-            let written = TestEvidenceRun.publish plan repoRoot r reusedNow runOf producer
-            let tally = TestEvidenceRun.tally plan r written
-            Logging.info "test-prune" tally
-            logToCtx tally)
+        ingestRunCoverage
+            collected
+            logToCtx
+            runId
+            db
+            repoRoot
+            runDir
+            enabledRatchetProjects
+            configuredCoverageOutput
+            coverageIngestFailed
+            coveragePathsByProject
+            launchTree
+            reconciled
+            rerunProjects
+            reusedNow
 
         // Flakiness: ONE parse + ONE rewrite of the history file for the whole run,
         // with every project's records — not one per project, and not racing itself
