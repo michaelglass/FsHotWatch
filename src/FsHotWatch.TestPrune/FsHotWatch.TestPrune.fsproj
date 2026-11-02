@@ -84,6 +84,7 @@
     <Compile Include="RunExecution.fs" />
     <Compile Include="AffectedSelection.fs" />
     <Compile Include="ImpactRun.fs" />
+    <Compile Include="FileCheckedHandler.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 
