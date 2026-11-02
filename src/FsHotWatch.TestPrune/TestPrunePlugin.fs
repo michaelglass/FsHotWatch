@@ -168,6 +168,15 @@ let internal commitPending (symbols: Set<string>) (debt: VerificationDebt) =
             PendingQueue = Set.difference debt.PendingQueue symbols
             SymbolRevisions = debt.SymbolRevisions |> Map.filter (fun s _ -> not (Set.contains s symbols)) }
 
+/// Whether debt found while the key is held joins the run holding it instead of
+/// queueing another. Only a full-suite run can take it. Under pass-through it takes
+/// every arrival, since no run may follow it. Under impact selection it takes a
+/// BootScan cohort, which scanned the tree that run is testing; an in-session cohort
+/// is an edit the run never built, and queues its own run.
+let internal joinsFullRun (state: TestPruneState) (bootScan: bool) =
+    (state.InFlight |> Option.exists (fun run -> run.Scope = LaunchedFullSuite))
+    && (TestMode.skips RerunIntents state.Mode || bootScan)
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1066,14 +1075,6 @@ let internal createWithEvidenceAndQueries
     let launchImpactRun ctx configs launchState hasCachedResults fanout =
         launchImpactRunWith impactLaunchEnv ctx configs launchState hasCachedResults fanout
 
-    /// Whether debt found while the key is held joins the run holding it instead of
-    /// queueing another. Only a full-suite run can take it. Under pass-through it takes
-    /// every arrival, since no run may follow it. Under impact selection it takes a
-    /// BootScan cohort, which scanned the tree that run is testing; an in-session cohort
-    /// is an edit the run never built, and queues its own run.
-    let joinsFullRun (state: TestPruneState) (bootScan: bool) =
-        (state.InFlight |> Option.exists (fun run -> run.Scope = LaunchedFullSuite))
-        && (TestMode.skips RerunIntents state.Mode || bootScan)
 
     /// Whether an owed launch now would only retry the red run that concluded last
     /// (AUTOMATION-1373). That run launched against every symbol owed now, each at the
