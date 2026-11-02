@@ -20,14 +20,18 @@ let private row pid ppid command : ProcessRow =
       Command = command }
 
 // ---------------------------------------------------------------------------
-// parseProcessTable — `ps -A -o pid=,ppid=,stat=,command=`
+// parseProcessTable — `ps` with `processTableArgs`: state, pid, ppid, command
+
+[<Fact>]
+let ``processTableArgs puts the state first, where a blank one cannot be mistaken for the command`` () =
+    test <@ processTableArgs = "-A -o stat=,pid=,ppid=,command=" @>
 
 [<Fact>]
 let ``parseProcessTable reads pid, parent, zombie state and the full command`` () =
     let text =
-        "  101     1 Ss   /sbin/launchd\n\
-         45128 45000 S    sh -c echo hi; sleep 60 & sleep 60\n\
-         45130 45128 Z    (sleep)\n\
+        "Ss       101     1 /sbin/launchd\n\
+         S      45128 45000 sh -c echo hi; sleep 60 & sleep 60\n\
+         Z      45130 45128 (sleep)\n\
          \n\
          garbage line\n"
 
@@ -38,6 +42,32 @@ let ``parseProcessTable reads pid, parent, zombie state and the full command`` (
                                        { row 45130 45128 "(sleep)" with
                                            Zombie = true } ]
         @>
+
+// The procps nix ships on macOS prints only STATE's modifier flags, so an ordinary
+// un-niced process has a blank one. These rows are that `ps`'s output, verbatim.
+[<Fact>]
+let ``parseProcessTable keeps the first word of the command when ps prints no state`` () =
+    let text = "       428     1 sleep 63\n"
+
+    test <@ parseProcessTable text = [ row 428 1 "sleep 63" ] @>
+
+[<Fact>]
+let ``parseProcessTable reads a state of modifier flags alone as a live process`` () =
+    let text = " s       166     1 sh -c sleep 63\n N+    45200 45128 dotnet build\n"
+
+    test <@ parseProcessTable text = [ row 166 1 "sh -c sleep 63"; row 45200 45128 "dotnet build" ] @>
+
+[<Fact>]
+let ``parseProcessTable keeps a state-like first word of the command, with or without a state`` () =
+    let text = "S        700     1 R --vanilla\n       701     1 Z\n"
+
+    test <@ parseProcessTable text = [ row 700 1 "R --vanilla"; row 701 1 "Z" ] @>
+
+[<Fact>]
+let ``parseProcessTable skips the header and a row with no command`` () =
+    let text = "STAT   PID  PPID COMMAND\nS        702     1\n"
+
+    test <@ parseProcessTable text |> List.isEmpty @>
 
 // ---------------------------------------------------------------------------
 // treeOf — the root and every descendant, by parent pid
