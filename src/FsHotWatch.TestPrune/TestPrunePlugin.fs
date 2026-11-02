@@ -710,6 +710,19 @@ let internal launchHeldWith
             state
     | _ -> state
 
+/// Whether the index names no test project beyond those a run here executes or
+/// declares excluded, so that a run of every runnable project leaves nothing owed
+/// elsewhere. An index that cannot be scanned may name one.
+let internal indexNamesOnlyRunnableIn
+    (queries: ImpactQueries)
+    (runnableProjects: Set<string>)
+    (debtScope: Lazy<Map<string, string>> -> (string -> Set<string>) -> string -> Set<string>)
+    (excluded: Lazy<Map<string, string>>)
+    =
+    match queries.IndexedTestProjects() with
+    | Some indexed -> Set.isSubset (debtScope excluded (fun _ -> indexed) "") runnableProjects
+    | None -> false
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1020,13 +1033,8 @@ let internal createWithEvidenceAndQueries
 
     let debtScope = debtScopeIn runnableProjects
 
-    /// Whether the index names no test project beyond those a run here executes or
-    /// declares excluded, so that a run of every runnable project leaves nothing owed
-    /// elsewhere. An index that cannot be scanned may name one.
-    let indexNamesOnlyRunnable (excluded: Lazy<Map<string, string>>) =
-        match queries.IndexedTestProjects() with
-        | Some indexed -> Set.isSubset (debtScope excluded (fun _ -> indexed) "") runnableProjects
-        | None -> false
+    let indexNamesOnlyRunnable =
+        indexNamesOnlyRunnableIn queries runnableProjects debtScope
 
     /// `debtScope` resolving the declarations only if a classification needs them.
     let lazyDebtScope (covering: string -> Set<string>) =
