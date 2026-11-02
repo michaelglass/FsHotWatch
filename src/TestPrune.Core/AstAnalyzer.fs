@@ -1764,6 +1764,74 @@ let private collectionFixtureFromInterfaces (entity: FSharpEntity) : string opti
     with _ ->
         None
 
+/// One synthetic symbol per `[<CollectionDefinition(name)>]` in a file, plus
+/// synthetic → fixture, so the recursive walk reaches T → synth → testMethod.
+/// `collectionDefinitions` maps each collection name to (synthetic name, fixture name).
+let private collectionSynthesis
+    (sourceFileName: string)
+    (collectionDefinitions: Map<string, string * string>)
+    : SymbolInfo list * Dependency list =
+    let mutable syms = []
+    let mutable edges = []
+
+    for KeyValue(_, (synthFullName, fixtureFullName)) in collectionDefinitions do
+        syms <-
+            { FullName = synthFullName
+              Kind = Type
+              SourceFile = sourceFileName
+              LineStart = 0
+              LineEnd = 0
+              ContentHash = ""
+              IsExtern = false }
+            :: syms
+
+        edges <- coreEdge UsesType synthFullName fixtureFullName :: edges
+
+    syms, edges
+
+/// A test and the production symbol that emits the same message normally name none of
+/// each other. Join them through a synthetic node: test -> literal -> producer in the
+/// dependency graph, which the reverse selection walk follows from a changed producer
+/// back to the test. A literal counts only inside a tracked symbol (`findEnclosing`).
+let private sharedLiteralBridges
+    (parseTree: ParsedInput)
+    (findEnclosing: range -> SymbolInfo option)
+    (symbols: SymbolInfo list)
+    (testMethods: TestMethodInfo list)
+    : SymbolInfo list * Dependency list =
+    let testSymbolNames = testMethods |> List.map _.SymbolFullName |> Set.ofList
+    let trackedSymbolNames = symbols |> List.map _.FullName |> Set.ofList
+    let mutable nodes = Map.empty
+    let mutable edges = []
+
+    for text, literalRange in collectSharedLiterals parseTree do
+        match findEnclosing literalRange with
+        | Some enclosing when trackedSymbolNames.Contains enclosing.FullName ->
+            let nodeName = sharedLiteralNodeName text
+
+            nodes <-
+                nodes
+                |> Map.add
+                    nodeName
+                    { FullName = nodeName
+                      Kind = ExternRef
+                      SourceFile = ExternSourceFile
+                      LineStart = 0
+                      LineEnd = 0
+                      ContentHash = ""
+                      IsExtern = true }
+
+            let edge =
+                if testSymbolNames.Contains enclosing.FullName then
+                    coreEdge SharedLiteral enclosing.FullName nodeName
+                else
+                    coreEdge SharedLiteral nodeName enclosing.FullName
+
+            edges <- edge :: edges
+        | _ -> ()
+
+    nodes |> Map.values |> List.ofSeq, edges |> List.distinct
+
 /// Extract analysis results from parse and type-check results.
 let private extractResults
     (maxTraversalVisits: int)
@@ -2342,64 +2410,11 @@ let private extractResults
 
             trace "tests-attributes"
 
-            // One synthetic symbol per [<CollectionDefinition(name)>] in this file, plus
-            // synthetic → fixture so the recursive walk reaches T → synth → testMethod.
             let collectionSynthSymbols, collectionSynthEdges =
-                let mutable syms = []
-                let mutable edges = []
+                collectionSynthesis sourceFileName collectionDefinitions
 
-                for KeyValue(_, (synthFullName, fixtureFullName)) in collectionDefinitions do
-                    syms <-
-                        { FullName = synthFullName
-                          Kind = Type
-                          SourceFile = sourceFileName
-                          LineStart = 0
-                          LineEnd = 0
-                          ContentHash = ""
-                          IsExtern = false }
-                        :: syms
-
-                    edges <- coreEdge UsesType synthFullName fixtureFullName :: edges
-
-                syms, edges
-
-            // A test and the production symbol that emits the same message normally name
-            // none of each other. Join them through a synthetic node: test -> literal ->
-            // producer in the dependency graph, which the existing reverse selection walk
-            // follows from a changed producer back to the test.
             let literalSynthSymbols, literalSynthEdges =
-                let testSymbolNames = testMethods |> List.map _.SymbolFullName |> Set.ofList
-                let trackedSymbolNames = symbols |> List.map _.FullName |> Set.ofList
-                let mutable nodes = Map.empty
-                let mutable edges = []
-
-                for text, literalRange in collectSharedLiterals parseResults.ParseTree do
-                    match findEnclosing literalRange with
-                    | Some enclosing when trackedSymbolNames.Contains enclosing.FullName ->
-                        let nodeName = sharedLiteralNodeName text
-
-                        nodes <-
-                            nodes
-                            |> Map.add
-                                nodeName
-                                { FullName = nodeName
-                                  Kind = ExternRef
-                                  SourceFile = ExternSourceFile
-                                  LineStart = 0
-                                  LineEnd = 0
-                                  ContentHash = ""
-                                  IsExtern = true }
-
-                        let edge =
-                            if testSymbolNames.Contains enclosing.FullName then
-                                coreEdge SharedLiteral enclosing.FullName nodeName
-                            else
-                                coreEdge SharedLiteral nodeName enclosing.FullName
-
-                        edges <- edge :: edges
-                    | _ -> ()
-
-                nodes |> Map.values |> List.ofSeq, edges |> List.distinct
+                sharedLiteralBridges parseResults.ParseTree findEnclosing symbols testMethods
 
             trace "shared-literals"
 
