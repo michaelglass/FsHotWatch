@@ -1067,6 +1067,69 @@ let internal tryReuseWith (env: ReuseEnv) (config: TestConfig) : bool =
             TestEvidenceRun.deleteQuietly (Path.Combine(runDir, config.Project + Ctrf.ReportSuffix))
             false)
 
+/// Fold one group's results into the run and emit them as progress.
+type internal GroupFold = (string * TestResult) list -> unit
+
+/// What refusing a whole run on stale artifacts reads from it (`refuseWholeRunWith`).
+type internal RefusalEnv =
+    { Configs: TestConfig list
+      Preflight: StaleArtifactPreflight.Outcome
+      LogToCtx: string -> unit
+      SkipProjectOf: TestConfig -> bool
+      SkippedResultOf: TestConfig -> string * TestResult
+      FoldAndEmit: GroupFold }
+
+/// Nothing spawns. Every configured project comes back deferred, naming its own
+/// reason where the preflight found one and the run-wide cause where it did not.
+let internal refuseWholeRunWith (env: RefusalEnv) () =
+    let configs = env.Configs
+    let preflight = env.Preflight
+    let logToCtx = env.LogToCtx
+    let skipProjectOf = env.SkipProjectOf
+    let skippedResultOf = env.SkippedResultOf
+    let foldAndEmit = env.FoldAndEmit
+
+    async {
+        let refused =
+            preflight.Refusals |> List.map (fun r -> r.Project, r.Reason) |> Map.ofList
+
+        // Every affected project, named in full — the headline may be
+        // shortened by a fixed-width surface, but this list never is.
+        let names =
+            preflight.Refusals |> List.map (fun r -> r.Project) |> String.concat ", "
+
+        for refusal in preflight.Refusals do
+            Logging.warn "test-prune" $"%s{refusal.Project}: %s{refusal.Reason}"
+            logToCtx $"{refusal.Project}: waiting on build ({refusal.Reason})"
+
+        let results =
+            configs
+            |> List.map (fun config ->
+                if skipProjectOf config then
+                    skippedResultOf config
+                else
+                    match refused.TryFind config.Project with
+                    | Some reason -> config.Project, TestsDeferred reason
+                    | None ->
+                        config.Project,
+                        TestsDeferred
+                            // The remedy points at the projects
+                            // that carry one rather than restating a generic
+                            // build command. Each named project's own deferral
+                            // holds the remedy for ITS cause, and those causes
+                            // need different actions — a raw `dotnet build`
+                            // fixes neither a tripped repair breaker nor a
+                            // byte-differing copy, and some repositories refuse
+                            // that command outright.
+                            $"not run — the whole run was refused before any suite launched because \
+                              %d{preflight.Refusals.Length} project(s) have stale build output: \
+                              %s{names}. Remedy: read those projects' own deferrals — each names its \
+                              cause and what to do about it — then re-run.")
+
+        foldAndEmit results
+        return [| results |]
+    }
+
 /// Execute test configs with optional affected classes for filtering. Handles beforeRun,
 /// coveragePaths, process execution, result storage. `rawFilter` is a passthrough filter
 /// string (from the run-tests command) that bypasses the template.
@@ -1351,49 +1414,15 @@ let internal executeTests
         // 390-line group loop keeps the indentation it has always had. A run-level
         // guard should cost one line here, not re-flow every line it guards.
 
-        /// Nothing spawns. Every configured project comes back deferred, naming its own
-        /// reason where the preflight found one and the run-wide cause where it did not.
-        let refuseWholeRun () =
-            async {
-                let refused =
-                    preflight.Refusals |> List.map (fun r -> r.Project, r.Reason) |> Map.ofList
+        let refusalEnv: RefusalEnv =
+            { Configs = configs
+              Preflight = preflight
+              LogToCtx = logToCtx
+              SkipProjectOf = skipProjectOf
+              SkippedResultOf = skippedResultOf
+              FoldAndEmit = foldAndEmit }
 
-                // Every affected project, named in full — the headline may be
-                // shortened by a fixed-width surface, but this list never is.
-                let names =
-                    preflight.Refusals |> List.map (fun r -> r.Project) |> String.concat ", "
-
-                for refusal in preflight.Refusals do
-                    Logging.warn "test-prune" $"%s{refusal.Project}: %s{refusal.Reason}"
-                    logToCtx $"{refusal.Project}: waiting on build ({refusal.Reason})"
-
-                let results =
-                    configs
-                    |> List.map (fun config ->
-                        if skipProjectOf config then
-                            skippedResultOf config
-                        else
-                            match refused.TryFind config.Project with
-                            | Some reason -> config.Project, TestsDeferred reason
-                            | None ->
-                                config.Project,
-                                TestsDeferred
-                                    // The remedy points at the projects
-                                    // that carry one rather than restating a generic
-                                    // build command. Each named project's own deferral
-                                    // holds the remedy for ITS cause, and those causes
-                                    // need different actions — a raw `dotnet build`
-                                    // fixes neither a tripped repair breaker nor a
-                                    // byte-differing copy, and some repositories refuse
-                                    // that command outright.
-                                    $"not run — the whole run was refused before any suite launched because \
-                                      %d{preflight.Refusals.Length} project(s) have stale build output: \
-                                      %s{names}. Remedy: read those projects' own deferrals — each names its \
-                                      cause and what to do about it — then re-run.")
-
-                foldAndEmit results
-                return [| results |]
-            }
+        let refuseWholeRun () = refuseWholeRunWith refusalEnv ()
 
         // `tests.maxParallelProjects`: with a cap, groups launch longest expected wall first
         // (from the retained CTRF reports), so the long ones are not left for last. Without
