@@ -720,14 +720,18 @@ let internal indexNamesOnlyRunnableIn
     | Some indexed -> Set.isSubset (debtScope excluded (fun _ -> indexed) "") runnableProjects
     | None -> false
 
+/// The run-tests force run: under a mode, a project set, an optional filter, and the reply
+/// it resolves.
+type internal ForceRunner =
+    PluginCtx<TestPruneMsg>
+        -> TestMode
+        -> TestConfig list
+        -> string option
+        -> Tasks.TaskCompletionSource<string>
+        -> Async<TestPruneMsg>
+
 let internal requestTestRunWith
-    (commandForceRun:
-        PluginCtx<TestPruneMsg>
-            -> TestMode
-            -> TestConfig list
-            -> string option
-            -> Tasks.TaskCompletionSource<string>
-            -> Async<TestPruneMsg>)
+    (commandForceRun: ForceRunner)
     (ctx: PluginCtx<TestPruneMsg>)
     (state: TestPruneState)
     configs
