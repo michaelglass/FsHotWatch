@@ -863,6 +863,72 @@ let internal decideReceipt (ctx: PluginCtx<TestPruneMsg>) (facts: ReceiptFacts) 
       ReceiptTransition = receiptTransition
       EvidenceReceipt = evidenceReceipt }
 
+/// The state a completion leaves before its debt is settled: the session ledgers, the
+/// failures and coverage it assembled, the receipt it holds, the red it stands on, and the
+/// mode `endRun` leaves.
+let internal recordCompletion
+    (endRun: bool -> TestPruneState -> TestPruneState)
+    (state: TestPruneState)
+    (completed: TestRunCompleted)
+    (launch: TestRunLaunch)
+    (assembled: AssembledRunResults)
+    (receipt: ReceiptOutcome)
+    (unanalyzable: Map<string, UnanalyzableFile>)
+    : TestPruneState =
+    let completedRuns = assembled.CompletedRuns
+    let checkReach = assembled.CheckReach
+    let conditionalFailureRecall = assembled.ConditionalFailureRecall
+    let outstandingFailures = assembled.OutstandingFailures
+    let coverage = assembled.Coverage
+    let currentTree = receipt.CurrentTree
+    let currentInputTree = receipt.CurrentInputTree
+    let currentModelGeneration = receipt.CurrentModelGeneration
+    let receiptTransition = receipt.ReceiptTransition
+
+    let state =
+        { state with
+            CompletedRuns = completedRuns
+            CheckReaches =
+                (completed.RunId, launch.WouldHaveRun, checkReach, conditionalFailureRecall)
+                :: (state.CheckReaches
+                    |> List.filter (fun (id, _, _, _) -> id <> completed.RunId)
+                    |> List.truncate (SessionRunLedger - 1))
+            OutstandingFailures = outstandingFailures
+            LastCoverage = coverage
+            LastZeroSelection = launch.ZeroSelection
+            Receipt = ReceiptTransition.hold state.Receipt receiptTransition currentTree
+            // Debt is scoped to exactly the run that was active when the
+            // BootScan cohort sealed. Failure keeps it durable, but must not
+            // let a later unrelated run claim it implicitly.
+            DebtDuringFullRun = Map.empty
+            InFlight = None
+            // A conclusion only when the run executed to a red over the
+            // tree and model it launched under (`onlyRetriesRed`).
+            LastRed =
+                match completed.Outcome, launch.InputTreeHash, currentInputTree with
+                | Normal, Some launched, Some current when
+                    launched = current
+                    && launch.ModelGeneration = currentModelGeneration
+                    && completed.Results
+                       |> Map.exists (fun _ result -> TestResult.verdict result = Refuted)
+                    ->
+                    Some
+                        { SymbolRevisions = launch.SymbolRevisions
+                          Tree = current }
+                | _ -> None
+            Mode =
+                (endRun
+                    (completed.Results
+                     |> Map.exists (fun _ result -> TestResult.executedTests result))
+                    state)
+                    .Mode
+            // Carried with them: the pruned map is what the ledger was
+            // just written from, so the next run's coarse-fallback
+            // widening reads the same set the user was shown.
+            UnanalyzableFiles = unanalyzable }
+
+    state
+
 /// What a completion's debt is settled from.
 type internal DebtSettlementFacts =
     { State: TestPruneState
@@ -1291,11 +1357,8 @@ let internal onRunFinishedWith
                   RunnableProjects = runnableProjects
                   Traces = traces }
 
-        let completedRuns = assembled.CompletedRuns
         let testResults = assembled.TestResults
         let coverage = assembled.Coverage
-        let checkReach = assembled.CheckReach
-        let conditionalFailureRecall = assembled.ConditionalFailureRecall
         let carriedFailures = assembled.CarriedFailures
         let outstandingFailures = assembled.OutstandingFailures
 
@@ -1327,7 +1390,6 @@ let internal onRunFinishedWith
                   RunnableProjects = runnableProjects
                   ObserveModelGeneration = observeModelGeneration }
 
-        let currentTree = receipt.CurrentTree
         let currentInputTree = receipt.CurrentInputTree
         let currentModelGeneration = receipt.CurrentModelGeneration
         let currentInputs = receipt.CurrentInputs
@@ -1336,46 +1398,7 @@ let internal onRunFinishedWith
         let evidenceReceipt = receipt.EvidenceReceipt
 
         let state =
-            { state with
-                CompletedRuns = completedRuns
-                CheckReaches =
-                    (completed.RunId, launch.WouldHaveRun, checkReach, conditionalFailureRecall)
-                    :: (state.CheckReaches
-                        |> List.filter (fun (id, _, _, _) -> id <> completed.RunId)
-                        |> List.truncate (SessionRunLedger - 1))
-                OutstandingFailures = outstandingFailures
-                LastCoverage = coverage
-                LastZeroSelection = launch.ZeroSelection
-                Receipt = ReceiptTransition.hold state.Receipt receiptTransition currentTree
-                // Debt is scoped to exactly the run that was active when the
-                // BootScan cohort sealed. Failure keeps it durable, but must not
-                // let a later unrelated run claim it implicitly.
-                DebtDuringFullRun = Map.empty
-                InFlight = None
-                // A conclusion only when the run executed to a red over the
-                // tree and model it launched under (`onlyRetriesRed`).
-                LastRed =
-                    match completed.Outcome, launch.InputTreeHash, currentInputTree with
-                    | Normal, Some launched, Some current when
-                        launched = current
-                        && launch.ModelGeneration = currentModelGeneration
-                        && completed.Results
-                           |> Map.exists (fun _ result -> TestResult.verdict result = Refuted)
-                        ->
-                        Some
-                            { SymbolRevisions = launch.SymbolRevisions
-                              Tree = current }
-                    | _ -> None
-                Mode =
-                    (endRun
-                        (completed.Results
-                         |> Map.exists (fun _ result -> TestResult.executedTests result))
-                        state)
-                        .Mode
-                // Carried with them: the pruned map is what the ledger was
-                // just written from, so the next run's coarse-fallback
-                // widening reads the same set the user was shown.
-                UnanalyzableFiles = unanalyzable }
+            recordCompletion endRun state completed launch assembled receipt unanalyzable
 
 
         let settled =
