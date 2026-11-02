@@ -457,6 +457,22 @@ let internal decideTracing
 
     decided
 
+/// Whether a failed launch found its apphost missing: from the project's own bin when it
+/// can be derived (`tryApphostPresent`), else from the output (`looksLikeApphostMissing`).
+let internal apphostMissingIn (repoRoot: string) (config: TestConfig) (outcome: ProcessOutcome) : bool =
+    // A clean exit means the apphost ran — never a
+    // launch-ordering problem, regardless of artifacts.
+    if isSucceeded outcome then
+        false
+    else
+        match tryApphostPresent config.Args repoRoot with
+        | Some present -> not present
+        | None ->
+            // Not derivable — fall back to the text sniff.
+            match outcome with
+            | ProcessOutcome.Failed(_, out) -> looksLikeApphostMissing (ProcessOutput.text out)
+            | _ -> false
+
 /// What one project's launch reads from its run (`launchProjectWith`).
 type internal ProjectLaunchEnv<'msg> =
     { Ctx: PluginCtx<'msg> option
@@ -652,21 +668,7 @@ let internal launchProjectWith
                 return outcome
             }
 
-        // See `tryApphostPresent`; `looksLikeApphostMissing` is the
-        // fallback for a command with no derivable project.
-        let detectApphostMissing (outcome: ProcessOutcome) : bool =
-            // A clean exit means the apphost ran — never a
-            // launch-ordering problem, regardless of artifacts.
-            if isSucceeded outcome then
-                false
-            else
-                match tryApphostPresent config.Args repoRoot with
-                | Some present -> not present
-                | None ->
-                    // Not derivable — fall back to the text sniff.
-                    match outcome with
-                    | ProcessOutcome.Failed(_, out) -> looksLikeApphostMissing (ProcessOutput.text out)
-                    | _ -> false
+        let detectApphostMissing = apphostMissingIn repoRoot config
 
         // Cold-start apphost-missing retry. The BuildCompleted→TestPrune
         // ordering already gates the launch on a successful build, but a
