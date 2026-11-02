@@ -346,10 +346,7 @@ let private runOnceAndVerdictIn
             runInfoOfFileCommands repoRoot config finalStatuses.Value
             |> detectStalePluginInputs
 
-        let stalenessWarning = formatStalenessWarning staleInputs
-
-        if stalenessWarning <> "" then
-            eprintfn "%s" stalenessWarning
+        formatStalenessWarning staleInputs |> Option.iter (eprintfn "%s")
 
         // The verdict file — on EVERY terminal path, exactly as the daemon path writes
         // it, from the same `CheckOutcome` the exit code below comes from, so

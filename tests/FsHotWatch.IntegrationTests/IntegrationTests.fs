@@ -1088,7 +1088,7 @@ let private runAnalyzersOnFile
             // An offside-broken fixture yields an empty AST, so every analyzer reports
             // zero findings — a "stays silent" assertion would then PASS for the wrong
             // reason. Refuse the fixture rather than emit a meaningless verdict.
-            test <@ not checkResult.ParseResults.ParseHadErrors @>
+            test <@ not (FileCheckResult.requireParseResults "test" checkResult).ParseHadErrors @>
 
             host.EmitFileChecked(stampFixture checkResult)
             waitForTerminalStatus host "analyzers" 15000

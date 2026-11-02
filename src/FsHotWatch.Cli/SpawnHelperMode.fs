@@ -63,7 +63,7 @@ let internal startInfo (getEnv: string -> string) (host: string) (cliAssembly: s
     psi.RedirectStandardInput <- true
     psi.RedirectStandardOutput <- true
 
-    ThreadSuspendInjection.launchOverride true getEnv
+    ThreadSuspendInjection.launchOverride true (ThreadSuspendInjection.Setting.read getEnv)
     |> Option.iter (fun (name, value) -> psi.Environment[name] <- value)
 
     psi

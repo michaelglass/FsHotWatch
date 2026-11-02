@@ -260,6 +260,6 @@ let ``a file whose used signatures cannot be described has no analyzers key`` ()
 
         let result =
             { resultIn root with
-                CheckResults = FullCheck broken }
+                CheckResults = FullCheck(fixtureParse (), broken) }
 
         test <@ keyFor (Some root) DiagnosticSeverity.Hint result = None @>)

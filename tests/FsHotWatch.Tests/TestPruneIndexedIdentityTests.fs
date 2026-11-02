@@ -47,7 +47,7 @@ let private checkBoth (layout: UpstreamLayout) (upA: string) (upB: string) =
                     TestPrune.AstAnalyzer.analyzeSourceFromResults
                         "Down.fs"
                         result.Source
-                        result.ParseResults
+                        (FileCheckResult.requireParseResults "test" result)
                         check
                         "App"
                 with
@@ -82,7 +82,7 @@ let ``an analysis whose upstream shape cannot be described has no identity and i
 
     let result =
         { fakeFileCheckResult "/src/A.fs" with
-            CheckResults = FullCheck broken }
+            CheckResults = FullCheck(fixtureParse (), broken) }
 
     test <@ IndexedAnalysis.identityOf "/src" result = None @>
 

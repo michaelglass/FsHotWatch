@@ -83,7 +83,7 @@ let internal stampOf
         // A replay stands for the full check it filed (ADR-059 §17).
         | FullCheck _
         | Replayed _ -> true
-        | ParseOnly -> false }
+        | ParseOnly _ -> false }
 
 /// The inputs a cache key named for each file, handed from the key computation to the
 /// fold that records a replay of it. A replayed analysis IS the analysis its key names,
@@ -510,9 +510,9 @@ let internal noTypedTree: obj =
 /// findings, and the gate would go green with its typed rules off.
 let internal typedTreeOf (checkResults: FileCheckState) : obj =
     match checkResults with
-    | ParseOnly -> noTypedTree
+    | ParseOnly _ -> noTypedTree
     | Replayed _ -> raise (ReplayedResultException("analyzers (typed tree)", "(a replayed check)"))
-    | FullCheck results ->
+    | FullCheck(_, results) ->
         try
             box results.ImplementationFile
         with :? InvalidOperationException ->
@@ -863,9 +863,9 @@ let internal createScopedWithSeams
 
                         let checkResultsObj =
                             match result.CheckResults with
-                            | FullCheck cr -> box cr
+                            | FullCheck(_, cr) -> box cr
                             | Replayed _ -> raise (ReplayedResultException("analyzers", fileStr))
-                            | ParseOnly ->
+                            | ParseOnly _ ->
                                 debug "analyzers" $"Running parse-only analyzers for %s{fileStr}"
                                 null
 
@@ -921,7 +921,11 @@ let internal createScopedWithSeams
                                                             createCliContext
                                                                 (box analyzedFile)
                                                                 (box sourceText)
-                                                                (box result.ParseResults)
+                                                                (box (
+                                                                    FileCheckResult.requireParseResults
+                                                                        "analyzers"
+                                                                        result
+                                                                ))
                                                                 checkResultsObj
                                                                 typedTreeObj
                                                                 (box result.ProjectOptions)

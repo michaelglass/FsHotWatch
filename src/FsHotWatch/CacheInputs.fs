@@ -328,11 +328,10 @@ let usedSignaturesHash
     (checkResults: FileCheckState)
     : string option =
     match checkResults with
-    | ParseOnly -> Some "parse-only"
+    | ParseOnly _ -> Some "parse-only"
     // What the filed check answered (ADR-059 §17).
     | Replayed outputs -> outputs.UsedSignatures
-    | FullCheck results when isNull (box results) -> Some "full-check-null"
-    | FullCheck results ->
+    | FullCheck(_, results) ->
         match usedSignaturesMemo.TryGetValue results with
         | true, memo when memo.RepoRoot = repoRoot && obj.ReferenceEquals(memo.Options, options) -> memo.Hash
         | _ ->

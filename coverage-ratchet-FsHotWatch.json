@@ -2720,15 +2720,15 @@
     ],
     "RunOnceOutput.fs": [
       {
-        "coveredLines": 122,
+        "coveredLines": 121,
         "coveredBranches": 23,
-        "reason": "min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
+        "reason": "2026-11-01: 122 less the one covered line of `RunOnceOutput.runOnceWithProgress`, deleted as a duplicate of `ScanHeartbeat.runOnceWithProgress` (AUTOMATION-1447); measured 121 by a full local coverage run. Before: min of two full local runs 2026-09-04 (2815 tests each). Tagged macos so ratchet/baseline-lines on a dev box only touch this entry; the linux entry is CI-only.",
         "platform": "macos"
       },
       {
-        "coveredLines": 119,
+        "coveredLines": 118,
         "coveredBranches": 47,
-        "reason": "Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 51/70 exact; lowered to 47 on 2026-09-23 because 6bb9d731 deleted the dead `StatusView.isQuiescent` (its only caller `isAllTerminal` had no production callers), taking its covered branches with it (Linux CI run 35923311462: 47) from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
+        "reason": "2026-11-01: lowered by the one covered line of the deleted duplicate `RunOnceOutput.runOnceWithProgress` (AUTOMATION-1447). Before: Linux CI run 33742353641 (main b3f11cfc, 2026-09-03): branches 51/70 exact; lowered to 47 on 2026-09-23 because 6bb9d731 deleted the dead `StatusView.isQuiescent` (its only caller `isAllTerminal` had no production callers), taking its covered branches with it (Linux CI run 35923311462: 47) from the ratchet check log; lines are a LOWER BOUND from the coverage-report HTML artifact, which omits F# StartupCode$ classes (delta vs the tool's own count on macOS: 1 lines). Hand-written because the coverage-thresholds artifact carries no counts; refresh from a CI run, never from a dev box.",
         "platform": "linux"
       }
     ],

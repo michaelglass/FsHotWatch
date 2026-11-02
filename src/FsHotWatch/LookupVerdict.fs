@@ -22,7 +22,7 @@ module Requirement =
     /// A requirement one key satisfies.
     let single (name: string) (key: ActionKey.ActionKey) : Requirement =
         { Name = name
-          Alternatives = [ [ ActionKey.valueOf key ] ] }
+          Alternatives = [ [ key.Value ] ] }
 
 [<RequireQualifiedAccess>]
 type Answer =

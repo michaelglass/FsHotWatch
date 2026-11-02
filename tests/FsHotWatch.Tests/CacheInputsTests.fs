@@ -138,10 +138,7 @@ let ``an unreadable config throws rather than being keyed as absent`` () =
 
 [<Fact>]
 let ``a file without typed results has a fixed used-signatures marker`` () =
-    test <@ usedSignaturesHash None Unchecked.defaultof<_> ParseOnly = Some "parse-only" @>
-
-    test
-        <@ usedSignaturesHash None Unchecked.defaultof<_> (FullCheck Unchecked.defaultof<_>) = Some "full-check-null" @>
+    test <@ usedSignaturesHash None Unchecked.defaultof<_> (fixtureParseOnly ()) = Some "parse-only" @>
 
 [<Fact>]
 let ``a check whose symbol uses cannot be read has no used signatures`` () =
@@ -153,7 +150,7 @@ let ``a check whose symbol uses cannot be read has no used signatures`` () =
         )
         :?> FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults
 
-    test <@ usedSignaturesHash None Unchecked.defaultof<_> (FullCheck broken) = None @>
+    test <@ usedSignaturesHash None Unchecked.defaultof<_> (FullCheck(fixtureParse (), broken)) = None @>
 
 /// An upstream file exercising every kind of declaration the shape renders.
 let private upstream =
@@ -336,7 +333,7 @@ let ``the used-signatures hash of one check answers for the root and project it 
             Some(usedShapes repoRoot options check |> FsHotWatch.CheckCache.sha256Hex)
 
         let hash repoRoot options =
-            usedSignaturesHash repoRoot options (FullCheck check)
+            usedSignaturesHash repoRoot options result.CheckResults
 
         let project = result.ProjectOptions
         let wholeDisk = Some(Path.GetPathRoot root)

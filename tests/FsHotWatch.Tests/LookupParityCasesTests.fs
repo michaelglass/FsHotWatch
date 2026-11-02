@@ -40,7 +40,7 @@ let private pass (store: OutcomeStore.Store) (key: ActionKey.ActionKey) =
     |> ignore
 
 let private lookupIn (store: OutcomeStore.Store) =
-    fun (k: ActionKey.KeyValue) -> store.Lookup k.Text |> Option.map _.Outcome
+    fun (k: ActionKey.KeyValue) -> store.Lookup k |> Option.map _.Outcome
 
 /// The key of a test project's run over the files it reads: here, one fixture.
 let private testOver (fixtureDigest: string) =

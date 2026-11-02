@@ -56,7 +56,7 @@ let private signatureOf (root: string) (source: string) =
         |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
 
     test <@ Array.isEmpty errors @>
-    FsHotWatch.ApiSignature.ofCheck source (FullCheck check)
+    FsHotWatch.ApiSignature.ofCheck source (FullCheck(fixtureParse (), check))
 
 /// `api` with `before` replaced by `after`; the fragment must occur exactly once.
 let private edit (source: string) (before: string, after: string) =
@@ -141,9 +141,8 @@ let ``a file with errors, or without typed results, has no signature`` () =
     withTempDir "api-signature-errors" (fun root ->
         let broken = "module Api\nlet broken : int = \"text\"\n"
         let check = checkAlone root "Api.fs" broken
-        test <@ FsHotWatch.ApiSignature.ofCheck broken (FullCheck check) = None @>
-        test <@ FsHotWatch.ApiSignature.ofCheck broken ParseOnly = None @>
-        test <@ FsHotWatch.ApiSignature.ofCheck broken (FullCheck Unchecked.defaultof<_>) = None @>
+        test <@ FsHotWatch.ApiSignature.ofCheck broken (FullCheck(fixtureParse (), check)) = None @>
+        test <@ FsHotWatch.ApiSignature.ofCheck broken (fixtureParseOnly ()) = None @>
 
         // An FSharpCheckFileResults with no state throws from every query, as FCS can from
         // a symbol property on partially-checked code.
@@ -153,7 +152,7 @@ let ``a file with errors, or without typed results, has no signature`` () =
             )
             :?> FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults
 
-        test <@ FsHotWatch.ApiSignature.ofCheck "module Api\n" (FullCheck stateless) = None @>)
+        test <@ FsHotWatch.ApiSignature.ofCheck "module Api\n" (FullCheck(fixtureParse (), stateless)) = None @>)
 
 [<Fact(Timeout = 4 * RealCheckWaitMs)>]
 let ``a namespace file has a signature, moved by its types`` () =
@@ -214,7 +213,12 @@ let ``a later file's result standing across an upstream line shift analyses as a
             test <@ Array.isEmpty errors @>
 
             match
-                TestPrune.AstAnalyzer.analyzeSourceFromResults "Down.fs" consumer result.ParseResults check "App"
+                TestPrune.AstAnalyzer.analyzeSourceFromResults
+                    "Down.fs"
+                    consumer
+                    (FileCheckResult.requireParseResults "test" result)
+                    check
+                    "App"
             with
             | Ok analysis -> analysis
             | Error e -> failwith e
@@ -225,9 +229,9 @@ let ``a later file's result standing across an upstream line shift analyses as a
         // The edit is one the cut applies to.
         test
             <@
-                FsHotWatch.ApiSignature.ofCheck shifted (FullCheck(checkAlone root "Api.fs" shifted)) = FsHotWatch.ApiSignature.ofCheck
+                FsHotWatch.ApiSignature.ofCheck shifted (FullCheck(fixtureParse (), checkAlone root "Api.fs" shifted)) = FsHotWatch.ApiSignature.ofCheck
                     api
-                    (FullCheck(checkAlone root "Api.fs" api))
+                    (FullCheck(fixtureParse (), checkAlone root "Api.fs" api))
             @>
 
         test <@ not standing.Dependencies.IsEmpty @>
@@ -256,7 +260,8 @@ let ``an entity's members are named in ordinal order, never in the order FCS enu
 
         let check = checkAlone root "Ordered.fs" source
 
-        let text = (FsHotWatch.ApiSignature.signatureText source (FullCheck check)).Value
+        let text =
+            (FsHotWatch.ApiSignature.signatureText source (FullCheck(fixtureParse (), check))).Value
 
         // Each entity block: its header line, then its body lines indented by two spaces.
         let blocks =

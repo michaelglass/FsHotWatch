@@ -2252,7 +2252,13 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
         let outcome = CheckVerdict.verdict CheckVerdict.InnerLoop zeroTestInputs
 
         test <@ outcome = CheckVerdict.CheckOutcome.UnearnedScope(NoTestsRun NoTestsReason.AlreadyVerified) @>
-        test <@ CheckVerdict.verdict CheckVerdict.InnerLoop initialInputs = CheckVerdict.CheckOutcome.Incomplete 1 @>
+
+        test
+            <@
+                CheckVerdict.verdict CheckVerdict.InnerLoop initialInputs = CheckVerdict.CheckOutcome.Incomplete(
+                    CheckVerdict.Unverified.Files 1
+                )
+            @>
 
         let zeroTestExitCode =
             publishVerdict
@@ -2382,7 +2388,8 @@ let private publishPrior (repoRoot: string) (kind: string) =
               Diagnostics = DiagnosticCounts.empty }
 
         publish (FullSuite(1, None)) CheckVerdict.CheckOutcome.FailuresFound (Map.ofList [ "build", failedStatus ])
-    | "incomplete" -> publish (FullSuite(1, None)) (CheckVerdict.CheckOutcome.Incomplete 1) Map.empty
+    | "incomplete" ->
+        publish (FullSuite(1, None)) (CheckVerdict.CheckOutcome.Incomplete(CheckVerdict.Unverified.Files 1)) Map.empty
     | "different-producer" ->
         publish (FullSuite(1, None)) (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline) Map.empty
         let verdictPath = Verdict.path repoRoot

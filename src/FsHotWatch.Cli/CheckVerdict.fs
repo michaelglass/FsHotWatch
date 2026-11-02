@@ -181,9 +181,24 @@ module Baseline =
             $"relative to full-suite run %s{runId} (%s{earnedAt}, %d{r.Projects} project(s))"
         | Baseline.NoTestSuite -> "no test suite is configured, so nothing was skipped"
 
+/// What an incomplete check could not verify.
+[<RequireQualifiedAccess>]
+type Unverified =
+    /// This many files, at least one, could not be checked.
+    | Files of count: int
+    /// Coverage could not be confirmed, so no count is known.
+    | Unconfirmed
+
+module Unverified =
+    /// `count` unchecked files, or `Unconfirmed` for a count that names none.
+    let ofCount (count: int) : Unverified =
+        if count > 0 then
+            Unverified.Files count
+        else
+            Unverified.Unconfirmed
+
 /// The decided outcome of a `check`, in one-to-one correspondence with an exit
-/// code. `Incomplete` carries the residual unchecked count for reporting
-/// (`-1` when coverage was `Unknown` — count not reported by the daemon).
+/// code. `Incomplete` says what could not be verified, for reporting.
 [<RequireQualifiedAccess>]
 type CheckOutcome =
     /// Complete coverage and no failures — relative to `baseline`.
@@ -199,7 +214,7 @@ type CheckOutcome =
     /// Failures found (regardless of coverage — failures short-circuit).
     | FailuresFound
     /// No failures, but completeness could not be achieved.
-    | Incomplete of unchecked: int
+    | Incomplete of unverified: Unverified
     /// No failures — but a test project was WAITING ON BUILD, so its tests did not
     /// run. Nothing was verified, so this is NON-green; nothing FAILED, so it is
     /// not a red. A distinct exit-2 outcome (like `Incomplete`) with its own
@@ -547,8 +562,8 @@ let verdict (mode: CheckMode) (inputs: CheckInputs) : CheckOutcome =
             // `confirm` demands the full suite and accepts nothing narrower.
             | Confirmation, FullSuite _ -> clean ()
             | Confirmation, (ImpactFiltered _ | ScopeUnknown) -> CheckOutcome.UnearnedScope testScope
-        | Incomplete n -> CheckOutcome.Incomplete n
-        | Unknown -> CheckOutcome.Incomplete -1
+        | Incomplete n -> CheckOutcome.Incomplete(Unverified.ofCount n)
+        | Unknown -> CheckOutcome.Incomplete Unverified.Unconfirmed
 
 /// Must `confirm` go and PRODUCE the evidence it is about to demand?
 ///

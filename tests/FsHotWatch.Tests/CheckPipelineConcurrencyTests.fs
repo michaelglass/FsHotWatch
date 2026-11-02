@@ -310,9 +310,9 @@ let ``work two sessions share survives one of them cancelling`` () =
                 test <@ result.Frame.IsSome @>
 
                 match result.CheckResults with
-                | FullCheck results -> results
+                | FullCheck(_, results) -> results
                 | Replayed _ -> failwith "a replayed check is not expected here (ADR-059 §17)"
-                | ParseOnly -> failwith "session B's check was aborted when session A cancelled"
+                | ParseOnly _ -> failwith "session B's check was aborted when session A cancelled"
 
         let bResults = fullCheck bCheck.Result
         test <@ bResults.Diagnostics |> Array.exists (fun d -> d.Message.Contains "string") @>

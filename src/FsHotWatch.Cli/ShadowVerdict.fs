@@ -183,7 +183,7 @@ let requirements (o: Observation) (testProjects: string list) : LookupVerdict.Re
           LookupVerdict.Requirement.single ("plugin:" + name) (pluginKey o name)
       LookupVerdict.Requirement.single "diagnostics" (diagnosticsKey o)
       for project in testProjects do
-          let full = [ ActionKey.valueOf (testKey o project FullScope) ]
+          let full = [ (testKey o project FullScope).Value ]
 
           // The record the test runner filed under this project's K_P, when the daemon named
           // the key: the K_P of the tree as it is now, so no other tree's run can answer.
@@ -197,9 +197,7 @@ let requirements (o: Observation) (testProjects: string list) : LookupVerdict.Re
               if o.Command = Verdict.Confirm then
                   [ full ] @ byKp
               else
-                  [ full
-                    [ ActionKey.valueOf (testKey o project ImpactScope)
-                      ActionKey.valueOf (baselineKey project) ] ]
+                  [ full; [ (testKey o project ImpactScope).Value; (baselineKey project).Value ] ]
                   @ byKp } ]
 
 /// The failed suites of `o` that a LATER run of the same check ran again and passed.
@@ -378,9 +376,9 @@ let line (o: Observation) (answer: LookupVerdict.Answer) (recorded: int) : strin
 /// Returns the lookup's answer. `testProjects` are the configured test projects.
 /// The answer for a key: the shadow store's, else the K_P store's, where the test runner files.
 let private lookupIn (store: OutcomeStore.Store) (kpStore: OutcomeStore.Store option) (key: ActionKey.KeyValue) =
-    match store.Lookup key.Text with
+    match store.Lookup key with
     | Some record -> Some record.Outcome
-    | None -> kpStore |> Option.bind (fun kp -> kp.Lookup key.Text) |> Option.map _.Outcome
+    | None -> kpStore |> Option.bind (fun kp -> kp.Lookup key) |> Option.map _.Outcome
 
 let observeWith
     (repoRoot: string)
@@ -400,10 +398,7 @@ let observeWith
     File.AppendAllText(path, line o answer recorded + "\n")
 
     let keep =
-        required
-        |> List.collect (fun r -> List.concat r.Alternatives)
-        |> List.map _.Text
-        |> Set.ofList
+        required |> List.collect (fun r -> List.concat r.Alternatives) |> Set.ofList
 
     store.Gc(o.RecordedAt, keep) |> ignore
     answer

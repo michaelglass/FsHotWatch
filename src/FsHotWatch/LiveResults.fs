@@ -182,7 +182,7 @@ type Bound internal (capacity: int, clock: unit -> TimeSpan) =
                 publish place
             }
         | FsHotWatch.Events.FullCheck _
-        | FsHotWatch.Events.ParseOnly -> this.Hold publish
+        | FsHotWatch.Events.ParseOnly _ -> this.Hold publish
 
     /// The live results now.
     member _.Status() : LiveResultsStatus =

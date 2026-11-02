@@ -73,40 +73,6 @@ let ``LintPlugin with configPath sets up lint params`` () =
     let handler = create None (Some "/tmp/nonexistent-config.json") None None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "lint" @>
 
-[<Fact(Timeout = 20000)>]
-let ``lint error path sets Failed status on null check results`` () =
-    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
-
-    let handler = create None None None None
-    host.RegisterHandler(handler)
-
-    // Explicitly null ParseResults to exercise the lint plugin's null-guard path.
-    let fakeResult =
-        { fakeFileCheckResult "/tmp/nonexistent/Fake.fs" with
-            Source = ""
-            ParseResults = Unchecked.defaultof<_> }
-
-    try
-        host.EmitFileChecked(fakeResult)
-    with _ ->
-        ()
-
-    waitUntil
-        (fun () ->
-            match host.GetStatus("lint") with
-            | Some(Failed _)
-            | Some(Running _) -> true
-            | _ -> false)
-        15000
-
-    let status = host.GetStatus("lint")
-    test <@ status.IsSome @>
-
-    match status.Value with
-    | Failed _ -> ()
-    | Running _ -> ()
-    | other -> Assert.Fail($"Expected Failed or Running, got: %A{other}")
-
 [<Fact(Timeout = 15000)>]
 let ``warnings command with args passes through`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
@@ -120,36 +86,6 @@ let ``warnings command with args passes through`` () =
 
     test <@ result.IsSome @>
     test <@ result.Value.Contains("\"files\": 0") @>
-
-[<Fact(Timeout = 15000)>]
-let ``lint skips file with null ParseResults without crashing`` () =
-    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
-
-    let handler = create None None None None
-    host.RegisterHandler(handler)
-
-    let fakeResult =
-        { fakeFileCheckResult "/tmp/test/Empty.fs" with
-            Source = "module Empty"
-            ParseResults = Unchecked.defaultof<_> }
-
-    // Should not throw
-    host.EmitFileChecked(fakeResult)
-
-    waitUntil
-        (fun () ->
-            match host.GetStatus("lint") with
-            | Some _ -> true
-            | None -> false)
-        15000
-
-    let status = host.GetStatus("lint")
-    test <@ status.IsSome @>
-
-    // Should be Running (set at start of handler), not Failed
-    match status.Value with
-    | Failed(msg, _, _) -> Assert.Fail($"Should not fail -- got: %s{msg}")
-    | _ -> ()
 
 [<WallClock("product timeout under test: the work deliberately outlasts the product's own bound, and the assertion is the typed timeout outcome the product reports")>]
 [<Fact(Timeout = 20000)>]
@@ -567,6 +503,16 @@ let ``lint refuses a FileChecked that carries no model generation at all`` () =
 
     test <@ linted |> List.ofSeq = [ present ] @>
 
+/// A plugin host over `root`, sharing the file task cache under `store` when `shared`.
+let private lintHostIn (store: string) (root: string) (shared: bool) =
+    if shared then
+        let cache =
+            FsHotWatch.FileTaskCache.FileTaskCache(store, repoRoot = root) :> FsHotWatch.TaskCache.ITaskCache
+
+        PluginHost(Unchecked.defaultof<_>, root, taskCache = cache)
+    else
+        PluginHost(Unchecked.defaultof<_>, root)
+
 // A task-cache hit skips `Update`, so a session reading a sibling checkout's cache entry
 // for a file used to leave that file out of `WarningsByFile`: the ledger had the replayed
 // findings, but the `warnings` command counted only the files this session linted itself.
@@ -600,15 +546,7 @@ let ``a lint result replayed from a sibling checkout's cache fills WarningsByFil
                         Lint.LintResult.Success []
 
                 let lintIn (root: string) (shared: bool) =
-                    let host =
-                        if shared then
-                            let cache =
-                                FsHotWatch.FileTaskCache.FileTaskCache(store, repoRoot = root)
-                                :> FsHotWatch.TaskCache.ITaskCache
-
-                            PluginHost(Unchecked.defaultof<_>, root, taskCache = cache)
-                        else
-                            PluginHost(Unchecked.defaultof<_>, root)
+                    let host = lintHostIn store root shared
 
                     host.WorkStore.PublishProjectModel fixtureModel
                     host.RegisterHandler(create (Some root) None (Some runner) None)
@@ -685,7 +623,7 @@ let ``lint with a project config reaches a terminal status`` () =
         host.EmitFileChecked
             { fakeFileCheckResult file with
                 Source = source
-                ParseResults = parsed }
+                CheckResults = ParseOnly parsed }
 
         waitForTerminalStatus host "lint" 20000
 
@@ -718,7 +656,7 @@ let private lintThroughPlugin (dir: string) (configPath: string option) (fileNam
     host.EmitFileChecked
         { fakeFileCheckResult file with
             Source = source
-            ParseResults = parsed }
+            CheckResults = ParseOnly parsed }
 
     waitForTerminalStatus host "lint" 20000
 
@@ -943,7 +881,7 @@ let private lintAfterConfigEdit (dir: string) (edited: string) (fileName: string
     host.EmitFileChecked
         { fakeFileCheckResult file with
             Source = longSource
-            ParseResults = parsed }
+            CheckResults = ParseOnly parsed }
 
     waitForTerminalStatus host "lint" 20000
 
