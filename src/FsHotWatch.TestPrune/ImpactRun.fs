@@ -282,6 +282,253 @@ let internal widenLaunch
       LaunchedSymbols = launchedSymbols
       LaunchedRevisions = launchedRevisions }
 
+/// The impact selection an impact run launches from (`selectForLaunch`).
+type internal LaunchSelection =
+    { CoveringProjectsBySymbol: Map<string, Set<string>>
+      SymbolAffectedByProject: Map<string, string list>
+      TraceShadow: ShadowReading list
+      QuarantinedAffectedByProject: Map<string, string list>
+      AffectedByProject: Map<string, string list>
+      TotalClasses: int
+      InputTree: ReceiptTree option
+      SymbolFreeEdit: SymbolFreeEdit option
+      NarrowedSeeds: string list option
+      AlwaysOnly: bool }
+
+/// Select what an impact run launches: the projects covering each launched symbol, the
+/// classes the symbols reach, the shadow trace reading, quarantined failures, the forced
+/// projects, and a symbol-free edit's covering classes.
+let internal selectForLaunch
+    (env: RunEnv)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (configs: TestConfig list)
+    (inputs: TestRunInputs)
+    (hasCachedResults: bool)
+    (widenings: LaunchWidenings)
+    : LaunchSelection =
+    let repoRoot = env.Config.RepoRoot
+    let runnableProjects = env.Config.RunnableProjects
+    let traces = env.Config.Traces
+    let db = env.Db
+    let queries = env.Queries
+    let coveringOf = env.Debt.CoveringOf
+    let lazyDebtScope = env.Debt.DebtScope
+    let nothingOwed = env.Debt.NothingOwed
+    let scopeIsFullSuite = widenings.ScopeIsFullSuite
+    let forceRunProjects = widenings.ForceRunProjects
+    let launchedSymbols = widenings.LaunchedSymbols
+
+    // For each launched symbol, the set of test PROJECTS whose tests
+    // cover it. An empty set ⇒ no covering test. Queried per-symbol so
+    // a symbol commits ONLY when every project covering IT passed (a
+    // run-wide union would over-couple unrelated symbols). Empty queue ⇒
+    // no queries. Kept INSIDE the try: these are DB reads that can throw
+    // transiently on a cold/contended box (SQLITE_BUSY, schema drift). A
+    // throw here must produce the Aborted lifecycle below (an honest,
+    // re-runnable "tests did not run" verdict) rather than escaping to
+    // the framework's `runOne`, which would only log-and-strand the run.
+    // The projects gating a symbol's commit are `debtScope`'s — the same
+    // rule `flushAndQueryAffected` uses to drop symbols, so the two cannot
+    // disagree. An unconfigured, undeclared coverer blocks the commit on
+    // purpose: its tests never ran, so they verified nothing.
+    //
+    // A pass-through run asks nothing: it runs every project, and its
+    // completion discharges by the full run's green (see `TestsFinished`).
+    let coveringProjectsBySymbol =
+        if TestMode.skips LaunchCoveringCapture inputs.Mode then
+            Map.empty
+        else
+            let owedTo = lazyDebtScope (coveringOf launchedSymbols)
+
+            launchedSymbols |> Set.toList |> List.map (fun s -> s, owedTo s) |> Map.ofList
+
+    // Extension-contributed edges were already written to the DB by
+    // flushAndQueryAffected, so `inputs.AffectedTests` already includes tests
+    // reachable through extension edges (sql, sql-hydra, falco, etc.).
+    //
+    // A pass-through flush selects nothing, so its launch asks the one grouped
+    // question the check-reach sample needs: what `check` would have selected.
+    let affectedTestsList =
+        if TestMode.skips FlushSelection inputs.Mode then
+            if Set.isEmpty launchedSymbols then
+                []
+            else
+                queries.AffectedTests(Set.toList launchedSymbols)
+                |> List.filter (fun t -> Set.isEmpty runnableProjects || Set.contains t.TestProject runnableProjects)
+        else
+            match inputs.AffectedTests with
+            | Analyzed tests -> tests
+            | NotYetAnalyzed -> []
+
+    let symbolAffectedByProject =
+        affectedTestsList
+        |> List.groupBy (fun t -> t.TestProject)
+        |> List.map (fun (proj, tests) -> proj, tests |> List.map (fun t -> t.TestClass) |> List.distinct)
+        |> Map.ofList
+
+    // `tests.traces.select: "shadow"`: what the recorded traces would select,
+    // beside the static symbol selection above, from the same seeds and index at
+    // the same instant. Logged now, stored at completion; it selects nothing.
+    let traceShadow =
+        match traces with
+        | Some wiring when wiring.Policy.Select = SelectShadow ->
+            let symbols = TestPrune.Ports.toSymbolStore db
+
+            TraceShadow.atLaunch
+                wiring.Policy
+                repoRoot
+                (configs |> List.map (fun c -> c.Project) |> List.distinct)
+                (fun project -> symbols.GetTestMethodsInProjects [ project ])
+                (lazy (TestPrune.Trace.TraceIngest.versionHashes symbols))
+                affectedTestsList
+                (Logging.info "test-prune")
+        | _ -> []
+
+    // A prior red is mandatory verification debt. The
+    // graph for today's edit may not reach yesterday's failing class, but
+    // the next ordinary run must still execute it. Unknown class scope is
+    // conservatively the whole project.
+    let quarantinedAffectedByProject =
+        OutstandingFailure.quarantine (fullSuiteProjects configs) inputs.OutstandingFailures symbolAffectedByProject
+
+    // UNION the dependency-fanout: each force-run project enters the
+    // map with an EMPTY class list, which `buildFilterArgs` treats as
+    // "no filter → run ALL tests in this project" (a project ABSENT
+    // from a non-empty map is skipped; present-with-[] runs in full).
+    // We don't overwrite a project that already has symbol-affected
+    // classes — its precise selection plus a forced full run are the
+    // same "run this project"; [] (full) is the safe superset, so a
+    // fanout hit promotes a partially-selected project to full.
+    let affectedByProject =
+        forceRunProjects
+        |> Set.fold (fun acc proj -> Map.add proj [] acc) quarantinedAffectedByProject
+
+    // The skip gate counts symbol-affected classes only. A pure
+    // dependency-fanout (force-run projects, zero symbol classes) must
+    // NOT be counted as "0 affected" and skipped — so the gate below
+    // also checks `forceRunProjects` is empty.
+    let totalClasses =
+        quarantinedAffectedByProject |> Map.values |> Seq.sumBy List.length
+
+    let inputTree = ReceiptInputTree.readTree repoRoot
+
+    // Nothing is owed and nothing was selected, but the tree moved since the
+    // evidence was earned, by an edit the symbol diff saw as changing no
+    // symbol. Running every project in full is what a non-source edit costs;
+    // an edit confined to compiled F# source files costs the classes covering
+    // their symbols (`SymbolFreeEdit`). `None` when this is not that launch.
+    let symbolFreeEdit =
+        let unverified =
+            not (ReceiptInputTree.matches inputs.EvidenceTree (inputTree |> Option.map _.Identity))
+
+        let nothingSelected =
+            totalClasses = 0
+            && Set.isEmpty forceRunProjects
+            && List.isEmpty inputs.OutstandingFailures
+            && not (UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered)
+
+        if
+            unverified
+            && hasCachedResults
+            && not scopeIsFullSuite
+            && nothingOwed inputs.Debt
+            && nothingSelected
+        then
+            let compiled =
+                ctx.ProjectGraph.ObserveCheckableFiles()
+                |> Option.map (fun (_, files) ->
+                    fun (rel: string) -> files.Contains(AbsFilePath.create (Path.Combine(repoRoot, rel))))
+
+            let index: SymbolFreeEdit.Index =
+                { SymbolsIn = fun rel -> db.GetSymbolsInFile rel |> List.map _.FullName |> List.distinct
+                  TestsIn = db.GetTestMethodsInFile
+                  Affected = queries.AffectedTests }
+
+            match
+                SymbolFreeEdit.select
+                    inputs.EvidenceManifest
+                    inputTree
+                    inputs.SealedTree
+                    compiled
+                    (fun project -> Set.isEmpty runnableProjects || Set.contains project runnableProjects)
+                    index
+            with
+            // No test covers the edited files, and no always-class stands in
+            // for them: only running can earn evidence for the edited tree.
+            | SymbolFreeEdit.Covering(files, _, classes) when
+                Map.isEmpty classes && Map.isEmpty (AlwaysClasses.only configs)
+                ->
+                SymbolFreeEdit.Refused
+                    $"no runnable test covers a symbol of %s{describeAll files}, and no project declares alwaysClasses"
+            | narrowing -> narrowing
+            |> Some
+        else
+            None
+
+    let affectedByProject, narrowedSeeds =
+        match symbolFreeEdit with
+        | Some(SymbolFreeEdit.Covering(files, seeds, classes)) ->
+            let classCount = classes |> Map.values |> Seq.sumBy List.length
+
+            let running =
+                if classCount = 0 then
+                    $"no runnable test covers their %d{List.length seeds} symbol(s), so running only the declared alwaysClasses"
+                else
+                    $"running the %d{classCount} class(es) covering their %d{List.length seeds} symbol(s)"
+
+            Logging.info
+                "test-prune"
+                $"No affected classes, and the tree moved since the evidence was earned only by an edit to %d{List.length files} compiled F# source file(s) the symbol diff saw as changing no symbol (%s{describeAll files}); %s{running} instead of every project in full"
+
+            classes, Some seeds
+        | Some(SymbolFreeEdit.Refused _)
+        | None -> affectedByProject, None
+
+    // ALWAYS-CLASSES. Every filtered launch carries each project's declared
+    // `alwaysClasses`: tests that read the source tree as data, which no
+    // symbol edge leads to. An edit whose every changed symbol has no
+    // covering test would otherwise take the nothing-to-verify skip below,
+    // yet the tree changed under classes that read all of it, so that edit
+    // runs exactly those classes instead. So does an edit no symbol diff sees
+    // to compiled files no test covers (`SymbolFreeEdit.Covering` with no
+    // class). An empty selection is otherwise left alone: it already runs
+    // every project in full.
+    let uncoveredSymbolFreeEdit =
+        match symbolFreeEdit with
+        | Some(SymbolFreeEdit.Covering(_, _, classes)) -> Map.isEmpty classes
+        | _ -> false
+
+    let alwaysOnly =
+        totalClasses = 0
+        && Set.isEmpty forceRunProjects
+        && List.isEmpty inputs.OutstandingFailures
+        && Map.isEmpty affectedByProject
+        && (UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered
+            || uncoveredSymbolFreeEdit)
+        && not (Map.isEmpty (AlwaysClasses.only configs))
+
+    let affectedByProject =
+        if alwaysOnly then
+            if not uncoveredSymbolFreeEdit then
+                Logging.info
+                    "test-prune"
+                    "Every changed symbol has no covering test, but the tree changed under the declared alwaysClasses; running only those"
+
+            AlwaysClasses.only configs
+        else
+            AlwaysClasses.widen configs affectedByProject
+
+    { CoveringProjectsBySymbol = coveringProjectsBySymbol
+      SymbolAffectedByProject = symbolAffectedByProject
+      TraceShadow = traceShadow
+      QuarantinedAffectedByProject = quarantinedAffectedByProject
+      AffectedByProject = affectedByProject
+      TotalClasses = totalClasses
+      InputTree = inputTree
+      SymbolFreeEdit = symbolFreeEdit
+      NarrowedSeeds = narrowedSeeds
+      AlwaysOnly = alwaysOnly }
+
 let internal runTestsWithImpactWith
     (env: RunEnv)
     (ctx: PluginCtx<TestPruneMsg>)
@@ -307,17 +554,12 @@ let internal runTestsWithImpactWith
     : Async<TestPruneMsg> =
     let repoRoot = env.Config.RepoRoot
     let configuredTestProjects = env.Config.ConfiguredTestProjects
-    let runnableProjects = env.Config.RunnableProjects
     let launchDeadline = env.Config.LaunchDeadline
     let maxParallelProjects = env.Config.MaxParallelProjects
     let beforeRun = env.Config.BeforeRun
     let afterRun = env.Config.AfterRun
     let coveragePaths = env.Config.CoveragePaths
-    let traces = env.Config.Traces
     let db = env.Db
-    let queries = env.Queries
-    let coveringOf = env.Debt.CoveringOf
-    let lazyDebtScope = env.Debt.DebtScope
     let nothingOwed = env.Debt.NothingOwed
     let awaitDiscoveryBeforeLaunch = env.Launch.AwaitDiscovery
     let compileInputsOf = env.Launch.CompileInputsOf
@@ -358,209 +600,17 @@ let internal runTestsWithImpactWith
             env.BumpSeedAges(Set.toList launchedSymbols)
 
         try
-            // For each launched symbol, the set of test PROJECTS whose tests
-            // cover it. An empty set ⇒ no covering test. Queried per-symbol so
-            // a symbol commits ONLY when every project covering IT passed (a
-            // run-wide union would over-couple unrelated symbols). Empty queue ⇒
-            // no queries. Kept INSIDE the try: these are DB reads that can throw
-            // transiently on a cold/contended box (SQLITE_BUSY, schema drift). A
-            // throw here must produce the Aborted lifecycle below (an honest,
-            // re-runnable "tests did not run" verdict) rather than escaping to
-            // the framework's `runOne`, which would only log-and-strand the run.
-            // The projects gating a symbol's commit are `debtScope`'s — the same
-            // rule `flushAndQueryAffected` uses to drop symbols, so the two cannot
-            // disagree. An unconfigured, undeclared coverer blocks the commit on
-            // purpose: its tests never ran, so they verified nothing.
-            //
-            // A pass-through run asks nothing: it runs every project, and its
-            // completion discharges by the full run's green (see `TestsFinished`).
-            let coveringProjectsBySymbol =
-                if TestMode.skips LaunchCoveringCapture inputs.Mode then
-                    Map.empty
-                else
-                    let owedTo = lazyDebtScope (coveringOf launchedSymbols)
-
-                    launchedSymbols |> Set.toList |> List.map (fun s -> s, owedTo s) |> Map.ofList
-
-            // Extension-contributed edges were already written to the DB by
-            // flushAndQueryAffected, so `inputs.AffectedTests` already includes tests
-            // reachable through extension edges (sql, sql-hydra, falco, etc.).
-            //
-            // A pass-through flush selects nothing, so its launch asks the one grouped
-            // question the check-reach sample needs: what `check` would have selected.
-            let affectedTestsList =
-                if TestMode.skips FlushSelection inputs.Mode then
-                    if Set.isEmpty launchedSymbols then
-                        []
-                    else
-                        queries.AffectedTests(Set.toList launchedSymbols)
-                        |> List.filter (fun t ->
-                            Set.isEmpty runnableProjects || Set.contains t.TestProject runnableProjects)
-                else
-                    match inputs.AffectedTests with
-                    | Analyzed tests -> tests
-                    | NotYetAnalyzed -> []
-
-            let symbolAffectedByProject =
-                affectedTestsList
-                |> List.groupBy (fun t -> t.TestProject)
-                |> List.map (fun (proj, tests) -> proj, tests |> List.map (fun t -> t.TestClass) |> List.distinct)
-                |> Map.ofList
-
-            // `tests.traces.select: "shadow"`: what the recorded traces would select,
-            // beside the static symbol selection above, from the same seeds and index at
-            // the same instant. Logged now, stored at completion; it selects nothing.
-            let traceShadow =
-                match traces with
-                | Some wiring when wiring.Policy.Select = SelectShadow ->
-                    let symbols = TestPrune.Ports.toSymbolStore db
-
-                    TraceShadow.atLaunch
-                        wiring.Policy
-                        repoRoot
-                        (configs |> List.map (fun c -> c.Project) |> List.distinct)
-                        (fun project -> symbols.GetTestMethodsInProjects [ project ])
-                        (lazy (TestPrune.Trace.TraceIngest.versionHashes symbols))
-                        affectedTestsList
-                        (Logging.info "test-prune")
-                | _ -> []
-
-            // A prior red is mandatory verification debt. The
-            // graph for today's edit may not reach yesterday's failing class, but
-            // the next ordinary run must still execute it. Unknown class scope is
-            // conservatively the whole project.
-            let quarantinedAffectedByProject =
-                OutstandingFailure.quarantine
-                    (fullSuiteProjects configs)
-                    inputs.OutstandingFailures
-                    symbolAffectedByProject
-
-            // UNION the dependency-fanout: each force-run project enters the
-            // map with an EMPTY class list, which `buildFilterArgs` treats as
-            // "no filter → run ALL tests in this project" (a project ABSENT
-            // from a non-empty map is skipped; present-with-[] runs in full).
-            // We don't overwrite a project that already has symbol-affected
-            // classes — its precise selection plus a forced full run are the
-            // same "run this project"; [] (full) is the safe superset, so a
-            // fanout hit promotes a partially-selected project to full.
-            let affectedByProject =
-                forceRunProjects
-                |> Set.fold (fun acc proj -> Map.add proj [] acc) quarantinedAffectedByProject
-
-            // The skip gate counts symbol-affected classes only. A pure
-            // dependency-fanout (force-run projects, zero symbol classes) must
-            // NOT be counted as "0 affected" and skipped — so the gate below
-            // also checks `forceRunProjects` is empty.
-            let totalClasses =
-                quarantinedAffectedByProject |> Map.values |> Seq.sumBy List.length
-
-            let inputTree = ReceiptInputTree.readTree repoRoot
-
-            // Nothing is owed and nothing was selected, but the tree moved since the
-            // evidence was earned, by an edit the symbol diff saw as changing no
-            // symbol. Running every project in full is what a non-source edit costs;
-            // an edit confined to compiled F# source files costs the classes covering
-            // their symbols (`SymbolFreeEdit`). `None` when this is not that launch.
-            let symbolFreeEdit =
-                let unverified =
-                    not (ReceiptInputTree.matches inputs.EvidenceTree (inputTree |> Option.map _.Identity))
-
-                let nothingSelected =
-                    totalClasses = 0
-                    && Set.isEmpty forceRunProjects
-                    && List.isEmpty inputs.OutstandingFailures
-                    && not (UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered)
-
-                if
-                    unverified
-                    && hasCachedResults
-                    && not scopeIsFullSuite
-                    && nothingOwed inputs.Debt
-                    && nothingSelected
-                then
-                    let compiled =
-                        ctx.ProjectGraph.ObserveCheckableFiles()
-                        |> Option.map (fun (_, files) ->
-                            fun (rel: string) -> files.Contains(AbsFilePath.create (Path.Combine(repoRoot, rel))))
-
-                    let index: SymbolFreeEdit.Index =
-                        { SymbolsIn = fun rel -> db.GetSymbolsInFile rel |> List.map _.FullName |> List.distinct
-                          TestsIn = db.GetTestMethodsInFile
-                          Affected = queries.AffectedTests }
-
-                    match
-                        SymbolFreeEdit.select
-                            inputs.EvidenceManifest
-                            inputTree
-                            inputs.SealedTree
-                            compiled
-                            (fun project -> Set.isEmpty runnableProjects || Set.contains project runnableProjects)
-                            index
-                    with
-                    // No test covers the edited files, and no always-class stands in
-                    // for them: only running can earn evidence for the edited tree.
-                    | SymbolFreeEdit.Covering(files, _, classes) when
-                        Map.isEmpty classes && Map.isEmpty (AlwaysClasses.only configs)
-                        ->
-                        SymbolFreeEdit.Refused
-                            $"no runnable test covers a symbol of %s{describeAll files}, and no project declares alwaysClasses"
-                    | narrowing -> narrowing
-                    |> Some
-                else
-                    None
-
-            let affectedByProject, narrowedSeeds =
-                match symbolFreeEdit with
-                | Some(SymbolFreeEdit.Covering(files, seeds, classes)) ->
-                    let classCount = classes |> Map.values |> Seq.sumBy List.length
-
-                    let running =
-                        if classCount = 0 then
-                            $"no runnable test covers their %d{List.length seeds} symbol(s), so running only the declared alwaysClasses"
-                        else
-                            $"running the %d{classCount} class(es) covering their %d{List.length seeds} symbol(s)"
-
-                    Logging.info
-                        "test-prune"
-                        $"No affected classes, and the tree moved since the evidence was earned only by an edit to %d{List.length files} compiled F# source file(s) the symbol diff saw as changing no symbol (%s{describeAll files}); %s{running} instead of every project in full"
-
-                    classes, Some seeds
-                | Some(SymbolFreeEdit.Refused _)
-                | None -> affectedByProject, None
-
-            // ALWAYS-CLASSES. Every filtered launch carries each project's declared
-            // `alwaysClasses`: tests that read the source tree as data, which no
-            // symbol edge leads to. An edit whose every changed symbol has no
-            // covering test would otherwise take the nothing-to-verify skip below,
-            // yet the tree changed under classes that read all of it, so that edit
-            // runs exactly those classes instead. So does an edit no symbol diff sees
-            // to compiled files no test covers (`SymbolFreeEdit.Covering` with no
-            // class). An empty selection is otherwise left alone: it already runs
-            // every project in full.
-            let uncoveredSymbolFreeEdit =
-                match symbolFreeEdit with
-                | Some(SymbolFreeEdit.Covering(_, _, classes)) -> Map.isEmpty classes
-                | _ -> false
-
-            let alwaysOnly =
-                totalClasses = 0
-                && Set.isEmpty forceRunProjects
-                && List.isEmpty inputs.OutstandingFailures
-                && Map.isEmpty affectedByProject
-                && (UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered
-                    || uncoveredSymbolFreeEdit)
-                && not (Map.isEmpty (AlwaysClasses.only configs))
-
-            let affectedByProject =
-                if alwaysOnly then
-                    if not uncoveredSymbolFreeEdit then
-                        Logging.info
-                            "test-prune"
-                            "Every changed symbol has no covering test, but the tree changed under the declared alwaysClasses; running only those"
-
-                    AlwaysClasses.only configs
-                else
-                    AlwaysClasses.widen configs affectedByProject
+            let selected = selectForLaunch env ctx configs inputs hasCachedResults widenings
+            let coveringProjectsBySymbol = selected.CoveringProjectsBySymbol
+            let symbolAffectedByProject = selected.SymbolAffectedByProject
+            let traceShadow = selected.TraceShadow
+            let quarantinedAffectedByProject = selected.QuarantinedAffectedByProject
+            let affectedByProject = selected.AffectedByProject
+            let totalClasses = selected.TotalClasses
+            let inputTree = selected.InputTree
+            let symbolFreeEdit = selected.SymbolFreeEdit
+            let narrowedSeeds = selected.NarrowedSeeds
+            let alwaysOnly = selected.AlwaysOnly
 
             // TEST EVIDENCE, at launch: AFTER selection, so it can only take away
             // launches the selector chose, never add a green it did not. Keyed now,
