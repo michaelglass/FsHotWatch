@@ -1966,6 +1966,87 @@ let private indexSyntax (tree: ParsedInput) (source: string) : SyntaxIndex =
         |> List.collect (fun shape -> shape.Children |> List.filter _.IsCase |> List.map (fun c -> c.Name, c.Range))
         |> groupRangesByName }
 
+/// The tracked definition enclosing a use: the narrowest binding or type-definition range
+/// containing it, resolved by name to the definition whose own lines sit inside that range.
+/// None when no range contains the use (the edge is dropped and counted).
+let private enclosingResolver
+    (syntax: SyntaxIndex)
+    (definitions: (SymbolInfo * FSharpSymbolUse) list)
+    : range -> SymbolInfo option =
+    let memberBindingRanges = syntax.MemberBindingRanges
+    let typeDefnRanges = syntax.TypeDefnRanges
+    let allBindingRangeMap = syntax.AllBindingRangeMap
+    let typeDefnRangeMap = syntax.TypeDefnRangeMap
+
+    // All ranges for findEnclosing: member bindings + type definitions.
+    // Type definition ranges enable edge attribution for interface implementation
+    // references (e.g. `interface IFoo with`) which sit at the type level,
+    // outside any member body.
+    let allEnclosingRanges = (memberBindingRanges @ typeDefnRanges) |> Array.ofList
+
+    // Covers binding ranges and type definition ranges so findEnclosing can resolve
+    // both member-level and type-level enclosures. Values are LISTS for the same
+    // reason as `groupRangesByName`: collapsing colliding short names to a single
+    // entry loses or mis-attributes the earlier definition's edges. findEnclosing
+    // disambiguates by the definition's own line range.
+    let definitionsByName =
+        definitions
+        |> List.choose (fun (si, _) ->
+            let sn = canonicalShortName si.FullName
+
+            if
+                allBindingRangeMap |> Map.containsKey sn
+                || typeDefnRangeMap |> Map.containsKey sn
+            then
+                Some(sn, si)
+            else
+                None)
+        |> List.groupBy fst
+        |> List.map (fun (n, sis) -> n, List.map snd sis)
+        |> Map.ofList
+
+    // Resolve a (name, enclosing binding range) pair to the SymbolInfo whose own
+    // definition range sits inside that binding range.
+    let resolveEnclosing (name: string) (bindingRange: range) : SymbolInfo option =
+        match definitionsByName |> Map.tryFind name with
+        | None -> None
+        | Some [ single ] -> Some single
+        | Some candidates ->
+            let contained =
+                candidates
+                |> List.filter (fun si -> si.LineStart >= bindingRange.StartLine && si.LineEnd <= bindingRange.EndLine)
+
+            match contained with
+            | [ exactlyOne ] -> Some exactlyOne
+            | first :: _ -> Some first
+            | [] -> List.tryHead candidates
+
+    let findEnclosing (useRange: range) =
+        let mutable best: (string * range) voption = ValueNone
+
+        for i in 0 .. allEnclosingRanges.Length - 1 do
+            let name, bindingRange = allEnclosingRanges[i]
+
+            if
+                useRange.StartLine >= bindingRange.StartLine
+                && useRange.EndLine <= bindingRange.EndLine
+            then
+                match best with
+                | ValueNone -> best <- ValueSome(name, bindingRange)
+                | ValueSome(_, bestRange) ->
+                    let span = bindingRange.EndLine - bindingRange.StartLine
+                    let bestSpan = bestRange.EndLine - bestRange.StartLine
+
+                    if span < bestSpan then
+                        best <- ValueSome(name, bindingRange)
+
+        best
+        |> function
+            | ValueSome(name, bindingRange) -> resolveEnclosing name bindingRange
+            | ValueNone -> None
+
+    findEnclosing
+
 /// Extract analysis results from parse and type-check results.
 let private extractResults
     (maxTraversalVisits: int)
@@ -2017,8 +2098,6 @@ let private extractResults
                 diagnosticResources sourceFileName stage
 
             let syntax = indexSyntax parseResults.ParseTree source
-            let memberBindingRanges = syntax.MemberBindingRanges
-            let typeDefnRanges = syntax.TypeDefnRanges
             let allBindingRangeMap = syntax.AllBindingRangeMap
             let typeDefnRangeMap = syntax.TypeDefnRangeMap
             let propertyRangeMap = syntax.PropertyRangeMap
@@ -2164,73 +2243,7 @@ let private extractResults
 
             trace "symbols"
 
-            // All ranges for findEnclosing: member bindings + type definitions.
-            // Type definition ranges enable edge attribution for interface implementation
-            // references (e.g. `interface IFoo with`) which sit at the type level,
-            // outside any member body.
-            let allEnclosingRanges = (memberBindingRanges @ typeDefnRanges) |> Array.ofList
-
-            // Covers binding ranges and type definition ranges so findEnclosing can resolve
-            // both member-level and type-level enclosures. Values are LISTS for the same
-            // reason as `groupRangesByName`: collapsing colliding short names to a single
-            // entry loses or mis-attributes the earlier definition's edges. findEnclosing
-            // disambiguates by the definition's own line range.
-            let definitionsByName =
-                definitions
-                |> List.choose (fun (si, _) ->
-                    let sn = canonicalShortName si.FullName
-
-                    if
-                        allBindingRangeMap |> Map.containsKey sn
-                        || typeDefnRangeMap |> Map.containsKey sn
-                    then
-                        Some(sn, si)
-                    else
-                        None)
-                |> List.groupBy fst
-                |> List.map (fun (n, sis) -> n, List.map snd sis)
-                |> Map.ofList
-
-            // Resolve a (name, enclosing binding range) pair to the SymbolInfo whose own
-            // definition range sits inside that binding range.
-            let resolveEnclosing (name: string) (bindingRange: range) : SymbolInfo option =
-                match definitionsByName |> Map.tryFind name with
-                | None -> None
-                | Some [ single ] -> Some single
-                | Some candidates ->
-                    let contained =
-                        candidates
-                        |> List.filter (fun si ->
-                            si.LineStart >= bindingRange.StartLine && si.LineEnd <= bindingRange.EndLine)
-
-                    match contained with
-                    | [ exactlyOne ] -> Some exactlyOne
-                    | first :: _ -> Some first
-                    | [] -> List.tryHead candidates
-
-            let findEnclosing (useRange: range) =
-                let mutable best: (string * range) voption = ValueNone
-
-                for i in 0 .. allEnclosingRanges.Length - 1 do
-                    let name, bindingRange = allEnclosingRanges[i]
-
-                    if
-                        useRange.StartLine >= bindingRange.StartLine
-                        && useRange.EndLine <= bindingRange.EndLine
-                    then
-                        match best with
-                        | ValueNone -> best <- ValueSome(name, bindingRange)
-                        | ValueSome(_, bestRange) ->
-                            let span = bindingRange.EndLine - bindingRange.StartLine
-                            let bestSpan = bestRange.EndLine - bestRange.StartLine
-
-                            if span < bestSpan then
-                                best <- ValueSome(name, bindingRange)
-
-                best
-                |> function
-                    | ValueSome(name, bindingRange) -> resolveEnclosing name bindingRange
-                    | ValueNone -> None
+            let findEnclosing = enclosingResolver syntax definitions
 
             let mutable droppedEdgeCount = 0
 
