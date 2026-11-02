@@ -767,8 +767,16 @@ module PluginReplies =
     let private lint: (string * (string -> Render option)) list =
         [ FsHotWatch.Lint.LintReplies.WarningsSchema, asStatusMap FsHotWatch.Lint.LintReplies.Warnings.tryParse ]
 
+    let private format: (string * (string -> Render option)) list =
+        let unformatted payload =
+            FsHotWatch.Fantomas.FormatReplies.Unformatted.tryParse payload
+            |> Option.map (fun _ mode renderStatuses noWarnFail ->
+                renderDiagnosticsReply mode renderStatuses noWarnFail payload)
+
+        [ FsHotWatch.Fantomas.FormatReplies.UnformattedSchema, unformatted ]
+
     let private renderers: Map<string, string -> Render option> =
-        Map.ofList (build @ lint)
+        Map.ofList (build @ lint @ format)
 
     /// The renderer for a `payload` of schema `id`; `None` for a schema this build does not
     /// know, or a payload it does not describe.

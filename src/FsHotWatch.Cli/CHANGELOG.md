@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- refactor: the CLI renders the format-check `unformatted` reply by its declared schema, as
+  before. A payload the schema does not describe is no verdict. Known and kept: rendering an
+  `unformatted` reply throws, typed or not, because it is read as a diagnostics response whose
+  `files` is an object; a test pins it.
+
 - refactor: the CLI renders the lint `warnings` reply by its declared schema, with the same
   output and exit code as before. A payload the schema does not describe is no verdict.
 

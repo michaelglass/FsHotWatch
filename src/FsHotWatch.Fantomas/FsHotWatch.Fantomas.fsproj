@@ -25,6 +25,7 @@
 
   <ItemGroup>
     <Compile Include="FantomasTool.fs" />
+    <Compile Include="FormatReplies.fs" />
     <Compile Include="FormatCheckPlugin.fs" />
   </ItemGroup>
 

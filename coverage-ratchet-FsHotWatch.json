@@ -630,6 +630,11 @@
         "platform": "linux"
       }
     ],
+    "FormatReplies.fs": {
+      "line": 100,
+      "branch": 100,
+      "reason": "new file (AUTOMATION-1447: the format-check plugin's unformatted reply, typed). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-02 on macOS with coverage over PluginReplyTests and the plugin's own tests: line 100%, branch 100%. Pure, so platform-neutral."
+    },
     "FormatCheckPlugin.fs": [
       {
         "line": 99,

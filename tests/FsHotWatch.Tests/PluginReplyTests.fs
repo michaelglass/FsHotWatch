@@ -12,22 +12,27 @@ open FsHotWatch.Cli
 open FsHotWatch.Cli.IpcOutput
 open FsHotWatch.Build.BuildReplies
 
-/// The exit code and everything written (stdout, stderr and the verdict terminal) when the
-/// CLI renders `reply`.
-let private rendered (noWarnFail: bool) (reply: string) : int * string =
+/// What the CLI does when it renders `reply`: the exit code and everything written (stdout,
+/// stderr and the verdict terminal), or the type and message of the exception it raised. A
+/// rendering that throws is compared too, so a typed renderer cannot quietly differ from the
+/// shape-read one even where that one fails.
+let private rendered (noWarnFail: bool) (reply: string) : Result<int * string, string * string> =
     let priorOut, priorErr = Console.Out, Console.Error
     use writer = new StringWriter()
     Console.SetOut writer
     Console.SetError writer
 
     try
-        use _ = VerdictTerminal.install writer
+        try
+            use _ = VerdictTerminal.install writer
 
-        let exitCode =
-            renderIpcResult ProgressRenderer.Verbose (fun _ -> [ "statuses" ]) noWarnFail reply
+            let exitCode =
+                renderIpcResult ProgressRenderer.Verbose (fun _ -> [ "statuses" ]) noWarnFail reply
 
-        writer.Flush()
-        exitCode, writer.ToString()
+            writer.Flush()
+            Ok(exitCode, writer.ToString())
+        with ex ->
+            Error(ex.GetType().FullName, ex.Message)
     finally
         Console.SetOut priorOut
         Console.SetError priorErr
@@ -46,11 +51,13 @@ let private rendersAsSniffed (command: string) (schema: string) (payload: string
 
 /// A payload its declared schema does not describe is no verdict, naming the schema.
 let private refusesUndescribed (command: string) (schema: string) (payload: string) =
-    let exitCode, text =
+    match
         rendered false (FsHotWatch.Ipc.declaredOutputReply command (FsHotWatch.Plugin.ReplySchema.Typed schema) payload)
-
-    test <@ exitCode = NoVerdictExitCode @>
-    test <@ text.Contains schema @>
+    with
+    | Ok(exitCode, text) ->
+        test <@ exitCode = NoVerdictExitCode @>
+        test <@ text.Contains schema @>
+    | Error(kind, message) -> failwith $"rendering an undescribed payload threw %s{kind}: %s{message}"
 
 let private buildStatuses =
     [ BuildStatus.Passed "Build succeeded."
@@ -116,3 +123,66 @@ let ``a typed warnings reply renders exactly as its shape did`` () =
 [<InlineData("""{"files": "2", "warnings": 1}""")>]
 let ``a warnings payload its schema does not describe is no verdict`` (payload: string) =
     refusesUndescribed "warnings" FsHotWatch.Lint.LintReplies.WarningsSchema payload
+
+[<Fact(Timeout = 15000)>]
+let ``unformatted is written as the JSON it always was, and read back as itself`` () =
+    let unformatted: FsHotWatch.Fantomas.FormatReplies.Unformatted =
+        { Count = 2
+          Files = "src/A.fs, src/B.fs" }
+
+    test
+        <@
+            FsHotWatch.Fantomas.FormatReplies.Unformatted.serialize unformatted = """{"count": 2, "files": "src/A.fs, src/B.fs"}"""
+        @>
+
+    test
+        <@
+            FsHotWatch.Fantomas.FormatReplies.Unformatted.tryParse (
+                FsHotWatch.Fantomas.FormatReplies.Unformatted.serialize unformatted
+            ) = Some unformatted
+        @>
+
+/// A path holding a quote or a backslash used to be written unescaped, which is not JSON. It is
+/// escaped now, and reads back as the same path.
+[<Fact(Timeout = 15000)>]
+let ``an unformatted file whose path needs escaping reads back as itself`` () =
+    let unformatted: FsHotWatch.Fantomas.FormatReplies.Unformatted =
+        { Count = 1
+          Files = """C:\src\say "hi".fs""" }
+
+    test
+        <@
+            FsHotWatch.Fantomas.FormatReplies.Unformatted.tryParse (
+                FsHotWatch.Fantomas.FormatReplies.Unformatted.serialize unformatted
+            ) = Some unformatted
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``a typed unformatted reply renders exactly as its shape did`` () =
+    for count, files in [ 0, ""; 2, "src/A.fs, src/B.fs" ] do
+        rendersAsSniffed
+            "unformatted"
+            FsHotWatch.Fantomas.FormatReplies.UnformattedSchema
+            (FsHotWatch.Fantomas.FormatReplies.Unformatted.serialize { Count = count; Files = files })
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("""{"count": 2}""")>]
+[<InlineData("""{"files": "a.fs"}""")>]
+let ``an unformatted payload its schema does not describe is no verdict`` (payload: string) =
+    refusesUndescribed "unformatted" FsHotWatch.Fantomas.FormatReplies.UnformattedSchema payload
+
+/// A defect this change keeps rather than fixes: the CLI reads an `unformatted` reply, by its
+/// `count`, as a diagnostics response, whose `files` is an object of per-file entries. The
+/// reply's `files` is a joined string, so rendering it throws, typed or read by its shape.
+/// Pinned so that fixing it is a visible change.
+[<Fact(Timeout = 15000)>]
+let ``rendering an unformatted reply throws, as it did before it was typed`` () =
+    let reply =
+        FsHotWatch.Ipc.declaredOutputReply
+            "unformatted"
+            (FsHotWatch.Plugin.ReplySchema.Typed FsHotWatch.Fantomas.FormatReplies.UnformattedSchema)
+            (FsHotWatch.Fantomas.FormatReplies.Unformatted.serialize { Count = 0; Files = "" })
+
+    match rendered false reply with
+    | Error(kind, _) -> test <@ kind = typeof<InvalidOperationException>.FullName @>
+    | Ok(exitCode, text) -> failwith $"expected the known throw, got exit %d{exitCode}: %s{text}"

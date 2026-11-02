@@ -419,9 +419,12 @@ let internal createFormatCheckWith
         [ "unformatted",
           PluginCommand.Observe(fun _ctx state _args ->
               async {
-                  let files = state.Unformatted |> Set.toList |> String.concat ", "
-                  return $"{{\"count\": %d{state.Unformatted.Count}, \"files\": \"%s{files}\"}}"
-              }) ]
+                  return
+                      FormatReplies.Unformatted.serialize
+                          { Count = state.Unformatted.Count
+                            Files = state.Unformatted |> Set.toList |> String.concat ", " }
+              })
+          |> PluginCommand.typed FormatReplies.UnformattedSchema ]
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
       CacheKey =
         // Content key: merkle of (file path, file source) for each file in the
