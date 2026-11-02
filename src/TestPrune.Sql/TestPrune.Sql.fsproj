@@ -6,7 +6,7 @@
         <PackageId>TestPrune.Sql</PackageId>
         <Authors>Michael Glass</Authors>
         <Description>SQL table/column coupling attributes for TestPrune test impact analysis</Description>
-        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageLicenseExpression>MPL-2.0</PackageLicenseExpression>
         <RepositoryUrl>https://github.com/michaelglass/FsHotWatch</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
         <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>

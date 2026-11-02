@@ -10,7 +10,7 @@
         <Version>0.7.7</Version>
         <Authors>Michael Glass</Authors>
         <Description>Measurements over recorded per-test traces: census, isolation audit, CPU overhead and file census.</Description>
-        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageLicenseExpression>MPL-2.0</PackageLicenseExpression>
         <RepositoryUrl>https://github.com/michaelglass/FsHotWatch</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
         <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>

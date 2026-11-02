@@ -5,7 +5,7 @@
     <PackageId>TestPrune.Falco</PackageId>
     <Authors>Michael Glass</Authors>
     <Description>Falco route-based integration test filtering extension for TestPrune</Description>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageLicenseExpression>MPL-2.0</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/michaelglass/FsHotWatch</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>

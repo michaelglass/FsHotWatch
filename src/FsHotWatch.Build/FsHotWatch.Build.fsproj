@@ -7,7 +7,7 @@
     <Version>0.7.0-alpha.52</Version>
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin that runs dotnet build and emits BuildCompleted events</Description>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageLicenseExpression>MPL-2.0</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/michaelglass/FsHotWatch</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>
