@@ -425,6 +425,18 @@ let internal nothingOwedUnder (baselineInvalidReason: VerificationDebt -> string
     && not debt.RecoveryOutstanding
     && Option.isNone (baselineInvalidReason debt)
 
+/// What a launch from `inputs` will execute: the widenings `runTestsWithImpact`
+/// applies to every project.
+let internal launchScopeUnder (baselineInvalidReason: VerificationDebt -> string option) (inputs: TestRunInputs) =
+    if
+        TestMode.requestsFullSuite inputs.Mode
+        || inputs.Debt.RecoveryOutstanding
+        || Option.isSome (baselineInvalidReason inputs.Debt)
+    then
+        LaunchedFullSuite
+    else
+        LaunchedSelection
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1130,17 +1142,7 @@ let internal createWithEvidenceAndQueries
 
 
 
-    /// What a launch from `inputs` will execute: the widenings `runTestsWithImpact`
-    /// applies to every project.
-    let launchScopeOf (inputs: TestRunInputs) =
-        if
-            TestMode.requestsFullSuite inputs.Mode
-            || inputs.Debt.RecoveryOutstanding
-            || Option.isSome (baselineInvalidReason inputs.Debt)
-        then
-            LaunchedFullSuite
-        else
-            LaunchedSelection
+    let launchScopeOf = launchScopeUnder baselineInvalidReason
 
     let impactLaunchEnv: ImpactLaunchEnv =
         { RefreshPhase = extensionRefresh
