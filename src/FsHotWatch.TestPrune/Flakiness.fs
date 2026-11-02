@@ -251,6 +251,10 @@ let internal expireHistory
         | [] -> false
         | recs -> recs |> List.exists (fun r -> r.RunStartedAt >= cutoff))
 
+/// Where a repository's per-test run history lives (`.fshw/test-history.json`).
+let historyPath (repoRoot: string) =
+    Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-history.json")
+
 /// Merge `records` into `history`, keeping each test's `keepN` most-recent
 /// entries (most-recent-first), then expire tests whose newest run predates
 /// `retention`. Pure — `appendRecords` is this plus the file I/O.
