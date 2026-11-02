@@ -2124,6 +2124,20 @@ let internal cacheKeyFor
             )
     | _ -> None
 
+/// Where this process's extension refresh stands. One value, so a refresh can never be
+/// running beside the fold while the process still reads as never having refreshed.
+[<RequireQualifiedAccess>]
+type internal ExtensionRefreshPhase =
+    /// No refresh yet: the stored edges were written by an earlier process, over a tree
+    /// that may differ, so the first flush owes one.
+    | NeverRefreshed
+    /// The restart's first refresh, running beside the fold (AUTOMATION-1441): its answer,
+    /// and how long it took, once it finishes.
+    | RunningBesideFold of Tasks.Task<ExtensionRefresh list * int64>
+    /// This process has refreshed. A later flush refreshes again only when it indexed
+    /// something or an extension failed (`FailedExtensions`).
+    | Refreshed
+
 /// The impact queries the plugin runs against its index, in one place, so a test can
 /// count them per handler instance.
 type internal ImpactQueries =
@@ -2755,13 +2769,9 @@ let internal createWithEvidenceAndQueries
         |> Seq.map (fun s -> Set.difference (owedTo s) runnableProjects)
         |> Set.unionMany
 
-    // True until this process's first extension refresh: the stored edges were written by
-    // an earlier process, over a tree that may differ. After that, a refresh is owed when a
-    // flush indexes something or an extension failed (`FailedExtensions`).
-    let extensionsUnrefreshed = ref true
-
-    // The refresh a restart owes before anything this process indexed (AUTOMATION-1441),
-    // running beside the fold: its answer, and how long it took. A restart's first flush is
+    // This process's extension refresh (`ExtensionRefreshPhase`). The refresh a restart owes
+    // before anything this process indexed (AUTOMATION-1441) runs beside the fold: its
+    // answer, and how long it took. A restart's first flush is
     // the `BuildCompleted` its scan dispatches before the checks; on a 2,674-file
     // repository the refresh took 6 s, and every check result queued behind the build
     // waited for it. A `FileChecked` reads neither the extensions' edges nor their failures,
@@ -2769,7 +2779,10 @@ let internal createWithEvidenceAndQueries
     // index, and a run launched in the meantime take its answer first (`joinRefresh`). It
     // reads what the fold's own refresh would have: no flush writes the index until the
     // answer is taken.
-    let refreshInFlight: Tasks.Task<ExtensionRefresh list * int64> option ref = ref None
+    //
+    // A ref rather than state the fold returns: a flush that throws returns the state from
+    // before it, and a refresh it already started must still be joined, once.
+    let extensionRefresh = ref ExtensionRefreshPhase.NeverRefreshed
 
     /// The failures `outcomes` leave, from those before them: a refreshed extension
     /// leaves the map, a failed one enters it.
@@ -2811,10 +2824,11 @@ let internal createWithEvidenceAndQueries
 
     /// Take the answer of the refresh running beside the fold, if one is, into `state`.
     let joinRefresh (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
-        match refreshInFlight.Value with
-        | None -> state
-        | Some refresh ->
-            refreshInFlight.Value <- None
+        match extensionRefresh.Value with
+        | ExtensionRefreshPhase.NeverRefreshed
+        | ExtensionRefreshPhase.Refreshed -> state
+        | ExtensionRefreshPhase.RunningBesideFold refresh ->
+            extensionRefresh.Value <- ExtensionRefreshPhase.Refreshed
 
             let answer =
                 use _ = ctx.DeclareBoundedWork "extension refresh" ImpactSelectionDeadline
@@ -2892,17 +2906,18 @@ let internal createWithEvidenceAndQueries
             | Some exts when
                 not exts.IsEmpty
                 && (indexedSomething
-                    || extensionsUnrefreshed.Value
+                    || extensionRefresh.Value = ExtensionRefreshPhase.NeverRefreshed
                     || not flushedState.FailedExtensions.IsEmpty)
                 ->
-                extensionsUnrefreshed.Value <- false
-
                 if not indexedSomething && flushedState.FailedExtensions.IsEmpty then
                     // Owed only because this process has not refreshed: nothing it indexed
-                    // is in the answer, so it runs beside the fold (`refreshInFlight`).
-                    refreshInFlight.Value <- Some(Tasks.Task.Run(refreshTimed exts))
+                    // is in the answer, so it runs beside the fold.
+                    extensionRefresh.Value <- ExtensionRefreshPhase.RunningBesideFold(Tasks.Task.Run(refreshTimed exts))
+
                     flushedState
                 else
+                    extensionRefresh.Value <- ExtensionRefreshPhase.Refreshed
+
                     // At info, because a refresh that holds the fold for minutes is
                     // otherwise invisible.
                     applyRefresh ctx (refreshTimed exts ()) flushedState
@@ -5237,7 +5252,11 @@ let internal createWithEvidenceAndQueries
         let inputs = TestRunInputs.ofState launchState
         // A refresh still running beside the fold: the run takes its failures before it
         // reads anything, off the fold (AUTOMATION-1441).
-        let refreshing = refreshInFlight.Value
+        let refreshing =
+            match extensionRefresh.Value with
+            | ExtensionRefreshPhase.RunningBesideFold refresh -> Some refresh
+            | ExtensionRefreshPhase.NeverRefreshed
+            | ExtensionRefreshPhase.Refreshed -> None
 
         let withRefreshed (inputs: TestRunInputs) =
             match refreshing with
