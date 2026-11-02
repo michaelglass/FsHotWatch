@@ -177,6 +177,11 @@ let internal joinsFullRun (state: TestPruneState) (bootScan: bool) =
     (state.InFlight |> Option.exists (fun run -> run.Scope = LaunchedFullSuite))
     && (TestMode.skips RerunIntents state.Mode || bootScan)
 
+/// The debt revision of `symbol`. A symbol loaded from the durable queue and never
+/// re-enqueued is at revision 0.
+let internal revisionOf (debt: VerificationDebt) (symbol: string) : int64 =
+    debt.SymbolRevisions |> Map.tryFind symbol |> Option.defaultValue 0L
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -530,10 +535,6 @@ let internal createWithEvidenceAndQueries
                     "test-prune"
                     $"failed to persist pending-verification queue before the analysis flush: %s{ex.Message}; the queue is published with this event's state"
 
-    /// The debt revision of `symbol`. A symbol loaded from the durable queue and never
-    /// re-enqueued is at revision 0.
-    let revisionOf (debt: VerificationDebt) (symbol: string) : int64 =
-        debt.SymbolRevisions |> Map.tryFind symbol |> Option.defaultValue 0L
 
 
 
