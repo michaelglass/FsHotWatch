@@ -535,6 +535,41 @@ let internal currentOutcomeKeysIn
             (evidenceCandidates graph (defaultArg testConfigs []))
     | _ -> Map.empty
 
+/// The traces of a run launched under `mode`, when `tests.traces` is configured, with
+/// the plugin's activity log and subtasks: a force run's `executeTests` has no `ctx`.
+let internal tracesForIn
+    (repoRoot: string)
+    (traces: TraceWiring option)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (mode: TestMode)
+    : TraceRunHost option =
+    traces
+    |> Option.map (fun wiring ->
+        { TraceRuntime =
+            { Settings = wiring.Policy
+              RepoRoot = repoRoot
+              ExcludedProjects = wiring.OptedOut
+              Mode = mode
+              // Known once the run's selection is: set by `executeTests`.
+              RunsEveryProjectInFull = false }
+          TraceWiring = wiring
+          TraceLog = ctx.Log
+          HoldSubtask =
+            fun key label ->
+                ctx.StartSubtask key label
+
+                { new IDisposable with
+                    member _.Dispose() = ctx.EndSubtask key }
+          IndexFold =
+            { Folded =
+                fun () ->
+                    let folded =
+                        Tasks.TaskCompletionSource(Tasks.TaskCreationOptions.RunContinuationsAsynchronously)
+
+                    ctx.Post(IndexFoldProbe folded)
+                    folded.Task
+              Bound = TraceRun.indexFoldBound } })
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -581,35 +616,7 @@ let internal createWithEvidenceAndQueries
     let compileInputsOf (ctx: PluginCtx<TestPruneMsg>) () : string -> bool =
         ReceiptInputTree.feedsCompile repoRoot (ctx.ProjectGraph.ObserveCheckableFiles() |> Option.map snd)
 
-    /// The traces of a run launched under `mode`, when `tests.traces` is configured, with
-    /// the plugin's activity log and subtasks: a force run's `executeTests` has no `ctx`.
-    let tracesFor (ctx: PluginCtx<TestPruneMsg>) (mode: TestMode) : TraceRunHost option =
-        traces
-        |> Option.map (fun wiring ->
-            { TraceRuntime =
-                { Settings = wiring.Policy
-                  RepoRoot = repoRoot
-                  ExcludedProjects = wiring.OptedOut
-                  Mode = mode
-                  // Known once the run's selection is: set by `executeTests`.
-                  RunsEveryProjectInFull = false }
-              TraceWiring = wiring
-              TraceLog = ctx.Log
-              HoldSubtask =
-                fun key label ->
-                    ctx.StartSubtask key label
-
-                    { new IDisposable with
-                        member _.Dispose() = ctx.EndSubtask key }
-              IndexFold =
-                { Folded =
-                    fun () ->
-                        let folded =
-                            Tasks.TaskCompletionSource(Tasks.TaskCreationOptions.RunContinuationsAsynchronously)
-
-                        ctx.Post(IndexFoldProbe folded)
-                        folded.Task
-                  Bound = TraceRun.indexFoldBound } })
+    let tracesFor = tracesForIn repoRoot traces
 
     let db = openOwnIndex dbPath walkPolicy
     let busyTimeout = dbBusyTimeout db
