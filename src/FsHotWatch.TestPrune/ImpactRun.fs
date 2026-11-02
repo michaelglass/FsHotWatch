@@ -818,6 +818,105 @@ let internal zeroAffectedSkip
             )
     }
 
+/// Log why an impact run that launches selected what it did: a zero-affected run that
+/// still launches says why its skip was refused, and every launch logs its selectivity.
+let internal logLaunchSelection
+    (inputs: TestRunInputs)
+    (hasCachedResults: bool)
+    (widenings: LaunchWidenings)
+    (selected: LaunchSelection)
+    (excludedByProject: Map<string, string list>)
+    (treeUnverified: bool)
+    =
+    let baselineInvalid = widenings.BaselineInvalid
+    let evidenceGap = widenings.EvidenceGap
+    let affectedByProject = selected.AffectedByProject
+    let totalClasses = selected.TotalClasses
+    let symbolFreeEdit = selected.SymbolFreeEdit
+    let narrowedSeeds = selected.NarrowedSeeds
+    let alwaysOnly = selected.AlwaysOnly
+
+    if totalClasses = 0 && narrowedSeeds.IsNone && not alwaysOnly then
+        // NAME the debt that refused the zero-affected
+        // skip, and say what will actually run. Both halves were wrong
+        // before: the cause was hard-coded to two of five possibilities,
+        // and "running all tests" was printed over runs that were a
+        // couple of force-run projects.
+        let widenings =
+            zeroAffectedWidening
+                hasCachedResults
+                inputs.Debt.UnknownDebt
+                (Set.count inputs.Debt.PendingQueue)
+                inputs.Debt.RuntimeObligations
+                (inputs.Debt.CoverageNotIngested |> Map.keys |> Set.ofSeq)
+                (List.length inputs.OutstandingFailures)
+                baselineInvalid
+                evidenceGap
+                treeUnverified
+
+        // An EMPTY selection is not "a few projects": `selectionOf` reads
+        // it as no selection at all and every configured project runs in
+        // full. That is the expensive outcome, so it is the one named.
+        let willRun =
+            if Map.isEmpty affectedByProject then
+                "EVERY configured project, in full"
+            else
+                $"%d{affectedByProject.Count} force-run project(s)"
+
+        match widenings with
+        | [] ->
+            // Nothing is owed and a baseline exists, so the zero-affected
+            // skip should have discharged this cycle for free — and did
+            // not. That is a defect in whichever arm consumed the signal,
+            // and it costs `willRun`. The phantom
+            // runtime-coverage obligation was exactly this shape and left
+            // no attributable line at all; this one is the alarm that a
+            // DIFFERENT arm has re-opened the same hole.
+            Logging.warn
+                "test-prune"
+                $"No affected classes, and NOTHING is owed — the zero-affected skip should have discharged \
+                  this cycle without running anything, yet it is running %s{willRun}. Some verification \
+                  debt is being reported as outstanding while naming nothing that can select or discharge \
+                  it."
+        | causes ->
+            let notNarrowed =
+                match symbolFreeEdit with
+                | Some(SymbolFreeEdit.Refused reason) ->
+                    $" (not narrowed to the edited files' covering classes: %s{reason})"
+                | _ -> ""
+
+            Logging.info
+                "test-prune"
+                $"No affected classes, but the zero-affected skip is refused — \
+                  %s{ZeroAffectedWidening.describeMany causes}; running %s{willRun}%s{notNarrowed}"
+    else
+        for (proj, classes) in affectedByProject |> Map.toList do
+            // Never `%A` here: it caps the list at 100, so a
+            // 1,500-class blowout reads like a 100-class one, and it
+            // renders an EMPTY list as `[]` — which here means the
+            // project runs UNFILTERED, the exact opposite of "nothing
+            // selected". `describeMany` leads with the exact count.
+            let rendered =
+                match classes, Map.tryFind proj excludedByProject with
+                | [], Some skipped ->
+                    $"ALL but %d{List.length skipped} checkSkipClasses (whole-project, exclude filter)"
+                | [], None -> "ALL (unfiltered — force-run)"
+                | classes, _ -> describeMany classes
+
+            Logging.info "test-prune" $"Affected classes for %s{proj}: %s{rendered}"
+
+    // Run-level selectivity in ONE line, since the per-project lines
+    // above can be interleaved or truncated. Separates the two ways a
+    // run can be wide: many classes named, versus projects unfiltered.
+    let unfilteredProjects =
+        affectedByProject |> Map.filter (fun _ cs -> List.isEmpty cs) |> Map.count
+
+    Logging.info
+        "test-prune"
+        $"Selectivity: %d{affectedByProject.Count} project(s) selected, \
+          %d{unfilteredProjects} of them UNFILTERED (whole-project), \
+          %d{affectedByProject |> Map.values |> Seq.sumBy List.length} class(es) named in total"
+
 let internal runTestsWithImpactWith
     (env: RunEnv)
     (ctx: PluginCtx<TestPruneMsg>)
@@ -869,9 +968,7 @@ let internal runTestsWithImpactWith
             ctx.EmitTestRunStarted started
 
         let widenings = widenLaunch env ctx configs inputs fanoutProjects
-        let baselineInvalid = widenings.BaselineInvalid
         let launchedRuntimeObligations = widenings.LaunchedRuntimeObligations
-        let evidenceGap = widenings.EvidenceGap
         let fullSuiteCause = widenings.FullSuiteCause
         let forceRunProjects = widenings.ForceRunProjects
         let launchedSymbols = widenings.LaunchedSymbols
@@ -887,8 +984,6 @@ let internal runTestsWithImpactWith
             let selected = selectForLaunch env ctx configs inputs hasCachedResults widenings
             let affectedByProject = selected.AffectedByProject
             let totalClasses = selected.TotalClasses
-            let symbolFreeEdit = selected.SymbolFreeEdit
-            let narrowedSeeds = selected.NarrowedSeeds
             let alwaysOnly = selected.AlwaysOnly
 
             let assembled =
@@ -946,86 +1041,7 @@ let internal runTestsWithImpactWith
             else
                 logSelectedBy launch
 
-                if totalClasses = 0 && narrowedSeeds.IsNone && not alwaysOnly then
-                    // NAME the debt that refused the zero-affected
-                    // skip, and say what will actually run. Both halves were wrong
-                    // before: the cause was hard-coded to two of five possibilities,
-                    // and "running all tests" was printed over runs that were a
-                    // couple of force-run projects.
-                    let widenings =
-                        zeroAffectedWidening
-                            hasCachedResults
-                            inputs.Debt.UnknownDebt
-                            (Set.count inputs.Debt.PendingQueue)
-                            inputs.Debt.RuntimeObligations
-                            (inputs.Debt.CoverageNotIngested |> Map.keys |> Set.ofSeq)
-                            (List.length inputs.OutstandingFailures)
-                            baselineInvalid
-                            evidenceGap
-                            treeUnverified
-
-                    // An EMPTY selection is not "a few projects": `selectionOf` reads
-                    // it as no selection at all and every configured project runs in
-                    // full. That is the expensive outcome, so it is the one named.
-                    let willRun =
-                        if Map.isEmpty affectedByProject then
-                            "EVERY configured project, in full"
-                        else
-                            $"%d{affectedByProject.Count} force-run project(s)"
-
-                    match widenings with
-                    | [] ->
-                        // Nothing is owed and a baseline exists, so the zero-affected
-                        // skip should have discharged this cycle for free — and did
-                        // not. That is a defect in whichever arm consumed the signal,
-                        // and it costs `willRun`. The phantom
-                        // runtime-coverage obligation was exactly this shape and left
-                        // no attributable line at all; this one is the alarm that a
-                        // DIFFERENT arm has re-opened the same hole.
-                        Logging.warn
-                            "test-prune"
-                            $"No affected classes, and NOTHING is owed — the zero-affected skip should have discharged \
-                              this cycle without running anything, yet it is running %s{willRun}. Some verification \
-                              debt is being reported as outstanding while naming nothing that can select or discharge \
-                              it."
-                    | causes ->
-                        let notNarrowed =
-                            match symbolFreeEdit with
-                            | Some(SymbolFreeEdit.Refused reason) ->
-                                $" (not narrowed to the edited files' covering classes: %s{reason})"
-                            | _ -> ""
-
-                        Logging.info
-                            "test-prune"
-                            $"No affected classes, but the zero-affected skip is refused — \
-                              %s{ZeroAffectedWidening.describeMany causes}; running %s{willRun}%s{notNarrowed}"
-                else
-                    for (proj, classes) in affectedByProject |> Map.toList do
-                        // Never `%A` here: it caps the list at 100, so a
-                        // 1,500-class blowout reads like a 100-class one, and it
-                        // renders an EMPTY list as `[]` — which here means the
-                        // project runs UNFILTERED, the exact opposite of "nothing
-                        // selected". `describeMany` leads with the exact count.
-                        let rendered =
-                            match classes, Map.tryFind proj excludedByProject with
-                            | [], Some skipped ->
-                                $"ALL but %d{List.length skipped} checkSkipClasses (whole-project, exclude filter)"
-                            | [], None -> "ALL (unfiltered — force-run)"
-                            | classes, _ -> describeMany classes
-
-                        Logging.info "test-prune" $"Affected classes for %s{proj}: %s{rendered}"
-
-                // Run-level selectivity in ONE line, since the per-project lines
-                // above can be interleaved or truncated. Separates the two ways a
-                // run can be wide: many classes named, versus projects unfiltered.
-                let unfilteredProjects =
-                    affectedByProject |> Map.filter (fun _ cs -> List.isEmpty cs) |> Map.count
-
-                Logging.info
-                    "test-prune"
-                    $"Selectivity: %d{affectedByProject.Count} project(s) selected, \
-                      %d{unfilteredProjects} of them UNFILTERED (whole-project), \
-                      %d{affectedByProject |> Map.values |> Seq.sumBy List.length} class(es) named in total"
+                logLaunchSelection inputs hasCachedResults widenings selected excludedByProject treeUnverified
 
                 let! results, started, completed, boundTree, testHostStartedAt, evidenceHeld =
                     executeTests
