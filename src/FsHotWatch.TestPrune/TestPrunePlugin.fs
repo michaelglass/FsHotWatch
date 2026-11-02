@@ -517,6 +517,24 @@ let internal mayReplayIn
         IndexedAnalysis.identityOf repoRoot result
         |> Option.exists (IndexedAnalysis.mayReplay (indexedKey relPath) (Map.tryFind relPath pending)))
 
+/// The outcome-store key of each configured project's full run over the tree as it is now
+/// (ADR-059 step 7b), for the `test-scope` reply. Empty without a store or without the
+/// model's compile-input identities: nothing can be keyed then.
+let internal currentOutcomeKeysIn
+    (evidence: TestEvidenceRun.Wiring option)
+    (repoRoot: string)
+    (testConfigs: TestConfig list option)
+    (graph: ProjectGraphAccessor)
+    : Map<string, string> =
+    match evidence, ObservedModel.inputs graph with
+    | Some wiring, Some identities ->
+        TestEvidenceRun.currentOutcomeKeys
+            wiring
+            repoRoot
+            (fun fsproj -> Map.tryFind fsproj identities)
+            (evidenceCandidates graph (defaultArg testConfigs []))
+    | _ -> Map.empty
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1077,18 +1095,7 @@ let internal createWithEvidenceAndQueries
     let observeTestInputs = observeTestInputsOf testConfigs
 
 
-    /// The outcome-store key of each configured project's full run over the tree as it is now
-    /// (ADR-059 step 7b), for the `test-scope` reply. Empty without a store or without the
-    /// model's compile-input identities: nothing can be keyed then.
-    let currentOutcomeKeys (graph: ProjectGraphAccessor) : Map<string, string> =
-        match evidence, ObservedModel.inputs graph with
-        | Some wiring, Some identities ->
-            TestEvidenceRun.currentOutcomeKeys
-                wiring
-                repoRoot
-                (fun fsproj -> Map.tryFind fsproj identities)
-                (evidenceCandidates graph (defaultArg testConfigs []))
-        | _ -> Map.empty
+    let currentOutcomeKeys = currentOutcomeKeysIn evidence repoRoot testConfigs
 
     /// The test-evidence plan of a run about to launch `configs`: every project the model
     /// can key, and a lookup for each one `launching` admits that has no outstanding
