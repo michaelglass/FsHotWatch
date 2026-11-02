@@ -1430,6 +1430,24 @@ let internal selectionIn
     | None, Some(_ :: _ as classes) -> Some classes
     | _ -> None
 
+let internal foldAndEmitInto
+    (ctx: PluginCtx<'msg> option)
+    (collected: RunCollector)
+    (runId: Guid)
+    (groupOutput: (string * TestResult) list)
+    =
+    collected.UpdateThen(
+        (fun c ->
+            { c with
+                Results = groupOutput |> List.fold (fun acc (k, v) -> Map.add k v acc) c.Results }),
+        fun () ->
+            ctx
+            |> Option.iter (fun c ->
+                c.EmitTestProgress
+                    { RunId = runId
+                      NewResults = Map.ofList groupOutput })
+    )
+
 /// Execute test configs with optional affected classes for filtering. Handles beforeRun,
 /// coveragePaths, process execution, result storage. `rawFilter` is a passthrough filter
 /// string (from the run-tests command) that bypasses the template.
@@ -1622,18 +1640,7 @@ let internal executeTests
         /// per config.
         let logToCtx msg = ctx |> Option.iter (fun c -> c.Log msg)
 
-        let foldAndEmit (groupOutput: (string * TestResult) list) =
-            collected.UpdateThen(
-                (fun c ->
-                    { c with
-                        Results = groupOutput |> List.fold (fun acc (k, v) -> Map.add k v acc) c.Results }),
-                fun () ->
-                    ctx
-                    |> Option.iter (fun c ->
-                        c.EmitTestProgress
-                            { RunId = runId
-                              NewResults = Map.ofList groupOutput })
-            )
+        let foldAndEmit = foldAndEmitInto ctx collected runId
 
         // STALE-ARTIFACT PREFLIGHT. The freshness question is pure
         // file I/O and is answerable in seconds, so it is asked about EVERY config
