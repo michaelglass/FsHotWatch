@@ -1364,6 +1364,34 @@ let internal runAllGroupsWith (env: GroupsEnv) () =
         })
     |> GroupSchedule.runAdmittedAs processes maxParallelProjects
 
+/// `launchProjectOrRaise`, with a launch stall answered as THIS project's result.
+///
+/// A stall ("launch produced no live process within Ns") means this project never
+/// ran. It used to raise out of the whole run, which then completed `Aborted` with
+/// no results at all: the projects that had run, or were still running, lost what
+/// they verified, and the next run ran every one of them in full again. Now the
+/// project is `TestsErrored` — nothing verified, never a pass, so the run is still
+/// not green — and every other project keeps its own result.
+/// One project's launch, with a stalled launch reported as that project's abort rather than the run's.
+let internal launchProjectGuarded
+    (launchProjectOrRaise: ProjectLauncher)
+    (logToCtx: string -> unit)
+    (runToken: Threading.CancellationToken)
+    (config: TestConfig)
+    : Async<TestResult * string option> =
+    async {
+        try
+            return! launchProjectOrRaise runToken config
+        with LaunchStalledException reason ->
+            logToCtx $"{config.Project}: ABORTED (nothing verified) — {reason}"
+
+            Logging.error
+                "test-prune"
+                $"%s{config.Project}: ABORTED — %s{reason}. Nothing was verified for this project; the rest of the run keeps its results. Re-run when the box is quiet."
+
+            return TestsErrored reason, None
+    }
+
 /// Execute test configs with optional affected classes for filtering. Handles beforeRun,
 /// coveragePaths, process execution, result storage. `rawFilter` is a passthrough filter
 /// string (from the run-tests command) that bypasses the template.
@@ -1668,30 +1696,7 @@ let internal executeTests
         // timeout on a starved box is held back from the group's results and re-run alone
         // once every group has finished (`rerunStarved`). See `Starvation`.
 
-        /// `launchProjectOrRaise`, with a launch stall answered as THIS project's result.
-        ///
-        /// A stall ("launch produced no live process within Ns") means this project never
-        /// ran. It used to raise out of the whole run, which then completed `Aborted` with
-        /// no results at all: the projects that had run, or were still running, lost what
-        /// they verified, and the next run ran every one of them in full again. Now the
-        /// project is `TestsErrored` — nothing verified, never a pass, so the run is still
-        /// not green — and every other project keeps its own result.
-        let launchProject
-            (runToken: Threading.CancellationToken)
-            (config: TestConfig)
-            : Async<TestResult * string option> =
-            async {
-                try
-                    return! launchProjectOrRaise runToken config
-                with LaunchStalledException reason ->
-                    logToCtx $"{config.Project}: ABORTED (nothing verified) — {reason}"
-
-                    Logging.error
-                        "test-prune"
-                        $"%s{config.Project}: ABORTED — %s{reason}. Nothing was verified for this project; the rest of the run keeps its results. Re-run when the box is quiet."
-
-                    return TestsErrored reason, None
-            }
+        let launchProject = launchProjectGuarded launchProjectOrRaise logToCtx
 
         /// The classes the run filtered `config`'s project to; `None` when it runs in full
         /// or under a raw filter, whose classes are not known.
