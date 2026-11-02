@@ -586,6 +586,179 @@ let internal earnedEvidenceOf (ctx: PluginCtx<TestPruneMsg>) (facts: CompletionE
 
     earned
 
+/// What a completion's results and failures are assembled from.
+type internal CompletionRunFacts =
+    { State: TestPruneState
+      Completed: TestRunCompleted
+      Launch: TestRunLaunch
+      RepoRoot: string
+      RunnableProjects: Set<string>
+      Traces: TraceWiring option }
+
+/// A completed run's results and the failures it leaves outstanding (`assembleRunResults`).
+type internal AssembledRunResults =
+    { CompletedRuns: Guid list
+      TestResults: TestResults
+      Coverage: RunCoverage
+      CheckReach: CheckReach
+      ConditionalFailureRecall: FailureRecall
+      CarriedFailures: OutstandingFailure list
+      OutstandingFailures: OutstandingFailure list }
+
+/// The first stage of a run's completion: its results, coverage and check reach, the
+/// shadow trace comparison, and the failures it found, retired and carried.
+let internal assembleRunResults (facts: CompletionRunFacts) : AssembledRunResults =
+    let state = facts.State
+    let completed = facts.Completed
+    let launch = facts.Launch
+    let repoRoot = facts.RepoRoot
+    let runnableProjects = facts.RunnableProjects
+    let traces = facts.Traces
+
+    // This run joins the session ledger HERE, so every state this fold
+    // returns carries it. A run that completed is a run whose directory a
+    // reader may need, whatever the handler goes on to decide about its
+    // results.
+    //
+    // Except a skip: a launch that selected nothing and ran nothing wrote
+    // no directory, and counting it tells a reader the tests ran twice.
+    let skipped =
+        launch.ZeroSelection <> ZeroSelection.NotAZero && Map.isEmpty completed.Results
+
+    let completedRuns =
+        if skipped then
+            state.CompletedRuns
+        else
+            completed.RunId
+            :: (state.CompletedRuns
+                |> List.filter (fun id -> id <> completed.RunId)
+                |> List.truncate (SessionRunLedger - 1))
+
+    // Apply error reporting synchronously here too — live emission from
+    // the async wouldn't be captured for cache replay.
+    let testResults: TestResults =
+        { Results = completed.Results
+          Elapsed = completed.TotalElapsed }
+
+    // A run may clear ONLY what it COVERED.
+    //
+    // Two properties must hold together: the ledger is REWRITTEN each
+    // cycle (so a superseded red cannot linger), and it is
+    // rewritten from the OUTSTANDING set — what this run found PLUS every
+    // earlier red it did not cover. Rewriting from this run's failures
+    // alone lets a narrower run's green erase reds it never executed.
+    // Coverage comes from the run's own launch selection, so a red dies
+    // only to evidence that executed it, and dies the moment that evidence
+    // exists (no stuck-red).
+    //
+    // The launch selection cannot express the reach of a raw `--filter`
+    // passthrough — it records every project as `ProjectInFull` — so hand
+    // `ofRun` the classes the run's OWN report shows passing.
+    // Read from THIS run's directory only, and empty
+    // whenever the report is missing or incomplete.
+    let coverage =
+        RunCoverage.ofRun launch.Selection completed.Results (passedClassesOfRun repoRoot completed.RunId)
+
+    let passedTests = passedTestsOfRun repoRoot completed.RunId
+
+    // The run log a project-level cause points at. Named
+    // only when it is on disk: `Written` is otherwise reserved for the
+    // code holding the open handle, and a message must never point at
+    // a log nobody wrote.
+    let runLogOf (project: string) : RunLog.Ref =
+        let path = RunLog.pathIn (Ctrf.runDir repoRoot completed.RunId) project
+
+        if File.Exists path then
+            RunLog.Ref.Written path
+        else
+            RunLog.Ref.Unavailable "no output log is on disk for this run"
+
+    // The failed rows and declared classes of the CTRF report each
+    // project wrote in this run's directory, for naming a red the console
+    // line did not and for splitting every red's name.
+    let reportOf =
+        let reports =
+            Ctrf.reportsForRun repoRoot completed.RunId
+            |> List.map (fun report -> report.Project, report.Path)
+            |> Map.ofList
+
+        fun (project: string) ->
+            match Map.tryFind project reports with
+            | None -> ReportedFailures.none
+            | Some path ->
+                try
+                    ReportedFailures.ofReport (File.ReadAllText path)
+                with
+                | :? IOException
+                | :? UnauthorizedAccessException -> ReportedFailures.none
+
+    let foundFailures = failuresOf runLogOf reportOf state.TestClassFiles testResults
+
+    let failedTests = failedTestsOfRun repoRoot completed.RunId testResults
+
+    let checkReach, conditionalFailureRecall =
+        failedTests |> CheckReach.classifyEvidence launch.WouldHaveRun
+
+    // Shadow trace selection: store the launch's comparison with this
+    // run's failed tests. A run with no complete report judges no miss.
+    match traces with
+    | Some wiring when not launch.TraceShadow.IsEmpty ->
+        let failedKeys =
+            match failedTests with
+            | Ok failures ->
+                failures
+                |> List.choose (fun f ->
+                    match f.Class, f.Method with
+                    | Some cls, Some meth -> Some(TraceShadow.failureKey f.Project cls meth)
+                    | _ -> None)
+            | Error _ -> []
+
+        TraceShadow.atCompletion
+            wiring.Policy
+            repoRoot
+            launch.TraceShadow
+            (completed.RunId.ToString "N")
+            failedKeys
+            (Logging.info "test-prune")
+    | _ -> ()
+
+    // Classified HERE, against THIS run's failures and the
+    // selection retained at its launch. Nothing extra runs and nothing is
+    // re-read: both inputs are already in hand.
+
+    // A prior red naming a class this run selected, in a project that then
+    // passed with a complete report holding no row of that class, names no
+    // test the project has. No pass can ever retire it, so it goes now.
+    let absentFailures, priorFailures =
+        OutstandingFailure.partitionAbsent
+            coverage
+            (classesRunOfPassedProjects repoRoot completed.RunId completed.Results)
+            state.OutstandingFailures
+
+    if not absentFailures.IsEmpty then
+        Logging.info
+            "test-prune"
+            $"%d{absentFailures.Length} failure(s) from an earlier run name a test class this run selected and its project does not have (%s{OutstandingFailure.summarize absentFailures}) — retired, since no run can ever execute them"
+
+    let carriedFailures =
+        OutstandingFailure.carriedOver runnableProjects coverage passedTests priorFailures
+
+    let outstandingFailures =
+        OutstandingFailure.carry runnableProjects coverage passedTests foundFailures priorFailures
+
+    if not carriedFailures.IsEmpty then
+        Logging.info
+            "test-prune"
+            $"%d{carriedFailures.Length} failure(s) from an earlier run were NOT covered by this one (%s{OutstandingFailure.summarize carriedFailures}) — they stay RED until a run that executes them passes"
+
+    { CompletedRuns = completedRuns
+      TestResults = testResults
+      Coverage = coverage
+      CheckReach = checkReach
+      ConditionalFailureRecall = conditionalFailureRecall
+      CarriedFailures = carriedFailures
+      OutstandingFailures = outstandingFailures }
+
 /// The debt accounting a run's completion reads (`commitPending`, `debtScope` and the rest).
 type internal CompletionDebt =
     { CommitPending: Set<string> -> VerificationDebt -> VerificationDebt
@@ -707,141 +880,22 @@ let internal onRunFinishedWith
         // TestRunCompleted (FileCommandPlugin) must see it on a hit.
         ctx.EmitTestRunCompleted completed
 
-        // This run joins the session ledger HERE, so every state this fold
-        // returns carries it. A run that completed is a run whose directory a
-        // reader may need, whatever the handler goes on to decide about its
-        // results.
-        //
-        // Except a skip: a launch that selected nothing and ran nothing wrote
-        // no directory, and counting it tells a reader the tests ran twice.
-        let skipped =
-            launch.ZeroSelection <> ZeroSelection.NotAZero && Map.isEmpty completed.Results
+        let assembled =
+            assembleRunResults
+                { State = state
+                  Completed = completed
+                  Launch = launch
+                  RepoRoot = repoRoot
+                  RunnableProjects = runnableProjects
+                  Traces = traces }
 
-        let completedRuns =
-            if skipped then
-                state.CompletedRuns
-            else
-                completed.RunId
-                :: (state.CompletedRuns
-                    |> List.filter (fun id -> id <> completed.RunId)
-                    |> List.truncate (SessionRunLedger - 1))
-
-        // Apply error reporting synchronously here too — live emission from
-        // the async wouldn't be captured for cache replay.
-        let testResults: TestResults =
-            { Results = completed.Results
-              Elapsed = completed.TotalElapsed }
-
-        // A run may clear ONLY what it COVERED.
-        //
-        // Two properties must hold together: the ledger is REWRITTEN each
-        // cycle (so a superseded red cannot linger), and it is
-        // rewritten from the OUTSTANDING set — what this run found PLUS every
-        // earlier red it did not cover. Rewriting from this run's failures
-        // alone lets a narrower run's green erase reds it never executed.
-        // Coverage comes from the run's own launch selection, so a red dies
-        // only to evidence that executed it, and dies the moment that evidence
-        // exists (no stuck-red).
-        //
-        // The launch selection cannot express the reach of a raw `--filter`
-        // passthrough — it records every project as `ProjectInFull` — so hand
-        // `ofRun` the classes the run's OWN report shows passing.
-        // Read from THIS run's directory only, and empty
-        // whenever the report is missing or incomplete.
-        let coverage =
-            RunCoverage.ofRun launch.Selection completed.Results (passedClassesOfRun repoRoot completed.RunId)
-
-        let passedTests = passedTestsOfRun repoRoot completed.RunId
-
-        // The run log a project-level cause points at. Named
-        // only when it is on disk: `Written` is otherwise reserved for the
-        // code holding the open handle, and a message must never point at
-        // a log nobody wrote.
-        let runLogOf (project: string) : RunLog.Ref =
-            let path = RunLog.pathIn (Ctrf.runDir repoRoot completed.RunId) project
-
-            if File.Exists path then
-                RunLog.Ref.Written path
-            else
-                RunLog.Ref.Unavailable "no output log is on disk for this run"
-
-        // The failed rows and declared classes of the CTRF report each
-        // project wrote in this run's directory, for naming a red the console
-        // line did not and for splitting every red's name.
-        let reportOf =
-            let reports =
-                Ctrf.reportsForRun repoRoot completed.RunId
-                |> List.map (fun report -> report.Project, report.Path)
-                |> Map.ofList
-
-            fun (project: string) ->
-                match Map.tryFind project reports with
-                | None -> ReportedFailures.none
-                | Some path ->
-                    try
-                        ReportedFailures.ofReport (File.ReadAllText path)
-                    with
-                    | :? IOException
-                    | :? UnauthorizedAccessException -> ReportedFailures.none
-
-        let foundFailures = failuresOf runLogOf reportOf state.TestClassFiles testResults
-
-        let failedTests = failedTestsOfRun repoRoot completed.RunId testResults
-
-        let checkReach, conditionalFailureRecall =
-            failedTests |> CheckReach.classifyEvidence launch.WouldHaveRun
-
-        // Shadow trace selection: store the launch's comparison with this
-        // run's failed tests. A run with no complete report judges no miss.
-        match traces with
-        | Some wiring when not launch.TraceShadow.IsEmpty ->
-            let failedKeys =
-                match failedTests with
-                | Ok failures ->
-                    failures
-                    |> List.choose (fun f ->
-                        match f.Class, f.Method with
-                        | Some cls, Some meth -> Some(TraceShadow.failureKey f.Project cls meth)
-                        | _ -> None)
-                | Error _ -> []
-
-            TraceShadow.atCompletion
-                wiring.Policy
-                repoRoot
-                launch.TraceShadow
-                (completed.RunId.ToString "N")
-                failedKeys
-                (Logging.info "test-prune")
-        | _ -> ()
-
-        // Classified HERE, against THIS run's failures and the
-        // selection retained at its launch. Nothing extra runs and nothing is
-        // re-read: both inputs are already in hand.
-
-        // A prior red naming a class this run selected, in a project that then
-        // passed with a complete report holding no row of that class, names no
-        // test the project has. No pass can ever retire it, so it goes now.
-        let absentFailures, priorFailures =
-            OutstandingFailure.partitionAbsent
-                coverage
-                (classesRunOfPassedProjects repoRoot completed.RunId completed.Results)
-                state.OutstandingFailures
-
-        if not absentFailures.IsEmpty then
-            Logging.info
-                "test-prune"
-                $"%d{absentFailures.Length} failure(s) from an earlier run name a test class this run selected and its project does not have (%s{OutstandingFailure.summarize absentFailures}) — retired, since no run can ever execute them"
-
-        let carriedFailures =
-            OutstandingFailure.carriedOver runnableProjects coverage passedTests priorFailures
-
-        let outstandingFailures =
-            OutstandingFailure.carry runnableProjects coverage passedTests foundFailures priorFailures
-
-        if not carriedFailures.IsEmpty then
-            Logging.info
-                "test-prune"
-                $"%d{carriedFailures.Length} failure(s) from an earlier run were NOT covered by this one (%s{OutstandingFailure.summarize carriedFailures}) — they stay RED until a run that executes them passes"
+        let completedRuns = assembled.CompletedRuns
+        let testResults = assembled.TestResults
+        let coverage = assembled.Coverage
+        let checkReach = assembled.CheckReach
+        let conditionalFailureRecall = assembled.ConditionalFailureRecall
+        let carriedFailures = assembled.CarriedFailures
+        let outstandingFailures = assembled.OutstandingFailures
 
         // Discharged HERE, immediately before the ledger
         // rewrite, because this is the one place the outstanding set is
