@@ -1449,6 +1449,91 @@ let internal foldAndEmitInto
                       NewResults = Map.ofList groupOutput })
     )
 
+/// Begin a run: settle how its traces see it, say it once when traces record nothing, run
+/// `beforeRun`, emit its start, and bind the tree it launches against.
+let internal beginRun
+    (ctx: PluginCtx<'msg> option)
+    (traces: TraceRunHost option)
+    (configs: TestConfig list)
+    (configuredCoverageProjects: TestConfig list)
+    (affectedClassesByProject: Map<string, string list>)
+    (excludedClassesByProject: Map<string, string list>)
+    (rawFilter: string option)
+    (runId: Guid)
+    repoRoot
+    beforeRun
+    emitStarted
+    feedsCompile
+    launchTree
+    trackHookStep
+    =
+    let skipsClasses =
+        excludedClassesByProject
+        |> Map.exists (fun _ classes -> not (List.isEmpty classes))
+
+    let isFilteredRun =
+        not affectedClassesByProject.IsEmpty || Option.isSome rawFilter || skipsClasses
+
+    // Every configured project launched, none of them filtered: a full run whatever
+    // mode launched it.
+    let runsEveryProjectInFull =
+        Option.isNone rawFilter
+        && not skipsClasses
+        && configuredCoverageProjects
+           |> List.forall (fun configured ->
+               configs |> List.exists (fun c -> c.Project = configured.Project)
+               && (affectedClassesByProject.IsEmpty
+                   || affectedClassesByProject
+                      |> Map.tryFind configured.Project
+                      |> Option.exists List.isEmpty))
+
+    let traces =
+        traces
+        |> Option.map (fun host ->
+            { host with
+                TraceRuntime =
+                    { host.TraceRuntime with
+                        RunsEveryProjectInFull = runsEveryProjectInFull } })
+
+    // Said once per run, loudly: every project below then stores and logs the same
+    // reason as its refusal.
+    traces
+    |> Option.bind (fun host -> TraceRun.unrecordedReason host.TraceRuntime)
+    |> Option.iter (fun reason -> Logging.warn "test-prune" $"traces: this run records none — %s{reason}")
+
+    let primaryLabel =
+        if isFilteredRun then
+            $"running %d{configs.Length} selected test projects"
+        else
+            $"running full suite (%d{configs.Length} projects)"
+
+    let startedAt = DateTime.UtcNow
+
+    ctx |> Option.iter (fun c -> c.StartSubtask PrimarySubtaskKey primaryLabel)
+    // `TestRunStarted` is emitted by the CALLER (which receives `started` in the
+    // returned tuple), so the synchronous `TestsFinished` handler can fire it inside
+    // the cache-write capture window.
+    let started: TestRunStarted = { RunId = runId; StartedAt = startedAt }
+    emitStarted started
+
+    // The tree this run's receipt binds to: re-read once `beforeRun` has done its
+    // generating, so its own output does not count as an edit made mid-run.
+    let boundTree =
+        match beforeRun with
+        | Some setup ->
+            Logging.info "test-prune" "Running beforeRun setup..."
+            setup runId trackHookStep
+            Logging.info "test-prune" "beforeRun complete"
+
+            let binding, why =
+                ReceiptInputTree.afterBeforeRun (feedsCompile ()) launchTree (ReceiptInputTree.readTree repoRoot)
+
+            why |> Option.iter (Logging.info "test-prune")
+            binding
+        | None -> launchTree
+
+    traces, started, boundTree
+
 /// Conclude a run whose groups have all finished: record flakiness, ingest its traces,
 /// tidy the run directories, stop the clock and close the primary subtask, and build the
 /// results and the completion the caller emits.
@@ -1609,70 +1694,22 @@ let internal executeTests
         | :? UnauthorizedAccessException as ex ->
             Logging.warn "test-prune" $"could not create the run directory %s{runDir}: %s{ex.Message}"
 
-        let skipsClasses =
-            excludedClassesByProject
-            |> Map.exists (fun _ classes -> not (List.isEmpty classes))
-
-        let isFilteredRun =
-            not affectedClassesByProject.IsEmpty || Option.isSome rawFilter || skipsClasses
-
-        // Every configured project launched, none of them filtered: a full run whatever
-        // mode launched it.
-        let runsEveryProjectInFull =
-            Option.isNone rawFilter
-            && not skipsClasses
-            && configuredCoverageProjects
-               |> List.forall (fun configured ->
-                   configs |> List.exists (fun c -> c.Project = configured.Project)
-                   && (affectedClassesByProject.IsEmpty
-                       || affectedClassesByProject
-                          |> Map.tryFind configured.Project
-                          |> Option.exists List.isEmpty))
-
-        let traces =
-            traces
-            |> Option.map (fun host ->
-                { host with
-                    TraceRuntime =
-                        { host.TraceRuntime with
-                            RunsEveryProjectInFull = runsEveryProjectInFull } })
-
-        // Said once per run, loudly: every project below then stores and logs the same
-        // reason as its refusal.
-        traces
-        |> Option.bind (fun host -> TraceRun.unrecordedReason host.TraceRuntime)
-        |> Option.iter (fun reason -> Logging.warn "test-prune" $"traces: this run records none — %s{reason}")
-
-        let primaryLabel =
-            if isFilteredRun then
-                $"running %d{configs.Length} selected test projects"
-            else
-                $"running full suite (%d{configs.Length} projects)"
-
-        let startedAt = DateTime.UtcNow
-
-        ctx |> Option.iter (fun c -> c.StartSubtask PrimarySubtaskKey primaryLabel)
-        // `TestRunStarted` is emitted by the CALLER (which receives `started` in the
-        // returned tuple), so the synchronous `TestsFinished` handler can fire it inside
-        // the cache-write capture window.
-        let started: TestRunStarted = { RunId = runId; StartedAt = startedAt }
-        emitStarted started
-
-        // The tree this run's receipt binds to: re-read once `beforeRun` has done its
-        // generating, so its own output does not count as an edit made mid-run.
-        let boundTree =
-            match beforeRun with
-            | Some setup ->
-                Logging.info "test-prune" "Running beforeRun setup..."
-                setup runId trackHookStep
-                Logging.info "test-prune" "beforeRun complete"
-
-                let binding, why =
-                    ReceiptInputTree.afterBeforeRun (feedsCompile ()) launchTree (ReceiptInputTree.readTree repoRoot)
-
-                why |> Option.iter (Logging.info "test-prune")
-                binding
-            | None -> launchTree
+        let traces, started, boundTree =
+            beginRun
+                ctx
+                traces
+                configs
+                configuredCoverageProjects
+                affectedClassesByProject
+                excludedClassesByProject
+                rawFilter
+                runId
+                repoRoot
+                beforeRun
+                emitStarted
+                feedsCompile
+                launchTree
+                trackHookStep
 
         let testHostStartedAt = DateTime.UtcNow
 
