@@ -135,15 +135,15 @@
     ],
     "TestPrunePlugin.fs": [
       {
-        "line": 94,
+        "line": 92,
         "branch": 84,
-        "reason": "First measured with coverageratchet 0.15.0-alpha.19, whose reader stopped skipping files with Test in their name. Measured 2026-09-30 on macOS by the unit suite (mise run test-direct): line 94.2%, branch 84.0% (1509/1796), rounded down.",
+        "reason": "Re-measured 2026-11-02 after AUTOMATION-1448 split the Update fold into named handlers: line 92.8% (2169/2338), branch 88.0% (581/660), rounded down. Branch coverage is unchanged by that commit (581/660 before and after); the line figure fell because the old figure was inflated, not because coverage was lost. In the single 2,140-line fold, sequence points spanned whole comment blocks, so coverlet counted 2,032 lines of the arms (comments included) at 95.8%. As separate handlers the same code is 1,000 instrumented lines at 91.9%. Inspected line by line: the uncovered lines are error and timing paths (trace-shadow completion, deferred-build status, flush failures) that were uncovered before too.",
         "platform": "macos"
       },
       {
-        "line": 94,
+        "line": 92,
         "branch": 84,
-        "reason": "First measured with coverageratchet 0.15.0-alpha.19, whose reader stopped skipping files with Test in their name. Measured on Linux CI run 36647760512: line 94.2%, branch 84.0% (1509/1796), rounded down.",
+        "reason": "Re-measured 2026-11-02 after AUTOMATION-1448 split the Update fold into named handlers: line 92.8% (2169/2338), branch 88.0% (581/660), rounded down. Branch coverage is unchanged by that commit (581/660 before and after); the line figure fell because the old figure was inflated, not because coverage was lost. In the single 2,140-line fold, sequence points spanned whole comment blocks, so coverlet counted 2,032 lines of the arms (comments included) at 95.8%. As separate handlers the same code is 1,000 instrumented lines at 91.9%. Inspected line by line: the uncovered lines are error and timing paths (trace-shadow completion, deferred-build status, flush failures) that were uncovered before too. Linux takes the same paths; equal to the macOS floor, as before.",
         "platform": "linux"
       }
     ],
