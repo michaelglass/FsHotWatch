@@ -1901,6 +1901,76 @@
         "reason": "Moved verbatim out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite (platform choices are injected), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 100.0%, branch 100.0% (10/10).",
         "platform": "linux"
       }
+    ],
+    "RunExecution.fs": [
+      {
+        "line": 95,
+        "branch": 78,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 95.9%, branch 166/211.",
+        "platform": "macos"
+      },
+      {
+        "line": 95,
+        "branch": 78,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 95.9%, branch 166/211.",
+        "platform": "linux"
+      }
+    ],
+    "RunSupport.fs": [
+      {
+        "line": 96,
+        "branch": 64,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 96.6%, branch 11/17.",
+        "platform": "macos"
+      },
+      {
+        "line": 96,
+        "branch": 64,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 96.6%, branch 11/17.",
+        "platform": "linux"
+      }
+    ],
+    "IndexMaintenance.fs": [
+      {
+        "line": 93,
+        "branch": 90,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 93.2%, branch 65/72.",
+        "platform": "macos"
+      },
+      {
+        "line": 93,
+        "branch": 90,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 93.2%, branch 65/72.",
+        "platform": "linux"
+      }
+    ],
+    "PluginCommands.fs": [
+      {
+        "line": 91,
+        "branch": 76,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 91.3%, branch 92/120.",
+        "platform": "macos"
+      },
+      {
+        "line": 91,
+        "branch": 76,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 91.3%, branch 92/120.",
+        "platform": "linux"
+      }
+    ],
+    "PluginQueries.fs": [
+      {
+        "line": 99,
+        "branch": 60,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 100.0%, branch 6/10.",
+        "platform": "macos"
+      },
+      {
+        "line": 99,
+        "branch": 60,
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 100.0%, branch 6/10.",
+        "platform": "linux"
+      }
     ]
   },
   "countFloors": {

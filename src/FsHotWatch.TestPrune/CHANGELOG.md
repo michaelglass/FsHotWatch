@@ -7,8 +7,10 @@
   the new module: `CoverageArtifacts`, `CoverageIngest`, `PluginTypes`, `RuntimeCoverageSelection`,
   `InputTrees`, `EvidenceReceipts`, `PluginState`, `RunLaunch`, `ExternalInputs`, `RunResults`,
   `ReceiptTransitions`, `SelectionAssembly`, `OutstandingFailures`, `TestFilters`, `FailureReports`,
-  `RunnerArgs` and `TestReports`. Top-level `private` definitions the plugin still uses became
-  `internal`.
+  `RunnerArgs`, `TestReports`, `PluginQueries`, `PluginCommands` (the IPC commands, over a
+  `CommandEnv`), `IndexMaintenance`, `RunSupport` and `RunExecution` (`executeTests`). Top-level
+  `private` definitions the plugin still uses became `internal`; `Flakiness.historyPath` replaces
+  the plugin's private history path.
 
 - refactor!: `TestPruneState` holds its test-evidence receipt as one `HeldReceipt` (`NoneYet`,
   `Standing of receipt * manifest`, `Revoked of reason`) in place of `EvidenceReceipt`,
