@@ -9,7 +9,7 @@
     <Version>0.7.0-alpha.34</Version>
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin for Fantomas format checking</Description>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageLicenseExpression>MPL-2.0</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/michaelglass/FsHotWatch</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>

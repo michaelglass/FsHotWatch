@@ -11,7 +11,7 @@
         <PackageId>TestPrune.Analyzers</PackageId>
         <Authors>Michael Glass</Authors>
         <Description>Opt-in FSharp.Analyzers.SDK analyzer that flags anonymous-record usage invisible to TestPrune impact analysis</Description>
-        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageLicenseExpression>MPL-2.0</PackageLicenseExpression>
         <RepositoryUrl>https://github.com/michaelglass/FsHotWatch</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
         <Version>0.1.0-alpha.6</Version>

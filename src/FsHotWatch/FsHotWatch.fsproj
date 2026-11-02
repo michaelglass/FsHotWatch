@@ -14,7 +14,7 @@
     <Authors>Michael Glass</Authors>
     <Description>F# file watcher daemon — keeps FSharpChecker warm for instant re-analysis</Description>
     <PackageTags>fsharp;file-watcher;fsharp-compiler-service;incremental;analysis</PackageTags>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageLicenseExpression>MPL-2.0</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/michaelglass/FsHotWatch</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>
