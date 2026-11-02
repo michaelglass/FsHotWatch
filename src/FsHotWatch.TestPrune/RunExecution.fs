@@ -1133,6 +1133,45 @@ let internal tryReuseWith (env: ReuseEnv) (config: TestConfig) : bool =
             TestEvidenceRun.deleteQuietly (Path.Combine(runDir, config.Project + Ctrf.ReportSuffix))
             false)
 
+/// The stale-artifact preflight over every project a run will launch: a coverage gap is
+/// said, and a repaired output is logged.
+let internal preflightLaunch
+    (repoRoot: string)
+    (configs: TestConfig list)
+    (skipProjectOf: TestConfig -> bool)
+    (logToCtx: string -> unit)
+    : StaleArtifactPreflight.Outcome =
+    // Every project that may launch is preflighted, a reusable one included: its filing
+    // can still fail, and then it launches like any other.
+    let runnableConfigs = configs |> List.filter (fun c -> not (skipProjectOf c))
+
+    let preflightTargets =
+        runnableConfigs
+        |> List.choose (fun c -> deriveProjectBin c.Args repoRoot |> Option.map (fun t -> c.Project, t))
+
+    // THE FLOOR. `List.choose` above DROPS every config whose build-output target
+    // could not be derived, and a dropped project is indistinguishable downstream
+    // from a project that was checked and found fresh — so a derivation that
+    // regressed would silently reduce this gate to checking nothing while every run
+    // stayed green. Say what was covered; see `coverageReport` for why it reports
+    // instead of refusing.
+    match
+        StaleArtifactPreflight.coverageReport
+            (runnableConfigs |> List.map (fun c -> c.Project))
+            (preflightTargets |> List.map fst)
+    with
+    | Some gap ->
+        Logging.warn "test-prune" gap
+        logToCtx gap
+    | None -> ()
+
+    let preflight = StaleArtifactPreflight.run repoRoot DateTime.UtcNow preflightTargets
+
+    for repaired in preflight.Healed do
+        logToCtx $"repaired stale build output before running: {repaired}"
+
+    preflight
+
 /// Fold one group's results into the run and emit them as progress.
 type internal GroupFold = (string * TestResult) list -> unit
 
@@ -1565,34 +1604,7 @@ let internal executeTests
 
         let tryReuse config = tryReuseWith reuseEnv config
 
-        // Every project that may launch is preflighted, a reusable one included: its filing
-        // can still fail, and then it launches like any other.
-        let runnableConfigs = configs |> List.filter (fun c -> not (skipProjectOf c))
-
-        let preflightTargets =
-            runnableConfigs
-            |> List.choose (fun c -> deriveProjectBin c.Args repoRoot |> Option.map (fun t -> c.Project, t))
-
-        // THE FLOOR. `List.choose` above DROPS every config whose build-output target
-        // could not be derived, and a dropped project is indistinguishable downstream
-        // from a project that was checked and found fresh — so a derivation that
-        // regressed would silently reduce this gate to checking nothing while every run
-        // stayed green. Say what was covered; see `coverageReport` for why it reports
-        // instead of refusing.
-        match
-            StaleArtifactPreflight.coverageReport
-                (runnableConfigs |> List.map (fun c -> c.Project))
-                (preflightTargets |> List.map fst)
-        with
-        | Some gap ->
-            Logging.warn "test-prune" gap
-            logToCtx gap
-        | None -> ()
-
-        let preflight = StaleArtifactPreflight.run repoRoot DateTime.UtcNow preflightTargets
-
-        for repaired in preflight.Healed do
-            logToCtx $"repaired stale build output before running: {repaired}"
+        let preflight = preflightLaunch repoRoot configs skipProjectOf logToCtx
 
         // ALL-OR-NOTHING on a refusal, as two named alternatives. A run whose tree is
         // provably not built cannot reach a green verdict, so launching the projects that
