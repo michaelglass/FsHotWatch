@@ -485,6 +485,24 @@ let internal onlyRetriesRedIn (repoRoot: string) (state: TestPruneState) =
         && ReceiptInputTree.matches (Some red.Tree) (ReceiptInputTree.read repoRoot)
     | None -> false
 
+/// Take the answer of the refresh running beside the fold, if one is, into `state`.
+let internal joinRefreshIn
+    (extensionRefresh: ExtensionRefreshPhase ref)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (state: TestPruneState)
+    =
+    match extensionRefresh.Value with
+    | ExtensionRefreshPhase.NeverRefreshed
+    | ExtensionRefreshPhase.Refreshed -> state
+    | ExtensionRefreshPhase.RunningBesideFold refresh ->
+        extensionRefresh.Value <- ExtensionRefreshPhase.Refreshed
+
+        let answer =
+            use _ = ctx.DeclareBoundedWork "extension refresh" ImpactSelectionDeadline
+            refresh.GetAwaiter().GetResult()
+
+        applyRefresh ctx answer state
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -867,19 +885,7 @@ let internal createWithEvidenceAndQueries
 
     let refreshTimed = refreshTimedIn db repoRoot
 
-    /// Take the answer of the refresh running beside the fold, if one is, into `state`.
-    let joinRefresh (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
-        match extensionRefresh.Value with
-        | ExtensionRefreshPhase.NeverRefreshed
-        | ExtensionRefreshPhase.Refreshed -> state
-        | ExtensionRefreshPhase.RunningBesideFold refresh ->
-            extensionRefresh.Value <- ExtensionRefreshPhase.Refreshed
-
-            let answer =
-                use _ = ctx.DeclareBoundedWork "extension refresh" ImpactSelectionDeadline
-                refresh.GetAwaiter().GetResult()
-
-            applyRefresh ctx answer state
+    let joinRefresh = joinRefreshIn extensionRefresh
 
     // Flush pending analysis to DB and merge the runtime obligations it names.
     // Extensions (if any) then replace their COMPLETE edge sets via
