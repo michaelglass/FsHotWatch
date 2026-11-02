@@ -2311,6 +2311,161 @@ let private memberFacts
       ParentLinks = List.rev parentLinks
       FixtureEdges = List.rev fixtureEdges |> List.distinct }
 
+/// Every definition in a file with the text its content hash covers, and the subset
+/// that is tracked (module-level bindings, type members, types, modules, cases and
+/// properties), each paired with its defining use.
+let private trackedDefinitions
+    (syntax: SyntaxIndex)
+    (sourceFileName: string)
+    (source: string)
+    (allUses: FSharpSymbolUse list)
+    : (SymbolInfo * FSharpSymbolUse) list * SymbolInfo list =
+    let sourceLines = source.Split('\n')
+    let allBindingRangeMap = syntax.AllBindingRangeMap
+    let typeDefnRangeMap = syntax.TypeDefnRangeMap
+    let propertyRangeMap = syntax.PropertyRangeMap
+    let typeShapes = syntax.TypeShapes
+    let sourceIndex = syntax.SourceIndex
+    let unionCaseRangeMap = syntax.UnionCaseRangeMap
+
+    let isTrackedSymbol (symbolInfo: SymbolInfo) =
+        match symbolInfo.Kind with
+        | Type
+        | Module
+        | DuCase
+        // A property is kept even when no syntax range names it: dropping it would
+        // sever every consumer edge, while keeping it costs at worst a hash that
+        // covers only its identifier's line. `spanOf` gives every property form
+        // the audit knows its whole text (`BindingFormAuditTests`).
+        | Property -> true
+        | Function
+        | Value ->
+            // Defence in depth behind `tryClassifyMemberOrFunction`'s
+            // `IsModuleValueOrMember` gate, which is the real discriminator. The
+            // short-name test alone is not enough: a parameter or local whose name
+            // collides with a module-level binding in the same file (`let private
+            // kebab (name: string)` in a file that also binds `name`) passes it and
+            // is persisted under the bare name `name` — a repo-wide hub, because
+            // `symbols.full_name` is UNIQUE. A module-level binding or type member
+            // is ALWAYS dot-qualified (`M.f`, `M.T.Member`), so an unqualified
+            // Function/Value is by definition a local.
+            symbolInfo.FullName.Contains('.')
+            && allBindingRangeMap |> Map.containsKey (canonicalShortName symbolInfo.FullName)
+        | ExternRef -> false
+
+    // The text each definition's hash covers. Prefer the AST range over FCS's
+    // `u.Range` (the identifier alone): a binding's includes its attributes and
+    // body, a union case's its attributes and payload. A Type's hash is refined
+    // to its header below, once every other symbol's span is known.
+    let spanOf (kind: SymbolKind) (fullName: string) (u: FSharpSymbolUse) : HashedSpan =
+        let sn = canonicalShortName fullName
+        let lines (r: range) = Lines(r.StartLine, r.EndLine)
+        let fallback = lines u.Range
+
+        let pickFrom map =
+            map |> Map.tryFind sn |> Option.bind (pickRangeFor u.Range)
+
+        match kind with
+        | Type -> pickFrom typeDefnRangeMap |> Option.map lines |> Option.defaultValue fallback
+        | Function
+        | Value -> pickFrom allBindingRangeMap |> Option.map lines |> Option.defaultValue fallback
+        | Property ->
+            // `member _.P = …` is a binding; `with get`/`and set` and `member val`
+            // are not, so both maps are candidates. Without the second, those two
+            // forms hashed only the line naming the property.
+            let candidates =
+                [ allBindingRangeMap; propertyRangeMap ]
+                |> List.collect (Map.tryFind sn >> Option.defaultValue [])
+
+            pickRangeFor u.Range candidates
+            |> Option.map lines
+            |> Option.defaultValue fallback
+        | DuCase -> pickFrom unionCaseRangeMap |> Option.map Exact |> Option.defaultValue fallback
+        | Module
+        | ExternRef -> fallback
+
+    let hashSpan span =
+        match span with
+        | Lines(startLine, endLine) -> hashSourceLines sourceLines startLine endLine
+        | Exact r -> hashRange sourceIndex r
+
+    let spannedDefinitions =
+        allUses
+        |> List.choose (fun u ->
+            if u.IsFromDefinition then
+                classifySymbol u.Symbol
+                |> Option.map (fun (kind, fullName) ->
+                    let isExtern =
+                        match u.Symbol with
+                        | :? FSharpMemberOrFunctionOrValue as mfv -> isDllImport mfv
+                        | _ -> false
+
+                    let span = spanOf kind fullName u
+
+                    { FullName = fullName
+                      Kind = kind
+                      SourceFile = sourceFileName
+                      LineStart = u.Range.StartLine
+                      LineEnd = u.Range.EndLine
+                      ContentHash = hashSpan span
+                      IsExtern = isExtern },
+                    u,
+                    span)
+            else
+                None)
+
+    // Union cases and members whose text some tracked symbol's own hash covers;
+    // only these are cut out of their type's header. Anything else stays in it,
+    // so no text of a type is ever hashed by nobody.
+    let hashedApart =
+        spannedDefinitions
+        |> List.choose (fun (si, _, span) ->
+            if si.Kind <> Type && isTrackedSymbol si then
+                Some(canonicalShortName si.FullName, span)
+            else
+                None)
+        |> groupRangesByName
+
+    let isHashedApart (child: TypeChild) =
+        hashedApart
+        |> Map.tryFind child.Name
+        |> Option.defaultValue []
+        |> List.exists (fun span ->
+            match span with
+            | Lines(startLine, endLine) -> startLine <= child.Range.StartLine && child.Range.EndLine <= endLine
+            | Exact r -> Range.rangeContainsRange r child.Range)
+
+    let headerHash (fullName: string) (u: FSharpSymbolUse) : string option =
+        let sn = canonicalShortName fullName
+
+        typeShapes
+        |> List.filter (fun shape ->
+            shape.Name = sn
+            && shape.Range.StartLine <= u.Range.StartLine
+            && u.Range.EndLine <= shape.Range.EndLine)
+        |> List.sortBy (fun shape -> shape.Range.EndLine - shape.Range.StartLine)
+        |> List.tryHead
+        |> Option.map (fun shape ->
+            shape.Children
+            |> List.filter (fun c -> (not c.IsCase || not shape.IsStruct) && isHashedApart c)
+            |> hashTypeHeader sourceIndex shape)
+
+    let definitions =
+        spannedDefinitions
+        |> List.map (fun (si, u, _) ->
+            match si.Kind with
+            | Type ->
+                match headerHash si.FullName u with
+                | Some h -> { si with ContentHash = h }, u
+                | None -> si, u
+            | _ -> si, u)
+
+    let symbols =
+        definitions
+        |> List.choose (fun (symbolInfo, _) -> if isTrackedSymbol symbolInfo then Some symbolInfo else None)
+
+    definitions, symbols
+
 /// Extract analysis results from parse and type-check results.
 let private extractResults
     (maxTraversalVisits: int)
@@ -2341,7 +2496,6 @@ let private extractResults
             let allUses = checkResults.GetAllUsesOfAllSymbolsInFile() |> Seq.toList
             let allUsesElapsed = analysisClock.ElapsedMilliseconds
             diagnosticFrame sourceFileName "all-uses" allUsesElapsed 0 0 0 0
-            let sourceLines = source.Split('\n')
 
             let genericEdgesForSymbol, genericCacheStats =
                 createGenericEdgeResolver symbolTraversalBudget enableMemoization (diagnosticsEnabled ())
@@ -2362,148 +2516,8 @@ let private extractResults
                 diagnosticResources sourceFileName stage
 
             let syntax = indexSyntax parseResults.ParseTree source
-            let allBindingRangeMap = syntax.AllBindingRangeMap
-            let typeDefnRangeMap = syntax.TypeDefnRangeMap
-            let propertyRangeMap = syntax.PropertyRangeMap
-            let typeShapes = syntax.TypeShapes
-            let sourceIndex = syntax.SourceIndex
-            let unionCaseRangeMap = syntax.UnionCaseRangeMap
 
-            let isTrackedSymbol (symbolInfo: SymbolInfo) =
-                match symbolInfo.Kind with
-                | Type
-                | Module
-                | DuCase
-                // A property is kept even when no syntax range names it: dropping it would
-                // sever every consumer edge, while keeping it costs at worst a hash that
-                // covers only its identifier's line. `spanOf` gives every property form
-                // the audit knows its whole text (`BindingFormAuditTests`).
-                | Property -> true
-                | Function
-                | Value ->
-                    // Defence in depth behind `tryClassifyMemberOrFunction`'s
-                    // `IsModuleValueOrMember` gate, which is the real discriminator. The
-                    // short-name test alone is not enough: a parameter or local whose name
-                    // collides with a module-level binding in the same file (`let private
-                    // kebab (name: string)` in a file that also binds `name`) passes it and
-                    // is persisted under the bare name `name` — a repo-wide hub, because
-                    // `symbols.full_name` is UNIQUE. A module-level binding or type member
-                    // is ALWAYS dot-qualified (`M.f`, `M.T.Member`), so an unqualified
-                    // Function/Value is by definition a local.
-                    symbolInfo.FullName.Contains('.')
-                    && allBindingRangeMap |> Map.containsKey (canonicalShortName symbolInfo.FullName)
-                | ExternRef -> false
-
-            // The text each definition's hash covers. Prefer the AST range over FCS's
-            // `u.Range` (the identifier alone): a binding's includes its attributes and
-            // body, a union case's its attributes and payload. A Type's hash is refined
-            // to its header below, once every other symbol's span is known.
-            let spanOf (kind: SymbolKind) (fullName: string) (u: FSharpSymbolUse) : HashedSpan =
-                let sn = canonicalShortName fullName
-                let lines (r: range) = Lines(r.StartLine, r.EndLine)
-                let fallback = lines u.Range
-
-                let pickFrom map =
-                    map |> Map.tryFind sn |> Option.bind (pickRangeFor u.Range)
-
-                match kind with
-                | Type -> pickFrom typeDefnRangeMap |> Option.map lines |> Option.defaultValue fallback
-                | Function
-                | Value -> pickFrom allBindingRangeMap |> Option.map lines |> Option.defaultValue fallback
-                | Property ->
-                    // `member _.P = …` is a binding; `with get`/`and set` and `member val`
-                    // are not, so both maps are candidates. Without the second, those two
-                    // forms hashed only the line naming the property.
-                    let candidates =
-                        [ allBindingRangeMap; propertyRangeMap ]
-                        |> List.collect (Map.tryFind sn >> Option.defaultValue [])
-
-                    pickRangeFor u.Range candidates
-                    |> Option.map lines
-                    |> Option.defaultValue fallback
-                | DuCase -> pickFrom unionCaseRangeMap |> Option.map Exact |> Option.defaultValue fallback
-                | Module
-                | ExternRef -> fallback
-
-            let hashSpan span =
-                match span with
-                | Lines(startLine, endLine) -> hashSourceLines sourceLines startLine endLine
-                | Exact r -> hashRange sourceIndex r
-
-            let spannedDefinitions =
-                allUses
-                |> List.choose (fun u ->
-                    if u.IsFromDefinition then
-                        classifySymbol u.Symbol
-                        |> Option.map (fun (kind, fullName) ->
-                            let isExtern =
-                                match u.Symbol with
-                                | :? FSharpMemberOrFunctionOrValue as mfv -> isDllImport mfv
-                                | _ -> false
-
-                            let span = spanOf kind fullName u
-
-                            { FullName = fullName
-                              Kind = kind
-                              SourceFile = sourceFileName
-                              LineStart = u.Range.StartLine
-                              LineEnd = u.Range.EndLine
-                              ContentHash = hashSpan span
-                              IsExtern = isExtern },
-                            u,
-                            span)
-                    else
-                        None)
-
-            // Union cases and members whose text some tracked symbol's own hash covers;
-            // only these are cut out of their type's header. Anything else stays in it,
-            // so no text of a type is ever hashed by nobody.
-            let hashedApart =
-                spannedDefinitions
-                |> List.choose (fun (si, _, span) ->
-                    if si.Kind <> Type && isTrackedSymbol si then
-                        Some(canonicalShortName si.FullName, span)
-                    else
-                        None)
-                |> groupRangesByName
-
-            let isHashedApart (child: TypeChild) =
-                hashedApart
-                |> Map.tryFind child.Name
-                |> Option.defaultValue []
-                |> List.exists (fun span ->
-                    match span with
-                    | Lines(startLine, endLine) -> startLine <= child.Range.StartLine && child.Range.EndLine <= endLine
-                    | Exact r -> Range.rangeContainsRange r child.Range)
-
-            let headerHash (fullName: string) (u: FSharpSymbolUse) : string option =
-                let sn = canonicalShortName fullName
-
-                typeShapes
-                |> List.filter (fun shape ->
-                    shape.Name = sn
-                    && shape.Range.StartLine <= u.Range.StartLine
-                    && u.Range.EndLine <= shape.Range.EndLine)
-                |> List.sortBy (fun shape -> shape.Range.EndLine - shape.Range.StartLine)
-                |> List.tryHead
-                |> Option.map (fun shape ->
-                    shape.Children
-                    |> List.filter (fun c -> (not c.IsCase || not shape.IsStruct) && isHashedApart c)
-                    |> hashTypeHeader sourceIndex shape)
-
-            let definitions =
-                spannedDefinitions
-                |> List.map (fun (si, u, _) ->
-                    match si.Kind with
-                    | Type ->
-                        match headerHash si.FullName u with
-                        | Some h -> { si with ContentHash = h }, u
-                        | None -> si, u
-                    | _ -> si, u)
-
-            let symbols =
-                definitions
-                |> List.choose (fun (symbolInfo, _) -> if isTrackedSymbol symbolInfo then Some symbolInfo else None)
+            let definitions, symbols = trackedDefinitions syntax sourceFileName source allUses
 
             trace "symbols"
 
