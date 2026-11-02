@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **BREAKING (API):** a resolved idle-exit window is a `PositiveMinutes` from config to timer
+  (AUTOMATION-1445). `IdleExit.resolveThreshold`, `resolvePressureFloor`, `ResolvedIdleExit.ThresholdMin`,
+  `effectiveThreshold`, `IdleExitDeps.BaseThresholdMin`/`PressureFloorMin` and
+  `DaemonOptions.IdleExitMin`/`PressureIdleFloorMin` now carry `PositiveMinutes` in place of `int`. The
+  daemon no longer re-checks `minutes > 0` before arming the timer, and the timer no longer relies on a
+  comment saying its window is positive. Windows, log lines and exits are unchanged.
+
+- **BREAKING (API):** `DepsFreshness.Freshness.Stale` carries a `StaleReason`: `AssetsMissing`, or
+  `DepsNewer` with the assets' write time and the dependency files written after them
+  (AUTOMATION-1445). `Stale` used to mean either fact, so the gate re-checked the assets on disk before
+  letting a matching content baseline vouch for them, and the log re-filtered the files to name them.
+  The baseline now vouches only for `DepsNewer`, and the log describes the reason the probe found.
+  `compareFreshness` takes each dependency file with its write time. Gate decisions are unchanged.
+
 - refactor: `check`, `options` and `format` records are built by one function,
   `OutcomeStore.Record.ofAction` (new): an action that ran no tests, untimed and outside any
   test run. Each filed record is unchanged.

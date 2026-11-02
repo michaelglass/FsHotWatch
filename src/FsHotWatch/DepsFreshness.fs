@@ -16,31 +16,42 @@ open System.Text.RegularExpressions
 open System.Xml.Linq
 open FsHotWatch.ProcessHelper
 
+/// Why a project's restored assets are out of sync with its declared deps. Two
+/// different facts, kept apart: only the second leaves assets that a matching content
+/// baseline can vouch for (`evaluateProject`).
+[<RequireQualifiedAccess>]
+type StaleReason =
+    /// `obj/project.assets.json` does not exist: never restored, or cleaned away.
+    | AssetsMissing
+    /// The assets (written at `assets`) exist, but each of `newer` — a dependency
+    /// file and its write time — was written after them. Never empty.
+    | DepsNewer of assets: DateTime * newer: (string * DateTime) list
+
 /// Whether a project's restored assets are in sync with its declared deps.
 type Freshness =
     | Fresh
-    | Stale
+    | Stale of StaleReason
 
 /// Plugin name under which the gate reports its fail-fast diagnostic. Shows up
 /// in `fshw errors` / `check` and feeds the aggregate verdict like any plugin.
 [<Literal>]
 let PluginName = "deps"
 
-/// Pure freshness comparator. Stale when assets are missing, or older than any
-/// dependency-declaring file. No dep files → Fresh (nothing can invalidate the
-/// assets). Exposed for unit testing without disk.
+/// Pure freshness comparator over the assets' write time and each dependency file's.
+/// Stale when assets are missing, or older than any dependency-declaring file, naming
+/// which. No dep files → Fresh (nothing can invalidate the assets). Exposed for unit
+/// testing without disk.
 ///
 /// This is an mtime-based fast path, not a content oracle; both of its blind spots
 /// are closed in `evaluateProject` by the content-hashed `depRelevantSignature`.
 /// See docs/adr-008-mtime-is-not-a-content-oracle.md.
-let compareFreshness (assetsMtime: DateTime option) (depFileMtimes: DateTime list) : Freshness =
+let compareFreshness (assetsMtime: DateTime option) (depFileMtimes: (string * DateTime) list) : Freshness =
     match assetsMtime with
-    | None -> Stale
+    | None -> Stale StaleReason.AssetsMissing
     | Some assets ->
-        if depFileMtimes |> List.exists (fun m -> m > assets) then
-            Stale
-        else
-            Fresh
+        match depFileMtimes |> List.filter (fun (_, written) -> written > assets) with
+        | [] -> Fresh
+        | newer -> Stale(StaleReason.DepsNewer(assets, newer))
 
 /// Names of dependency-declaring files that live alongside / above a project.
 /// `*.fsproj` is handled separately (it is the project file itself).
@@ -122,19 +133,14 @@ let private tryMtime (path: string) : DateTime option =
 
 /// Which inputs make a project read `Stale`: no assets at all, or each dep file
 /// written after them. Pure, so the daemon log's wording is testable.
-let internal describeStaleness
-    (repoRoot: string)
-    (assetsMtime: DateTime option)
-    (depFileMtimes: (string * DateTime) list)
-    : string =
-    match assetsMtime with
-    | None -> "obj/project.assets.json is missing"
-    | Some assets ->
+let internal describeStaleness (repoRoot: string) (reason: StaleReason) : string =
+    match reason with
+    | StaleReason.AssetsMissing -> "obj/project.assets.json is missing"
+    | StaleReason.DepsNewer(assets, newer) ->
         let stamp (at: DateTime) = at.ToString("O")
 
         let newer =
-            depFileMtimes
-            |> List.filter (fun (_, written) -> written > assets)
+            newer
             |> List.map (fun (file, written) -> $"%s{Path.GetRelativePath(repoRoot, file)} (written %s{stamp written})")
             |> String.concat ", "
 
@@ -151,12 +157,12 @@ let detectProjectFreshness (repoRoot: string) (fsprojPath: string) : Freshness =
         dependencyFiles fsprojPath repoRoot
         |> List.choose (fun file -> tryMtime file |> Option.map (fun written -> file, written))
 
-    let freshness = compareFreshness assetsMtime (List.map snd depMtimes)
+    let freshness = compareFreshness assetsMtime depMtimes
 
-    if freshness = Stale then
-        Logging.info
-            "deps"
-            $"%s{Path.GetFileName fsprojPath}: stale by mtime — %s{describeStaleness repoRoot assetsMtime depMtimes}"
+    match freshness with
+    | Stale reason ->
+        Logging.info "deps" $"%s{Path.GetFileName fsprojPath}: stale by mtime — %s{describeStaleness repoRoot reason}"
+    | Fresh -> ()
 
     freshness
 
@@ -685,7 +691,7 @@ let evaluateProject
                     tracker.Clear proj
                     tracker.RecordFreshSignature(proj, sig_)
                     Proceed
-                | Stale -> attemptRecovery sig_
+                | Stale _ -> attemptRecovery sig_
             finally
                 Threading.Monitor.Exit gate
 
@@ -703,13 +709,12 @@ let evaluateProject
         tracker.Clear proj
         tracker.RecordFreshSignature(proj, sig_)
         Proceed
-    | Stale when assetsPresent proj && tracker.MatchesFreshBaseline(proj, sig_) ->
+    | Stale(StaleReason.DepsNewer _) when tracker.MatchesFreshBaseline(proj, sig_) ->
         // mtime says stale but the dep content is unchanged from the last baseline:
         // a compile-item-only fsproj edit. The existing assets are still valid.
         //
-        // `assetsPresent` FIRST, and it is not redundant. `Stale` is two different
-        // facts wearing one label — "the assets are older than a dep file" and "there
-        // are no assets at all" — and the baseline can only vouch for the first. The
+        // Only `DepsNewer`, never `AssetsMissing`: the baseline can vouch for assets
+        // older than a dep file, never for assets that are not there. The
         // signature is derived from the `.fsproj` and the ancestor dep files, none of
         // which a `rm -rf obj/` touches, so a cleaned workspace arrives here with a
         // matching baseline and would be certified fresh with NO restore output on
@@ -720,7 +725,7 @@ let evaluateProject
         tracker.Clear proj
         tracker.RecordFreshSignature(proj, sig_)
         Proceed
-    | Stale ->
+    | Stale _ ->
         Logging.info "deps" $"%s{Path.GetFileName proj}: no fresh baseline vouches for its dep content — recovering"
         handleStale sig_
 

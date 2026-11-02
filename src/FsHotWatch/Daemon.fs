@@ -3477,9 +3477,9 @@ type Daemon
         lifetime: CancellationTokenSource,
         formatAllFn: (unit -> Async<string>) option,
         excludePatterns: string list,
-        idleExitMin: int option,
+        idleExitMin: IdleExit.PositiveMinutes option,
         idleExitSource: IdleExit.ThresholdSource,
-        pressureIdleFloorMin: int option,
+        pressureIdleFloorMin: IdleExit.PositiveMinutes option,
         // How often a running daemon checks that its root still exists (`VanishedRoot`).
         vanishedRootCheckEvery: TimeSpan,
         // Live scan-activity leases, shared with the scan supervisor that takes them.
@@ -3505,7 +3505,10 @@ type Daemon
         beforeScanPublication: (FileCheckResult -> unit) ref
     ) =
 
-    let mutable disposed = false
+    // 0 until the first Dispose claims it. `Run`, `RunWithIpc` and the owner's `use` all
+    // dispose, possibly at once (a shutdown's `finally` beside the caller's): exactly one
+    // of them runs the teardown.
+    let disposeClaimed = ref 0
 
     // Settles when the scan `RunWithIpc` starts on serving has settled, however it ended.
     let startupScanSettled =
@@ -3649,9 +3652,7 @@ type Daemon
 
     interface IDisposable with
         member this.Dispose() =
-            if not disposed then
-                disposed <- true
-
+            if Interlocked.Exchange(disposeClaimed, 1) = 0 then
                 // Close admission first. Queued requests settle and live work is asked to
                 // cancel, so nothing can launch a child after the registry reaps. Live
                 // callbacks stay owned until they actually return.
@@ -4027,7 +4028,7 @@ type Daemon
                 // window.
                 use _idleExitTimer: IDisposable =
                     match idleExitMin with
-                    | Some minutes when minutes > 0 ->
+                    | Some minutes ->
                         let deps: IdleExit.IdleExitDeps =
                             { BaseThresholdMin = minutes
                               Source = idleExitSource
@@ -5045,7 +5046,7 @@ module Daemon =
             /// auto-restarts. `None` (the default) disables it — no timer is
             /// created. Resolution from the `idleExitMin` config + repo path is
             /// done by the caller (`IdleExit.resolveThreshold`).
-            IdleExitMin: int option
+            IdleExitMin: IdleExit.PositiveMinutes option
             /// Where `IdleExitMin` came from (`IdleExit.resolveIdleExit`): named on the
             /// `[idle-exit] enabled:` line, and an `Environment` source that disables
             /// idle-exit logs that it did.
@@ -5059,7 +5060,7 @@ module Daemon =
             /// None`, e.g. the default workspace) eligible. Resolution from the
             /// `pressureIdleFloorMin` config is done by the caller
             /// (`IdleExit.resolvePressureFloor`).
-            PressureIdleFloorMin: int option
+            PressureIdleFloorMin: IdleExit.PositiveMinutes option
             /// How often a running daemon checks that its root still exists; it shuts
             /// down once it does not (`VanishedRoot`).
             VanishedRootCheckEvery: TimeSpan

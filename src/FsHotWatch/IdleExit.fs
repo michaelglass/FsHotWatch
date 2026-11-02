@@ -60,11 +60,11 @@ type PressureFloorConfig =
 /// - `Absent`   → `Some 2` (default-on)
 /// - `Disabled` → `None` (no pressure-shortening)
 /// - `Minutes N` → `Some N`
-let resolvePressureFloor (config: PressureFloorConfig) : int option =
+let resolvePressureFloor (config: PressureFloorConfig) : PositiveMinutes option =
     match config with
-    | PressureFloorConfig.Absent -> Some DefaultPressureFloorMin
+    | PressureFloorConfig.Absent -> Some(PositiveMinutes DefaultPressureFloorMin)
     | PressureFloorConfig.Disabled -> None
-    | PressureFloorConfig.Minutes n -> Some(PositiveMinutes.value n)
+    | PressureFloorConfig.Minutes n -> Some n
 
 /// Pure: the GC's high-load decision. True when `memoryLoad` has reached the GC's own
 /// `highLoadThreshold`. No percentage knob — we reuse the GC's high-load mark. A 0
@@ -209,12 +209,16 @@ let disconnectPressureNote (pressure: bool) : string =
 
 /// Pure: shorten an already-eligible idle window (in minutes) under memory pressure.
 /// Eligibility is decided upstream by `resolveThreshold`, so by the time we have a
-/// `baseThreshold: int` the daemon is eligible and pressure here only SHORTENS, never
+/// `baseThreshold` the daemon is eligible and pressure here only SHORTENS, never
 /// creates, a window. Under pressure with a floor it is `min(base, f)`, so the floor
 /// never lengthens a window already smaller than it; otherwise `base` is unchanged.
-let effectiveThreshold (baseThreshold: int) (pressure: bool) (pressureFloor: int option) : int =
+let effectiveThreshold
+    (baseThreshold: PositiveMinutes)
+    (pressure: bool)
+    (pressureFloor: PositiveMinutes option)
+    : PositiveMinutes =
     match pressure, pressureFloor with
-    | true, Some f -> min baseThreshold f
+    | true, Some f when PositiveMinutes.value f < PositiveMinutes.value baseThreshold -> f
     | _ -> baseThreshold
 
 /// True when `repoRoot` is a non-default jj workspace — the path contains a
@@ -236,15 +240,15 @@ let isNonDefaultWorkspace (repoRoot: string) : bool =
 /// - `Absent`  → `Some 30` iff `repoRoot` is a non-default workspace, else `None`
 /// - `Disabled`→ `None` everywhere (explicit opt-out beats AUTO)
 /// - `Minutes N` → `Some N` everywhere (explicit opt-in, path-agnostic)
-let resolveThreshold (config: IdleExitConfig) (repoRoot: string) : int option =
+let resolveThreshold (config: IdleExitConfig) (repoRoot: string) : PositiveMinutes option =
     match config with
     | IdleExitConfig.Absent ->
         if isNonDefaultWorkspace repoRoot then
-            Some AutoThresholdMin
+            Some(PositiveMinutes AutoThresholdMin)
         else
             None
     | IdleExitConfig.Disabled -> None
-    | IdleExitConfig.Minutes n -> Some(PositiveMinutes.value n)
+    | IdleExitConfig.Minutes n -> Some n
 
 /// The environment variable that overrides `.fshw.json`'s `idleExitMin` for the one
 /// daemon started with it. `.fshw.json` is shared and tracked, and an edit to it stops
@@ -314,7 +318,7 @@ module ThresholdSource =
 /// A daemon's resolved idle-exit window, where it came from, and the warning for an
 /// override that could not be read.
 type ResolvedIdleExit =
-    { ThresholdMin: int option
+    { ThresholdMin: PositiveMinutes option
       Source: ThresholdSource
       Warning: string option }
 
@@ -464,14 +468,14 @@ type IdleExitDeps =
         /// Base idle window (minutes) before exit is eligible — the resolved
         /// `idleExitMin` threshold (`IdleExit.resolveThreshold`). Memory pressure
         /// can SHORTEN this per tick to `min(BaseThresholdMin, PressureFloorMin)`.
-        BaseThresholdMin: int
+        BaseThresholdMin: PositiveMinutes
         /// Where `BaseThresholdMin` came from (`resolveIdleExit`), named on the
         /// enable line.
         Source: ThresholdSource
         /// Resolved pressure floor (minutes), or `None` when pressure-shortening
         /// is disabled (`resolvePressureFloor`). Re-read against `Pressure` each
         /// tick — it never lengthens a window already smaller than it.
-        PressureFloorMin: int option
+        PressureFloorMin: PositiveMinutes option
         /// Current memory-pressure signal. Re-evaluated each tick (a live
         /// current-state read, not latched): if pressure subsides the full window
         /// is restored. Production wires `IdleExit.readPressure`; the reading is named on the exit line.
@@ -510,10 +514,11 @@ let runTick (deps: IdleExitDeps) (latch: FireLatch) : TickOutcome =
         let inhibitors = deps.Inhibitors()
         let reading = deps.Pressure()
         let pressure = PressureReading.isPressure reading
-        // BaseThresholdMin is always > 0 here — createTimer is only wired once
-        // resolveThreshold returned Some, so the daemon is already eligible.
+        let baseMin = PositiveMinutes.value deps.BaseThresholdMin
+
         let effectiveMin =
             effectiveThreshold deps.BaseThresholdMin pressure deps.PressureFloorMin
+            |> PositiveMinutes.value
 
         let threshold = TimeSpan.FromMinutes(float effectiveMin)
 
@@ -524,8 +529,8 @@ let runTick (deps: IdleExitDeps) (latch: FireLatch) : TickOutcome =
         | TickOutcome.Fired ->
             if FireLatch.tryFire latch then
                 let pressureNote =
-                    if pressure && effectiveMin < deps.BaseThresholdMin then
-                        $" (memory pressure shortened the %d{deps.BaseThresholdMin}min window)"
+                    if pressure && effectiveMin < baseMin then
+                        $" (memory pressure shortened the %d{baseMin}min window)"
                     else
                         ""
 
@@ -558,13 +563,15 @@ let runTick (deps: IdleExitDeps) (latch: FireLatch) : TickOutcome =
 let createTimerWith (period: TimeSpan) (deps: IdleExitDeps) : IDisposable =
     let latch = FireLatch.create ()
 
+    let baseMin = PositiveMinutes.value deps.BaseThresholdMin
+
     let floorNote =
-        match deps.PressureFloorMin with
-        | Some f when f < deps.BaseThresholdMin -> $" (or %d{f}min under memory pressure)"
+        match deps.PressureFloorMin |> Option.map PositiveMinutes.value with
+        | Some f when f < baseMin -> $" (or %d{f}min under memory pressure)"
         | _ -> ""
 
     deps.Log
-        $"[idle-exit] enabled: will shut down after %d{deps.BaseThresholdMin}min idle (checked every 30s)%s{floorNote} — from %s{ThresholdSource.describe deps.Source}"
+        $"[idle-exit] enabled: will shut down after %d{baseMin}min idle (checked every 30s)%s{floorNote} — from %s{ThresholdSource.describe deps.Source}"
 
     DrainedTimer.every period (fun () -> runTick deps latch |> ignore)
 

@@ -17,6 +17,23 @@ open FsHotWatch.Tests.TestHelpers
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
 
+/// A probe reading: the assets exist, and a dependency file was written after them.
+let private stale =
+    Stale(
+        StaleReason.DepsNewer(
+            DateTime(2026, 6, 2, 0, 0, 0, DateTimeKind.Utc),
+            [ "P.fsproj", DateTime(2026, 6, 3, 0, 0, 0, DateTimeKind.Utc) ]
+        )
+    )
+
+/// A probe reading: there are no assets at all.
+let private missing = Stale StaleReason.AssetsMissing
+
+let private isStale (freshness: Freshness) =
+    match freshness with
+    | Stale _ -> true
+    | Fresh -> false
+
 // ---- pure comparator ----
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
@@ -24,25 +41,26 @@ let ``compareFreshness: assets newer than all dep files is Fresh`` () =
     let assets = DateTime(2026, 6, 2, 12, 0, 0, DateTimeKind.Utc)
 
     let deps =
-        [ DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc)
-          DateTime(2026, 6, 2, 11, 0, 0, DateTimeKind.Utc) ]
+        [ "a.props", DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc)
+          "P.fsproj", DateTime(2026, 6, 2, 11, 0, 0, DateTimeKind.Utc) ]
 
     test <@ compareFreshness (Some assets) deps = Fresh @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
-let ``compareFreshness: assets older than one dep file is Stale`` () =
+let ``compareFreshness: assets older than one dep file is Stale, naming only that file`` () =
     let assets = DateTime(2026, 6, 2, 12, 0, 0, DateTimeKind.Utc)
+    let newer = DateTime(2026, 6, 3, 0, 0, 0, DateTimeKind.Utc)
 
     let deps =
-        [ DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc)
-          DateTime(2026, 6, 3, 0, 0, 0, DateTimeKind.Utc) ]
+        [ "a.props", DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc)
+          "P.fsproj", newer ]
 
-    test <@ compareFreshness (Some assets) deps = Stale @>
+    test <@ compareFreshness (Some assets) deps = Stale(StaleReason.DepsNewer(assets, [ "P.fsproj", newer ])) @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``compareFreshness: missing assets is Stale`` () =
-    let deps = [ DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc) ]
-    test <@ compareFreshness None deps = Stale @>
+    let deps = [ "P.fsproj", DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc) ]
+    test <@ compareFreshness None deps = Stale StaleReason.AssetsMissing @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``compareFreshness: no dep files is Fresh`` () =
@@ -193,7 +211,7 @@ let ``detectProjectFreshness: missing assets is Stale`` () =
         let projDir = Path.Combine(root, "src", "Proj")
         let fsproj = Path.Combine(projDir, "Proj.fsproj")
         touch fsproj
-        test <@ detectProjectFreshness root fsproj = Stale @>)
+        test <@ detectProjectFreshness root fsproj = Stale StaleReason.AssetsMissing @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectProjectFreshness: assets newer than fsproj is Fresh`` () =
@@ -217,7 +235,7 @@ let ``detectProjectFreshness: assets older than fsproj is Stale`` () =
         touch assets
         File.SetLastWriteTimeUtc(assets, DateTime.UtcNow.AddMinutes(-5.0))
         File.SetLastWriteTimeUtc(fsproj, DateTime.UtcNow)
-        test <@ detectProjectFreshness root fsproj = Stale @>)
+        test <@ isStale (detectProjectFreshness root fsproj) @>)
 
 // ---- content-aware dep-relevant signature (mtime is not a content oracle) ----
 
@@ -436,7 +454,7 @@ let ``evaluateProject: stale then successful restore (assets present) -> Recover
     let tracker = RecoveryTracker()
 
     let result =
-        evaluateProject (fun _ -> Stale) sigZero assetsYes succeedingRunner tracker "P.fsproj"
+        evaluateProject (fun _ -> stale) sigZero assetsYes succeedingRunner tracker "P.fsproj"
 
     test <@ result = RecoveredOk @>
 
@@ -445,7 +463,7 @@ let ``evaluateProject: stale and restore fails -> FailFast with one message`` ()
     let tracker = RecoveryTracker()
 
     let result =
-        evaluateProject (fun _ -> Stale) sigZero assetsYes failingRunner tracker "P.fsproj"
+        evaluateProject (fun _ -> stale) sigZero assetsYes failingRunner tracker "P.fsproj"
 
     match result with
     | FailFast(msg, detail) ->
@@ -459,7 +477,7 @@ let ``evaluateProject: restore succeeds but assets still missing -> FailFast`` (
     let tracker = RecoveryTracker()
 
     let result =
-        evaluateProject (fun _ -> Stale) sigZero assetsNo succeedingRunner tracker "P.fsproj"
+        evaluateProject (fun _ -> stale) sigZero assetsNo succeedingRunner tracker "P.fsproj"
 
     match result with
     | FailFast(msg, _) -> test <@ msg.Contains "still missing" @>
@@ -477,8 +495,8 @@ let ``evaluateProject: still-stale second cycle does not re-run restore (no loop
     let tracker = RecoveryTracker()
     let proj = "P.fsproj"
 
-    let first = evaluateProject (fun _ -> Stale) sigZero assetsYes runner tracker proj
-    let second = evaluateProject (fun _ -> Stale) sigZero assetsYes runner tracker proj
+    let first = evaluateProject (fun _ -> stale) sigZero assetsYes runner tracker proj
+    let second = evaluateProject (fun _ -> stale) sigZero assetsYes runner tracker proj
 
     test <@ runs = 1 @>
 
@@ -504,10 +522,10 @@ let ``evaluateProject: a new dep bump re-arms recovery`` () =
     let tracker = RecoveryTracker()
     let proj = "P.fsproj"
 
-    evaluateProject (fun _ -> Stale) signatureOf assetsYes runner tracker proj
+    evaluateProject (fun _ -> stale) signatureOf assetsYes runner tracker proj
     |> ignore
 
-    evaluateProject (fun _ -> Stale) signatureOf assetsYes runner tracker proj
+    evaluateProject (fun _ -> stale) signatureOf assetsYes runner tracker proj
     |> ignore
 
     test <@ runs = 2 @>
@@ -586,7 +604,7 @@ let ``evaluateProject: mtime-Stale but dep signature matches baseline -> Proceed
 
     // Cycle 2: a compile-item edit bumped the mtime; the dep signature is unchanged.
     let second =
-        evaluateProject (fun _ -> Stale) sigStable assetsYes runner tracker proj
+        evaluateProject (fun _ -> stale) sigStable assetsYes runner tracker proj
 
     test <@ first = Proceed @>
     test <@ second = Proceed @>
@@ -612,7 +630,7 @@ let ``evaluateProject: mtime-Stale with CHANGED dep signature -> restores (not s
         evaluateProject (fun _ -> Fresh) signatureOf assetsYes runner tracker proj
 
     let second =
-        evaluateProject (fun _ -> Stale) signatureOf assetsYes runner tracker proj
+        evaluateProject (fun _ -> stale) signatureOf assetsYes runner tracker proj
 
     test <@ first = Proceed @>
     test <@ runs = 1 @>
@@ -649,7 +667,8 @@ let ``a matching baseline never certifies a project whose assets are GONE`` () =
 
     // Cycle 2: `obj/` was cleaned. The declared deps did not move, so the signature
     // still matches — but there is nothing left to be fresh.
-    let second = evaluateProject (fun _ -> Stale) sigStable assetsNo runner tracker proj
+    let second =
+        evaluateProject (fun _ -> missing) sigStable assetsNo runner tracker proj
 
     test <@ first = Proceed @>
     test <@ runs = 1 @>
@@ -673,7 +692,7 @@ let ``evaluateProject: Stale on first sighting (no baseline) still restores`` ()
     let tracker = RecoveryTracker()
 
     let result =
-        evaluateProject (fun _ -> Stale) (fun _ -> "dep-sig") assetsYes runner tracker "P.fsproj"
+        evaluateProject (fun _ -> stale) (fun _ -> "dep-sig") assetsYes runner tracker "P.fsproj"
 
     test <@ runs = 1 @>
     test <@ result = RecoveredOk @>
@@ -737,7 +756,7 @@ let ``a restore failure preflight saw is still reported when the scan's gate ski
     let tracker = RecoveryTracker()
 
     let gate =
-        evaluateProject (fun _ -> Stale) (fun _ -> "dep-sig") (fun _ -> false) runner tracker
+        evaluateProject (fun _ -> stale) (fun _ -> "dep-sig") (fun _ -> false) runner tracker
 
     let scanGate = withPreflight (preflight gate [ "P.fsproj" ]) gate
 
@@ -1007,7 +1026,7 @@ let ``evaluateProject: a concurrent evaluation waits for an in-flight restore in
         if System.Threading.Volatile.Read(&restored.contents) then
             Fresh
         else
-            Stale
+            stale
 
     let winner =
         System.Threading.Tasks.Task.Run(fun () ->
@@ -1104,7 +1123,7 @@ let ``a content-identical dep rewrite seen by a new daemon does not restore`` ()
         test <@ gateOf root runs fsproj = Proceed @>
 
         touchIdentical props
-        test <@ detectProjectFreshness root fsproj = Stale @>
+        test <@ isStale (detectProjectFreshness root fsproj) @>
 
         // A second daemon process: its own tracker, nothing shared in memory.
         test <@ gateOf root runs fsproj = Proceed @>
@@ -1176,11 +1195,13 @@ let ``describeStaleness names each input written after the assets`` () =
     let fsproj = Path.Combine(root, "P", "P.fsproj")
 
     let described =
-        describeStaleness root (Some assets) [ props, assets.AddMinutes 1.0; fsproj, assets.AddMinutes -1.0 ]
+        match compareFreshness (Some assets) [ props, assets.AddMinutes 1.0; fsproj, assets.AddMinutes -1.0 ] with
+        | Stale reason -> describeStaleness root reason
+        | Fresh -> failwith "a dependency file written after the assets is stale"
 
     test <@ described.Contains "Directory.Build.props (written 2026-10-30T12:01:00" @>
     test <@ not (described.Contains "P.fsproj") @>
-    test <@ describeStaleness root None [ props, assets ] = "obj/project.assets.json is missing" @>
+    test <@ describeStaleness root StaleReason.AssetsMissing = "obj/project.assets.json is missing" @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``projectReferenceClosure is transitive, cycle-safe, and skips property-named references`` () =
