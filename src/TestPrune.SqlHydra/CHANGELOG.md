@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.4 - 2026-11-02
+
 - perf: `extractFacts` groups each file's edges by source symbol once instead of filtering
   the whole file's edges for every symbol in it. No fact change.
 - refactor: table-level facts carry `SqlColumn.AllColumns` (TestPrune.Sql's new column type)

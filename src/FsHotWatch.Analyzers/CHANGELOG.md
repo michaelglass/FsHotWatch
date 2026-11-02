@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.55 - 2026-11-02
+
 - feat: `diagnostics` and `analyzer-findings` declare their reply schemas
   (`analyzers/diagnostics-v1`, and `AnalyzerFindings.ReplySchema`, the schema the findings reply
   already carried inside it). The new `AnalyzerReplies` module holds the `diagnostics` reply as a

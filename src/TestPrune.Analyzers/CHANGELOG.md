@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.7 - 2026-11-02
+
 - build: the package's source link points at github.com/michaelglass/FsHotWatch, where TestPrune
   now lives with its history (AUTOMATION-1367). No code change.
 

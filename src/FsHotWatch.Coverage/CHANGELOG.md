@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.33 - 2026-11-02
+
 - feat: `coverage-status` and `coverage-ratchet` declare their reply schemas
   (`coverage/coverage-status-v1`, `coverage/coverage-ratchet-v1`). The new `CoverageReplies`
   module holds each reply as a type (`CoverageStatus` is `NotChecked`, `Passed` or `Failed`;

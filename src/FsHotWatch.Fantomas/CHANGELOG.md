@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.35 - 2026-11-02
+
 - feat: `unformatted` declares its reply schema (`format-check/unformatted-v1`). The new
   `FormatReplies` module holds the reply as a type (`Unformatted`: the count and the joined file
   paths), with its writer and a reader for it.

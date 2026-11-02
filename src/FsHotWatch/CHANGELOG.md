@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.102 - 2026-11-02
+
 - feat: `Json.tryBool` reads a boolean field, and `Json.tryReadDocument` applies a reader to the
   root of a text that parses as JSON and returns `None` for one that does not.
 

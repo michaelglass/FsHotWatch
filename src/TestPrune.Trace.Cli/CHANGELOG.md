@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0 - 2026-11-02
+
 - fix: `mutate --json` prints its report. It threw `NotSupportedException` instead: System.Text.Json
   cannot write the F# union a sample's outcome is, so it is now written by name (`measured`,
   `no-failure`, `run-failed`, with the reason beside a failed run).

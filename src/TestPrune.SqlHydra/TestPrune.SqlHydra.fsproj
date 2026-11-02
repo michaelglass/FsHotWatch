@@ -12,7 +12,7 @@
         <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>
         <PackageTags>fsharp;testing;sqlhydra;database;test-impact-analysis</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
-        <Version>0.2.3</Version>
+        <Version>0.2.4</Version>
         <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
         <IncludeSymbols>true</IncludeSymbols>

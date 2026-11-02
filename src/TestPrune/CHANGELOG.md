@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 14.0.0 - 2026-11-02
+
 - **BREAKING (API):** a parsed command carries exactly the options it reads.
   `Command.Index of parallelism` replaces `ParsedCommand.Parallelism` (which every other
   command carried and ignored), and `DeadCodeCmd of DeadCodeOptions` replaces the

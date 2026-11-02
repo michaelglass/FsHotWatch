@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 14.0.0 - 2026-11-02
+
 - refactor: `AstAnalyzer.extractResults` (865 lines) is a sequence of named stages, each a
   module-level function of what it reads: `indexSyntax` (one walk of the declarations
   feeds every syntax collector, where five walks ran), `trackedDefinitions`,
