@@ -51,6 +51,8 @@ open FsHotWatch.TestPrune.ImpactLaunch
 open FsHotWatch.TestPrune.ImpactRun
 open FsHotWatch.TestPrune.FileCheckedHandler
 open FsHotWatch.TestPrune.CheckHandlers
+open FsHotWatch.TestPrune.RunOutcomeReport
+open FsHotWatch.TestPrune.CompletionStages
 open FsHotWatch.TestPrune.RunFinished
 
 
