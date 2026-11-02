@@ -78,6 +78,7 @@
     <Compile Include="TestReports.fs" />
     <Compile Include="PluginQueries.fs" />
     <Compile Include="PluginCommands.fs" />
+    <Compile Include="IndexMaintenance.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 

@@ -21,6 +21,7 @@ open FsHotWatch.Plugin
 open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.IndexMaintenance
 open FsHotWatch.TestPrune.TestReports
 open FsHotWatch.TestPrune.FailureReports
 open FsHotWatch.TestPrune.TestFilters
@@ -6270,5 +6271,5 @@ let ``a cold-start BuildCompleted must NOT replay a test result from the task ca
 let ``an extension refresh line names the extension, its edges and how long the refresh took`` () =
     test
         <@
-            FsHotWatch.TestPrune.TestPrunePlugin.extensionStoredLine "falco-routes" 42 1834L = "Extension 'falco-routes' stored 42 edge(s) (extension refresh took 1834ms)"
+            FsHotWatch.TestPrune.IndexMaintenance.extensionStoredLine "falco-routes" 42 1834L = "Extension 'falco-routes' stored 42 edge(s) (extension refresh took 1834ms)"
         @>

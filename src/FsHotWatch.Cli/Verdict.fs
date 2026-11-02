@@ -3750,7 +3750,7 @@ type PriorConfirmation =
 /// THE fast path — and the only thing in fshw allowed to carry a green across a process
 /// boundary.
 ///
-/// A cached PLUGIN RESULT may not do this (see `TestPrunePlugin.cacheKeyFor`): its key is
+/// A cached PLUGIN RESULT may not do this (see `IndexMaintenance.cacheKeyFor`): its key is
 /// a merkle of changed symbols and build outcome, which does not pin the tree, so a hit
 /// proves nothing about what is on disk. The verdict file is content-addressed to its
 /// SUBJECT (`treeHash`) and to its PRODUCER (the binary's content hash), both compared

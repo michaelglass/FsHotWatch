@@ -20,6 +20,7 @@ open FsHotWatch.Plugin
 open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.IndexMaintenance
 open FsHotWatch.TestPrune.RunnerArgs
 open FsHotWatch.TestPrune.SelectionAssembly
 open FsHotWatch.TestPrune.RunLaunch
@@ -150,7 +151,7 @@ let ``hasFcsErrors returns false for ParseOnly`` () =
     test
         <@
             not (
-                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
                     FsHotWatch.FcsSuppression.Suppression.none
                     (fixtureParseOnly ())
             )
@@ -171,7 +172,7 @@ let x : int = "not an int"
 
         test
             <@
-                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
                     (FileCheckResult.suppression Set.empty result)
                     result.CheckResults
             @>)
@@ -192,7 +193,7 @@ let answer = 42
         test
             <@
                 not (
-                    FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
                         (FileCheckResult.suppression Set.empty result)
                         result.CheckResults
                 )
@@ -232,7 +233,7 @@ let f x =
         test
             <@
                 not (
-                    FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
                         (FileCheckResult.suppression Set.empty result)
                         result.CheckResults
                 )
@@ -277,7 +278,7 @@ let x : int = "not-an-int"
 
         test
             <@
-                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
                     (FileCheckResult.suppression Set.empty result)
                     result.CheckResults
             @>)
@@ -308,7 +309,7 @@ let x : int = "not-an-int"
         test
             <@
                 not (
-                    FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
                         (FileCheckResult.suppression (Set.singleton 1) result)
                         result.CheckResults
                 )
@@ -331,7 +332,7 @@ let x : int = "not-an-int"
 
         test
             <@
-                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
                     (FileCheckResult.suppression Set.empty result)
                     result.CheckResults
             @>
@@ -339,7 +340,7 @@ let x : int = "not-an-int"
         // Suppressing an unrelated code must NOT mask the real FS0001.
         test
             <@
-                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
                     (FileCheckResult.suppression (Set.singleton 9999) result)
                     result.CheckResults
             @>)
@@ -401,7 +402,7 @@ let badTypeUse : int = "not-an-int"
         // Sanity: the result really is poisoned.
         test
             <@
-                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
                     (FileCheckResult.suppression Set.empty result)
                     result.CheckResults
             @>
@@ -458,7 +459,7 @@ let ``a changed file FCS reported errors for is named in test-scope as not selec
 
         test
             <@
-                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
                     (FileCheckResult.suppression Set.empty dirty)
                     dirty.CheckResults
             @>
@@ -524,7 +525,7 @@ let cleanTest () = ()
         test
             <@
                 not (
-                    FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
                         (FileCheckResult.suppression Set.empty result)
                         result.CheckResults
                 )
@@ -715,7 +716,7 @@ let badTypeUse : int = "wrong-type"
 
         test
             <@
-                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
                     (FileCheckResult.suppression Set.empty brokenResult)
                     brokenResult.CheckResults
             @>
@@ -829,7 +830,7 @@ let phaseBTest () = ()
         test
             <@
                 not (
-                    FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
                         (FileCheckResult.suppression Set.empty result)
                         result.CheckResults
                 )
@@ -934,7 +935,7 @@ let ``Item 3: pre-BuildCompleted clean FileChecked → sidecar stays dirty`` () 
         test
             <@
                 not (
-                    FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
                         (FileCheckResult.suppression Set.empty result)
                         result.CheckResults
                 )
@@ -1046,7 +1047,7 @@ let bad : int = "not-an-int"
 
         test
             <@
-                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
                     (FileCheckResult.suppression Set.empty dirtyResult)
                     dirtyResult.CheckResults
             @>
@@ -1071,7 +1072,7 @@ let bad : int = "not-an-int"
         test
             <@
                 not (
-                    FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
                         (FileCheckResult.suppression Set.empty cleanResult)
                         cleanResult.CheckResults
                 )

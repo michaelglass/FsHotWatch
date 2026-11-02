@@ -15,6 +15,7 @@ open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open FsHotWatch.TestPrune
 open FsHotWatch.TestPrune.TestPrunePlugin
+open FsHotWatch.TestPrune.IndexMaintenance
 open FsHotWatch.TestPrune.SelectionAssembly
 open FsHotWatch.TestPrune.RunResults
 open FsHotWatch.TestPrune.RunLaunch

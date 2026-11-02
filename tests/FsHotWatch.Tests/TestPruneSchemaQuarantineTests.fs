@@ -72,7 +72,7 @@ let ``a daemon whose test-impact db has a newer schema quarantines it and starts
                 FsHotWatch.Cli.DaemonConfig.registerPlugins daemon tmpDir config
 
             let aside =
-                FsHotWatch.TestPrune.TestPrunePlugin.quarantinedIndexPath dbPath newerSchema
+                FsHotWatch.TestPrune.IndexMaintenance.quarantinedIndexPath dbPath newerSchema
 
             // The newer file is kept, untouched, under a name a newer consumer can find.
             test <@ File.Exists aside @>
@@ -98,13 +98,13 @@ let ``quarantine drops a stale sidecar left by an earlier quarantine of the same
         clearSqlitePool dbPath
 
         let aside =
-            FsHotWatch.TestPrune.TestPrunePlugin.quarantinedIndexPath dbPath newerSchema
+            FsHotWatch.TestPrune.IndexMaintenance.quarantinedIndexPath dbPath newerSchema
 
         // A journal from an EARLIER quarantine, which must not pair with this file.
         File.WriteAllText(aside + "-wal", "stale wal")
 
         let db =
-            FsHotWatch.TestPrune.TestPrunePlugin.openOwnIndex dbPath TestPrune.Domain.WalkPolicy.FollowAll
+            FsHotWatch.TestPrune.IndexMaintenance.openOwnIndex dbPath TestPrune.Domain.WalkPolicy.FollowAll
 
         test <@ db.WasRecreated @>
         clearSqlitePool dbPath
