@@ -544,6 +544,209 @@ let internal cacheKeyWith
             sessionHasTestEvidence
             event
 
+
+/// The `run-tests` force-run work async, launched under the "tests" key by the
+/// `RunTestsRequested` fold. Every exit that returns yields a `CommandTestsFinished`,
+/// whose fold delivers the earned terminal status and resolves `reply` once that is
+/// published; cancellation resolves `reply` itself (the IPC command is awaiting it,
+/// bounded).
+///
+/// Empty launch set: `run-tests` is a manual FORCE run (optionally
+/// filtered to a subset / only-failed). It is NOT the impact-analysis
+/// queue-draining path, and a filtered force-run may not cover every
+/// queued symbol — so it commits NOTHING from the pending-verification
+/// queue (over-testing is the safe direction). The queue drains through
+/// the normal BuildCompleted impact flow.
+let internal commandForceRunWith
+    (env: RunEnv)
+    (ctx: PluginCtx<TestPruneMsg>)
+    // The mode the force run launches under: it decides whether it records traces.
+    (mode: TestMode)
+    (configs: TestConfig list)
+    (filter: string option)
+    (reply: Tasks.TaskCompletionSource<string>)
+    : Async<TestPruneMsg> =
+    let repoRoot = env.Config.RepoRoot
+    let configuredTestProjects = env.Config.ConfiguredTestProjects
+    let launchDeadline = env.Config.LaunchDeadline
+    let maxParallelProjects = env.Config.MaxParallelProjects
+    let beforeRun = env.Config.BeforeRun
+    let afterRun = env.Config.AfterRun
+    let coveragePaths = env.Config.CoveragePaths
+    let db = env.Db
+    let awaitDiscoveryBeforeLaunch = env.Launch.AwaitDiscovery
+    let compileInputsOf = env.Launch.CompileInputsOf
+    let coverageIngestFailed = env.Launch.CoverageIngestFailed
+    let logLaunch = env.Launch.LogLaunch
+    let logSelectedBy = env.Launch.LogSelectedBy
+    let observeModelGeneration = env.Launch.ObserveModelGeneration
+    let observeTestInputs = env.Launch.ObserveTestInputs
+    let tracesFor = env.Launch.TracesFor
+
+    // A force-run launches exactly `configs`, each with NO class selection (it
+    // passes `Map.empty` to `executeTests`), so each runs IN FULL — a plain
+    // `dotnet fshw test-rerun` is therefore the unfiltered run that can clear ANY
+    // outstanding red (the escape hatch that keeps the clear-only-what-it-covered rule
+    // from wedging into a permanent stuck-red).
+    //
+    // A `--filter` passthrough is a different matter: `RunCoverage.ofRun` sees
+    // `wasFiltered = true` on the results and declines to claim coverage for a
+    // filter string whose reach it cannot compute. Projects NOT in `configs`
+    // (`--only-failed`, `--projects`) are absent from the selection and so are
+    // covered by nothing — exactly right, they did not run.
+    let commandLaunch: TestRunLaunch =
+        { InputTree = None
+          ModelGeneration = observeModelGeneration ctx
+          ProjectInputs = observeTestInputs ctx
+          Symbols = Set.empty
+          SymbolRevisions = Map.empty
+          // A force-run is not launched from the changed files, so it consumes none.
+          ChangedFiles = []
+          TestHostStartedAt = None
+          CoveringProjectsBySymbol = Map.empty
+          RuntimeProjectsByFile = Map.empty
+          Selection = configs |> List.map (fun c -> c.Project, ProjectInFull) |> Map.ofList
+          // A FORCE run has no impact selection behind it — nothing was widened past,
+          // so there is no `check` reading to project. This is the
+          // ESCALATING `confirm`'s path, and it already carries an EXECUTED
+          // impact-scoped reading taken before the escalation.
+          WouldHaveRun = None
+          Reused = Map.empty
+          Seeds = []
+          ZeroSelection = ZeroSelection.NotAZero
+          FullSuiteCause = FullSuiteCause.ForceRun
+          SeedFanout = SeedFanoutReading.NoSelection
+          TraceShadow = []
+          SelectedBy =
+            configs
+            |> List.map (fun c ->
+                { Project = c.Project
+                  Causes = [ SelectionCause.ForceRun ]
+                  SkippedClasses = [] }) }
+
+    async {
+        do! awaitDiscoveryBeforeLaunch ctx
+
+        // The model is read after the wait, not when the run was requested.
+        let commandLaunch =
+            { commandLaunch with
+                InputTree = ReceiptInputTree.readTree repoRoot
+                ModelGeneration = observeModelGeneration ctx
+                ProjectInputs = observeTestInputs ctx }
+
+        logLaunch "forced" mode commandLaunch
+        logSelectedBy commandLaunch
+
+        let mutable progress = RequestedRunProgress.NotStarted
+
+        let emittedStart () =
+            match progress with
+            | RequestedRunProgress.Started started -> Some started
+            | RequestedRunProgress.NotStarted
+            | RequestedRunProgress.Returned -> None
+
+        let emitStarted started =
+            progress <- RequestedRunProgress.Started started
+            ctx.EmitTestRunStarted started
+
+        try
+            try
+                let! results, started, completed, boundTree, testHostStartedAt, _ =
+                    executeTests
+                        db
+                        None
+                        emitStarted
+                        repoRoot
+                        launchDeadline
+                        maxParallelProjects
+                        ctx.Processes
+                        (tracesFor ctx mode)
+                        commandLaunch.InputTree
+                        (compileInputsOf ctx)
+                        beforeRun
+                        (HookStep.asSubtasks ctx.StartSubtask ctx.EndSubtask)
+                        coveragePaths
+                        (coverageIngestFailed ctx)
+                        afterRun
+                        configuredTestProjects
+                        configs
+                        Map.empty
+                        Map.empty
+                        filter
+                        // A `run-tests` force run is an explicit request to run: it
+                        // neither reuses nor publishes evidence.
+                        None
+
+                // The counts come from the CTRF reports THIS RUN wrote, located by
+                // the run id the daemon just handed back — declared membership, never
+                // an mtime scan of a shared pile. An empty list from an existing
+                // run-dir means the run executed no tests, and that is exactly the
+                // fact the CLI has to be able to state. Only verdict evidence is
+                // read, so the counts printed beside a status are the ones that
+                // decided it.
+                let runReports =
+                    FsHotWatch.Ctrf.verdictReportsForRun repoRoot started.RunId
+                    |> List.map (fun r -> r.Project, r.Summary)
+                    |> Map.ofList
+
+                // Returned (not Posted) so the framework's completion path
+                // delivers it: the synchronous handler does the error reporting and
+                // status updates a bare emit would skip, and the reply is resolved
+                // only once that completion is published.
+                progress <- RequestedRunProgress.Returned
+
+                return
+                    CommandTestsFinished(
+                        started,
+                        completed,
+                        { commandLaunch with
+                            InputTree = boundTree
+                            TestHostStartedAt = Some testHostStartedAt },
+                        reply,
+                        formatTestResultsJson filter runReports results
+                    )
+            with ex ->
+                // A `beforeRun` throw / `executeTests` fault
+                // means the suite it guards NEVER RAN — that must surface
+                // as a failure, never a stale prior green. The Aborted
+                // lifecycle drives the TestsFinished handler to a Failed
+                // status.
+                Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
+                let started, completed = abortedRunLifecycle (emittedStart ()) ex.Message
+
+                if (emittedStart ()).IsNone then
+                    emitStarted started
+
+                progress <- RequestedRunProgress.Returned
+
+                return
+                    CommandTestsFinished(
+                        started,
+                        completed,
+                        commandLaunch,
+                        reply,
+                        JsonSerializer.Serialize({| error = ex.Message |})
+                    )
+        finally
+            // Cancellation — daemon teardown, or every client that asked for this run
+            // has gone — skips `with` but runs `finally`, and no completion will fold.
+            let reason = "the run was cancelled before it completed"
+
+            // Close the run this work opened. Subscribers track every started run
+            // until its completion (Build defers every build while one is live),
+            // so a started run must end. `Aborted` with no results is evidence of
+            // nothing: it is never a pass.
+            match progress with
+            | RequestedRunProgress.Returned -> ()
+            | RequestedRunProgress.Started started ->
+                let _, completed = abortedRunLifecycle (Some started) reason
+                ctx.EmitTestRunCompleted completed
+                // Never leave a client that is still waiting on a reply that cannot come.
+                reply.TrySetResult(JsonSerializer.Serialize({| error = reason |})) |> ignore
+            | RequestedRunProgress.NotStarted ->
+                reply.TrySetResult(JsonSerializer.Serialize({| error = reason |})) |> ignore
+    }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1628,189 +1831,9 @@ let internal createWithEvidenceAndQueries
     let runTestsWithImpact ctx configs inputs hasCachedResults fanoutProjects =
         runTestsWithImpactWith runEnv ctx configs inputs hasCachedResults fanoutProjects
 
-    /// The `run-tests` force-run work async, launched under the "tests" key by the
-    /// `RunTestsRequested` fold. Every exit that returns yields a `CommandTestsFinished`,
-    /// whose fold delivers the earned terminal status and resolves `reply` once that is
-    /// published; cancellation resolves `reply` itself (the IPC command is awaiting it,
-    /// bounded).
-    ///
-    /// Empty launch set: `run-tests` is a manual FORCE run (optionally
-    /// filtered to a subset / only-failed). It is NOT the impact-analysis
-    /// queue-draining path, and a filtered force-run may not cover every
-    /// queued symbol — so it commits NOTHING from the pending-verification
-    /// queue (over-testing is the safe direction). The queue drains through
-    /// the normal BuildCompleted impact flow.
-    let commandForceRun
-        (ctx: PluginCtx<TestPruneMsg>)
-        // The mode the force run launches under: it decides whether it records traces.
-        (mode: TestMode)
-        (configs: TestConfig list)
-        (filter: string option)
-        (reply: Tasks.TaskCompletionSource<string>)
-        : Async<TestPruneMsg> =
-        // A force-run launches exactly `configs`, each with NO class selection (it
-        // passes `Map.empty` to `executeTests`), so each runs IN FULL — a plain
-        // `dotnet fshw test-rerun` is therefore the unfiltered run that can clear ANY
-        // outstanding red (the escape hatch that keeps the clear-only-what-it-covered rule
-        // from wedging into a permanent stuck-red).
-        //
-        // A `--filter` passthrough is a different matter: `RunCoverage.ofRun` sees
-        // `wasFiltered = true` on the results and declines to claim coverage for a
-        // filter string whose reach it cannot compute. Projects NOT in `configs`
-        // (`--only-failed`, `--projects`) are absent from the selection and so are
-        // covered by nothing — exactly right, they did not run.
-        let commandLaunch: TestRunLaunch =
-            { InputTree = None
-              ModelGeneration = observeModelGeneration ctx
-              ProjectInputs = observeTestInputs ctx
-              Symbols = Set.empty
-              SymbolRevisions = Map.empty
-              // A force-run is not launched from the changed files, so it consumes none.
-              ChangedFiles = []
-              TestHostStartedAt = None
-              CoveringProjectsBySymbol = Map.empty
-              RuntimeProjectsByFile = Map.empty
-              Selection = configs |> List.map (fun c -> c.Project, ProjectInFull) |> Map.ofList
-              // A FORCE run has no impact selection behind it — nothing was widened past,
-              // so there is no `check` reading to project. This is the
-              // ESCALATING `confirm`'s path, and it already carries an EXECUTED
-              // impact-scoped reading taken before the escalation.
-              WouldHaveRun = None
-              Reused = Map.empty
-              Seeds = []
-              ZeroSelection = ZeroSelection.NotAZero
-              FullSuiteCause = FullSuiteCause.ForceRun
-              SeedFanout = SeedFanoutReading.NoSelection
-              TraceShadow = []
-              SelectedBy =
-                configs
-                |> List.map (fun c ->
-                    { Project = c.Project
-                      Causes = [ SelectionCause.ForceRun ]
-                      SkippedClasses = [] }) }
 
-        async {
-            do! awaitDiscoveryBeforeLaunch ctx
-
-            // The model is read after the wait, not when the run was requested.
-            let commandLaunch =
-                { commandLaunch with
-                    InputTree = ReceiptInputTree.readTree repoRoot
-                    ModelGeneration = observeModelGeneration ctx
-                    ProjectInputs = observeTestInputs ctx }
-
-            logLaunch "forced" mode commandLaunch
-            logSelectedBy commandLaunch
-
-            let mutable progress = RequestedRunProgress.NotStarted
-
-            let emittedStart () =
-                match progress with
-                | RequestedRunProgress.Started started -> Some started
-                | RequestedRunProgress.NotStarted
-                | RequestedRunProgress.Returned -> None
-
-            let emitStarted started =
-                progress <- RequestedRunProgress.Started started
-                ctx.EmitTestRunStarted started
-
-            try
-                try
-                    let! results, started, completed, boundTree, testHostStartedAt, _ =
-                        executeTests
-                            db
-                            None
-                            emitStarted
-                            repoRoot
-                            launchDeadline
-                            maxParallelProjects
-                            ctx.Processes
-                            (tracesFor ctx mode)
-                            commandLaunch.InputTree
-                            (compileInputsOf ctx)
-                            beforeRun
-                            (HookStep.asSubtasks ctx.StartSubtask ctx.EndSubtask)
-                            coveragePaths
-                            (coverageIngestFailed ctx)
-                            afterRun
-                            configuredTestProjects
-                            configs
-                            Map.empty
-                            Map.empty
-                            filter
-                            // A `run-tests` force run is an explicit request to run: it
-                            // neither reuses nor publishes evidence.
-                            None
-
-                    // The counts come from the CTRF reports THIS RUN wrote, located by
-                    // the run id the daemon just handed back — declared membership, never
-                    // an mtime scan of a shared pile. An empty list from an existing
-                    // run-dir means the run executed no tests, and that is exactly the
-                    // fact the CLI has to be able to state. Only verdict evidence is
-                    // read, so the counts printed beside a status are the ones that
-                    // decided it.
-                    let runReports =
-                        FsHotWatch.Ctrf.verdictReportsForRun repoRoot started.RunId
-                        |> List.map (fun r -> r.Project, r.Summary)
-                        |> Map.ofList
-
-                    // Returned (not Posted) so the framework's completion path
-                    // delivers it: the synchronous handler does the error reporting and
-                    // status updates a bare emit would skip, and the reply is resolved
-                    // only once that completion is published.
-                    progress <- RequestedRunProgress.Returned
-
-                    return
-                        CommandTestsFinished(
-                            started,
-                            completed,
-                            { commandLaunch with
-                                InputTree = boundTree
-                                TestHostStartedAt = Some testHostStartedAt },
-                            reply,
-                            formatTestResultsJson filter runReports results
-                        )
-                with ex ->
-                    // A `beforeRun` throw / `executeTests` fault
-                    // means the suite it guards NEVER RAN — that must surface
-                    // as a failure, never a stale prior green. The Aborted
-                    // lifecycle drives the TestsFinished handler to a Failed
-                    // status.
-                    Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
-                    let started, completed = abortedRunLifecycle (emittedStart ()) ex.Message
-
-                    if (emittedStart ()).IsNone then
-                        emitStarted started
-
-                    progress <- RequestedRunProgress.Returned
-
-                    return
-                        CommandTestsFinished(
-                            started,
-                            completed,
-                            commandLaunch,
-                            reply,
-                            JsonSerializer.Serialize({| error = ex.Message |})
-                        )
-            finally
-                // Cancellation — daemon teardown, or every client that asked for this run
-                // has gone — skips `with` but runs `finally`, and no completion will fold.
-                let reason = "the run was cancelled before it completed"
-
-                // Close the run this work opened. Subscribers track every started run
-                // until its completion (Build defers every build while one is live),
-                // so a started run must end. `Aborted` with no results is evidence of
-                // nothing: it is never a pass.
-                match progress with
-                | RequestedRunProgress.Returned -> ()
-                | RequestedRunProgress.Started started ->
-                    let _, completed = abortedRunLifecycle (Some started) reason
-                    ctx.EmitTestRunCompleted completed
-                    // Never leave a client that is still waiting on a reply that cannot come.
-                    reply.TrySetResult(JsonSerializer.Serialize({| error = reason |})) |> ignore
-                | RequestedRunProgress.NotStarted ->
-                    reply.TrySetResult(JsonSerializer.Serialize({| error = reason |})) |> ignore
-        }
+    let commandForceRun ctx mode configs filter reply =
+        commandForceRunWith runEnv ctx mode configs filter reply
 
     let allCommands =
         pluginCommands
