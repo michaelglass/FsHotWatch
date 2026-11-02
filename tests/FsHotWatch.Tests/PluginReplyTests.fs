@@ -49,6 +49,14 @@ let private rendersAsSniffed (command: string) (schema: string) (payload: string
     for noWarnFail in [ false; true ] do
         test <@ rendered noWarnFail typed = rendered noWarnFail sniffed @>
 
+/// The exit code and text of rendering `payload` under its declared schema; a throw fails the test.
+let private renderedTyped (command: string) (schema: string) (payload: string) : int * string =
+    match
+        rendered false (FsHotWatch.Ipc.declaredOutputReply command (FsHotWatch.Plugin.ReplySchema.Typed schema) payload)
+    with
+    | Ok rendering -> rendering
+    | Error(kind, message) -> failwith $"rendering %s{payload} threw %s{kind}: %s{message}"
+
 /// A payload its declared schema does not describe is no verdict, naming the schema.
 let private refusesUndescribed (command: string) (schema: string) (payload: string) =
     match
@@ -80,10 +88,29 @@ let ``force-rebuild is written as the JSON it always was, and read back as itsel
 
 [<Fact(Timeout = 15000)>]
 let ``a typed build reply renders exactly as its shape did`` () =
-    for status in buildStatuses do
+    for status in
+        [ BuildStatus.Passed "Build succeeded."
+          BuildStatus.Failed "error FS0001: boom" ] do
         rendersAsSniffed "build-status" BuildStatusSchema (BuildStatus.serialize status)
 
-    rendersAsSniffed "force-rebuild" ForceRebuildSchema (ForceRebuild.serialize ForceRebuild.Forced)
+/// AUTOMATION-1466: a build that has not run printed an empty status display and exited 0. It
+/// is no verdict.
+[<Fact(Timeout = 15000)>]
+let ``a build that has not run is no verdict`` () =
+    let exitCode, text =
+        renderedTyped "build-status" BuildStatusSchema (BuildStatus.serialize BuildStatus.NotRun)
+
+    test <@ exitCode = NoVerdictExitCode @>
+    test <@ text.Contains "the build has not run yet" @>
+
+[<Fact(Timeout = 15000)>]
+let ``force-rebuild says the next build is forced`` () =
+    // AUTOMATION-1466: this printed an empty status display.
+    let exitCode, text =
+        renderedTyped "force-rebuild" ForceRebuildSchema (ForceRebuild.serialize ForceRebuild.Forced)
+
+    test <@ exitCode = 0 @>
+    test <@ text.Contains "the next build runs for real, not from the cache" @>
 
 [<Theory(Timeout = 15000)>]
 [<InlineData("""{"status":"passed"}""")>]
@@ -111,12 +138,33 @@ let ``warnings is written as the JSON it always was, and read back as itself`` (
         @>
 
 [<Fact(Timeout = 15000)>]
-let ``a typed warnings reply renders exactly as its shape did`` () =
-    for files, warnings in [ 0, 0; 3, 11 ] do
-        rendersAsSniffed
-            "warnings"
-            FsHotWatch.Lint.LintReplies.WarningsSchema
-            (FsHotWatch.Lint.LintReplies.Warnings.serialize { Files = files; Warnings = warnings })
+let ``a warnings reply says how many there are, and fails when there are any`` () =
+    // AUTOMATION-1466: this printed an empty status display and exited 0. Lint warnings fail
+    // unless warnings are excused, as they do in `fshw check`.
+    let render noWarnFail (files, warnings) =
+        let payload =
+            FsHotWatch.Lint.LintReplies.Warnings.serialize { Files = files; Warnings = warnings }
+
+        match
+            rendered
+                noWarnFail
+                (FsHotWatch.Ipc.declaredOutputReply
+                    "warnings"
+                    (FsHotWatch.Plugin.ReplySchema.Typed FsHotWatch.Lint.LintReplies.WarningsSchema)
+                    payload)
+        with
+        | Ok rendering -> rendering
+        | Error(kind, message) -> failwith $"rendering %s{payload} threw %s{kind}: %s{message}"
+
+    let clean = render false (0, 0)
+    test <@ fst clean = 0 @>
+    test <@ (snd clean).Contains "lint: no warnings" @>
+
+    let dirty = render false (3, 11)
+    test <@ fst dirty = 1 @>
+    test <@ (snd dirty).Contains "lint: 11 warning(s) in 3 file(s)" @>
+
+    test <@ fst (render true (3, 11)) = 0 @>
 
 [<Theory(Timeout = 15000)>]
 [<InlineData("""{"files": 2}""")>]
@@ -158,34 +206,34 @@ let ``an unformatted file whose path needs escaping reads back as itself`` () =
         @>
 
 [<Fact(Timeout = 15000)>]
-let ``a typed unformatted reply renders exactly as its shape did`` () =
-    for count, files in [ 0, ""; 2, "src/A.fs, src/B.fs" ] do
-        rendersAsSniffed
+let ``an unformatted reply says which files are unformatted, and fails when any are`` () =
+    // AUTOMATION-1466: this used to throw, because the reply was read as a diagnostics
+    // response whose `files` is an object.
+    let clean =
+        renderedTyped
             "unformatted"
             FsHotWatch.Fantomas.FormatReplies.UnformattedSchema
-            (FsHotWatch.Fantomas.FormatReplies.Unformatted.serialize { Count = count; Files = files })
+            (FsHotWatch.Fantomas.FormatReplies.Unformatted.serialize { Count = 0; Files = "" })
+
+    test <@ fst clean = 0 @>
+    test <@ (snd clean).Contains "no unformatted files" @>
+
+    let dirty =
+        renderedTyped
+            "unformatted"
+            FsHotWatch.Fantomas.FormatReplies.UnformattedSchema
+            (FsHotWatch.Fantomas.FormatReplies.Unformatted.serialize
+                { Count = 2
+                  Files = "src/A.fs, src/B.fs" })
+
+    test <@ fst dirty = 1 @>
+    test <@ (snd dirty).Contains "2 unformatted file(s): src/A.fs, src/B.fs" @>
 
 [<Theory(Timeout = 15000)>]
 [<InlineData("""{"count": 2}""")>]
 [<InlineData("""{"files": "a.fs"}""")>]
 let ``an unformatted payload its schema does not describe is no verdict`` (payload: string) =
     refusesUndescribed "unformatted" FsHotWatch.Fantomas.FormatReplies.UnformattedSchema payload
-
-/// A defect this change keeps rather than fixes: the CLI reads an `unformatted` reply, by its
-/// `count`, as a diagnostics response, whose `files` is an object of per-file entries. The
-/// reply's `files` is a joined string, so rendering it throws, typed or read by its shape.
-/// Pinned so that fixing it is a visible change.
-[<Fact(Timeout = 15000)>]
-let ``rendering an unformatted reply throws, as it did before it was typed`` () =
-    let reply =
-        FsHotWatch.Ipc.declaredOutputReply
-            "unformatted"
-            (FsHotWatch.Plugin.ReplySchema.Typed FsHotWatch.Fantomas.FormatReplies.UnformattedSchema)
-            (FsHotWatch.Fantomas.FormatReplies.Unformatted.serialize { Count = 0; Files = "" })
-
-    match rendered false reply with
-    | Error(kind, _) -> test <@ kind = typeof<InvalidOperationException>.FullName @>
-    | Ok(exitCode, text) -> failwith $"expected the known throw, got exit %d{exitCode}: %s{text}"
 
 let private commandStatuses =
     [ FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.Passed
@@ -204,12 +252,23 @@ let ``a file command's status is written as the JSON it always was, and read bac
         test <@ FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.tryParse (serialize status) = Some status @>
 
 [<Fact(Timeout = 15000)>]
-let ``a typed file command status renders exactly as its shape did`` () =
-    for status in commandStatuses do
-        rendersAsSniffed
-            "lint-docs-status"
-            FsHotWatch.FileCommand.FileCommandReplies.StatusSchema
-            (FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.serialize status)
+let ``a file command status says how the command's last run ended`` () =
+    // AUTOMATION-1466: every status printed an empty status display and exited 0, a failed
+    // command included.
+    let expected =
+        [ FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.Passed, 0, "Passed"
+          FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.Failed, 1, "Failed"
+          FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.NotRun, NoVerdictExitCode, "has not run yet" ]
+
+    for status, code, says in expected do
+        let exitCode, text =
+            renderedTyped
+                "lint-docs-status"
+                FsHotWatch.FileCommand.FileCommandReplies.StatusSchema
+                (FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.serialize status)
+
+        test <@ exitCode = code @>
+        test <@ text.Contains says @>
 
 [<Theory(Timeout = 15000)>]
 [<InlineData("""{"passed":"yes"}""")>]
@@ -260,18 +319,43 @@ let ``coverage-ratchet is written as the text it always was, and read back as it
         test <@ FsHotWatch.Coverage.CoverageReplies.RatchetReply.tryParse (serialize reply) = Some reply @>
 
 [<Fact(Timeout = 15000)>]
-let ``a typed coverage reply renders exactly as its shape did`` () =
-    for status in coverageStatuses do
-        rendersAsSniffed
-            "coverage-status"
-            FsHotWatch.Coverage.CoverageReplies.StatusSchema
-            (FsHotWatch.Coverage.CoverageReplies.CoverageStatus.serialize status)
+let ``a coverage reply exits by what it says, and prints its line`` () =
+    // AUTOMATION-1465: these all exited 0, so a ratchet that failed or a coverage check that
+    // failed read as a green. A failure is 1, an answer still being computed is 6 (in
+    // flight), and no answer at all is 3 (no verdict).
+    let expectations =
+        [ "coverage-status",
+          FsHotWatch.Coverage.CoverageReplies.StatusSchema,
+          [ FsHotWatch.Coverage.CoverageReplies.CoverageStatus.serialize
+                FsHotWatch.Coverage.CoverageReplies.CoverageStatus.Passed,
+            0
+            FsHotWatch.Coverage.CoverageReplies.CoverageStatus.serialize
+                FsHotWatch.Coverage.CoverageReplies.CoverageStatus.Failed,
+            1
+            FsHotWatch.Coverage.CoverageReplies.CoverageStatus.serialize
+                FsHotWatch.Coverage.CoverageReplies.CoverageStatus.NotChecked,
+            NoVerdictExitCode ]
+          "coverage-ratchet",
+          FsHotWatch.Coverage.CoverageReplies.RatchetSchema,
+          ratchetReplies
+          |> List.map (fun reply ->
+              FsHotWatch.Coverage.CoverageReplies.RatchetReply.serialize reply,
+              match reply with
+              | FsHotWatch.Coverage.CoverageReplies.RatchetReply.Updated _ -> 0
+              | FsHotWatch.Coverage.CoverageReplies.RatchetReply.TimedOut -> RerunTimedOutExitCode
+              | _ -> 1) ]
 
-    for reply in ratchetReplies do
-        rendersAsSniffed
-            "coverage-ratchet"
-            FsHotWatch.Coverage.CoverageReplies.RatchetSchema
-            (FsHotWatch.Coverage.CoverageReplies.RatchetReply.serialize reply)
+    for command, schema, cases in expectations do
+        for payload, expected in cases do
+            match
+                rendered
+                    false
+                    (FsHotWatch.Ipc.declaredOutputReply command (FsHotWatch.Plugin.ReplySchema.Typed schema) payload)
+            with
+            | Ok(exitCode, text) ->
+                test <@ exitCode = expected @>
+                test <@ text.Contains payload @>
+            | Error(kind, message) -> failwith $"rendering %s{payload} threw %s{kind}: %s{message}"
 
 [<Theory(Timeout = 15000)>]
 [<InlineData("coverage: maybe")>]
@@ -315,13 +399,19 @@ let private findingsReply: FsHotWatch.Analyzers.AnalyzerFindings.Reply =
 
 [<Fact(Timeout = 15000)>]
 let ``a typed analyzers reply renders exactly as its shape did`` () =
-    rendersAsSniffed
-        "diagnostics"
-        FsHotWatch.Analyzers.AnalyzerReplies.DiagnosticsSchema
-        (FsHotWatch.Analyzers.AnalyzerReplies.Diagnostics.serialize
-            { Analyzers = 1
-              Files = 0
-              Diagnostics = 0 })
+    // AUTOMATION-1466: this printed an empty status display. It counts findings of every
+    // severity, so it reports and does not decide: `fshw check` does.
+    let exitCode, text =
+        renderedTyped
+            "diagnostics"
+            FsHotWatch.Analyzers.AnalyzerReplies.DiagnosticsSchema
+            (FsHotWatch.Analyzers.AnalyzerReplies.Diagnostics.serialize
+                { Analyzers = 2
+                  Files = 1
+                  Diagnostics = 4 })
+
+    test <@ exitCode = 0 @>
+    test <@ text.Contains "analyzers: 2 loaded, 4 diagnostic(s) in 1 file(s)" @>
 
     rendersAsSniffed
         FsHotWatch.Analyzers.AnalyzerFindings.CommandName
@@ -444,33 +534,97 @@ let ``a typed test-prune reply renders exactly as its shape did`` () =
     let replies = FsHotWatch.TestPrune.TestPruneReplies.RunSchema
 
     for reply in TestPrune.runReplies do
-        let payload = FsHotWatch.TestPrune.TestPruneReplies.RunReply.serialize reply
-        rendersAsSniffed "run-tests" replies payload
-        rendersAsSniffed "test-results" replies payload
-
-    for reply in TestPrune.scopeReplies do
-        rendersAsSniffed
-            "set-scope"
-            FsHotWatch.TestPrune.TestPruneReplies.SetScopeSchema
-            (FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.serialize reply)
-
-    rendersAsSniffed
-        "affected-tests"
-        FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema
-        """[{"class":"Tests.A","method":"works","project":"Tests"}]"""
-
-    rendersAsSniffed "affected-tests" FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema "[]"
-    rendersAsSniffed "changed-files" FsHotWatch.TestPrune.TestPruneReplies.ChangedFilesSchema """["src/A.fs"]"""
+        match reply with
+        | TestPrune.R.Running
+        | TestPrune.R.Settling
+        | TestPrune.R.NotRun -> ()
+        | _ ->
+            let payload = FsHotWatch.TestPrune.TestPruneReplies.RunReply.serialize reply
+            rendersAsSniffed "run-tests" replies payload
+            rendersAsSniffed "test-results" replies payload
 
     rendersAsSniffed
-        "flaky-tests"
-        FsHotWatch.TestPrune.TestPruneReplies.FlakyTestsSchema
-        """{"tests":[{"flakiness":0.25,"name":"Tests.A.works","runs":8}]}"""
+        "set-scope"
+        FsHotWatch.TestPrune.TestPruneReplies.SetScopeSchema
+        (FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.serialize (TestPrune.S.ScopeRefused "no"))
 
     rendersAsSniffed
         "check-reach"
         FsHotWatch.TestPrune.TestPruneReplies.CheckReachSchema
         """{"recorded":false,"reason":"no run has completed"}"""
+
+/// AUTOMATION-1466: these printed an empty status display.
+[<Fact(Timeout = 15000)>]
+let ``set-scope and flaky-tests say what they answer`` () =
+    let scope =
+        renderedTyped
+            "set-scope"
+            FsHotWatch.TestPrune.TestPruneReplies.SetScopeSchema
+            (FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.serialize (TestPrune.S.ScopeSet "full"))
+
+    test <@ scope = (0, "test scope set to full\n") @>
+
+    let flaky =
+        renderedTyped
+            "flaky-tests"
+            FsHotWatch.TestPrune.TestPruneReplies.FlakyTestsSchema
+            """{"tests":[{"flakiness":0.25,"name":"Tests.A.works","runs":8}]}"""
+
+    test <@ flaky = (0, "1 flaky test(s):\n  · Tests.A.works: 25% flaky over 8 run(s)\n") @>
+
+    let noneFlaky =
+        renderedTyped "flaky-tests" FsHotWatch.TestPrune.TestPruneReplies.FlakyTestsSchema """{"tests":[]}"""
+
+    test <@ noneFlaky = (0, "no flaky tests recorded\n") @>
+
+/// AUTOMATION-1466: both answer with a JSON array, which the CLI used to refuse as "not a JSON
+/// object" (no verdict). They are listings, so they list, and exit 0.
+[<Fact(Timeout = 15000)>]
+let ``affected-tests and changed-files list what they answer`` () =
+    let affected =
+        renderedTyped
+            "affected-tests"
+            FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema
+            """[{"class":"Tests.A","method":"works","project":"Tests"}]"""
+
+    test <@ affected = (0, "1 affected test(s):\n  · Tests: Tests.A.works\n") @>
+
+    let noneAffected =
+        renderedTyped "affected-tests" FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema "[]"
+
+    test <@ noneAffected = (0, "no affected tests\n") @>
+
+    let changed =
+        renderedTyped
+            "changed-files"
+            FsHotWatch.TestPrune.TestPruneReplies.ChangedFilesSchema
+            """["src/A.fs","src/B.fs"]"""
+
+    test <@ changed = (0, "2 changed file(s):\n  · src/A.fs\n  · src/B.fs\n") @>
+
+    let noneChanged =
+        renderedTyped "changed-files" FsHotWatch.TestPrune.TestPruneReplies.ChangedFilesSchema "[]"
+
+    test <@ noneChanged = (0, "no changed files\n") @>
+
+/// AUTOMATION-1466: these printed an empty status display and exited 0. A run still in
+/// progress or still being committed is in flight; no completed run is no verdict.
+[<Fact(Timeout = 15000)>]
+let ``test-results without a committed result is in flight or no verdict`` () =
+    let expected =
+        [ TestPrune.R.Running, RerunTimedOutExitCode, "a test run is in progress"
+          TestPrune.R.Settling, RerunTimedOutExitCode, "being committed"
+          TestPrune.R.NotRun, NoVerdictExitCode, "no test run has completed" ]
+
+    for reply, code, says in expected do
+        let exitCode, text =
+            renderedTyped
+                "test-results"
+                FsHotWatch.TestPrune.TestPruneReplies.RunSchema
+                (FsHotWatch.TestPrune.TestPruneReplies.RunReply.serialize reply)
+
+        test <@ exitCode = code @>
+        test <@ text.Contains says @>
 
 [<Theory(Timeout = 15000)>]
 [<InlineData("run-tests", "test-prune/run-v1", """{"status":"exploded"}""")>]

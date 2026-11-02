@@ -360,6 +360,17 @@ let private renderNotAnObject (kind: JsonValueKind) : int =
 
     NoVerdictExitCode
 
+/// A reply that holds no answer yet to what was asked: no verdict, said as such.
+let private renderNoVerdict (reason: string) : int =
+    VerdictTerminal.fail $"%s{reason} — no verdict"
+    NoVerdictExitCode
+
+/// A reply whose answer is still being computed: in flight (ADR-019), never 0 and never the 1
+/// of a failure.
+let private renderInFlight (reason: string) : int =
+    UI.fail reason
+    RerunTimedOutExitCode
+
 /// A command that refused, with its reason.
 let private renderRefusal (reason: string) : int =
     UI.fail reason
@@ -751,74 +762,174 @@ module PluginReplies =
     let private build: (string * (string -> Render option)) list =
         let buildStatus payload =
             FsHotWatch.Build.BuildReplies.BuildStatus.tryParse payload
-            |> Option.map (fun status _ renderStatuses _ ->
+            |> Option.map (fun status _ _ _ ->
                 match status with
                 | FsHotWatch.Build.BuildReplies.BuildStatus.Passed _ -> renderPassed ()
                 | FsHotWatch.Build.BuildReplies.BuildStatus.Failed _ -> renderFailed ()
-                // Read as a status map, as its shape always was: it holds no plugin's status.
-                | FsHotWatch.Build.BuildReplies.BuildStatus.NotRun -> renderStatusMap renderStatuses payload)
+                | FsHotWatch.Build.BuildReplies.BuildStatus.NotRun -> renderNoVerdict "the build has not run yet")
 
         [ FsHotWatch.Build.BuildReplies.BuildStatusSchema, buildStatus
           FsHotWatch.Build.BuildReplies.ForceRebuildSchema,
-          asStatusMap FsHotWatch.Build.BuildReplies.ForceRebuild.tryParse ]
+          (fun payload ->
+              FsHotWatch.Build.BuildReplies.ForceRebuild.tryParse payload
+              |> Option.map (fun _ _ _ _ ->
+                  UI.success "the next build runs for real, not from the cache"
+                  0)) ]
 
     let private lint: (string * (string -> Render option)) list =
-        [ FsHotWatch.Lint.LintReplies.WarningsSchema, asStatusMap FsHotWatch.Lint.LintReplies.Warnings.tryParse ]
+        // Lint warnings fail unless warnings are excused, as they do in `fshw check`.
+        let warnings payload =
+            FsHotWatch.Lint.LintReplies.Warnings.tryParse payload
+            |> Option.map (fun reply _ _ noWarnFail ->
+                if reply.Warnings = 0 then
+                    UI.success "lint: no warnings"
+                    0
+                else
+                    let line = $"lint: %d{reply.Warnings} warning(s) in %d{reply.Files} file(s)"
+
+                    if noWarnFail then
+                        UI.warn line
+                        0
+                    else
+                        renderRefusal line)
+
+        [ FsHotWatch.Lint.LintReplies.WarningsSchema, warnings ]
 
     let private format: (string * (string -> Render option)) list =
+        // Which files are unformatted, failing when any are (AUTOMATION-1466: this was read as
+        // a diagnostics response, whose `files` is an object, and threw).
         let unformatted payload =
             FsHotWatch.Fantomas.FormatReplies.Unformatted.tryParse payload
-            |> Option.map (fun _ mode renderStatuses noWarnFail ->
-                renderDiagnosticsReply mode renderStatuses noWarnFail payload)
+            |> Option.map (fun reply _ _ _ ->
+                if reply.Count = 0 then
+                    UI.success "no unformatted files"
+                    0
+                else
+                    renderRefusal $"%d{reply.Count} unformatted file(s): %s{reply.Files}")
 
         [ FsHotWatch.Fantomas.FormatReplies.UnformattedSchema, unformatted ]
 
     let private fileCommand: (string * (string -> Render option)) list =
-        [ FsHotWatch.FileCommand.FileCommandReplies.StatusSchema,
-          asStatusMap FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.tryParse ]
+        let status payload =
+            FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.tryParse payload
+            |> Option.map (fun status _ _ _ ->
+                match status with
+                | FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.Passed -> renderPassed ()
+                | FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.Failed -> renderFailed ()
+                | FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.NotRun ->
+                    renderNoVerdict "the command has not run yet")
 
-    /// A reply its schema describes that is a line of text: printed as it is, as before.
-    let private asText (tryParse: string -> 'Reply option) (payload: string) : Render option =
-        tryParse payload |> Option.map (fun _ _ _ _ -> renderText payload)
+        [ FsHotWatch.FileCommand.FileCommandReplies.StatusSchema, status ]
 
+    /// The coverage replies are lines of text, printed as they are. Each exits by what it says
+    /// (AUTOMATION-1465): a failure is 1, a ratchet that could not get the slot in time is
+    /// in flight, and "no check has run" is no verdict. They all used to exit 0.
     let private coverage: (string * (string -> Render option)) list =
-        [ FsHotWatch.Coverage.CoverageReplies.StatusSchema,
-          asText FsHotWatch.Coverage.CoverageReplies.CoverageStatus.tryParse
-          FsHotWatch.Coverage.CoverageReplies.RatchetSchema,
-          asText FsHotWatch.Coverage.CoverageReplies.RatchetReply.tryParse ]
+        let status payload =
+            FsHotWatch.Coverage.CoverageReplies.CoverageStatus.tryParse payload
+            |> Option.map (fun status _ _ _ ->
+                match status with
+                | FsHotWatch.Coverage.CoverageReplies.CoverageStatus.Passed -> renderText payload
+                | FsHotWatch.Coverage.CoverageReplies.CoverageStatus.Failed -> renderRefusal payload
+                | FsHotWatch.Coverage.CoverageReplies.CoverageStatus.NotChecked ->
+                    renderText payload |> ignore
+                    NoVerdictExitCode)
+
+        let ratchet payload =
+            FsHotWatch.Coverage.CoverageReplies.RatchetReply.tryParse payload
+            |> Option.map (fun reply _ _ _ ->
+                match reply with
+                | FsHotWatch.Coverage.CoverageReplies.RatchetReply.Updated _ -> renderText payload
+                | FsHotWatch.Coverage.CoverageReplies.RatchetReply.TimedOut ->
+                    UI.fail payload
+                    RerunTimedOutExitCode
+                | FsHotWatch.Coverage.CoverageReplies.RatchetReply.Failed _
+                | FsHotWatch.Coverage.CoverageReplies.RatchetReply.NoReportFound
+                | FsHotWatch.Coverage.CoverageReplies.RatchetReply.NoNamedReportExists -> renderRefusal payload)
+
+        [ FsHotWatch.Coverage.CoverageReplies.StatusSchema, status
+          FsHotWatch.Coverage.CoverageReplies.RatchetSchema, ratchet ]
 
     let private analyzers: (string * (string -> Render option)) list =
         [ FsHotWatch.Analyzers.AnalyzerReplies.DiagnosticsSchema,
-          asStatusMap FsHotWatch.Analyzers.AnalyzerReplies.Diagnostics.tryParse
+          // It counts findings of every severity, so it reports and does not decide.
+          (fun payload ->
+              FsHotWatch.Analyzers.AnalyzerReplies.Diagnostics.tryParse payload
+              |> Option.map (fun reply _ _ _ ->
+                  eprintfn
+                      "analyzers: %d loaded, %d diagnostic(s) in %d file(s)"
+                      reply.Analyzers
+                      reply.Diagnostics
+                      reply.Files
+
+                  0))
           FsHotWatch.Analyzers.AnalyzerFindings.ReplySchema,
           asStatusMap (FsHotWatch.Analyzers.AnalyzerFindings.tryParseReply >> Result.toOption) ]
 
     let private testPrune: (string * (string -> Render option)) list =
         let run payload =
             FsHotWatch.TestPrune.TestPruneReplies.RunReply.tryParse payload
-            |> Option.map (fun reply _ renderStatuses _ ->
+            |> Option.map (fun reply _ _ _ ->
                 match reply with
                 | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Report json ->
                     use doc = JsonDocument.Parse json
                     renderRunReport doc.RootElement (doc.RootElement.GetProperty "projects")
                 | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Busy message -> renderBusy (Some message)
                 | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Refused error -> renderRefusal error
-                // Read as a status map, as its shape always was: it holds no plugin's status.
-                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Running
-                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Settling
-                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.NotRun -> renderStatusMap renderStatuses payload)
+                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Running ->
+                    renderInFlight "a test run is in progress; its results are not in yet"
+                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Settling ->
+                    renderInFlight "a test run finished and its results are being committed"
+                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.NotRun -> renderNoVerdict "no test run has completed")
 
         let setScope payload =
             FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.tryParse payload
-            |> Option.map (fun reply _ renderStatuses _ ->
+            |> Option.map (fun reply _ _ _ ->
                 match reply with
-                | FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.ScopeSet _ -> renderStatusMap renderStatuses payload
+                | FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.ScopeSet scope ->
+                    eprintfn "test scope set to %s" scope
+                    0
                 | FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.ScopeRefused error -> renderRefusal error)
 
-        // A JSON array, which the CLI has always refused as not an object.
-        let asArray (tryParse: string -> 'Reply option) payload : Render option =
-            tryParse payload
-            |> Option.map (fun _ _ _ _ -> renderNotAnObject JsonValueKind.Array)
+        // A listing: its items, or that there are none. AUTOMATION-1466: these answer with a
+        // JSON array, which the CLI used to refuse as not an object.
+        let listing (noun: string) (items: string list) : int =
+            match items with
+            | [] -> eprintfn "no %s" noun
+            | _ ->
+                eprintfn "%d %s:" items.Length noun
+
+                for item in items do
+                    eprintfn "  · %s" item
+
+            0
+
+        let flakyTests payload =
+            FsHotWatch.TestPrune.TestPruneReplies.FlakyTests.tryParse payload
+            |> Option.map (fun tests _ _ _ ->
+                match tests with
+                | [] -> listing "flaky tests recorded" []
+                | _ ->
+                    tests
+                    |> List.map (fun t -> $"%s{t.Name}: %.0f{t.Flakiness * 100.0}%% flaky over %d{t.Runs} run(s)")
+                    |> listing "flaky test(s)")
+
+        let affectedTests payload =
+            FsHotWatch.TestPrune.TestPruneReplies.AffectedTests.tryParse payload
+            |> Option.map (fun tests _ _ _ ->
+                match tests with
+                | [] -> listing "affected tests" []
+                | _ ->
+                    tests
+                    |> List.map (fun t -> $"%s{t.Project}: %s{t.Class}.%s{t.Method}")
+                    |> listing "affected test(s)")
+
+        let changedFiles payload =
+            FsHotWatch.TestPrune.TestPruneReplies.ChangedFiles.tryParse payload
+            |> Option.map (fun files _ _ _ ->
+                match files with
+                | [] -> listing "changed files" []
+                | _ -> listing "changed file(s)" files)
 
         // Read by the reader the verdict uses, then rendered by its shape, as before.
         let byShape (describes: string -> bool) payload : Render option =
@@ -840,12 +951,9 @@ module PluginReplies =
 
         [ FsHotWatch.TestPrune.TestPruneReplies.RunSchema, run
           FsHotWatch.TestPrune.TestPruneReplies.SetScopeSchema, setScope
-          FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema,
-          asArray FsHotWatch.TestPrune.TestPruneReplies.AffectedTests.tryParse
-          FsHotWatch.TestPrune.TestPruneReplies.ChangedFilesSchema,
-          asArray FsHotWatch.TestPrune.TestPruneReplies.ChangedFiles.tryParse
-          FsHotWatch.TestPrune.TestPruneReplies.FlakyTestsSchema,
-          asStatusMap FsHotWatch.TestPrune.TestPruneReplies.FlakyTests.tryParse
+          FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema, affectedTests
+          FsHotWatch.TestPrune.TestPruneReplies.ChangedFilesSchema, changedFiles
+          FsHotWatch.TestPrune.TestPruneReplies.FlakyTestsSchema, flakyTests
           FsHotWatch.TestPrune.TestPruneReplies.TestScopeSchema, byShape testScope
           FsHotWatch.TestPrune.TestPruneReplies.CheckReachSchema, byShape checkReach ]
 

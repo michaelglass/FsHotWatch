@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- fix: the informational replies say what they answer instead of printing an empty status display
+  (AUTOMATION-1466).
+  - `warnings` gives the lint warning count and the number of files. It exits 1 when there are
+    warnings, unless warnings are excused, as in `fshw check`.
+  - `diagnostics` gives the analyzers loaded and the findings per file. It exits 0, because it
+    counts every severity and `fshw check` is what decides.
+  - `force-rebuild` says the next build runs for real, not from the cache.
+  - `set-scope` names the scope it set.
+  - `flaky-tests` lists each test with its flakiness and run count.
+
+- fix: status replies with no settled answer exit by what they say instead of printing an empty
+  status display with exit 0 (AUTOMATION-1466).
+  - `build-status` before any build: no verdict (3).
+  - A file command's `<name>-status`: "Passed" exits 0, "Failed" exits 1, and not yet run is no
+    verdict (3).
+  - `test-results` while a run is in progress or being committed: in flight (6).
+  - `test-results` before any run has completed: no verdict (3).
+
+- fix: `fshw affected-tests` and `fshw changed-files` list what they answer: each test as
+  `project: Class.method` or each file, or that there are none. Both exit 0 (AUTOMATION-1466).
+  Both reply with a JSON array, which the CLI used to refuse as a malformed reply (exit 3).
+
+- fix: `fshw unformatted` says which files are unformatted. It exits 1 when any are, and prints
+  "no unformatted files" with exit 0 when none are (AUTOMATION-1466). It used to throw on every
+  reply, because the reply was read as a diagnostics response, and the passthrough reported the
+  throw as a daemon error.
+
+- fix: the coverage replies exit by what they say (AUTOMATION-1465). They all used to exit 0, so a
+  ratchet that failed and a coverage check that failed both read as a green.
+  - `coverage-ratchet` exits 1 when it failed or found no coverage report to ratchet from, and 6
+    (in flight) when it did not get the coverage slot within its wait. It exits 0 only when it
+    updated the thresholds.
+  - `coverage-status` exits 1 for `FAILED` and 3 (no verdict) when no check has run.
+  - A failure line is printed as a failure.
+
 - refactor: the CLI renders the test-prune replies by their declared schemas, with the same
   output and exit codes as before. A run report, a busy run and a refusal go to their own
   renderers, now separate functions (`renderRunReport`, `renderBusy`, `renderRefusal`). A
