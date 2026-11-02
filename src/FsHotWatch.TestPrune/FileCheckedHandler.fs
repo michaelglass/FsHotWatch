@@ -50,6 +50,7 @@ open FsHotWatch.TestPrune.ProjectLaunch
 open FsHotWatch.TestPrune.RunGroups
 open FsHotWatch.TestPrune.RunExecution
 open FsHotWatch.TestPrune.AffectedSelection
+open FsHotWatch.TestPrune.ImpactLaunch
 open FsHotWatch.TestPrune.ImpactRun
 
 /// What `onFileCheckedWith` reads from the plugin. The freshness view stays a plugin cell:

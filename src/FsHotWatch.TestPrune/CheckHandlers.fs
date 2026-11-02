@@ -50,6 +50,7 @@ open FsHotWatch.TestPrune.ProjectLaunch
 open FsHotWatch.TestPrune.RunGroups
 open FsHotWatch.TestPrune.RunExecution
 open FsHotWatch.TestPrune.AffectedSelection
+open FsHotWatch.TestPrune.ImpactLaunch
 open FsHotWatch.TestPrune.ImpactRun
 open FsHotWatch.TestPrune.FileCheckedHandler
 
