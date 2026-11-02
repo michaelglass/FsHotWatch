@@ -20,7 +20,8 @@
   `SelectionEnv`), `ImpactLaunch` (an impact run's grouped `RunEnv` and its launch stages), `ImpactRun` (the
   run itself), and the plugin's event
   handlers over explicit envs: `FileCheckedHandler`, `CheckHandlers` (`BatchChecked` and
-  `BuildCompleted`) and `RunFinished` (a run's completion). Top-level
+  `BuildCompleted`), `RunFinished` (a run's completion), `CompletionStages` (its stages) and
+  `RunOutcomeReport` (its terminal status). Top-level
   `private` definitions the plugin still uses became `internal`; `Flakiness.historyPath` replaces
   the plugin's private history path.
 

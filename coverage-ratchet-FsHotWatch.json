@@ -2123,6 +2123,34 @@
         "reason": "Moved out of RunExecution.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 97.98%, branch 39/51. Inspected: LaunchStalledException's handler in launchProjectGuarded is now a compiled exception filter whose other side is the same uncovered path as before the move; every other partially covered line is unchanged.",
         "platform": "linux"
       }
+    ],
+    "CompletionStages.fs": [
+      {
+        "line": 95,
+        "branch": 88,
+        "reason": "Moved out of RunFinished.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 95.3%, branch 118/133. With RunOutcomeReport and RunFinished the family covers 199 of 224 branches, as RunFinished.fs did before the split.",
+        "platform": "macos"
+      },
+      {
+        "line": 95,
+        "branch": 88,
+        "reason": "Moved out of RunFinished.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 95.3%, branch 118/133. With RunOutcomeReport and RunFinished the family covers 199 of 224 branches, as RunFinished.fs did before the split.",
+        "platform": "linux"
+      }
+    ],
+    "RunOutcomeReport.fs": [
+      {
+        "line": 91,
+        "branch": 86,
+        "reason": "Moved out of RunFinished.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 91.6%, branch 57/66. With CompletionStages and RunFinished the family covers 199 of 224 branches, as RunFinished.fs did before the split.",
+        "platform": "macos"
+      },
+      {
+        "line": 91,
+        "branch": 86,
+        "reason": "Moved out of RunFinished.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 91.6%, branch 57/66. With CompletionStages and RunFinished the family covers 199 of 224 branches, as RunFinished.fs did before the split.",
+        "platform": "linux"
+      }
     ]
   },
   "countFloors": {
