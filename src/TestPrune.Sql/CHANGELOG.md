@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: `ReadsFrom`/`WritesTo` arguments are read through TestPrune.Core's `AttributeArgs`, so a
+  table or column name holding a comma, a quote or a backslash reads back whole
+  (AUTOMATION-1452). It was split on commas and stripped of quotes. An unreadable payload is
+  reported on stderr.
 - **BREAKING (API):** `SqlFact.Column` is a `SqlColumn` (`AllColumns | Column of name`), not a
   string in which `"*"` meant every column. `SqlColumn.parse` reads an attribute argument
   (`"*"` is `AllColumns`) and `SqlColumn.overlaps` is the column-matching rule `buildEdges`

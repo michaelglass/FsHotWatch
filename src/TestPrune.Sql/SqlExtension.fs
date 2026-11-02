@@ -17,11 +17,16 @@ type SqlExtension(facts: SqlFact list) =
 /// and produces SharedState edges based on shared table access.
 type AutoSqlExtension() =
 
-    static let parseArgsJson (json: string) : string list =
-        json.Trim('[', ']').Split(',')
-        |> Array.map (fun s -> s.Trim().Trim('"'))
-        |> Array.filter (fun s -> s <> "")
-        |> Array.toList
+    /// The arguments as text (see `AttributeArgs`). A payload that cannot be read is
+    /// reported and read as no arguments, which couples it to every other such fact on the
+    /// table-less group, as an unreadable payload always did.
+    static let parseArgsJson (symbolName: string) (json: string) : string list =
+        match TestPrune.AttributeArgs.parse json with
+        // An empty argument reads as absent: `ReadsFrom("t", "")` is table-level, as before.
+        | Ok args -> TestPrune.AttributeArgs.texts args |> List.filter (fun s -> s <> "")
+        | Error reason ->
+            eprintfn $"Warning: SQL attribute on %s{symbolName} is unreadable: %s{reason}"
+            []
 
     static let readsFromNames =
         let full = nameof ReadsFromAttribute
@@ -44,7 +49,7 @@ type AutoSqlExtension() =
             |> List.choose (fun (attrName, argsJson) ->
                 classifyAttribute attrName
                 |> Option.map (fun access ->
-                    let args = parseArgsJson argsJson
+                    let args = parseArgsJson symbolName argsJson
                     let table = args |> List.tryHead |> Option.defaultValue ""
 
                     let column =

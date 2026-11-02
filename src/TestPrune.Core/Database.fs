@@ -455,6 +455,12 @@ let private openConnectionWaiting (busyTimeout: TimeSpan) (dbPath: string) =
 ///          Before, its hash covered only the line naming it, so an edit to an accessor
 ///          body or initializer below that line changed no property hash. A file not
 ///          re-indexed would keep those one-line hashes.
+/// v23    — no schema text change; a REBUILD, because `symbol_attributes.args_json` is now
+///          written by a JSON writer (`AttributeArgs`). It was assembled by hand with no
+///          escaping, so an argument holding a backslash or a quote stored a payload no
+///          reader could parse, and its `DependsOnFile` declaration seeded nothing. A file
+///          not re-indexed would keep those payloads, which selection now reports as
+///          unreadable and answers by running everything.
 ///
 /// A `SchemaVersion` bump rebuilds the tables core's DDL creates and nothing else
 /// (FsHotWatch ADR-059 §5). Every other table in the file (a plugin's, a host's such as FsHotWatch's)
@@ -472,7 +478,7 @@ let private openConnectionWaiting (busyTimeout: TimeSpan) (dbPath: string) =
 /// the newer open path. A consumer that only needs its own plugin table needs no probe:
 /// `Ports.pluginStoreAt` opens the file without core's version check or DDL.
 [<Literal>]
-let SchemaVersion = 22
+let SchemaVersion = 23
 
 /// The `source_files.path` that owns the edges an extension contributes
 /// (see `Database.ReplaceExtensionEdges`). The leading underscore keeps it out of the
