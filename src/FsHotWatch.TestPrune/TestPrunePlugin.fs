@@ -663,6 +663,18 @@ let internal flushAndQueryAffectedWith
     else
         selectAffected flushedState runtimeObligations
 
+/// `flushAndQueryAffected` under the bound it declares over itself
+/// (`ImpactSelectionDeadline`). Every caller goes through this: the fold is the same
+/// work whichever event drove it, and a caller that forgot the declaration would be
+/// the one the stall detector failed.
+let internal flushAndQueryAffectedBoundedWith
+    (flushAndQueryAffected: StateStep)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (state: TestPruneState)
+    =
+    use _declaration = ctx.DeclareBoundedWork "impact selection" ImpactSelectionDeadline
+    flushAndQueryAffected ctx state
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1049,13 +1061,8 @@ let internal createWithEvidenceAndQueries
     let flushAndQueryAffected =
         flushAndQueryAffectedWith flushPending joinRefresh selectAffected
 
-    /// `flushAndQueryAffected` under the bound it declares over itself
-    /// (`ImpactSelectionDeadline`). Every caller goes through this: the fold is the same
-    /// work whichever event drove it, and a caller that forgot the declaration would be
-    /// the one the stall detector failed.
-    let flushAndQueryAffectedBounded (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
-        use _declaration = ctx.DeclareBoundedWork "impact selection" ImpactSelectionDeadline
-        flushAndQueryAffected ctx state
+    let flushAndQueryAffectedBounded =
+        flushAndQueryAffectedBoundedWith flushAndQueryAffected
 
     // Per-file FCS freshness sidecar, loaded once at plugin construction from
     // `.fshw/test-prune/file-freshness.json` and updated incrementally on each
