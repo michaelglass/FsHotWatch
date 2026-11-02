@@ -999,6 +999,74 @@ let internal rerunStarvedWith (env: RerunEnv) () : Async<(string * TestResult) l
         return List.rev rerun
     }
 
+/// What reusing a project's stored test evidence reads from its run (`tryReuseWith`).
+type internal ReuseEnv =
+    { RepoRoot: string
+      RunDir: string
+      Collected: RunCollector
+      LogToCtx: string -> unit
+      Reusable: Map<string, TestEvidenceStore.Entry>
+      CoveragePathsByProject: Map<string, CoveragePaths> }
+
+/// File `entry` as this run's evidence for `config`; `false` when it could not be
+/// filed, and then the project is launched like any other. A filed project reports
+/// NOTHING until the completion re-check has confirmed it (`TestEvidenceRun.reconcile`):
+/// no progress subscriber may see a green the re-check could still withdraw.
+let internal tryReuseWith (env: ReuseEnv) (config: TestConfig) : bool =
+    let repoRoot = env.RepoRoot
+    let runDir = env.RunDir
+    let collected = env.Collected
+    let logToCtx = env.LogToCtx
+    let reusable = env.Reusable
+    let coveragePathsByProject = env.CoveragePathsByProject
+
+    Map.tryFind config.Project reusable
+    |> Option.exists (fun entry ->
+        try
+            Directory.CreateDirectory runDir |> ignore
+
+            File.WriteAllText(
+                Path.Combine(runDir, config.Project + Ctrf.ReportSuffix),
+                TestEvidenceRun.reusedReport repoRoot entry
+            )
+
+            match Map.tryFind config.Project coveragePathsByProject, entry.Coverage with
+            | Some paths, Some blob ->
+                let content = TestEvidenceStore.rebind repoRoot blob.Content
+                // Where a launch would have written it; a fresh checkout has no
+                // such directory until something writes there.
+                Directory.CreateDirectory(Path.GetDirectoryName paths.Baseline) |> ignore
+                File.WriteAllText(paths.Baseline, content)
+                File.WriteAllText(runCoveragePath runDir config.Project, content)
+
+                collected.Update(fun c ->
+                    { c with
+                        CoverageInputs =
+                            coverageInput config.Project paths.IncludeInRatchet paths.Baseline
+                            :: c.CoverageInputs })
+            | _ -> ()
+
+            collected.Update(fun c ->
+                { c with
+                    Materialized = Map.add config.Project entry c.Materialized })
+
+            let line =
+                $"%s{config.Project}: %s{TestEvidenceRun.Provenance.describe (TestEvidenceRun.Provenance.ofEntry entry)}"
+
+            Logging.info "test-prune" line
+            logToCtx line
+            true
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException
+        | :? System.Text.Json.JsonException as ex ->
+            Logging.warn
+                "test-prune"
+                $"%s{config.Project}: could not file reused evidence (%s{ex.Message}) — launching it instead"
+
+            TestEvidenceRun.deleteQuietly (Path.Combine(runDir, config.Project + Ctrf.ReportSuffix))
+            false)
+
 /// Execute test configs with optional affected classes for filtering. Handles beforeRun,
 /// coveragePaths, process execution, result storage. `rawFilter` is a passthrough filter
 /// string (from the run-tests command) that bypasses the template.
@@ -1229,57 +1297,15 @@ let internal executeTests
                     && (not (coveragePathsByProject.ContainsKey project) || Option.isSome entry.Coverage))
 
 
-        /// File `entry` as this run's evidence for `config`; `false` when it could not be
-        /// filed, and then the project is launched like any other. A filed project reports
-        /// NOTHING until the completion re-check has confirmed it (`TestEvidenceRun.reconcile`):
-        /// no progress subscriber may see a green the re-check could still withdraw.
-        let tryReuse (config: TestConfig) : bool =
-            Map.tryFind config.Project reusable
-            |> Option.exists (fun entry ->
-                try
-                    Directory.CreateDirectory runDir |> ignore
+        let reuseEnv: ReuseEnv =
+            { RepoRoot = repoRoot
+              RunDir = runDir
+              Collected = collected
+              LogToCtx = logToCtx
+              Reusable = reusable
+              CoveragePathsByProject = coveragePathsByProject }
 
-                    File.WriteAllText(
-                        Path.Combine(runDir, config.Project + Ctrf.ReportSuffix),
-                        TestEvidenceRun.reusedReport repoRoot entry
-                    )
-
-                    match Map.tryFind config.Project coveragePathsByProject, entry.Coverage with
-                    | Some paths, Some blob ->
-                        let content = TestEvidenceStore.rebind repoRoot blob.Content
-                        // Where a launch would have written it; a fresh checkout has no
-                        // such directory until something writes there.
-                        Directory.CreateDirectory(Path.GetDirectoryName paths.Baseline) |> ignore
-                        File.WriteAllText(paths.Baseline, content)
-                        File.WriteAllText(runCoveragePath runDir config.Project, content)
-
-                        collected.Update(fun c ->
-                            { c with
-                                CoverageInputs =
-                                    coverageInput config.Project paths.IncludeInRatchet paths.Baseline
-                                    :: c.CoverageInputs })
-                    | _ -> ()
-
-                    collected.Update(fun c ->
-                        { c with
-                            Materialized = Map.add config.Project entry c.Materialized })
-
-                    let line =
-                        $"%s{config.Project}: %s{TestEvidenceRun.Provenance.describe (TestEvidenceRun.Provenance.ofEntry entry)}"
-
-                    Logging.info "test-prune" line
-                    logToCtx line
-                    true
-                with
-                | :? IOException
-                | :? UnauthorizedAccessException
-                | :? System.Text.Json.JsonException as ex ->
-                    Logging.warn
-                        "test-prune"
-                        $"%s{config.Project}: could not file reused evidence (%s{ex.Message}) — launching it instead"
-
-                    TestEvidenceRun.deleteQuietly (Path.Combine(runDir, config.Project + Ctrf.ReportSuffix))
-                    false)
+        let tryReuse config = tryReuseWith reuseEnv config
 
         // Every project that may launch is preflighted, a reusable one included: its filing
         // can still fail, and then it launches like any other.
