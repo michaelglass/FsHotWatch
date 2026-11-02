@@ -723,6 +723,43 @@ let internal indexNamesOnlyRunnableIn
     | Some indexed -> Set.isSubset (debtScope excluded (fun _ -> indexed) "") runnableProjects
     | None -> false
 
+let internal requestTestRunWith
+    (commandForceRun:
+        PluginCtx<TestPruneMsg>
+            -> TestMode
+            -> TestConfig list
+            -> string option
+            -> Tasks.TaskCompletionSource<string>
+            -> Async<TestPruneMsg>)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (state: TestPruneState)
+    configs
+    filter
+    reply
+    =
+    let workOf runCtx =
+        PluginWork.cooperativeSafe (commandForceRun runCtx state.Mode configs filter reply)
+
+    match runTestHostExclusive ctx Set.empty (Some reply) workOf with
+    | Claimed ->
+        { state with
+            Receipt = HeldReceipt.Revoked "a manual test run replaced it"
+            InFlight =
+                Some
+                    { Scope = LaunchedSelection
+                      Mode = state.Mode
+                      WatcherReported = Set.empty } }
+    | SlotBusy ->
+        // A busy key QUEUES the run, never refuses it: a refusal that reads as
+        // success is a vacuous green. The intent waits behind the holder, owned, and
+        // the IPC command bounds its own wait on `reply`.
+        ctx.Log "  ↳ queued run-tests force-run (tests already running)"
+
+        ctx.EnqueueExclusiveIntent "tests" None (RunTestsRequested(configs, filter, reply))
+        |> ignore
+
+        state
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1363,29 +1400,7 @@ let internal createWithEvidenceAndQueries
     // framework may cancel it once that client is gone. Its test hosts run in its own
     // process scope (reaped), its result publishes only through the fold it returns
     // (never folded when cancelled), and its `finally` closes the run it opened.
-    let requestTestRun (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) configs filter reply =
-        let workOf runCtx =
-            PluginWork.cooperativeSafe (commandForceRun runCtx state.Mode configs filter reply)
-
-        match runTestHostExclusive ctx Set.empty (Some reply) workOf with
-        | Claimed ->
-            { state with
-                Receipt = HeldReceipt.Revoked "a manual test run replaced it"
-                InFlight =
-                    Some
-                        { Scope = LaunchedSelection
-                          Mode = state.Mode
-                          WatcherReported = Set.empty } }
-        | SlotBusy ->
-            // A busy key QUEUES the run, never refuses it: a refusal that reads as
-            // success is a vacuous green. The intent waits behind the holder, owned, and
-            // the IPC command bounds its own wait on `reply`.
-            ctx.Log "  ↳ queued run-tests force-run (tests already running)"
-
-            ctx.EnqueueExclusiveIntent "tests" None (RunTestsRequested(configs, filter, reply))
-            |> ignore
-
-            state
+    let requestTestRun = requestTestRunWith commandForceRun
 
     /// The owed run an `ImpactRunRequested` intent stands for, decided against the state it
     /// is delivered into. Flush first, so changes that landed while the previous run held
