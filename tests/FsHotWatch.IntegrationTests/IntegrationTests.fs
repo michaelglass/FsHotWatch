@@ -2525,7 +2525,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
           RequestShutdown = ignore
           RequestScan = ignore
           InvocationReleased = fun _ -> System.Threading.CancellationToken.None
-          GetScanStatus = fun () -> "idle"
+          GetScanStatus = fun () -> FsHotWatch.ScanProgress.Progress.Idle
           GetScanGeneration = fun () -> 0L
           TriggerBuild = fun () -> async { return () }
           FormatAll = fun () -> async { return "formatted 0 files" }

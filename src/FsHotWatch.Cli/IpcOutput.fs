@@ -54,13 +54,16 @@ let snapshotLine (snapshot: FsHotWatch.SnapshotEpoch.SnapshotStatus) : string =
 let publicationsLine (publications: FsHotWatch.ProjectModel.Publications) : string =
     $"publications: %d{publications.Accepted} accepted, %d{publications.Refused} refused as stale (a newer project model superseded the work)"
 
-/// The line `status` adds while the daemon is scanning: the `scanning: N/M files (P%)`
-/// line of a `ScanStatus` answer, or `None` when no scan is running (idle, complete).
-/// Only that line is taken, so a wedge report the answer may lead with is never
-/// presented as scan progress.
-let scanProgressLine (scanStatus: string) : string option =
-    scanStatus.Split('\n')
-    |> Array.tryFind (fun line -> line.StartsWith("scanning:", System.StringComparison.Ordinal))
+/// The line `status` adds while the daemon is scanning (`scanning: N/M files (P%)`), from a
+/// parsed `ScanStatus` answer, or `None` when no scan is running (idle, complete). The wedge
+/// report an answer may carry is never presented as scan progress. An answer this build
+/// cannot read says so: it comes from a daemon of another fshw build.
+let scanProgressLine (reading: FsHotWatch.ScanProgress.Reading) : string option =
+    match reading with
+    | FsHotWatch.ScanProgress.Reading.Reported(_, progress) -> FsHotWatch.ScanProgress.progressLine progress
+    | FsHotWatch.ScanProgress.Reading.Unrecognised _ ->
+        Some
+            "scan progress unreadable: the daemon answered in a format this fshw does not know (a daemon from another fshw build?); `fshw stop` restarts it"
 
 /// Format the full errors response.
 ///
@@ -304,14 +307,15 @@ let busyRerunLines (daemonMessage: string option) : string list =
       $"  Exit %d{RerunTimedOutExitCode} (in flight): the run may still finish in the daemon; `fshw status test-prune` shows it." ]
 
 
-/// Render a generic IPC result (status JSON or plain text).
-let renderIpcResult
+/// Render what a reply carries: a plugin command's output, the statuses after a re-run, or
+/// a format summary (status JSON or plain text). The payload is plugin-defined.
+let private renderPayload
     (mode: ProgressRenderer.RenderMode)
     (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
     (noWarnFail: bool)
     (result: string)
     : int =
-    // renderIpcResult tolerates non-JSON output (the daemon emits plain text for
+    // renderPayload tolerates non-JSON output (the daemon emits plain text for
     // some commands; the None branch falls through to eprintfn). Narrow to
     // :? JsonException so a real programming bug (e.g. null arg) propagates instead
     // of silently rendering raw text.
@@ -322,11 +326,6 @@ let renderIpcResult
             None
 
     match doc with
-    // The unknown-command sentinel is plain text too, but it is NOT output: the daemon
-    // has no plugin serving the command, so nothing ran (AUTOMATION-1337).
-    | None when FsHotWatch.Ipc.isUnknownCommandReply result ->
-        UI.fail (unknownCommandMessage (result.Substring FsHotWatch.Ipc.UnknownCommandSentinelPrefix.Length))
-        NoVerdictExitCode
     | None ->
         eprintfn "%s" result
         0
@@ -746,6 +745,39 @@ let renderIpcResult
 ///
 /// The clock, the pause between readings, the line sink and the interactive switch are
 /// the caller's, so the reporting of a long wait is testable without one.
+/// Render a command reply the daemon tagged (`Ipc.CommandReply`).
+let renderCommandReply
+    (mode: ProgressRenderer.RenderMode)
+    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
+    (noWarnFail: bool)
+    (reply: FsHotWatch.Ipc.CommandReply)
+    : int =
+    match reply with
+    // No plugin serves the command, so nothing ran (AUTOMATION-1337).
+    | FsHotWatch.Ipc.CommandReply.UnknownCommand command ->
+        UI.fail (unknownCommandMessage command)
+        NoVerdictExitCode
+    | FsHotWatch.Ipc.CommandReply.Refused reason ->
+        UI.fail reason
+        1
+    | FsHotWatch.Ipc.CommandReply.Output(_, payload)
+    | FsHotWatch.Ipc.CommandReply.Statuses payload
+    | FsHotWatch.Ipc.CommandReply.Formatted payload -> renderPayload mode renderStatuses noWarnFail payload
+
+/// Render a command-shaped RPC's reply, parsed once here. A reply this build cannot parse
+/// (an untagged one, from a daemon of another fshw build) is no verdict, said as such.
+let renderIpcResult
+    (mode: ProgressRenderer.RenderMode)
+    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
+    (noWarnFail: bool)
+    (result: string)
+    : int =
+    match FsHotWatch.Ipc.CommandReply.parse result with
+    | FsHotWatch.Ipc.ReplyReading.Tagged reply -> renderCommandReply mode renderStatuses noWarnFail reply
+    | FsHotWatch.Ipc.ReplyReading.Unrecognised _ ->
+        VerdictTerminal.fail FsHotWatch.Ipc.CommandReply.untaggedMessage
+        NoVerdictExitCode
+
 let internal pollUntilSettledWith
     (now: unit -> DateTime)
     (pause: unit -> unit)

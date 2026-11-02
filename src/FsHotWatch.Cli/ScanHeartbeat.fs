@@ -20,7 +20,12 @@ let interval = TimeSpan.FromSeconds 15.0
 /// scan running, a finished scan) emits nothing. A failed read is skipped: progress is
 /// reporting, and must never fail or end the wait a verdict depends on. Returns what
 /// `wait` returns, or raises what it raised.
-let waitReporting (every: TimeSpan) (readStatus: unit -> string) (emit: string -> unit) (wait: unit -> 'a) : 'a =
+let waitReporting
+    (every: TimeSpan)
+    (readStatus: unit -> FsHotWatch.ScanProgress.Reading)
+    (emit: string -> unit)
+    (wait: unit -> 'a)
+    : 'a =
     let waiting = Task.Run(fun () -> wait ())
 
     // The wait handle, not `Task.Wait`: that throws the wait's failure wrapped in an
@@ -53,7 +58,7 @@ let emitLine (line: string) : unit =
 
 /// `--run-once`'s scan and settle (`Daemon.RunOnce`), its scan reported every `every`
 /// through `emit`, as a daemon-backed `check` reports its scan (AUTOMATION-1395). The
-/// in-process daemon's `FormatScanStatus` is the answer a daemon's `ScanStatus` serves,
+/// in-process daemon's `ScanProgress` is the answer a daemon's `ScanStatus` serves,
 /// so the line is the same; only the scan is reported, never the settle after it.
 let runOnceReporting
     (every: TimeSpan)
@@ -61,7 +66,11 @@ let runOnceReporting
     (daemon: FsHotWatch.Daemon.Daemon)
     : Map<string, FsHotWatch.Events.PluginStatus> =
     let run () =
-        waitReporting every daemon.FormatScanStatus emit (fun () -> daemon.RunOnce() |> Async.RunSynchronously)
+        waitReporting
+            every
+            (fun () -> FsHotWatch.ScanProgress.Reading.Reported(None, daemon.ScanProgress()))
+            emit
+            (fun () -> daemon.RunOnce() |> Async.RunSynchronously)
 
     RunOnceOutput.withRunOnceDisplay run
 

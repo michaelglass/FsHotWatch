@@ -237,7 +237,7 @@ let ``LintPlugin cache key is stable across runs for same file content`` () =
         { File = AbsFilePath.create file
           Source = source
           CheckResults = fixtureParseOnly ()
-          ProjectOptions = Unchecked.defaultof<_>
+          ProjectOptions = fixtureOptions ()
           Version = 0L
           ModelGeneration = None
           Frame = None
@@ -276,7 +276,7 @@ let ``LintPlugin cache key reflects config file content`` () =
             { File = AbsFilePath.create "/src/Foo.fs"
               Source = source
               CheckResults = fixtureParseOnly ()
-              ProjectOptions = Unchecked.defaultof<_>
+              ProjectOptions = fixtureOptions ()
               Version = 0L
               ModelGeneration = None
               Frame = None
@@ -343,7 +343,7 @@ let ``LintPlugin cache key uses missing-config marker when config path doesn't e
         { File = AbsFilePath.create "/src/Foo.fs"
           Source = "let x = 1"
           CheckResults = fixtureParseOnly ()
-          ProjectOptions = Unchecked.defaultof<_>
+          ProjectOptions = fixtureOptions ()
           Version = 0L
           ModelGeneration = None
           Frame = None

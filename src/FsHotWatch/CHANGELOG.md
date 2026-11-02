@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- refactor!: command replies are tagged on the wire. `RunCommand`, `RunCommandFor`, `FormatAll`
+  and `RerunPlugin` answer `Ipc.CommandReply` as `fshw-reply-v1` JSON. The cases:
+  - `Output`: a plugin command's own output;
+  - `UnknownCommand`: replaces the `fshw-unknown-command:` sentinel;
+  - `Statuses`: a re-run's statuses;
+  - `Refused`: replaces a re-run's `{"error": …}`;
+  - `Formatted`: a format summary.
+
+  `CommandReply.parse` reads a reply into `ReplyReading.Tagged` or `Unrecognised`; an untagged
+  reply, as a daemon of another fshw build sends, is the latter. `Ipc.isUnknownCommandReply` and
+  `UnknownCommandSentinelPrefix` are gone. `unknownCommandReply` and the new `commandOutputReply`
+  build the tagged wire form.
+
+- refactor!: the `ScanStatus` answer is typed. New `ScanProgress` module: a `Progress` union
+  (`Idle`, `Discovering`, `Checking` with counts, elapsed time and cache hits/misses, and
+  `Complete` with registered and unchecked counts), `render` (the exact line `status` and
+  `WaitForScan` showed before), `toJson` and `parse`. `DaemonRpcConfig.GetScanStatus` returns a
+  `Progress`. `ScanStatus` answers `fshw-scan-status-v1` JSON, with the wedge report in its own
+  field. `WaitForScan` still answers the rendered line. New `Daemon.ScanProgress`;
+  `Daemon.FormatScanStatus` renders it.
+
+- refactor: a check result's project options are never null. `FileCheckResult.suppression` and the in-memory check cache no longer guard against a null `ProjectOptions`: every result the pipeline builds carries the options it was checked under. Test fixtures use the shared fixture script's real options; the few tests of a description that throws inject the null explicitly (`TestHelpers.withUndescribableOptions`).
+
 - refactor!: an action key's value is a parsed `ActionKey.KeyValue`, and the outcome store takes
   it (ADR-059 §2). `ActionKey.Value` is a `KeyValue`; `.Text` is the filed spelling. `Store.Lookup`,
   `LookupWithOutputs`, `History` and `DirectoryOf` take a `KeyValue` or the `ActionKey` itself, and

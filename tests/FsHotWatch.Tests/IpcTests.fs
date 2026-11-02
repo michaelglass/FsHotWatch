@@ -32,7 +32,7 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       RequestShutdown = ignore
       RequestScan = ignore
       InvocationReleased = fun _ -> System.Threading.CancellationToken.None
-      GetScanStatus = fun () -> "idle"
+      GetScanStatus = fun () -> FsHotWatch.ScanProgress.Progress.Idle
       GetScanGeneration = fun () -> 0L
       TriggerBuild = fun () -> async { return () }
       FormatAll = fun () -> async { return "formatted 0 files" }
@@ -170,15 +170,13 @@ let ``a stopping server gives up waiting on a name another live server still ser
 
     // `ScanStatus` answers straight out of the config it was served from, so each
     // server can name itself and a served call says WHICH of the two answered it.
-    let named (marker: string) =
+    let named (marker: int) =
         { defaultRpcConfig host with
-            GetScanStatus = fun () -> marker }
+            GetScanStatus = fun () -> FsHotWatch.ScanProgress.Progress.Complete(marker, 0, TimeSpan.Zero) }
 
-    let first =
-        Async.StartImmediateAsTask(IpcServer.start pipeName (named "stopping") stopping)
+    let first = Async.StartImmediateAsTask(IpcServer.start pipeName (named 1) stopping)
 
-    let second =
-        Async.StartImmediateAsTask(IpcServer.start pipeName (named "staying") staying)
+    let second = Async.StartImmediateAsTask(IpcServer.start pipeName (named 2) staying)
 
     try
         waitForServer pipeName
@@ -196,7 +194,12 @@ let ``a stopping server gives up waiting on a name another live server still ser
                 waitUntilTrue
                     (fun () ->
                         try
-                            IpcClient.scanStatus pipeName |> Async.RunSynchronously = "staying"
+                            IpcClient.scanStatus pipeName
+                            |> Async.RunSynchronously
+                            |> FsHotWatch.ScanProgress.parse = FsHotWatch.ScanProgress.Reading.Reported(
+                                None,
+                                FsHotWatch.ScanProgress.Progress.Complete(2, 0, TimeSpan.Zero)
+                            )
                         with _ ->
                             false)
                     5000
@@ -334,7 +337,7 @@ let ``server responds to RunCommandFor, naming the invocation it asks for`` () =
             IpcClient.runCommandFor pipeName "invocation-3" "greet" "claude"
             |> Async.RunSynchronously
 
-        test <@ result = "hello claude" @>
+        test <@ result = commandOutputReply "greet" "hello claude" @>
         test <@ List.ofSeq looked = [ "invocation-3" ] @>
     finally
         cts.Cancel()
@@ -466,7 +469,7 @@ let ``RunCommand returns unknown command for non-existent command`` () =
 
         // 0.6.0 strict-CLI: unknown command comes back as a distinguishable JSON
         // sentinel (not a plain string) so the CLI can fail hard on it.
-        test <@ isUnknownCommandReply result @>
+        test <@ CommandReply.parse result = ReplyReading.Tagged(CommandReply.UnknownCommand "no-such-command") @>
     finally
         cts.Cancel()
 
@@ -693,14 +696,17 @@ let ``ScanStatus prefixes the wedge report when a stuck op is in flight`` () =
 
     let config =
         { defaultRpcConfig host with
-            GetScanStatus = fun () -> "complete: 10 files checked in 1.0s" }
+            GetScanStatus = fun () -> FsHotWatch.ScanProgress.Progress.Complete(10, 0, TimeSpan.FromSeconds 1.0) }
 
     let target = DaemonRpcTarget(config, watchdog)
-    let status = target.ScanStatus()
-    test <@ status.StartsWith("WEDGED:") @>
-    test <@ status.Contains("WaitForComplete") @>
-    // The underlying scan line is still present.
-    test <@ status.Contains("complete: 10 files") @>
+
+    match FsHotWatch.ScanProgress.parse (target.ScanStatus()) with
+    | FsHotWatch.ScanProgress.Reading.Reported(Some wedge, progress) ->
+        test <@ wedge.StartsWith("WEDGED:") @>
+        test <@ wedge.Contains("WaitForComplete") @>
+        // The underlying scan progress is still there.
+        test <@ progress = FsHotWatch.ScanProgress.Progress.Complete(10, 0, TimeSpan.FromSeconds 1.0) @>
+    | other -> failwith $"expected a wedged answer, got %A{other}"
 
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = SyncHangBackstopMs)>]
@@ -781,7 +787,7 @@ let ``DaemonRpcTarget.RunCommand returns unknown command for missing command`` (
         |> Async.AwaitTask
         |> Async.RunSynchronously
 
-    test <@ isUnknownCommandReply result @>
+    test <@ CommandReply.parse result = ReplyReading.Tagged(CommandReply.UnknownCommand "nonexistent") @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
@@ -810,7 +816,7 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
     let result1 =
         target.RunCommand("hello", "") |> Async.AwaitTask |> Async.RunSynchronously
 
-    test <@ result1 = "hello world" @>
+    test <@ result1 = commandOutputReply "hello" "hello world" @>
 
     // Exercises the else branch of argsJson parsing.
     let result2 =
@@ -818,7 +824,7 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
         |> Async.AwaitTask
         |> Async.RunSynchronously
 
-    test <@ result2 = "hello test-arg" @>
+    test <@ result2 = commandOutputReply "hello" "hello test-arg" @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` () =
@@ -878,7 +884,7 @@ let ``WaitForScan resolves immediately when generation already advanced`` () =
 
     let config =
         { defaultRpcConfig host with
-            GetScanStatus = fun () -> "complete: 10 files checked in 0.5s"
+            GetScanStatus = fun () -> FsHotWatch.ScanProgress.Progress.Complete(10, 0, TimeSpan.FromSeconds 0.5)
             WaitForScanGeneration =
                 fun afterGen ->
                     if 5L > afterGen then
@@ -897,7 +903,7 @@ let ``WaitForScan blocks until generation advances`` () =
 
     let config =
         { defaultRpcConfig host with
-            GetScanStatus = fun () -> "complete: 5 files"
+            GetScanStatus = fun () -> FsHotWatch.ScanProgress.Progress.Complete(5, 0, TimeSpan.Zero)
             WaitForScanGeneration = fun _afterGen -> tcs.Task }
 
     let target = DaemonRpcTarget(config)
@@ -1002,10 +1008,17 @@ let ``DaemonRpcTarget.ScanStatus delegates to GetScanStatus`` () =
 
     let config =
         { defaultRpcConfig host with
-            GetScanStatus = fun () -> "complete: 70 files checked in 15.5s" }
+            GetScanStatus = fun () -> FsHotWatch.ScanProgress.Progress.Complete(70, 0, TimeSpan.FromSeconds 15.5) }
 
     let target = DaemonRpcTarget(config)
-    test <@ target.ScanStatus() = "complete: 70 files checked in 15.5s" @>
+
+    test
+        <@
+            FsHotWatch.ScanProgress.parse (target.ScanStatus()) = FsHotWatch.ScanProgress.Reading.Reported(
+                None,
+                FsHotWatch.ScanProgress.Progress.Complete(70, 0, TimeSpan.FromSeconds 15.5)
+            )
+        @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.Invalidate awaits cache invalidation and acknowledges it`` () =
@@ -1207,7 +1220,7 @@ let ``DaemonRpcTarget.FormatAll delegates to config`` () =
 
     let target = DaemonRpcTarget(config)
     let result = target.FormatAll().Result
-    test <@ result = "formatted 5 files" @>
+    test <@ CommandReply.parse result = ReplyReading.Tagged(CommandReply.Formatted "formatted 5 files") @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.RerunPlugin delegates to config`` () =
@@ -1226,7 +1239,7 @@ let ``DaemonRpcTarget.RerunPlugin delegates to config`` () =
     let target = DaemonRpcTarget(config)
     let result = target.RerunPlugin("coverage-ratchet").Result
     // Returns GetStatus payload (empty map "{}" when no plugins registered aside from mocks).
-    test <@ result = "{}" @>
+    test <@ CommandReply.parse result = ReplyReading.Tagged(CommandReply.Statuses "{}") @>
     test <@ capturedName = "coverage-ratchet" @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
@@ -1239,8 +1252,13 @@ let ``DaemonRpcTarget.RerunPlugin returns error payload when plugin has no patte
 
     let target = DaemonRpcTarget(config)
     let result = target.RerunPlugin("missing").Result
-    test <@ result.Contains("error") @>
-    test <@ result.Contains("missing") @>
+
+    test
+        <@
+            match CommandReply.parse result with
+            | ReplyReading.Tagged(CommandReply.Refused reason) -> reason.Contains("missing")
+            | _ -> false
+        @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
@@ -1820,7 +1838,7 @@ let ``an RPC that completes inside the deadline returns normally`` () =
 
     let config =
         { defaultRpcConfig host with
-            GetScanStatus = fun () -> "complete: 3 files checked in 0.1s" }
+            GetScanStatus = fun () -> FsHotWatch.ScanProgress.Progress.Complete(3, 0, TimeSpan.FromSeconds 0.1) }
 
     let target = DaemonRpcTarget(config, deadline = TimeSpan.FromSeconds 10.0)
     let result = target.WaitForScan(-1L).Result

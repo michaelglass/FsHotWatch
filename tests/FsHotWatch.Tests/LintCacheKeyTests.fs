@@ -159,7 +159,8 @@ let ``a file whose used signatures cannot be described has no lint key`` () =
     withTempDir "lint-undescribable" (fun root ->
         let file = Path.Combine(root, "A.fs")
         File.WriteAllText(file, "let x = 1\n")
-        // A check result with no state throws from every query.
+        // Fault injection: a check result with no state, under no project options, so the
+        // walk that describes its used signatures throws.
         let broken =
             System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(
                 typeof<FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults>
@@ -170,5 +171,6 @@ let ``a file whose used signatures cannot be described has no lint key`` () =
             { fakeFileCheckResult file with
                 Source = "let x = 1\n"
                 CheckResults = FullCheck(fixtureParse (), broken) }
+            |> withUndescribableOptions
 
         test <@ keyFor root result = None @>)

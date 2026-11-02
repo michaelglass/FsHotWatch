@@ -73,7 +73,8 @@ let ``an upstream signature edit changes the downstream identity, in the project
 
 [<Fact(Timeout = 15000)>]
 let ``an analysis whose upstream shape cannot be described has no identity and is never matched`` () =
-    // A check result with no state throws from every query.
+    // Fault injection: a check result with no state, under no project options, so the
+    // walk that describes its used signatures throws.
     let broken =
         System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(
             typeof<FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults>
@@ -83,6 +84,7 @@ let ``an analysis whose upstream shape cannot be described has no identity and i
     let result =
         { fakeFileCheckResult "/src/A.fs" with
             CheckResults = FullCheck(fixtureParse (), broken) }
+        |> withUndescribableOptions
 
     test <@ IndexedAnalysis.identityOf "/src" result = None @>
 

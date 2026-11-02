@@ -166,14 +166,17 @@ let private ofJudgement (warningsAreFailures: bool) (about: Answer) (judged: Jud
 /// hashes. Returns the answer and whether a retry could change it.
 let private readOnce (seams: Seams) (warningsAreFailures: bool) : Answer * bool =
     let before = seams.TreeHash()
-    let json = seams.ReadReply()
 
-    if Ipc.isUnknownCommandReply json then
+    match Ipc.CommandReply.parse (seams.ReadReply()) with
+    | Ipc.ReplyReading.Tagged(Ipc.CommandReply.UnknownCommand _) ->
         bare
             Refused
             [ $"the daemon serves no `%s{CommandName}` command: no analyzers are configured in .fshw.json, or the daemon was built before this verb" ],
         false
-    else
+    | Ipc.ReplyReading.Unrecognised _ -> bare Refused [ Ipc.CommandReply.untaggedMessage ], false
+    | Ipc.ReplyReading.Tagged(Ipc.CommandReply.Statuses _ | Ipc.CommandReply.Refused _ | Ipc.CommandReply.Formatted _ as other) ->
+        bare Refused [ $"the daemon answered `%s{CommandName}` with %A{other}, not its output" ], false
+    | Ipc.ReplyReading.Tagged(Ipc.CommandReply.Output(_, json)) ->
         match tryParseReply json with
         | Result.Error why -> bare Refused [ why ], false
         | Result.Ok reply ->

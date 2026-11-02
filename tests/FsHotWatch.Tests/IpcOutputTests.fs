@@ -10,6 +10,10 @@ open FsHotWatch.Cli
 open FsHotWatch.Cli.IpcOutput
 open FsHotWatch.Tests.TestHelpers
 
+/// `renderIpcResult` over a plugin command's `payload`, tagged as the daemon sends it.
+let private renderOutput mode renderStatuses noWarnFail (payload: string) =
+    renderIpcResult mode renderStatuses noWarnFail (FsHotWatch.Ipc.commandOutputReply "run-tests" payload)
+
 let private evidenceTree hash =
     VerifiedTree
         { FsHotWatch.TreeHash.Hash = hash
@@ -457,8 +461,7 @@ let ``agent output puts each diagnostic line before the trailing next hint`` () 
 
 [<Fact(Timeout = 15000)>]
 let ``a busy rerun with no message still refuses a green, naming a default reason`` () =
-    test
-        <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"status":"busy"}""" = RerunTimedOutExitCode @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false """{"status":"busy"}""" = RerunTimedOutExitCode @>
 
     test <@ (busyRerunLines None |> String.concat "\n").Contains "NOTHING RAN TO COMPLETION" @>
 
@@ -468,7 +471,7 @@ let ``a rerun whose project entry carries no name or status is never a green`` (
     // counted as having executed anything, so the reply fails closed.
     test
         <@
-            renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"projects":[{}]}"""
+            renderOutput ProgressRenderer.Verbose (fun _ -> []) false """{"projects":[{}]}"""
             <> 0
         @>
 
@@ -566,14 +569,14 @@ let ``exitCodeFromResponse without noWarnFail fails on warnings`` () =
 [<Fact(Timeout = 15000)>]
 let ``renderIpcResult with GetDiagnostics format count 0 returns 0`` () =
     let result =
-        renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"count":0,"files":{},"statuses":{}}"""
+        renderOutput ProgressRenderer.Verbose (fun _ -> []) false """{"count":0,"files":{},"statuses":{}}"""
 
     test <@ result = 0 @>
 
 [<Fact(Timeout = 15000)>]
 let ``renderIpcResult with GetDiagnostics format count > 0 returns 1`` () =
     let result =
-        renderIpcResult
+        renderOutput
             ProgressRenderer.Verbose
             (fun _ -> [])
             false
@@ -584,28 +587,28 @@ let ``renderIpcResult with GetDiagnostics format count > 0 returns 1`` () =
 [<Fact(Timeout = 15000)>]
 let ``renderIpcResult with status passed returns 0`` () =
     let result =
-        renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"status":"passed"}"""
+        renderOutput ProgressRenderer.Verbose (fun _ -> []) false """{"status":"passed"}"""
 
     test <@ result = 0 @>
 
 [<Fact(Timeout = 15000)>]
 let ``renderIpcResult with status failed returns 1`` () =
     let result =
-        renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"status":"failed"}"""
+        renderOutput ProgressRenderer.Verbose (fun _ -> []) false """{"status":"failed"}"""
 
     test <@ result = 1 @>
 
 [<Fact(Timeout = 15000)>]
 let ``renderIpcResult with error field returns 1`` () =
     let result =
-        renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"error":"something went wrong"}"""
+        renderOutput ProgressRenderer.Verbose (fun _ -> []) false """{"error":"something went wrong"}"""
 
     test <@ result = 1 @>
 
 [<Fact(Timeout = 15000)>]
 let ``renderIpcResult with plain text returns 0`` () =
     let result =
-        renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false "build completed successfully"
+        renderOutput ProgressRenderer.Verbose (fun _ -> []) false "build completed successfully"
 
     test <@ result = 0 @>
 
@@ -618,6 +621,42 @@ let ``renderIpcResult with the unknown-command sentinel returns 3, never a plain
         renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false (FsHotWatch.Ipc.unknownCommandReply "run-tests")
 
     test <@ result = 3 @>
+
+// A daemon of another fshw build answers untagged: its plugin's raw JSON or text. That is no
+// verdict, said as such, however green the payload looks.
+[<Fact(Timeout = 15000)>]
+let ``an untagged reply is no verdict and names the version mismatch, however green it looks`` () =
+    for old in
+        [ """{"status":"passed"}"""
+          "build completed successfully"
+          """{"count":0,"files":{},"statuses":{}}""" ] do
+        use writer = new System.IO.StringWriter()
+        use _ = VerdictTerminal.install writer
+        let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false old
+        let stderr = writer.ToString()
+
+        test <@ result = NoVerdictExitCode @>
+        test <@ stderr.Contains "another fshw build" @>
+
+[<Fact(Timeout = 15000)>]
+let ``a refused re-run fails, naming why, and a format summary is printed`` () =
+    test
+        <@
+            renderCommandReply
+                ProgressRenderer.Verbose
+                (fun _ -> [])
+                false
+                (FsHotWatch.Ipc.CommandReply.Refused "no pattern") = 1
+        @>
+
+    test
+        <@
+            renderCommandReply
+                ProgressRenderer.Verbose
+                (fun _ -> [])
+                false
+                (FsHotWatch.Ipc.CommandReply.Formatted "formatted 0 files") = 0
+        @>
 
 [<Fact>]
 let ``unknownCommandMessage names the missing test-prune plugin and its config for run-tests`` () =
@@ -637,7 +676,7 @@ let ``renderIpcResult with test results JSON containing arrays does not crash`` 
     let json =
         """{"elapsed":"1.5s","projects":[{"project":"TestProject","status":"passed","output":"ok"}]}"""
 
-    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    let result = renderOutput ProgressRenderer.Verbose (fun _ -> []) false json
     test <@ result = 0 @>
 
 [<Fact(Timeout = 15000)>]
@@ -645,7 +684,7 @@ let ``renderIpcResult with test results JSON with failed project returns 1`` () 
     let json =
         """{"elapsed":"2.0s","projects":[{"project":"FailProject","status":"failed","output":"FAIL: test1"}]}"""
 
-    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    let result = renderOutput ProgressRenderer.Verbose (fun _ -> []) false json
     test <@ result = 1 @>
 
 [<Fact(Timeout = 15000)>]
@@ -657,7 +696,7 @@ let ``renderIpcResult with noTestsMatched run returns 3 — refuses to green wit
     let json =
         """{"elapsed":"0.1s","noTestsMatched":true,"projects":[{"project":"P","status":"no-tests-matched","output":""}]}"""
 
-    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    let result = renderOutput ProgressRenderer.Verbose (fun _ -> []) false json
     test <@ result = 3 @>
 
 [<Fact(Timeout = 15000)>]
@@ -667,7 +706,7 @@ let ``renderIpcResult with an EMPTY projects array returns 3, never "Tests passe
     // sets neither flag and used to fall through to `UI.success "Tests passed"`, exit 0.
     let json = """{"elapsed":"0.0s","projects":[]}"""
 
-    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    let result = renderOutput ProgressRenderer.Verbose (fun _ -> []) false json
     test <@ result = 3 @>
 
 [<Fact(Timeout = 15000)>]
@@ -677,7 +716,7 @@ let ``renderIpcResult still returns 0 for a genuine pass — the guard is not a 
     let json =
         """{"elapsed":"1.2s","projects":[{"project":"RealProject","status":"passed","output":"Passed! total: 7"}]}"""
 
-    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    let result = renderOutput ProgressRenderer.Verbose (fun _ -> []) false json
     test <@ result = 0 @>
 
 [<Fact(Timeout = 15000)>]
@@ -688,7 +727,7 @@ let ``renderIpcResult with busy status NEVER returns 0 — no run, no green`` ()
     let json =
         """{"status":"busy","message":"the test run did not produce a result within 600s (still queued or running); retry, or raise --wait-sec"}"""
 
-    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    let result = renderOutput ProgressRenderer.Verbose (fun _ -> []) false json
     test <@ result <> 0 @>
 
 /// AUTOMATION-1400: a `test-rerun` whose wait ran out with the run still queued or
@@ -707,8 +746,8 @@ let ``a test-rerun whose wait ran out exits in-flight and says nothing ran to co
                message = daemonMessage |}
 
     test <@ RerunTimedOutExitCode = 6 @>
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json = RerunTimedOutExitCode @>
-    test <@ renderIpcResult ProgressRenderer.Agent (fun _ -> []) false json = RerunTimedOutExitCode @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false json = RerunTimedOutExitCode @>
+    test <@ renderOutput ProgressRenderer.Agent (fun _ -> []) false json = RerunTimedOutExitCode @>
 
     let said = busyRerunLines (Some daemonMessage) |> String.concat "\n"
     test <@ said.Contains "NOTHING RAN TO COMPLETION" @>
@@ -1795,7 +1834,7 @@ let ``a confirm with no projection on offer says nothing was compared, and a che
 let ``renderIpcResult reads the coverage token when the daemon sends one`` () =
     let json = """{"elapsed":"0.0s","coverage":"no-projects-selected","projects":[]}"""
 
-    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    let result = renderOutput ProgressRenderer.Verbose (fun _ -> []) false json
     test <@ result = 3 @>
 
 [<Fact(Timeout = 15000)>]
@@ -1803,7 +1842,7 @@ let ``renderIpcResult reads coverage=all-zero-match as a refusal, not a pass`` (
     let json =
         """{"elapsed":"0.1s","coverage":"all-zero-match","noTestsMatched":true,"projects":[{"project":"P","status":"no-tests-matched","output":""}]}"""
 
-    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    let result = renderOutput ProgressRenderer.Verbose (fun _ -> []) false json
     test <@ result = 3 @>
 
 [<Fact(Timeout = 15000)>]
@@ -1817,7 +1856,7 @@ let ``renderIpcResult trusts a coverage token that ran, over an empty-looking pa
         let json =
             $"""{{"elapsed":"1.0s","coverage":"{token}","projects":[{{"project":"P","status":"passed","output":"Passed! total: 3"}}]}}"""
 
-        test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json = 0 @>
+        test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false json = 0 @>
 
 [<Fact(Timeout = 15000)>]
 let ``the retired bare "ran" token is refused, not read as a pass`` () =
@@ -1828,7 +1867,7 @@ let ``the retired bare "ran" token is refused, not read as a pass`` () =
     let json =
         """{"elapsed":"1.0s","coverage":"ran","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
 
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json = 3 @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false json = 3 @>
 
 [<Fact(Timeout = 15000)>]
 let ``an OLDER daemon sending no coverage field still cannot report a no-op as a pass`` () =
@@ -1842,10 +1881,10 @@ let ``an OLDER daemon sending no coverage field still cannot report a no-op as a
     let noCoverageReal =
         """{"elapsed":"1.0s","projects":[{"project":"P","status":"passed","output":"Passed! total: 9"}]}"""
 
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false noCoverageEmpty = 3 @>
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false noCoverageZeroMatch = 3 @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false noCoverageEmpty = 3 @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false noCoverageZeroMatch = 3 @>
     // …and the fallback is still not a blanket refusal.
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false noCoverageReal = 0 @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false noCoverageReal = 0 @>
 
 [<Fact(Timeout = 15000)>]
 let ``an OLDER daemon reporting a MIXED no-op run is refused, not read as a pass`` () =
@@ -1857,20 +1896,20 @@ let ``an OLDER daemon reporting a MIXED no-op run is refused, not read as a pass
     let mixedNoOp =
         """{"elapsed":"0.2s","projects":[{"project":"A","status":"no-tests-matched","output":""},{"project":"B","status":"deferred","output":"apphost not produced"}]}"""
 
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false mixedNoOp = 3 @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false mixedNoOp = 3 @>
 
     // Every all-non-executing combination, not just the one that was reported.
     let deferredAndErrored =
         """{"elapsed":"0.2s","projects":[{"project":"A","status":"errored","output":""},{"project":"B","status":"deferred","output":""}]}"""
 
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false deferredAndErrored = 3 @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false deferredAndErrored = 3 @>
 
     // POSITIVE CONTROL: the refusal is derived from "nothing executed", not from "some
     // project was not `passed`". One project that really ran keeps the run a pass.
     let oneRealPass =
         """{"elapsed":"0.2s","projects":[{"project":"A","status":"passed","output":"Passed! total: 3"},{"project":"B","status":"no-tests-matched","output":""}]}"""
 
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false oneRealPass = 0 @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false oneRealPass = 0 @>
 
 [<Fact(Timeout = 15000)>]
 let ``an UNKNOWN per-project status does not count as having executed`` () =
@@ -1879,7 +1918,7 @@ let ``an UNKNOWN per-project status does not count as having executed`` () =
     let unknownStatus =
         """{"elapsed":"0.2s","projects":[{"project":"A","status":"quarantined","output":""}]}"""
 
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false unknownStatus = 3 @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false unknownStatus = 3 @>
 
 [<Fact(Timeout = 15000)>]
 let ``a project KILLED at its timeout is a failure, not a pass`` () =
@@ -1890,19 +1929,19 @@ let ``a project KILLED at its timeout is a failure, not a pass`` () =
     let withToken =
         """{"elapsed":"9.0s","coverage":"ran-partial","projects":[{"project":"P","status":"timed-out","output":"killed after 600s"}]}"""
 
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false withToken = 1 @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false withToken = 1 @>
 
     let noToken =
         """{"elapsed":"9.0s","projects":[{"project":"P","status":"timed-out","output":"killed after 600s"}]}"""
 
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false noToken = 1 @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false noToken = 1 @>
 
     // POSITIVE CONTROL: a run with no timeout in it is still a pass, so the assertions
     // above are about the timeout and not about a blanket refusal.
     let clean =
         """{"elapsed":"1.0s","coverage":"ran-partial","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
 
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false clean = 0 @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false clean = 0 @>
 
 // ---------------------------------------------------------------------------
 // The token was string-COMPARED, and anything unrecognized fell through an `else` to
@@ -1917,7 +1956,7 @@ let ``an UNRECOGNIZED coverage token is refused, not read as a pass`` () =
     let json =
         """{"elapsed":"1.0s","coverage":"all-deferred","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
 
-    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    let result = renderOutput ProgressRenderer.Verbose (fun _ -> []) false json
     test <@ result = 3 @>
 
 [<Fact(Timeout = 15000)>]
@@ -1925,12 +1964,12 @@ let ``a garbage coverage token is refused too — it is not a whitelist of known
     let json =
         """{"elapsed":"1.0s","coverage":"","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
 
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json = 3 @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false json = 3 @>
 
     let typo =
         """{"elapsed":"1.0s","coverage":"rann","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
 
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false typo = 3 @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false typo = 3 @>
 
 [<Fact(Timeout = 15000)>]
 let ``refusing unknown tokens is NOT a blanket — a known ran token is still a pass`` () =
@@ -1939,7 +1978,7 @@ let ``refusing unknown tokens is NOT a blanket — a known ran token is still a 
     let json =
         """{"elapsed":"1.0s","coverage":"ran-full-suite","projects":[{"project":"P","status":"passed","output":"Passed! total: 3"}]}"""
 
-    test <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json = 0 @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false json = 0 @>
 
 // --- the verdict's causes come from the SAME entries as its count ---
 
@@ -3281,12 +3320,11 @@ let ``a daemon reply that is JSON but not an object is a named malformed reply``
 
     let exitCode =
         use _ = VerdictTerminal.install writer
-        renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false reply
+        renderOutput ProgressRenderer.Verbose (fun _ -> []) false reply
 
     test <@ exitCode = NoVerdictExitCode @>
     test <@ writer.ToString().Contains "malformed daemon reply" @>
 
 [<Fact(Timeout = 15000)>]
 let ``a rerun whose project entry is not an object is never a green, and never a throw`` () =
-    test
-        <@ renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"projects":[1,"p"]}""" = NoVerdictExitCode @>
+    test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false """{"projects":[1,"p"]}""" = NoVerdictExitCode @>

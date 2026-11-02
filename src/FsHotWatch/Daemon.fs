@@ -3406,25 +3406,34 @@ let internal scanProgress (prior: ScanState) (total: int) (completed: int) (now:
     | ScanIdle
     | ScanComplete _ -> Scanning(total, completed, now)
 
-/// "42s" under a minute, "6m 12s" from there.
-let private describeElapsed (elapsed: System.TimeSpan) : string =
-    let seconds = max 0 (int elapsed.TotalSeconds)
+/// The scan's progress from a LIVE completeness reading. `registered` and `unchecked` come
+/// from the host's coverage set at read time (registered minus currently-checked), so the
+/// `complete:`/`incomplete:` numbers never rot after incremental edits. A running scan also
+/// says how long it has run (read against `now`) and what the check-result cache has done for
+/// it (`cache`, counted from the scan's start; None when this daemon runs no check-result
+/// cache).
+let internal scanProgressWith
+    (registered: int)
+    (unchecked: int)
+    (now: System.DateTime)
+    (cache: CheckCacheTally.CacheTally option)
+    (scanState: ScanState)
+    : ScanProgress.Progress =
+    match scanState with
+    | ScanIdle -> ScanProgress.Progress.Idle
+    | Scanning(0, 0, startedAt) -> ScanProgress.Progress.Discovering(now - startedAt)
+    | Scanning(total, completed, startedAt) ->
+        let counts =
+            cache
+            |> Option.map (fun cache ->
+                ({ Hits = cache.Hits
+                   Misses = CheckCacheTally.CacheTally.misses cache }
+                : ScanProgress.CacheCounts))
 
-    if seconds < 60 then
-        $"%d{seconds}s"
-    else
-        let minutes, rest = Math.DivRem(seconds, 60)
-        $"%d{minutes}m %d{rest}s"
+        ScanProgress.Progress.Checking(completed, total, now - startedAt, counts)
+    | ScanComplete elapsed -> ScanProgress.Progress.Complete(registered, unchecked, elapsed)
 
-/// Render a scan-state line from a LIVE completeness reading. `registered` and
-/// `unchecked` come from the host's coverage set at read time (registered minus
-/// currently-checked), so the rendered `complete:`/`incomplete:` numbers never
-/// rot after incremental edits. A running scan also says how long it has run (read
-/// against `now`) and what the check-result cache has done for it (`cache`, counted
-/// from the scan's start; None when this daemon runs no check-result cache). The line
-/// prefixes are load-bearing:
-/// `status`/`WaitForScan`/external tooling greps `complete:`/`incomplete:`/
-/// `scanning:`.
+/// `scanProgressWith`, as the line it is shown as (`ScanProgress.render`).
 let internal formatScanStatusWith
     (registered: int)
     (unchecked: int)
@@ -3432,29 +3441,7 @@ let internal formatScanStatusWith
     (cache: CheckCacheTally.CacheTally option)
     (scanState: ScanState)
     : string =
-    match scanState with
-    | ScanIdle -> "idle"
-    | Scanning(0, 0, startedAt) ->
-        // No file is registered until discovery finishes: "0/0 files" would read as an
-        // empty tree.
-        $"scanning: discovering projects, %s{describeElapsed (now - startedAt)} elapsed"
-    | Scanning(total, completed, startedAt) ->
-        let pct = if total > 0 then completed * 100 / total else 0
-
-        let cacheText =
-            match cache with
-            | Some cache -> $"cache %d{cache.Hits} hit / %d{CheckCacheTally.CacheTally.misses cache} miss"
-            | None -> "check-result cache off"
-
-        $"scanning: %d{completed}/%d{total} files (%d{pct}%%), %s{describeElapsed (now - startedAt)} elapsed, %s{cacheText}"
-    | ScanComplete elapsed ->
-        if unchecked > 0 then
-            // Non-ok: a truncated or stale-incomplete scan must not present as
-            // clean. The checked count is (registered - unchecked) so the
-            // discrepancy is explicit to an agent/user reading status output.
-            $"incomplete: %d{registered - unchecked} files checked, %d{unchecked} unchecked in %.1f{elapsed.TotalSeconds}s"
-        else
-            $"complete: %d{registered} files checked in %.1f{elapsed.TotalSeconds}s"
+    ScanProgress.render (scanProgressWith registered unchecked now cache scanState)
 
 /// The daemon ties together a warm FSharpChecker, file watcher, check pipeline, and plugin host.
 /// It runs until the provided CancellationToken is cancelled.
@@ -3823,15 +3810,15 @@ type Daemon
                 return completed, ()
             })
 
-    /// Format scan state as a human-readable string. Completeness is read LIVE
-    /// from the host's coverage set (registered minus currently-checked) so the
-    /// rendered numbers agree with `fshw check` and never rot after incremental
-    /// edits — only the scan marker comes from the scan supervisor's published row.
-    member _.FormatScanStatus() =
+    /// The scan's progress. Completeness is read LIVE from the host's coverage set
+    /// (registered minus currently-checked) so the numbers agree with `fshw check` and never
+    /// rot after incremental edits — only the scan marker comes from the scan supervisor's
+    /// published row.
+    member _.ScanProgress() : ScanProgress.Progress =
         let (registered, unchecked) = liveCoverage ()
         let row = getScanRow scanAgent
 
-        formatScanStatusWith
+        scanProgressWith
             registered
             unchecked
             System.DateTime.UtcNow
@@ -3840,6 +3827,10 @@ type Daemon
              else
                  None)
             row.ScanState
+
+    /// `ScanProgress`, as the line it is shown as (`ScanProgress.render`).
+    member this.FormatScanStatus() =
+        ScanProgress.render (this.ScanProgress())
 
     /// Run the daemon with IPC server on the given pipe name.
     /// Discovers projects, performs initial scan, then watches for changes.
@@ -3918,7 +3909,7 @@ type Daemon
                       RequestShutdown = fun () -> cts.Cancel()
                       RequestScan = onScan
                       InvocationReleased = RunClaim.releasedFor repoRoot
-                      GetScanStatus = this.FormatScanStatus
+                      GetScanStatus = this.ScanProgress
                       GetScanGeneration = this.GetScanGeneration
                       TriggerBuild = triggerBuild
                       FormatAll = formatAll
