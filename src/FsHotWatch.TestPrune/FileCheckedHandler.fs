@@ -61,6 +61,96 @@ type internal FileCheckedEnv =
       UpdateFreshness: FileFreshness.Store -> unit
       EnqueuePending: string list -> VerificationDebt -> VerificationDebt }
 
+/// The file one `FileChecked` event is about, as its handler reads it.
+type internal CheckedFile =
+    { Ctx: PluginCtx<TestPruneMsg>
+      State: TestPruneState
+      Result: FileCheckResult
+      FileStr: string
+      RelPath: string
+      AnalysisStarted: DateTime }
+
+/// The ONE treatment for a file whose symbol analysis
+/// failed (an `analyzeSourceFromResults` Error and a handler fault are the same
+/// condition). The file is REMEMBERED as unanalysable, with three
+/// consequences, none silent:
+///   1. a WARNING lands in the error ledger, keyed to the file, so
+///      `fshw check` prints it and — under the default warn-fail
+///      policy — refuses a green verdict;
+///   2. `runTestsWithImpact` falls back to EVERY test project in full
+///      while the set is non-empty;
+///   3. the non-empty force-run set disables the zero-affected skip
+///      gate, so this can never end as "0 affected — green, 0 ran".
+/// The file leaves the set the moment it analyses cleanly.
+///
+/// The Failed stamp needs no idle guard: the framework's ReportStatus
+/// funnel drops any terminal stamped while an exclusive run is in
+/// flight (the run owns the status), so a mid-run analysis failure
+/// cannot manufacture a terminal. The ledger entry and the
+/// force-full-suite consequence persist either way.
+let internal markUnanalysableIn
+    (env: FileCheckedEnv)
+    (file: CheckedFile)
+    (reason: string)
+    (detail: string)
+    (logDetail: string)
+    : TestPruneState =
+    let repoRoot = env.RepoRoot
+    let freshnessStore = env.FreshnessStore
+    let updateFreshness = env.UpdateFreshness
+    let ctx = file.Ctx
+    let state = file.State
+    let result = file.Result
+    let fileStr = file.FileStr
+    let relPath = file.RelPath
+    let analysisStarted = file.AnalysisStarted
+
+    match FileFreshness.resolvePresence repoRoot relPath with
+    | FileFreshness.Gone ->
+        // A path that no longer exists is GONE, not a
+        // file that failed analysis: there is no source to be invisible
+        // and no parse error to fix. Warning here named files a merge had
+        // deleted, and the warning denied the gate its green. Forget the
+        // file everywhere this plugin remembers it instead.
+        Logging.info
+            "test-prune"
+            $"%s{relPath} no longer exists; dropping it rather than reporting '%s{reason}' (%s{detail})"
+
+        updateFreshness (FileFreshness.stamp FileFreshness.Gone false DateTime.UtcNow relPath (freshnessStore ()))
+
+        { state with
+            AnalysisFiles = Map.remove result.File state.AnalysisFiles
+            UnanalyzableFiles = Map.remove relPath state.UnanalyzableFiles
+            Unindexed = Set.remove relPath state.Unindexed }
+    | FileFreshness.Present ->
+        Logging.error
+            "test-prune"
+            $"%s{reason} for %s{relPath}: %s{logDetail} — this file is INVISIBLE to the impact graph (no symbols), so every test project will be run in full until it analyses cleanly"
+
+        ctx.ReportErrors fileStr [ unanalyzableFileDiagnostic relPath detail ]
+
+        ctx.ReportStatus(
+            PluginStatus.Failed(
+                $"%s{reason}: %s{detail}",
+                DateTime.UtcNow,
+                RunVerdict.create $"%s{reason}: %s{detail}" (DateTime.UtcNow - analysisStarted)
+            )
+        )
+
+        { state with
+            AnalysisFiles =
+                Map.add
+                    result.File
+                    (AnalysisFileEvidence.fromResult ctx.FcsSuppressedCodes result (Error detail))
+                    state.AnalysisFiles
+            UnanalyzableFiles =
+                Map.add
+                    relPath
+                    { RelPath = relPath
+                      File = fileStr
+                      Reason = detail }
+                    state.UnanalyzableFiles }
+
 /// One file's check result under the current model: its analysis, freshness and changed symbols.
 let internal onFileCheckedWith
     (env: FileCheckedEnv)
@@ -81,72 +171,16 @@ let internal onFileCheckedWith
         let fileStr = AbsFilePath.value result.File
         let relPath = Path.GetRelativePath(repoRoot, fileStr).Replace('\\', '/')
 
-        // The ONE treatment for a file whose symbol analysis
-        // failed (an `analyzeSourceFromResults` Error and a handler fault are the same
-        // condition). The file is REMEMBERED as unanalysable, with three
-        // consequences, none silent:
-        //   1. a WARNING lands in the error ledger, keyed to the file, so
-        //      `fshw check` prints it and — under the default warn-fail
-        //      policy — refuses a green verdict;
-        //   2. `runTestsWithImpact` falls back to EVERY test project in full
-        //      while the set is non-empty;
-        //   3. the non-empty force-run set disables the zero-affected skip
-        //      gate, so this can never end as "0 affected — green, 0 ran".
-        // The file leaves the set the moment it analyses cleanly.
-        //
-        // The Failed stamp needs no idle guard: the framework's ReportStatus
-        // funnel drops any terminal stamped while an exclusive run is in
-        // flight (the run owns the status), so a mid-run analysis failure
-        // cannot manufacture a terminal. The ledger entry and the
-        // force-full-suite consequence persist either way.
-        let markUnanalysable (reason: string) (detail: string) (logDetail: string) : TestPruneState =
-            match FileFreshness.resolvePresence repoRoot relPath with
-            | FileFreshness.Gone ->
-                // A path that no longer exists is GONE, not a
-                // file that failed analysis: there is no source to be invisible
-                // and no parse error to fix. Warning here named files a merge had
-                // deleted, and the warning denied the gate its green. Forget the
-                // file everywhere this plugin remembers it instead.
-                Logging.info
-                    "test-prune"
-                    $"%s{relPath} no longer exists; dropping it rather than reporting '%s{reason}' (%s{detail})"
+        let checkedFile: CheckedFile =
+            { Ctx = ctx
+              State = state
+              Result = result
+              FileStr = fileStr
+              RelPath = relPath
+              AnalysisStarted = analysisStarted }
 
-                updateFreshness (
-                    FileFreshness.stamp FileFreshness.Gone false DateTime.UtcNow relPath (freshnessStore ())
-                )
+        let markUnanalysable = markUnanalysableIn env checkedFile
 
-                { state with
-                    AnalysisFiles = Map.remove result.File state.AnalysisFiles
-                    UnanalyzableFiles = Map.remove relPath state.UnanalyzableFiles
-                    Unindexed = Set.remove relPath state.Unindexed }
-            | FileFreshness.Present ->
-                Logging.error
-                    "test-prune"
-                    $"%s{reason} for %s{relPath}: %s{logDetail} — this file is INVISIBLE to the impact graph (no symbols), so every test project will be run in full until it analyses cleanly"
-
-                ctx.ReportErrors fileStr [ unanalyzableFileDiagnostic relPath detail ]
-
-                ctx.ReportStatus(
-                    PluginStatus.Failed(
-                        $"%s{reason}: %s{detail}",
-                        DateTime.UtcNow,
-                        RunVerdict.create $"%s{reason}: %s{detail}" (DateTime.UtcNow - analysisStarted)
-                    )
-                )
-
-                { state with
-                    AnalysisFiles =
-                        Map.add
-                            result.File
-                            (AnalysisFileEvidence.fromResult ctx.FcsSuppressedCodes result (Error detail))
-                            state.AnalysisFiles
-                    UnanalyzableFiles =
-                        Map.add
-                            relPath
-                            { RelPath = relPath
-                              File = fileStr
-                              Reason = detail }
-                            state.UnanalyzableFiles }
 
         try
             // Canonical project identity. For real .fsproj files, FCS
