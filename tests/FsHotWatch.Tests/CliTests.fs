@@ -443,8 +443,18 @@ let ``classifyParse root unknown command yields RootUnknownCommand with raw rest
 [<Fact(Timeout = 15000)>]
 let ``every command reply reads back from its own wire form`` () =
     let replies =
-        [ FsHotWatch.Ipc.CommandReply.Output("run-tests", """{"status":"passed"}""")
-          FsHotWatch.Ipc.CommandReply.Output("greet", "hello")
+        [ FsHotWatch.Ipc.CommandReply.Output(
+              "run-tests",
+              FsHotWatch.Plugin.ReplySchema.undeclared,
+              """{"status":"passed"}"""
+          )
+          FsHotWatch.Ipc.CommandReply.Output("greet", FsHotWatch.Plugin.ReplySchema.undeclared, "hello")
+          FsHotWatch.Ipc.CommandReply.Output("greet", FsHotWatch.Plugin.ReplySchema.Typed "greeter/greet-v1", "hello")
+          FsHotWatch.Ipc.CommandReply.Output(
+              "greet",
+              FsHotWatch.Plugin.ReplySchema.Raw "passes a tool through",
+              "hello"
+          )
           FsHotWatch.Ipc.CommandReply.UnknownCommand "bogus"
           FsHotWatch.Ipc.CommandReply.Statuses "{}"
           FsHotWatch.Ipc.CommandReply.Refused "no pattern"
@@ -466,7 +476,9 @@ let ``an untagged reply, as a daemon of another fshw build sends, is unrecognise
           "plain text"
           "fshw-unknown-command:bogus"
           """{"error":"no pattern"}"""
-          """{"schema":"fshw-reply-v1","kind":"output"}""" ] do
+          """{"schema":"fshw-reply-v1","kind":"output"}"""
+          // A part-3 output reply, before a command declared its reply schema.
+          """{"schema":"fshw-reply-v1","kind":"output","command":"greet","output":"hello"}""" ] do
         test <@ FsHotWatch.Ipc.CommandReply.parse old = FsHotWatch.Ipc.ReplyReading.Unrecognised old @>
 
     test <@ FsHotWatch.Ipc.CommandReply.parse null = FsHotWatch.Ipc.ReplyReading.Unrecognised null @>
@@ -880,7 +892,11 @@ let ``CLI command proxying works against running daemon`` () =
         test
             <@
                 FsHotWatch.Ipc.CommandReply.parse result = FsHotWatch.Ipc.ReplyReading.Tagged(
-                    FsHotWatch.Ipc.CommandReply.Output("greet", "hello Claude")
+                    FsHotWatch.Ipc.CommandReply.Output(
+                        "greet",
+                        FsHotWatch.Plugin.ReplySchema.undeclared,
+                        "hello Claude"
+                    )
                 )
             @>
 

@@ -50,7 +50,7 @@ let private registerWith
 
     registerHandler
         { defaultServices with
-            RegisterCommand = registerCommand }
+            RegisterCommand = fun (name, _, command) -> registerCommand (name, command) }
         handler
 
 /// Register with all defaults.
@@ -693,7 +693,7 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
         registerHandler
             { defaultServices with
                 ReportStatus = fun _ status -> reportedStatuses.Enqueue(status)
-                RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd }
+                RegisterCommand = fun (_, _, cmd) -> registeredCmd <- Some cmd }
             handler
 
     dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
@@ -757,7 +757,7 @@ let ``handler that throws records ex.ToString() (full type+stack) in Failed stat
         registerHandler
             { defaultServices with
                 ReportStatus = fun _ status -> reportedStatuses.Enqueue(status)
-                RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd }
+                RegisterCommand = fun (_, _, cmd) -> registeredCmd <- Some cmd }
             handler
 
     dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
@@ -782,7 +782,7 @@ let ``handler that throws records ex.ToString() (full type+stack) in Failed stat
 /// Build host services with a provided TaskCache for these tests.
 let private servicesWithCache (cache: TaskCache.ITaskCache) (registerCommand: string * CommandHandler -> unit) =
     { defaultServices with
-        RegisterCommand = registerCommand
+        RegisterCommand = fun (name, _, command) -> registerCommand (name, command)
         TaskCache = Some cache }
 
 [<Fact(Timeout = 20000)>]
@@ -1192,7 +1192,7 @@ let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRu
                 EmitTestProgress = fun _ -> System.Threading.Interlocked.Increment(tpSeen) |> ignore
                 EmitTestRunCompleted = fun _ -> System.Threading.Interlocked.Increment(trcSeen) |> ignore
                 EmitCommandCompleted = fun _ -> System.Threading.Interlocked.Increment(ccSeen) |> ignore
-                RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd
+                RegisterCommand = fun (_, _, cmd) -> registeredCmd <- Some cmd
                 TaskCache = Some cache }
 
         let updateCalls = ref 0
@@ -1262,7 +1262,7 @@ let ``cache replay synthesizes a matching start for a completion captured after 
             { defaultServices with
                 EmitTestRunStarted = fun value -> replayedStart <- Some value
                 EmitTestRunCompleted = fun value -> replayedCompletion <- Some value
-                RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd
+                RegisterCommand = fun (_, _, cmd) -> registeredCmd <- Some cmd
                 TaskCache = Some cache }
 
         let handler: PluginHandler<unit, unit> =

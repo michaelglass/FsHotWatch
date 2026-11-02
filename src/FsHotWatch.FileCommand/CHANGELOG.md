@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: a file command's `<name>-status` declares its reply schema (`file-command/status-v1`).
+  The new `FileCommandReplies` module holds the reply as a type (`CommandStatus` is `Passed`,
+  `Failed` or `NotRun`), with the writer that produces the same JSON as before and a reader for it.
+
 ## 0.7.0-alpha.27 - 2026-10-30
 
 - build: package versions come from Directory.Packages.props (Central Package Management, now

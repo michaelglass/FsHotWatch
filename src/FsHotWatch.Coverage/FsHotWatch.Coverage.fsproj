@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <Compile Include="Judgement.fs" />
+    <Compile Include="CoverageReplies.fs" />
     <Compile Include="CoveragePlugin.fs" />
   </ItemGroup>
 

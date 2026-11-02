@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: `unformatted` declares its reply schema (`format-check/unformatted-v1`). The new
+  `FormatReplies` module holds the reply as a type (`Unformatted`: the count and the joined file
+  paths), with its writer and a reader for it.
+
+- fix: `unformatted` escapes a file path holding a quote, a backslash or a control character,
+  which it used to write unescaped and so not as JSON. Every other path is written byte for byte
+  as before.
+
 ## 0.7.0-alpha.34 - 2026-11-01
 
 - feat: the format preprocessor files what it proved in the outcome store (ADR-059 §20,

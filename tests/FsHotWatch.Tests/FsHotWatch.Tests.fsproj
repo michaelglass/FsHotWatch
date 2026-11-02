@@ -264,6 +264,7 @@
     <Compile Include="ShadowVerdictTests.fs" />
     <Compile Include="LookupParityCasesTests.fs" />
     <Compile Include="IpcOutputTests.fs" />
+    <Compile Include="PluginReplyTests.fs" />
     <Compile Include="ConfirmModelChangeTests.fs" />
     <Compile Include="ConfirmTracesTests.fs" />
     <Compile Include="ProgressRendererTests.fs" />

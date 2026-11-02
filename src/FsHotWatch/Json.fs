@@ -41,3 +41,29 @@ let tryInt64 (el: JsonElement) (name: string) : int64 option =
         | true, n -> Some n
         | _ -> None
     | _ -> None
+
+/// The named field, when it is a JSON `true` or `false`.
+let tryBool (el: JsonElement) (name: string) : bool option =
+    match tryProp el name with
+    | Some v when v.ValueKind = JsonValueKind.True -> Some true
+    | Some v when v.ValueKind = JsonValueKind.False -> Some false
+    | _ -> None
+
+/// `read` applied to the root of `text` when it parses as JSON; `None` when it does not.
+/// The document is disposed before this returns, so `read` must copy out what it keeps.
+/// Only a `JsonException` reads as "not JSON": any other exception, from the parse or from
+/// `read`, propagates.
+let tryReadDocument (read: JsonElement -> 'T option) (text: string) : 'T option =
+    let parsed =
+        try
+            Some(JsonDocument.Parse(text))
+        with :? JsonException ->
+            None
+
+    match parsed with
+    | None -> None
+    | Some doc ->
+        try
+            read doc.RootElement
+        finally
+            doc.Dispose()

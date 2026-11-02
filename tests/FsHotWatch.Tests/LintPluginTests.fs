@@ -69,6 +69,20 @@ let ``warnings command returns zeroes when no files checked`` () =
     test <@ result.Value.Contains("\"warnings\": 0") @>
 
 [<Fact(Timeout = 15000)>]
+let ``warnings declares its reply schema`` () =
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
+    host.RegisterHandler(create None None None None)
+
+    let reply = host.RunCommandReply("warnings", [||]) |> Async.RunSynchronously
+
+    test
+        <@
+            reply |> Option.map fst = Some(
+                FsHotWatch.Plugin.ReplySchema.Typed FsHotWatch.Lint.LintReplies.WarningsSchema
+            )
+        @>
+
+[<Fact(Timeout = 15000)>]
 let ``LintPlugin with configPath sets up lint params`` () =
     let handler = create None (Some "/tmp/nonexistent-config.json") None None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "lint" @>

@@ -77,6 +77,7 @@
     <Compile Include="RunnerArgs.fs" />
     <Compile Include="TestReports.fs" />
     <Compile Include="PluginQueries.fs" />
+    <Compile Include="TestPruneReplies.fs" />
     <Compile Include="PluginCommands.fs" />
     <Compile Include="IndexMaintenance.fs" />
     <Compile Include="RunSupport.fs" />

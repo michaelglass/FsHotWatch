@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: the test-prune commands declare their reply schemas: `run-tests` and `test-results`
+  (`test-prune/run-v1`), `set-scope`, `test-scope`, `check-reach`, `affected-tests`,
+  `changed-files` and `flaky-tests` (`test-prune/<command>-v1`). The new `TestPruneReplies`
+  module holds the replies as types (`RunReply`, `ScopeReply`, `AffectedTest`, `FlakyTest`, the
+  changed files), with the writers that produce the same JSON as before and readers for them.
+  `test-scope` and `check-reach` are read by the CLI's existing readers.
+
 - refactor!: `TestPrunePlugin` is being split along its seams into focused modules. Moved
   definitions keep their names; a caller that qualified them as `TestPrunePlugin.X` now names
   the new module: `CoverageArtifacts`, `CoverageIngest`, `PluginTypes`, `RuntimeCoverageSelection`,

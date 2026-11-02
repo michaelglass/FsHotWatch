@@ -3,6 +3,21 @@ module FsHotWatch.Plugin
 /// A function that handles a named command with string arguments and returns a result.
 type CommandHandler = string array -> Async<string>
 
+/// What a plugin command's reply is, as the plugin declares it. A client renders a reply by
+/// its schema, never by which fields its payload happens to have.
+[<RequireQualifiedAccess>]
+type ReplySchema =
+    /// A versioned schema the plugin owns, such as `build/build-status-v1`. Changing what the
+    /// reply holds changes the id.
+    | Typed of id: string
+    /// Free-form output with no schema, and why: a reply that passes another tool's text
+    /// through, or a command that declares none.
+    | Raw of reason: string
+
+module ReplySchema =
+    /// What a command that declares no reply schema answers with.
+    let undeclared = ReplySchema.Raw "the command declares no reply schema"
+
 /// What one preprocessor pass did — as evidence, not as a count.
 ///
 /// `Modified` alone (the old return value) could not tell "every file was already clean"

@@ -31,6 +31,29 @@ let ``plugin has correct name`` () =
     let handler = create None [] None DiagnosticSeverity.Hint
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "analyzers" @>
 
+
+[<Fact(Timeout = 20000)>]
+let ``diagnostics and analyzer-findings declare their reply schemas`` () =
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
+    host.RegisterHandler(create None [] None DiagnosticSeverity.Hint)
+
+    let schemaOf name =
+        host.RunCommandReply(name, [||]) |> Async.RunSynchronously |> Option.map fst
+
+    test
+        <@
+            schemaOf "diagnostics" = Some(
+                FsHotWatch.Plugin.ReplySchema.Typed FsHotWatch.Analyzers.AnalyzerReplies.DiagnosticsSchema
+            )
+        @>
+
+    test
+        <@
+            schemaOf FsHotWatch.Analyzers.AnalyzerFindings.CommandName = Some(
+                FsHotWatch.Plugin.ReplySchema.Typed FsHotWatch.Analyzers.AnalyzerFindings.ReplySchema
+            )
+        @>
+
 [<Fact(Timeout = 20000)>]
 let ``diagnostics command returns zeroes when no files checked`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"

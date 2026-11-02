@@ -4272,16 +4272,16 @@ let private executeCommandRendered
                         1
                     | _ ->
                         let result =
-                            daemon.Host.RunCommand(IpcParsing.RunTestsCommand, [| runArgsJson |])
+                            daemon.Host.RunCommandReply(IpcParsing.RunTestsCommand, [| runArgsJson |])
                             |> Async.RunSynchronously
 
                         match result with
-                        | Some json ->
+                        | Some(schema, json) ->
                             IpcOutput.renderCommandReply
                                 mode
                                 (renderLines mode (not noWarnFail))
                                 noWarnFail
-                                (FsHotWatch.Ipc.CommandReply.Output(IpcParsing.RunTestsCommand, json))
+                                (FsHotWatch.Ipc.CommandReply.Output(IpcParsing.RunTestsCommand, schema, json))
                         | None ->
                             // Same answer as the daemon's unknown-command reply: nothing
                             // ran, so no verdict (AUTOMATION-1337).

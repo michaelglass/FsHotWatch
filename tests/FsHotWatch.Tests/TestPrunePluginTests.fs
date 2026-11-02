@@ -6274,3 +6274,40 @@ let ``an extension refresh line names the extension, its edges and how long the 
         <@
             FsHotWatch.TestPrune.IndexMaintenance.extensionStoredLine "falco-routes" 42 1834L = "Extension 'falco-routes' stored 42 edge(s) (extension refresh took 1834ms)"
         @>
+
+[<Fact(Timeout = 15000)>]
+let ``the listing commands declare their reply schemas`` () =
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
+    host.RegisterHandler(create ":memory:" (isolatedRoot ()) None None None None None [])
+
+    let schemaOf name =
+        host.RunCommandReply(name, [||]) |> Async.RunSynchronously |> Option.map fst
+
+    let typed = FsHotWatch.Plugin.ReplySchema.Typed >> Some
+
+    test <@ schemaOf "affected-tests" = typed FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema @>
+    test <@ schemaOf "changed-files" = typed FsHotWatch.TestPrune.TestPruneReplies.ChangedFilesSchema @>
+    test <@ schemaOf "test-results" = typed FsHotWatch.TestPrune.TestPruneReplies.RunSchema @>
+    test <@ schemaOf "flaky-tests" = typed FsHotWatch.TestPrune.TestPruneReplies.FlakyTestsSchema @>
+
+[<Fact(Timeout = 60000)>]
+let ``the scope and run commands declare their reply schemas`` () =
+    withTempDir "tp-reply-schemas" (fun tmpDir ->
+        let host, _sentinel = withSingleProjectHarness tmpDir "TestProj"
+
+        let schemaOf name (args: string array) =
+            host.RunCommandReply(name, args) |> Async.RunSynchronously |> Option.map fst
+
+        let typed = FsHotWatch.Plugin.ReplySchema.Typed >> Some
+
+        test <@ schemaOf "test-scope" [||] = typed FsHotWatch.TestPrune.TestPruneReplies.TestScopeSchema @>
+        test <@ schemaOf "check-reach" [||] = typed FsHotWatch.TestPrune.TestPruneReplies.CheckReachSchema @>
+
+        test
+            <@
+                schemaOf "set-scope" [| """{"scope":"impact"}""" |] = typed
+                    FsHotWatch.TestPrune.TestPruneReplies.SetScopeSchema
+            @>
+
+        test <@ schemaOf "run-tests" [| "{}" |] = typed FsHotWatch.TestPrune.TestPruneReplies.RunSchema @>
+        waitForQuiescent host 10000)

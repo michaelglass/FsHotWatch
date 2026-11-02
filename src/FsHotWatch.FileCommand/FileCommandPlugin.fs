@@ -1,7 +1,6 @@
 module FsHotWatch.FileCommand.FileCommandPlugin
 
 open System
-open System.Text.Json
 open System.Threading
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
@@ -417,11 +416,15 @@ let create
         [ $"%s{nameStr}-status",
           PluginCommand.Observe(fun _ctx state _args ->
               async {
-                  match state.LastResult with
-                  | Succeeded _ -> return JsonSerializer.Serialize({| passed = true |})
-                  | CommandFailed _ -> return JsonSerializer.Serialize({| passed = false |})
-                  | NeverRun -> return JsonSerializer.Serialize({| status = "not run" |})
-              }) ]
+                  let status =
+                      match state.LastResult with
+                      | Succeeded _ -> FileCommandReplies.CommandStatus.Passed
+                      | CommandFailed _ -> FileCommandReplies.CommandStatus.Failed
+                      | NeverRun -> FileCommandReplies.CommandStatus.NotRun
+
+                  return FileCommandReplies.CommandStatus.serialize status
+              })
+          |> PluginCommand.typed FileCommandReplies.StatusSchema ]
       Subscriptions = CommandTrigger.subscriptions trigger
       CacheKey =
         // Pure-content cache key: merkle of (command, args, content of every

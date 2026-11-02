@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `diagnostics` and `analyzer-findings` declare their reply schemas
+  (`analyzers/diagnostics-v1`, and `AnalyzerFindings.ReplySchema`, the schema the findings reply
+  already carried inside it). The new `AnalyzerReplies` module holds the `diagnostics` reply as a
+  type (`Diagnostics`: its analyzer, file and finding counts), with the writer that produces the
+  same JSON as before and a reader for it.
+
 ## 0.7.0-alpha.54 - 2026-11-01
 
 - perf: the analyzer set is read and hashed once per dispatch batch, not once per file

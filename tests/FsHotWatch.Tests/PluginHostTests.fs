@@ -2268,3 +2268,37 @@ let ``a reader never sees Completed for a run without that run's findings`` () =
     let violations, lastSeen = reader.Result
     test <@ lastSeen = runs @>
     test <@ List.isEmpty violations @>
+
+[<Fact(Timeout = 15000)>]
+let ``a command's reply comes back with the schema its plugin declares`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let handler: FsHotWatch.PluginFramework.PluginHandler<unit, unit> =
+        { Name = FsHotWatch.PluginFramework.PluginName.create "declaring"
+          Init = ()
+          Update = fun _ state _ -> async { return state }
+          Commands =
+            [ "typed",
+              FsHotWatch.PluginFramework.PluginCommand.typed
+                  "declaring/typed-v1"
+                  (FsHotWatch.PluginFramework.PluginCommand.Observe(fun _ _ _ -> async { return "t" }))
+              "raw",
+              FsHotWatch.PluginFramework.PluginCommand.raw
+                  "passes a tool through"
+                  (FsHotWatch.PluginFramework.PluginCommand.Observe(fun _ _ _ -> async { return "r" }))
+              "plain", FsHotWatch.PluginFramework.PluginCommand.Observe(fun _ _ _ -> async { return "p" }) ]
+          Subscriptions = FsHotWatch.PluginFramework.PluginSubscriptions.none
+          PrepareCommit = None
+          CacheKey = None
+          Teardown = None }
+
+    host.RegisterHandler handler
+
+    let reply name =
+        host.RunCommandReply(name, [||]) |> Async.RunSynchronously
+
+    test <@ reply "typed" = Some(FsHotWatch.Plugin.ReplySchema.Typed "declaring/typed-v1", "t") @>
+    test <@ reply "raw" = Some(FsHotWatch.Plugin.ReplySchema.Raw "passes a tool through", "r") @>
+    test <@ reply "plain" = Some(FsHotWatch.Plugin.ReplySchema.undeclared, "p") @>
+    test <@ host.RunCommand("typed", [||]) |> Async.RunSynchronously = Some "t" @>
+    test <@ reply "absent" = None @>

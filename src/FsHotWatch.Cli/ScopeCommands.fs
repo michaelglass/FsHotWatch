@@ -26,7 +26,7 @@ type Send = string -> string -> string option
 let overIpc (runCommand: string -> string -> string) : Send =
     fun name args ->
         match Ipc.CommandReply.parse (runCommand name args) with
-        | Ipc.ReplyReading.Tagged(Ipc.CommandReply.Output(_, output)) -> Some output
+        | Ipc.ReplyReading.Tagged(Ipc.CommandReply.Output(_, _, output)) -> Some output
         | Ipc.ReplyReading.Tagged(Ipc.CommandReply.UnknownCommand _) -> None
         | Ipc.ReplyReading.Tagged other -> invalidOp $"`%s{name}` answered %A{other}, not a command's output"
         | Ipc.ReplyReading.Unrecognised _ -> invalidOp $"`%s{name}`: %s{Ipc.CommandReply.untaggedMessage}"

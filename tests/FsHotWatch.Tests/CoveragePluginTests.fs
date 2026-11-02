@@ -1538,3 +1538,25 @@ let ``a full-suite run whose named report predates it fails the plugin`` () =
             10000
 
         test <@ host.GetErrorsByPlugin("coverage") |> Map.containsKey configPath @>)
+
+[<Fact(Timeout = 15000)>]
+let ``coverage-status and coverage-ratchet declare their reply schemas`` () =
+    let host = FsHotWatch.PluginHost.PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create "/tmp/no-such-ratchet.json" "/tmp/no-such-dir")
+
+    let schemaOf name (args: string array) =
+        host.RunCommandReply(name, args) |> Async.RunSynchronously |> Option.map fst
+
+    test
+        <@
+            schemaOf "coverage-status" [||] = Some(
+                FsHotWatch.Plugin.ReplySchema.Typed FsHotWatch.Coverage.CoverageReplies.StatusSchema
+            )
+        @>
+
+    test
+        <@
+            schemaOf "coverage-ratchet" [||] = Some(
+                FsHotWatch.Plugin.ReplySchema.Typed FsHotWatch.Coverage.CoverageReplies.RatchetSchema
+            )
+        @>

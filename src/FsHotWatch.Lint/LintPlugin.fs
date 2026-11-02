@@ -395,8 +395,13 @@ let create
               async {
                   let current = state.WarningsByFile
                   let count = current |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)
-                  return $"{{\"files\": %d{current.Count}, \"warnings\": %d{count}}}"
-              }) ]
+
+                  return
+                      LintReplies.Warnings.serialize
+                          { Files = current.Count
+                            Warnings = count }
+              })
+          |> PluginCommand.typed LintReplies.WarningsSchema ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey = Some(fun _state event -> cacheKey event)
       Teardown = None }

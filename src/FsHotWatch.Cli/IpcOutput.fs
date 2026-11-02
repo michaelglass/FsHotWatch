@@ -307,6 +307,389 @@ let busyRerunLines (daemonMessage: string option) : string list =
       $"  Exit %d{RerunTimedOutExitCode} (in flight): the run may still finish in the daemon; `fshw status test-prune` shows it." ]
 
 
+/// A reply read as the daemon's diagnostics: its counts, files and statuses.
+let private renderDiagnosticsReply
+    (mode: ProgressRenderer.RenderMode)
+    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
+    (noWarnFail: bool)
+    (payload: string)
+    : int =
+    let resp = parseDiagnosticsResponse payload
+    eprintfn "%s" (formatDiagnosticsResponse mode renderStatuses resp)
+    exitCodeFromResponse noWarnFail resp
+
+/// A reply read as plugin statuses: each object-valued member a plugin's status.
+let private renderStatusMap (renderStatuses: Map<string, ParsedPluginStatus> -> string list) (payload: string) : int =
+    match parsePluginStatuses payload with
+    // The daemon answered and we could not read the answer. That is not "no plugins are
+    // failing" — it is not an answer. Exit non-zero: a status nobody could read must never
+    // be the basis of a zero exit code.
+    | Result.Error reason ->
+        UI.fail $"could not read the daemon's status: %s{reason}"
+        1
+    | Result.Ok parsed ->
+        let lines = renderStatuses parsed
+        let output = String.concat "\n" lines
+        eprintfn "%s" output
+
+        // The SAME predicate the verdict decides on, so `fshw status` and `fshw check` cannot
+        // disagree about whether a plugin failed.
+        if CheckVerdict.CheckInputs.anyPluginFailed parsed then
+            1
+        else
+            0
+
+/// A reply that is a line of text, not JSON: printed as it is.
+let private renderText (payload: string) : int =
+    eprintfn "%s" payload
+    0
+
+let private renderPassed () =
+    UI.success "Passed"
+    0
+
+let private renderFailed () =
+    UI.fail "Failed"
+    1
+
+/// Valid JSON that is not an object: every reply the daemon sends is one, so this is a
+/// malformed reply, named as one, never an exception from a field read (AUTOMATION-1079).
+let private renderNotAnObject (kind: JsonValueKind) : int =
+    VerdictTerminal.fail
+        $"malformed daemon reply: expected a JSON object, got %s{kind.ToString().ToLowerInvariant()} — no verdict"
+
+    NoVerdictExitCode
+
+/// A command that refused, with its reason.
+let private renderRefusal (reason: string) : int =
+    UI.fail reason
+    1
+
+/// The force-rerun did not produce a result within its budget (a prior run holds the slot,
+/// or the queued run didn't finish in time). Distinct from "Tests failed" — nothing is known
+/// to be broken — but it must NEVER exit 0: `test-rerun` is the explicit "prove it ran" verb,
+/// and an exit 0 without a run is a vacuous green. Nor is it a red: it gets the in-flight
+/// code, so a caller can tell the two apart.
+let private renderBusy (message: string option) : int =
+    let lines = busyRerunLines message
+    UI.fail (List.head lines)
+
+    for line in List.tail lines do
+        UI.info line
+
+    RerunTimedOutExitCode
+
+/// A run report (`run-tests`, `test-results`): each project's status and counts, and the run's
+/// verdict on what it verified. `root` is the reply; `projects` its `projects` array.
+let private renderRunReport (root: JsonElement) (projects: JsonElement) : int =
+    // Name and status of every project the run consulted. Kept as a
+    // list (not just a count) because a refusal has to say WHAT it
+    // searched: "no tests matched the filter" over an unnamed set of
+    // projects is indistinguishable from a typo, and reading the
+    // names off `fshw status test-prune` afterwards is a step people
+    // skip.
+    let projectStatuses =
+        projects.EnumerateArray()
+        |> Seq.map (fun p ->
+            let name =
+                match FsHotWatch.Json.tryProp p "project" with
+                | Some n when n.ValueKind = JsonValueKind.String -> n.GetString()
+                | _ -> "(unnamed)"
+
+            let status =
+                match FsHotWatch.Json.tryProp p "status" with
+                | Some s when s.ValueKind = JsonValueKind.String -> s.GetString()
+                | _ -> "unknown"
+
+            name, status)
+        |> List.ofSeq
+
+    // Report criterion 3: the per-project TEST counts, from
+    // the CTRF report each project wrote. Rendered for every project on
+    // every outcome, green included: "a missing summary line is the tell
+    // that separates a real pass from a vacuous one", and until now the
+    // counts existed only in `daemon.log`, so noticing required going to
+    // look. Now the ✓ has to carry them.
+    //
+    // ABSENT counts print as an explicit "no test report", never as
+    // zeros: `total: 0, failed: 0` reads as a suite that ran cleanly,
+    // which is the same vacuous green one level down.
+    let countsLine (p: JsonElement) : string =
+        let field (name: string) =
+            FsHotWatch.Json.tryProp p "counts"
+            |> Option.bind (fun c -> FsHotWatch.Json.tryInt c name)
+
+        match field "total", field "succeeded", field "failed" with
+        | Some total, Some succeeded, Some failed ->
+            let skipped =
+                match field "skipped" with
+                | Some n when n > 0 -> $", %d{n} skipped"
+                | _ -> ""
+
+            $"total %d{total}, %d{succeeded} succeeded, %d{failed} failed%s{skipped}"
+        | _ -> "no test report — counts unknown (not zero)"
+
+    let perProjectLines =
+        Seq.zip projectStatuses (projects.EnumerateArray())
+        |> Seq.map (fun ((name, status), p) -> $"  · %s{name} [%s{status}] — %s{countsLine p}")
+        |> List.ofSeq
+
+    // NO PROJECT RAN AT ALL. `noTestsMatched` cannot cover this:
+    // `allZeroMatch` is deliberately false for an empty result set
+    // (no project is not the same claim as every project matched
+    // nothing), so without this branch an empty `projects` array
+    // reads as "Tests passed" — a green for a run that executed
+    // nothing.
+    let projectCount = projectStatuses.Length
+
+    let statusCounts = projectStatuses |> List.countBy snd |> Map.ofList
+
+    let countOf key =
+        statusCounts |> Map.tryFind key |> Option.defaultValue 0
+
+    let passedCount = countOf "passed"
+    let failedCount = countOf "failed"
+    let timedOutCount = countOf "timed-out"
+    let noMatchCount = countOf "no-tests-matched"
+
+    let otherCount =
+        projectCount - passedCount - failedCount - timedOutCount - noMatchCount
+
+    // A project killed at its timeout is a FAILURE, and was not being
+    // counted as one: `hasFailed` matched only `"failed"`, so a run
+    // whose sole project was killed at its timeout printed
+    // "✓ Tests passed" and exited 0 while the daemon's own terminal
+    // status for the same run was `failedNow` + `CompleteWithTimeout`.
+    // The CLI and the daemon may not disagree about a red.
+    let hasFailed = failedCount > 0 || timedOutCount > 0
+
+    // Which wire statuses mean "a test actually executed". Listed
+    // POSITIVELY and closed: an unrecognised status (a daemon newer
+    // than this CLI) is NOT counted as having executed, so the
+    // fallback below fails closed rather than greening on a word it
+    // does not know.
+    let executedCount = passedCount + failedCount + timedOutCount
+
+    // Run-level "matched nothing": every project was a
+    // zero-match-under-filter pass. Reported DISTINCTLY so a
+    // `test-rerun --filter-*` that selected no test never looks
+    // like a real green run that exercised code.
+    let noTestsMatched =
+        match FsHotWatch.Json.tryProp root "noTestsMatched" with
+        | Some n -> n.ValueKind = JsonValueKind.True
+        | None -> false
+
+    // The producer STATES what the run verified instead of leaving
+    // the consumer to infer it from array lengths.
+    //
+    // PARSED, not string-compared. The tokens are written in exactly
+    // one place (`RunVerification.token`, core) and read back through
+    // `tryParse`, so a rename cannot drift between the two ends —
+    // and, unlike a literal comparison with an `else`, a token this
+    // build does not know cannot fall through to exit 0.
+    //
+    // `None` means BOTH "absent" and "unreadable", and both are
+    // handled below as no-verdict. Absent is the older-daemon case:
+    // reconstruct from the counts rather than assume anything.
+    let parsedCoverage =
+        match FsHotWatch.Json.tryProp root "coverage" with
+        | Some c when c.ValueKind = JsonValueKind.String ->
+            match RunVerification.tryParse (c.GetString()) with
+            | Some v -> Understood v
+            | None -> Unrecognized(c.GetString())
+        | _ ->
+            // Older daemon: no `coverage` field at all. An ABSENT
+            // field must never be read as "ran", so derive what the
+            // counts actually establish — and no more than that.
+            if projectCount = 0 then
+                Understood NoProjectsSelected
+            elif noTestsMatched then
+                Understood(AllZeroMatch projectCount)
+            elif executedCount = 0 then
+                // The MIXED case, and the one this
+                // fallback used to hand to `RanPerCounts` → exit 0:
+                // `{"projects":[{"status":"no-tests-matched"},
+                // {"status":"deferred"}]}` is not all-zero-match, so
+                // `noTestsMatched` is false, yet NOT ONE project
+                // executed a test. The per-project statuses that
+                // establish it were already in hand and went unused.
+                Understood NothingExecuted
+            else
+                RanPerCounts
+
+    // Say what the run actually did, on every outcome including the
+    // green: "1 project: 1 matched nothing" and "1 project: 12
+    // passed" are the same `✓` without this line, and the counts are
+    // otherwise only in `daemon.log`. Printed before the verdict so
+    // it is present whichever branch below fires.
+    let summaryParts =
+        [ if passedCount > 0 then
+              $"%d{passedCount} passed"
+          if failedCount > 0 then
+              $"%d{failedCount} failed"
+          // Named separately from "failed" and from "did not run":
+          // a killed run is a red, but a red whose cause is the clock
+          // rather than an assertion.
+          if timedOutCount > 0 then
+              $"%d{timedOutCount} timed out"
+          if noMatchCount > 0 then
+              $"%d{noMatchCount} matched nothing"
+          // Deferred / errored projects. Named as a group rather than
+          // silently omitted, so the parts always add up to the
+          // project count.
+          if otherCount > 0 then
+              $"%d{otherCount} did not run" ]
+
+    if projectCount > 0 then
+        let detail = summaryParts |> String.concat ", "
+        UI.info $"  %d{projectCount} project(s): %s{detail}"
+
+        for line in perProjectLines do
+            UI.info line
+
+    // The filter the run was launched with, as the daemon reported
+    // it. `None` is NOT rendered as "(none)": an absent field means
+    // this daemon predates the field, which is a different fact from
+    // "the run was unfiltered", and a refusal that guesses between
+    // them is how a wrong conclusion gets drawn.
+    let activeFilter =
+        match FsHotWatch.Json.tryProp root "filter" with
+        | Some f when f.ValueKind = JsonValueKind.String && f.GetString() <> "" -> Some(f.GetString())
+        | _ -> None
+
+    /// The refusal's two evidence lines: WHAT was searched for and
+    /// WHERE. Printed by every "nothing was verified" branch, so no
+    /// refusal can be the count-only message that sent one
+    /// investigation after a class that was never misspelled.
+    let reportSearch () =
+        match activeFilter with
+        | Some f -> UI.info $"  Filter:   %s{f}"
+        | None ->
+            UI.info
+                "  Filter:   not reported (this daemon predates the field) — restart it with `fshw stop` to see it here"
+
+        // Capped, with the remainder COUNTED rather than dropped: a
+        // truncated list that does not say it was truncated reads as
+        // the whole selection.
+        let shown = projectStatuses |> List.truncate 10
+
+        let rendered =
+            shown |> List.map (fun (n, s) -> $"%s{n} (%s{s})") |> String.concat ", "
+
+        let more = projectCount - shown.Length
+
+        let suffix = if more > 0 then $", +%d{more} more" else ""
+
+        if projectCount > 0 then
+            UI.info $"  Searched: %s{rendered}%s{suffix}"
+
+    // Both no-op outcomes exit 3, matching `confirm`'s established
+    // contract: REFUSE TO GREEN WITHOUT EVIDENCE rather than
+    // report a pass nothing earned. Exit 0 here would sail through
+    // any `&&` chain and any CI gate.
+    if hasFailed then
+        if failedCount > 0 then
+            UI.fail "Tests failed"
+        else
+            // Reached only via `timedOutCount`. Worded so the cause is
+            // not mistaken for an assertion failure — a killed run
+            // usually means a wedged host or a too-tight budget.
+            UI.fail $"%d{timedOutCount} test project(s) were KILLED at their timeout — not a pass"
+
+        1
+    elif parsedCoverage = Understood NoProjectsSelected then
+        UI.fail "No test project ran — nothing was verified (not a pass)"
+        reportSearch ()
+        UI.info "  Why: no project was selected, so no test binary was invoked."
+
+        UI.info "  Nothing was discovered, so there are no test names to suggest here."
+
+        UI.info "  Wanted the whole suite?   fshw confirm   (unfiltered)"
+        UI.info "  Expected your diff to select something?   fshw status test-prune"
+        3
+    elif
+        (match parsedCoverage with
+         | Understood(AllZeroMatch _) -> true
+         | _ -> false)
+    then
+        UI.fail "No tests matched the filter — nothing was verified (not a pass)"
+        reportSearch ()
+
+        UI.info $"  Why: %d{projectCount} project(s) ran and discovered their tests; the filter matched none of them."
+
+        // Two causes, and the ordering matters. The filter is fanned
+        // out across EVERY configured project, so a class that really
+        // exists still reports "matched nothing" in each project that
+        // does not contain it — indistinguishable from a typo. Naming
+        // only the typo has already sent one investigation after a
+        // class that was never misspelled, so aim is offered first
+        // when the run was narrow enough for it to be the likely story.
+        if projectCount = 1 then
+            UI.info
+                "  Either the class lives in a DIFFERENT project than the one that ran, or the pattern is a typo / renamed class."
+
+            UI.info "  Aim it:                    fshw test-rerun --project <name> --filter-class <pattern>"
+        else
+            UI.info "  A filter that matches nothing is usually a typo or a renamed class."
+
+            UI.info "  Or aim it at one project:  fshw test-rerun --project <name> --filter-class <pattern>"
+
+        UI.info "  See the discovered names:  fshw status test-prune"
+        UI.info "  Wanted the whole suite?    fshw confirm   (unfiltered)"
+        3
+    else
+        match parsedCoverage with
+        // `Ran` says at least ONE project executed, not that every
+        // selected project did. A project that errored, deferred or
+        // reported a status this build cannot read owed a result and
+        // produced none, and a sibling's pass does not stand in for
+        // it. `otherCount` excludes zero-match projects, which owed
+        // nothing the filter asked for.
+        | Understood(Ran _)
+        | RanPerCounts when otherCount > 0 ->
+            UI.fail
+                $"%d{otherCount} selected project(s) produced no test result — nothing was verified for them (not a pass)"
+
+            reportSearch ()
+            UI.info "  Run `fshw status test-prune` for the full output of each."
+            3
+        // Scope is irrelevant to the exit code — this asks only
+        // whether anything was verified, so both breadths pass.
+        | Understood(Ran _)
+        | RanPerCounts ->
+            UI.success "Tests passed"
+            0
+        | Unrecognized unknown ->
+            // A token this build cannot interpret is NOT a pass. Same
+            // decision as `ScopeUnreadable` in IpcParsing: a reading
+            // you could not interpret must never read as a good one.
+            UI.fail "Cannot interpret what this run verified — no verdict (not a pass)"
+
+            UI.info $"  The daemon reported coverage '%s{unknown}', which this build does not recognize."
+
+            UI.info "  Most likely the daemon is NEWER than this CLI. Check both versions:"
+            UI.info "    ps ax | rg fshotwatch      # the running daemon's package path"
+            UI.info "  Then restart the daemon so it matches:  fshw stop"
+            3
+        | Understood NothingExecuted ->
+            // Projects reported and not one ran a test. Reachable —
+            // unlike the two below — because the zero-match branch
+            // above only catches results that MATCHED nothing, not
+            // ones that deferred or errored.
+            UI.fail "Nothing was verified — every project failed to execute a test (not a pass)"
+            // The per-project statuses ARE the diagnosis here, so
+            // they are printed rather than pointed at.
+            reportSearch ()
+            UI.info "  Run `fshw status test-prune` for the full output of each."
+            3
+        | Understood NoProjectsSelected
+        | Understood(AllZeroMatch _) ->
+            // Unreachable: both are handled above. Present so that
+            // adding a case to RunVerification breaks THIS match
+            // rather than silently landing on a green.
+            UI.fail "internal: unhandled coverage case — no verdict"
+            3
+
 /// Render what a reply carries: a plugin command's output, the statuses after a re-run, or
 /// a format summary (status JSON or plain text). The payload is plugin-defined.
 let private renderPayload
@@ -326,406 +709,195 @@ let private renderPayload
             None
 
     match doc with
-    | None ->
-        eprintfn "%s" result
-        0
-    // Valid JSON that is not an object: every reply the daemon sends is one, so this is a
-    // malformed reply, named as one, never an exception from a field read (AUTOMATION-1079).
+    | None -> renderText result
     | Some doc when doc.RootElement.ValueKind <> JsonValueKind.Object ->
         use doc = doc
-
-        VerdictTerminal.fail
-            $"malformed daemon reply: expected a JSON object, got %s{doc.RootElement.ValueKind.ToString().ToLowerInvariant()} — no verdict"
-
-        NoVerdictExitCode
+        renderNotAnObject doc.RootElement.ValueKind
     | Some doc ->
         use doc = doc
         let root = doc.RootElement
 
         match FsHotWatch.Json.tryProp root "count" with
-        | Some _ ->
-            let resp = parseDiagnosticsResponse result
-            let output = formatDiagnosticsResponse mode renderStatuses resp
-            eprintfn "%s" output
-            exitCodeFromResponse noWarnFail resp
+        | Some _ -> renderDiagnosticsReply mode renderStatuses noWarnFail result
         | None ->
 
             match FsHotWatch.Json.tryProp root "error" with
-            | Some e ->
-                UI.fail (
-                    if e.ValueKind = JsonValueKind.String then
-                        e.GetString()
-                    else
-                        e.GetRawText()
-                )
-
-                1
+            | Some e when e.ValueKind = JsonValueKind.String -> renderRefusal (e.GetString())
+            | Some e -> renderRefusal (e.GetRawText())
             | None ->
 
                 match FsHotWatch.Json.tryProp root "status" with
-                | Some v when v.ValueKind = JsonValueKind.String && v.GetString() = "failed" ->
-                    UI.fail "Failed"
-                    1
-                | Some v when v.ValueKind = JsonValueKind.String && v.GetString() = "passed" ->
-                    UI.success "Passed"
-                    0
+                | Some v when v.ValueKind = JsonValueKind.String && v.GetString() = "failed" -> renderFailed ()
+                | Some v when v.ValueKind = JsonValueKind.String && v.GetString() = "passed" -> renderPassed ()
                 | Some v when v.ValueKind = JsonValueKind.String && v.GetString() = "busy" ->
-                    // The force-rerun did not produce a result within its
-                    // budget (a prior run holds the slot, or the queued run
-                    // didn't finish in time). Distinct from "Tests failed" —
-                    // nothing is known to be broken — but it must NEVER exit 0:
-                    // `test-rerun` is the explicit "prove it ran" verb, and an
-                    // exit 0 without a run is a vacuous green. Nor is it a red: it
-                    // gets the in-flight code, so a caller can tell the two apart.
-                    let msg =
-                        match FsHotWatch.Json.tryProp root "message" with
-                        | Some m when m.ValueKind = JsonValueKind.String -> Some(m.GetString())
-                        | _ -> None
-
-                    let lines = busyRerunLines msg
-                    UI.fail (List.head lines)
-
-                    for line in List.tail lines do
-                        UI.info line
-
-                    RerunTimedOutExitCode
+                    renderBusy (FsHotWatch.Json.tryString root "message")
                 | _ ->
 
                     match FsHotWatch.Json.tryProp root "projects" with
-                    | Some projects when projects.ValueKind = JsonValueKind.Array ->
-                        // Name and status of every project the run consulted. Kept as a
-                        // list (not just a count) because a refusal has to say WHAT it
-                        // searched: "no tests matched the filter" over an unnamed set of
-                        // projects is indistinguishable from a typo, and reading the
-                        // names off `fshw status test-prune` afterwards is a step people
-                        // skip.
-                        let projectStatuses =
-                            projects.EnumerateArray()
-                            |> Seq.map (fun p ->
-                                let name =
-                                    match FsHotWatch.Json.tryProp p "project" with
-                                    | Some n when n.ValueKind = JsonValueKind.String -> n.GetString()
-                                    | _ -> "(unnamed)"
+                    | Some projects when projects.ValueKind = JsonValueKind.Array -> renderRunReport root projects
+                    | _ -> renderStatusMap renderStatuses result
 
-                                let status =
-                                    match FsHotWatch.Json.tryProp p "status" with
-                                    | Some s when s.ValueKind = JsonValueKind.String -> s.GetString()
-                                    | _ -> "unknown"
+/// The renderers of the plugin reply schemas this build knows, by schema id: each parses its
+/// payload into the plugin's reply type and renders that. A payload its schema does not
+/// describe is `None`, as an unknown schema is.
+module PluginReplies =
+    type Render = ProgressRenderer.RenderMode -> (Map<string, ParsedPluginStatus> -> string list) -> bool -> int
 
-                                name, status)
-                            |> List.ofSeq
+    /// A reply its schema describes, rendered as the status map its shape was always read as.
+    let private asStatusMap (tryParse: string -> 'Reply option) (payload: string) : Render option =
+        tryParse payload
+        |> Option.map (fun _ _ renderStatuses _ -> renderStatusMap renderStatuses payload)
 
-                        // Report criterion 3: the per-project TEST counts, from
-                        // the CTRF report each project wrote. Rendered for every project on
-                        // every outcome, green included: "a missing summary line is the tell
-                        // that separates a real pass from a vacuous one", and until now the
-                        // counts existed only in `daemon.log`, so noticing required going to
-                        // look. Now the ✓ has to carry them.
-                        //
-                        // ABSENT counts print as an explicit "no test report", never as
-                        // zeros: `total: 0, failed: 0` reads as a suite that ran cleanly,
-                        // which is the same vacuous green one level down.
-                        let countsLine (p: JsonElement) : string =
-                            let field (name: string) =
-                                FsHotWatch.Json.tryProp p "counts"
-                                |> Option.bind (fun c -> FsHotWatch.Json.tryInt c name)
+    let private build: (string * (string -> Render option)) list =
+        let buildStatus payload =
+            FsHotWatch.Build.BuildReplies.BuildStatus.tryParse payload
+            |> Option.map (fun status _ renderStatuses _ ->
+                match status with
+                | FsHotWatch.Build.BuildReplies.BuildStatus.Passed _ -> renderPassed ()
+                | FsHotWatch.Build.BuildReplies.BuildStatus.Failed _ -> renderFailed ()
+                // Read as a status map, as its shape always was: it holds no plugin's status.
+                | FsHotWatch.Build.BuildReplies.BuildStatus.NotRun -> renderStatusMap renderStatuses payload)
 
-                            match field "total", field "succeeded", field "failed" with
-                            | Some total, Some succeeded, Some failed ->
-                                let skipped =
-                                    match field "skipped" with
-                                    | Some n when n > 0 -> $", %d{n} skipped"
-                                    | _ -> ""
+        [ FsHotWatch.Build.BuildReplies.BuildStatusSchema, buildStatus
+          FsHotWatch.Build.BuildReplies.ForceRebuildSchema,
+          asStatusMap FsHotWatch.Build.BuildReplies.ForceRebuild.tryParse ]
 
-                                $"total %d{total}, %d{succeeded} succeeded, %d{failed} failed%s{skipped}"
-                            | _ -> "no test report — counts unknown (not zero)"
+    let private lint: (string * (string -> Render option)) list =
+        [ FsHotWatch.Lint.LintReplies.WarningsSchema, asStatusMap FsHotWatch.Lint.LintReplies.Warnings.tryParse ]
 
-                        let perProjectLines =
-                            Seq.zip projectStatuses (projects.EnumerateArray())
-                            |> Seq.map (fun ((name, status), p) -> $"  · %s{name} [%s{status}] — %s{countsLine p}")
-                            |> List.ofSeq
+    let private format: (string * (string -> Render option)) list =
+        let unformatted payload =
+            FsHotWatch.Fantomas.FormatReplies.Unformatted.tryParse payload
+            |> Option.map (fun _ mode renderStatuses noWarnFail ->
+                renderDiagnosticsReply mode renderStatuses noWarnFail payload)
 
-                        // NO PROJECT RAN AT ALL. `noTestsMatched` cannot cover this:
-                        // `allZeroMatch` is deliberately false for an empty result set
-                        // (no project is not the same claim as every project matched
-                        // nothing), so without this branch an empty `projects` array
-                        // reads as "Tests passed" — a green for a run that executed
-                        // nothing.
-                        let projectCount = projectStatuses.Length
+        [ FsHotWatch.Fantomas.FormatReplies.UnformattedSchema, unformatted ]
 
-                        let statusCounts = projectStatuses |> List.countBy snd |> Map.ofList
+    let private fileCommand: (string * (string -> Render option)) list =
+        [ FsHotWatch.FileCommand.FileCommandReplies.StatusSchema,
+          asStatusMap FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.tryParse ]
 
-                        let countOf key =
-                            statusCounts |> Map.tryFind key |> Option.defaultValue 0
+    /// A reply its schema describes that is a line of text: printed as it is, as before.
+    let private asText (tryParse: string -> 'Reply option) (payload: string) : Render option =
+        tryParse payload |> Option.map (fun _ _ _ _ -> renderText payload)
 
-                        let passedCount = countOf "passed"
-                        let failedCount = countOf "failed"
-                        let timedOutCount = countOf "timed-out"
-                        let noMatchCount = countOf "no-tests-matched"
+    let private coverage: (string * (string -> Render option)) list =
+        [ FsHotWatch.Coverage.CoverageReplies.StatusSchema,
+          asText FsHotWatch.Coverage.CoverageReplies.CoverageStatus.tryParse
+          FsHotWatch.Coverage.CoverageReplies.RatchetSchema,
+          asText FsHotWatch.Coverage.CoverageReplies.RatchetReply.tryParse ]
 
-                        let otherCount =
-                            projectCount - passedCount - failedCount - timedOutCount - noMatchCount
+    let private analyzers: (string * (string -> Render option)) list =
+        [ FsHotWatch.Analyzers.AnalyzerReplies.DiagnosticsSchema,
+          asStatusMap FsHotWatch.Analyzers.AnalyzerReplies.Diagnostics.tryParse
+          FsHotWatch.Analyzers.AnalyzerFindings.ReplySchema,
+          asStatusMap (FsHotWatch.Analyzers.AnalyzerFindings.tryParseReply >> Result.toOption) ]
 
-                        // A project killed at its timeout is a FAILURE, and was not being
-                        // counted as one: `hasFailed` matched only `"failed"`, so a run
-                        // whose sole project was killed at its timeout printed
-                        // "✓ Tests passed" and exited 0 while the daemon's own terminal
-                        // status for the same run was `failedNow` + `CompleteWithTimeout`.
-                        // The CLI and the daemon may not disagree about a red.
-                        let hasFailed = failedCount > 0 || timedOutCount > 0
+    let private testPrune: (string * (string -> Render option)) list =
+        let run payload =
+            FsHotWatch.TestPrune.TestPruneReplies.RunReply.tryParse payload
+            |> Option.map (fun reply _ renderStatuses _ ->
+                match reply with
+                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Report json ->
+                    use doc = JsonDocument.Parse json
+                    renderRunReport doc.RootElement (doc.RootElement.GetProperty "projects")
+                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Busy message -> renderBusy (Some message)
+                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Refused error -> renderRefusal error
+                // Read as a status map, as its shape always was: it holds no plugin's status.
+                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Running
+                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Settling
+                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.NotRun -> renderStatusMap renderStatuses payload)
 
-                        // Which wire statuses mean "a test actually executed". Listed
-                        // POSITIVELY and closed: an unrecognised status (a daemon newer
-                        // than this CLI) is NOT counted as having executed, so the
-                        // fallback below fails closed rather than greening on a word it
-                        // does not know.
-                        let executedCount = passedCount + failedCount + timedOutCount
+        let setScope payload =
+            FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.tryParse payload
+            |> Option.map (fun reply _ renderStatuses _ ->
+                match reply with
+                | FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.ScopeSet _ -> renderStatusMap renderStatuses payload
+                | FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.ScopeRefused error -> renderRefusal error)
 
-                        // Run-level "matched nothing": every project was a
-                        // zero-match-under-filter pass. Reported DISTINCTLY so a
-                        // `test-rerun --filter-*` that selected no test never looks
-                        // like a real green run that exercised code.
-                        let noTestsMatched =
-                            match FsHotWatch.Json.tryProp root "noTestsMatched" with
-                            | Some n -> n.ValueKind = JsonValueKind.True
-                            | None -> false
+        // A JSON array, which the CLI has always refused as not an object.
+        let asArray (tryParse: string -> 'Reply option) payload : Render option =
+            tryParse payload
+            |> Option.map (fun _ _ _ _ -> renderNotAnObject JsonValueKind.Array)
 
-                        // The producer STATES what the run verified instead of leaving
-                        // the consumer to infer it from array lengths.
-                        //
-                        // PARSED, not string-compared. The tokens are written in exactly
-                        // one place (`RunVerification.token`, core) and read back through
-                        // `tryParse`, so a rename cannot drift between the two ends —
-                        // and, unlike a literal comparison with an `else`, a token this
-                        // build does not know cannot fall through to exit 0.
-                        //
-                        // `None` means BOTH "absent" and "unreadable", and both are
-                        // handled below as no-verdict. Absent is the older-daemon case:
-                        // reconstruct from the counts rather than assume anything.
-                        let parsedCoverage =
-                            match FsHotWatch.Json.tryProp root "coverage" with
-                            | Some c when c.ValueKind = JsonValueKind.String ->
-                                match RunVerification.tryParse (c.GetString()) with
-                                | Some v -> Understood v
-                                | None -> Unrecognized(c.GetString())
-                            | _ ->
-                                // Older daemon: no `coverage` field at all. An ABSENT
-                                // field must never be read as "ran", so derive what the
-                                // counts actually establish — and no more than that.
-                                if projectCount = 0 then
-                                    Understood NoProjectsSelected
-                                elif noTestsMatched then
-                                    Understood(AllZeroMatch projectCount)
-                                elif executedCount = 0 then
-                                    // The MIXED case, and the one this
-                                    // fallback used to hand to `RanPerCounts` → exit 0:
-                                    // `{"projects":[{"status":"no-tests-matched"},
-                                    // {"status":"deferred"}]}` is not all-zero-match, so
-                                    // `noTestsMatched` is false, yet NOT ONE project
-                                    // executed a test. The per-project statuses that
-                                    // establish it were already in hand and went unused.
-                                    Understood NothingExecuted
-                                else
-                                    RanPerCounts
+        // Read by the reader the verdict uses, then rendered by its shape, as before.
+        let byShape (describes: string -> bool) payload : Render option =
+            if describes payload then
+                Some(fun mode renderStatuses noWarnFail -> renderPayload mode renderStatuses noWarnFail payload)
+            else
+                None
 
-                        // Say what the run actually did, on every outcome including the
-                        // green: "1 project: 1 matched nothing" and "1 project: 12
-                        // passed" are the same `✓` without this line, and the counts are
-                        // otherwise only in `daemon.log`. Printed before the verdict so
-                        // it is present whichever branch below fires.
-                        let summaryParts =
-                            [ if passedCount > 0 then
-                                  $"%d{passedCount} passed"
-                              if failedCount > 0 then
-                                  $"%d{failedCount} failed"
-                              // Named separately from "failed" and from "did not run":
-                              // a killed run is a red, but a red whose cause is the clock
-                              // rather than an assertion.
-                              if timedOutCount > 0 then
-                                  $"%d{timedOutCount} timed out"
-                              if noMatchCount > 0 then
-                                  $"%d{noMatchCount} matched nothing"
-                              // Deferred / errored projects. Named as a group rather than
-                              // silently omitted, so the parts always add up to the
-                              // project count.
-                              if otherCount > 0 then
-                                  $"%d{otherCount} did not run" ]
+        let testScope payload =
+            match (parseTestRunReport payload).Scope with
+            | ScopeUnreadable _ -> false
+            | _ -> true
 
-                        if projectCount > 0 then
-                            let detail = summaryParts |> String.concat ", "
-                            UI.info $"  %d{projectCount} project(s): %s{detail}"
+        // `parseCheckReach` is total and fail-closed, so it reads every payload as something;
+        // the schema describes the replies that say whether a reach was recorded.
+        let checkReach payload =
+            FsHotWatch.Json.tryReadDocument (fun root -> FsHotWatch.Json.tryBool root "recorded") payload
+            |> Option.isSome
 
-                            for line in perProjectLines do
-                                UI.info line
+        [ FsHotWatch.TestPrune.TestPruneReplies.RunSchema, run
+          FsHotWatch.TestPrune.TestPruneReplies.SetScopeSchema, setScope
+          FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema,
+          asArray FsHotWatch.TestPrune.TestPruneReplies.AffectedTests.tryParse
+          FsHotWatch.TestPrune.TestPruneReplies.ChangedFilesSchema,
+          asArray FsHotWatch.TestPrune.TestPruneReplies.ChangedFiles.tryParse
+          FsHotWatch.TestPrune.TestPruneReplies.FlakyTestsSchema,
+          asStatusMap FsHotWatch.TestPrune.TestPruneReplies.FlakyTests.tryParse
+          FsHotWatch.TestPrune.TestPruneReplies.TestScopeSchema, byShape testScope
+          FsHotWatch.TestPrune.TestPruneReplies.CheckReachSchema, byShape checkReach ]
 
-                        // The filter the run was launched with, as the daemon reported
-                        // it. `None` is NOT rendered as "(none)": an absent field means
-                        // this daemon predates the field, which is a different fact from
-                        // "the run was unfiltered", and a refusal that guesses between
-                        // them is how a wrong conclusion gets drawn.
-                        let activeFilter =
-                            match FsHotWatch.Json.tryProp root "filter" with
-                            | Some f when f.ValueKind = JsonValueKind.String && f.GetString() <> "" ->
-                                Some(f.GetString())
-                            | _ -> None
+    let private renderers: Map<string, string -> Render option> =
+        Map.ofList (build @ lint @ format @ fileCommand @ coverage @ analyzers @ testPrune)
 
-                        /// The refusal's two evidence lines: WHAT was searched for and
-                        /// WHERE. Printed by every "nothing was verified" branch, so no
-                        /// refusal can be the count-only message that sent one
-                        /// investigation after a class that was never misspelled.
-                        let reportSearch () =
-                            match activeFilter with
-                            | Some f -> UI.info $"  Filter:   %s{f}"
-                            | None ->
-                                UI.info
-                                    "  Filter:   not reported (this daemon predates the field) — restart it with `fshw stop` to see it here"
+    /// The renderer for a `payload` of schema `id`; `None` for a schema this build does not
+    /// know, or a payload it does not describe.
+    let render (id: string) (payload: string) : Render option =
+        Map.tryFind id renderers |> Option.bind (fun parse -> parse payload)
 
-                            // Capped, with the remainder COUNTED rather than dropped: a
-                            // truncated list that does not say it was truncated reads as
-                            // the whole selection.
-                            let shown = projectStatuses |> List.truncate 10
+/// Render a command reply the daemon tagged (`Ipc.CommandReply`).
+let renderCommandReply
+    (mode: ProgressRenderer.RenderMode)
+    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
+    (noWarnFail: bool)
+    (reply: FsHotWatch.Ipc.CommandReply)
+    : int =
+    match reply with
+    // No plugin serves the command, so nothing ran (AUTOMATION-1337).
+    | FsHotWatch.Ipc.CommandReply.UnknownCommand command ->
+        UI.fail (unknownCommandMessage command)
+        NoVerdictExitCode
+    | FsHotWatch.Ipc.CommandReply.Refused reason ->
+        UI.fail reason
+        1
+    // A plugin declaring no schema, or a free-form one: its payload is read by its shape.
+    | FsHotWatch.Ipc.CommandReply.Output(_, FsHotWatch.Plugin.ReplySchema.Raw _, payload)
+    | FsHotWatch.Ipc.CommandReply.Statuses payload
+    | FsHotWatch.Ipc.CommandReply.Formatted payload -> renderPayload mode renderStatuses noWarnFail payload
+    | FsHotWatch.Ipc.CommandReply.Output(command, FsHotWatch.Plugin.ReplySchema.Typed id, payload) ->
+        match PluginReplies.render id payload with
+        | Some rendered -> rendered mode renderStatuses noWarnFail
+        | None ->
+            VerdictTerminal.fail
+                $"the daemon answered `%s{command}` with reply schema `%s{id}`, which this fshw does not know or cannot read: the daemon is from another fshw build; `fshw stop` restarts it — no verdict"
 
-                            let rendered =
-                                shown |> List.map (fun (n, s) -> $"%s{n} (%s{s})") |> String.concat ", "
+            NoVerdictExitCode
 
-                            let more = projectCount - shown.Length
-
-                            let suffix = if more > 0 then $", +%d{more} more" else ""
-
-                            if projectCount > 0 then
-                                UI.info $"  Searched: %s{rendered}%s{suffix}"
-
-                        // Both no-op outcomes exit 3, matching `confirm`'s established
-                        // contract: REFUSE TO GREEN WITHOUT EVIDENCE rather than
-                        // report a pass nothing earned. Exit 0 here would sail through
-                        // any `&&` chain and any CI gate.
-                        if hasFailed then
-                            if failedCount > 0 then
-                                UI.fail "Tests failed"
-                            else
-                                // Reached only via `timedOutCount`. Worded so the cause is
-                                // not mistaken for an assertion failure — a killed run
-                                // usually means a wedged host or a too-tight budget.
-                                UI.fail $"%d{timedOutCount} test project(s) were KILLED at their timeout — not a pass"
-
-                            1
-                        elif parsedCoverage = Understood NoProjectsSelected then
-                            UI.fail "No test project ran — nothing was verified (not a pass)"
-                            reportSearch ()
-                            UI.info "  Why: no project was selected, so no test binary was invoked."
-
-                            UI.info "  Nothing was discovered, so there are no test names to suggest here."
-
-                            UI.info "  Wanted the whole suite?   fshw confirm   (unfiltered)"
-                            UI.info "  Expected your diff to select something?   fshw status test-prune"
-                            3
-                        elif
-                            (match parsedCoverage with
-                             | Understood(AllZeroMatch _) -> true
-                             | _ -> false)
-                        then
-                            UI.fail "No tests matched the filter — nothing was verified (not a pass)"
-                            reportSearch ()
-
-                            UI.info
-                                $"  Why: %d{projectCount} project(s) ran and discovered their tests; the filter matched none of them."
-
-                            // Two causes, and the ordering matters. The filter is fanned
-                            // out across EVERY configured project, so a class that really
-                            // exists still reports "matched nothing" in each project that
-                            // does not contain it — indistinguishable from a typo. Naming
-                            // only the typo has already sent one investigation after a
-                            // class that was never misspelled, so aim is offered first
-                            // when the run was narrow enough for it to be the likely story.
-                            if projectCount = 1 then
-                                UI.info
-                                    "  Either the class lives in a DIFFERENT project than the one that ran, or the pattern is a typo / renamed class."
-
-                                UI.info
-                                    "  Aim it:                    fshw test-rerun --project <name> --filter-class <pattern>"
-                            else
-                                UI.info "  A filter that matches nothing is usually a typo or a renamed class."
-
-                                UI.info
-                                    "  Or aim it at one project:  fshw test-rerun --project <name> --filter-class <pattern>"
-
-                            UI.info "  See the discovered names:  fshw status test-prune"
-                            UI.info "  Wanted the whole suite?    fshw confirm   (unfiltered)"
-                            3
-                        else
-                            match parsedCoverage with
-                            // `Ran` says at least ONE project executed, not that every
-                            // selected project did. A project that errored, deferred or
-                            // reported a status this build cannot read owed a result and
-                            // produced none, and a sibling's pass does not stand in for
-                            // it. `otherCount` excludes zero-match projects, which owed
-                            // nothing the filter asked for.
-                            | Understood(Ran _)
-                            | RanPerCounts when otherCount > 0 ->
-                                UI.fail
-                                    $"%d{otherCount} selected project(s) produced no test result — nothing was verified for them (not a pass)"
-
-                                reportSearch ()
-                                UI.info "  Run `fshw status test-prune` for the full output of each."
-                                3
-                            // Scope is irrelevant to the exit code — this asks only
-                            // whether anything was verified, so both breadths pass.
-                            | Understood(Ran _)
-                            | RanPerCounts ->
-                                UI.success "Tests passed"
-                                0
-                            | Unrecognized unknown ->
-                                // A token this build cannot interpret is NOT a pass. Same
-                                // decision as `ScopeUnreadable` in IpcParsing: a reading
-                                // you could not interpret must never read as a good one.
-                                UI.fail "Cannot interpret what this run verified — no verdict (not a pass)"
-
-                                UI.info
-                                    $"  The daemon reported coverage '%s{unknown}', which this build does not recognize."
-
-                                UI.info "  Most likely the daemon is NEWER than this CLI. Check both versions:"
-                                UI.info "    ps ax | rg fshotwatch      # the running daemon's package path"
-                                UI.info "  Then restart the daemon so it matches:  fshw stop"
-                                3
-                            | Understood NothingExecuted ->
-                                // Projects reported and not one ran a test. Reachable —
-                                // unlike the two below — because the zero-match branch
-                                // above only catches results that MATCHED nothing, not
-                                // ones that deferred or errored.
-                                UI.fail "Nothing was verified — every project failed to execute a test (not a pass)"
-                                // The per-project statuses ARE the diagnosis here, so
-                                // they are printed rather than pointed at.
-                                reportSearch ()
-                                UI.info "  Run `fshw status test-prune` for the full output of each."
-                                3
-                            | Understood NoProjectsSelected
-                            | Understood(AllZeroMatch _) ->
-                                // Unreachable: both are handled above. Present so that
-                                // adding a case to RunVerification breaks THIS match
-                                // rather than silently landing on a green.
-                                UI.fail "internal: unhandled coverage case — no verdict"
-                                3
-                    | _ ->
-
-                        match parsePluginStatuses result with
-                        // The daemon answered and we could not read the answer. That is
-                        // not "no plugins are failing" — it is not an answer. Exit
-                        // non-zero: a status nobody could read must never be the basis
-                        // of a zero exit code.
-                        | Result.Error reason ->
-                            UI.fail $"could not read the daemon's status: %s{reason}"
-                            1
-                        | Result.Ok parsed ->
-                            let lines = renderStatuses parsed
-                            let output = String.concat "\n" lines
-                            eprintfn "%s" output
-
-                            // The SAME predicate the verdict decides on, so `fshw status`
-                            // and `fshw check` cannot disagree about whether a plugin failed.
-                            if CheckVerdict.CheckInputs.anyPluginFailed parsed then
-                                1
-                            else
-                                0
+/// Render a command-shaped RPC's reply, parsed once here. A reply this build cannot parse
+/// (an untagged one, from a daemon of another fshw build) is no verdict, said as such.
+let renderIpcResult
+    (mode: ProgressRenderer.RenderMode)
+    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
+    (noWarnFail: bool)
+    (result: string)
+    : int =
+    match FsHotWatch.Ipc.CommandReply.parse result with
+    | FsHotWatch.Ipc.ReplyReading.Tagged reply -> renderCommandReply mode renderStatuses noWarnFail reply
+    | FsHotWatch.Ipc.ReplyReading.Unrecognised _ ->
+        VerdictTerminal.fail FsHotWatch.Ipc.CommandReply.untaggedMessage
+        NoVerdictExitCode
 
 /// Render live plugin-status progress until `isSettled` reports the host has
 /// reached its authoritative verdict. Pure of the scan trigger — the caller
@@ -745,39 +917,6 @@ let private renderPayload
 ///
 /// The clock, the pause between readings, the line sink and the interactive switch are
 /// the caller's, so the reporting of a long wait is testable without one.
-/// Render a command reply the daemon tagged (`Ipc.CommandReply`).
-let renderCommandReply
-    (mode: ProgressRenderer.RenderMode)
-    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
-    (noWarnFail: bool)
-    (reply: FsHotWatch.Ipc.CommandReply)
-    : int =
-    match reply with
-    // No plugin serves the command, so nothing ran (AUTOMATION-1337).
-    | FsHotWatch.Ipc.CommandReply.UnknownCommand command ->
-        UI.fail (unknownCommandMessage command)
-        NoVerdictExitCode
-    | FsHotWatch.Ipc.CommandReply.Refused reason ->
-        UI.fail reason
-        1
-    | FsHotWatch.Ipc.CommandReply.Output(_, payload)
-    | FsHotWatch.Ipc.CommandReply.Statuses payload
-    | FsHotWatch.Ipc.CommandReply.Formatted payload -> renderPayload mode renderStatuses noWarnFail payload
-
-/// Render a command-shaped RPC's reply, parsed once here. A reply this build cannot parse
-/// (an untagged one, from a daemon of another fshw build) is no verdict, said as such.
-let renderIpcResult
-    (mode: ProgressRenderer.RenderMode)
-    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
-    (noWarnFail: bool)
-    (result: string)
-    : int =
-    match FsHotWatch.Ipc.CommandReply.parse result with
-    | FsHotWatch.Ipc.ReplyReading.Tagged reply -> renderCommandReply mode renderStatuses noWarnFail reply
-    | FsHotWatch.Ipc.ReplyReading.Unrecognised _ ->
-        VerdictTerminal.fail FsHotWatch.Ipc.CommandReply.untaggedMessage
-        NoVerdictExitCode
-
 let internal pollUntilSettledWith
     (now: unit -> DateTime)
     (pause: unit -> unit)

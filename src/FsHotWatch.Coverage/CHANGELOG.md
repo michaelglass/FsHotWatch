@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `coverage-status` and `coverage-ratchet` declare their reply schemas
+  (`coverage/coverage-status-v1`, `coverage/coverage-ratchet-v1`). The new `CoverageReplies`
+  module holds each reply as a type (`CoverageStatus` is `NotChecked`, `Passed` or `Failed`;
+  `RatchetReply` is `NoReportFound`, `NoNamedReportExists`, `Updated`, `Failed` or `TimedOut`),
+  with the writer that produces the same text line as before and a reader for it.
+
 ## 0.7.0-alpha.32 - 2026-10-30
 
 - build: package versions come from Directory.Packages.props (Central Package Management, now

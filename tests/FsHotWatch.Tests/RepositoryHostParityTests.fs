@@ -833,7 +833,7 @@ let ``a legacy daemon, a hosted session, and one sharing its checker observe the
         test
             <@
                 (match FsHotWatch.Ipc.CommandReply.parse legacy.PluginCommand with
-                 | FsHotWatch.Ipc.ReplyReading.Tagged(FsHotWatch.Ipc.CommandReply.Output(_, output)) ->
+                 | FsHotWatch.Ipc.ReplyReading.Tagged(FsHotWatch.Ipc.CommandReply.Output(_, _, output)) ->
                      output.StartsWith "{\"files\""
                  | _ -> false)
             @>

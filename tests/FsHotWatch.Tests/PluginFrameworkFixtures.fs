@@ -37,9 +37,11 @@ let defaultServices: PluginHostServices =
 
 /// Register a handler with no-op host services, capturing its commands.
 let registerWith (handler: PluginHandler<'State, 'Msg>) (registerCommand: (string * CommandHandler -> unit) option) =
+    let registerCommand = defaultArg registerCommand ignore
+
     registerHandler
         { defaultServices with
-            RegisterCommand = defaultArg registerCommand ignore }
+            RegisterCommand = fun (name, _, command) -> registerCommand (name, command) }
         handler
 
 /// Register with all defaults.

@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <Compile Include="BuildDiagnostics.fs" />
+    <Compile Include="BuildReplies.fs" />
     <Compile Include="BuildPlugin.fs" />
   </ItemGroup>
 

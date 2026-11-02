@@ -352,6 +352,21 @@ let ``build-status command returns not run initially`` () =
     test <@ result.Value.Contains("not run") @>
 
 [<Fact(Timeout = 15000)>]
+let ``build-status and force-rebuild declare their reply schemas`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let handler =
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None
+
+    host.RegisterHandler(handler)
+
+    let schemaOf name =
+        host.RunCommandReply(name, [||]) |> Async.RunSynchronously |> Option.map fst
+
+    test <@ schemaOf "build-status" = Some(FsHotWatch.Plugin.ReplySchema.Typed BuildReplies.BuildStatusSchema) @>
+    test <@ schemaOf "force-rebuild" = Some(FsHotWatch.Plugin.ReplySchema.Typed BuildReplies.ForceRebuildSchema) @>
+
+[<Fact(Timeout = 15000)>]
 let ``formatSilentFailureDiagnostic includes exit code and output length`` () =
     let output =
         "Build FAILED.\n    0 Warning(s)\n    0 Error(s)\n\nTime Elapsed 00:00:02.96"

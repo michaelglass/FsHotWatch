@@ -57,7 +57,7 @@ type PluginHost
 
     let ledger = ErrorLedger(?reporters = reporters)
     let normalizedRepoRoot = System.IO.Path.GetFullPath(repoRoot)
-    let commands = ConcurrentDictionary<string, CommandHandler>()
+    let commands = ConcurrentDictionary<string, Plugin.ReplySchema * CommandHandler>()
     // Registration order is run order: a generator registered before the formatter runs
     // before it, and the formatter is offered what the generator wrote.
     let preprocessors = ResizeArray<IFsHotWatchPreprocessor>()
@@ -287,7 +287,7 @@ type PluginHost
               EmitTestProgress = fun progress -> dispatchToAll (PluginFramework.DispatchTestProgress progress)
               EmitTestRunCompleted = fun completed -> dispatchToAll (PluginFramework.DispatchTestRunCompleted completed)
               EmitCommandCompleted = fun result -> dispatchToAll (PluginFramework.DispatchCommandCompleted result)
-              RegisterCommand = fun cmd -> commands[fst cmd] <- snd cmd
+              RegisterCommand = fun (name, schema, handler) -> commands[name] <- (schema, handler)
               TaskCache = taskCache
               StartSubtask =
                 fun name key label -> activity.StartSubtask(PluginFramework.PluginName.value name, key, label)
@@ -649,12 +649,19 @@ type PluginHost
         dispatchToAll (PluginFramework.DispatchCommandCompleted result)
 
     /// Run a registered command by name. Returns None if the command is unknown.
-    member _.RunCommand(name: string, args: string array) : Async<string option> =
+    member this.RunCommand(name: string, args: string array) : Async<string option> =
+        async {
+            let! reply = this.RunCommandReply(name, args)
+            return reply |> Option.map snd
+        }
+
+    /// `RunCommand`, with the schema the command declares its reply has.
+    member _.RunCommandReply(name: string, args: string array) : Async<(Plugin.ReplySchema * string) option> =
         async {
             match commands.TryGetValue(name) with
-            | true, handler ->
+            | true, (schema, handler) ->
                 let! result = handler args
-                return Some result
+                return Some(schema, result)
             | false, _ -> return None
         }
 

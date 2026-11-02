@@ -84,7 +84,11 @@ let internal runTestsCommand (allConfigs: TestConfig list) =
                         Error ex.Message
 
                 match parseResult with
-                | Error msg -> return JsonSerializer.Serialize({| error = $"invalid JSON: %s{msg}" |})
+                | Error msg ->
+                    return
+                        TestPruneReplies.RunReply.serialize (
+                            TestPruneReplies.RunReply.Refused $"invalid JSON: %s{msg}"
+                        )
                 | Ok doc ->
 
                     use doc = doc
@@ -134,7 +138,7 @@ let internal runTestsCommand (allConfigs: TestConfig list) =
                                 $"no test project matches --project %s{asked}. Configured test projects: %s{known}"
                             | None -> "no matching test projects"
 
-                        return JsonSerializer.Serialize({| error = msg |})
+                        return TestPruneReplies.RunReply.serialize (TestPruneReplies.RunReply.Refused msg)
                     | _ ->
                         let reply =
                             Tasks.TaskCompletionSource<string>(
@@ -156,8 +160,10 @@ let internal runTestsCommand (allConfigs: TestConfig list) =
                             (fun (admitted: Tasks.Task) ->
                                 if admitted.IsFaulted then
                                     reply.TrySetResult(
-                                        JsonSerializer.Serialize(
-                                            {| error = admitted.Exception.GetBaseException().Message |}
+                                        TestPruneReplies.RunReply.serialize (
+                                            TestPruneReplies.RunReply.Refused(
+                                                admitted.Exception.GetBaseException().Message
+                                            )
                                         )
                                     )
                                     |> ignore),
@@ -178,10 +184,9 @@ let internal runTestsCommand (allConfigs: TestConfig list) =
                             return reply.Task.Result
                         else
                             return
-                                JsonSerializer.Serialize(
-                                    {| status = "busy"
-                                       message =
-                                        $"the test run did not produce a result within %d{waitForResultMs / 1000}s (still queued or running); retry, or raise --wait-sec" |}
+                                TestPruneReplies.RunReply.serialize (
+                                    TestPruneReplies.RunReply.Busy
+                                        $"the test run did not produce a result within %d{waitForResultMs / 1000}s (still queued or running); retry, or raise --wait-sec"
                                 )
             with ex ->
                 // Command-local faults only (the run itself executes in
@@ -190,7 +195,7 @@ let internal runTestsCommand (allConfigs: TestConfig list) =
                 // the Aborted lifecycle). Nothing to post here: no run
                 // was launched.
                 Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
-                return JsonSerializer.Serialize({| error = ex.Message |})
+                return TestPruneReplies.RunReply.serialize (TestPruneReplies.RunReply.Refused ex.Message)
         })
 
 /// The `check-reach` observer: how far the checks of a run reached, from the session's run ledger.
@@ -597,19 +602,21 @@ let internal pluginCommands (env: CommandEnv) =
                       else
                           queries.AffectedTests symbols
 
-                  let testsData =
+                  return
                       tests
                       |> List.map (fun t ->
-                          {| project = t.TestProject
-                             ``class`` = t.TestClass
-                             ``method`` = t.TestMethod |})
-
-                  return JsonSerializer.Serialize(testsData)
+                          ({ Project = t.TestProject
+                             Class = t.TestClass
+                             Method = t.TestMethod }
+                          : TestPruneReplies.AffectedTest))
+                      |> TestPruneReplies.AffectedTests.serialize
               })
+          |> PluginCommand.typed TestPruneReplies.AffectedTestsSchema
 
           "changed-files",
           PluginCommand.Observe(fun (_ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->
-              async { return JsonSerializer.Serialize(state.ChangedFiles) })
+              async { return TestPruneReplies.ChangedFiles.serialize state.ChangedFiles })
+          |> PluginCommand.typed TestPruneReplies.ChangedFilesSchema
 
           "test-results",
           // The last COMMITTED result set, and only once it is the current one. While a
@@ -619,18 +626,23 @@ let internal pluginCommands (env: CommandEnv) =
           // rather than hand those back as though they were the run that just finished.
           PluginCommand.Observe(fun (ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->
               async {
-                  if ctx.IsRunning "tests" then
-                      return JsonSerializer.Serialize({| status = "running" |})
-                  elif ctx.IsSettling "tests" then
-                      return JsonSerializer.Serialize({| status = "settling" |})
-                  else
-                      match state.LastResults with
-                      // No filter: `test-results` reports the LAST stored result set,
-                      // which does not remember what launched it. Saying nothing is
-                      // correct here; inventing "(none)" would claim it was unfiltered.
-                      | Some results -> return formatTestResultsJson None Map.empty results
-                      | None -> return JsonSerializer.Serialize({| status = "not run" |})
+                  let reply =
+                      if ctx.IsRunning "tests" then
+                          TestPruneReplies.RunReply.Running
+                      elif ctx.IsSettling "tests" then
+                          TestPruneReplies.RunReply.Settling
+                      else
+                          match state.LastResults with
+                          // No filter: `test-results` reports the LAST stored result set,
+                          // which does not remember what launched it. Saying nothing is
+                          // correct here; inventing "(none)" would claim it was unfiltered.
+                          | Some results ->
+                              TestPruneReplies.RunReply.Report(formatTestResultsJson None Map.empty results)
+                          | None -> TestPruneReplies.RunReply.NotRun
+
+                  return TestPruneReplies.RunReply.serialize reply
               })
+          |> PluginCommand.typed TestPruneReplies.RunSchema
 
           "flaky-tests",
           PluginCommand.Observe(fun (_ctx: CommandReadCtx) (_state: TestPruneState) (_args: string array) ->
@@ -638,18 +650,16 @@ let internal pluginCommands (env: CommandEnv) =
                   let history = Flakiness.loadHistory (Flakiness.historyPath repoRoot)
                   let top = Flakiness.topFlaky 10 history
 
-                  let payload =
+                  return
                       top
                       |> List.map (fun (name, score) ->
-                          let runs =
-                              history |> Map.tryFind name |> Option.map List.length |> Option.defaultValue 0
-
-                          {| name = name
-                             flakiness = score
-                             runs = runs |})
-
-                  return JsonSerializer.Serialize({| tests = payload |})
-              }) ]
+                          ({ Name = name
+                             Flakiness = score
+                             Runs = history |> Map.tryFind name |> Option.map List.length |> Option.defaultValue 0 }
+                          : TestPruneReplies.FlakyTest))
+                      |> TestPruneReplies.FlakyTests.serialize
+              })
+          |> PluginCommand.typed TestPruneReplies.FlakyTestsSchema ]
 
     // run-tests / scope commands (only if testConfigs are provided). The scope verbs
     // live behind the same condition on purpose: a repo with no test projects has no suite
@@ -682,7 +692,9 @@ let internal pluginCommands (env: CommandEnv) =
                         match requested with
                         | "owed" ->
                             do! ctx.EnqueueExclusiveIntent "scope" None OwedRunRequested |> Async.AwaitTask
-                            return JsonSerializer.Serialize({| scope = requested |})
+
+                            return
+                                TestPruneReplies.ScopeReply.serialize (TestPruneReplies.ScopeReply.ScopeSet requested)
                         | "full"
                         | "impact" ->
                             // Its own intent key: a scope change queued behind a running
@@ -691,15 +703,20 @@ let internal pluginCommands (env: CommandEnv) =
                                 ctx.EnqueueExclusiveIntent "scope" None (ScopeRequested(TestMode.ofScope requested))
                                 |> Async.AwaitTask
 
-                            return JsonSerializer.Serialize({| scope = requested |})
+                            return
+                                TestPruneReplies.ScopeReply.serialize (TestPruneReplies.ScopeReply.ScopeSet requested)
                         | other ->
                             return
-                                JsonSerializer.Serialize(
-                                    {| error = $"unknown scope '%s{other}' (expected 'full', 'impact' or 'owed')" |}
+                                TestPruneReplies.ScopeReply.serialize (
+                                    TestPruneReplies.ScopeReply.ScopeRefused
+                                        $"unknown scope '%s{other}' (expected 'full', 'impact' or 'owed')"
                                 )
                     })
+                |> PluginCommand.typed TestPruneReplies.SetScopeSchema
 
-                "test-scope", testScopeCommand env allConfigs
+                "test-scope",
+                testScopeCommand env allConfigs
+                |> PluginCommand.typed TestPruneReplies.TestScopeSchema
 
                 // What `check` WOULD have concluded about the run
                 // `confirm` just widened to full — the sample `confirm` used to destroy.
@@ -715,8 +732,9 @@ let internal pluginCommands (env: CommandEnv) =
                 // The optional argument is the run to answer for — the run the verdict
                 // GRADES, which need not be the newest completion. Without one, the newest.
                 checkReachCommand allConfigs
+                |> PluginCommand.typed TestPruneReplies.CheckReachSchema
 
-                "run-tests", runTestsCommand allConfigs ]
+                "run-tests", runTestsCommand allConfigs |> PluginCommand.typed TestPruneReplies.RunSchema ]
         | _ -> commands
 
     allCommands

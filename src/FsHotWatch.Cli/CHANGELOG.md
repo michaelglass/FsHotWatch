@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- refactor: the CLI renders the test-prune replies by their declared schemas, with the same
+  output and exit codes as before. A run report, a busy run and a refusal go to their own
+  renderers, now separate functions (`renderRunReport`, `renderBusy`, `renderRefusal`). A
+  payload a schema does not describe is no verdict. `test-scope` and `check-reach` are gated
+  by their schemas and still rendered by their shape. Known and kept: `affected-tests` and
+  `changed-files` answer with JSON arrays, which the CLI refuses as "not a JSON object"
+  (no verdict).
+
+- refactor: the CLI renders the analyzers plugin's `diagnostics` and `analyzer-findings`
+  replies by their declared schemas, with the same output and exit code as before. A payload
+  either schema does not describe is no verdict.
+
+- refactor: the CLI renders the coverage plugin's `coverage-status` and `coverage-ratchet`
+  replies by their declared schemas and prints the line as before. A payload either schema does
+  not describe is no verdict. Known and kept: a ratchet that failed or timed out still exits 0.
+
+- refactor: the CLI renders a file command's `<name>-status` reply by its declared schema, with
+  the same output and exit code as before. A payload the schema does not describe is no verdict.
+
+- refactor: the CLI renders the format-check `unformatted` reply by its declared schema, as
+  before. A payload the schema does not describe is no verdict. Known and kept: rendering an
+  `unformatted` reply throws, typed or not, because it is read as a diagnostics response whose
+  `files` is an object; a test pins it.
+
+- refactor: the CLI renders the lint `warnings` reply by its declared schema, with the same
+  output and exit code as before. A payload the schema does not describe is no verdict.
+
+- refactor: the CLI renders `build-status` and `force-rebuild` replies by their declared schemas,
+  with the same output and exit codes as before. A payload either schema does not describe is
+  no verdict.
+
+- refactor!: a plugin command's reply is rendered by the schema its plugin declares.
+  `renderCommandReply` sends an output declared `Typed` to that schema's renderer
+  (`IpcOutput.PluginReplies`). A schema this build does not know, or a payload its schema does
+  not describe, is no verdict and names the schema. An output declared `Raw`, and a command that
+  declares nothing, is read by its shape as before.
+
 - refactor!: a command reply is parsed once, where it arrives, and matched on what it is.
   `IpcOutput.renderIpcResult` parses the daemon's reply; the new `renderCommandReply` renders a
   parsed one. `ScopeCommands.overIpc`, `findings`, the forced rebuild and plugin commands all

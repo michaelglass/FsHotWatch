@@ -161,6 +161,16 @@ let ``unformatted command returns zero count when no files processed`` () =
     host.RegisterHandler(createFormatCheck "/tmp" None)
     test <@ (unformattedCount host).Contains("\"count\": 0") @>
 
+[<Fact(Timeout = 15000)>]
+let ``unformatted declares its reply schema`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    host.RegisterHandler(createFormatCheck "/tmp" None)
+
+    let reply = host.RunCommandReply("unformatted", [||]) |> Async.RunSynchronously
+    let declared = reply |> Option.map fst
+
+    test <@ declared = Some(ReplySchema.Typed FsHotWatch.Fantomas.FormatReplies.UnformattedSchema) @>
+
 [<Fact(Timeout = 20000)>]
 let ``format check handles non-source change events without crashing`` () =
     // No manifest under /tmp — and none is needed: an event with nothing to check
