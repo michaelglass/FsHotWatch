@@ -411,7 +411,17 @@ let internal classifyKill (call: KillCall) : KillOutcome =
     | KillCall.DidNotReturn budget -> KillOutcome.KillTimedOut budget
 
 
-/// One row of the OS process table, as `ps -A -o pid=,ppid=,stat=,command=` prints it.
+/// The `ps` arguments that print the process table `parseProcessTable` reads.
+///
+/// STATE comes FIRST because it is the one column a `ps` may leave blank: the procps
+/// that nix ships on macOS prints only the modifier flags (`s`, `+`, `N`), so an
+/// ordinary un-niced process gets an empty STATE. Between PPID and COMMAND a blank is
+/// indistinguishable from a command whose first word is short and state-like (`R`,
+/// `S`); in front of PID it is unambiguous, because a state is never an integer and a
+/// pid always is. That keeps the parse independent of which `ps` is first on PATH.
+let internal processTableArgs = "-A -o stat=,pid=,ppid=,command="
+
+/// One row of the OS process table, as `ps` prints it with `processTableArgs`.
 ///
 /// The COMMAND rides along with the pid because a pid alone cannot tell "the same
 /// process, still running" from "a recycled pid, somebody else's process" — and a
@@ -425,24 +435,37 @@ type internal ProcessRow =
         Command: string
     }
 
-/// Parse `ps -A -o pid=,ppid=,stat=,command=` output. Lines that do not start with two
-/// integers and a state are skipped — a header, a blank line, a truncated tail.
+/// The first whitespace-separated word of `text` and everything after it.
+let private splitWord (text: string) : string * string =
+    let text = text.TrimStart(' ', '\t')
+
+    match text.IndexOfAny [| ' '; '\t' |] with
+    | -1 -> text, ""
+    | i -> text.Substring(0, i), text.Substring i
+
+/// Parse `ps` output printed with `processTableArgs`: an optional state, then two
+/// integers and a command. A blank state is a live process, not a zombie. Lines without
+/// both integers and a command are skipped — a header, a blank line, a truncated tail.
 let internal parseProcessTable (text: string) : ProcessRow list =
     text.Split('\n')
     |> Array.choose (fun line ->
-        let parts =
-            line.Trim().Split([| ' '; '\t' |], 4, StringSplitOptions.RemoveEmptyEntries)
+        let first, afterFirst = splitWord line
 
-        match parts with
-        | [| pid; ppid; stat; command |] ->
-            match Int32.TryParse pid, Int32.TryParse ppid with
-            | (true, p), (true, pp) ->
-                Some
-                    { Pid = p
-                      ParentPid = pp
-                      Zombie = stat.StartsWith "Z"
-                      Command = command.Trim() }
-            | _ -> None
+        let stat, afterStat =
+            match Int32.TryParse first with
+            | true, _ -> "", line
+            | false, _ -> first, afterFirst
+
+        let pid, afterPid = splitWord afterStat
+        let ppid, command = splitWord afterPid
+
+        match Int32.TryParse pid, Int32.TryParse ppid, command.Trim() with
+        | (true, p), (true, pp), command when command <> "" ->
+            Some
+                { Pid = p
+                  ParentPid = pp
+                  Zombie = stat.StartsWith "Z"
+                  Command = command }
         | _ -> None)
     |> Array.toList
 
@@ -1349,7 +1372,7 @@ let internal readProcessTableWithin (budget: TimeSpan) : Result<ProcessRow list,
         let psi =
             ProcessStartInfo(
                 "ps",
-                "-A -o pid=,ppid=,stat=,command=",
+                processTableArgs,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false
