@@ -570,6 +570,42 @@ let internal tracesForIn
                     folded.Task
               Bound = TraceRun.indexFoldBound } })
 
+/// The test-evidence plan of a run about to launch `configs`: every project the model
+/// can key, and a lookup for each one `launching` admits that has no outstanding
+/// failure, when `lookups` allows any. `None` without a store, or without the
+/// model's compile-input identities (nothing can be keyed without them).
+let internal evidencePlanForIn
+    (evidence: TestEvidenceRun.Wiring option)
+    (repoRoot: string)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (configs: TestConfig list)
+    (launching: string -> bool)
+    (lookups: bool)
+    (outstanding: OutstandingFailure list)
+    : TestEvidenceRun.Plan option =
+    evidence
+    |> Option.bind (fun wiring ->
+        match ObservedModel.inputs ctx.ProjectGraph with
+        | None ->
+            Logging.info "test-prune" "test evidence: the project model publishes no identities — nothing keyed"
+            None
+        | Some identities ->
+            let failing = outstanding |> List.map _.Project |> Set.ofList
+            let candidates = evidenceCandidates ctx.ProjectGraph configs
+
+            let plan =
+                TestEvidenceRun.plan
+                    wiring
+                    repoRoot
+                    (fun fsproj -> Map.tryFind fsproj identities)
+                    candidates
+                    (fun project -> lookups && launching project && not (failing.Contains project))
+
+            for KeyValue(project, why) in plan.Misses do
+                Logging.info "test-prune" $"%s{project}: launching — %s{why}"
+
+            Some plan)
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1104,39 +1140,7 @@ let internal createWithEvidenceAndQueries
 
     let currentOutcomeKeys = currentOutcomeKeysIn evidence repoRoot testConfigs
 
-    /// The test-evidence plan of a run about to launch `configs`: every project the model
-    /// can key, and a lookup for each one `launching` admits that has no outstanding
-    /// failure, when `lookups` allows any. `None` without a store, or without the
-    /// model's compile-input identities (nothing can be keyed without them).
-    let evidencePlanFor
-        (ctx: PluginCtx<TestPruneMsg>)
-        (configs: TestConfig list)
-        (launching: string -> bool)
-        (lookups: bool)
-        (outstanding: OutstandingFailure list)
-        : TestEvidenceRun.Plan option =
-        evidence
-        |> Option.bind (fun wiring ->
-            match ObservedModel.inputs ctx.ProjectGraph with
-            | None ->
-                Logging.info "test-prune" "test evidence: the project model publishes no identities — nothing keyed"
-                None
-            | Some identities ->
-                let failing = outstanding |> List.map _.Project |> Set.ofList
-                let candidates = evidenceCandidates ctx.ProjectGraph configs
-
-                let plan =
-                    TestEvidenceRun.plan
-                        wiring
-                        repoRoot
-                        (fun fsproj -> Map.tryFind fsproj identities)
-                        candidates
-                        (fun project -> lookups && launching project && not (failing.Contains project))
-
-                for KeyValue(project, why) in plan.Misses do
-                    Logging.info "test-prune" $"%s{project}: launching — %s{why}"
-
-                Some plan)
+    let evidencePlanFor = evidencePlanForIn evidence repoRoot
 
 
 
