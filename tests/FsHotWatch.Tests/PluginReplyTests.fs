@@ -88,8 +88,20 @@ let ``force-rebuild is written as the JSON it always was, and read back as itsel
 
 [<Fact(Timeout = 15000)>]
 let ``a typed build reply renders exactly as its shape did`` () =
-    for status in buildStatuses do
+    for status in
+        [ BuildStatus.Passed "Build succeeded."
+          BuildStatus.Failed "error FS0001: boom" ] do
         rendersAsSniffed "build-status" BuildStatusSchema (BuildStatus.serialize status)
+
+/// AUTOMATION-1466: a build that has not run printed an empty status display and exited 0. It
+/// is no verdict.
+[<Fact(Timeout = 15000)>]
+let ``a build that has not run is no verdict`` () =
+    let exitCode, text =
+        renderedTyped "build-status" BuildStatusSchema (BuildStatus.serialize BuildStatus.NotRun)
+
+    test <@ exitCode = NoVerdictExitCode @>
+    test <@ text.Contains "the build has not run yet" @>
 
     rendersAsSniffed "force-rebuild" ForceRebuildSchema (ForceRebuild.serialize ForceRebuild.Forced)
 
@@ -212,12 +224,23 @@ let ``a file command's status is written as the JSON it always was, and read bac
         test <@ FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.tryParse (serialize status) = Some status @>
 
 [<Fact(Timeout = 15000)>]
-let ``a typed file command status renders exactly as its shape did`` () =
-    for status in commandStatuses do
-        rendersAsSniffed
-            "lint-docs-status"
-            FsHotWatch.FileCommand.FileCommandReplies.StatusSchema
-            (FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.serialize status)
+let ``a file command status says how the command's last run ended`` () =
+    // AUTOMATION-1466: every status printed an empty status display and exited 0, a failed
+    // command included.
+    let expected =
+        [ FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.Passed, 0, "Passed"
+          FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.Failed, 1, "Failed"
+          FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.NotRun, NoVerdictExitCode, "has not run yet" ]
+
+    for status, code, says in expected do
+        let exitCode, text =
+            renderedTyped
+                "lint-docs-status"
+                FsHotWatch.FileCommand.FileCommandReplies.StatusSchema
+                (FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.serialize status)
+
+        test <@ exitCode = code @>
+        test <@ text.Contains says @>
 
 [<Theory(Timeout = 15000)>]
 [<InlineData("""{"passed":"yes"}""")>]
@@ -477,9 +500,14 @@ let ``a typed test-prune reply renders exactly as its shape did`` () =
     let replies = FsHotWatch.TestPrune.TestPruneReplies.RunSchema
 
     for reply in TestPrune.runReplies do
-        let payload = FsHotWatch.TestPrune.TestPruneReplies.RunReply.serialize reply
-        rendersAsSniffed "run-tests" replies payload
-        rendersAsSniffed "test-results" replies payload
+        match reply with
+        | TestPrune.R.Running
+        | TestPrune.R.Settling
+        | TestPrune.R.NotRun -> ()
+        | _ ->
+            let payload = FsHotWatch.TestPrune.TestPruneReplies.RunReply.serialize reply
+            rendersAsSniffed "run-tests" replies payload
+            rendersAsSniffed "test-results" replies payload
 
     for reply in TestPrune.scopeReplies do
         rendersAsSniffed
@@ -526,6 +554,25 @@ let ``affected-tests and changed-files list what they answer`` () =
         renderedTyped "changed-files" FsHotWatch.TestPrune.TestPruneReplies.ChangedFilesSchema "[]"
 
     test <@ noneChanged = (0, "no changed files\n") @>
+
+/// AUTOMATION-1466: these printed an empty status display and exited 0. A run still in
+/// progress or still being committed is in flight; no completed run is no verdict.
+[<Fact(Timeout = 15000)>]
+let ``test-results without a committed result is in flight or no verdict`` () =
+    let expected =
+        [ TestPrune.R.Running, RerunTimedOutExitCode, "a test run is in progress"
+          TestPrune.R.Settling, RerunTimedOutExitCode, "being committed"
+          TestPrune.R.NotRun, NoVerdictExitCode, "no test run has completed" ]
+
+    for reply, code, says in expected do
+        let exitCode, text =
+            renderedTyped
+                "test-results"
+                FsHotWatch.TestPrune.TestPruneReplies.RunSchema
+                (FsHotWatch.TestPrune.TestPruneReplies.RunReply.serialize reply)
+
+        test <@ exitCode = code @>
+        test <@ text.Contains says @>
 
 [<Theory(Timeout = 15000)>]
 [<InlineData("run-tests", "test-prune/run-v1", """{"status":"exploded"}""")>]

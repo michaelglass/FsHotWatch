@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: status replies with no settled answer exit by what they say instead of printing an empty
+  status display with exit 0 (AUTOMATION-1466).
+  - `build-status` before any build: no verdict (3).
+  - A file command's `<name>-status`: "Passed" exits 0, "Failed" exits 1, and not yet run is no
+    verdict (3).
+  - `test-results` while a run is in progress or being committed: in flight (6).
+  - `test-results` before any run has completed: no verdict (3).
+
 - fix: `fshw affected-tests` and `fshw changed-files` list what they answer: each test as
   `project: Class.method` or each file, or that there are none. Both exit 0 (AUTOMATION-1466).
   Both reply with a JSON array, which the CLI used to refuse as a malformed reply (exit 3).

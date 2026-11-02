@@ -1157,10 +1157,16 @@ let ``a plugin command reaches the session of the worktree it is run in, and no 
                 test <@ (record root).HostPid = (record sibling).HostPid @>
                 test <@ (record root).Session <> (record sibling).Session @>
 
-                // Each worktree's command is recognised and answered by its own session.
+                // Each worktree's command is recognised and answered by its own session: its file
+                // command has not run (no `.probe` file changed), which is its status's answer,
+                // no verdict (3). An unrecognised command would exit 1 naming it.
                 for worktree, command in [ root, "alpha-status"; sibling, "beta-status" ] do
                     let exitCode, output = runCli stateHome worktree [ command ]
-                    Assert.True((exitCode = 0), $"fshw %s{command} exited %d{exitCode}:\n%s{output}")
+
+                    Assert.True(
+                        (exitCode = 3 && output.Contains "the command has not run yet"),
+                        $"fshw %s{command} exited %d{exitCode}:\n%s{output}"
+                    )
 
                 // The sibling's session has no `alpha` command: the command is not served
                 // by another worktree's session, it fails as an unknown command.

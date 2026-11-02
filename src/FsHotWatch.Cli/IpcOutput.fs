@@ -360,6 +360,17 @@ let private renderNotAnObject (kind: JsonValueKind) : int =
 
     NoVerdictExitCode
 
+/// A reply that holds no answer yet to what was asked: no verdict, said as such.
+let private renderNoVerdict (reason: string) : int =
+    VerdictTerminal.fail $"%s{reason} — no verdict"
+    NoVerdictExitCode
+
+/// A reply whose answer is still being computed: in flight (ADR-019), never 0 and never the 1
+/// of a failure.
+let private renderInFlight (reason: string) : int =
+    UI.fail reason
+    RerunTimedOutExitCode
+
 /// A command that refused, with its reason.
 let private renderRefusal (reason: string) : int =
     UI.fail reason
@@ -751,12 +762,11 @@ module PluginReplies =
     let private build: (string * (string -> Render option)) list =
         let buildStatus payload =
             FsHotWatch.Build.BuildReplies.BuildStatus.tryParse payload
-            |> Option.map (fun status _ renderStatuses _ ->
+            |> Option.map (fun status _ _ _ ->
                 match status with
                 | FsHotWatch.Build.BuildReplies.BuildStatus.Passed _ -> renderPassed ()
                 | FsHotWatch.Build.BuildReplies.BuildStatus.Failed _ -> renderFailed ()
-                // Read as a status map, as its shape always was: it holds no plugin's status.
-                | FsHotWatch.Build.BuildReplies.BuildStatus.NotRun -> renderStatusMap renderStatuses payload)
+                | FsHotWatch.Build.BuildReplies.BuildStatus.NotRun -> renderNoVerdict "the build has not run yet")
 
         [ FsHotWatch.Build.BuildReplies.BuildStatusSchema, buildStatus
           FsHotWatch.Build.BuildReplies.ForceRebuildSchema,
@@ -780,8 +790,16 @@ module PluginReplies =
         [ FsHotWatch.Fantomas.FormatReplies.UnformattedSchema, unformatted ]
 
     let private fileCommand: (string * (string -> Render option)) list =
-        [ FsHotWatch.FileCommand.FileCommandReplies.StatusSchema,
-          asStatusMap FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.tryParse ]
+        let status payload =
+            FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.tryParse payload
+            |> Option.map (fun status _ _ _ ->
+                match status with
+                | FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.Passed -> renderPassed ()
+                | FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.Failed -> renderFailed ()
+                | FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.NotRun ->
+                    renderNoVerdict "the command has not run yet")
+
+        [ FsHotWatch.FileCommand.FileCommandReplies.StatusSchema, status ]
 
     /// The coverage replies are lines of text, printed as they are. Each exits by what it says
     /// (AUTOMATION-1465): a failure is 1, a ratchet that could not get the slot in time is
@@ -821,17 +839,18 @@ module PluginReplies =
     let private testPrune: (string * (string -> Render option)) list =
         let run payload =
             FsHotWatch.TestPrune.TestPruneReplies.RunReply.tryParse payload
-            |> Option.map (fun reply _ renderStatuses _ ->
+            |> Option.map (fun reply _ _ _ ->
                 match reply with
                 | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Report json ->
                     use doc = JsonDocument.Parse json
                     renderRunReport doc.RootElement (doc.RootElement.GetProperty "projects")
                 | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Busy message -> renderBusy (Some message)
                 | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Refused error -> renderRefusal error
-                // Read as a status map, as its shape always was: it holds no plugin's status.
-                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Running
-                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Settling
-                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.NotRun -> renderStatusMap renderStatuses payload)
+                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Running ->
+                    renderInFlight "a test run is in progress; its results are not in yet"
+                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.Settling ->
+                    renderInFlight "a test run finished and its results are being committed"
+                | FsHotWatch.TestPrune.TestPruneReplies.RunReply.NotRun -> renderNoVerdict "no test run has completed")
 
         let setScope payload =
             FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.tryParse payload
