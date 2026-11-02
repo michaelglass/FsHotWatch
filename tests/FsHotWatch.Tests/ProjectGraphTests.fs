@@ -353,7 +353,7 @@ let ``GetAllFiles returns empty after PrepareForRediscovery`` () =
 
 // --- TargetFramework ---
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = TestHelpers.SyncHangBackstopMs)>]
 let ``extractTargetFramework returns single TargetFramework`` () =
     let doc =
         System.Xml.Linq.XDocument.Parse(
@@ -362,7 +362,7 @@ let ``extractTargetFramework returns single TargetFramework`` () =
 
     test <@ extractTargetFramework doc = Some "net10.0" @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = TestHelpers.SyncHangBackstopMs)>]
 let ``extractTargetFramework returns first entry of TargetFrameworks`` () =
     let doc =
         System.Xml.Linq.XDocument.Parse(
@@ -371,7 +371,7 @@ let ``extractTargetFramework returns first entry of TargetFrameworks`` () =
 
     test <@ extractTargetFramework doc = Some "net10.0" @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = TestHelpers.SyncHangBackstopMs)>]
 let ``extractTargetFramework returns None when neither tag present`` () =
     let doc =
         System.Xml.Linq.XDocument.Parse("""<Project><PropertyGroup /></Project>""")
@@ -397,7 +397,7 @@ let ``RegisterFromFsproj captures TargetFramework`` () =
     finally
         Directory.Delete(tmpDir, true)
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = TestHelpers.SyncHangBackstopMs)>]
 let ``GetTargetFramework returns None for unregistered project`` () =
     let graph = ProjectGraph()
     test <@ graph.GetTargetFramework(pp "/nope/Foo.fsproj") = None @>

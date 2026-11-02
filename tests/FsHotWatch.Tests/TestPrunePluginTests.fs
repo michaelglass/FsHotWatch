@@ -3840,28 +3840,28 @@ let ``buildFilterArgs quotes a spaced class name so the runner receives it as on
 
 // --- Schema-drift recovery ---
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``looksLikeSchemaDrift matches SQLite "no such column" wording`` () =
     let ex = exn "SQLite Error 1: 'no such column: foo'."
     test <@ looksLikeSchemaDrift ex @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``looksLikeSchemaDrift matches "no column named" wording`` () =
     let ex = exn "table projects has no column named source"
     test <@ looksLikeSchemaDrift ex @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``looksLikeSchemaDrift matches regardless of case`` () =
     let ex = exn "NO SUCH COLUMN: X"
     test <@ looksLikeSchemaDrift ex @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``looksLikeSchemaDrift rejects unrelated errors`` () =
     test <@ not (looksLikeSchemaDrift (exn "connection refused")) @>
     test <@ not (looksLikeSchemaDrift (exn "database is locked")) @>
     test <@ not (looksLikeSchemaDrift (exn "")) @>
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``tryRepairSchemaDrift deletes the DB when the error looks like schema drift`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-repair-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
@@ -3876,7 +3876,7 @@ let ``tryRepairSchemaDrift deletes the DB when the error looks like schema drift
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``tryRepairSchemaDrift deletes WAL and SHM sidecars alongside the main DB`` () =
     // SQLite in WAL mode ties the sidecars to the main file: opening a fresh (empty) main
     // DB alongside stale -wal/-shm yields a 0-byte main DB with garbage recovery state,
@@ -3902,7 +3902,7 @@ let ``tryRepairSchemaDrift deletes WAL and SHM sidecars alongside the main DB`` 
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``tryRepairSchemaDrift leaves the DB alone for unrelated errors`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-repair-noop-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
@@ -3917,7 +3917,7 @@ let ``tryRepairSchemaDrift leaves the DB alone for unrelated errors`` () =
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
 
-[<Fact(Timeout = 2000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``tryRepairSchemaDrift is a no-op when the DB file is already gone`` () =
     let missingPath =
         Path.Combine(Path.GetTempPath(), $"tp-missing-{Guid.NewGuid():N}.db")
