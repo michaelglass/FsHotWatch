@@ -134,6 +134,19 @@ let internal evidenceCandidates
               Closure = TestEvidenceRun.closureOf graph.GetProjectReferences fsproj
               TestConfig = canonicalTestConfig config }))
 
+/// A launch, named by the model it was selected under and what it selected, so the
+/// completion line (`describeCompletionEvidence`) can be read against it.
+let internal logLaunch (kind: string) (mode: TestMode) (launch: TestRunLaunch) =
+    let scope =
+        if TestMode.requestsFullSuite mode then
+            "confirm mode"
+        else
+            "check mode"
+
+    Logging.info
+        "test-prune"
+        $"Launching %s{kind} run under project model generation %s{ObservedModel.describe launch.ModelGeneration} (%s{scope}, %d{Map.count launch.Selection} project(s) selected)"
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -951,18 +964,6 @@ let internal createWithEvidenceAndQueries
                 Some plan)
 
 
-    /// A launch, named by the model it was selected under and what it selected, so the
-    /// completion line (`describeCompletionEvidence`) can be read against it.
-    let logLaunch (kind: string) (mode: TestMode) (launch: TestRunLaunch) =
-        let scope =
-            if TestMode.requestsFullSuite mode then
-                "confirm mode"
-            else
-                "check mode"
-
-        Logging.info
-            "test-prune"
-            $"Launching %s{kind} run under project model generation %s{ObservedModel.describe launch.ModelGeneration} (%s{scope}, %d{Map.count launch.Selection} project(s) selected)"
 
     /// Which cause selected each project of a run that is about to execute. Logged once
     /// the run is past the zero-affected skip, which executes nothing and selects nothing.
