@@ -875,6 +875,66 @@ let internal impactRunWith
                 rerunState
     | _ -> state
 
+/// Discharge what a BootScan cohort owes when the last completed run already covered
+/// it: that run passed every runnable project in full over the tree and model the
+/// cohort sealed on, every file the cohort checked is part of that tree, and the
+/// index names no coverer it did not run. A cold daemon's build launches that run
+/// before the scan has checked the tree, so the cohort usually seals after the run's
+/// result has folded, with no run in flight to attach to (`joinsFullRun`). Launching
+/// for it would run the tree's impact a second time.
+/// An in-session cohort is an edit, and debt the covering run cannot speak for (an
+/// unreadable ledger, a missing baseline, a dependency force-run) keeps its launch.
+let internal dischargeCoveredBootScanWith
+    (baselineInvalidReason: VerificationDebt -> string option)
+    (indexNamesOnlyRunnable: Lazy<Map<string, string>> -> bool)
+    (owedDescription: VerificationDebt -> string)
+    (repoRoot: string)
+    (resolveExcludedProjects: unit -> Map<string, string>)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (batch: BatchChecked)
+    (state: TestPruneState)
+    =
+    // A file outside the hashed tree can change without moving its identity.
+    let inTree (tree: ReceiptTree) =
+        let hashed = tree.Entries |> List.map fst |> Set.ofList
+
+        batch.Files
+        |> List.forall (fun file ->
+            hashed.Contains(Path.GetRelativePath(repoRoot, AbsFilePath.value file).Replace('\\', '/')))
+
+    // An idle boot scan that owes debt the covering run can speak for.
+    let bootScanOwesCoverableDebt () =
+        batch.Trigger = BootScan
+        && state.InFlight.IsNone
+        && not (Set.isEmpty state.Debt.PendingQueue && Map.isEmpty state.Debt.RuntimeObligations)
+        && not state.Debt.RecoveryOutstanding
+        && Option.isNone (baselineInvalidReason state.Debt)
+        && Set.isEmpty state.PendingForceRunProjects
+
+    // The covering run passed this very tree, under the current model.
+    let coveredBy (tree: ReceiptTree) generation =
+        ReceiptInputTree.matches (Some tree.Identity) state.SealedTree
+        && inTree tree
+        && observeModelGeneration ctx = generation
+        && indexNamesOnlyRunnable (lazy (resolveExcludedProjects ()))
+
+    match state.CoveredFullSuite with
+    | Some(tree, generation) when bootScanOwesCoverableDebt () && coveredBy tree generation ->
+        Logging.info
+            "test-prune"
+            $"BatchChecked: %s{owedDescription state.Debt} discovered by BootScan over the tree the last full-suite run passed — covered by that run, no re-run"
+
+        // Shed what a covering completion sheds: the queue, and the in-memory view
+        // the next selection reads from, so a later edit selects only itself.
+        { state with
+            Debt =
+                { commitPending state.Debt.PendingQueue state.Debt with
+                    RuntimeObligations = Map.empty }
+            ChangedFiles = []
+            ChangedSymbols = []
+            AffectedTests = Analyzed [] }
+    | _ -> state
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1451,56 +1511,13 @@ let internal createWithEvidenceAndQueries
 
     let logRedStands = logRedStandsWith owedDescription
 
-    /// Discharge what a BootScan cohort owes when the last completed run already covered
-    /// it: that run passed every runnable project in full over the tree and model the
-    /// cohort sealed on, every file the cohort checked is part of that tree, and the
-    /// index names no coverer it did not run. A cold daemon's build launches that run
-    /// before the scan has checked the tree, so the cohort usually seals after the run's
-    /// result has folded, with no run in flight to attach to (`joinsFullRun`). Launching
-    /// for it would run the tree's impact a second time.
-    /// An in-session cohort is an edit, and debt the covering run cannot speak for (an
-    /// unreadable ledger, a missing baseline, a dependency force-run) keeps its launch.
-    let dischargeCoveredBootScan (ctx: PluginCtx<TestPruneMsg>) (batch: BatchChecked) (state: TestPruneState) =
-        // A file outside the hashed tree can change without moving its identity.
-        let inTree (tree: ReceiptTree) =
-            let hashed = tree.Entries |> List.map fst |> Set.ofList
-
-            batch.Files
-            |> List.forall (fun file ->
-                hashed.Contains(Path.GetRelativePath(repoRoot, AbsFilePath.value file).Replace('\\', '/')))
-
-        // An idle boot scan that owes debt the covering run can speak for.
-        let bootScanOwesCoverableDebt () =
-            batch.Trigger = BootScan
-            && state.InFlight.IsNone
-            && not (Set.isEmpty state.Debt.PendingQueue && Map.isEmpty state.Debt.RuntimeObligations)
-            && not state.Debt.RecoveryOutstanding
-            && Option.isNone (baselineInvalidReason state.Debt)
-            && Set.isEmpty state.PendingForceRunProjects
-
-        // The covering run passed this very tree, under the current model.
-        let coveredBy (tree: ReceiptTree) generation =
-            ReceiptInputTree.matches (Some tree.Identity) state.SealedTree
-            && inTree tree
-            && observeModelGeneration ctx = generation
-            && indexNamesOnlyRunnable (lazy (resolveExcludedProjects ()))
-
-        match state.CoveredFullSuite with
-        | Some(tree, generation) when bootScanOwesCoverableDebt () && coveredBy tree generation ->
-            Logging.info
-                "test-prune"
-                $"BatchChecked: %s{owedDescription state.Debt} discovered by BootScan over the tree the last full-suite run passed — covered by that run, no re-run"
-
-            // Shed what a covering completion sheds: the queue, and the in-memory view
-            // the next selection reads from, so a later edit selects only itself.
-            { state with
-                Debt =
-                    { commitPending state.Debt.PendingQueue state.Debt with
-                        RuntimeObligations = Map.empty }
-                ChangedFiles = []
-                ChangedSymbols = []
-                AffectedTests = Analyzed [] }
-        | _ -> state
+    let dischargeCoveredBootScan =
+        dischargeCoveredBootScanWith
+            baselineInvalidReason
+            indexNamesOnlyRunnable
+            owedDescription
+            repoRoot
+            resolveExcludedProjects
 
 
     let endRun = endRunFrom initialMode
