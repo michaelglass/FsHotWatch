@@ -187,7 +187,9 @@ let private cobertura (root: string) =
 
 /// Run ids, times and durations differ between any two runs; nothing else may. A profile
 /// (`Profile`, `<Project>.profile.jsonl`) is a measurement of the run: its pid, load, CPU
-/// and wall figures, and how many 5 s samples a run lasted long enough to take, are too.
+/// and wall figures, and how many 5 s samples a run lasted long enough to take, are too, and
+/// so are its `children` lines: they are written only when a sample read the process table
+/// before the host exited, which a run on a loaded box does and a fast one does not.
 let private normalize (root: string) (text: string) =
     let replace (pattern: string) (by: string) (input: string) = Regex.Replace(input, pattern, by)
 
@@ -197,6 +199,7 @@ let private normalize (root: string) (text: string) =
     |> replace @"-?\d+[:.]\d\d:\d\d(\.\d+)?" "<span>"
     |> replace @"\d+(\.\d+)?\s?(ms|s)\b" "<duration>"
     |> replace @"(?m)^\{""event"":""sample"".*\r?\n" ""
+    |> replace @"(?m)^\{""event"":""children"".*\r?\n" ""
     |> replace @"(?i)(""?\w*(elapsed|duration|ticks)\w*""?\s*[:=]\s*)-?[\d.]+" "$1<n>"
     |> replace
         @"(""(pid|wallMs|cpuMs|load1|spanMs|samples|loadPerCoreMean|loadPerCoreMax|contended)""\s*:\s*)(-?[\d.]+(E[+-]?\d+)?|null|true|false)"
