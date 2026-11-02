@@ -693,6 +693,9 @@ type Summary =
         DiffSteps: int
         /// ((plugin, replay-only | forced-only), diagnostics).
         DiffByPlugin: ((string * string) * int) list
+        /// Steps whose diagnostics were not compared because a run published neither green nor
+        /// red (interrupted, incomplete): its error ledger is a partial scan.
+        Incomparable: string list
         /// Clean steps where one run published green and the other red: (commit, replay,
         /// forced). A forced run on a tree the replay already tested may run no tests and
         /// publish no verdict; that is not a disagreement.
@@ -709,6 +712,18 @@ module Summary =
 
         let clean = entries |> List.filter (fun e -> e.Phase = Phase.Clean)
 
+        // A run that published neither green nor red stopped part-way, so its error ledger
+        // holds a partial scan and differs from any finished one for that reason alone.
+        let concluded (r: RunResult) =
+            match r.Verdict with
+            | Some v -> v.Outcome = "green" || v.Outcome = "red"
+            | None -> false
+
+        let comparable (e: Entry) =
+            concluded e.Replay && (e.Forced |> Option.forall concluded)
+
+        let compared = entries |> List.filter comparable
+
         { Commits = entries |> List.map _.Commit |> List.distinct |> List.length
           CleanSteps = clean.Length
           FaultSteps = entries.Length - clean.Length
@@ -721,14 +736,21 @@ module Summary =
             |> List.filter (fun (_, s) -> s.Direction <> "agree")
             |> List.countBy (fun (mode, s) -> mode + " " + Shadow.classOf s)
             |> List.sort
-          DiffSteps = entries |> List.filter (fun e -> not (Diagnostics.agrees e.Diff)) |> List.length
+          DiffSteps =
+            compared
+            |> List.filter (fun e -> not (Diagnostics.agrees e.Diff))
+            |> List.length
           DiffByPlugin =
-            entries
+            compared
             |> List.collect (fun e ->
                 (e.Diff.OnlyReplay |> List.map (fun d -> d.Plugin, "replay-only"))
                 @ (e.Diff.OnlyForced |> List.map (fun d -> d.Plugin, "forced-only")))
             |> List.countBy id
             |> List.sort
+          Incomparable =
+            entries
+            |> List.filter (fun e -> e.Forced.IsSome && not (comparable e))
+            |> List.map _.Commit
           VerdictMismatches =
             [ for e in clean do
                   match e.Replay.Verdict, e.Forced |> Option.bind _.Verdict with
@@ -737,7 +759,7 @@ module Summary =
                   | _ -> () ]
           Faults =
             entries
-            |> List.choose (fun e -> e.Fault |> Option.map (fun f -> f, Diagnostics.agrees e.Diff))
+            |> List.choose (fun e -> e.Fault |> Option.map (fun f -> f, comparable e && Diagnostics.agrees e.Diff))
             |> List.groupBy (fun (f, _) -> f.Kind)
             |> List.map (fun (kind, xs) ->
                 let count p = xs |> List.filter p |> List.length
@@ -775,6 +797,9 @@ module Summary =
 
         for (plugin, side), n in s.DiffByPlugin do
             line $"  %-12s{plugin} %-12s{side} %d{n}"
+
+        let skipped = String.Join(", ", s.Incomparable)
+        line $"  not compared (a run published neither green nor red): %d{s.Incomparable.Length} %s{skipped}"
 
         line ""
         line $"replay-vs-forced verdict outcomes that differ on a clean tree: %d{s.VerdictMismatches.Length}"
