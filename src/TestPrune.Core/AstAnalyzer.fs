@@ -1832,6 +1832,73 @@ let private sharedLiteralBridges
 
     nodes |> Map.values |> List.ofSeq, edges |> List.distinct
 
+/// One placeholder per edge TARGET this file names but does not declare: a cross-file or
+/// cross-assembly reference, which must exist in the symbols table for its edge to resolve.
+/// `classifiedTargetKinds` is what FCS said each target is, where it was classified.
+let private externPlaceholders
+    (symbols: SymbolInfo list)
+    (dependencies: Dependency list)
+    (classifiedTargetKinds: System.Collections.Generic.Dictionary<string, SymbolKind>)
+    : SymbolInfo list =
+    // A signature (`.fsi`) declaration and its implementation share one FCS
+    // identity, so both files report the same canonical names. Each file's
+    // symbols are that name's source OCCURRENCE in that file — the stores keep
+    // them side by side (see `Database.RebuildProjects`), never as two nodes.
+    let declaredKinds =
+        symbols |> List.map (fun symbol -> symbol.FullName, symbol.Kind) |> Map.ofList
+
+    // Collect extern symbols: ToSymbol names in dependencies that aren't
+    // defined in this file. These are cross-assembly references that need
+    // to exist in the symbols table for dependency edges to resolve.
+    let localSymbolNames = symbols |> List.map (fun s -> s.FullName) |> Set.ofList
+
+    let externSymbols =
+        let seen = System.Collections.Generic.HashSet<string>()
+
+        dependencies
+        |> List.map _.ToSymbol
+        |> List.choose (fun name ->
+
+            if seen.Add(name) && not (Set.contains name localSymbolNames) then
+                // `symbols` carries `CHECK (kind = 'Module' OR full_name LIKE '%.%')`
+                // to keep out unqualified rows, which under a UNIQUE `full_name`
+                // become repo-wide hubs. `Module` is therefore the schema's one
+                // escape from that CHECK, and a placeholder may only take it on
+                // EVIDENCE — FCS classified this very name as a module while
+                // analysing this file. A top-level single-segment module (`module
+                // Alpha`, whose FCS `FullName` is just `Alpha`) referenced from a
+                // file indexed ahead of its own is the case that needs it.
+                //
+                // Deriving the label from the shape of the string instead — "no dot,
+                // therefore a module" — is what let the CHECK ship inert: it relabels
+                // every unqualified name a module, so no input can fail it, and the
+                // hub reforms under a kind the constraint exempts. An unqualified
+                // target with no module evidence stays `ExternRef` and is REJECTED
+                // by the constraint, which names the symbol and its file. That is
+                // the intended outcome: such a name is not identifiable, and a loud
+                // failure naming it is what the silent merge cost hours of.
+                let kind =
+                    if name.Contains '.' then
+                        ExternRef
+                    else
+                        match classifiedTargetKinds.TryGetValue name with
+                        | _ when declaredKinds |> Map.tryFind name = Some Module -> Module
+                        | true, Module -> Module
+                        | _ -> ExternRef
+
+                Some
+                    { FullName = name
+                      Kind = kind
+                      SourceFile = ExternSourceFile
+                      LineStart = 0
+                      LineEnd = 0
+                      ContentHash = ""
+                      IsExtern = true }
+            else
+                None)
+
+    externSymbols
+
 /// Extract analysis results from parse and type-check results.
 let private extractResults
     (maxTraversalVisits: int)
@@ -2426,62 +2493,7 @@ let private extractResults
 
             let symbols = symbols @ collectionSynthSymbols @ literalSynthSymbols
 
-            // A signature (`.fsi`) declaration and its implementation share one FCS
-            // identity, so both files report the same canonical names. Each file's
-            // symbols are that name's source OCCURRENCE in that file — the stores keep
-            // them side by side (see `Database.RebuildProjects`), never as two nodes.
-            let declaredKinds =
-                symbols |> List.map (fun symbol -> symbol.FullName, symbol.Kind) |> Map.ofList
-
-            // Collect extern symbols: ToSymbol names in dependencies that aren't
-            // defined in this file. These are cross-assembly references that need
-            // to exist in the symbols table for dependency edges to resolve.
-            let localSymbolNames = symbols |> List.map (fun s -> s.FullName) |> Set.ofList
-
-            let externSymbols =
-                let seen = System.Collections.Generic.HashSet<string>()
-
-                dependencies
-                |> List.map _.ToSymbol
-                |> List.choose (fun name ->
-
-                    if seen.Add(name) && not (Set.contains name localSymbolNames) then
-                        // `symbols` carries `CHECK (kind = 'Module' OR full_name LIKE '%.%')`
-                        // to keep out unqualified rows, which under a UNIQUE `full_name`
-                        // become repo-wide hubs. `Module` is therefore the schema's one
-                        // escape from that CHECK, and a placeholder may only take it on
-                        // EVIDENCE — FCS classified this very name as a module while
-                        // analysing this file. A top-level single-segment module (`module
-                        // Alpha`, whose FCS `FullName` is just `Alpha`) referenced from a
-                        // file indexed ahead of its own is the case that needs it.
-                        //
-                        // Deriving the label from the shape of the string instead — "no dot,
-                        // therefore a module" — is what let the CHECK ship inert: it relabels
-                        // every unqualified name a module, so no input can fail it, and the
-                        // hub reforms under a kind the constraint exempts. An unqualified
-                        // target with no module evidence stays `ExternRef` and is REJECTED
-                        // by the constraint, which names the symbol and its file. That is
-                        // the intended outcome: such a name is not identifiable, and a loud
-                        // failure naming it is what the silent merge cost hours of.
-                        let kind =
-                            if name.Contains '.' then
-                                ExternRef
-                            else
-                                match classifiedTargetKinds.TryGetValue name with
-                                | _ when declaredKinds |> Map.tryFind name = Some Module -> Module
-                                | true, Module -> Module
-                                | _ -> ExternRef
-
-                        Some
-                            { FullName = name
-                              Kind = kind
-                              SourceFile = ExternSourceFile
-                              LineStart = 0
-                              LineEnd = 0
-                              ContentHash = ""
-                              IsExtern = true }
-                    else
-                        None)
+            let externSymbols = externPlaceholders symbols dependencies classifiedTargetKinds
 
             let allSymbols = symbols @ externSymbols
 
