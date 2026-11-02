@@ -412,6 +412,51 @@ let internal projectResultOf (launched: FinishedLaunch) : TestResult * string op
 
     result, reportJson
 
+/// Whether one project launches traced: decided after the preflight certified the build
+/// output fresh and before the spawn, and logged. A refused project launches as configured.
+let internal decideTracing
+    (traces: TraceRunHost option)
+    (repoRoot: string)
+    (runDir: string)
+    (runToken: Threading.CancellationToken)
+    (config: TestConfig)
+    (ctrfPath: string option)
+    (extraArgs: ResizeArray<string>)
+    : TraceDecision =
+    // TRACES. Decided here, after the preflight certified the build
+    // output fresh and before the spawn: a traced project launches its
+    // woven copy; a refused one launches exactly as configured, and the
+    // refusal is stored with its reason after the run.
+    let decided =
+        match traces with
+        | None -> Untraced None
+        | Some host ->
+            // Weaving and JIT verification can take minutes: held as a
+            // subtask, so a wait line names it rather than the run.
+            use _ =
+                host.HoldSubtask $"{config.Project}:traces" $"preparing traces for {config.Project}"
+
+            host.TraceWiring.Decide
+                runToken
+                host.TraceRuntime
+                { Project = config.Project
+                  Command = config.Command
+                  Args = config.Args
+                  Environment = config.Environment
+                  Target = deriveProjectBin config.Args repoRoot
+                  CtrfPath = ctrfPath
+                  TraceWeave = host.TraceWiring.WeaveOverrides.TryFind config.Project }
+                runDir
+                (List.ofSeq extraArgs)
+
+    match decided with
+    | Untraced(Some reason) ->
+        Logging.warn "test-prune" $"%s{config.Project}: not tracing this run, launching as configured — %s{reason}"
+    | Traced(spec, _) -> Logging.info "test-prune" $"%s{config.Project}: tracing, launching %s{spec.Command}"
+    | Untraced None -> ()
+
+    decided
+
 /// What one project's launch reads from its run (`launchProjectWith`).
 type internal ProjectLaunchEnv<'msg> =
     { Ctx: PluginCtx<'msg> option
@@ -464,37 +509,8 @@ let internal launchProjectWith
         let ctrfPath = launchArgs.CtrfPath
         let finalArgs = launchArgs.FinalArgs
 
-        // TRACES. Decided here, after the preflight certified the build
-        // output fresh and before the spawn: a traced project launches its
-        // woven copy; a refused one launches exactly as configured, and the
-        // refusal is stored with its reason after the run.
         let decided =
-            match traces with
-            | None -> Untraced None
-            | Some host ->
-                // Weaving and JIT verification can take minutes: held as a
-                // subtask, so a wait line names it rather than the run.
-                use _ =
-                    host.HoldSubtask $"{config.Project}:traces" $"preparing traces for {config.Project}"
-
-                host.TraceWiring.Decide
-                    runToken
-                    host.TraceRuntime
-                    { Project = config.Project
-                      Command = config.Command
-                      Args = config.Args
-                      Environment = config.Environment
-                      Target = deriveProjectBin config.Args repoRoot
-                      CtrfPath = ctrfPath
-                      TraceWeave = host.TraceWiring.WeaveOverrides.TryFind config.Project }
-                    runDir
-                    (List.ofSeq extraArgs)
-
-        match decided with
-        | Untraced(Some reason) ->
-            Logging.warn "test-prune" $"%s{config.Project}: not tracing this run, launching as configured — %s{reason}"
-        | Traced(spec, _) -> Logging.info "test-prune" $"%s{config.Project}: tracing, launching %s{spec.Command}"
-        | Untraced None -> ()
+            decideTracing traces repoRoot runDir runToken config ctrfPath extraArgs
 
         // A ref: the untraced retry below replaces it from inside `runOnce`.
         let traceDecision = ref decided
