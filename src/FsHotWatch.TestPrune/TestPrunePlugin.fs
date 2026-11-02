@@ -915,6 +915,144 @@ let internal runTestHostExclusive
     | SharedQueued -> Claimed
     | LocalSlotBusy -> SlotBusy
 
+/// Take an extension refresh's answer, and how long it took, into the state.
+type internal RefreshApplier =
+    PluginCtx<TestPruneMsg> -> ExtensionRefresh list * int64 -> TestPruneState -> TestPruneState
+
+/// The extensions' edge refresh, timed.
+type internal TimedRefresh = ITestPruneExtension list -> unit -> ExtensionRefresh list * int64
+
+/// The extension refresh a flush runs or joins: the cell that says whether one runs beside
+/// the fold (read and written when the flush runs), and the steps around it.
+type internal ExtensionRefreshSteps =
+    { Phase: ExtensionRefreshPhase ref
+      Extensions: ITestPruneExtension list option
+      Apply: RefreshApplier
+      Timed: TimedRefresh
+      Join: StateStep }
+
+/// What a flush of pending analysis reads from the plugin (`flushPendingWith`).
+type internal FlushEnv =
+    { Db: Database
+      DbPath: string
+      BusyTimeout: TimeSpan
+      EnqueuePending: string list -> VerificationDebt -> VerificationDebt
+      PersistQueueAdditions: VerificationDebt -> unit
+      RuntimeCoverageSelection: string list -> RuntimeCoverageSelection
+      Refresh: ExtensionRefreshSteps }
+
+let internal flushPendingWith (env: FlushEnv) (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
+    let db = env.Db
+    let dbPath = env.DbPath
+    let busyTimeout = env.BusyTimeout
+    let enqueuePending = env.EnqueuePending
+    let persistQueueAdditions = env.PersistQueueAdditions
+    let runtimeCoverageSelection = env.RuntimeCoverageSelection
+    let extensionRefresh = env.Refresh.Phase
+    let extensions = env.Refresh.Extensions
+    let applyRefresh = env.Refresh.Apply
+    let refreshTimed = env.Refresh.Timed
+    let joinRefresh = env.Refresh.Join
+
+    // Capture OLD literal coupling before `RebuildProjects`
+    // replaces a changed producer's outgoing graph. The unchanged test still
+    // points at that old literal, but after the rebuild the producer does not;
+    // querying only the changed producer would therefore select nothing.
+    //
+    // Queue the literal NODE, not a stale producer edge. It then follows the
+    // ordinary pending-verification lifecycle and disappears after its covering
+    // tests pass, while the rebuilt graph remains an exact description of current
+    // source. This is bounded evidence carried across one destructive boundary,
+    // not permanent false-positive coupling.
+    let preRebuildSymbols =
+        Set.union state.Debt.PendingQueue (Set.ofList state.ChangedSymbols)
+        |> Set.toList
+
+    let priorLiteralSeeds = db.GetPriorSharedLiteralSeeds preRebuildSymbols
+
+    // Only a seed not already owed is new debt. Re-enqueuing an owed one would issue
+    // it a newer revision and deny a covering run in flight its discharge.
+    let newlyOwedLiterals =
+        priorLiteralSeeds
+        |> List.filter (fun symbol -> not (Set.contains symbol state.Debt.PendingQueue))
+
+    let state =
+        { state with
+            Debt = enqueuePending newlyOwedLiterals state.Debt
+            ChangedSymbols = (priorLiteralSeeds @ state.ChangedSymbols) |> List.distinct }
+
+    if not priorLiteralSeeds.IsEmpty then
+        Logging.info
+            "test-prune"
+            $"Preserved %d{priorLiteralSeeds.Length} pre-rebuild literal coupling seed(s) for impact selection"
+
+    // Persist the pending queue BEFORE flushPendingAnalysis advances the
+    // durable analysis snapshot. One write per flush (vs per FileChecked) — same
+    // crash-safety, batch-size fewer disk writes. See `persistQueueAdditions`.
+    persistQueueAdditions state.Debt
+
+    let indexedSomething = not state.PendingAnalysis.IsEmpty
+
+    // A refresh still running beside the fold reads the index this flush would write.
+    let state = joinRefresh ctx state
+
+    let flushedState =
+        flushPendingAnalysis
+            db
+            dbPath
+            busyTimeout
+            (fun label -> ctx.DeclareBoundedWork label ImpactSelectionDeadline)
+            state
+
+    // The flush wrote these analyses and their identities in one transaction.
+    let flushedState =
+        let written = state.PendingIdentities |> Map.keys |> Set.ofSeq
+
+        { flushedState with
+            PendingIdentities = Map.empty
+            Unindexed = Set.difference flushedState.Unindexed written }
+
+    let flushedState =
+        match extensions with
+        | Some exts when
+            not exts.IsEmpty
+            && (indexedSomething
+                || extensionRefresh.Value = ExtensionRefreshPhase.NeverRefreshed
+                || not flushedState.FailedExtensions.IsEmpty)
+            ->
+            if not indexedSomething && flushedState.FailedExtensions.IsEmpty then
+                // Owed only because this process has not refreshed: nothing it indexed
+                // is in the answer, so it runs beside the fold.
+                extensionRefresh.Value <- ExtensionRefreshPhase.RunningBesideFold(Tasks.Task.Run(refreshTimed exts))
+
+                flushedState
+            else
+                extensionRefresh.Value <- ExtensionRefreshPhase.Refreshed
+
+                // At info, because a refresh that holds the fold for minutes is
+                // otherwise invisible.
+                applyRefresh ctx (refreshTimed exts ()) flushedState
+        | _ -> flushedState
+
+    let runtimeSelection = runtimeCoverageSelection flushedState.ChangedFiles
+
+    let runtimeObligations =
+        if Map.isEmpty runtimeSelection.ProjectsByFile then
+            flushedState.Debt.RuntimeObligations
+        else
+            mergeRuntimeCoverageObligations flushedState.Debt.RuntimeObligations runtimeSelection.ProjectsByFile
+
+    if not (Map.isEmpty runtimeSelection.ProjectsByFile) then
+        for KeyValue(file, projects) in runtimeSelection.ProjectsByFile do
+            if not (Set.isEmpty projects) then
+                let projectNames = projects |> Set.toList |> String.concat ", "
+
+                Logging.info "test-prune" $"runtime coverage selected %s{file} -> %s{projectNames} (project-in-full)"
+
+    reportRuntimeCoverageWidenings (Logging.warn "test-prune") runtimeSelection
+
+    flushedState, runtimeObligations
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1517,107 +1655,21 @@ let internal createWithEvidenceAndQueries
     // against current symbols, and before QueryAffectedTests, so their edges
     // participate in impact traversal. They re-run only when this flush indexed
     // something or a refresh is owed: their answer is a function of the tree.
-    let flushPending (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
-        // Capture OLD literal coupling before `RebuildProjects`
-        // replaces a changed producer's outgoing graph. The unchanged test still
-        // points at that old literal, but after the rebuild the producer does not;
-        // querying only the changed producer would therefore select nothing.
-        //
-        // Queue the literal NODE, not a stale producer edge. It then follows the
-        // ordinary pending-verification lifecycle and disappears after its covering
-        // tests pass, while the rebuilt graph remains an exact description of current
-        // source. This is bounded evidence carried across one destructive boundary,
-        // not permanent false-positive coupling.
-        let preRebuildSymbols =
-            Set.union state.Debt.PendingQueue (Set.ofList state.ChangedSymbols)
-            |> Set.toList
+    let flushEnv: FlushEnv =
+        { Db = db
+          DbPath = dbPath
+          BusyTimeout = busyTimeout
+          EnqueuePending = enqueuePending
+          PersistQueueAdditions = persistQueueAdditions
+          RuntimeCoverageSelection = runtimeCoverageSelection
+          Refresh =
+            { Phase = extensionRefresh
+              Extensions = extensions
+              Apply = applyRefresh
+              Timed = refreshTimed
+              Join = joinRefresh } }
 
-        let priorLiteralSeeds = db.GetPriorSharedLiteralSeeds preRebuildSymbols
-
-        // Only a seed not already owed is new debt. Re-enqueuing an owed one would issue
-        // it a newer revision and deny a covering run in flight its discharge.
-        let newlyOwedLiterals =
-            priorLiteralSeeds
-            |> List.filter (fun symbol -> not (Set.contains symbol state.Debt.PendingQueue))
-
-        let state =
-            { state with
-                Debt = enqueuePending newlyOwedLiterals state.Debt
-                ChangedSymbols = (priorLiteralSeeds @ state.ChangedSymbols) |> List.distinct }
-
-        if not priorLiteralSeeds.IsEmpty then
-            Logging.info
-                "test-prune"
-                $"Preserved %d{priorLiteralSeeds.Length} pre-rebuild literal coupling seed(s) for impact selection"
-
-        // Persist the pending queue BEFORE flushPendingAnalysis advances the
-        // durable analysis snapshot. One write per flush (vs per FileChecked) — same
-        // crash-safety, batch-size fewer disk writes. See `persistQueueAdditions`.
-        persistQueueAdditions state.Debt
-
-        let indexedSomething = not state.PendingAnalysis.IsEmpty
-
-        // A refresh still running beside the fold reads the index this flush would write.
-        let state = joinRefresh ctx state
-
-        let flushedState =
-            flushPendingAnalysis
-                db
-                dbPath
-                busyTimeout
-                (fun label -> ctx.DeclareBoundedWork label ImpactSelectionDeadline)
-                state
-
-        // The flush wrote these analyses and their identities in one transaction.
-        let flushedState =
-            let written = state.PendingIdentities |> Map.keys |> Set.ofSeq
-
-            { flushedState with
-                PendingIdentities = Map.empty
-                Unindexed = Set.difference flushedState.Unindexed written }
-
-        let flushedState =
-            match extensions with
-            | Some exts when
-                not exts.IsEmpty
-                && (indexedSomething
-                    || extensionRefresh.Value = ExtensionRefreshPhase.NeverRefreshed
-                    || not flushedState.FailedExtensions.IsEmpty)
-                ->
-                if not indexedSomething && flushedState.FailedExtensions.IsEmpty then
-                    // Owed only because this process has not refreshed: nothing it indexed
-                    // is in the answer, so it runs beside the fold.
-                    extensionRefresh.Value <- ExtensionRefreshPhase.RunningBesideFold(Tasks.Task.Run(refreshTimed exts))
-
-                    flushedState
-                else
-                    extensionRefresh.Value <- ExtensionRefreshPhase.Refreshed
-
-                    // At info, because a refresh that holds the fold for minutes is
-                    // otherwise invisible.
-                    applyRefresh ctx (refreshTimed exts ()) flushedState
-            | _ -> flushedState
-
-        let runtimeSelection = runtimeCoverageSelection flushedState.ChangedFiles
-
-        let runtimeObligations =
-            if Map.isEmpty runtimeSelection.ProjectsByFile then
-                flushedState.Debt.RuntimeObligations
-            else
-                mergeRuntimeCoverageObligations flushedState.Debt.RuntimeObligations runtimeSelection.ProjectsByFile
-
-        if not (Map.isEmpty runtimeSelection.ProjectsByFile) then
-            for KeyValue(file, projects) in runtimeSelection.ProjectsByFile do
-                if not (Set.isEmpty projects) then
-                    let projectNames = projects |> Set.toList |> String.concat ", "
-
-                    Logging.info
-                        "test-prune"
-                        $"runtime coverage selected %s{file} -> %s{projectNames} (project-in-full)"
-
-        reportRuntimeCoverageWidenings (Logging.warn "test-prune") runtimeSelection
-
-        flushedState, runtimeObligations
+    let flushPending ctx state = flushPendingWith flushEnv ctx state
 
     /// The impact selection over a flushed state, and the classification of every queued
     /// symbol by the projects covering it.
