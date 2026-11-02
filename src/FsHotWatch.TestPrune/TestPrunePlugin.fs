@@ -1082,6 +1082,55 @@ let internal restorePersisted (repoRoot: string) : RestoredState =
       LoadedNotIngested = loadedNotIngested
       NotIngestedUnreadableReason = notIngestedUnreadableReason }
 
+/// The verification debt a plugin starts with, from its restored sidecars.
+let internal debtFromRestored
+    (repoRoot: string)
+    (allowedRuntimeProjects: Set<string>)
+    (restored: RestoredState)
+    : VerificationDebt =
+    let loadedQueue = restored.LoadedQueue
+    let ledgerUnreadableReason = restored.LedgerUnreadableReason
+    let debtPublicationPath = restored.DebtPublicationPath
+    let interruptedPublication = restored.InterruptedPublication
+    let failuresUnreadableReason = restored.FailuresUnreadableReason
+    let loadedBaseline = restored.LoadedBaseline
+    let loadedRuntimeObligations = restored.LoadedRuntimeObligations
+    let runtimeObligationsUnreadableReason = restored.RuntimeObligationsUnreadableReason
+    let loadedNotIngested = restored.LoadedNotIngested
+    let notIngestedUnreadableReason = restored.NotIngestedUnreadableReason
+
+    { PendingQueue =
+        match loadedQueue with
+        | PendingVerification.LoadedQueue.Loaded queue -> queue
+        // The owed symbols cannot be NAMED, so none are seeded; `UnknownDebt` carries
+        // the debt instead and widens every run until a full suite proves the tree.
+        // Seeding `empty` is safe ONLY because that cause is recorded.
+        | PendingVerification.LoadedQueue.Unreadable _ -> PendingVerification.empty
+      SymbolRevisions = Map.empty
+      Revision = 0L
+      UnknownDebt =
+        [ match ledgerUnreadableReason with
+          | Some reason ->
+              $"the pending-verification ledger (%s{PendingVerification.sidecarPath repoRoot}) could not be read: %s{reason}"
+          | None -> ()
+          match failuresUnreadableReason with
+          | Some reason ->
+              $"the outstanding-failures ledger (%s{OutstandingFailure.sidecarPath repoRoot}) could not be read: %s{reason}"
+          | None -> ()
+          match runtimeObligationsUnreadableReason with
+          | Some reason ->
+              $"the runtime coverage obligation ledger (%s{runtimeCoverageObligationsPath repoRoot}) could not be trusted: %s{reason}"
+          | None -> ()
+          match notIngestedUnreadableReason with
+          | Some reason ->
+              $"the record of runtime coverage that did not ingest (%s{CoverageNotIngested.sidecarPath repoRoot}) could not be read: %s{reason}"
+          | None -> ()
+          if interruptedPublication then
+              $"a verification-debt publication did not finish (%s{debtPublicationPath}), and no full suite has passed since to recover it" ]
+      Baseline = loadedBaseline
+      RuntimeObligations = pruneRuntimeCoverageObligations allowedRuntimeProjects loadedRuntimeObligations
+      CoverageNotIngested = loadedNotIngested }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1155,18 +1204,11 @@ let internal createWithEvidenceAndQueries
     let mayReplay = mayReplayIn indexedKey repoRoot testConfigs
 
     let restored = restorePersisted repoRoot
-    let loadedQueue = restored.LoadedQueue
     let ledgerUnreadableReason = restored.LedgerUnreadableReason
     let debtPublicationPath = restored.DebtPublicationPath
-    let interruptedPublication = restored.InterruptedPublication
     let loadedFailures = restored.LoadedFailures
-    let failuresUnreadableReason = restored.FailuresUnreadableReason
-    let loadedBaseline = restored.LoadedBaseline
     let restoredEvidence = restored.RestoredEvidence
     let loadedRuntimeObligations = restored.LoadedRuntimeObligations
-    let runtimeObligationsUnreadableReason = restored.RuntimeObligationsUnreadableReason
-    let loadedNotIngested = restored.LoadedNotIngested
-    let notIngestedUnreadableReason = restored.NotIngestedUnreadableReason
 
     let coverageIngestFailed = coverageIngestFailedIn repoRoot
 
@@ -1228,38 +1270,7 @@ let internal createWithEvidenceAndQueries
 
     let allowedRuntimeProjects = Set.ofList expectedRuntimeCoverageProjects
 
-    let loadedDebt =
-        { PendingQueue =
-            match loadedQueue with
-            | PendingVerification.LoadedQueue.Loaded queue -> queue
-            // The owed symbols cannot be NAMED, so none are seeded; `UnknownDebt` carries
-            // the debt instead and widens every run until a full suite proves the tree.
-            // Seeding `empty` is safe ONLY because that cause is recorded.
-            | PendingVerification.LoadedQueue.Unreadable _ -> PendingVerification.empty
-          SymbolRevisions = Map.empty
-          Revision = 0L
-          UnknownDebt =
-            [ match ledgerUnreadableReason with
-              | Some reason ->
-                  $"the pending-verification ledger (%s{PendingVerification.sidecarPath repoRoot}) could not be read: %s{reason}"
-              | None -> ()
-              match failuresUnreadableReason with
-              | Some reason ->
-                  $"the outstanding-failures ledger (%s{OutstandingFailure.sidecarPath repoRoot}) could not be read: %s{reason}"
-              | None -> ()
-              match runtimeObligationsUnreadableReason with
-              | Some reason ->
-                  $"the runtime coverage obligation ledger (%s{runtimeCoverageObligationsPath repoRoot}) could not be trusted: %s{reason}"
-              | None -> ()
-              match notIngestedUnreadableReason with
-              | Some reason ->
-                  $"the record of runtime coverage that did not ingest (%s{CoverageNotIngested.sidecarPath repoRoot}) could not be read: %s{reason}"
-              | None -> ()
-              if interruptedPublication then
-                  $"a verification-debt publication did not finish (%s{debtPublicationPath}), and no full suite has passed since to recover it" ]
-          Baseline = loadedBaseline
-          RuntimeObligations = pruneRuntimeCoverageObligations allowedRuntimeProjects loadedRuntimeObligations
-          CoverageNotIngested = loadedNotIngested }
+    let loadedDebt = debtFromRestored repoRoot allowedRuntimeProjects restored
 
     // A project that no longer produces runtime coverage cannot retire an obligation, so
     // its obligations are pruned at load. Written here, before any event, because no
