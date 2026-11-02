@@ -606,6 +606,26 @@ let internal evidencePlanForIn
 
             Some plan)
 
+/// A launch that found its artifacts or test host unavailable ran nothing: it revokes
+/// the receipt, hands back the fanout it consumed, and fails.
+let internal unavailableRunWith
+    (endRun: bool -> TestPruneState -> TestPruneState)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (state: TestPruneState)
+    (message: string)
+    (owed: Set<string>)
+    (reply: Tasks.TaskCompletionSource<string> option)
+    =
+    ctx.ReportStatus(PluginStatus.failedNow message message TimeSpan.Zero)
+
+    { endRun false state with
+        Receipt = HeldReceipt.Revoked $"the test run could not start: %s{message}"
+        PendingForceRunProjects = Set.union state.PendingForceRunProjects owed
+        Replies =
+            reply
+            |> Option.map (fun target -> target, JsonSerializer.Serialize {| error = message |})
+            |> Option.toList }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1272,24 +1292,7 @@ let internal createWithEvidenceAndQueries
 
     let endRun = endRunFrom initialMode
 
-    /// A launch that found its artifacts or test host unavailable ran nothing: it revokes
-    /// the receipt, hands back the fanout it consumed, and fails.
-    let unavailableRun
-        (ctx: PluginCtx<TestPruneMsg>)
-        (state: TestPruneState)
-        (message: string)
-        (owed: Set<string>)
-        (reply: Tasks.TaskCompletionSource<string> option)
-        =
-        ctx.ReportStatus(PluginStatus.failedNow message message TimeSpan.Zero)
-
-        { endRun false state with
-            Receipt = HeldReceipt.Revoked $"the test run could not start: %s{message}"
-            PendingForceRunProjects = Set.union state.PendingForceRunProjects owed
-            Replies =
-                reply
-                |> Option.map (fun target -> target, JsonSerializer.Serialize {| error = message |})
-                |> Option.toList }
+    let unavailableRun = unavailableRunWith endRun
 
     // Launched from the mailbox so it is serialised with every other launch site and
     // holds the "tests" key for its whole duration — see the `RunTestsRequested` case
