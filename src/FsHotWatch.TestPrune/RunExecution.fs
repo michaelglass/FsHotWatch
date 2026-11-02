@@ -1449,6 +1449,34 @@ let internal foldAndEmitInto
                       NewResults = Map.ofList groupOutput })
     )
 
+/// A run's coverage plan: each configured project's coverage paths, the projects in the
+/// ratchet, and the cobertura output.
+let internal coveragePlanOf
+    (coveragePaths: (string -> CoveragePaths option) option)
+    (configuredCoverageProjects: TestConfig list)
+    =
+    let coveragePathsByProject =
+        configuredCoverageProjects
+        |> List.choose (fun config ->
+            coveragePaths
+            |> Option.bind (fun pathsForProject -> pathsForProject config.Project)
+            |> Option.map (fun paths -> config.Project, paths))
+        |> Map.ofList
+
+    let enabledRatchetProjects =
+        coveragePathsByProject
+        |> Map.toSeq
+        |> Seq.choose (fun (project, paths) -> if paths.IncludeInRatchet then Some project else None)
+        |> Set.ofSeq
+
+    let configuredCoverageOutput =
+        coveragePathsByProject
+        |> Map.toSeq
+        |> Seq.tryHead
+        |> Option.map (fun (_, paths) -> paths.Cobertura)
+
+    coveragePathsByProject, enabledRatchetProjects, configuredCoverageOutput
+
 /// Begin a run: settle how its traces see it, say it once when traces record nothing, run
 /// `beforeRun`, emit its start, and bind the tree it launches against.
 let internal beginRun
@@ -1715,25 +1743,8 @@ let internal executeTests
 
         let groups = configs |> List.groupBy (fun c -> c.Group)
 
-        let coveragePathsByProject =
-            configuredCoverageProjects
-            |> List.choose (fun config ->
-                coveragePaths
-                |> Option.bind (fun pathsForProject -> pathsForProject config.Project)
-                |> Option.map (fun paths -> config.Project, paths))
-            |> Map.ofList
-
-        let enabledRatchetProjects =
-            coveragePathsByProject
-            |> Map.toSeq
-            |> Seq.choose (fun (project, paths) -> if paths.IncludeInRatchet then Some project else None)
-            |> Set.ofSeq
-
-        let configuredCoverageOutput =
-            coveragePathsByProject
-            |> Map.toSeq
-            |> Seq.tryHead
-            |> Option.map (fun (_, paths) -> paths.Cobertura)
+        let coveragePathsByProject, enabledRatchetProjects, configuredCoverageOutput =
+            coveragePlanOf coveragePaths configuredCoverageProjects
 
         // Impact analysis may have decided a project has no affected classes. Such a
         // project never launches, so it is neither preflighted (no artifacts worth
