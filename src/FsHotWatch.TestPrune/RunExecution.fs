@@ -1392,6 +1392,33 @@ let internal launchProjectGuarded
             return TestsErrored reason, None
     }
 
+/// `launchProject`, with the load sampled while it runs.
+let internal launchSampledWith
+    (launchProject: ProjectLauncher)
+    (runToken: Threading.CancellationToken)
+    (config: TestConfig)
+    =
+    async {
+        let sampler =
+            Starvation.Sampler.start Starvation.Sampler.DefaultInterval OperationWatchdog.loadAverage
+
+        let samples = ref []
+
+        let! result, reportJson =
+            async {
+                try
+                    return! launchProject runToken config
+                finally
+                    samples.Value <- Starvation.Sampler.stop sampler
+            }
+
+        let reading: Starvation.Reading =
+            { Cores = Environment.ProcessorCount
+              Samples = samples.Value }
+
+        return result, reportJson, reading
+    }
+
 /// Execute test configs with optional affected classes for filtering. Handles beforeRun,
 /// coveragePaths, process execution, result storage. `rawFilter` is a passthrough filter
 /// string (from the run-tests command) that bypasses the template.
@@ -1705,28 +1732,7 @@ let internal executeTests
             | None, Some(_ :: _ as classes) -> Some classes
             | _ -> None
 
-        /// `launchProject`, with the load sampled while it runs.
-        let launchSampled (runToken: Threading.CancellationToken) (config: TestConfig) =
-            async {
-                let sampler =
-                    Starvation.Sampler.start Starvation.Sampler.DefaultInterval OperationWatchdog.loadAverage
-
-                let samples = ref []
-
-                let! result, reportJson =
-                    async {
-                        try
-                            return! launchProject runToken config
-                        finally
-                            samples.Value <- Starvation.Sampler.stop sampler
-                    }
-
-                let reading: Starvation.Reading =
-                    { Cores = Environment.ProcessorCount
-                      Samples = samples.Value }
-
-                return result, reportJson, reading
-            }
+        let launchSampled = launchSampledWith launchProject
 
         let watchEnv: WatchEnv =
             { Collected = collected
