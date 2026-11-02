@@ -759,6 +759,101 @@ let internal assembleRunResults (facts: CompletionRunFacts) : AssembledRunResult
       CarriedFailures = carriedFailures
       OutstandingFailures = outstandingFailures }
 
+/// What a completion's receipt transition is decided from.
+type internal ReceiptFacts =
+    { State: TestPruneState
+      Completed: TestRunCompleted
+      Launch: TestRunLaunch
+      Coverage: RunCoverage
+      RepoRoot: string
+      RunnableProjects: Set<string>
+      ObserveModelGeneration: PluginCtx<TestPruneMsg> -> int64 option }
+
+/// The tree and model a completion is judged against, and what it does to the receipt.
+type internal ReceiptOutcome =
+    { CurrentTree: ReceiptTree option
+      CurrentInputTree: string option
+      CurrentModelGeneration: int64 option
+      CurrentInputs: Map<string, string> option
+      StandingEvidence: EarnedEvidence option
+      ReceiptTransition: ReceiptTransition
+      EvidenceReceipt: TestEvidenceReceipt option }
+
+/// Read the tree and model as they stand now, classify what the completion does to the
+/// test-evidence receipt, log a revocation and the paths that moved, and apply it.
+let internal decideReceipt (ctx: PluginCtx<TestPruneMsg>) (facts: ReceiptFacts) : ReceiptOutcome =
+    let state = facts.State
+    let completed = facts.Completed
+    let launch = facts.Launch
+    let coverage = facts.Coverage
+    let repoRoot = facts.RepoRoot
+    let runnableProjects = facts.RunnableProjects
+    let observeModelGeneration = facts.ObserveModelGeneration
+
+    let currentTree = ReceiptInputTree.readTree repoRoot
+    let currentInputTree = currentTree |> Option.map _.Identity
+    let currentModelGeneration = observeModelGeneration ctx
+    let currentInputs = ObservedModel.inputs ctx.ProjectGraph
+
+    // A typed transition, not a candidate-then-guard: see
+    // `ReceiptTransition`. `Noop` and `Narrower` keep whatever was earned,
+    // `Revoked` clears it, and only `Earned` can write.
+    let writtenByTestRun =
+        ReceiptInputTree.writtenByTestRun
+            repoRoot
+            (ReceiptInputTree.watcherObserves repoRoot (ctx.ProjectGraph.ObserveCheckableFiles() |> Option.map snd))
+            (state.InFlight |> Option.map (fun run -> run.WatcherReported))
+            launch.TestHostStartedAt
+            launch.InputTree
+            currentTree
+
+    // The evidence the standing receipt's own run earned, under the
+    // current model. A completion that keeps the receipt (`Noop`,
+    // `Narrower`) publishes exactly this, so the run `test-scope` grades
+    // and the run the published evidence names are one run.
+    let standingEvidence =
+        state.EvidenceReceipt
+        |> Option.bind (fun receipt ->
+            EarnedEvidence.retainedForRun currentModelGeneration currentInputs receipt.RunId state.Earned)
+
+    let receiptTransition =
+        ReceiptTransition.classify
+            (Set.toList runnableProjects)
+            state.EvidenceReceipt
+            standingEvidence
+            currentInputTree
+            currentModelGeneration
+            currentInputs
+            writtenByTestRun
+            launch
+            completed
+            coverage
+
+    match receiptTransition with
+    | ReceiptTransition.Revoked reason ->
+        ctx.Log $"  ↳ test evidence receipt revoked: %s{reason}"
+
+        // WHICH paths, so a revocation with no watcher event behind it
+        // (a gitignored build output under a discovery root, say) is
+        // answered by this line rather than by an afternoon of ctimes.
+        match ReceiptInputTree.movedPaths launch.InputTree currentTree with
+        | Some paths -> ctx.Log $"    moved paths: %s{paths}"
+        | None -> ()
+    | ReceiptTransition.Earned _
+    | ReceiptTransition.Noop
+    | ReceiptTransition.Narrower -> ()
+
+    let evidenceReceipt =
+        ReceiptTransition.apply state.EvidenceReceipt receiptTransition
+
+    { CurrentTree = currentTree
+      CurrentInputTree = currentInputTree
+      CurrentModelGeneration = currentModelGeneration
+      CurrentInputs = currentInputs
+      StandingEvidence = standingEvidence
+      ReceiptTransition = receiptTransition
+      EvidenceReceipt = evidenceReceipt }
+
 /// The debt accounting a run's completion reads (`commitPending`, `debtScope` and the rest).
 type internal CompletionDebt =
     { CommitPending: Set<string> -> VerificationDebt -> VerificationDebt
@@ -914,61 +1009,24 @@ let internal onRunFinishedWith
         // assert a result this process never ran.
         let debtDuringFullRun = state.DebtDuringFullRun
 
-        let currentTree = ReceiptInputTree.readTree repoRoot
-        let currentInputTree = currentTree |> Option.map _.Identity
-        let currentModelGeneration = observeModelGeneration ctx
-        let currentInputs = ObservedModel.inputs ctx.ProjectGraph
+        let receipt =
+            decideReceipt
+                ctx
+                { State = state
+                  Completed = completed
+                  Launch = launch
+                  Coverage = coverage
+                  RepoRoot = repoRoot
+                  RunnableProjects = runnableProjects
+                  ObserveModelGeneration = observeModelGeneration }
 
-        // A typed transition, not a candidate-then-guard: see
-        // `ReceiptTransition`. `Noop` and `Narrower` keep whatever was earned,
-        // `Revoked` clears it, and only `Earned` can write.
-        let writtenByTestRun =
-            ReceiptInputTree.writtenByTestRun
-                repoRoot
-                (ReceiptInputTree.watcherObserves repoRoot (ctx.ProjectGraph.ObserveCheckableFiles() |> Option.map snd))
-                (state.InFlight |> Option.map (fun run -> run.WatcherReported))
-                launch.TestHostStartedAt
-                launch.InputTree
-                currentTree
-
-        // The evidence the standing receipt's own run earned, under the
-        // current model. A completion that keeps the receipt (`Noop`,
-        // `Narrower`) publishes exactly this, so the run `test-scope` grades
-        // and the run the published evidence names are one run.
-        let standingEvidence =
-            state.EvidenceReceipt
-            |> Option.bind (fun receipt ->
-                EarnedEvidence.retainedForRun currentModelGeneration currentInputs receipt.RunId state.Earned)
-
-        let receiptTransition =
-            ReceiptTransition.classify
-                (Set.toList runnableProjects)
-                state.EvidenceReceipt
-                standingEvidence
-                currentInputTree
-                currentModelGeneration
-                currentInputs
-                writtenByTestRun
-                launch
-                completed
-                coverage
-
-        match receiptTransition with
-        | ReceiptTransition.Revoked reason ->
-            ctx.Log $"  ↳ test evidence receipt revoked: %s{reason}"
-
-            // WHICH paths, so a revocation with no watcher event behind it
-            // (a gitignored build output under a discovery root, say) is
-            // answered by this line rather than by an afternoon of ctimes.
-            match ReceiptInputTree.movedPaths launch.InputTree currentTree with
-            | Some paths -> ctx.Log $"    moved paths: %s{paths}"
-            | None -> ()
-        | ReceiptTransition.Earned _
-        | ReceiptTransition.Noop
-        | ReceiptTransition.Narrower -> ()
-
-        let evidenceReceipt =
-            ReceiptTransition.apply state.EvidenceReceipt receiptTransition
+        let currentTree = receipt.CurrentTree
+        let currentInputTree = receipt.CurrentInputTree
+        let currentModelGeneration = receipt.CurrentModelGeneration
+        let currentInputs = receipt.CurrentInputs
+        let standingEvidence = receipt.StandingEvidence
+        let receiptTransition = receipt.ReceiptTransition
+        let evidenceReceipt = receipt.EvidenceReceipt
 
         let state =
             { state with
