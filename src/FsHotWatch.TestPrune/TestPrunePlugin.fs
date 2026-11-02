@@ -486,6 +486,218 @@ let internal onFileCheckedWith
             return markUnanalysable "FileChecked handler failed" ex.Message (ex.ToString())
     }
 
+/// A fold step over the plugin state that may post to the plugin.
+type internal StateStep = PluginCtx<TestPruneMsg> -> TestPruneState -> TestPruneState
+
+/// `launchImpactRun`: the launched state, or `None` when the tests slot is already held.
+type internal ImpactLauncher =
+    PluginCtx<TestPruneMsg> -> TestConfig list -> TestPruneState -> bool -> Set<string> -> TestPruneState option
+
+/// The plugin's run-launch helpers the check and build handlers share.
+type internal LaunchSteps =
+    { AttachToFullRun: TestPruneState -> TestPruneState
+      EnqueueImpactRun: PluginCtx<TestPruneMsg> -> unit
+      FlushAndQueryAffectedBounded: StateStep
+      JoinsFullRun: TestPruneState -> bool -> bool
+      LaunchImpactRun: ImpactLauncher
+      NothingOwed: VerificationDebt -> bool
+      TryRepairSchemaDrift: exn -> unit }
+
+/// What `onBatchCheckedWith` reads from the plugin.
+type internal BatchCheckedEnv =
+    { RepoRoot: string
+      TestConfigs: TestConfig list option
+      RunnableProjects: Set<string>
+      Launch: LaunchSteps
+      DischargeCoveredBootScan: PluginCtx<TestPruneMsg> -> BatchChecked -> TestPruneState -> TestPruneState
+      LaunchHeld: PluginCtx<TestPruneMsg> -> TestPruneState -> string -> TestPruneState
+      LogRedStands: string -> TestPruneState -> unit
+      OwedDescription: VerificationDebt -> string
+      OnlyRetriesRed: TestPruneState -> bool }
+
+/// A sealed batch of check results under the current model.
+let internal onBatchCheckedWith
+    (env: BatchCheckedEnv)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (state: TestPruneState)
+    (modelGeneration: int64 option)
+    (batch: BatchChecked)
+    =
+    let repoRoot = env.RepoRoot
+    let testConfigs = env.TestConfigs
+    let runnableProjects = env.RunnableProjects
+    let attachToFullRun = env.Launch.AttachToFullRun
+    let enqueueImpactRun = env.Launch.EnqueueImpactRun
+    let flushAndQueryAffectedBounded = env.Launch.FlushAndQueryAffectedBounded
+    let joinsFullRun = env.Launch.JoinsFullRun
+    let launchImpactRun = env.Launch.LaunchImpactRun
+    let nothingOwed = env.Launch.NothingOwed
+    let tryRepairSchemaDrift = env.Launch.TryRepairSchemaDrift
+    let dischargeCoveredBootScan = env.DischargeCoveredBootScan
+    let launchHeld = env.LaunchHeld
+    let logRedStands = env.LogRedStands
+    let owedDescription = env.OwedDescription
+    let onlyRetriesRed = env.OnlyRetriesRed
+
+    async {
+        // Cohort-complete flush. The mailbox is FIFO and the daemon emits
+        // BatchChecked strictly after the last FileChecked, so every
+        // FileChecked from this cohort is already folded into
+        // `ChangedSymbols`/`PendingAnalysis` by now.
+        //
+        // This is the canonical DB persistence point, NOT BuildCompleted. On a
+        // cold scan `Daemon.performScan` awaits BuildPlugin terminal BEFORE
+        // the FCS tier checks, so BuildCompleted reaches this mailbox before
+        // any FileChecked — a BuildCompleted-only flush would always fire
+        // against an empty `PendingAnalysis` and leave the symbol DB
+        // permanently empty. BuildCompleted's flush stays as an idempotent
+        // re-run plus the test-trigger.
+        let flushed =
+            try
+                Ok(flushAndQueryAffectedBounded ctx state)
+            with ex ->
+                Error ex
+
+        match flushed with
+        | Error ex ->
+            Logging.error "test-prune" $"BatchChecked flushAndQueryAffected failed: %s{ex.Message}"
+            tryRepairSchemaDrift ex
+            return state
+        | Ok flushedState ->
+            // The seal is the moment the scan has an answer: every checkable
+            // file of this model either analysed or did not. An analysis-only
+            // daemon publishes that answer as its receipt. A daemon that runs
+            // tests grades its test evidence through it, so a file the scan
+            // never finished refuses the run selected without its symbols.
+            let flushedState =
+                // A seal that re-discovered the model on the scoped path names
+                // the files it did not re-check because their inputs did not
+                // change. Their outcomes stand for this model.
+                let analysisFiles =
+                    match batch.Retained, modelGeneration with
+                    | Some carried, Some generation ->
+                        AnalysisFileEvidence.carryInto generation carried flushedState.AnalysisFiles
+                    | _ -> flushedState.AnalysisFiles
+
+                let membership =
+                    match ctx.ProjectGraph.ObserveCheckableFiles() with
+                    | Some(generation, files) when Some generation = modelGeneration -> Some files
+                    | Some _
+                    | None -> None
+
+                let seal =
+                    membership
+                    |> Option.bind (fun files -> AnalysisEvidence.fromCompleted modelGeneration files analysisFiles)
+
+                { flushedState with
+                    AnalysisFiles = analysisFiles
+                    CohortSeal = seal
+                    AnalysisReceipt = if runnableProjects.IsEmpty then seal else None }
+
+            // ── DRAIN THE PENDING QUEUE ────────────────
+            // The cohort seal is the first moment this scan's symbols are
+            // known. `BuildCompleted` cannot be the only test trigger: on a
+            // scan it fires BEFORE the FCS pass, so scan-discovered symbols
+            // would never be verified by the run it launched and would
+            // accumulate silently while `check` reported a stale terminal
+            // status. If symbols remain unverified here, RUN the tests that
+            // verify them — a verdict is only ever earned by a run.
+            //
+            // The skip asks `nothingOwed`, not `Set.isEmpty`: an UNREADABLE
+            // ledger leaves the in-memory queue empty because we cannot name
+            // what it held, and reading that as "nothing to drain" lets a
+            // corrupt sidecar run ZERO tests and still go green.
+            // The tree these check results describe, for `DiffWait`: read after
+            // the fold, so bytes written since read as a moved tree.
+            let flushedState =
+                if flushedState.LastResults.IsSome then
+                    { flushedState with
+                        SealedTree = ReceiptInputTree.read repoRoot }
+                else
+                    flushedState
+
+            let flushedState = dischargeCoveredBootScan ctx batch flushedState
+
+            if nothingOwed flushedState.Debt then
+                if flushedState.AwaitingDiff.IsSome then
+                    return launchHeld ctx flushedState "the check results it waited for are folded and owe nothing"
+                else
+                    return flushedState
+            else
+                match testConfigs with
+                | Some configs when not configs.IsEmpty && onlyRetriesRed flushedState ->
+                    logRedStands "BatchChecked" flushedState
+
+                    return
+                        { flushedState with
+                            AwaitingDiff = None }
+                | Some configs when not configs.IsEmpty ->
+                    // Drain UNCONDITIONALLY when the slot is free. Never defer
+                    // to "the BuildCompleted that is surely coming": several
+                    // `FileChanged` shapes never produce one at all
+                    // (BuildPlugin ignores `SolutionChanged`, and DROPS a
+                    // FileChanged arriving while a build is running), so the
+                    // deferral can wait forever. CI caught exactly that — 3
+                    // symbols deferred to a BuildCompleted that never came,
+                    // zero tests run, exit 0.
+                    //
+                    // Draining on a half-built tree is safe: the
+                    // apphost-freshness gate in `executeTests` refuses
+                    // `--no-build` against an artifact older than its sources
+                    // and defers that project WITHOUT spawning a test process,
+                    // so the stale case costs a status flip, not a run.
+                    //
+                    // The claim is ATTEMPTED, not pre-checked: `RunExclusive`
+                    // returns the outcome, so there is no TOCTOU between an
+                    // `IsRunning` read and the launch.
+                    let hasCachedResults = flushedState.LastResults.IsSome
+                    let forceRunProjects = flushedState.PendingForceRunProjects
+
+                    let drainedState =
+                        { flushedState with
+                            PendingForceRunProjects = Set.empty
+                            AwaitingDiff = None }
+
+                    match launchImpactRun ctx configs drainedState hasCachedResults forceRunProjects with
+                    | Some launched ->
+                        Logging.info "test-prune" $"BatchChecked: %s{owedDescription flushedState.Debt} — draining now"
+
+                        return launched
+                    | None when joinsFullRun flushedState (batch.Trigger = BootScan) ->
+                        // The full-suite run in flight covers the built tree
+                        // this cohort describes, so it takes the debt instead of
+                        // a duplicate run. TestsFinished may discharge it only
+                        // from actual green full-suite evidence over an
+                        // unchanged input tree; failure, partial scope, or a
+                        // moved tree keeps the durable queue outstanding.
+                        Logging.info
+                            "test-prune"
+                            $"BatchChecked: %s{owedDescription flushedState.Debt} discovered during a full-suite run — attaching debt to that run"
+
+                        return
+                            attachToFullRun
+                                { flushedState with
+                                    AwaitingDiff = None }
+                    | None ->
+                        // A run is in flight but was launched against an older
+                        // queue snapshot, so it cannot clear these symbols.
+                        // Queue the rerun behind it as an intent. The pending
+                        // fanout is retained (the work was NOT consumed).
+                        Logging.info
+                            "test-prune"
+                            $"BatchChecked: %s{owedDescription flushedState.Debt} still outstanding while a run is in flight — queueing re-run"
+
+                        enqueueImpactRun ctx
+
+                        return
+                            { flushedState with
+                                AwaitingDiff = None }
+                | _ ->
+                    // Analysis-only (no test configs): nothing can verify
+                    // these symbols, so there is nothing to drain.
+                    return flushedState
+    }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -3667,168 +3879,28 @@ let internal createWithEvidenceAndQueries
             | BuildFailed _ -> return state
         }
 
-    /// A sealed batch of check results under the current model.
-    let onBatchChecked (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (modelGeneration: int64 option) batch =
-        async {
-            // Cohort-complete flush. The mailbox is FIFO and the daemon emits
-            // BatchChecked strictly after the last FileChecked, so every
-            // FileChecked from this cohort is already folded into
-            // `ChangedSymbols`/`PendingAnalysis` by now.
-            //
-            // This is the canonical DB persistence point, NOT BuildCompleted. On a
-            // cold scan `Daemon.performScan` awaits BuildPlugin terminal BEFORE
-            // the FCS tier checks, so BuildCompleted reaches this mailbox before
-            // any FileChecked — a BuildCompleted-only flush would always fire
-            // against an empty `PendingAnalysis` and leave the symbol DB
-            // permanently empty. BuildCompleted's flush stays as an idempotent
-            // re-run plus the test-trigger.
-            let flushed =
-                try
-                    Ok(flushAndQueryAffectedBounded ctx state)
-                with ex ->
-                    Error ex
+    let launchSteps: LaunchSteps =
+        { AttachToFullRun = attachToFullRun
+          EnqueueImpactRun = enqueueImpactRun
+          FlushAndQueryAffectedBounded = flushAndQueryAffectedBounded
+          JoinsFullRun = joinsFullRun
+          LaunchImpactRun = launchImpactRun
+          NothingOwed = nothingOwed
+          TryRepairSchemaDrift = tryRepairSchemaDrift }
 
-            match flushed with
-            | Error ex ->
-                Logging.error "test-prune" $"BatchChecked flushAndQueryAffected failed: %s{ex.Message}"
-                tryRepairSchemaDrift ex
-                return state
-            | Ok flushedState ->
-                // The seal is the moment the scan has an answer: every checkable
-                // file of this model either analysed or did not. An analysis-only
-                // daemon publishes that answer as its receipt. A daemon that runs
-                // tests grades its test evidence through it, so a file the scan
-                // never finished refuses the run selected without its symbols.
-                let flushedState =
-                    // A seal that re-discovered the model on the scoped path names
-                    // the files it did not re-check because their inputs did not
-                    // change. Their outcomes stand for this model.
-                    let analysisFiles =
-                        match batch.Retained, modelGeneration with
-                        | Some carried, Some generation ->
-                            AnalysisFileEvidence.carryInto generation carried flushedState.AnalysisFiles
-                        | _ -> flushedState.AnalysisFiles
+    let batchCheckedEnv: BatchCheckedEnv =
+        { RepoRoot = repoRoot
+          TestConfigs = testConfigs
+          RunnableProjects = runnableProjects
+          Launch = launchSteps
+          DischargeCoveredBootScan = dischargeCoveredBootScan
+          LaunchHeld = launchHeld
+          LogRedStands = logRedStands
+          OwedDescription = owedDescription
+          OnlyRetriesRed = onlyRetriesRed }
 
-                    let membership =
-                        match ctx.ProjectGraph.ObserveCheckableFiles() with
-                        | Some(generation, files) when Some generation = modelGeneration -> Some files
-                        | Some _
-                        | None -> None
-
-                    let seal =
-                        membership
-                        |> Option.bind (fun files -> AnalysisEvidence.fromCompleted modelGeneration files analysisFiles)
-
-                    { flushedState with
-                        AnalysisFiles = analysisFiles
-                        CohortSeal = seal
-                        AnalysisReceipt = if runnableProjects.IsEmpty then seal else None }
-
-                // ── DRAIN THE PENDING QUEUE ────────────────
-                // The cohort seal is the first moment this scan's symbols are
-                // known. `BuildCompleted` cannot be the only test trigger: on a
-                // scan it fires BEFORE the FCS pass, so scan-discovered symbols
-                // would never be verified by the run it launched and would
-                // accumulate silently while `check` reported a stale terminal
-                // status. If symbols remain unverified here, RUN the tests that
-                // verify them — a verdict is only ever earned by a run.
-                //
-                // The skip asks `nothingOwed`, not `Set.isEmpty`: an UNREADABLE
-                // ledger leaves the in-memory queue empty because we cannot name
-                // what it held, and reading that as "nothing to drain" lets a
-                // corrupt sidecar run ZERO tests and still go green.
-                // The tree these check results describe, for `DiffWait`: read after
-                // the fold, so bytes written since read as a moved tree.
-                let flushedState =
-                    if flushedState.LastResults.IsSome then
-                        { flushedState with
-                            SealedTree = ReceiptInputTree.read repoRoot }
-                    else
-                        flushedState
-
-                let flushedState = dischargeCoveredBootScan ctx batch flushedState
-
-                if nothingOwed flushedState.Debt then
-                    if flushedState.AwaitingDiff.IsSome then
-                        return launchHeld ctx flushedState "the check results it waited for are folded and owe nothing"
-                    else
-                        return flushedState
-                else
-                    match testConfigs with
-                    | Some configs when not configs.IsEmpty && onlyRetriesRed flushedState ->
-                        logRedStands "BatchChecked" flushedState
-
-                        return
-                            { flushedState with
-                                AwaitingDiff = None }
-                    | Some configs when not configs.IsEmpty ->
-                        // Drain UNCONDITIONALLY when the slot is free. Never defer
-                        // to "the BuildCompleted that is surely coming": several
-                        // `FileChanged` shapes never produce one at all
-                        // (BuildPlugin ignores `SolutionChanged`, and DROPS a
-                        // FileChanged arriving while a build is running), so the
-                        // deferral can wait forever. CI caught exactly that — 3
-                        // symbols deferred to a BuildCompleted that never came,
-                        // zero tests run, exit 0.
-                        //
-                        // Draining on a half-built tree is safe: the
-                        // apphost-freshness gate in `executeTests` refuses
-                        // `--no-build` against an artifact older than its sources
-                        // and defers that project WITHOUT spawning a test process,
-                        // so the stale case costs a status flip, not a run.
-                        //
-                        // The claim is ATTEMPTED, not pre-checked: `RunExclusive`
-                        // returns the outcome, so there is no TOCTOU between an
-                        // `IsRunning` read and the launch.
-                        let hasCachedResults = flushedState.LastResults.IsSome
-                        let forceRunProjects = flushedState.PendingForceRunProjects
-
-                        let drainedState =
-                            { flushedState with
-                                PendingForceRunProjects = Set.empty
-                                AwaitingDiff = None }
-
-                        match launchImpactRun ctx configs drainedState hasCachedResults forceRunProjects with
-                        | Some launched ->
-                            Logging.info
-                                "test-prune"
-                                $"BatchChecked: %s{owedDescription flushedState.Debt} — draining now"
-
-                            return launched
-                        | None when joinsFullRun flushedState (batch.Trigger = BootScan) ->
-                            // The full-suite run in flight covers the built tree
-                            // this cohort describes, so it takes the debt instead of
-                            // a duplicate run. TestsFinished may discharge it only
-                            // from actual green full-suite evidence over an
-                            // unchanged input tree; failure, partial scope, or a
-                            // moved tree keeps the durable queue outstanding.
-                            Logging.info
-                                "test-prune"
-                                $"BatchChecked: %s{owedDescription flushedState.Debt} discovered during a full-suite run — attaching debt to that run"
-
-                            return
-                                attachToFullRun
-                                    { flushedState with
-                                        AwaitingDiff = None }
-                        | None ->
-                            // A run is in flight but was launched against an older
-                            // queue snapshot, so it cannot clear these symbols.
-                            // Queue the rerun behind it as an intent. The pending
-                            // fanout is retained (the work was NOT consumed).
-                            Logging.info
-                                "test-prune"
-                                $"BatchChecked: %s{owedDescription flushedState.Debt} still outstanding while a run is in flight — queueing re-run"
-
-                            enqueueImpactRun ctx
-
-                            return
-                                { flushedState with
-                                    AwaitingDiff = None }
-                    | _ ->
-                        // Analysis-only (no test configs): nothing can verify
-                        // these symbols, so there is nothing to drain.
-                        return flushedState
-        }
+    let onBatchChecked ctx state modelGeneration batch =
+        onBatchCheckedWith batchCheckedEnv ctx state modelGeneration batch
 
     let fileCheckedEnv: FileCheckedEnv =
         { RepoRoot = repoRoot
