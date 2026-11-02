@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- refactor!: scan progress is parsed, not scraped. `IpcOutput.scanProgressLine` takes a
+  `ScanProgress.Reading`, and `ScanHeartbeat.waitReporting` reads one. A `ScanStatus` answer this
+  build cannot parse (an untagged line from a daemon of another fshw build) is `Unrecognised`, and
+  shows as a line saying so and naming `fshw stop`. It is never read as a scan's progress.
+
 - refactor!: `CheckVerdict.CheckOutcome.Incomplete` carries an `Unverified`
   (`Files of count`, at least one, or `Unconfirmed`) instead of an `int` in which `-1` and `0`
   meant "no count known". New: `CheckVerdict.Unverified.ofCount`. The prose, verdict file and

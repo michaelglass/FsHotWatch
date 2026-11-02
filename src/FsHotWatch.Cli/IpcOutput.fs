@@ -54,13 +54,16 @@ let snapshotLine (snapshot: FsHotWatch.SnapshotEpoch.SnapshotStatus) : string =
 let publicationsLine (publications: FsHotWatch.ProjectModel.Publications) : string =
     $"publications: %d{publications.Accepted} accepted, %d{publications.Refused} refused as stale (a newer project model superseded the work)"
 
-/// The line `status` adds while the daemon is scanning: the `scanning: N/M files (P%)`
-/// line of a `ScanStatus` answer, or `None` when no scan is running (idle, complete).
-/// Only that line is taken, so a wedge report the answer may lead with is never
-/// presented as scan progress.
-let scanProgressLine (scanStatus: string) : string option =
-    scanStatus.Split('\n')
-    |> Array.tryFind (fun line -> line.StartsWith("scanning:", System.StringComparison.Ordinal))
+/// The line `status` adds while the daemon is scanning (`scanning: N/M files (P%)`), from a
+/// parsed `ScanStatus` answer, or `None` when no scan is running (idle, complete). The wedge
+/// report an answer may carry is never presented as scan progress. An answer this build
+/// cannot read says so: it comes from a daemon of another fshw build.
+let scanProgressLine (reading: FsHotWatch.ScanProgress.Reading) : string option =
+    match reading with
+    | FsHotWatch.ScanProgress.Reading.Reported(_, progress) -> FsHotWatch.ScanProgress.progressLine progress
+    | FsHotWatch.ScanProgress.Reading.Unrecognised _ ->
+        Some
+            "scan progress unreadable: the daemon answered in a format this fshw does not know (a daemon from another fshw build?); `fshw stop` restarts it"
 
 /// Format the full errors response.
 ///

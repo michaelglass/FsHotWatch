@@ -11,6 +11,12 @@ open FsHotWatch.Cli
 let private every = TimeSpan.FromMilliseconds 20.0
 
 let private scanning =
+    FsHotWatch.ScanProgress.Reading.Reported(
+        None,
+        FsHotWatch.ScanProgress.Progress.Checking(3, 10, TimeSpan.FromSeconds 5.0, Some { Hits = 0L; Misses = 3L })
+    )
+
+let private scanningLine =
     "scanning: 3/10 files (30%), 5s elapsed, cache 0 hit / 3 miss"
 
 /// A wait that blocks until `release` is set, then answers `result`.
@@ -38,7 +44,7 @@ let ``a scan that outlasts the interval reports its progress until it finishes``
 
     test <@ result = "scan done" @>
     test <@ emitted.Count >= 2 @>
-    test <@ emitted |> Seq.forall ((=) scanning) @>
+    test <@ emitted |> Seq.forall ((=) scanningLine) @>
 
 // A warm scan answers from the cache before the first report is due: nothing is said.
 [<Fact(Timeout = 15000)>]
@@ -71,7 +77,10 @@ let ``an answer with no scanning line reports nothing`` () =
         if Interlocked.Increment reads >= 2 then
             release.Set()
 
-        "complete: 10 files checked in 1.0s"
+        FsHotWatch.ScanProgress.Reading.Reported(
+            Some "WEDGED: stuck",
+            FsHotWatch.ScanProgress.Progress.Complete(10, 0, TimeSpan.FromSeconds 1.0)
+        )
 
     ScanHeartbeat.waitReporting every read emitted.Enqueue (blockingUntil release ())
 
@@ -86,7 +95,7 @@ let ``a failing progress read leaves the wait running`` () =
     let reads = ref 0
     let emitted = ConcurrentQueue<string>()
 
-    let read () : string =
+    let read () : FsHotWatch.ScanProgress.Reading =
         if Interlocked.Increment reads >= 2 then
             release.Set()
 
@@ -115,12 +124,12 @@ let ``check reports a running scan at least every 30 seconds`` () =
 [<Fact(Timeout = 15000)>]
 let ``a progress line is indented on its own line when output is not a terminal`` () =
     let written = ConcurrentQueue<string>()
-    ScanHeartbeat.emitLineTo false written.Enqueue scanning
-    test <@ List.ofSeq written = [ $"  %s{scanning}\n" ] @>
+    ScanHeartbeat.emitLineTo false written.Enqueue scanningLine
+    test <@ List.ofSeq written = [ $"  %s{scanningLine}\n" ] @>
 
 // On a terminal the spinner owns the current line: the progress line clears it first.
 [<Fact(Timeout = 15000)>]
 let ``a progress line clears the spinner's line first on a terminal`` () =
     let written = ConcurrentQueue<string>()
-    ScanHeartbeat.emitLineTo true written.Enqueue scanning
-    test <@ List.ofSeq written = [ $"\r\u001b[2K  %s{scanning}\n" ] @>
+    ScanHeartbeat.emitLineTo true written.Enqueue scanningLine
+    test <@ List.ofSeq written = [ $"\r\u001b[2K  %s{scanningLine}\n" ] @>

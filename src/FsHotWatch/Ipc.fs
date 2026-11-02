@@ -172,7 +172,7 @@ type DaemonRpcConfig =
         /// claim is released (`RunClaim.releasedFor`). One that never fires when there is
         /// no claim to watch, so the daemon holds what that invocation asks for.
         InvocationReleased: string -> CancellationToken
-        GetScanStatus: unit -> string
+        GetScanStatus: unit -> ScanProgress.Progress
         GetScanGeneration: unit -> int64
         TriggerBuild: unit -> Async<unit>
         FormatAll: unit -> Async<string>
@@ -421,27 +421,29 @@ type DaemonRpcTarget
         config.RequestScan(Some invocationId)
         $"scan started:%d{gen}"
 
-    /// Get current scan progress without blocking. When the daemon is wedged on
-    /// a stuck op, the scan line is prefixed with the `WEDGED: ...` report so a
-    /// client polling only this RPC sees the wedge inline. `fshw status` prints the
-    /// scanning line from this answer.
+    /// Get current scan progress without blocking, as `ScanProgress.toJson`: the progress,
+    /// and the `WEDGED: ...` report when the daemon is wedged on a stuck op, so a client
+    /// polling only this RPC sees the wedge. `fshw status` prints the scanning line from it.
     ///
     /// An answer that reports a scan in progress is logged at Info, so a cold scan's
     /// progress is in the daemon log and not only in the polling client's terminal. An
     /// idle or finished scan is not: a waiting client polls this repeatedly.
     member _.ScanStatus() : string =
         let clock = Diagnostics.Stopwatch.StartNew()
-        let scan = config.GetScanStatus()
+        let progress = config.GetScanStatus()
+        let wedge = wedgeEntry () |> Option.map (fun (_, v) -> unbox<string> v)
 
-        let answer =
-            match wedgeEntry () with
-            | Some(_, v) -> $"%s{unbox<string> v}\n%s{scan}"
-            | None -> scan
+        match ScanProgress.progressLine progress with
+        | Some line ->
+            let shown =
+                match wedge with
+                | Some report -> $"%s{report}\n%s{line}"
+                | None -> line
 
-        if scan.StartsWith("scanning:", StringComparison.Ordinal) then
-            Logging.info "rpc" $"scan status answered in %d{clock.ElapsedMilliseconds}ms: %s{answer}"
+            Logging.info "rpc" $"scan status answered in %d{clock.ElapsedMilliseconds}ms: %s{shown}"
+        | None -> ()
 
-        answer
+        ScanProgress.toJson wedge progress
 
     /// Query the error ledger. If pluginFilter is empty, return all errors; otherwise filter to that plugin.
     ///
@@ -576,7 +578,7 @@ type DaemonRpcTarget
             task {
                 Logging.debug "rpc" $"WaitForScan(%d{afterGeneration}) called"
                 do! config.WaitForScanGeneration(afterGeneration)
-                return config.GetScanStatus()
+                return ScanProgress.render (config.GetScanStatus())
             })
 
     /// Wait for all plugins to reach a terminal state with 1s stability confirmation.

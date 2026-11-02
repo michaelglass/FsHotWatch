@@ -87,7 +87,7 @@ let private config (host: PluginHost) (invocationReleased: string -> Cancellatio
       RequestShutdown = ignore
       RequestScan = ignore
       InvocationReleased = invocationReleased
-      GetScanStatus = fun () -> "idle"
+      GetScanStatus = fun () -> FsHotWatch.ScanProgress.Progress.Idle
       GetScanGeneration = fun () -> 0L
       TriggerBuild = fun () -> async { return () }
       FormatAll = fun () -> async { return "" }

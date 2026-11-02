@@ -1389,7 +1389,10 @@ let private ensureAndQueryErrors
                     (fun () ->
                         ScanHeartbeat.waitReporting
                             ScanHeartbeat.interval
-                            (fun () -> ipc.ScanStatus pipeName |> Async.RunSynchronously)
+                            (fun () ->
+                                ipc.ScanStatus pipeName
+                                |> Async.RunSynchronously
+                                |> FsHotWatch.ScanProgress.parse)
                             ScanHeartbeat.emitLine
                             (fun () -> forceScanAndWait ipc pipeName (Some invocation.Id)))
                     // Authoritative settle: block until the daemon reports its sound
@@ -4159,6 +4162,7 @@ let private executeCommandRendered
                     // waits for the scan it reports on.
                     ipc.ScanStatus pipeName
                     |> Async.RunSynchronously
+                    |> FsHotWatch.ScanProgress.parse
                     |> IpcOutput.scanProgressLine
                     |> Option.iter (eprintfn "%s")
 

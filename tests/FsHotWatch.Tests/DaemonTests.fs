@@ -1252,7 +1252,7 @@ let private scanStatusAnswered (state: ScanState) : string * string list =
                   RequestShutdown = ignore
                   RequestScan = ignore
                   InvocationReleased = fun _ -> System.Threading.CancellationToken.None
-                  GetScanStatus = daemon.FormatScanStatus
+                  GetScanStatus = daemon.ScanProgress
                   GetScanGeneration = fun () -> 0L
                   TriggerBuild = fun () -> async { return () }
                   FormatAll = fun () -> async { return "formatted 0 files" }
@@ -1268,7 +1268,11 @@ let private scanStatusAnswered (state: ScanState) : string * string list =
                   Context = None }
             )
 
-        let answer = target.ScanStatus()
+        let answer =
+            match FsHotWatch.ScanProgress.parse (target.ScanStatus()) with
+            | FsHotWatch.ScanProgress.Reading.Reported(_, progress) -> FsHotWatch.ScanProgress.render progress
+            | FsHotWatch.ScanProgress.Reading.Unrecognised answer -> failwith $"unreadable scan status: %s{answer}"
+
         answer, List.ofSeq logged)
 
 // A cold scan is the longest wait a client sits through, and `daemon.log` said nothing

@@ -1023,7 +1023,11 @@ let ``executeCommand Status prints the daemon's scan progress while a scan runs`
                 fun _ ->
                     async {
                         asked <- asked + 1
-                        return "scanning: 3/10 files (30%)"
+
+                        return
+                            FsHotWatch.ScanProgress.toJson
+                                None
+                                (FsHotWatch.ScanProgress.Progress.Checking(3, 10, TimeSpan.FromSeconds 5.0, None))
                     } }
 
     let stderr, result = captureStderr (fun () -> exec ipc (Status(None, [])))
@@ -1034,22 +1038,48 @@ let ``executeCommand Status prints the daemon's scan progress while a scan runs`
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Status prints no scan line when no scan is running`` () =
-    for answer in [ "idle"; "complete: 10 files checked in 1.0s" ] do
+    for progress in
+        [ FsHotWatch.ScanProgress.Progress.Idle
+          FsHotWatch.ScanProgress.Progress.Complete(10, 0, TimeSpan.FromSeconds 1.0) ] do
         let ipc =
             { fakeIpc () with
-                ScanStatus = fun _ -> async { return answer } }
+                ScanStatus = fun _ -> async { return FsHotWatch.ScanProgress.toJson None progress } }
 
         let stderr, result = captureStderr (fun () -> exec ipc (Status(None, [])))
 
         test <@ result = 0 @>
-        test <@ not (stderr.Contains(answer)) @>
+        test <@ not (stderr.Contains(FsHotWatch.ScanProgress.render progress)) @>
 
 [<Fact(Timeout = 15000)>]
-let ``scanProgressLine picks the scanning line out of a wedged answer`` () =
-    let answer = "WEDGED: scan stuck 300s\nscanning: 4/9 files (44%)"
+let ``scanProgressLine shows a running scan, never the wedge report beside it`` () =
+    let checking =
+        FsHotWatch.ScanProgress.Progress.Checking(4, 9, TimeSpan.FromSeconds 3.0, None)
 
-    test <@ IpcOutput.scanProgressLine answer = Some "scanning: 4/9 files (44%)" @>
-    test <@ IpcOutput.scanProgressLine "idle" = None @>
+    let answer =
+        FsHotWatch.ScanProgress.toJson (Some "WEDGED: scan stuck 300s") checking
+        |> FsHotWatch.ScanProgress.parse
+
+    test <@ IpcOutput.scanProgressLine answer = Some "scanning: 4/9 files (44%), 3s elapsed, check-result cache off" @>
+
+    test
+        <@
+            IpcOutput.scanProgressLine (
+                FsHotWatch.ScanProgress.Reading.Reported(None, FsHotWatch.ScanProgress.Progress.Idle)
+            ) = None
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``an untagged scan status, from a daemon of another fshw build, is named as one and read as no progress`` () =
+    // What an older daemon answered: the rendered line, with the wedge report above it.
+    let old = "WEDGED: scan stuck 300s\nscanning: 4/9 files (44%)"
+    test <@ FsHotWatch.ScanProgress.parse old = FsHotWatch.ScanProgress.Reading.Unrecognised old @>
+    test <@ FsHotWatch.ScanProgress.parse "idle" = FsHotWatch.ScanProgress.Reading.Unrecognised "idle" @>
+
+    test
+        <@
+            IpcOutput.scanProgressLine (FsHotWatch.ScanProgress.parse old)
+            |> Option.exists (fun line -> line.Contains "another fshw build")
+        @>
 
 [<Fact(Timeout = 15000)>]
 let ``executePluginCommand proxies a recognized command to IPC`` () =
@@ -3994,3 +4024,28 @@ let ``analytics reads this repository's box-wide store and discovers the shadow 
     let weekAgo = now.AddDays -7.0
     test <@ chosen.Since = Some weekAgo @>
     test <@ chosen.Top = 3 && chosen.Json @>
+
+[<Fact(Timeout = 15000)>]
+let ``every scan progress reads back from its own answer, with its wedge report`` () =
+    let cases =
+        [ FsHotWatch.ScanProgress.Progress.Idle
+          FsHotWatch.ScanProgress.Progress.Discovering(TimeSpan.FromSeconds 12.5)
+          FsHotWatch.ScanProgress.Progress.Checking(5, 10, TimeSpan.FromSeconds 42.0, None)
+          FsHotWatch.ScanProgress.Progress.Checking(5, 10, TimeSpan.FromSeconds 42.0, Some { Hits = 3L; Misses = 2L })
+          FsHotWatch.ScanProgress.Progress.Complete(70, 0, TimeSpan.FromSeconds 15.5)
+          FsHotWatch.ScanProgress.Progress.Complete(70, 4, TimeSpan.FromSeconds 15.5) ]
+
+    for progress in cases do
+        for wedge in [ None; Some "WEDGED: stuck" ] do
+            test
+                <@
+                    FsHotWatch.ScanProgress.parse (FsHotWatch.ScanProgress.toJson wedge progress) = FsHotWatch
+                        .ScanProgress
+                        .Reading
+                        .Reported(wedge, progress)
+                @>
+
+    let malformed =
+        """{"schema":"fshw-scan-status-v1","state":"checking","completed":1}"""
+
+    test <@ FsHotWatch.ScanProgress.parse malformed = FsHotWatch.ScanProgress.Reading.Unrecognised malformed @>
