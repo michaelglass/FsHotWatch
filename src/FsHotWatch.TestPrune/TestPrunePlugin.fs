@@ -257,6 +257,46 @@ let internal owedElsewhereIn
     |> Seq.map (fun s -> Set.difference (owedTo s) runnableProjects)
     |> Set.unionMany
 
+/// The covering test projects a symbol's debt waits on, under ONE resolution of the
+/// declared exclusions. Empty ⇒ nothing is owed for it and it may leave the queue.
+///
+/// A covering project counts unless it is unconfigured AND declared excluded with a
+/// written reason. That is the whole policy, applied at every place debt is
+/// classified — the flush that drops uncovered symbols, the launch that captures each
+/// symbol's coverers, the completion that retires them (launch and BootScan cohorts
+/// alike), and the residual diagnostics that name what is still owed:
+///   * a CONFIGURED project always counts, whatever an exclusion says;
+///   * an unconfigured project with no declaration counts. Nothing can run it here,
+///     so the symbol stays owed and the verdict stays red, naming the project. The
+///     earlier rule dropped such a symbol, which let a configured-suite green
+///     discharge tests that never ran;
+///   * a blank reason declares nothing.
+/// Excluding a project is never evidence that its tests passed: the declaration only
+/// removes that project from THIS gate's claim.
+///
+/// `excluded` is lazy so a classification that never meets an unconfigured coverer
+/// never resolves the declarations. Analysis-only daemons make no test claim, so every
+/// covering project counts and the declarations are never consulted. `covering` is a
+/// pass's `coveringOf`.
+let internal debtScopeIn
+    (runnableProjects: Set<string>)
+    (excluded: Lazy<Map<string, string>>)
+    (covering: string -> Set<string>)
+    : string -> Set<string> =
+    let declaredExcluded (project: string) =
+        match Map.tryFind project excluded.Value with
+        | Some reason -> not (String.IsNullOrWhiteSpace reason)
+        | None -> false
+
+    fun symbol ->
+        let projects = covering symbol
+
+        if Set.isEmpty runnableProjects then
+            projects
+        else
+            projects
+            |> Set.filter (fun project -> Set.contains project runnableProjects || not (declaredExcluded project))
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -673,41 +713,7 @@ let internal createWithEvidenceAndQueries
             changedFiles
             (DateTimeOffset.UtcNow - RuntimeCoverageMaxAge)
 
-    /// The covering test projects a symbol's debt waits on, under ONE resolution of the
-    /// declared exclusions. Empty ⇒ nothing is owed for it and it may leave the queue.
-    ///
-    /// A covering project counts unless it is unconfigured AND declared excluded with a
-    /// written reason. That is the whole policy, applied at every place debt is
-    /// classified — the flush that drops uncovered symbols, the launch that captures each
-    /// symbol's coverers, the completion that retires them (launch and BootScan cohorts
-    /// alike), and the residual diagnostics that name what is still owed:
-    ///   * a CONFIGURED project always counts, whatever an exclusion says;
-    ///   * an unconfigured project with no declaration counts. Nothing can run it here,
-    ///     so the symbol stays owed and the verdict stays red, naming the project. The
-    ///     earlier rule dropped such a symbol, which let a configured-suite green
-    ///     discharge tests that never ran;
-    ///   * a blank reason declares nothing.
-    /// Excluding a project is never evidence that its tests passed: the declaration only
-    /// removes that project from THIS gate's claim.
-    ///
-    /// `excluded` is lazy so a classification that never meets an unconfigured coverer
-    /// never resolves the declarations. Analysis-only daemons make no test claim, so every
-    /// covering project counts and the declarations are never consulted. `covering` is a
-    /// pass's `coveringOf`.
-    let debtScope (excluded: Lazy<Map<string, string>>) (covering: string -> Set<string>) : string -> Set<string> =
-        let declaredExcluded (project: string) =
-            match Map.tryFind project excluded.Value with
-            | Some reason -> not (String.IsNullOrWhiteSpace reason)
-            | None -> false
-
-        fun symbol ->
-            let projects = covering symbol
-
-            if Set.isEmpty runnableProjects then
-                projects
-            else
-                projects
-                |> Set.filter (fun project -> Set.contains project runnableProjects || not (declaredExcluded project))
+    let debtScope = debtScopeIn runnableProjects
 
     /// Whether the index names no test project beyond those a run here executes or
     /// declares excluded, so that a run of every runnable project leaves nothing owed
