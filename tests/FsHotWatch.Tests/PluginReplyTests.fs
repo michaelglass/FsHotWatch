@@ -284,3 +284,61 @@ let ``a coverage-status payload its schema does not describe is no verdict`` (pa
 [<InlineData("ratchet failed: x")>]
 let ``a coverage-ratchet payload its schema does not describe is no verdict`` (payload: string) =
     refusesUndescribed "coverage-ratchet" FsHotWatch.Coverage.CoverageReplies.RatchetSchema payload
+
+[<Fact(Timeout = 15000)>]
+let ``diagnostics is written as the JSON it always was, and read back as itself`` () =
+    let diagnostics: FsHotWatch.Analyzers.AnalyzerReplies.Diagnostics =
+        { Analyzers = 3
+          Files = 2
+          Diagnostics = 5 }
+
+    test
+        <@
+            FsHotWatch.Analyzers.AnalyzerReplies.Diagnostics.serialize diagnostics = """{"analyzers":3,"diagnostics":5,"files":2}"""
+        @>
+
+    test
+        <@
+            FsHotWatch.Analyzers.AnalyzerReplies.Diagnostics.tryParse (
+                FsHotWatch.Analyzers.AnalyzerReplies.Diagnostics.serialize diagnostics
+            ) = Some diagnostics
+        @>
+
+let private findingsReply: FsHotWatch.Analyzers.AnalyzerFindings.Reply =
+    { ModelGeneration = Some 4L
+      Expected = [ "/repo/src/A.fs" ]
+      AnalyzerSet = Ok "set-key"
+      FailOnSeverity = FsHotWatch.ErrorLedger.DiagnosticSeverity.Warning
+      ScopeRoot = Some "/repo"
+      AnalyzerCount = 1
+      Files = [] }
+
+[<Fact(Timeout = 15000)>]
+let ``a typed analyzers reply renders exactly as its shape did`` () =
+    rendersAsSniffed
+        "diagnostics"
+        FsHotWatch.Analyzers.AnalyzerReplies.DiagnosticsSchema
+        (FsHotWatch.Analyzers.AnalyzerReplies.Diagnostics.serialize
+            { Analyzers = 1
+              Files = 0
+              Diagnostics = 0 })
+
+    rendersAsSniffed
+        FsHotWatch.Analyzers.AnalyzerFindings.CommandName
+        FsHotWatch.Analyzers.AnalyzerFindings.ReplySchema
+        (FsHotWatch.Analyzers.AnalyzerFindings.serializeReply findingsReply)
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("""{"analyzers":1,"files":0}""")>]
+[<InlineData("""{"count":1}""")>]
+let ``a diagnostics payload its schema does not describe is no verdict`` (payload: string) =
+    refusesUndescribed "diagnostics" FsHotWatch.Analyzers.AnalyzerReplies.DiagnosticsSchema payload
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("""{"schema":"fshw-analyzer-findings-reply-v0"}""")>]
+[<InlineData("""{"files":[]}""")>]
+let ``an analyzer-findings payload its schema does not describe is no verdict`` (payload: string) =
+    refusesUndescribed
+        FsHotWatch.Analyzers.AnalyzerFindings.CommandName
+        FsHotWatch.Analyzers.AnalyzerFindings.ReplySchema
+        payload

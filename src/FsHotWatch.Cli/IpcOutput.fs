@@ -792,8 +792,14 @@ module PluginReplies =
           FsHotWatch.Coverage.CoverageReplies.RatchetSchema,
           asText FsHotWatch.Coverage.CoverageReplies.RatchetReply.tryParse ]
 
+    let private analyzers: (string * (string -> Render option)) list =
+        [ FsHotWatch.Analyzers.AnalyzerReplies.DiagnosticsSchema,
+          asStatusMap FsHotWatch.Analyzers.AnalyzerReplies.Diagnostics.tryParse
+          FsHotWatch.Analyzers.AnalyzerFindings.ReplySchema,
+          asStatusMap (FsHotWatch.Analyzers.AnalyzerFindings.tryParseReply >> Result.toOption) ]
+
     let private renderers: Map<string, string -> Render option> =
-        Map.ofList (build @ lint @ format @ fileCommand @ coverage)
+        Map.ofList (build @ lint @ format @ fileCommand @ coverage @ analyzers)
 
     /// The renderer for a `payload` of schema `id`; `None` for a schema this build does not
     /// know, or a payload it does not describe.

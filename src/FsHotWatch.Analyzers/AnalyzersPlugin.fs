@@ -5,7 +5,6 @@ open System.IO
 open System.Threading
 open FSharp.Analyzers.SDK
 open FSharp.Compiler.Text
-open System.Text.Json
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.Logging
@@ -1110,12 +1109,12 @@ let internal createScopedWithSeams
                       |> List.sumBy (fun (_, entries) -> entries.Length)
 
                   return
-                      JsonSerializer.Serialize(
-                          {| analyzers = state.LoadedCount
-                             files = state.DiagnosticsByFile.Count
-                             diagnostics = totalDiags |}
-                      )
+                      AnalyzerReplies.Diagnostics.serialize
+                          { Analyzers = state.LoadedCount
+                            Files = state.DiagnosticsByFile.Count
+                            Diagnostics = totalDiags }
               })
+          |> PluginCommand.typed AnalyzerReplies.DiagnosticsSchema
           // `fshw findings`: every stamped analysis with its entries, the files the current
           // model says must be accounted for, and the analyzer set on disk NOW — read, not
           // reloaded, so observing changes nothing the next analysis will see.
@@ -1150,7 +1149,8 @@ let internal createScopedWithSeams
                                   { File = AbsFilePath.value file
                                     Analyzed = analyzed
                                     Entries = state.DiagnosticsByFile |> Map.tryFind file |> Option.defaultValue [] }) }
-              }) ]
+              })
+          |> PluginCommand.typed FsHotWatch.Analyzers.AnalyzerFindings.ReplySchema ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey =
         // pure-content cache key: the analyzer set's identity and failure threshold, the
