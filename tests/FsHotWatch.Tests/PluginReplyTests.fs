@@ -488,14 +488,6 @@ let ``a typed test-prune reply renders exactly as its shape did`` () =
             (FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.serialize reply)
 
     rendersAsSniffed
-        "affected-tests"
-        FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema
-        """[{"class":"Tests.A","method":"works","project":"Tests"}]"""
-
-    rendersAsSniffed "affected-tests" FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema "[]"
-    rendersAsSniffed "changed-files" FsHotWatch.TestPrune.TestPruneReplies.ChangedFilesSchema """["src/A.fs"]"""
-
-    rendersAsSniffed
         "flaky-tests"
         FsHotWatch.TestPrune.TestPruneReplies.FlakyTestsSchema
         """{"tests":[{"flakiness":0.25,"name":"Tests.A.works","runs":8}]}"""
@@ -504,6 +496,36 @@ let ``a typed test-prune reply renders exactly as its shape did`` () =
         "check-reach"
         FsHotWatch.TestPrune.TestPruneReplies.CheckReachSchema
         """{"recorded":false,"reason":"no run has completed"}"""
+
+/// AUTOMATION-1466: both answer with a JSON array, which the CLI used to refuse as "not a JSON
+/// object" (no verdict). They are listings, so they list, and exit 0.
+[<Fact(Timeout = 15000)>]
+let ``affected-tests and changed-files list what they answer`` () =
+    let affected =
+        renderedTyped
+            "affected-tests"
+            FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema
+            """[{"class":"Tests.A","method":"works","project":"Tests"}]"""
+
+    test <@ affected = (0, "1 affected test(s):\n  · Tests: Tests.A.works\n") @>
+
+    let noneAffected =
+        renderedTyped "affected-tests" FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema "[]"
+
+    test <@ noneAffected = (0, "no affected tests\n") @>
+
+    let changed =
+        renderedTyped
+            "changed-files"
+            FsHotWatch.TestPrune.TestPruneReplies.ChangedFilesSchema
+            """["src/A.fs","src/B.fs"]"""
+
+    test <@ changed = (0, "2 changed file(s):\n  · src/A.fs\n  · src/B.fs\n") @>
+
+    let noneChanged =
+        renderedTyped "changed-files" FsHotWatch.TestPrune.TestPruneReplies.ChangedFilesSchema "[]"
+
+    test <@ noneChanged = (0, "no changed files\n") @>
 
 [<Theory(Timeout = 15000)>]
 [<InlineData("run-tests", "test-prune/run-v1", """{"status":"exploded"}""")>]

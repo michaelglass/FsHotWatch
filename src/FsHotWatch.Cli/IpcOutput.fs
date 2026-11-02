@@ -840,10 +840,35 @@ module PluginReplies =
                 | FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.ScopeSet _ -> renderStatusMap renderStatuses payload
                 | FsHotWatch.TestPrune.TestPruneReplies.ScopeReply.ScopeRefused error -> renderRefusal error)
 
-        // A JSON array, which the CLI has always refused as not an object.
-        let asArray (tryParse: string -> 'Reply option) payload : Render option =
-            tryParse payload
-            |> Option.map (fun _ _ _ _ -> renderNotAnObject JsonValueKind.Array)
+        // A listing: its items, or that there are none. AUTOMATION-1466: these answer with a
+        // JSON array, which the CLI used to refuse as not an object.
+        let listing (noun: string) (items: string list) : int =
+            match items with
+            | [] -> eprintfn "no %s" noun
+            | _ ->
+                eprintfn "%d %s:" items.Length noun
+
+                for item in items do
+                    eprintfn "  · %s" item
+
+            0
+
+        let affectedTests payload =
+            FsHotWatch.TestPrune.TestPruneReplies.AffectedTests.tryParse payload
+            |> Option.map (fun tests _ _ _ ->
+                match tests with
+                | [] -> listing "affected tests" []
+                | _ ->
+                    tests
+                    |> List.map (fun t -> $"%s{t.Project}: %s{t.Class}.%s{t.Method}")
+                    |> listing "affected test(s)")
+
+        let changedFiles payload =
+            FsHotWatch.TestPrune.TestPruneReplies.ChangedFiles.tryParse payload
+            |> Option.map (fun files _ _ _ ->
+                match files with
+                | [] -> listing "changed files" []
+                | _ -> listing "changed file(s)" files)
 
         // Read by the reader the verdict uses, then rendered by its shape, as before.
         let byShape (describes: string -> bool) payload : Render option =
@@ -865,10 +890,8 @@ module PluginReplies =
 
         [ FsHotWatch.TestPrune.TestPruneReplies.RunSchema, run
           FsHotWatch.TestPrune.TestPruneReplies.SetScopeSchema, setScope
-          FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema,
-          asArray FsHotWatch.TestPrune.TestPruneReplies.AffectedTests.tryParse
-          FsHotWatch.TestPrune.TestPruneReplies.ChangedFilesSchema,
-          asArray FsHotWatch.TestPrune.TestPruneReplies.ChangedFiles.tryParse
+          FsHotWatch.TestPrune.TestPruneReplies.AffectedTestsSchema, affectedTests
+          FsHotWatch.TestPrune.TestPruneReplies.ChangedFilesSchema, changedFiles
           FsHotWatch.TestPrune.TestPruneReplies.FlakyTestsSchema,
           asStatusMap FsHotWatch.TestPrune.TestPruneReplies.FlakyTests.tryParse
           FsHotWatch.TestPrune.TestPruneReplies.TestScopeSchema, byShape testScope

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: `fshw affected-tests` and `fshw changed-files` list what they answer: each test as
+  `project: Class.method` or each file, or that there are none. Both exit 0 (AUTOMATION-1466).
+  Both reply with a JSON array, which the CLI used to refuse as a malformed reply (exit 3).
+
 - fix: `fshw unformatted` says which files are unformatted. It exits 1 when any are, and prints
   "no unformatted files" with exit 0 when none are (AUTOMATION-1466). It used to throw on every
   reply, because the reply was read as a diagnostics response, and the passthrough reported the
