@@ -528,6 +528,8 @@ type PluginCommand<'State, 'Msg> =
     /// depends on state belongs to the plugin's own `Update`, which folds the message
     /// against the state it actually commits.
     | Request of (CommandCtx<'Msg> -> string array -> Async<string>)
+    /// `command`, whose reply has `schema` (`Plugin.ReplySchema`): what a client renders it by.
+    | Declared of schema: Plugin.ReplySchema * command: PluginCommand<'State, 'Msg>
 
 module PluginCommand =
     /// The observing half of a command context. A command context names no result fold,
@@ -541,10 +543,26 @@ module PluginCommand =
 
     /// Run a command against an explicit state. Plugin tests use this to drive a
     /// command without a host.
-    let invoke (command: PluginCommand<'State, 'Msg>) (ctx: CommandCtx<'Msg>) (state: 'State) (args: string array) =
+    let rec invoke (command: PluginCommand<'State, 'Msg>) (ctx: CommandCtx<'Msg>) (state: 'State) (args: string array) =
         match command with
         | PluginCommand.Observe read -> read (readContext ctx) state args
         | PluginCommand.Request request -> request ctx args
+        | PluginCommand.Declared(_, inner) -> invoke inner ctx state args
+
+    /// The schema `command`'s reply has; `ReplySchema.undeclared` for one that declares none.
+    let rec schemaOf (command: PluginCommand<'State, 'Msg>) : Plugin.ReplySchema =
+        match command with
+        | PluginCommand.Declared(schema, _) -> schema
+        | PluginCommand.Observe _
+        | PluginCommand.Request _ -> Plugin.ReplySchema.undeclared
+
+    /// `command` with its reply declared as the plugin's versioned schema `id`.
+    let typed (id: string) (command: PluginCommand<'State, 'Msg>) : PluginCommand<'State, 'Msg> =
+        PluginCommand.Declared(Plugin.ReplySchema.Typed id, command)
+
+    /// `command` with its reply declared free-form, and why.
+    let raw (reason: string) (command: PluginCommand<'State, 'Msg>) : PluginCommand<'State, 'Msg> =
+        PluginCommand.Declared(Plugin.ReplySchema.Raw reason, command)
 
 /// Tags for events a plugin can subscribe to.
 type SubscribedEvent =
@@ -782,7 +800,7 @@ type PluginHostServices =
         EmitTestProgress: TestProgress -> unit
         EmitTestRunCompleted: TestRunCompleted -> unit
         EmitCommandCompleted: CommandCompletedResult -> unit
-        RegisterCommand: string * CommandHandler -> unit
+        RegisterCommand: string * Plugin.ReplySchema * CommandHandler -> unit
         TaskCache: TaskCache.ITaskCache option
         StartSubtask: PluginName -> string -> string -> unit
         UpdateSubtask: PluginName -> string -> string -> unit
@@ -2238,39 +2256,39 @@ let internal registerHandlerForOwner
 
     // Register commands. An observation reads one published snapshot and never waits
     // behind running work; a request is the plugin's own code with a posting context.
+    let rec runCommand (command: PluginCommand<'State, 'Msg>) (args: string array) : Async<string> =
+        match command with
+        | PluginCommand.Declared(_, inner) -> runCommand inner args
+        | PluginCommand.Request request ->
+            // A request runs under its requester's token — the IPC server's
+            // per-connection token for a client, joined by the run claim of the
+            // invocation that sent it when it names one (`RunCommandFor`) — so
+            // the intents it enqueues are held by that client, and released when
+            // it goes away.
+            async {
+                let! requester = Async.CancellationToken
+                let leases = PluginWorkOwner.ConsumerLeases.ofClient requester
+
+                return!
+                    request
+                        { commandCtx with
+                            EnqueueExclusiveIntent = enqueueExclusiveIntentFor leases }
+                        args
+            }
+        | PluginCommand.Observe read ->
+            async {
+                let snapshot = owner.Snapshot
+
+                let readCtx =
+                    { PluginCommand.readContext commandCtx with
+                        IsRunning = snapshot.IsRunning
+                        IsSettling = snapshot.IsSettling }
+
+                return! read readCtx snapshot.State args
+            }
+
     for (commandName, command) in handler.Commands do
-        services.RegisterCommand(
-            commandName,
-            fun args ->
-                match command with
-                | PluginCommand.Request request ->
-                    // A request runs under its requester's token — the IPC server's
-                    // per-connection token for a client, joined by the run claim of the
-                    // invocation that sent it when it names one (`RunCommandFor`) — so
-                    // the intents it enqueues are held by that client, and released when
-                    // it goes away.
-                    async {
-                        let! requester = Async.CancellationToken
-                        let leases = PluginWorkOwner.ConsumerLeases.ofClient requester
-
-                        return!
-                            request
-                                { commandCtx with
-                                    EnqueueExclusiveIntent = enqueueExclusiveIntentFor leases }
-                                args
-                    }
-                | PluginCommand.Observe read ->
-                    async {
-                        let snapshot = owner.Snapshot
-
-                        let readCtx =
-                            { PluginCommand.readContext commandCtx with
-                                IsRunning = snapshot.IsRunning
-                                IsSettling = snapshot.IsSettling }
-
-                        return! read readCtx snapshot.State args
-                    }
-        )
+        services.RegisterCommand(commandName, PluginCommand.schemaOf command, runCommand command)
 
     let dispatchTracked (dispatched: PluginDispatchEvent) =
         match dispatched with

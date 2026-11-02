@@ -26,8 +26,8 @@ let private severityToString = DiagnosticSeverity.toString
 /// matches on what it is instead of probing a payload for the fields it happens to have.
 [<RequireQualifiedAccess>]
 type CommandReply =
-    /// A plugin command's own output: plugin-defined text or JSON.
-    | Output of command: string * output: string
+    /// A plugin command's own output, and the schema the plugin declares it has.
+    | Output of command: string * schema: Plugin.ReplySchema * output: string
     /// No registered plugin serves the command, so nothing ran.
     | UnknownCommand of command: string
     /// The plugin statuses after a re-run (`GetStatus`'s JSON).
@@ -60,10 +60,14 @@ module CommandReply =
         o["schema"] <- Schema
 
         match reply with
-        | CommandReply.Output(command, output) ->
+        | CommandReply.Output(command, schema, output) ->
             o["kind"] <- "output"
             o["command"] <- command
             o["output"] <- output
+
+            match schema with
+            | Plugin.ReplySchema.Typed id -> o["replySchema"] <- id
+            | Plugin.ReplySchema.Raw reason -> o["rawReason"] <- reason
         | CommandReply.UnknownCommand command ->
             o["kind"] <- "unknown-command"
             o["command"] <- command
@@ -85,8 +89,14 @@ module CommandReply =
 
         match field "kind" with
         | Some "output" ->
-            match field "command", field "output" with
-            | Some command, Some output -> Some(CommandReply.Output(command, output))
+            let schema =
+                match field "replySchema", field "rawReason" with
+                | Some id, None -> Some(Plugin.ReplySchema.Typed id)
+                | None, Some reason -> Some(Plugin.ReplySchema.Raw reason)
+                | _ -> None
+
+            match field "command", schema, field "output" with
+            | Some command, Some schema, Some output -> Some(CommandReply.Output(command, schema, output))
             | _ -> None
         | Some "unknown-command" -> field "command" |> Option.map CommandReply.UnknownCommand
         | Some "statuses" -> field "statuses" |> Option.map CommandReply.Statuses
@@ -120,9 +130,14 @@ module CommandReply =
 let unknownCommandReply (name: string) : string =
     CommandReply.toJson (CommandReply.UnknownCommand name)
 
-/// The reply `RunCommand` sends for a plugin command's `output`, as it goes on the wire.
+/// The reply `RunCommand` sends for a plugin command's `output` whose reply has `schema`, as
+/// it goes on the wire.
+let declaredOutputReply (name: string) (schema: Plugin.ReplySchema) (output: string) : string =
+    CommandReply.toJson (CommandReply.Output(name, schema, output))
+
+/// `declaredOutputReply` for a command that declares no reply schema.
 let commandOutputReply (name: string) (output: string) : string =
-    CommandReply.toJson (CommandReply.Output(name, output))
+    declaredOutputReply name Plugin.ReplySchema.undeclared output
 
 /// Default hard bound on a `WaitForComplete` verdict wait when the client
 /// imposes no timeout of its own. Deliberately generous — a legitimate cold
@@ -408,10 +423,10 @@ type DaemonRpcTarget
                 else
                     [| argsJson |]
 
-            let! result = Async.StartAsTask(config.Host.RunCommand(name, args), cancellationToken = requester)
+            let! result = Async.StartAsTask(config.Host.RunCommandReply(name, args), cancellationToken = requester)
 
             match result with
-            | Some r -> return commandOutputReply name r
+            | Some(schema, r) -> return declaredOutputReply name schema r
             | None -> return unknownCommandReply name
         }
 

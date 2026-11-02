@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- refactor!: a plugin command's reply is rendered by the schema its plugin declares.
+  `renderCommandReply` sends an output declared `Typed` to that schema's renderer
+  (`IpcOutput.PluginReplies`). A schema this build does not know, or a payload its schema does
+  not describe, is no verdict and names the schema. An output declared `Raw`, and a command that
+  declares nothing, is read by its shape as before.
+
 - refactor!: a command reply is parsed once, where it arrives, and matched on what it is.
   `IpcOutput.renderIpcResult` parses the daemon's reply; the new `renderCommandReply` renders a
   parsed one. `ScopeCommands.overIpc`, `findings`, the forced rebuild and plugin commands all

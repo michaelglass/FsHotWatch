@@ -165,7 +165,7 @@ let private registerWithServices (services: PluginHostServices) (probe: Probe) (
     let registration =
         registerHandler
             { services with
-                RegisterCommand = fun (_, handler) -> command <- Some handler
+                RegisterCommand = fun (_, _, handler) -> command <- Some handler
                 ReportStatus = fun _ status -> probe.Statuses.Enqueue status }
             (leasePluginWith probe safe shared)
 
@@ -528,7 +528,7 @@ let ``a cancelled run restores its displaced status and an owed run verdict stil
     let registration =
         registerHandler
             { defaultServices with
-                RegisterCommand = fun (_, handler) -> command <- Some handler
+                RegisterCommand = fun (_, _, handler) -> command <- Some handler
                 ReportStatus = fun _ status -> statuses.Enqueue status }
             handler
 

@@ -176,7 +176,7 @@ let private readOnce (seams: Seams) (warningsAreFailures: bool) : Answer * bool 
     | Ipc.ReplyReading.Unrecognised _ -> bare Refused [ Ipc.CommandReply.untaggedMessage ], false
     | Ipc.ReplyReading.Tagged(Ipc.CommandReply.Statuses _ | Ipc.CommandReply.Refused _ | Ipc.CommandReply.Formatted _ as other) ->
         bare Refused [ $"the daemon answered `%s{CommandName}` with %A{other}, not its output" ], false
-    | Ipc.ReplyReading.Tagged(Ipc.CommandReply.Output(_, json)) ->
+    | Ipc.ReplyReading.Tagged(Ipc.CommandReply.Output(_, _, json)) ->
         match tryParseReply json with
         | Result.Error why -> bare Refused [ why ], false
         | Result.Ok reply ->

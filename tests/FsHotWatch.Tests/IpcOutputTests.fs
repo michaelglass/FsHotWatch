@@ -3328,3 +3328,21 @@ let ``a daemon reply that is JSON but not an object is a named malformed reply``
 [<Fact(Timeout = 15000)>]
 let ``a rerun whose project entry is not an object is never a green, and never a throw`` () =
     test <@ renderOutput ProgressRenderer.Verbose (fun _ -> []) false """{"projects":[1,"p"]}""" = NoVerdictExitCode @>
+
+[<Fact(Timeout = 15000)>]
+let ``an output declaring a reply schema this build does not know is no verdict, naming the schema`` () =
+    use writer = new System.IO.StringWriter()
+    use _ = VerdictTerminal.install writer
+
+    let result =
+        renderIpcResult
+            ProgressRenderer.Verbose
+            (fun _ -> [])
+            false
+            (FsHotWatch.Ipc.declaredOutputReply
+                "greet"
+                (FsHotWatch.Plugin.ReplySchema.Typed "greeter/greet-v9")
+                """{"status":"passed"}""")
+
+    test <@ result = NoVerdictExitCode @>
+    test <@ writer.ToString().Contains "greeter/greet-v9" @>

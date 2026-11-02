@@ -313,7 +313,7 @@ let ``event receipt and cache wait for durable finalization after candidate publ
         registerHandler
             { defaultServices with
                 TaskCache = Some cache
-                RegisterCommand = fun (_, command) -> readCommand <- Some command }
+                RegisterCommand = fun (_, _, command) -> readCommand <- Some command }
             handler
 
     let receipt =
@@ -437,7 +437,7 @@ let ``ordinary cache write sees published candidate while its event is still own
         registerHandler
             { defaultServices with
                 TaskCache = Some cache
-                RegisterCommand = fun (_, command) -> readCommand <- Some command }
+                RegisterCommand = fun (_, _, command) -> readCommand <- Some command }
             handler
 
     let receipt =
@@ -590,7 +590,7 @@ let ``cache write failure preserves published state and faults the actual event 
         registerHandler
             { defaultServices with
                 TaskCache = Some cache
-                RegisterCommand = fun (_, command) -> readCommand <- Some command }
+                RegisterCommand = fun (_, _, command) -> readCommand <- Some command }
             handler
 
     let receipt =

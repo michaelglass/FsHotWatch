@@ -745,6 +745,19 @@ let private renderPayload
 ///
 /// The clock, the pause between readings, the line sink and the interactive switch are
 /// the caller's, so the reporting of a long wait is testable without one.
+/// The renderers of the plugin reply schemas this build knows, by schema id: each parses its
+/// payload into the plugin's reply type and renders that. A payload its schema does not
+/// describe is `None`, as an unknown schema is.
+module PluginReplies =
+    type Render = ProgressRenderer.RenderMode -> (Map<string, ParsedPluginStatus> -> string list) -> bool -> int
+
+    let private renderers: Map<string, string -> Render option> = Map.empty
+
+    /// The renderer for a `payload` of schema `id`; `None` for a schema this build does not
+    /// know, or a payload it does not describe.
+    let render (id: string) (payload: string) : Render option =
+        Map.tryFind id renderers |> Option.bind (fun parse -> parse payload)
+
 /// Render a command reply the daemon tagged (`Ipc.CommandReply`).
 let renderCommandReply
     (mode: ProgressRenderer.RenderMode)
@@ -760,9 +773,18 @@ let renderCommandReply
     | FsHotWatch.Ipc.CommandReply.Refused reason ->
         UI.fail reason
         1
-    | FsHotWatch.Ipc.CommandReply.Output(_, payload)
+    // A plugin declaring no schema, or a free-form one: its payload is read by its shape.
+    | FsHotWatch.Ipc.CommandReply.Output(_, FsHotWatch.Plugin.ReplySchema.Raw _, payload)
     | FsHotWatch.Ipc.CommandReply.Statuses payload
     | FsHotWatch.Ipc.CommandReply.Formatted payload -> renderPayload mode renderStatuses noWarnFail payload
+    | FsHotWatch.Ipc.CommandReply.Output(command, FsHotWatch.Plugin.ReplySchema.Typed id, payload) ->
+        match PluginReplies.render id payload with
+        | Some rendered -> rendered mode renderStatuses noWarnFail
+        | None ->
+            VerdictTerminal.fail
+                $"the daemon answered `%s{command}` with reply schema `%s{id}`, which this fshw does not know or cannot read: the daemon is from another fshw build; `fshw stop` restarts it — no verdict"
+
+            NoVerdictExitCode
 
 /// Render a command-shaped RPC's reply, parsed once here. A reply this build cannot parse
 /// (an untagged one, from a daemon of another fshw build) is no verdict, said as such.
