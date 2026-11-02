@@ -158,6 +158,16 @@ let internal failuresAfter (outcomes: ExtensionRefresh list) (failed: Map<string
             | ExtensionRefresh.Failed(name, ex) -> Map.add name ex.Message failed)
         failed
 
+/// Remove `symbols` from the queue: a covering run passed them, or they have no
+/// covering test. Durable once the state carrying it is prepared.
+let internal commitPending (symbols: Set<string>) (debt: VerificationDebt) =
+    if symbols.IsEmpty then
+        debt
+    else
+        { debt with
+            PendingQueue = Set.difference debt.PendingQueue symbols
+            SymbolRevisions = debt.SymbolRevisions |> Map.filter (fun s _ -> not (Set.contains s symbols)) }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -517,15 +527,6 @@ let internal createWithEvidenceAndQueries
         debt.SymbolRevisions |> Map.tryFind symbol |> Option.defaultValue 0L
 
 
-    /// Remove `symbols` from the queue: a covering run passed them, or they have no
-    /// covering test. Durable once the state carrying it is prepared.
-    let commitPending (symbols: Set<string>) (debt: VerificationDebt) =
-        if symbols.IsEmpty then
-            debt
-        else
-            { debt with
-                PendingQueue = Set.difference debt.PendingQueue symbols
-                SymbolRevisions = debt.SymbolRevisions |> Map.filter (fun s _ -> not (Set.contains s symbols)) }
 
     let expectedRuntimeCoverageProjects =
         match testConfigs, coveragePaths with
