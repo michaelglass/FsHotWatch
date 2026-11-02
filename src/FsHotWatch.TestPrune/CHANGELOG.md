@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- refactor: the plugin's remaining steps leave `createWithEvidenceAndQueries`, which keeps only its
+  wiring: `PluginSteps` (its steps over state) and `PluginStartup` (its restored sidecars, starting
+  debt and state, and its freshness cell).
+
 ## 0.13.0-alpha.102 - 2026-11-02
 
 - feat: the test-prune commands declare their reply schemas: `run-tests` and `test-results`
@@ -23,8 +27,7 @@
   run itself), and the plugin's event
   handlers over explicit envs: `FileCheckedHandler`, `CheckHandlers` (`BatchChecked` and
   `BuildCompleted`), `RunFinished` (a run's completion), `CompletionStages` (its stages) and
-  `RunOutcomeReport` (its terminal status), `PluginFold` (the fold and cache key), `PluginSteps` (its steps over state), `PluginStartup`
-  (what it starts from) and `PluginRuns` (the
+  `RunOutcomeReport` (its terminal status), `PluginFold` (the fold and cache key) and `PluginRuns` (the
   plugin's run steps). Top-level
   `private` definitions the plugin still uses became `internal`; `Flakiness.historyPath` replaces
   the plugin's private history path.
