@@ -2182,15 +2182,15 @@
     ],
     "PluginSteps.fs": [
       {
-        "line": 89,
+        "line": 88,
         "branch": 84,
-        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 89.7%, branch 106/126. With PluginStartup and TestPrunePlugin the three files cover 160 of 184 branches, as TestPrunePlugin.fs did before the split.",
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 88.8% to 89.7% across two runs (its run-lifecycle helpers include timing-dependent paths), branch 106/126. With PluginStartup and TestPrunePlugin the three files cover 160 of 184 branches, as TestPrunePlugin.fs did before the split.",
         "platform": "macos"
       },
       {
-        "line": 89,
+        "line": 88,
         "branch": 84,
-        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 89.7%, branch 106/126. With PluginStartup and TestPrunePlugin the three files cover 160 of 184 branches, as TestPrunePlugin.fs did before the split.",
+        "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 88.8% to 89.7% across two runs (its run-lifecycle helpers include timing-dependent paths), branch 106/126. With PluginStartup and TestPrunePlugin the three files cover 160 of 184 branches, as TestPrunePlugin.fs did before the split.",
         "platform": "linux"
       }
     ],
