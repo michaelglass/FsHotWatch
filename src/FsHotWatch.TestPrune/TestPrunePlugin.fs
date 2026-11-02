@@ -631,6 +631,38 @@ let internal unavailableRunWith
 let internal compileInputsOfIn (repoRoot: string) (ctx: PluginCtx<TestPruneMsg>) () : string -> bool =
     ReceiptInputTree.feedsCompile repoRoot (ctx.ProjectGraph.ObserveCheckableFiles() |> Option.map snd)
 
+/// Flush, then select, unless the mode skips `FlushSelection`: pass-through records
+/// the debt without selecting or classifying it, and only a full run's green
+/// discharges it.
+let internal flushAndQueryAffectedWith
+    (flushPending: PluginCtx<TestPruneMsg> -> TestPruneState -> TestPruneState * RuntimeCoverageObligations)
+    (joinRefresh: StateStep)
+    (selectAffected: TestPruneState -> RuntimeCoverageObligations -> TestPruneState)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (state: TestPruneState)
+    =
+    let flushedState, runtimeObligations = flushPending ctx state
+
+    // A selection that queries the index follows the extensions' edges.
+    let flushedState =
+        if
+            Set.isEmpty flushedState.Debt.PendingQueue
+            && List.isEmpty flushedState.ChangedSymbols
+        then
+            flushedState
+        else
+            joinRefresh ctx flushedState
+
+    if TestMode.skips FlushSelection flushedState.Mode then
+        { flushedState with
+            Debt =
+                { flushedState.Debt with
+                    RuntimeObligations = runtimeObligations }
+            AffectedTests = Analyzed []
+            ChangedSymbolsAllUncovered = UncoveredChanges.No }
+    else
+        selectAffected flushedState runtimeObligations
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1014,31 +1046,8 @@ let internal createWithEvidenceAndQueries
     let selectAffected (flushedState: TestPruneState) (runtimeObligations: RuntimeCoverageObligations) =
         selectAffectedWith selectionEnv flushedState runtimeObligations
 
-    /// Flush, then select, unless the mode skips `FlushSelection`: pass-through records
-    /// the debt without selecting or classifying it, and only a full run's green
-    /// discharges it.
-    let flushAndQueryAffected (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
-        let flushedState, runtimeObligations = flushPending ctx state
-
-        // A selection that queries the index follows the extensions' edges.
-        let flushedState =
-            if
-                Set.isEmpty flushedState.Debt.PendingQueue
-                && List.isEmpty flushedState.ChangedSymbols
-            then
-                flushedState
-            else
-                joinRefresh ctx flushedState
-
-        if TestMode.skips FlushSelection flushedState.Mode then
-            { flushedState with
-                Debt =
-                    { flushedState.Debt with
-                        RuntimeObligations = runtimeObligations }
-                AffectedTests = Analyzed []
-                ChangedSymbolsAllUncovered = UncoveredChanges.No }
-        else
-            selectAffected flushedState runtimeObligations
+    let flushAndQueryAffected =
+        flushAndQueryAffectedWith flushPending joinRefresh selectAffected
 
     /// `flushAndQueryAffected` under the bound it declares over itself
     /// (`ImpactSelectionDeadline`). Every caller goes through this: the fold is the same
