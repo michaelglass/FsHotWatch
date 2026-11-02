@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `warnings` declares its reply schema (`lint/warnings-v1`). The new `LintReplies` module
+  holds the reply as a type (`Warnings`: its file and warning counts), with the writer that
+  produces the same JSON as before and a reader for it.
+
 ## 0.7.0-alpha.39 - 2026-10-30
 
 - build: package versions come from Directory.Packages.props (Central Package Management, now

@@ -91,3 +91,28 @@ let ``a build-status payload its schema does not describe is no verdict`` (paylo
 [<InlineData("""{"status":"ok","forced":false}""")>]
 let ``a force-rebuild payload its schema does not describe is no verdict`` (payload: string) =
     refusesUndescribed "force-rebuild" ForceRebuildSchema payload
+
+[<Fact(Timeout = 15000)>]
+let ``warnings is written as the JSON it always was, and read back as itself`` () =
+    let warnings: FsHotWatch.Lint.LintReplies.Warnings = { Files = 2; Warnings = 7 }
+    test <@ FsHotWatch.Lint.LintReplies.Warnings.serialize warnings = """{"files": 2, "warnings": 7}""" @>
+
+    test
+        <@
+            FsHotWatch.Lint.LintReplies.Warnings.tryParse (FsHotWatch.Lint.LintReplies.Warnings.serialize warnings) = Some
+                warnings
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``a typed warnings reply renders exactly as its shape did`` () =
+    for files, warnings in [ 0, 0; 3, 11 ] do
+        rendersAsSniffed
+            "warnings"
+            FsHotWatch.Lint.LintReplies.WarningsSchema
+            (FsHotWatch.Lint.LintReplies.Warnings.serialize { Files = files; Warnings = warnings })
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("""{"files": 2}""")>]
+[<InlineData("""{"files": "2", "warnings": 1}""")>]
+let ``a warnings payload its schema does not describe is no verdict`` (payload: string) =
+    refusesUndescribed "warnings" FsHotWatch.Lint.LintReplies.WarningsSchema payload

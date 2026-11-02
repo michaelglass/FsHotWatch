@@ -745,6 +745,11 @@ let private renderPayload
 module PluginReplies =
     type Render = ProgressRenderer.RenderMode -> (Map<string, ParsedPluginStatus> -> string list) -> bool -> int
 
+    /// A reply its schema describes, rendered as the status map its shape was always read as.
+    let private asStatusMap (tryParse: string -> 'Reply option) (payload: string) : Render option =
+        tryParse payload
+        |> Option.map (fun _ _ renderStatuses _ -> renderStatusMap renderStatuses payload)
+
     let private build: (string * (string -> Render option)) list =
         let buildStatus payload =
             FsHotWatch.Build.BuildReplies.BuildStatus.tryParse payload
@@ -755,16 +760,15 @@ module PluginReplies =
                 // Read as a status map, as its shape always was: it holds no plugin's status.
                 | FsHotWatch.Build.BuildReplies.BuildStatus.NotRun -> renderStatusMap renderStatuses payload)
 
-        let forceRebuild payload =
-            FsHotWatch.Build.BuildReplies.ForceRebuild.tryParse payload
-            // Read as a status map, as its shape always was: it holds no plugin's status.
-            |> Option.map (fun FsHotWatch.Build.BuildReplies.ForceRebuild.Forced _ renderStatuses _ ->
-                renderStatusMap renderStatuses payload)
-
         [ FsHotWatch.Build.BuildReplies.BuildStatusSchema, buildStatus
-          FsHotWatch.Build.BuildReplies.ForceRebuildSchema, forceRebuild ]
+          FsHotWatch.Build.BuildReplies.ForceRebuildSchema,
+          asStatusMap FsHotWatch.Build.BuildReplies.ForceRebuild.tryParse ]
 
-    let private renderers: Map<string, string -> Render option> = Map.ofList build
+    let private lint: (string * (string -> Render option)) list =
+        [ FsHotWatch.Lint.LintReplies.WarningsSchema, asStatusMap FsHotWatch.Lint.LintReplies.Warnings.tryParse ]
+
+    let private renderers: Map<string, string -> Render option> =
+        Map.ofList (build @ lint)
 
     /// The renderer for a `payload` of schema `id`; `None` for a schema this build does not
     /// know, or a payload it does not describe.

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- refactor: the CLI renders the lint `warnings` reply by its declared schema, with the same
+  output and exit code as before. A payload the schema does not describe is no verdict.
+
 - refactor: the CLI renders `build-status` and `force-rebuild` replies by their declared schemas,
   with the same output and exit codes as before. A payload either schema does not describe is
   no verdict.
