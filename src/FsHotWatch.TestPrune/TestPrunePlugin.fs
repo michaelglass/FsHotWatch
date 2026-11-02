@@ -1131,6 +1131,62 @@ let internal debtFromRestored
       RuntimeObligations = pruneRuntimeCoverageObligations allowedRuntimeProjects loadedRuntimeObligations
       CoverageNotIngested = loadedNotIngested }
 
+/// Seed the in-memory hot view from the durable queue so a restart with a non-empty
+/// queue re-flags those symbols. Without this, a restart diffs current symbols against
+/// the already-advanced analysis snapshot → "nothing changed" → zero tests run → false
+/// green.
+let internal initialStateOf
+    (initialMode: TestMode)
+    (mayReplay: Map<string, string> -> FileCheckResult -> bool)
+    (loadedDebt: VerificationDebt)
+    (restored: RestoredState)
+    : TestPruneState =
+    let loadedFailures = restored.LoadedFailures
+    let restoredEvidence = restored.RestoredEvidence
+
+    { Debt = loadedDebt
+      Mode = initialMode
+      InFlight = None
+      LastRed = None
+      SealedTree = None
+      AwaitingDiff = None
+      OwedRunHeld = false
+      CompletedRuns = []
+      CheckReaches = []
+      Replies = []
+      PendingAnalysis = Map.empty
+      AnalysisModelGeneration = None
+      AnalysisFiles = Map.empty
+      CohortSeal = None
+      AnalysisReceipt = None
+      SymbolSnapshot = Map.empty
+      AffectedTests = NotYetAnalyzed
+      ChangedSymbols = loadedDebt.PendingQueue |> Set.toList
+      ChangedFiles = []
+      LastResults = None
+      LastSeeds = []
+      LastSeedFanout = SeedFanoutReading.NoSelection
+      DebtDuringFullRun = Map.empty
+      CoveredFullSuite = None
+      TestClassFiles = Map.empty
+      BuildCompletedInThisSession = false
+      PriorProjectFingerprints = Map.empty
+      PendingForceRunProjects = Set.empty
+      ChangedSymbolsAllUncovered = UncoveredChanges.No
+      UnanalyzableFiles = Map.empty
+      NotSelected = Map.empty
+      PendingIdentities = Map.empty
+      Unindexed = Set.empty
+      IndexGuard = IndexedAnalysis.Guard mayReplay
+      FailedExtensions = Map.empty
+      // The previous session's reds, quarantined into the first run.
+      OutstandingFailures = loadedFailures
+      LastCoverage = RunCoverage.none
+      LastZeroSelection = ZeroSelection.NotAZero
+      Receipt = HeldReceipt.NoneYet
+      Earned = None
+      RestoredEvidence = restoredEvidence }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1206,8 +1262,6 @@ let internal createWithEvidenceAndQueries
     let restored = restorePersisted repoRoot
     let ledgerUnreadableReason = restored.LedgerUnreadableReason
     let debtPublicationPath = restored.DebtPublicationPath
-    let loadedFailures = restored.LoadedFailures
-    let restoredEvidence = restored.RestoredEvidence
     let loadedRuntimeObligations = restored.LoadedRuntimeObligations
 
     let coverageIngestFailed = coverageIngestFailedIn repoRoot
@@ -1437,53 +1491,7 @@ let internal createWithEvidenceAndQueries
                 updateFreshness kept
         | _ -> ()
 
-    // Seed the in-memory hot view from the durable queue so a restart with a non-empty
-    // queue re-flags those symbols. Without this, a restart diffs current symbols against
-    // the already-advanced analysis snapshot → "nothing changed" → zero tests run → false
-    // green.
-    let initialState =
-        { Debt = loadedDebt
-          Mode = initialMode
-          InFlight = None
-          LastRed = None
-          SealedTree = None
-          AwaitingDiff = None
-          OwedRunHeld = false
-          CompletedRuns = []
-          CheckReaches = []
-          Replies = []
-          PendingAnalysis = Map.empty
-          AnalysisModelGeneration = None
-          AnalysisFiles = Map.empty
-          CohortSeal = None
-          AnalysisReceipt = None
-          SymbolSnapshot = Map.empty
-          AffectedTests = NotYetAnalyzed
-          ChangedSymbols = loadedDebt.PendingQueue |> Set.toList
-          ChangedFiles = []
-          LastResults = None
-          LastSeeds = []
-          LastSeedFanout = SeedFanoutReading.NoSelection
-          DebtDuringFullRun = Map.empty
-          CoveredFullSuite = None
-          TestClassFiles = Map.empty
-          BuildCompletedInThisSession = false
-          PriorProjectFingerprints = Map.empty
-          PendingForceRunProjects = Set.empty
-          ChangedSymbolsAllUncovered = UncoveredChanges.No
-          UnanalyzableFiles = Map.empty
-          NotSelected = Map.empty
-          PendingIdentities = Map.empty
-          Unindexed = Set.empty
-          IndexGuard = IndexedAnalysis.Guard mayReplay
-          FailedExtensions = Map.empty
-          // The previous session's reds, quarantined into the first run.
-          OutstandingFailures = loadedFailures
-          LastCoverage = RunCoverage.none
-          LastZeroSelection = ZeroSelection.NotAZero
-          Receipt = HeldReceipt.NoneYet
-          Earned = None
-          RestoredEvidence = restoredEvidence }
+    let initialState = initialStateOf initialMode mayReplay loadedDebt restored
 
 
     let observeTestInputs = observeTestInputsOf testConfigs
