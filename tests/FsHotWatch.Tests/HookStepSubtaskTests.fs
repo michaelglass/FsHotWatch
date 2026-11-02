@@ -14,6 +14,8 @@ open FsHotWatch
 open FsHotWatch.Cli.DaemonConfig
 open FsHotWatch.PluginHost
 open FsHotWatch.Daemon
+open FsHotWatch.TestPrune.PluginRuns
+open FsHotWatch.TestPrune.PluginFold
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.TestPrune.SelectionAssembly
 open FsHotWatch.TestPrune.PluginTypes

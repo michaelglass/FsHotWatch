@@ -6,6 +6,8 @@ module FsHotWatch.Tests.TestPruneSupersededModelLogTests
 open System.IO
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.TestPrune.PluginRuns
+open FsHotWatch.TestPrune.PluginFold
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.Tests.TestHelpers
 

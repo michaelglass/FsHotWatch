@@ -16,6 +16,8 @@ open System.IO
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
+open FsHotWatch.TestPrune.PluginRuns
+open FsHotWatch.TestPrune.PluginFold
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.TestPrune.TestReports
 open FsHotWatch.TestPrune.FailureReports

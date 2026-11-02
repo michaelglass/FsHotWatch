@@ -10,6 +10,8 @@ open FsHotWatch.Daemon
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.ProcessHelper
+open FsHotWatch.TestPrune.PluginRuns
+open FsHotWatch.TestPrune.PluginFold
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.TestPrune.FailureReports
 open FsHotWatch.TestPrune.SelectionAssembly

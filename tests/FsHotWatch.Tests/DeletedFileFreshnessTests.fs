@@ -16,6 +16,8 @@ open FsHotWatch.CheckPipeline
 open FsHotWatch.Events
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune
+open FsHotWatch.TestPrune.PluginRuns
+open FsHotWatch.TestPrune.PluginFold
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.TestPrune.SelectionAssembly
 open FsHotWatch.TestPrune.PluginTypes

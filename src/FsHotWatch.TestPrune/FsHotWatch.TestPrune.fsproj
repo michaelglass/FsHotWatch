@@ -92,6 +92,8 @@
     <Compile Include="RunOutcomeReport.fs" />
     <Compile Include="CompletionStages.fs" />
     <Compile Include="RunFinished.fs" />
+    <Compile Include="PluginFold.fs" />
+    <Compile Include="PluginRuns.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 

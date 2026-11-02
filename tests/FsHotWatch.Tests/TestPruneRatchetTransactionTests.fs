@@ -9,6 +9,8 @@ open System
 open System.IO
 open Microsoft.Data.Sqlite
 open Xunit
+open FsHotWatch.TestPrune.PluginRuns
+open FsHotWatch.TestPrune.PluginFold
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.TestPrune.CoverageIngest
 open FsHotWatch.TestPrune.CoverageArtifacts

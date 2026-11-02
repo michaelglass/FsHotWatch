@@ -9,6 +9,8 @@ open Swensen.Unquote
 open FsHotWatch.CheckPipeline
 open FsHotWatch.Events
 open TestPrune.AstAnalyzer
+open FsHotWatch.TestPrune.PluginRuns
+open FsHotWatch.TestPrune.PluginFold
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.TestPrune.TestFilters
 open FsHotWatch.TestPrune.SelectionAssembly

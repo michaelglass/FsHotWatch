@@ -21,6 +21,8 @@ open FsHotWatch.ProjectGraph
 module LintPlugin = FsHotWatch.Lint.LintPlugin
 
 open FsHotWatch.Fantomas.FormatCheckPlugin
+open FsHotWatch.TestPrune.PluginRuns
+open FsHotWatch.TestPrune.PluginFold
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.TestPrune.FailureReports
 open FsHotWatch.TestPrune.SelectionAssembly

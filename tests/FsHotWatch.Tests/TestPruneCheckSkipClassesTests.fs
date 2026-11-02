@@ -20,6 +20,8 @@ open TestPrune.Database
 open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open FsHotWatch.TestPrune
+open FsHotWatch.TestPrune.PluginRuns
+open FsHotWatch.TestPrune.PluginFold
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.TestPrune.SelectionAssembly
 open FsHotWatch.TestPrune.ReceiptTransitions

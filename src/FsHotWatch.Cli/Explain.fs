@@ -12,6 +12,8 @@ open System.IO
 open System.Text.Json
 open TestPrune.Database
 open FsHotWatch.TestPrune
+open FsHotWatch.TestPrune.PluginRuns
+open FsHotWatch.TestPrune.PluginFold
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.TestPrune.SelectionAssembly
 open FsHotWatch.TestPrune.EvidenceReceipts

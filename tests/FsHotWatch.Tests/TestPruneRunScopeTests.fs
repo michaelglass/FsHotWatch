@@ -18,6 +18,8 @@ open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
+open FsHotWatch.TestPrune.PluginRuns
+open FsHotWatch.TestPrune.PluginFold
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.TestPrune.ProjectLaunch
 open FsHotWatch.TestPrune.RunGroups
