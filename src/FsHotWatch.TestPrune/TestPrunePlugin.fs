@@ -2175,6 +2175,24 @@ type internal ExtensionRefreshPhase =
     /// something or an extension failed (`FailedExtensions`).
     | Refreshed
 
+/// How far a requested run's work has got, for the path that closes it when it is
+/// cancelled: a run it started must be completed, and a run it returned is closed by the
+/// fold of what it returned.
+[<RequireQualifiedAccess>]
+type internal RequestedRunProgress =
+    /// No run started yet.
+    | NotStarted
+    /// This run started and has not returned.
+    | Started of TestRunStarted
+    /// The work returned its result; the fold closes the run.
+    | Returned
+
+/// The file-freshness sidecar a plugin holds, with the project model generation it was
+/// last reconciled against (`None` before the first). Read and replaced as one value.
+type internal FreshnessView =
+    { Store: FileFreshness.Store
+      ReconciledAt: int64 option }
+
 /// The impact queries the plugin runs against its index, in one place, so a test can
 /// count them per handler instance.
 type internal ImpactQueries =
@@ -3376,10 +3394,16 @@ let internal createWithEvidenceAndQueries
     // Per-file FCS freshness sidecar, loaded once at plugin construction from
     // `.fshw/test-prune/file-freshness.json` and updated incrementally on each
     // FileChecked. Survives daemon restarts so a cross-restart replay can decide which
-    // files' stored symbols are trustworthy enough to run detectChanges against.
+    // files' stored symbols are trustworthy enough to run detectChanges against. Held with
+    // the project model generation it was last reconciled against, as one value.
     //
     // Closure-local mutable cell + Volatile: only the Update handler reads and writes it.
-    let mutable freshnessRef: FileFreshness.Store = FileFreshness.load repoRoot
+    let mutable freshness: FreshnessView =
+        { Store = FileFreshness.load repoRoot
+          ReconciledAt = None }
+
+    /// The sidecar as it stands.
+    let freshnessStore () = (Volatile.Read(&freshness)).Store
 
     /// The clock `storedRowsExist: bool` did not have. Rows written
     /// seconds ago by this session's own scan are not a baseline; diffing the current
@@ -3389,7 +3413,11 @@ let internal createWithEvidenceAndQueries
     let priorRows = FileFreshness.PriorRowLedger()
 
     let updateFreshness (newStore: FileFreshness.Store) =
-        Volatile.Write(&freshnessRef, newStore)
+        Volatile.Write(
+            &freshness,
+            { Volatile.Read(&freshness) with
+                Store = newStore }
+        )
 
         try
             FileFreshness.save repoRoot newStore
@@ -3398,17 +3426,21 @@ let internal createWithEvidenceAndQueries
                 "test-prune"
                 $"failed to persist file-freshness sidecar: %s{ex.Message}; in-memory state still updated"
 
-    // The project model generation the sidecar was last reconciled against. A file
-    // deleted together with its compile entry is unregistered by the re-evaluation that
-    // publishes the next model, so it gets no FileChecked and no `stamp` forgets it; the
-    // model moving is the event that says such a file may be gone.
-    let mutable freshnessReconciledAt: int64 option = None
-
+    // A file deleted together with its compile entry is unregistered by the re-evaluation
+    // that publishes the next model, so it gets no FileChecked and no `stamp` forgets it;
+    // the model moving is the event that says such a file may be gone.
     let reconcileFreshness (modelGeneration: int64 option) =
+        let current = Volatile.Read(&freshness)
+
         match modelGeneration with
-        | Some generation when modelGeneration <> Volatile.Read(&freshnessReconciledAt) ->
-            Volatile.Write(&freshnessReconciledAt, modelGeneration)
-            let kept, dropped = FileFreshness.dropGone repoRoot (Volatile.Read(&freshnessRef))
+        | Some generation when modelGeneration <> current.ReconciledAt ->
+            Volatile.Write(
+                &freshness,
+                { current with
+                    ReconciledAt = modelGeneration }
+            )
+
+            let kept, dropped = FileFreshness.dropGone repoRoot current.Store
 
             if not dropped.IsEmpty then
                 for relPath in dropped do
@@ -4494,11 +4526,16 @@ let internal createWithEvidenceAndQueries
             logLaunch "forced" mode commandLaunch
             logSelectedBy commandLaunch
 
-            let mutable emittedStart: TestRunStarted option = None
-            let mutable returned = false
+            let mutable progress = RequestedRunProgress.NotStarted
+
+            let emittedStart () =
+                match progress with
+                | RequestedRunProgress.Started started -> Some started
+                | RequestedRunProgress.NotStarted
+                | RequestedRunProgress.Returned -> None
 
             let emitStarted started =
-                emittedStart <- Some started
+                progress <- RequestedRunProgress.Started started
                 ctx.EmitTestRunStarted started
 
             try
@@ -4545,7 +4582,7 @@ let internal createWithEvidenceAndQueries
                     // delivers it: the synchronous handler does the error reporting and
                     // status updates a bare emit would skip, and the reply is resolved
                     // only once that completion is published.
-                    returned <- true
+                    progress <- RequestedRunProgress.Returned
 
                     return
                         CommandTestsFinished(
@@ -4564,12 +4601,12 @@ let internal createWithEvidenceAndQueries
                     // lifecycle drives the TestsFinished handler to a Failed
                     // status.
                     Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
-                    let started, completed = abortedRunLifecycle emittedStart ex.Message
+                    let started, completed = abortedRunLifecycle (emittedStart ()) ex.Message
 
-                    if emittedStart.IsNone then
+                    if (emittedStart ()).IsNone then
                         emitStarted started
 
-                    returned <- true
+                    progress <- RequestedRunProgress.Returned
 
                     return
                         CommandTestsFinished(
@@ -4582,20 +4619,20 @@ let internal createWithEvidenceAndQueries
             finally
                 // Cancellation — daemon teardown, or every client that asked for this run
                 // has gone — skips `with` but runs `finally`, and no completion will fold.
-                if not returned then
-                    let reason = "the run was cancelled before it completed"
+                let reason = "the run was cancelled before it completed"
 
-                    // Close the run this work opened. Subscribers track every started run
-                    // until its completion (Build defers every build while one is live),
-                    // so a started run must end. `Aborted` with no results is evidence of
-                    // nothing: it is never a pass.
-                    match emittedStart with
-                    | Some started ->
-                        let _, completed = abortedRunLifecycle (Some started) reason
-                        ctx.EmitTestRunCompleted completed
-                    | None -> ()
-
+                // Close the run this work opened. Subscribers track every started run
+                // until its completion (Build defers every build while one is live),
+                // so a started run must end. `Aborted` with no results is evidence of
+                // nothing: it is never a pass.
+                match progress with
+                | RequestedRunProgress.Returned -> ()
+                | RequestedRunProgress.Started started ->
+                    let _, completed = abortedRunLifecycle (Some started) reason
+                    ctx.EmitTestRunCompleted completed
                     // Never leave a client that is still waiting on a reply that cannot come.
+                    reply.TrySetResult(JsonSerializer.Serialize({| error = reason |})) |> ignore
+                | RequestedRunProgress.NotStarted ->
                     reply.TrySetResult(JsonSerializer.Serialize({| error = reason |})) |> ignore
         }
 
@@ -5902,12 +5939,7 @@ let internal createWithEvidenceAndQueries
                                 $"%s{relPath} no longer exists; dropping it rather than reporting '%s{reason}' (%s{detail})"
 
                             updateFreshness (
-                                FileFreshness.stamp
-                                    FileFreshness.Gone
-                                    false
-                                    DateTime.UtcNow
-                                    relPath
-                                    (Volatile.Read(&freshnessRef))
+                                FileFreshness.stamp FileFreshness.Gone false DateTime.UtcNow relPath (freshnessStore ())
                             )
 
                             { state with
@@ -5979,7 +6011,7 @@ let internal createWithEvidenceAndQueries
                             )
 
                         let storedFreshness =
-                            let store = Volatile.Read(&freshnessRef)
+                            let store = freshnessStore ()
                             FileFreshness.classify relPath store
 
                         // FileChecked is the completion payload from the daemon's warm FCS
@@ -6216,7 +6248,7 @@ let internal createWithEvidenceAndQueries
                                     (currentClean && state.BuildCompletedInThisSession)
                                     now
                                     relPath
-                                    (Volatile.Read(&freshnessRef))
+                                    (freshnessStore ())
 
                             updateFreshness updatedFreshness
 
