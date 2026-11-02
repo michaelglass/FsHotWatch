@@ -229,6 +229,23 @@ let internal enqueueImpactRun (ctx: PluginCtx<TestPruneMsg>) =
 let internal observeTestInputsOf (testConfigs: TestConfig list option) (ctx: PluginCtx<TestPruneMsg>) =
     ObservedModel.testInputs ctx.ProjectGraph (defaultArg testConfigs [] |> List.map _.Project)
 
+/// Why the full-suite baseline cannot vouch for what a filtered run
+/// over the configured projects would skip — `None` when it can. Analysis-only
+/// daemons make no test claim and so owe no baseline.
+///
+/// Unknown debt is folded in: the baseline composes with the queue (the queue names
+/// what changed since the baseline), so a baseline beside a ledger that cannot be
+/// read vouches for nothing until a full suite re-earns both.
+let internal baselineInvalidReasonIn (runnableProjects: Set<string>) (debt: VerificationDebt) : string option =
+    if Set.isEmpty runnableProjects then
+        None
+    elif debt.RecoveryOutstanding then
+        Some "what is owed is unknown, so the full-suite baseline cannot say what changed since it was earned"
+    else
+        match debt.Baseline with
+        | None -> Some FullSuiteBaseline.absentReason
+        | Some baseline -> FullSuiteBaseline.staleness runnableProjects baseline
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -512,22 +529,7 @@ let internal createWithEvidenceAndQueries
         | None -> Set.empty
 
 
-    /// Why the full-suite baseline cannot vouch for what a filtered run
-    /// over the configured projects would skip — `None` when it can. Analysis-only
-    /// daemons make no test claim and so owe no baseline.
-    ///
-    /// Unknown debt is folded in: the baseline composes with the queue (the queue names
-    /// what changed since the baseline), so a baseline beside a ledger that cannot be
-    /// read vouches for nothing until a full suite re-earns both.
-    let baselineInvalidReason (debt: VerificationDebt) : string option =
-        if Set.isEmpty runnableProjects then
-            None
-        elif debt.RecoveryOutstanding then
-            Some "what is owed is unknown, so the full-suite baseline cannot say what changed since it was earned"
-        else
-            match debt.Baseline with
-            | None -> Some FullSuiteBaseline.absentReason
-            | Some baseline -> FullSuiteBaseline.staleness runnableProjects baseline
+    let baselineInvalidReason = baselineInvalidReasonIn runnableProjects
 
     /// The one question every skip in this plugin is really asking: is the
     /// needs-testing queue PROVABLY empty? Unknown debt is never `true` here — an empty
