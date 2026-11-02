@@ -626,6 +626,11 @@ let internal unavailableRunWith
             |> Option.map (fun target -> target, JsonSerializer.Serialize {| error = message |})
             |> Option.toList }
 
+/// Which repo-relative paths a build consumed, under the model the host publishes when
+/// asked — so `executeTests` observes it after `beforeRun`, not at launch.
+let internal compileInputsOfIn (repoRoot: string) (ctx: PluginCtx<TestPruneMsg>) () : string -> bool =
+    ReceiptInputTree.feedsCompile repoRoot (ctx.ProjectGraph.ObserveCheckableFiles() |> Option.map snd)
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -667,10 +672,7 @@ let internal createWithEvidenceAndQueries
     // `TestMode.startingWith false` for a host that runs only what a command requests.
     (initialMode: TestMode)
     =
-    /// Which repo-relative paths a build consumed, under the model the host publishes when
-    /// asked — so `executeTests` observes it after `beforeRun`, not at launch.
-    let compileInputsOf (ctx: PluginCtx<TestPruneMsg>) () : string -> bool =
-        ReceiptInputTree.feedsCompile repoRoot (ctx.ProjectGraph.ObserveCheckableFiles() |> Option.map snd)
+    let compileInputsOf = compileInputsOfIn repoRoot
 
     let tracesFor = tracesForIn repoRoot traces
 
