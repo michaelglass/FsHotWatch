@@ -2081,6 +2081,20 @@
         "reason": "Moved out of TestPrunePlugin.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 93.8%, branch 196/220. Lowered from 89 after inspection (AUTOMATION-1448 group 6): the settleDebt stage moved the loop over launch.RuntimeProjectsByFile out of the async builder into a plain function, where the compiler emits an enumerator-disposal branch whose other side cannot run (a Map enumerator is always IDisposable). Every other partially covered line is unchanged; measured 2026-11-02 on macOS: line 95.3%, branch 199/224.",
         "platform": "linux"
       }
+    ],
+    "ImpactLaunch.fs": [
+      {
+        "line": 95,
+        "branch": 91,
+        "reason": "Moved out of ImpactRun.fs (AUTOMATION-1448), whose floor covered this code until then. Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by the unit suite (mise run test-direct): line 95.9%, branch 93/102.",
+        "platform": "macos"
+      },
+      {
+        "line": 95,
+        "branch": 91,
+        "reason": "Moved out of ImpactRun.fs (AUTOMATION-1448), whose Linux floor equalled its macOS floor. The moved code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 95.9%, branch 93/102.",
+        "platform": "linux"
+      }
     ]
   },
   "countFloors": {
