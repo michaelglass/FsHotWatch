@@ -437,6 +437,28 @@ let internal launchScopeUnder (baselineInvalidReason: VerificationDebt -> string
     else
         LaunchedSelection
 
+/// What a drain is FOR, in words. Unknown debt cannot be counted, so it is named.
+let internal owedDescriptionUnder (baselineInvalidReason: VerificationDebt -> string option) (debt: VerificationDebt) =
+    let queued = Set.count debt.PendingQueue
+
+    if debt.RecoveryOutstanding then
+        $"UNKNOWN verification debt (%s{describeUnknownDebt debt.UnknownDebt}), which only a full suite can prove, + %d{queued} newly-queued symbol(s)"
+    else
+        // A drain owed only to the baseline says so, or a reader sees
+        // "0 symbol(s) awaiting verification — draining now" and goes looking for the
+        // bug in the queue.
+        let notIngested =
+            if Map.isEmpty debt.CoverageNotIngested then
+                ""
+            else
+                let projects = debt.CoverageNotIngested |> Map.keys |> String.concat ", "
+                $" + a whole-project run of %s{projects}, whose runtime coverage did not ingest"
+
+        match baselineInvalidReason debt with
+        | Some reason ->
+            $"%d{queued} symbol(s) awaiting verification + a full suite to earn the baseline (%s{reason})%s{notIngested}"
+        | None -> $"%d{queued} symbol(s) awaiting verification%s{notIngested}"
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -700,27 +722,7 @@ let internal createWithEvidenceAndQueries
 
     let nothingOwed = nothingOwedUnder baselineInvalidReason
 
-    /// What a drain is FOR, in words. Unknown debt cannot be counted, so it is named.
-    let owedDescription (debt: VerificationDebt) =
-        let queued = Set.count debt.PendingQueue
-
-        if debt.RecoveryOutstanding then
-            $"UNKNOWN verification debt (%s{describeUnknownDebt debt.UnknownDebt}), which only a full suite can prove, + %d{queued} newly-queued symbol(s)"
-        else
-            // A drain owed only to the baseline says so, or a reader sees
-            // "0 symbol(s) awaiting verification — draining now" and goes looking for the
-            // bug in the queue.
-            let notIngested =
-                if Map.isEmpty debt.CoverageNotIngested then
-                    ""
-                else
-                    let projects = debt.CoverageNotIngested |> Map.keys |> String.concat ", "
-                    $" + a whole-project run of %s{projects}, whose runtime coverage did not ingest"
-
-            match baselineInvalidReason debt with
-            | Some reason ->
-                $"%d{queued} symbol(s) awaiting verification + a full suite to earn the baseline (%s{reason})%s{notIngested}"
-            | None -> $"%d{queued} symbol(s) awaiting verification%s{notIngested}"
+    let owedDescription = owedDescriptionUnder baselineInvalidReason
 
     let persistQueueAdditions = persistQueueAdditionsIn repoRoot
 
