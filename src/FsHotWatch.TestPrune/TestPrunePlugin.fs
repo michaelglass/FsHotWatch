@@ -225,6 +225,10 @@ let internal applyRefresh
 let internal enqueueImpactRun (ctx: PluginCtx<TestPruneMsg>) =
     ctx.EnqueueExclusiveIntent "tests" (Some "impact") ImpactRunRequested |> ignore
 
+/// Each configured test project's `.fsproj` and compile-input identity now.
+let internal observeTestInputsOf (testConfigs: TestConfig list option) (ctx: PluginCtx<TestPruneMsg>) =
+    ObservedModel.testInputs ctx.ProjectGraph (defaultArg testConfigs [] |> List.map _.Project)
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -943,9 +947,7 @@ let internal createWithEvidenceAndQueries
           RestoredEvidence = restoredEvidence }
 
 
-    /// Each configured test project's `.fsproj` and compile-input identity now.
-    let observeTestInputs (ctx: PluginCtx<TestPruneMsg>) =
-        ObservedModel.testInputs ctx.ProjectGraph (defaultArg testConfigs [] |> List.map _.Project)
+    let observeTestInputs = observeTestInputsOf testConfigs
 
 
     /// The outcome-store key of each configured project's full run over the tree as it is now
