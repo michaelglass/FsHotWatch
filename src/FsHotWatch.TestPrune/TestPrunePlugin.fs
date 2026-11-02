@@ -381,6 +381,36 @@ let internal logSelectedByIn (repoRoot: string) (launch: TestRunLaunch) =
     with ex ->
         Logging.warn "test-prune" $"Priced: not priced — %s{ex.Message}"
 
+/// The run in flight has concluded: forget it, and end the pass-through it ran for
+/// when it executed at least one project to a verdict (`TestMode.afterRun`).
+let internal endRunFrom (initialMode: TestMode) (executedAny: bool) (state: TestPruneState) =
+    let mode =
+        match state.InFlight with
+        | Some run -> TestMode.afterRunIn initialMode run.Mode executedAny state.Mode
+        | None -> state.Mode
+
+    // Said out loud: a later launch in the same session is impact-selected again, and
+    // its status line (`selected: yes`) reads as if the confirm had lost its scope.
+    if TestMode.requestsFullSuite state.Mode && not (TestMode.requestsFullSuite mode) then
+        Logging.info
+            "test-prune"
+            "Scope back to IMPACT-FILTERED: the full-suite run the scope was set for has concluded; later launches in this session are impact-selected"
+    elif TestMode.launchesOwedRuns state.Mode && not (TestMode.launchesOwedRuns mode) then
+        Logging.info
+            "test-prune"
+            "Holding test runs again: the run a command asked for has concluded; later builds launch none until a command (check, confirm, test-rerun) asks"
+    elif
+        not executedAny
+        && state.InFlight |> Option.exists (fun run -> TestMode.requestsFullSuite run.Mode)
+    then
+        Logging.info
+            "test-prune"
+            "Scope stays FULL SUITE: the run launched for it executed no project to a verdict, so the next launch runs every project in full"
+
+    { state with
+        InFlight = None
+        Mode = mode }
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1198,35 +1228,7 @@ let internal createWithEvidenceAndQueries
         | _ -> state
 
 
-    /// The run in flight has concluded: forget it, and end the pass-through it ran for
-    /// when it executed at least one project to a verdict (`TestMode.afterRun`).
-    let endRun (executedAny: bool) (state: TestPruneState) =
-        let mode =
-            match state.InFlight with
-            | Some run -> TestMode.afterRunIn initialMode run.Mode executedAny state.Mode
-            | None -> state.Mode
-
-        // Said out loud: a later launch in the same session is impact-selected again, and
-        // its status line (`selected: yes`) reads as if the confirm had lost its scope.
-        if TestMode.requestsFullSuite state.Mode && not (TestMode.requestsFullSuite mode) then
-            Logging.info
-                "test-prune"
-                "Scope back to IMPACT-FILTERED: the full-suite run the scope was set for has concluded; later launches in this session are impact-selected"
-        elif TestMode.launchesOwedRuns state.Mode && not (TestMode.launchesOwedRuns mode) then
-            Logging.info
-                "test-prune"
-                "Holding test runs again: the run a command asked for has concluded; later builds launch none until a command (check, confirm, test-rerun) asks"
-        elif
-            not executedAny
-            && state.InFlight |> Option.exists (fun run -> TestMode.requestsFullSuite run.Mode)
-        then
-            Logging.info
-                "test-prune"
-                "Scope stays FULL SUITE: the run launched for it executed no project to a verdict, so the next launch runs every project in full"
-
-        { state with
-            InFlight = None
-            Mode = mode }
+    let endRun = endRunFrom initialMode
 
     /// A launch that found its artifacts or test host unavailable ran nothing: it revokes
     /// the receipt, hands back the fanout it consumed, and fails.
