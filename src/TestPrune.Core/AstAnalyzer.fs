@@ -2192,6 +2192,125 @@ let private catalogEntities (allUses: FSharpSymbolUse list) : EntityCatalog =
       CollectionMemberships = collectionMemberships
       EntityAttributes = entityAttributes }
 
+/// What the member definitions of a file declare, in declaration order: test methods,
+/// member attributes (with the synthetic inline marker), member -> declaring-type
+/// containment links, and test-method -> fixture edges.
+type private MemberFacts =
+    { TestMethods: TestMethodInfo list
+      Attributes: SymbolAttribute list
+      ParentLinks: SymbolParentLink list
+      FixtureEdges: Dependency list }
+
+let private memberFacts
+    (allUses: FSharpSymbolUse list)
+    (projectName: string)
+    (testClassForEntity: string -> FSharpEntity -> string)
+    (collectFixtureTypes: FSharpEntity -> string list)
+    (collectionMemberships: Map<string, string list>)
+    : MemberFacts =
+    let mutable testMethods = []
+    let mutable attributes = []
+    let mutable parentLinks = []
+    let mutable fixtureEdges = []
+
+    for u in allUses do
+        if u.IsFromDefinition then
+            match u.Symbol with
+            | :? FSharpMemberOrFunctionOrValue as mfv ->
+                // Containment link for aggregate-type invalidation. Emitted only
+                // for members of non-module Types; module bindings must not
+                // participate (editing one module function would otherwise fan
+                // out to consumers of sibling functions).
+                //
+                // Dedup is downstream: InMemoryStore uses a Map, the Database
+                // UPDATE is idempotent for repeated (child, parent) pairs.
+                try
+                    match mfv.DeclaringEntity with
+                    | Some entity when not entity.IsFSharpModule ->
+                        parentLinks <-
+                            { Child = memberName mfv
+                              Parent = entityName entity }
+                            :: parentLinks
+                    | _ -> ()
+                with _ ->
+                    ()
+
+                if isTestAttribute mfv then
+                    // `mfv.FullName` can throw on un-nameable symbols — see `tryName`.
+                    try
+                        let fallbackClass, testMethod = extractTestClass mfv.FullName
+
+                        let testClass =
+                            try
+                                match mfv.DeclaringEntity with
+                                | Some entity -> testClassForEntity fallbackClass entity
+                                | None -> fallbackClass
+                            with
+                            | SymbolTraversalDepthExceededException _ -> reraise ()
+                            | SymbolTraversalBudgetExceededException _ -> reraise ()
+                            | _ -> fallbackClass
+
+                        testMethods <-
+                            { SymbolFullName = memberName mfv
+                              TestProject = projectName
+                              TestClass = testClass
+                              TestMethod = testMethod }
+                            :: testMethods
+                    with
+                    | SymbolTraversalDepthExceededException _ -> reraise ()
+                    | SymbolTraversalBudgetExceededException _ -> reraise ()
+                    | _ -> ()
+
+                    // Direct edges from the test method to every fixture its
+                    // declaring class exposes (ctor-param types + IClassFixture /
+                    // ICollectionFixture interface args), plus to the synthetic
+                    // symbol for each [<Collection(n)>] membership. Covers tests
+                    // that never reference the fixture in their body — class-level
+                    // edges alone wouldn't chain back to the test method.
+                    try
+                        match mfv.DeclaringEntity with
+                        | Some entity when not entity.IsFSharpModule ->
+                            for fixtureFullName in collectFixtureTypes entity do
+                                if fixtureFullName <> memberName mfv then
+                                    fixtureEdges <- coreEdge UsesType (memberName mfv) fixtureFullName :: fixtureEdges
+
+                            match collectionMemberships |> Map.tryFind (entityName entity) with
+                            | Some names ->
+                                for name in names do
+                                    fixtureEdges <-
+                                        coreEdge UsesType (memberName mfv) (SyntheticCollectionPrefix + name)
+                                        :: fixtureEdges
+                            | None -> ()
+                        | _ -> ()
+                    with _ ->
+                        ()
+
+                try
+                    for attr in mfv.Attributes do
+                        try
+                            attributes <-
+                                { SymbolFullName = memberName mfv
+                                  AttributeName = attr.AttributeType.DisplayName
+                                  ArgsJson = serializeAttributeArgs attr }
+                                :: attributes
+                        with _ ->
+                            ()
+
+                    if mfv.InlineAnnotation = FSharpInlineAnnotation.AlwaysInline then
+                        attributes <-
+                            { SymbolFullName = memberName mfv
+                              AttributeName = InlineAttributeName
+                              ArgsJson = "[]" }
+                            :: attributes
+                with _ ->
+                    ()
+            | _ -> ()
+
+    { TestMethods = List.rev testMethods
+      Attributes = List.rev attributes
+      ParentLinks = List.rev parentLinks
+      FixtureEdges = List.rev fixtureEdges |> List.distinct }
+
 /// Extract analysis results from parse and type-check results.
 let private extractResults
     (maxTraversalVisits: int)
@@ -2404,10 +2523,6 @@ let private extractResults
             let collectionMemberships = entities.CollectionMemberships
             let entityAttributes = entities.EntityAttributes
 
-            let mutable testMethods = []
-            let mutable attributes = []
-            let mutable parentLinks = []
-            let mutable fixtureEdges = []
             let testClassCache = System.Collections.Generic.Dictionary<string, string>()
 
             let testClassForEntity fallbackClass (entity: FSharpEntity) =
@@ -2439,104 +2554,13 @@ let private extractResults
 
                         resolved
 
-            for u in allUses do
-                if u.IsFromDefinition then
-                    match u.Symbol with
-                    | :? FSharpMemberOrFunctionOrValue as mfv ->
-                        // Containment link for aggregate-type invalidation. Emitted only
-                        // for members of non-module Types; module bindings must not
-                        // participate (editing one module function would otherwise fan
-                        // out to consumers of sibling functions).
-                        //
-                        // Dedup is downstream: InMemoryStore uses a Map, the Database
-                        // UPDATE is idempotent for repeated (child, parent) pairs.
-                        try
-                            match mfv.DeclaringEntity with
-                            | Some entity when not entity.IsFSharpModule ->
-                                parentLinks <-
-                                    { Child = memberName mfv
-                                      Parent = entityName entity }
-                                    :: parentLinks
-                            | _ -> ()
-                        with _ ->
-                            ()
+            let members =
+                memberFacts allUses projectName testClassForEntity collectFixtureTypes collectionMemberships
 
-                        if isTestAttribute mfv then
-                            // `mfv.FullName` can throw on un-nameable symbols — see `tryName`.
-                            try
-                                let fallbackClass, testMethod = extractTestClass mfv.FullName
-
-                                let testClass =
-                                    try
-                                        match mfv.DeclaringEntity with
-                                        | Some entity -> testClassForEntity fallbackClass entity
-                                        | None -> fallbackClass
-                                    with
-                                    | SymbolTraversalDepthExceededException _ -> reraise ()
-                                    | SymbolTraversalBudgetExceededException _ -> reraise ()
-                                    | _ -> fallbackClass
-
-                                testMethods <-
-                                    { SymbolFullName = memberName mfv
-                                      TestProject = projectName
-                                      TestClass = testClass
-                                      TestMethod = testMethod }
-                                    :: testMethods
-                            with
-                            | SymbolTraversalDepthExceededException _ -> reraise ()
-                            | SymbolTraversalBudgetExceededException _ -> reraise ()
-                            | _ -> ()
-
-                            // Direct edges from the test method to every fixture its
-                            // declaring class exposes (ctor-param types + IClassFixture /
-                            // ICollectionFixture interface args), plus to the synthetic
-                            // symbol for each [<Collection(n)>] membership. Covers tests
-                            // that never reference the fixture in their body — class-level
-                            // edges alone wouldn't chain back to the test method.
-                            try
-                                match mfv.DeclaringEntity with
-                                | Some entity when not entity.IsFSharpModule ->
-                                    for fixtureFullName in collectFixtureTypes entity do
-                                        if fixtureFullName <> memberName mfv then
-                                            fixtureEdges <-
-                                                coreEdge UsesType (memberName mfv) fixtureFullName :: fixtureEdges
-
-                                    match collectionMemberships |> Map.tryFind (entityName entity) with
-                                    | Some names ->
-                                        for name in names do
-                                            fixtureEdges <-
-                                                coreEdge UsesType (memberName mfv) (SyntheticCollectionPrefix + name)
-                                                :: fixtureEdges
-                                    | None -> ()
-                                | _ -> ()
-                            with _ ->
-                                ()
-
-                        try
-                            for attr in mfv.Attributes do
-                                try
-                                    attributes <-
-                                        { SymbolFullName = memberName mfv
-                                          AttributeName = attr.AttributeType.DisplayName
-                                          ArgsJson = serializeAttributeArgs attr }
-                                        :: attributes
-                                with _ ->
-                                    ()
-
-                            if mfv.InlineAnnotation = FSharpInlineAnnotation.AlwaysInline then
-                                attributes <-
-                                    { SymbolFullName = memberName mfv
-                                      AttributeName = InlineAttributeName
-                                      ArgsJson = "[]" }
-                                    :: attributes
-                        with _ ->
-                            ()
-                    | _ -> ()
-
-            let testMethods = List.rev testMethods
-            let attributes = (List.rev attributes) @ (List.rev entityAttributes)
-            let parentLinks = List.rev parentLinks
-            let fixtureEdges = List.rev fixtureEdges |> List.distinct
+            let testMethods = members.TestMethods
+            let attributes = members.Attributes @ (List.rev entityAttributes)
+            let parentLinks = members.ParentLinks
+            let fixtureEdges = members.FixtureEdges
 
             trace "tests-attributes"
 
