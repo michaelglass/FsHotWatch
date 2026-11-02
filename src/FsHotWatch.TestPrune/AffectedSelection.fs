@@ -66,13 +66,186 @@ type internal SelectionEnv =
         SeedAges: unit -> Map<string, int>
     }
 
+/// The tests the changed symbols reach, and the seed-fanout reading of that walk: nothing
+/// when no symbol changed.
+let internal affectedTestsFor (env: SelectionEnv) (symbols: string list) =
+    let queries = env.Queries
+    let runnableProjects = env.RunnableProjects
+
+    if symbols.IsEmpty then
+        [], SeedFanoutReading.NoSelection
+    else
+        // Scoped to projects this daemon actually runs. Selecting tests in an
+        // unconfigured project would put classes in the run map that never
+        // execute — and make `allChangesUncovered` (and so the zero-affected
+        // skip) disagree with the commit rule. See `debtScope`.
+        let queryRunnable (seeds: string list) =
+            queries.AffectedTests seeds
+            |> fun ts ->
+                if Set.isEmpty runnableProjects then
+                    ts
+                else
+                    ts |> List.filter (fun t -> Set.contains t.TestProject runnableProjects)
+
+        let affected = queryRunnable symbols
+        let sortedSeeds = List.sort symbols
+
+        // Count the INPUT explicitly, not just the output. `symbols` is the
+        // union of the durable pending-verification queue and the in-memory
+        // hot view, so it grows monotonically across aborted runs until a
+        // green run clears it — "the queue is wedged and growing" and "a
+        // small, precise selection" look identical without this number, and
+        // `%A` truncated it away at 100.
+        //
+        // The seed list is logged in FULL and sorted (`describeAll`, not
+        // `%A`): when a handful of junk seeds drags in thousands of tests,
+        // the offending seed is the whole diagnosis, and a sample that
+        // happens to omit it costs hours.
+        Logging.info "test-prune" $"QueryAffectedTests: %d{symbols.Length} seed(s) → %d{affected.Length} affected tests"
+
+        Logging.info "test-prune" $"  seeds: %s{describeAll sortedSeeds}"
+
+        // How many tests ONE seed selects on its own — a full recursive
+        // reverse-walk each time, so it is memoised. Two diagnostics below ask
+        // this same question (the poisoned-seed guard and the per-seed
+        // attribution), and the seeds they ask about OVERLAP: `agedSeeds` is a
+        // subset of `sortedSeeds`, so in the case that matters most — a wide
+        // selection AND pinned seeds, which is exactly the shape both exist to
+        // catch — every aged seed was paying for the same query twice in one
+        // flush. Only `.Length` is ever used, so nothing needs the rows.
+        let aloneCounts = System.Collections.Generic.Dictionary<string, int>()
+
+        let aloneCount (seed: string) : int =
+            match aloneCounts.TryGetValue seed with
+            | true, n -> n
+            | false, _ ->
+                let n = (queryRunnable [ seed ]).Length
+                aloneCounts[seed] <- n
+                n
+
+        // The poisoned-seed guard.
+        //
+        // The per-seed attribution below asks "is one seed dominating THIS run?",
+        // a question about a moment. The failure that happened was about TIME:
+        // `name` and `kind` dominated every run for days, and each run looked
+        // like a legitimately expensive edit. Only width that PERSISTS separates
+        // them.
+        //
+        // This only READS the ages — they advance once per test RUN, at the
+        // launch point (see `pendingAgeRef`). Do not bump them here: this
+        // function runs 2-3 times per edit-save cycle, so the counter would
+        // measure flushes, and two edits to one function on a green repo would
+        // trip a guard designed to fire late.
+        //
+        // Independent of `WideSelectionTests`: a seed pinning 200 tests of a
+        // 400-test suite is the same disease as one pinning 3,000, and gating on
+        // absolute width would miss every smaller repo.
+        let ages = env.SeedAges()
+
+        let ageOf s =
+            ages |> Map.tryFind s |> Option.defaultValue 0
+
+        // Each check below is a full recursive reverse-walk, so both the count and
+        // the decision to run at all are gated:
+        //
+        //  * an EMPTY selection can never yield a suspect (`isPoisonSuspect`
+        //    requires `affectedCount > 0`), so the loop is skipped — the common
+        //    case on a no-op cycle;
+        //  * the same `MaxSeedsToAttribute` budget the attribution loop uses.
+        //    `agedSeeds` grows precisely when the queue is wedged — the situation
+        //    this guard exists to report — so an unbudgeted loop would pay N graph
+        //    walks per build exactly when the daemon is already struggling. A
+        //    suspect must account for >=25% of the selection, so at most four
+        //    seeds can qualify and a large aged list is waste by construction.
+        //    The cap is never silent.
+        let agedSeeds = sortedSeeds |> List.filter (fun s -> ageOf s >= PoisonSeedRuns)
+
+        if not affected.IsEmpty && agedSeeds.Length > MaxSeedsToAttribute then
+            Logging.warn
+                "test-prune"
+                $"%d{agedSeeds.Length} seed(s) have been queued across %d{PoisonSeedRuns}+ consecutive \
+                  runs, which exceeds the %d{MaxSeedsToAttribute}-seed budget — the poisoned-seed check \
+                  is SKIPPED this cycle. A pending queue that size is itself the finding; the full seed \
+                  list is logged above."
+
+        for seed in
+            (if affected.IsEmpty || agedSeeds.Length > MaxSeedsToAttribute then
+                 []
+             else
+                 agedSeeds) do
+            let runs = ageOf seed
+            let alone = aloneCount seed
+
+            if isPoisonSuspect runs affected.Length alone then
+                let pct = alone * 100 / (max 1 affected.Length)
+
+                // Deliberately a WARNING and not a quarantine: dropping the
+                // symbol would be under-testing on a guess. The failure this
+                // addresses is that nobody could SEE the pattern.
+                Logging.warn
+                    "test-prune"
+                    $"POSSIBLE POISONED SEED: '%s{seed}' has been queued for verification across \
+                      %d{runs} consecutive runs and alone selects %d{alone} of %d{affected.Length} \
+                      tests (%d{pct}%%). A symbol only leaves the queue once every runnable project \
+                      covering it passes, so one persistently-failing project pins it and it re-seeds \
+                      this selection every run. Check whether it is a real dependency-graph hub, a \
+                      mis-qualified symbol, or a test project that has been red for a \
+                      while."
+
+        // Per-seed attribution, but ONLY when the selection is already wide.
+        // A single seed accounting for most of a run is either a genuine
+        // graph hub or a mis-qualified symbol, and is the only thing worth
+        // looking at; below the threshold this costs nothing because the
+        // re-query loop never runs.
+        if affected.Length > WideSelectionTests then
+            if sortedSeeds.Length > MaxSeedsToAttribute then
+                // Never cap silently: say the attribution was skipped and why,
+                // so an absent breakdown is not read as "no seed dominated".
+                Logging.warn
+                    "test-prune"
+                    $"%d{affected.Length} tests selected, but %d{sortedSeeds.Length} seeds exceeds the \
+                      %d{MaxSeedsToAttribute}-seed attribution budget — per-seed breakdown SKIPPED"
+            else
+                // Derived from the same constant `isPoisonSuspect` uses, never a
+                // second spelling of it: a `/ 4` here beside a `25` there drifts,
+                // and the two diagnostics then disagree about "dominant".
+                let dominantShare = affected.Length * PoisonSeedSharePercent / 100
+
+                for seed in sortedSeeds do
+                    let alone = aloneCount seed
+
+                    if alone > affected.Length then
+                        // Not a hub: the selection is not monotone in its seeds. The
+                        // composition-root fail-safe restores a test project's
+                        // unbarriered tests only when the whole seed set leaves it
+                        // empty, so a sibling seed that reaches the project directly
+                        // can suppress the restore this seed gets on its own.
+                        Logging.warn
+                            "test-prune"
+                            $"seed '%s{seed}' alone selects %d{alone} tests, MORE than the %d{affected.Length} \
+                              the whole queue selects — the composition-root fail-safe is not monotone in \
+                              its seeds, so this seed's own tests are narrower when it is queued with others"
+                    elif alone > dominantShare then
+                        let pct = alone * 100 / affected.Length
+
+                        Logging.warn
+                            "test-prune"
+                            $"seed '%s{seed}' alone selects %d{alone} of %d{affected.Length} tests \
+                              (%d{pct}%%) — a dependency-graph hub, or a mis-qualified symbol"
+
+        // The top seeds by fanout, for the verdict: the same memoised walks the
+        // breakdown above paid for, under the same width and seed budget.
+        let fanout =
+            SeedFanoutReading.ofSelection WideSelectionTests MaxSeedsToAttribute affected.Length sortedSeeds aloneCount
+
+        affected, fanout
+
 let internal selectAffectedWith
     (env: SelectionEnv)
     (flushedState: TestPruneState)
     (runtimeObligations: RuntimeCoverageObligations)
     =
     let db = env.Db
-    let queries = env.Queries
     let runnableProjects = env.RunnableProjects
     let coveringOf = env.CoveringOf
     let lazyDebtScope = env.DebtScope
@@ -87,181 +260,7 @@ let internal selectAffectedWith
         Set.union flushedState.Debt.PendingQueue (Set.ofList flushedState.ChangedSymbols)
         |> Set.toList
 
-    let affectedTests, seedFanout =
-        if symbols.IsEmpty then
-            [], SeedFanoutReading.NoSelection
-        else
-            // Scoped to projects this daemon actually runs. Selecting tests in an
-            // unconfigured project would put classes in the run map that never
-            // execute — and make `allChangesUncovered` (and so the zero-affected
-            // skip) disagree with the commit rule. See `debtScope`.
-            let queryRunnable (seeds: string list) =
-                queries.AffectedTests seeds
-                |> fun ts ->
-                    if Set.isEmpty runnableProjects then
-                        ts
-                    else
-                        ts |> List.filter (fun t -> Set.contains t.TestProject runnableProjects)
-
-            let affected = queryRunnable symbols
-            let sortedSeeds = List.sort symbols
-
-            // Count the INPUT explicitly, not just the output. `symbols` is the
-            // union of the durable pending-verification queue and the in-memory
-            // hot view, so it grows monotonically across aborted runs until a
-            // green run clears it — "the queue is wedged and growing" and "a
-            // small, precise selection" look identical without this number, and
-            // `%A` truncated it away at 100.
-            //
-            // The seed list is logged in FULL and sorted (`describeAll`, not
-            // `%A`): when a handful of junk seeds drags in thousands of tests,
-            // the offending seed is the whole diagnosis, and a sample that
-            // happens to omit it costs hours.
-            Logging.info
-                "test-prune"
-                $"QueryAffectedTests: %d{symbols.Length} seed(s) → %d{affected.Length} affected tests"
-
-            Logging.info "test-prune" $"  seeds: %s{describeAll sortedSeeds}"
-
-            // How many tests ONE seed selects on its own — a full recursive
-            // reverse-walk each time, so it is memoised. Two diagnostics below ask
-            // this same question (the poisoned-seed guard and the per-seed
-            // attribution), and the seeds they ask about OVERLAP: `agedSeeds` is a
-            // subset of `sortedSeeds`, so in the case that matters most — a wide
-            // selection AND pinned seeds, which is exactly the shape both exist to
-            // catch — every aged seed was paying for the same query twice in one
-            // flush. Only `.Length` is ever used, so nothing needs the rows.
-            let aloneCounts = System.Collections.Generic.Dictionary<string, int>()
-
-            let aloneCount (seed: string) : int =
-                match aloneCounts.TryGetValue seed with
-                | true, n -> n
-                | false, _ ->
-                    let n = (queryRunnable [ seed ]).Length
-                    aloneCounts[seed] <- n
-                    n
-
-            // The poisoned-seed guard.
-            //
-            // The per-seed attribution below asks "is one seed dominating THIS run?",
-            // a question about a moment. The failure that happened was about TIME:
-            // `name` and `kind` dominated every run for days, and each run looked
-            // like a legitimately expensive edit. Only width that PERSISTS separates
-            // them.
-            //
-            // This only READS the ages — they advance once per test RUN, at the
-            // launch point (see `pendingAgeRef`). Do not bump them here: this
-            // function runs 2-3 times per edit-save cycle, so the counter would
-            // measure flushes, and two edits to one function on a green repo would
-            // trip a guard designed to fire late.
-            //
-            // Independent of `WideSelectionTests`: a seed pinning 200 tests of a
-            // 400-test suite is the same disease as one pinning 3,000, and gating on
-            // absolute width would miss every smaller repo.
-            let ages = env.SeedAges()
-
-            let ageOf s =
-                ages |> Map.tryFind s |> Option.defaultValue 0
-
-            // Each check below is a full recursive reverse-walk, so both the count and
-            // the decision to run at all are gated:
-            //
-            //  * an EMPTY selection can never yield a suspect (`isPoisonSuspect`
-            //    requires `affectedCount > 0`), so the loop is skipped — the common
-            //    case on a no-op cycle;
-            //  * the same `MaxSeedsToAttribute` budget the attribution loop uses.
-            //    `agedSeeds` grows precisely when the queue is wedged — the situation
-            //    this guard exists to report — so an unbudgeted loop would pay N graph
-            //    walks per build exactly when the daemon is already struggling. A
-            //    suspect must account for >=25% of the selection, so at most four
-            //    seeds can qualify and a large aged list is waste by construction.
-            //    The cap is never silent.
-            let agedSeeds = sortedSeeds |> List.filter (fun s -> ageOf s >= PoisonSeedRuns)
-
-            if not affected.IsEmpty && agedSeeds.Length > MaxSeedsToAttribute then
-                Logging.warn
-                    "test-prune"
-                    $"%d{agedSeeds.Length} seed(s) have been queued across %d{PoisonSeedRuns}+ consecutive \
-                      runs, which exceeds the %d{MaxSeedsToAttribute}-seed budget — the poisoned-seed check \
-                      is SKIPPED this cycle. A pending queue that size is itself the finding; the full seed \
-                      list is logged above."
-
-            for seed in
-                (if affected.IsEmpty || agedSeeds.Length > MaxSeedsToAttribute then
-                     []
-                 else
-                     agedSeeds) do
-                let runs = ageOf seed
-                let alone = aloneCount seed
-
-                if isPoisonSuspect runs affected.Length alone then
-                    let pct = alone * 100 / (max 1 affected.Length)
-
-                    // Deliberately a WARNING and not a quarantine: dropping the
-                    // symbol would be under-testing on a guess. The failure this
-                    // addresses is that nobody could SEE the pattern.
-                    Logging.warn
-                        "test-prune"
-                        $"POSSIBLE POISONED SEED: '%s{seed}' has been queued for verification across \
-                          %d{runs} consecutive runs and alone selects %d{alone} of %d{affected.Length} \
-                          tests (%d{pct}%%). A symbol only leaves the queue once every runnable project \
-                          covering it passes, so one persistently-failing project pins it and it re-seeds \
-                          this selection every run. Check whether it is a real dependency-graph hub, a \
-                          mis-qualified symbol, or a test project that has been red for a \
-                          while."
-
-            // Per-seed attribution, but ONLY when the selection is already wide.
-            // A single seed accounting for most of a run is either a genuine
-            // graph hub or a mis-qualified symbol, and is the only thing worth
-            // looking at; below the threshold this costs nothing because the
-            // re-query loop never runs.
-            if affected.Length > WideSelectionTests then
-                if sortedSeeds.Length > MaxSeedsToAttribute then
-                    // Never cap silently: say the attribution was skipped and why,
-                    // so an absent breakdown is not read as "no seed dominated".
-                    Logging.warn
-                        "test-prune"
-                        $"%d{affected.Length} tests selected, but %d{sortedSeeds.Length} seeds exceeds the \
-                          %d{MaxSeedsToAttribute}-seed attribution budget — per-seed breakdown SKIPPED"
-                else
-                    // Derived from the same constant `isPoisonSuspect` uses, never a
-                    // second spelling of it: a `/ 4` here beside a `25` there drifts,
-                    // and the two diagnostics then disagree about "dominant".
-                    let dominantShare = affected.Length * PoisonSeedSharePercent / 100
-
-                    for seed in sortedSeeds do
-                        let alone = aloneCount seed
-
-                        if alone > affected.Length then
-                            // Not a hub: the selection is not monotone in its seeds. The
-                            // composition-root fail-safe restores a test project's
-                            // unbarriered tests only when the whole seed set leaves it
-                            // empty, so a sibling seed that reaches the project directly
-                            // can suppress the restore this seed gets on its own.
-                            Logging.warn
-                                "test-prune"
-                                $"seed '%s{seed}' alone selects %d{alone} tests, MORE than the %d{affected.Length} \
-                                  the whole queue selects — the composition-root fail-safe is not monotone in \
-                                  its seeds, so this seed's own tests are narrower when it is queued with others"
-                        elif alone > dominantShare then
-                            let pct = alone * 100 / affected.Length
-
-                            Logging.warn
-                                "test-prune"
-                                $"seed '%s{seed}' alone selects %d{alone} of %d{affected.Length} tests \
-                                  (%d{pct}%%) — a dependency-graph hub, or a mis-qualified symbol"
-
-            // The top seeds by fanout, for the verdict: the same memoised walks the
-            // breakdown above paid for, under the same width and seed budget.
-            let fanout =
-                SeedFanoutReading.ofSelection
-                    WideSelectionTests
-                    MaxSeedsToAttribute
-                    affected.Length
-                    sortedSeeds
-                    aloneCount
-
-            affected, fanout
+    let affectedTests, seedFanout = affectedTestsFor env symbols
 
     // Classify every considered symbol ONCE, under one resolution of the declared
     // exclusions (see `debtScope`):
