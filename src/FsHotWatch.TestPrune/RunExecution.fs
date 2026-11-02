@@ -1430,6 +1430,7 @@ let internal selectionIn
     | None, Some(_ :: _ as classes) -> Some classes
     | _ -> None
 
+/// Fold one group's results into the run's collector and, after the fold, emit them as progress.
 let internal foldAndEmitInto
     (ctx: PluginCtx<'msg> option)
     (collected: RunCollector)
@@ -1447,6 +1448,91 @@ let internal foldAndEmitInto
                     { RunId = runId
                       NewResults = Map.ofList groupOutput })
     )
+
+/// Conclude a run whose groups have all finished: record flakiness, ingest its traces,
+/// tidy the run directories, stop the clock and close the primary subtask, and build the
+/// results and the completion the caller emits.
+let internal concludeRun
+    (ctx: PluginCtx<'msg> option)
+    (collected: RunCollector)
+    (traces: TraceRunHost option)
+    (db: Database)
+    (repoRoot: string)
+    (runId: Guid)
+    (sw: Stopwatch)
+    (boundTree: ReceiptTree option)
+    (configuredCoverageProjects: TestConfig list)
+    : Async<TestResults * TestRunCompleted> =
+    async {
+        // Flakiness: ONE parse + ONE rewrite of the history file for the whole run,
+        // with every project's records — not one per project, and not racing itself
+        // from inside Async.Parallel. Best-effort: the history is a diagnostic, so a
+        // failure to record it must never fail the run that produced it.
+        let collectedFlakiness = collected.Read _.Flakiness
+
+        if not collectedFlakiness.IsEmpty then
+            try
+                Flakiness.appendRecords (Flakiness.historyPath repoRoot) 20 collectedFlakiness
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException
+            | :? JsonException as ex -> Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}"
+
+        // Traces: after every project finished, before `tidyRunsDir` can rotate the run
+        // directory holding the dumps. `ingestAll` first waits, bounded, for this plugin's
+        // mailbox to fold the analysis events admitted before now, so the traces join
+        // against the index those events write. The folds never wait on this run, whose
+        // result is posted only after it returns. It never throws, and nothing it does
+        // reaches `cumulative`: a trace failure is a log line and a stored row, never a
+        // changed result.
+        match traces with
+        | Some host ->
+            let runs = collected.Read(fun c -> List.rev c.TraceRuns)
+
+            do!
+                TraceRun.ingestAll
+                    host.TraceRuntime
+                    (TestPrune.Ports.toSymbolStore db)
+                    host.IndexFold
+                    (runId.ToString("N"))
+                    (boundTree |> Option.map _.Identity)
+                    (fun () -> ReceiptInputTree.read repoRoot)
+                    runs
+                    host.TraceLog
+        | None -> ()
+
+        // Bound what `.fshw/test-runs/` retains, and purge the DEAD `.log` format.
+        // Runs AFTER this run's reports were written, so the
+        // evidence the verdict is about to point at is always among the survivors.
+        Ctrf.tidyRunsDir repoRoot Ctrf.RetainedRuns
+
+        sw.Stop()
+
+        let finalResults = collected.Read _.Results
+
+        let testResults =
+            { Results = finalResults
+              Elapsed = sw.Elapsed }
+
+        ctx |> Option.iter (fun c -> c.EndSubtask PrimarySubtaskKey)
+
+        // `TestRunCompleted` is emitted by the CALLER (the synchronous Custom handler) so
+        // it lands in EmittedEvents for cache replay; returned in the tuple instead. The
+        // matching start was emitted before any host could mutate its input artifacts.
+        // `Outcome = Normal` means the run completed naturally — per-project pass/fail
+        // lives in Results, and Aborted is reserved for cancellation/timeout/crash.
+        let completed: TestRunCompleted =
+            { RunId = runId
+              TotalElapsed = sw.Elapsed
+              Outcome = Normal
+              Results = finalResults
+              Verification =
+                verificationWithin
+                    (configuredCoverageProjects |> List.map (fun c -> c.Project) |> Set.ofList)
+                    finalResults }
+
+        return testResults, completed
+    }
 
 /// Execute test configs with optional affected classes for filtering. Handles beforeRun,
 /// coveragePaths, process execution, result storage. `rawFilter` is a passthrough filter
@@ -1820,72 +1906,8 @@ let internal executeTests
             rerunProjects
             reusedNow
 
-        // Flakiness: ONE parse + ONE rewrite of the history file for the whole run,
-        // with every project's records — not one per project, and not racing itself
-        // from inside Async.Parallel. Best-effort: the history is a diagnostic, so a
-        // failure to record it must never fail the run that produced it.
-        let collectedFlakiness = collected.Read _.Flakiness
-
-        if not collectedFlakiness.IsEmpty then
-            try
-                Flakiness.appendRecords (Flakiness.historyPath repoRoot) 20 collectedFlakiness
-            with
-            | :? IOException
-            | :? UnauthorizedAccessException
-            | :? JsonException as ex -> Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}"
-
-        // Traces: after every project finished, before `tidyRunsDir` can rotate the run
-        // directory holding the dumps. `ingestAll` first waits, bounded, for this plugin's
-        // mailbox to fold the analysis events admitted before now, so the traces join
-        // against the index those events write. The folds never wait on this run, whose
-        // result is posted only after it returns. It never throws, and nothing it does
-        // reaches `cumulative`: a trace failure is a log line and a stored row, never a
-        // changed result.
-        match traces with
-        | Some host ->
-            let runs = collected.Read(fun c -> List.rev c.TraceRuns)
-
-            do!
-                TraceRun.ingestAll
-                    host.TraceRuntime
-                    (TestPrune.Ports.toSymbolStore db)
-                    host.IndexFold
-                    (runId.ToString("N"))
-                    (boundTree |> Option.map _.Identity)
-                    (fun () -> ReceiptInputTree.read repoRoot)
-                    runs
-                    host.TraceLog
-        | None -> ()
-
-        // Bound what `.fshw/test-runs/` retains, and purge the DEAD `.log` format.
-        // Runs AFTER this run's reports were written, so the
-        // evidence the verdict is about to point at is always among the survivors.
-        Ctrf.tidyRunsDir repoRoot Ctrf.RetainedRuns
-
-        sw.Stop()
-
-        let finalResults = collected.Read _.Results
-
-        let testResults =
-            { Results = finalResults
-              Elapsed = sw.Elapsed }
-
-        ctx |> Option.iter (fun c -> c.EndSubtask PrimarySubtaskKey)
-
-        // `TestRunCompleted` is emitted by the CALLER (the synchronous Custom handler) so
-        // it lands in EmittedEvents for cache replay; returned in the tuple instead. The
-        // matching start was emitted before any host could mutate its input artifacts.
-        // `Outcome = Normal` means the run completed naturally — per-project pass/fail
-        // lives in Results, and Aborted is reserved for cancellation/timeout/crash.
-        let completed: TestRunCompleted =
-            { RunId = runId
-              TotalElapsed = sw.Elapsed
-              Outcome = Normal
-              Results = finalResults
-              Verification =
-                verificationWithin
-                    (configuredCoverageProjects |> List.map (fun c -> c.Project) |> Set.ofList)
-                    finalResults }
+        let! testResults, completed =
+            concludeRun ctx collected traces db repoRoot runId sw boundTree configuredCoverageProjects
 
         match afterRun with
         | Some hook -> hook testResults
