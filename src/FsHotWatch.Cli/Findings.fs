@@ -195,6 +195,16 @@ let private readOnce (seams: Seams) (warningsAreFailures: bool) : Answer * bool 
             else
                 ofJudgement warningsAreFailures about judged
 
+/// The answer one `analyzer-findings` reply gives, judged against the disk now. What the CLI
+/// passthrough of the command shows: one read, with no tree hash around it, so it cannot
+/// say whether the tree moved while it read, and it is never about a named tree.
+let ofReply (disk: Reply -> DiskView) (warningsAreFailures: bool) (reply: Reply) : Answer =
+    let about =
+        { bare Stale [] with
+            Reply = Some reply }
+
+    ofJudgement warningsAreFailures about (judge (disk reply) reply) |> fst
+
 /// The answer for this worktree's daemon. See the module comment for the rules.
 let answer (seams: Seams) (options: Options) : Answer =
     if not (seams.IsRunning()) then
