@@ -807,6 +807,74 @@ let internal launchRequestedWith
                 { flushed with OwedRunHeld = false }
     | _ -> state
 
+/// The owed run an `ImpactRunRequested` intent stands for, decided against the state it
+/// is delivered into. Flush first, so changes that landed while the previous run held
+/// the key are selected; then launch only if something is still owed. An intent is
+/// queued while a run is in flight, and that run may have discharged exactly the debt
+/// that queued it: launching blindly would produce a zero-project run whose result
+/// erases the passing evidence.
+///
+/// Stale needs the evidence to cover the tree as well. A run that executed nothing
+/// (every client abandoned it, its artifacts or test host were unavailable) discharged
+/// nothing, and the debt alone cannot show that: a tree moved only by an edit the
+/// symbol diff sees as changing no symbol owes no symbol, yet has no evidence. The
+/// rerun queued behind such a run is what verifies it.
+let internal impactRunWith
+    (flushAndQueryAffectedBounded: StateStep)
+    (launchImpactRun: ImpactLauncher)
+    (logRedStands: string -> TestPruneState -> unit)
+    (nothingOwed: VerificationDebt -> bool)
+    (onlyRetriesRed: TestPruneState -> bool)
+    (repoRoot: string)
+    (testConfigs: TestConfig list option)
+    (tryRepairSchemaDrift: exn -> unit)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (state: TestPruneState)
+    =
+    match testConfigs with
+    | Some configs when not configs.IsEmpty ->
+        match
+            (try
+                Ok(flushAndQueryAffectedBounded ctx state)
+             with ex ->
+                 Error ex)
+        with
+        | Error ex ->
+            Logging.error "test-prune" $"flushAndQueryAffected (rerun) failed: %s{ex.Message}"
+            tryRepairSchemaDrift ex
+            ctx.ReportStatus(PluginStatus.failedNow ex.Message $"rerun flush failed: %s{ex.Message}" TimeSpan.Zero)
+            state
+        | Ok rerunState when
+            nothingOwed rerunState.Debt
+            && Set.isEmpty rerunState.PendingForceRunProjects
+            && ReceiptInputTree.matches
+                (rerunState.EvidenceReceipt |> Option.bind (fun receipt -> receipt.InputTreeHash))
+                (ReceiptInputTree.read repoRoot)
+            ->
+            Logging.info
+                "test-prune"
+                "Queued impact rerun is stale — nothing is owed, no dependency fanout remains, and the evidence covers the current tree"
+
+            rerunState
+        | Ok rerunState when onlyRetriesRed rerunState ->
+            logRedStands "Queued impact rerun" rerunState
+            rerunState
+        | Ok rerunState ->
+            Logging.info "test-prune" "Re-running tests (queued during previous run)"
+            let fanout = rerunState.PendingForceRunProjects
+
+            let launchState =
+                { rerunState with
+                    PendingForceRunProjects = Set.empty }
+
+            match launchImpactRun ctx configs launchState rerunState.LastResults.IsSome fanout with
+            | Some launched -> launched
+            | None when joinsFullRun rerunState false -> attachToFullRun rerunState
+            | None ->
+                enqueueImpactRun ctx
+                rerunState
+    | _ -> state
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1449,62 +1517,16 @@ let internal createWithEvidenceAndQueries
     // (never folded when cancelled), and its `finally` closes the run it opened.
     let requestTestRun = requestTestRunWith commandForceRun
 
-    /// The owed run an `ImpactRunRequested` intent stands for, decided against the state it
-    /// is delivered into. Flush first, so changes that landed while the previous run held
-    /// the key are selected; then launch only if something is still owed. An intent is
-    /// queued while a run is in flight, and that run may have discharged exactly the debt
-    /// that queued it: launching blindly would produce a zero-project run whose result
-    /// erases the passing evidence.
-    ///
-    /// Stale needs the evidence to cover the tree as well. A run that executed nothing
-    /// (every client abandoned it, its artifacts or test host were unavailable) discharged
-    /// nothing, and the debt alone cannot show that: a tree moved only by an edit the
-    /// symbol diff sees as changing no symbol owes no symbol, yet has no evidence. The
-    /// rerun queued behind such a run is what verifies it.
-    let impactRun (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
-        match testConfigs with
-        | Some configs when not configs.IsEmpty ->
-            match
-                (try
-                    Ok(flushAndQueryAffectedBounded ctx state)
-                 with ex ->
-                     Error ex)
-            with
-            | Error ex ->
-                Logging.error "test-prune" $"flushAndQueryAffected (rerun) failed: %s{ex.Message}"
-                tryRepairSchemaDrift ex
-                ctx.ReportStatus(PluginStatus.failedNow ex.Message $"rerun flush failed: %s{ex.Message}" TimeSpan.Zero)
-                state
-            | Ok rerunState when
-                nothingOwed rerunState.Debt
-                && Set.isEmpty rerunState.PendingForceRunProjects
-                && ReceiptInputTree.matches
-                    (rerunState.EvidenceReceipt |> Option.bind (fun receipt -> receipt.InputTreeHash))
-                    (ReceiptInputTree.read repoRoot)
-                ->
-                Logging.info
-                    "test-prune"
-                    "Queued impact rerun is stale — nothing is owed, no dependency fanout remains, and the evidence covers the current tree"
-
-                rerunState
-            | Ok rerunState when onlyRetriesRed rerunState ->
-                logRedStands "Queued impact rerun" rerunState
-                rerunState
-            | Ok rerunState ->
-                Logging.info "test-prune" "Re-running tests (queued during previous run)"
-                let fanout = rerunState.PendingForceRunProjects
-
-                let launchState =
-                    { rerunState with
-                        PendingForceRunProjects = Set.empty }
-
-                match launchImpactRun ctx configs launchState rerunState.LastResults.IsSome fanout with
-                | Some launched -> launched
-                | None when joinsFullRun rerunState false -> attachToFullRun rerunState
-                | None ->
-                    enqueueImpactRun ctx
-                    rerunState
-        | _ -> state
+    let impactRun =
+        impactRunWith
+            flushAndQueryAffectedBounded
+            launchImpactRun
+            logRedStands
+            nothingOwed
+            onlyRetriesRed
+            repoRoot
+            testConfigs
+            tryRepairSchemaDrift
 
     let launchRequested =
         launchRequestedWith flushAndQueryAffectedBounded launchImpactRun testConfigs tryRepairSchemaDrift
