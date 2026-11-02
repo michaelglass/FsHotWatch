@@ -260,18 +260,43 @@ let ``coverage-ratchet is written as the text it always was, and read back as it
         test <@ FsHotWatch.Coverage.CoverageReplies.RatchetReply.tryParse (serialize reply) = Some reply @>
 
 [<Fact(Timeout = 15000)>]
-let ``a typed coverage reply renders exactly as its shape did`` () =
-    for status in coverageStatuses do
-        rendersAsSniffed
-            "coverage-status"
-            FsHotWatch.Coverage.CoverageReplies.StatusSchema
-            (FsHotWatch.Coverage.CoverageReplies.CoverageStatus.serialize status)
+let ``a coverage reply exits by what it says, and prints its line`` () =
+    // AUTOMATION-1465: these all exited 0, so a ratchet that failed or a coverage check that
+    // failed read as a green. A failure is 1, an answer still being computed is 6 (in
+    // flight), and no answer at all is 3 (no verdict).
+    let expectations =
+        [ "coverage-status",
+          FsHotWatch.Coverage.CoverageReplies.StatusSchema,
+          [ FsHotWatch.Coverage.CoverageReplies.CoverageStatus.serialize
+                FsHotWatch.Coverage.CoverageReplies.CoverageStatus.Passed,
+            0
+            FsHotWatch.Coverage.CoverageReplies.CoverageStatus.serialize
+                FsHotWatch.Coverage.CoverageReplies.CoverageStatus.Failed,
+            1
+            FsHotWatch.Coverage.CoverageReplies.CoverageStatus.serialize
+                FsHotWatch.Coverage.CoverageReplies.CoverageStatus.NotChecked,
+            NoVerdictExitCode ]
+          "coverage-ratchet",
+          FsHotWatch.Coverage.CoverageReplies.RatchetSchema,
+          ratchetReplies
+          |> List.map (fun reply ->
+              FsHotWatch.Coverage.CoverageReplies.RatchetReply.serialize reply,
+              match reply with
+              | FsHotWatch.Coverage.CoverageReplies.RatchetReply.Updated _ -> 0
+              | FsHotWatch.Coverage.CoverageReplies.RatchetReply.TimedOut -> RerunTimedOutExitCode
+              | _ -> 1) ]
 
-    for reply in ratchetReplies do
-        rendersAsSniffed
-            "coverage-ratchet"
-            FsHotWatch.Coverage.CoverageReplies.RatchetSchema
-            (FsHotWatch.Coverage.CoverageReplies.RatchetReply.serialize reply)
+    for command, schema, cases in expectations do
+        for payload, expected in cases do
+            match
+                rendered
+                    false
+                    (FsHotWatch.Ipc.declaredOutputReply command (FsHotWatch.Plugin.ReplySchema.Typed schema) payload)
+            with
+            | Ok(exitCode, text) ->
+                test <@ exitCode = expected @>
+                test <@ text.Contains payload @>
+            | Error(kind, message) -> failwith $"rendering %s{payload} threw %s{kind}: %s{message}"
 
 [<Theory(Timeout = 15000)>]
 [<InlineData("coverage: maybe")>]

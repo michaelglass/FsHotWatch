@@ -777,15 +777,34 @@ module PluginReplies =
         [ FsHotWatch.FileCommand.FileCommandReplies.StatusSchema,
           asStatusMap FsHotWatch.FileCommand.FileCommandReplies.CommandStatus.tryParse ]
 
-    /// A reply its schema describes that is a line of text: printed as it is, as before.
-    let private asText (tryParse: string -> 'Reply option) (payload: string) : Render option =
-        tryParse payload |> Option.map (fun _ _ _ _ -> renderText payload)
-
+    /// The coverage replies are lines of text, printed as they are. Each exits by what it says
+    /// (AUTOMATION-1465): a failure is 1, a ratchet that could not get the slot in time is
+    /// in flight, and "no check has run" is no verdict. They all used to exit 0.
     let private coverage: (string * (string -> Render option)) list =
-        [ FsHotWatch.Coverage.CoverageReplies.StatusSchema,
-          asText FsHotWatch.Coverage.CoverageReplies.CoverageStatus.tryParse
-          FsHotWatch.Coverage.CoverageReplies.RatchetSchema,
-          asText FsHotWatch.Coverage.CoverageReplies.RatchetReply.tryParse ]
+        let status payload =
+            FsHotWatch.Coverage.CoverageReplies.CoverageStatus.tryParse payload
+            |> Option.map (fun status _ _ _ ->
+                match status with
+                | FsHotWatch.Coverage.CoverageReplies.CoverageStatus.Passed -> renderText payload
+                | FsHotWatch.Coverage.CoverageReplies.CoverageStatus.Failed -> renderRefusal payload
+                | FsHotWatch.Coverage.CoverageReplies.CoverageStatus.NotChecked ->
+                    renderText payload |> ignore
+                    NoVerdictExitCode)
+
+        let ratchet payload =
+            FsHotWatch.Coverage.CoverageReplies.RatchetReply.tryParse payload
+            |> Option.map (fun reply _ _ _ ->
+                match reply with
+                | FsHotWatch.Coverage.CoverageReplies.RatchetReply.Updated _ -> renderText payload
+                | FsHotWatch.Coverage.CoverageReplies.RatchetReply.TimedOut ->
+                    UI.fail payload
+                    RerunTimedOutExitCode
+                | FsHotWatch.Coverage.CoverageReplies.RatchetReply.Failed _
+                | FsHotWatch.Coverage.CoverageReplies.RatchetReply.NoReportFound
+                | FsHotWatch.Coverage.CoverageReplies.RatchetReply.NoNamedReportExists -> renderRefusal payload)
+
+        [ FsHotWatch.Coverage.CoverageReplies.StatusSchema, status
+          FsHotWatch.Coverage.CoverageReplies.RatchetSchema, ratchet ]
 
     let private analyzers: (string * (string -> Render option)) list =
         [ FsHotWatch.Analyzers.AnalyzerReplies.DiagnosticsSchema,

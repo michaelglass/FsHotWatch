@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: the coverage replies exit by what they say (AUTOMATION-1465). They all used to exit 0, so a
+  ratchet that failed and a coverage check that failed both read as a green.
+  - `coverage-ratchet` exits 1 when it failed or found no coverage report to ratchet from, and 6
+    (in flight) when it did not get the coverage slot within its wait. It exits 0 only when it
+    updated the thresholds.
+  - `coverage-status` exits 1 for `FAILED` and 3 (no verdict) when no check has run.
+  - A failure line is printed as a failure.
+
 - refactor: the CLI renders the test-prune replies by their declared schemas, with the same
   output and exit codes as before. A run report, a busy run and a refusal go to their own
   renderers, now separate functions (`renderRunReport`, `renderBusy`, `renderRefusal`). A
