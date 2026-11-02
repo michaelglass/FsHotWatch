@@ -2123,6 +2123,75 @@ let private useEdges
 
     dependencies, classifiedTargetKinds, droppedEdgeCount
 
+/// What the entity definitions of a file declare before any member is read: each
+/// collection definition (name -> synthetic name, fixture), each test class's collection
+/// memberships, and every entity-level attribute.
+type private EntityCatalog =
+    { CollectionDefinitions: Map<string, string * string>
+      CollectionMemberships: Map<string, string list>
+      EntityAttributes: SymbolAttribute list }
+
+/// Pre-pass over entity definitions: capture entity-level attributes (the
+/// member pass misses them) and catalog xUnit collection fixtures so
+/// the member pass can link test methods to them.
+///
+/// A synthetic symbol `<SyntheticCollectionPrefix><name>` bridges each
+/// `[<Collection(name)>]` test class to the matching `[<CollectionDefinition(name)>]`
+/// declaration (potentially in a different file). Test methods get edges to the
+/// synth; the synth gets an edge to the fixture T. Cross-file resolution
+/// happens through the existing extern/full_name pipeline.
+let private catalogEntities (allUses: FSharpSymbolUse list) : EntityCatalog =
+    let mutable collectionDefinitions: Map<string, string * string> = Map.empty
+    let mutable collectionMemberships: Map<string, string list> = Map.empty
+    let mutable entityAttributes: SymbolAttribute list = []
+
+    for u in allUses do
+        if u.IsFromDefinition then
+            match u.Symbol with
+            | :? FSharpEntity as entity ->
+                try
+                    let entityFullName = entityName entity
+
+                    for attr in entity.Attributes do
+                        try
+                            let attrName = attr.AttributeType.DisplayName
+
+                            entityAttributes <-
+                                { SymbolFullName = entityFullName
+                                  AttributeName = attrName
+                                  ArgsJson = serializeAttributeArgs attr }
+                                :: entityAttributes
+
+                            if attrName = CollectionDefinitionAttributeName then
+                                match firstStringArg attr with
+                                | Some name ->
+                                    match collectionFixtureFromInterfaces entity with
+                                    | Some fixtureFullName ->
+                                        let synthName = SyntheticCollectionPrefix + name
+
+                                        collectionDefinitions <-
+                                            collectionDefinitions |> Map.add name (synthName, fixtureFullName)
+                                    | None -> ()
+                                | None -> ()
+                            elif attrName = CollectionAttributeName then
+                                match firstStringArg attr with
+                                | Some name ->
+                                    let existing =
+                                        collectionMemberships |> Map.tryFind entityFullName |> Option.defaultValue []
+
+                                    collectionMemberships <-
+                                        collectionMemberships |> Map.add entityFullName (name :: existing)
+                                | None -> ()
+                        with _ ->
+                            ()
+                with _ ->
+                    ()
+            | _ -> ()
+
+    { CollectionDefinitions = collectionDefinitions
+      CollectionMemberships = collectionMemberships
+      EntityAttributes = entityAttributes }
+
 /// Extract analysis results from parse and type-check results.
 let private extractResults
     (maxTraversalVisits: int)
@@ -2330,63 +2399,10 @@ let private extractResults
             let collectFixtureTypes =
                 collectFixtureTypesWith (System.Collections.Generic.Dictionary<string, string list>())
 
-            // Pre-pass over entity definitions: capture entity-level attributes (the
-            // MFV-only loop below misses them) and catalog xUnit collection fixtures so
-            // the MFV pass can link test methods to them.
-            //
-            // A synthetic symbol `<SyntheticCollectionPrefix><name>` bridges each
-            // `[<Collection(name)>]` test class to the matching `[<CollectionDefinition(name)>]`
-            // declaration (potentially in a different file). Test methods get edges to the
-            // synth; the synth gets an edge to the fixture T. Cross-file resolution
-            // happens through the existing extern/full_name pipeline.
-            let mutable collectionDefinitions: Map<string, string * string> = Map.empty
-            let mutable collectionMemberships: Map<string, string list> = Map.empty
-            let mutable entityAttributes: SymbolAttribute list = []
-
-            for u in allUses do
-                if u.IsFromDefinition then
-                    match u.Symbol with
-                    | :? FSharpEntity as entity ->
-                        try
-                            let entityFullName = entityName entity
-
-                            for attr in entity.Attributes do
-                                try
-                                    let attrName = attr.AttributeType.DisplayName
-
-                                    entityAttributes <-
-                                        { SymbolFullName = entityFullName
-                                          AttributeName = attrName
-                                          ArgsJson = serializeAttributeArgs attr }
-                                        :: entityAttributes
-
-                                    if attrName = CollectionDefinitionAttributeName then
-                                        match firstStringArg attr with
-                                        | Some name ->
-                                            match collectionFixtureFromInterfaces entity with
-                                            | Some fixtureFullName ->
-                                                let synthName = SyntheticCollectionPrefix + name
-
-                                                collectionDefinitions <-
-                                                    collectionDefinitions |> Map.add name (synthName, fixtureFullName)
-                                            | None -> ()
-                                        | None -> ()
-                                    elif attrName = CollectionAttributeName then
-                                        match firstStringArg attr with
-                                        | Some name ->
-                                            let existing =
-                                                collectionMemberships
-                                                |> Map.tryFind entityFullName
-                                                |> Option.defaultValue []
-
-                                            collectionMemberships <-
-                                                collectionMemberships |> Map.add entityFullName (name :: existing)
-                                        | None -> ()
-                                with _ ->
-                                    ()
-                        with _ ->
-                            ()
-                    | _ -> ()
+            let entities = catalogEntities allUses
+            let collectionDefinitions = entities.CollectionDefinitions
+            let collectionMemberships = entities.CollectionMemberships
+            let entityAttributes = entities.EntityAttributes
 
             let mutable testMethods = []
             let mutable attributes = []
