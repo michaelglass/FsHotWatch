@@ -52,6 +52,540 @@ open FsHotWatch.TestPrune.ImpactRun
 open FsHotWatch.TestPrune.FileCheckedHandler
 open FsHotWatch.TestPrune.CheckHandlers
 
+/// What a completed run's terminal status is reported from (`reportRunOutcome`).
+type internal RunOutcomeFacts =
+    { Completed: TestRunCompleted
+      CarriedFailures: OutstandingFailure list
+      QueueAfterCommit: Set<string>
+      PendingDescription: unit -> string
+      ReceiptTransition: ReceiptTransition
+      EvidenceReceipt: TestEvidenceReceipt option }
+
+/// Report a completed run's terminal status. Pushing a terminal Completed/Failed status is
+/// what appends the run to history; both rerun and final-idle branches must call this.
+let internal reportRunOutcome (ctx: PluginCtx<TestPruneMsg>) (facts: RunOutcomeFacts) (results: TestResults) =
+    let completed = facts.Completed
+    let carriedFailures = facts.CarriedFailures
+    let queueAfterCommit = facts.QueueAfterCommit
+    let pendingDescription = facts.PendingDescription
+    let receiptTransition = facts.ReceiptTransition
+    let evidenceReceipt = facts.EvidenceReceipt
+
+    let total = results.Results.Count
+
+    // Reds this run did not cover are still RED —
+    // they must deny it a green verdict exactly as its own failures
+    // would, or `check` exits 0 with a failing test outstanding
+    // (the whole defect). Named in every non-green message below so
+    // the reason a passing run is not green is never a mystery.
+    let carriedCount = carriedFailures.Length
+
+    let carriedNote =
+        if carriedCount = 0 then
+            ""
+        else
+            $" (+%d{carriedCount} still red from an earlier run, not covered by this one: %s{OutstandingFailure.summarize carriedFailures})"
+
+    // Consult `completed.Outcome` FIRST. An Aborted run (beforeRun
+    // threw, runner crashed, run cancelled) must be non-green
+    // regardless of result counts — empty results trivially satisfy
+    // "failed = 0 && deferred = 0" and would otherwise false-green.
+    // Likewise a run that executed ZERO projects while the pending
+    // queue still holds symbols verified nothing, so it takes the
+    // honest "waiting on build (tests did not run)" path.
+    let abortMessage =
+        match completed.Outcome with
+        | Aborted reason -> Some reason
+        | Normal -> None
+
+    match abortMessage with
+    | Some reason ->
+        ctx.ReportStatus(
+            PluginStatus.failedNow
+                $"test run aborted (tests did not run): %s{reason}%s{carriedNote}"
+                $"test run aborted: %s{reason}%s{carriedNote}"
+                results.Elapsed
+        )
+    | None when total = 0 && not (Set.isEmpty queueAfterCommit) ->
+        // Zero projects executed but symbols still await
+        // verification — honest non-green, same wording/path as a
+        // deferred (never-ran) project.
+        ctx.ReportStatus(
+            PluginStatus.failedNow
+                $"%s{pendingDescription ()}%s{carriedNote}"
+                $"0 projects ran; symbols still awaiting verification%s{carriedNote}"
+                results.Elapsed
+        )
+    // Projects RAN and every one matched zero tests, so
+    // nothing executed and nothing was verified — not a green. The
+    // ladder below counts zero matches OUT of both `passed` and
+    // `failed`, so without this check `failed = 0 && deferred = 0`
+    // holds, the green branch fires, and it reports "0 passed, 0
+    // failed in N projects" about N projects that ran no test at all.
+    //
+    // Scoped to ALL projects deliberately: a zero match in ONE project
+    // is a correct pass for it (an impact selection naming no class in
+    // the Integration project must not fail that project). Only the
+    // run-level verdict changes, and only when nothing matched
+    // anywhere — a mis-aimed filter, never a verified pass. An
+    // empty-results run stays on its existing "nothing to verify" path
+    // because `Map.forall` is vacuously true for an empty map.
+    | None when allZeroMatchOf results.Results ->
+        ctx.ReportStatus(
+            PluginStatus.failedNow
+                $"%d{total} project(s) ran and matched ZERO tests — nothing was verified (not a pass)%s{carriedNote}"
+                $"%d{total} project(s) discovered their tests; the active filter matched none of them, so no test executed%s{carriedNote}"
+                results.Elapsed
+        )
+    | None ->
+
+        // Non-green = anything this run did not verify green, MINUS
+        // the zero matches (counted separately below). Split further
+        // into genuine failures vs deferred (never-ran) so the verdict
+        // can be honest: deferred is non-green but is "could not run /
+        // waiting on build", NOT "failed".
+        //
+        // Written out per case, at the site. `not verifiedGreen`
+        // would sweep the zero matches in here and report them as
+        // failures; matching only `Refuted` would drop the
+        // Deferred/Errored projects, which ARE non-green — they owed
+        // a result and produced none.
+        //
+        // Per result, this match is the exact negation of
+        // `noProjectRefutedOrUnrun` in `cacheKeyFor`, kept in agreement
+        // BY HAND — see that site for why a shared helper would not
+        // enforce it (the conditions around the two differ).
+        let nonGreen =
+            results.Results
+            |> Map.toList
+            |> List.filter (fun (_, r) ->
+                match TestResult.verdict r with
+                | Verified -> false
+                | Refuted -> true
+                | NothingVerified -> not (TestResult.isNoMatch r))
+
+        let deferredList = nonGreen |> List.filter (fun (_, r) -> TestResult.isDeferred r)
+
+        // An ABORTED project — its test host died
+        // mid-run — is counted OUT of `failed`, which used to sweep
+        // it in (`not isDeferred`). Nothing failed there: the runner
+        // never finished asking. Reporting it as "N failed: X" is a
+        // non-result rendered as a definite negative, and it is the
+        // exact shape a reader mistakes for a mass regression.
+        let abortedList = nonGreen |> List.filter (fun (_, r) -> TestResult.isErrored r)
+
+        let failedList =
+            nonGreen
+            |> List.filter (fun (_, r) -> not (TestResult.isDeferred r) && not (TestResult.isErrored r))
+
+        let failed = failedList.Length
+        let deferred = deferredList.Length
+        let aborted = abortedList.Length
+
+        // Zero-match projects are counted OUT of `passed`. `passed` is
+        // derived by exclusion, and the `nonGreen` fold above
+        // deliberately excludes them (a zero match is not a failure to
+        // report), so without this subtraction a project that executed
+        // no test is reported as one that passed — and the status line
+        // then disagrees with the CLI, which counts them separately.
+        let noMatch =
+            results.Results |> Map.filter (fun _ r -> TestResult.isNoMatch r) |> Map.count
+
+        let passed = total - failed - deferred - aborted - noMatch
+
+        let noMatchSuffix = if noMatch = 0 then "" else $", %d{noMatch} matched nothing"
+
+        let anyFiltered =
+            results.Results |> Map.exists (fun _ r -> TestResult.wasFiltered r)
+
+        let selectedSuffix = if anyFiltered then "yes" else "no"
+
+        let timedOutProjects =
+            failedList
+            |> List.choose (fun (name, r) -> if TestResult.isTimedOut r then Some name else None)
+
+        // When 2+ projects ran and at least one has recorded elapsed,
+        // surface the slowest in the summary so a bottlenecked project
+        // is visible without having to query test-results JSON.
+        let slowestSuffix =
+            if total < 2 then
+                ""
+            else
+                let withElapsed =
+                    results.Results
+                    |> Map.toList
+                    |> List.choose (fun (name, r) ->
+                        let e = TestResult.elapsed r
+                        if e > TimeSpan.Zero then Some(name, e) else None)
+
+                match withElapsed with
+                | [] -> ""
+                | _ ->
+                    let (n, e) = withElapsed |> List.maxBy snd
+                    $", slowest: %s{n} %.1f{e.TotalSeconds}s"
+
+        let deferredSuffix =
+            if deferred > 0 then
+                $", %d{deferred} waiting on build"
+            else
+                ""
+
+        // Never folded into the `failed` number it sits beside: the
+        // summary is the one line most readers see, so it is the one
+        // line that must not call a dead host a failure.
+        let abortedSuffix =
+            if aborted > 0 then
+                $", %d{aborted} ABORTED (host died, nothing verified)"
+            else
+                ""
+
+        let abortedNames = abortedList |> List.map fst |> String.concat ", "
+
+        if not timedOutProjects.IsEmpty then
+            let names = timedOutProjects |> String.concat ", "
+            // Flip the recorded outcome to TimedOut; the verdict on
+            // the Failed below carries the summary (one channel).
+            ctx.CompleteWithTimeout $"test project(s): {names}"
+
+            ctx.ReportStatus(
+                PluginStatus.failedNow
+                    $"%d{timedOutProjects.Length} timed out: %s{names}%s{carriedNote}"
+                    $"%d{timedOutProjects.Length} timed out: %s{names}%s{carriedNote}"
+                    results.Elapsed
+            )
+        else
+            let runSummary =
+                $"%d{passed} passed, %d{failed} failed%s{abortedSuffix}%s{deferredSuffix}%s{noMatchSuffix} in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
+
+            // EVERY terminal below CARRIES the run's evidence —
+            // `runSummary` + measured duration — on the status
+            // itself. There is no separate summary channel left to
+            // forget or contradict.
+            if
+                failed = 0
+                && aborted = 0
+                && deferred = 0
+                && Set.isEmpty queueAfterCommit
+                && carriedCount = 0
+            then
+                // Nothing failed, nothing is owed — and on a
+                // run that EXECUTED NOTHING that is not a pass, it is an
+                // absence of evidence. `runSummary` would report it as
+                // "0 passed, 0 failed in 0 projects", which is how a plugin
+                // line goes `✓` for a check that verified nothing while the
+                // verdict layer is (correctly) refusing it exit 0.
+                //
+                // The STATUS stays `Completed`: nothing failed, and a
+                // `Failed` here would claim one — turning `check`'s honest
+                // exit 3 "NO VERDICT" into an exit 1 "failures found". It is
+                // the VERDICT that carries the fact — the run record becomes
+                // `RunOutcome.VerifiedNothing` — and every renderer keys its
+                // glyph off that case (`ParsedPluginStatus.verifiedNothing`).
+                //
+                // Asked of `RunVerification`, THE derivation, so this is a
+                // question about the RUN ("did anything execute?") and not
+                // about one selection bug: any future path that lands an
+                // executed-nothing run here is covered without a new arm.
+                let verdict =
+                    match receiptTransition, evidenceReceipt with
+                    | ReceiptTransition.Noop, Some retained when
+                        RunVerification.verifiedNothing (verificationOf results.Results)
+                        ->
+                        // Nothing needed running because an earlier run
+                        // already verified this tree and model, and its
+                        // receipt stands: that run is the evidence, so
+                        // the line names it rather than the empty skip.
+                        let retainedRun = retained.RunId.ToString("N")
+
+                        RunVerdict.create
+                            $"no test needed: nothing changed since run %s{retainedRun}, which verified this tree"
+                            results.Elapsed
+                    | _ when RunVerification.verifiedNothing (verificationOf results.Results) ->
+                        RunVerdict.verifiedNothing $"%d{total} test project(s) ran, no test executed" results.Elapsed
+                    | _ -> RunVerdict.create runSummary results.Elapsed
+
+                ctx.ReportStatus(Completed(DateTime.UtcNow, verdict))
+            elif failed = 0 && aborted = 0 && deferred = 0 && Set.isEmpty queueAfterCommit then
+                // Everything this run RAN passed, the
+                // queue is drained — and yet an earlier failure it did
+                // not execute is still outstanding. A narrower run
+                // cannot vindicate a test it never ran, so this is
+                // NON-green: the red survives until a run that COVERS
+                // it passes (`dotnet fshw test-rerun` runs every
+                // project unfiltered and will clear it if it is fixed).
+                ctx.ReportStatus(
+                    PluginStatus.failedNow
+                        $"%d{carriedCount} still red from an earlier run, not covered by this one: %s{OutstandingFailure.summarize carriedFailures}"
+                        $"%s{runSummary}%s{carriedNote}"
+                        results.Elapsed
+                )
+            elif failed = 0 && aborted = 0 && deferred = 0 then
+                // Everything that RAN passed, but the pending queue
+                // still holds symbols this (e.g. filtered) run did not
+                // cover green — NOT test-equivalent to a green run yet.
+                // Non-green with the honest "waiting on build" wording;
+                // the next BuildCompleted re-selects and runs them.
+                ctx.ReportStatus(
+                    PluginStatus.failedNow
+                        $"%s{pendingDescription ()}%s{carriedNote}"
+                        $"%s{runSummary}%s{carriedNote}"
+                        results.Elapsed
+                )
+            elif failed = 0 && aborted = 0 then
+                // Only deferred projects — nothing FAILED, but
+                // nothing was verified either. Non-green, honest
+                // "waiting on build" (never "failed").
+                let names = deferredList |> List.map fst |> String.concat ", "
+
+                if carriedCount = 0 then
+                    // PURE defer: no red this run or carried. A
+                    // NON-failing terminal, so the verdict reads the
+                    // `Deferred`-severity ledger entry and routes it to
+                    // `Incomplete`/exit 2, not the exit 1 a red earns —
+                    // a build-ordering race left one project unrun.
+                    // A defer's `verdict` is `NothingVerified`, so its
+                    // symbols never commit (the next build re-runs them)
+                    // and the result is uncacheable.
+                    ctx.ReportStatus(
+                        PluginStatus.completedNow
+                            $"%s{runSummary} — %d{deferred} waiting on build (tests did not run): %s{names}"
+                            results.Elapsed
+                    )
+                else
+                    // A carried RED from an earlier run is still
+                    // outstanding — that dominates a defer. Stay
+                    // Failed/red (exit 1); the ledger's carried Error
+                    // entry independently keeps the verdict red.
+                    ctx.ReportStatus(
+                        PluginStatus.failedNow
+                            $"%d{deferred} waiting on build (tests did not run): %s{names}%s{carriedNote}"
+                            $"%s{runSummary}%s{carriedNote}"
+                            results.Elapsed
+                    )
+            elif failed = 0 then
+                // Nothing failed — a test HOST DIED.
+                // Killed by a signal under load, or gone before it
+                // could write a report. No test was shown to fail and
+                // no test was shown to pass, so this is the third
+                // answer and it must LOOK like the third answer: a
+                // dead host reported as "N failed: X" sends the reader
+                // hunting a regression that is not there, which is the
+                // hours this arm exists to stop burning.
+                //
+                // A NON-failing terminal, exactly like the pure-defer
+                // arm above: the `HostAborted`-severity ledger entries
+                // route the verdict to `RunnerAborted`/exit 2 rather
+                // than the exit 1 a red earns. The verdict is a
+                // verified-nothing one (`RunOutcome.VerifiedNothing` on
+                // the run record), so no renderer can give this run a
+                // bare `✓` either.
+                let deferredNote =
+                    if deferred > 0 then
+                        let dn = deferredList |> List.map fst |> String.concat ", "
+                        $" (+%d{deferred} waiting on build: %s{dn})"
+                    else
+                        ""
+
+                let abortLine =
+                    $"%d{aborted} test host(s) ABORTED — killed mid-run, nothing verified (NOT a test failure): %s{abortedNames}%s{deferredNote}"
+
+                if carriedCount = 0 then
+                    ctx.ReportStatus(PluginStatus.verifiedNothingNow abortLine results.Elapsed)
+                else
+                    // A carried RED from an earlier run outranks an
+                    // abort — same rule the defer arm applies, and for
+                    // the same reason: an aborted run cannot vindicate
+                    // a test it never ran. Stay red (exit 1); the
+                    // carried Error entry keeps the ledger red anyway.
+                    ctx.ReportStatus(
+                        PluginStatus.failedNow
+                            $"%s{abortLine}%s{carriedNote}"
+                            $"%s{runSummary}%s{carriedNote}"
+                            results.Elapsed
+                    )
+            else
+                let names = failedList |> List.map fst |> String.concat ", "
+
+                let deferredNote =
+                    if deferred > 0 then
+                        let dn = deferredList |> List.map fst |> String.concat ", "
+                        $" (%d{deferred} waiting on build: %s{dn})"
+                    else
+                        ""
+
+                // A real red DOMINATES an abort beside it — but the
+                // abort is still NAMED, and named as an abort: those
+                // projects proved nothing, and a reader must not add
+                // them to the failure count.
+                let abortNote =
+                    if aborted > 0 then
+                        $" (+%d{aborted} ABORTED, nothing verified: %s{abortedNames})"
+                    else
+                        ""
+
+                ctx.ReportStatus(
+                    PluginStatus.failedNow
+                        $"%d{failed} failed: %s{names}%s{abortNote}%s{deferredNote}%s{carriedNote}"
+                        $"%s{runSummary}%s{carriedNote}"
+                        results.Elapsed
+                )
+
+/// What a completion's earned evidence is decided from (`earnedEvidenceOf`).
+type internal CompletionEvidenceFacts =
+    { State: TestPruneState
+      Started: TestRunStarted
+      Completed: TestRunCompleted
+      Launch: TestRunLaunch
+      Debt: VerificationDebt
+      RunnableProjects: Set<string>
+      Aborted: bool
+      ExecutedFullSuite: bool
+      ProjectPassed: string -> bool
+      Unanalyzable: Map<string, UnanalyzableFile>
+      OutstandingFailures: OutstandingFailure list
+      CurrentInputTree: string option
+      CurrentInputs: Map<string, string> option
+      CurrentModelGeneration: int64 option
+      ReceiptTransition: ReceiptTransition
+      EvidenceReceipt: TestEvidenceReceipt option
+      StandingEvidence: EarnedEvidence option }
+
+/// The evidence a completion earns, or keeps from the standing receipt, and the log line
+/// that describes it.
+let internal earnedEvidenceOf (ctx: PluginCtx<TestPruneMsg>) (facts: CompletionEvidenceFacts) : EarnedEvidence option =
+    let state = facts.State
+    let started = facts.Started
+    let completed = facts.Completed
+    let launch = facts.Launch
+    let debt = facts.Debt
+    let runnableProjects = facts.RunnableProjects
+    let aborted = facts.Aborted
+    let executedFullSuite = facts.ExecutedFullSuite
+    let projectPassed = facts.ProjectPassed
+    let unanalyzable = facts.Unanalyzable
+    let outstandingFailures = facts.OutstandingFailures
+    let currentInputTree = facts.CurrentInputTree
+    let currentInputs = facts.CurrentInputs
+    let currentModelGeneration = facts.CurrentModelGeneration
+    let receiptTransition = facts.ReceiptTransition
+    let evidenceReceipt = facts.EvidenceReceipt
+    let standingEvidence = facts.StandingEvidence
+
+    // What this completion EARNED. What it left OWED is a refusal it
+    // carries: a proof that records a red is still a proof of what ran.
+    //
+    // Owed is what THIS run did not cover, not everything the queue holds
+    // at this instant. A cold tree queues obligations while the run is
+    // already executing — the build fires the full suite first and the
+    // scan's file events land during it — so they are absent from the
+    // launch snapshot and survive the launch-scoped retirement above. A run
+    // that executed every runnable project IN FULL and passed, over the
+    // tree it launched against, covered those files whenever they were
+    // queued; refusing them turned a green check into exit 2 with nothing
+    // failing anywhere. A run that did not (a project absent, failed, or
+    // filtered) covers nothing extra, and every one of them still refuses.
+    let coveredEverythingRunnable =
+        executedFullSuite
+        && ReceiptInputTree.matches launch.InputTreeHash currentInputTree
+        && runnableProjects |> Set.forall projectPassed
+
+    let owedSymbols =
+        if coveredEverythingRunnable then
+            Set.empty
+        else
+            debt.PendingQueue
+
+    let owedRuntimeObligations =
+        if coveredEverythingRunnable then
+            0
+        else
+            debt.RuntimeObligations |> Map.values |> Seq.sumBy Map.count
+
+    let pendingObligations =
+        Set.count owedSymbols
+        + owedRuntimeObligations
+        + unanalyzable.Count
+        + outstandingFailures.Length
+        + Map.count debt.CoverageNotIngested
+        + (if debt.RecoveryOutstanding then 1 else 0)
+
+    // A completion that leaves the receipt standing — a narrower run, or a
+    // quiet one that found the tree already verified — leaves the evidence
+    // THAT receipt's run earned standing with it: the verdict grades the
+    // receipt's run and looks its evidence up by run id. Under a model,
+    // `classify` keeps a receipt only when this evidence is held.
+    //
+    // Including a quiet completion that folds while an obligation is owed
+    // (symbols a scan delivered while it was in flight). It used to publish
+    // an evidence of its own, refusing for the obligation, beside the
+    // receipt it kept: the two named different runs, and the narrower run
+    // that then discharged the obligation found no evidence for the
+    // receipt's run to keep and published its own, so `check` graded the
+    // full suite and found nothing vouching for it.
+    //
+    // A receipt that covers the whole suite on the tree it is bound to has
+    // run every test that tree has, so an obligation owed on that same tree
+    // is one it already verified, as it is after a narrower run. A
+    // narrower receipt cannot say so: its evidence refuses for what is owed.
+    let keptWithReceipt =
+        match receiptTransition, evidenceReceipt with
+        | ReceiptTransition.Noop, Some receipt when
+            pendingObligations > 0
+            && not (RunCoverage.coversWholeSuite (Set.toList runnableProjects) receipt.Coverage)
+            ->
+            standingEvidence
+            |> Option.map (
+                EarnedEvidence.withRefusals [ $"%d{pendingObligations} verification obligation(s) remain pending" ]
+            )
+        | ReceiptTransition.Noop, _
+        | ReceiptTransition.Narrower, _ -> standingEvidence
+        | ReceiptTransition.Earned _, _
+        | ReceiptTransition.Revoked _, _ -> None
+
+    let earned =
+        match keptWithReceipt, completed.Verification with
+        | Some kept, _ -> Some kept
+        | None, NoProjectsSelected when
+            pendingObligations = 0
+            && not aborted
+            && launch.ZeroSelection <> ZeroSelection.NotAZero
+            && launch.ModelGeneration = currentModelGeneration
+            ->
+            // Nothing needed running, so this completion proves nothing new.
+            // The evidence it was already verified by stands, while it belongs
+            // to the current model.
+            EarnedEvidence.retainedForZeroSelection currentModelGeneration currentInputs state.Earned
+        | None, NoProjectsSelected
+        | None, AllZeroMatch _
+        | None, NothingExecuted
+        | None, Ran _ ->
+            EarnedEvidence.fromCompletion
+                started.RunId
+                launch.ModelGeneration
+                currentModelGeneration
+                currentInputs
+                (ObservedModel.projectFiles ctx.ProjectGraph)
+                runnableProjects
+                pendingObligations
+                (TestPruneState.coverageEvidence state)
+                completed
+
+    Logging.info
+        "test-prune"
+        (describeCompletionEvidence
+            completed.RunId
+            launch.ModelGeneration
+            currentModelGeneration
+            receiptTransition
+            evidenceReceipt
+            earned)
+
+    match receiptEvidenceMismatch currentModelGeneration evidenceReceipt earned with
+    | Some mismatch -> Logging.warn "test-prune" mismatch
+    | None -> ()
+
+    earned
+
 /// The debt accounting a run's completion reads (`commitPending`, `debtScope` and the rest).
 type internal CompletionDebt =
     { CommitPending: Set<string> -> VerificationDebt -> VerificationDebt
@@ -685,118 +1219,26 @@ let internal onRunFinishedWith
             else
                 debt
 
-        // What this completion EARNED. What it left OWED is a refusal it
-        // carries: a proof that records a red is still a proof of what ran.
-        //
-        // Owed is what THIS run did not cover, not everything the queue holds
-        // at this instant. A cold tree queues obligations while the run is
-        // already executing — the build fires the full suite first and the
-        // scan's file events land during it — so they are absent from the
-        // launch snapshot and survive the launch-scoped retirement above. A run
-        // that executed every runnable project IN FULL and passed, over the
-        // tree it launched against, covered those files whenever they were
-        // queued; refusing them turned a green check into exit 2 with nothing
-        // failing anywhere. A run that did not (a project absent, failed, or
-        // filtered) covers nothing extra, and every one of them still refuses.
-        let coveredEverythingRunnable =
-            executedFullSuite
-            && ReceiptInputTree.matches launch.InputTreeHash currentInputTree
-            && runnableProjects |> Set.forall projectPassed
-
-        let owedSymbols =
-            if coveredEverythingRunnable then
-                Set.empty
-            else
-                debt.PendingQueue
-
-        let owedRuntimeObligations =
-            if coveredEverythingRunnable then
-                0
-            else
-                debt.RuntimeObligations |> Map.values |> Seq.sumBy Map.count
-
-        let pendingObligations =
-            Set.count owedSymbols
-            + owedRuntimeObligations
-            + unanalyzable.Count
-            + outstandingFailures.Length
-            + Map.count debt.CoverageNotIngested
-            + (if debt.RecoveryOutstanding then 1 else 0)
-
-        // A completion that leaves the receipt standing — a narrower run, or a
-        // quiet one that found the tree already verified — leaves the evidence
-        // THAT receipt's run earned standing with it: the verdict grades the
-        // receipt's run and looks its evidence up by run id. Under a model,
-        // `classify` keeps a receipt only when this evidence is held.
-        //
-        // Including a quiet completion that folds while an obligation is owed
-        // (symbols a scan delivered while it was in flight). It used to publish
-        // an evidence of its own, refusing for the obligation, beside the
-        // receipt it kept: the two named different runs, and the narrower run
-        // that then discharged the obligation found no evidence for the
-        // receipt's run to keep and published its own, so `check` graded the
-        // full suite and found nothing vouching for it.
-        //
-        // A receipt that covers the whole suite on the tree it is bound to has
-        // run every test that tree has, so an obligation owed on that same tree
-        // is one it already verified, as it is after a narrower run. A
-        // narrower receipt cannot say so: its evidence refuses for what is owed.
-        let keptWithReceipt =
-            match receiptTransition, evidenceReceipt with
-            | ReceiptTransition.Noop, Some receipt when
-                pendingObligations > 0
-                && not (RunCoverage.coversWholeSuite (Set.toList runnableProjects) receipt.Coverage)
-                ->
-                standingEvidence
-                |> Option.map (
-                    EarnedEvidence.withRefusals [ $"%d{pendingObligations} verification obligation(s) remain pending" ]
-                )
-            | ReceiptTransition.Noop, _
-            | ReceiptTransition.Narrower, _ -> standingEvidence
-            | ReceiptTransition.Earned _, _
-            | ReceiptTransition.Revoked _, _ -> None
-
         let earned =
-            match keptWithReceipt, completed.Verification with
-            | Some kept, _ -> Some kept
-            | None, NoProjectsSelected when
-                pendingObligations = 0
-                && not aborted
-                && launch.ZeroSelection <> ZeroSelection.NotAZero
-                && launch.ModelGeneration = currentModelGeneration
-                ->
-                // Nothing needed running, so this completion proves nothing new.
-                // The evidence it was already verified by stands, while it belongs
-                // to the current model.
-                EarnedEvidence.retainedForZeroSelection currentModelGeneration currentInputs state.Earned
-            | None, NoProjectsSelected
-            | None, AllZeroMatch _
-            | None, NothingExecuted
-            | None, Ran _ ->
-                EarnedEvidence.fromCompletion
-                    started.RunId
-                    launch.ModelGeneration
-                    currentModelGeneration
-                    currentInputs
-                    (ObservedModel.projectFiles ctx.ProjectGraph)
-                    runnableProjects
-                    pendingObligations
-                    (TestPruneState.coverageEvidence state)
-                    completed
-
-        Logging.info
-            "test-prune"
-            (describeCompletionEvidence
-                completed.RunId
-                launch.ModelGeneration
-                currentModelGeneration
-                receiptTransition
-                evidenceReceipt
-                earned)
-
-        match receiptEvidenceMismatch currentModelGeneration evidenceReceipt earned with
-        | Some mismatch -> Logging.warn "test-prune" mismatch
-        | None -> ()
+            earnedEvidenceOf
+                ctx
+                { State = state
+                  Started = started
+                  Completed = completed
+                  Launch = launch
+                  Debt = debt
+                  RunnableProjects = runnableProjects
+                  Aborted = aborted
+                  ExecutedFullSuite = executedFullSuite
+                  ProjectPassed = projectPassed
+                  Unanalyzable = unanalyzable
+                  OutstandingFailures = outstandingFailures
+                  CurrentInputTree = currentInputTree
+                  CurrentInputs = currentInputs
+                  CurrentModelGeneration = currentModelGeneration
+                  ReceiptTransition = receiptTransition
+                  EvidenceReceipt = evidenceReceipt
+                  StandingEvidence = standingEvidence }
 
         let state =
             { state with
@@ -852,375 +1294,20 @@ let internal onRunFinishedWith
                   daemon does not run: list them in `tests.projects`, or declare them in \
                   `tests.excluded` with a reason"
 
-        // Pushing a terminal Completed/Failed status is what appends the
-        // run to history; both rerun and final-idle branches must call this.
-        let recordRunOutcome (results: TestResults) =
-            let total = results.Results.Count
-
-            // Reds this run did not cover are still RED —
-            // they must deny it a green verdict exactly as its own failures
-            // would, or `check` exits 0 with a failing test outstanding
-            // (the whole defect). Named in every non-green message below so
-            // the reason a passing run is not green is never a mystery.
-            let carriedCount = carriedFailures.Length
-
-            let carriedNote =
-                if carriedCount = 0 then
-                    ""
-                else
-                    $" (+%d{carriedCount} still red from an earlier run, not covered by this one: %s{OutstandingFailure.summarize carriedFailures})"
-
-            // Consult `completed.Outcome` FIRST. An Aborted run (beforeRun
-            // threw, runner crashed, run cancelled) must be non-green
-            // regardless of result counts — empty results trivially satisfy
-            // "failed = 0 && deferred = 0" and would otherwise false-green.
-            // Likewise a run that executed ZERO projects while the pending
-            // queue still holds symbols verified nothing, so it takes the
-            // honest "waiting on build (tests did not run)" path.
-            let abortMessage =
-                match completed.Outcome with
-                | Aborted reason -> Some reason
-                | Normal -> None
-
-            match abortMessage with
-            | Some reason ->
-                ctx.ReportStatus(
-                    PluginStatus.failedNow
-                        $"test run aborted (tests did not run): %s{reason}%s{carriedNote}"
-                        $"test run aborted: %s{reason}%s{carriedNote}"
-                        results.Elapsed
-                )
-            | None when total = 0 && not (Set.isEmpty queueAfterCommit) ->
-                // Zero projects executed but symbols still await
-                // verification — honest non-green, same wording/path as a
-                // deferred (never-ran) project.
-                ctx.ReportStatus(
-                    PluginStatus.failedNow
-                        $"%s{pendingDescription ()}%s{carriedNote}"
-                        $"0 projects ran; symbols still awaiting verification%s{carriedNote}"
-                        results.Elapsed
-                )
-            // Projects RAN and every one matched zero tests, so
-            // nothing executed and nothing was verified — not a green. The
-            // ladder below counts zero matches OUT of both `passed` and
-            // `failed`, so without this check `failed = 0 && deferred = 0`
-            // holds, the green branch fires, and it reports "0 passed, 0
-            // failed in N projects" about N projects that ran no test at all.
-            //
-            // Scoped to ALL projects deliberately: a zero match in ONE project
-            // is a correct pass for it (an impact selection naming no class in
-            // the Integration project must not fail that project). Only the
-            // run-level verdict changes, and only when nothing matched
-            // anywhere — a mis-aimed filter, never a verified pass. An
-            // empty-results run stays on its existing "nothing to verify" path
-            // because `Map.forall` is vacuously true for an empty map.
-            | None when allZeroMatchOf results.Results ->
-                ctx.ReportStatus(
-                    PluginStatus.failedNow
-                        $"%d{total} project(s) ran and matched ZERO tests — nothing was verified (not a pass)%s{carriedNote}"
-                        $"%d{total} project(s) discovered their tests; the active filter matched none of them, so no test executed%s{carriedNote}"
-                        results.Elapsed
-                )
-            | None ->
-
-                // Non-green = anything this run did not verify green, MINUS
-                // the zero matches (counted separately below). Split further
-                // into genuine failures vs deferred (never-ran) so the verdict
-                // can be honest: deferred is non-green but is "could not run /
-                // waiting on build", NOT "failed".
-                //
-                // Written out per case, at the site. `not verifiedGreen`
-                // would sweep the zero matches in here and report them as
-                // failures; matching only `Refuted` would drop the
-                // Deferred/Errored projects, which ARE non-green — they owed
-                // a result and produced none.
-                //
-                // Per result, this match is the exact negation of
-                // `noProjectRefutedOrUnrun` in `cacheKeyFor`, kept in agreement
-                // BY HAND — see that site for why a shared helper would not
-                // enforce it (the conditions around the two differ).
-                let nonGreen =
-                    results.Results
-                    |> Map.toList
-                    |> List.filter (fun (_, r) ->
-                        match TestResult.verdict r with
-                        | Verified -> false
-                        | Refuted -> true
-                        | NothingVerified -> not (TestResult.isNoMatch r))
-
-                let deferredList = nonGreen |> List.filter (fun (_, r) -> TestResult.isDeferred r)
-
-                // An ABORTED project — its test host died
-                // mid-run — is counted OUT of `failed`, which used to sweep
-                // it in (`not isDeferred`). Nothing failed there: the runner
-                // never finished asking. Reporting it as "N failed: X" is a
-                // non-result rendered as a definite negative, and it is the
-                // exact shape a reader mistakes for a mass regression.
-                let abortedList = nonGreen |> List.filter (fun (_, r) -> TestResult.isErrored r)
-
-                let failedList =
-                    nonGreen
-                    |> List.filter (fun (_, r) -> not (TestResult.isDeferred r) && not (TestResult.isErrored r))
-
-                let failed = failedList.Length
-                let deferred = deferredList.Length
-                let aborted = abortedList.Length
-
-                // Zero-match projects are counted OUT of `passed`. `passed` is
-                // derived by exclusion, and the `nonGreen` fold above
-                // deliberately excludes them (a zero match is not a failure to
-                // report), so without this subtraction a project that executed
-                // no test is reported as one that passed — and the status line
-                // then disagrees with the CLI, which counts them separately.
-                let noMatch =
-                    results.Results |> Map.filter (fun _ r -> TestResult.isNoMatch r) |> Map.count
-
-                let passed = total - failed - deferred - aborted - noMatch
-
-                let noMatchSuffix = if noMatch = 0 then "" else $", %d{noMatch} matched nothing"
-
-                let anyFiltered =
-                    results.Results |> Map.exists (fun _ r -> TestResult.wasFiltered r)
-
-                let selectedSuffix = if anyFiltered then "yes" else "no"
-
-                let timedOutProjects =
-                    failedList
-                    |> List.choose (fun (name, r) -> if TestResult.isTimedOut r then Some name else None)
-
-                // When 2+ projects ran and at least one has recorded elapsed,
-                // surface the slowest in the summary so a bottlenecked project
-                // is visible without having to query test-results JSON.
-                let slowestSuffix =
-                    if total < 2 then
-                        ""
-                    else
-                        let withElapsed =
-                            results.Results
-                            |> Map.toList
-                            |> List.choose (fun (name, r) ->
-                                let e = TestResult.elapsed r
-                                if e > TimeSpan.Zero then Some(name, e) else None)
-
-                        match withElapsed with
-                        | [] -> ""
-                        | _ ->
-                            let (n, e) = withElapsed |> List.maxBy snd
-                            $", slowest: %s{n} %.1f{e.TotalSeconds}s"
-
-                let deferredSuffix =
-                    if deferred > 0 then
-                        $", %d{deferred} waiting on build"
-                    else
-                        ""
-
-                // Never folded into the `failed` number it sits beside: the
-                // summary is the one line most readers see, so it is the one
-                // line that must not call a dead host a failure.
-                let abortedSuffix =
-                    if aborted > 0 then
-                        $", %d{aborted} ABORTED (host died, nothing verified)"
-                    else
-                        ""
-
-                let abortedNames = abortedList |> List.map fst |> String.concat ", "
-
-                if not timedOutProjects.IsEmpty then
-                    let names = timedOutProjects |> String.concat ", "
-                    // Flip the recorded outcome to TimedOut; the verdict on
-                    // the Failed below carries the summary (one channel).
-                    ctx.CompleteWithTimeout $"test project(s): {names}"
-
-                    ctx.ReportStatus(
-                        PluginStatus.failedNow
-                            $"%d{timedOutProjects.Length} timed out: %s{names}%s{carriedNote}"
-                            $"%d{timedOutProjects.Length} timed out: %s{names}%s{carriedNote}"
-                            results.Elapsed
-                    )
-                else
-                    let runSummary =
-                        $"%d{passed} passed, %d{failed} failed%s{abortedSuffix}%s{deferredSuffix}%s{noMatchSuffix} in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
-
-                    // EVERY terminal below CARRIES the run's evidence —
-                    // `runSummary` + measured duration — on the status
-                    // itself. There is no separate summary channel left to
-                    // forget or contradict.
-                    if
-                        failed = 0
-                        && aborted = 0
-                        && deferred = 0
-                        && Set.isEmpty queueAfterCommit
-                        && carriedCount = 0
-                    then
-                        // Nothing failed, nothing is owed — and on a
-                        // run that EXECUTED NOTHING that is not a pass, it is an
-                        // absence of evidence. `runSummary` would report it as
-                        // "0 passed, 0 failed in 0 projects", which is how a plugin
-                        // line goes `✓` for a check that verified nothing while the
-                        // verdict layer is (correctly) refusing it exit 0.
-                        //
-                        // The STATUS stays `Completed`: nothing failed, and a
-                        // `Failed` here would claim one — turning `check`'s honest
-                        // exit 3 "NO VERDICT" into an exit 1 "failures found". It is
-                        // the VERDICT that carries the fact — the run record becomes
-                        // `RunOutcome.VerifiedNothing` — and every renderer keys its
-                        // glyph off that case (`ParsedPluginStatus.verifiedNothing`).
-                        //
-                        // Asked of `RunVerification`, THE derivation, so this is a
-                        // question about the RUN ("did anything execute?") and not
-                        // about one selection bug: any future path that lands an
-                        // executed-nothing run here is covered without a new arm.
-                        let verdict =
-                            match receiptTransition, evidenceReceipt with
-                            | ReceiptTransition.Noop, Some retained when
-                                RunVerification.verifiedNothing (verificationOf results.Results)
-                                ->
-                                // Nothing needed running because an earlier run
-                                // already verified this tree and model, and its
-                                // receipt stands: that run is the evidence, so
-                                // the line names it rather than the empty skip.
-                                let retainedRun = retained.RunId.ToString("N")
-
-                                RunVerdict.create
-                                    $"no test needed: nothing changed since run %s{retainedRun}, which verified this tree"
-                                    results.Elapsed
-                            | _ when RunVerification.verifiedNothing (verificationOf results.Results) ->
-                                RunVerdict.verifiedNothing
-                                    $"%d{total} test project(s) ran, no test executed"
-                                    results.Elapsed
-                            | _ -> RunVerdict.create runSummary results.Elapsed
-
-                        ctx.ReportStatus(Completed(DateTime.UtcNow, verdict))
-                    elif failed = 0 && aborted = 0 && deferred = 0 && Set.isEmpty queueAfterCommit then
-                        // Everything this run RAN passed, the
-                        // queue is drained — and yet an earlier failure it did
-                        // not execute is still outstanding. A narrower run
-                        // cannot vindicate a test it never ran, so this is
-                        // NON-green: the red survives until a run that COVERS
-                        // it passes (`dotnet fshw test-rerun` runs every
-                        // project unfiltered and will clear it if it is fixed).
-                        ctx.ReportStatus(
-                            PluginStatus.failedNow
-                                $"%d{carriedCount} still red from an earlier run, not covered by this one: %s{OutstandingFailure.summarize carriedFailures}"
-                                $"%s{runSummary}%s{carriedNote}"
-                                results.Elapsed
-                        )
-                    elif failed = 0 && aborted = 0 && deferred = 0 then
-                        // Everything that RAN passed, but the pending queue
-                        // still holds symbols this (e.g. filtered) run did not
-                        // cover green — NOT test-equivalent to a green run yet.
-                        // Non-green with the honest "waiting on build" wording;
-                        // the next BuildCompleted re-selects and runs them.
-                        ctx.ReportStatus(
-                            PluginStatus.failedNow
-                                $"%s{pendingDescription ()}%s{carriedNote}"
-                                $"%s{runSummary}%s{carriedNote}"
-                                results.Elapsed
-                        )
-                    elif failed = 0 && aborted = 0 then
-                        // Only deferred projects — nothing FAILED, but
-                        // nothing was verified either. Non-green, honest
-                        // "waiting on build" (never "failed").
-                        let names = deferredList |> List.map fst |> String.concat ", "
-
-                        if carriedCount = 0 then
-                            // PURE defer: no red this run or carried. A
-                            // NON-failing terminal, so the verdict reads the
-                            // `Deferred`-severity ledger entry and routes it to
-                            // `Incomplete`/exit 2, not the exit 1 a red earns —
-                            // a build-ordering race left one project unrun.
-                            // A defer's `verdict` is `NothingVerified`, so its
-                            // symbols never commit (the next build re-runs them)
-                            // and the result is uncacheable.
-                            ctx.ReportStatus(
-                                PluginStatus.completedNow
-                                    $"%s{runSummary} — %d{deferred} waiting on build (tests did not run): %s{names}"
-                                    results.Elapsed
-                            )
-                        else
-                            // A carried RED from an earlier run is still
-                            // outstanding — that dominates a defer. Stay
-                            // Failed/red (exit 1); the ledger's carried Error
-                            // entry independently keeps the verdict red.
-                            ctx.ReportStatus(
-                                PluginStatus.failedNow
-                                    $"%d{deferred} waiting on build (tests did not run): %s{names}%s{carriedNote}"
-                                    $"%s{runSummary}%s{carriedNote}"
-                                    results.Elapsed
-                            )
-                    elif failed = 0 then
-                        // Nothing failed — a test HOST DIED.
-                        // Killed by a signal under load, or gone before it
-                        // could write a report. No test was shown to fail and
-                        // no test was shown to pass, so this is the third
-                        // answer and it must LOOK like the third answer: a
-                        // dead host reported as "N failed: X" sends the reader
-                        // hunting a regression that is not there, which is the
-                        // hours this arm exists to stop burning.
-                        //
-                        // A NON-failing terminal, exactly like the pure-defer
-                        // arm above: the `HostAborted`-severity ledger entries
-                        // route the verdict to `RunnerAborted`/exit 2 rather
-                        // than the exit 1 a red earns. The verdict is a
-                        // verified-nothing one (`RunOutcome.VerifiedNothing` on
-                        // the run record), so no renderer can give this run a
-                        // bare `✓` either.
-                        let deferredNote =
-                            if deferred > 0 then
-                                let dn = deferredList |> List.map fst |> String.concat ", "
-                                $" (+%d{deferred} waiting on build: %s{dn})"
-                            else
-                                ""
-
-                        let abortLine =
-                            $"%d{aborted} test host(s) ABORTED — killed mid-run, nothing verified (NOT a test failure): %s{abortedNames}%s{deferredNote}"
-
-                        if carriedCount = 0 then
-                            ctx.ReportStatus(PluginStatus.verifiedNothingNow abortLine results.Elapsed)
-                        else
-                            // A carried RED from an earlier run outranks an
-                            // abort — same rule the defer arm applies, and for
-                            // the same reason: an aborted run cannot vindicate
-                            // a test it never ran. Stay red (exit 1); the
-                            // carried Error entry keeps the ledger red anyway.
-                            ctx.ReportStatus(
-                                PluginStatus.failedNow
-                                    $"%s{abortLine}%s{carriedNote}"
-                                    $"%s{runSummary}%s{carriedNote}"
-                                    results.Elapsed
-                            )
-                    else
-                        let names = failedList |> List.map fst |> String.concat ", "
-
-                        let deferredNote =
-                            if deferred > 0 then
-                                let dn = deferredList |> List.map fst |> String.concat ", "
-                                $" (%d{deferred} waiting on build: %s{dn})"
-                            else
-                                ""
-
-                        // A real red DOMINATES an abort beside it — but the
-                        // abort is still NAMED, and named as an abort: those
-                        // projects proved nothing, and a reader must not add
-                        // them to the failure count.
-                        let abortNote =
-                            if aborted > 0 then
-                                $" (+%d{aborted} ABORTED, nothing verified: %s{abortedNames})"
-                            else
-                                ""
-
-                        ctx.ReportStatus(
-                            PluginStatus.failedNow
-                                $"%d{failed} failed: %s{names}%s{abortNote}%s{deferredNote}%s{carriedNote}"
-                                $"%s{runSummary}%s{carriedNote}"
-                                results.Elapsed
-                        )
 
         // Whatever this run left owed is queued behind it as an intent by
         // the trigger that owed it (`enqueueImpactRun`, a queued `run-tests`),
         // and is delivered only after this fold is committed. Nothing is
         // launched from here.
-        recordRunOutcome testResults
+        reportRunOutcome
+            ctx
+            { Completed = completed
+              CarriedFailures = carriedFailures
+              QueueAfterCommit = queueAfterCommit
+              PendingDescription = pendingDescription
+              ReceiptTransition = receiptTransition
+              EvidenceReceipt = evidenceReceipt }
+            testResults
 
         let replies =
             match message with
