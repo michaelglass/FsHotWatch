@@ -503,6 +503,20 @@ let internal joinRefreshIn
 
         applyRefresh ctx answer state
 
+let internal mayReplayIn
+    (indexedKey: string -> string option)
+    (repoRoot: string)
+    (testConfigs: TestConfig list option)
+    (pending: Map<string, string>)
+    (result: FileCheckResult)
+    : bool =
+    testConfigs |> Option.forall List.isEmpty
+    || (let relPath =
+            Path.GetRelativePath(repoRoot, AbsFilePath.value result.File).Replace('\\', '/')
+
+        IndexedAnalysis.identityOf repoRoot result
+        |> Option.exists (IndexedAnalysis.mayReplay (indexedKey relPath) (Map.tryFind relPath pending)))
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -604,13 +618,7 @@ let internal createWithEvidenceAndQueries
 
     let indexedKey = indexedKeyIn db
 
-    let mayReplay (pending: Map<string, string>) (result: FileCheckResult) : bool =
-        testConfigs |> Option.forall List.isEmpty
-        || (let relPath =
-                Path.GetRelativePath(repoRoot, AbsFilePath.value result.File).Replace('\\', '/')
-
-            IndexedAnalysis.identityOf repoRoot result
-            |> Option.exists (IndexedAnalysis.mayReplay (indexedKey relPath) (Map.tryFind relPath pending)))
+    let mayReplay = mayReplayIn indexedKey repoRoot testConfigs
 
     // Durable "needs-testing" queue (plugin-owned sidecar). The set of changed
     // symbols not yet proven test-equivalent to the last green run. Loaded once
