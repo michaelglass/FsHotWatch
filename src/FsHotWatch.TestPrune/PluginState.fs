@@ -384,6 +384,10 @@ type TestPruneState =
         member this.MayReadFileCache result =
             this.IndexGuard.MayReplay(this.PendingIdentities, result)
 
+    // AUTOMATION-1482: a replayed check whose analysis is filed is answered from the record.
+    interface IReplayedCheckReader with
+        member this.CanAnswer result = this.IndexGuard.AnswersReplay result
+
     // A replayed `FileChecked` is recorded by the rule a live fold applies: only a result
     // published against the model published now describes it (see `notCurrent`).
     interface IFileReplayState<TestPruneState> with

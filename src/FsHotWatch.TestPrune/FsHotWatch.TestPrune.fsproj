@@ -38,6 +38,7 @@
     <Compile Include="Flakiness.fs" />
     <Compile Include="FileFreshness.fs" />
     <Compile Include="IndexedAnalysis.fs" />
+    <Compile Include="AnalysisRecords.fs" />
     <Compile Include="PendingVerification.fs" />
     <Compile Include="FullSuiteBaseline.fs" />
     <Compile Include="WholeProjectEvidence.fs" />

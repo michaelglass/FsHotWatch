@@ -1232,6 +1232,44 @@ Measured with the fixed fshw on a runner, on the same pair (41649087683): 0 -> 1
 laptop's number. The 525 left are the projects the release bump reached and the projects that
 reference them, whose versions really changed.
 
-**Not changed here.** In the 704-of-704 replay the second checkout's daemon still started 704
-FCS checks, all of them demanded by a plugin. The check records answered every file, and the
-per-checkout plugin caches did not. That belongs to the plugin-cache convergence of §14 and §9.5.
+**AUTOMATION-1482: TestPrune's analysis is a record too.** In the 704-of-704 replay the second
+checkout's daemon still started 704 FCS checks, all demanded by a plugin. A per-plugin tally
+(`PluginHost.DemandTally`, now logged when a daemon stops) measured who demanded them:
+`test-prune 704`, and no other plugin. Lint, analyzers and format-check answered from their
+box-wide task caches (`CacheResidency`). TestPrune's `FileChecked` entry is workspace-local and
+may be read only when the workspace's impact index already holds that analysis
+(`IndexedAnalysis`). A fresh workspace's index holds none, so every replay was demanded. The
+analysis reads the typed tree, which a replay does not carry.
+
+Two answers were weighed:
+
+- **Satisfy the demand from the check records.** Not possible as they stand. A check record
+  holds diagnostics and signatures, not the symbols, edges and tests the index is built from.
+  Adding them would put one plugin's index rows into every check record.
+- **Give the analysis a record.** Chosen. The analysis is a function of the check it reads, so
+  TestPrune files it (`AnalysisRecords`, kind `testprune-analysis`) when it analyses a live
+  check. The key is the identity the index already trusts to skip re-analysis
+  (`IndexedAnalysis.identity`: the source, the compiler signature, and the public shape of
+  everything the check resolved outside the file), plus the file, its project and the analyser
+  build. Paths are relative to the analysis root.
+  - A plugin state can now answer a replayed check itself (`IReplayedCheckReader`). The
+    framework asks before demanding a live check.
+  - TestPrune answers when the record is filed, and folds the recorded analysis exactly as a
+    live one: the index gets the same rows, and the changed-symbol diff and freshness gate run
+    on the replayed diagnostics.
+  - Any other replay is demanded as before.
+
+The records are filed beside the repository's test evidence, whenever that store is wired. The
+false-green guard is `TestPruneIndexReplayTests`. A fresh workspace (empty index, empty task
+cache) answers every replayed check from the filed analyses, and its index then selects the test
+that calls the edited value. With the records switched off the same test demands all three files
+(RED).
+
+Measured with `fshw-bench replay` on 276ae958, second checkout, fresh cache home:
+
+| binary | replayed | FCS checks started | demanded, by plugin |
+|---|---|---|---|
+| AUTOMATION-1478 + 1480 + 1479 | 704 of 704 | 704 | test-prune 704 |
+| + AUTOMATION-1482 | 704 of 704 | 0 | none |
+
+The gate said AGREE.

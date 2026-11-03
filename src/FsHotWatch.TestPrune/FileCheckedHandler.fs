@@ -56,12 +56,16 @@ open FsHotWatch.TestPrune.ImpactRun
 /// What `onFileCheckedWith` reads from the plugin. The freshness view stays a plugin cell:
 /// `FreshnessStore` reads it and `UpdateFreshness` writes it when the handler calls them.
 type internal FileCheckedEnv =
-    { RepoRoot: string
-      Db: Database
-      PriorRows: FileFreshness.PriorRowLedger
-      FreshnessStore: unit -> FileFreshness.Store
-      UpdateFreshness: FileFreshness.Store -> unit
-      EnqueuePending: string list -> VerificationDebt -> VerificationDebt }
+    {
+        RepoRoot: string
+        Db: Database
+        PriorRows: FileFreshness.PriorRowLedger
+        FreshnessStore: unit -> FileFreshness.Store
+        UpdateFreshness: FileFreshness.Store -> unit
+        EnqueuePending: string list -> VerificationDebt -> VerificationDebt
+        /// Where analyses are filed and read (AUTOMATION-1482); None files and reads none.
+        AnalysisRecords: FsHotWatch.OutcomeStore.Store option
+    }
 
 /// The file one `FileChecked` event is about, as its handler reads it.
 type internal CheckedFile =
@@ -439,14 +443,8 @@ let internal onFileCheckedWith
                     // consumed. Do not inspect ProjectOptions: an aborted FCS
                     // check may not carry usable options either.
                     ""
-                | Replayed _ -> raise (ReplayedResultException("test-prune symbol analysis", fileStr))
-                | FullCheck _ ->
-                    let raw = result.ProjectOptions.ProjectFileName |> Path.GetFileNameWithoutExtension
-
-                    if raw.EndsWith(".fsx") then
-                        raw.Substring(0, raw.Length - 4)
-                    else
-                        raw
+                | Replayed _
+                | FullCheck _ -> AnalysisRecords.projectNameOf result.ProjectOptions.ProjectFileName
 
             // The per-file freshness sidecar gates the `detectChanges` call
             // site, not the symbol-DB write: dirty FCS results are still
@@ -480,8 +478,29 @@ let internal onFileCheckedWith
             let analysisResult =
                 match result.CheckResults with
                 | FullCheck(parseResults, checkResults) ->
-                    analyzeSourceFromResults analysisFile result.Source parseResults checkResults projectName
-                | Replayed _ -> raise (ReplayedResultException("test-prune symbol analysis", fileStr))
+                    let analysed =
+                        analyzeSourceFromResults analysisFile result.Source parseResults checkResults projectName
+
+                    // Filed, so another checkout's replay of the same check is answered
+                    // without a live one (AUTOMATION-1482).
+                    match analysed, env.AnalysisRecords, AnalysisRecords.keyFor repoRoot result with
+                    | Ok analysis, Some store, Some key ->
+                        AnalysisRecords.file store analysisRoot relPath key analysis |> ignore
+                    | _ -> ()
+
+                    analysed
+                | Replayed _ ->
+                    // Only a state that holds this analysis's record is handed a replay
+                    // (`IReplayedCheckReader`); one that moved since is a fault, as before.
+                    let filed =
+                        env.AnalysisRecords
+                        |> Option.bind (fun store ->
+                            AnalysisRecords.keyFor repoRoot result
+                            |> Option.bind (AnalysisRecords.lookup store analysisRoot))
+
+                    match filed with
+                    | Some analysis -> Ok analysis
+                    | None -> raise (ReplayedResultException("test-prune symbol analysis", fileStr))
                 | ParseOnly _ ->
                     Error "FCS produced parse-only results; full type-check results are required for impact analysis"
 

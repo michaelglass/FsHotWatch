@@ -321,7 +321,20 @@ let internal createWithEvidenceAndQueries
     /// `FileFreshness.PriorRowLedger`, which owns the rule.
     let priorRows = FileFreshness.PriorRowLedger()
 
-    let initialState = initialStateOf initialMode mayReplay loadedDebt restored
+    // AUTOMATION-1482: analyses filed box-wide, beside this repository's test evidence.
+    let analysisRecords =
+        evidence
+        |> Option.bind (fun (wiring: TestEvidenceRun.Wiring) -> wiring.Outcomes)
+
+    let initialState =
+        { initialStateOf initialMode mayReplay loadedDebt restored with
+            IndexGuard =
+                IndexedAnalysis.Guard(
+                    mayReplay,
+                    fun result ->
+                        analysisRecords
+                        |> Option.exists (fun store -> AnalysisRecords.holds store repoRoot result)
+                ) }
 
 
     let observeTestInputs = observeTestInputsOf testConfigs
@@ -508,7 +521,8 @@ let internal createWithEvidenceAndQueries
           PriorRows = priorRows
           FreshnessStore = freshnessStore
           UpdateFreshness = updateFreshness
-          EnqueuePending = enqueuePending }
+          EnqueuePending = enqueuePending
+          AnalysisRecords = analysisRecords }
 
     let onFileChecked ctx state modelGeneration result =
         onFileCheckedWith fileCheckedEnv ctx state modelGeneration result

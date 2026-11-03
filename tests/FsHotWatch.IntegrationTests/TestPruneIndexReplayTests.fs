@@ -243,9 +243,11 @@ let private checkEach (pipeline: CheckPipeline) (files: string list) =
 /// checks as records; then a restart replays each file from its record and hands the
 /// replays to a new TestPrune instance over `restartCache`. The files the restarted plugin
 /// demanded a live check of, and its status.
-let private restartedTestPruneDemands
+let private restartedTestPruneDemandsIn
     (root: string)
     (restartCache: FsHotWatch.TaskCache.ITaskCache -> FsHotWatch.TaskCache.ITaskCache)
+    (restartDb: string -> string)
+    (keepAnalyses: bool)
     =
     let files = writeProject root
     let dbPath = Path.Combine(root, "tp.db")
@@ -297,7 +299,15 @@ let private restartedTestPruneDemands
                 | _ -> false)
         @>
 
+    // A workspace that has never analysed: no box-wide analysis records (AUTOMATION-1482).
+    if not keepAnalyses then
+        let analyses = OutcomeStore.directoryFor root
+
+        if Directory.Exists analyses then
+            Directory.Delete(analyses, true)
+
     let demanded = Collections.Concurrent.ConcurrentQueue<string>()
+    let restartDbPath = restartDb dbPath
 
     let restarted =
         FsHotWatch.PluginHost.PluginHost(sharedChecker.Value, root, taskCache = restartCache cache)
@@ -308,7 +318,7 @@ let private restartedTestPruneDemands
         demanded.Enqueue(Path.GetFileName(AbsFilePath.value replay.File))
         second.CheckFileLive(replay.File, replay.ProjectOptions))
 
-    restarted.RegisterHandler(TestPrunePlugin.create dbPath root (Some [ config root ]) None None None None [])
+    restarted.RegisterHandler(TestPrunePlugin.create restartDbPath root (Some [ config root ]) None None None None [])
 
     try
         for result in replayed do
@@ -318,9 +328,17 @@ let private restartedTestPruneDemands
         restarted.EmitBatchChecked(batch 1L files)
         waitForQuiescent restarted 20000
 
-        List.ofSeq demanded |> List.sort, restarted.GetStatus FsHotWatch.PluginActivity.TestPrunePluginName
+        let covering =
+            (TestPrune.Database.Database.create restartDbPath).QueryAffectedTests [ "P.Value.answer" ]
+            |> List.map (fun t -> t.TestClass + "." + t.TestMethod)
+
+        List.ofSeq demanded |> List.sort, restarted.GetStatus FsHotWatch.PluginActivity.TestPrunePluginName, covering
     finally
         restarted.Teardown()
+
+let private restartedTestPruneDemands root restartCache =
+    let demanded, status, _ = restartedTestPruneDemandsIn root restartCache id false
+    demanded, status
 
 /// ADR-059 §17 step 3: a restarted daemon hands TestPrune replayed checks. TestPrune's
 /// per-file analysis is keyed by the stored FCS signature and the indexed analysis, so with
@@ -348,6 +366,31 @@ let ``a restarted TestPrune with no cached analysis demands a live check of ever
                 FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache)
 
         test <@ demanded = [ "Attr.fs"; "Tests.fs"; "Value.fs" ] @>
+
+        test
+            <@
+                match status with
+                | Some(Completed _) -> true
+                | _ -> false
+            @>)
+
+/// AUTOMATION-1482: a fresh workspace of an already-checked tree has no task cache and an
+/// empty impact index, yet TestPrune answers every replayed check from the analyses the
+/// first workspace filed, and its index learns every test, so selection still works.
+[<Fact(Timeout = 240000)>]
+let ``a fresh workspace's TestPrune answers replayed checks from filed analyses, and indexes them`` () =
+    withTempDir "tp-replayed-fresh" (fun root ->
+        let demanded, status, covering =
+            restartedTestPruneDemandsIn
+                root
+                (fun _ -> FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache)
+                (fun db -> db + ".fresh")
+                true
+
+        test <@ List.isEmpty demanded @>
+        // The false-green guard: the index the replays built selects the test that calls
+        // `answer`, exactly as a live analysis would have.
+        test <@ covering |> List.exists (fun name -> name.Contains "observes the value") @>
 
         test
             <@

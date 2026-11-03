@@ -3661,6 +3661,10 @@ type Daemon
                 pipeline.CheckRecordsTally
                 |> Option.iter (fun tally -> Logging.info "check-records" $"this daemon: %s{tally}")
 
+                match host.DemandTally with
+                | "" -> ()
+                | tally -> Logging.info "check-records" $"live checks demanded, by plugin: %s{tally}"
+
     /// Register a declarative framework-managed plugin handler.
     ///
     /// Registration starts the plugin's worker, which captures the current context: the

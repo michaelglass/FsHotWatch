@@ -167,6 +167,7 @@
     <Compile Include="TestEvidenceRunTests.fs" />
     <Compile Include="TestOutcomeRecordsTests.fs" />
     <Compile Include="TestPrunePluginTests.fs" />
+    <Compile Include="TestPruneAnalysisReplayTests.fs" />
     <Compile Include="TestPruneNamedDispatchTests.fs" />
     <Compile Include="TestPruneFreshnessGateTests.fs" />
     <Compile Include="FcsSuppressionTests.fs" />
@@ -174,6 +175,7 @@
     <Compile Include="TestPruneRedRetryTests.fs" />
     <Compile Include="TestPruneRunScopeTests.fs" />
     <Compile Include="TestPruneIndexedIdentityTests.fs" />
+    <Compile Include="AnalysisRecordsTests.fs" />
     <Compile Include="TestPruneTestNameTests.fs" />
     <Compile Include="TestPruneFailedLineTests.fs" />
     <Compile Include="TestPruneDiscoveryWaitTests.fs" />

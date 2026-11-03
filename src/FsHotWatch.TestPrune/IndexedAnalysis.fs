@@ -62,8 +62,19 @@ let mayReplay (indexed: string option) (pending: string option) (identity: strin
 /// the index to hold exactly that analysis. A class, compared by reference, so the state
 /// that holds it keeps its structural equality.
 [<Sealed>]
-type Guard(mayReplay: Map<string, string> -> FsHotWatch.Events.FileCheckResult -> bool) =
+type Guard
+    (
+        mayReplay: Map<string, string> -> FsHotWatch.Events.FileCheckResult -> bool,
+        answersReplay: FsHotWatch.Events.FileCheckResult -> bool
+    ) =
+    /// A guard whose state answers no replayed check itself.
+    new(mayReplay: Map<string, string> -> FsHotWatch.Events.FileCheckResult -> bool) = Guard(mayReplay, fun _ -> false)
+
     /// Whether an entry for `result` may stand in for analysing it, given the analyses
     /// pending a flush (`TestPruneState.PendingIdentities`).
     member _.MayReplay(pending: Map<string, string>, result: FsHotWatch.Events.FileCheckResult) =
         mayReplay pending result
+
+    /// Whether a replayed check of a file can be answered without a live one: its analysis is
+    /// filed (`AnalysisRecords`, AUTOMATION-1482).
+    member _.AnswersReplay(result: FsHotWatch.Events.FileCheckResult) = answersReplay result

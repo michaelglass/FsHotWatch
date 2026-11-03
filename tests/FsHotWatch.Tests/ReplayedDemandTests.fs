@@ -399,3 +399,90 @@ let ``a live check's parse is handed out, and a replay's refused`` () =
     test <@ obj.ReferenceEquals(FileCheckResult.requireParseResults "a test" live, parse) @>
 
     raises<ReplayedResultException> <@ FileCheckResult.requireParseResults "a test" (replayedResult "/tmp/repo/A.fs") @>
+
+[<Fact(Timeout = 30000)>]
+let ``the host counts each plugin's demands, so a restart can say who paid for its FCS checks`` () =
+    // AUTOMATION-1482: which plugins demand live checks after a fully replayed check.
+    let host =
+        FsHotWatch.PluginHost.PluginHost.create TestHelpers.sharedChecker.Value "/tmp/repo"
+
+    let seen = ConcurrentQueue<string>()
+    host.RegisterHandler(recordingHandler seen)
+    let other = ConcurrentQueue<string>()
+
+    host.RegisterHandler
+        { recordingHandler other with
+            Name = PluginName.create "other" }
+
+    host.SetCheckDemand(fun replayed ->
+        async {
+            return
+                Some
+                    { replayed with
+                        CheckResults = TestHelpers.fixtureFullCheck () }
+        })
+
+    test <@ host.DemandTally = "" @>
+    host.EmitFileChecked(replayedResult "/tmp/repo/A.fs")
+    host.EmitFileChecked(replayedResult "/tmp/repo/B.fs")
+    TestHelpers.waitUntil (fun () -> seen.Count = 2 && other.Count = 2) 10000
+    test <@ host.DemandTally = "other 2, recorder 2" @>
+
+/// A state that answers replayed checks it holds a record for (AUTOMATION-1482).
+type private Answering(answers: string -> bool) =
+    interface IReplayedCheckReader with
+        member _.CanAnswer result = answers (AbsFilePath.value result.File)
+
+let private answeringHandler
+    (answers: string -> bool)
+    (seen: ConcurrentQueue<string>)
+    : PluginHandler<Answering, unit> =
+    { Name = PluginName.create "answering"
+      Init = Answering answers
+      Update =
+        fun _ state event ->
+            async {
+                match event with
+                | FileChecked result ->
+                    seen.Enqueue(
+                        match result.CheckResults with
+                        | FullCheck _ -> "full"
+                        | ParseOnly _ -> "parse-only"
+                        | Replayed _ -> "replayed"
+                    )
+                | _ -> ()
+
+                return state
+            }
+      Commands = []
+      Subscriptions = Set.singleton SubscribeFileChecked
+      CacheKey = None
+      PrepareCommit = None
+      Teardown = None }
+
+[<Fact(Timeout = 30000)>]
+let ``a state that can answer a replayed check gets it in Update, and the rest are demanded`` () =
+    let seen = ConcurrentQueue<string>()
+    let demanded = ConcurrentQueue<string>()
+
+    let services =
+        { defaultServices with
+            DemandCheck =
+                fun replayed ->
+                    async {
+                        demanded.Enqueue(AbsFilePath.value replayed.File)
+
+                        return
+                            Some
+                                { replayed with
+                                    CheckResults = TestHelpers.fixtureFullCheck () }
+                    } }
+
+    let registration =
+        registerHandler services (answeringHandler (fun file -> file.EndsWith "A.fs") seen)
+
+    dispatchAndAwait registration (DispatchFileChecked(replayedResult "/tmp/repo/A.fs"))
+    dispatchAndAwait registration (DispatchFileChecked(replayedResult "/tmp/repo/B.fs"))
+    // A: answered from what the state holds, no demand. B: nothing held, demanded live.
+    test <@ List.ofSeq demanded = [ "/tmp/repo/B.fs" ] @>
+    test <@ List.ofSeq seen = [ "replayed"; "full" ] @>

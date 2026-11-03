@@ -620,6 +620,15 @@ type IFileReplayState<'State> =
 type IFileCacheReadGuard =
     abstract MayReadFileCache: result: FileCheckResult -> bool
 
+/// A state that can answer some replayed checks itself, from a record of the work a live
+/// check of the same inputs did (AUTOMATION-1482). For a replayed `FileChecked` with no
+/// cached entry, the framework asks `CanAnswer` before demanding a live check: true hands
+/// `Update` the replayed result, which the state must then answer without FCS objects;
+/// false demands a live check as for any other state (ADR-059 §17). It is asked on the
+/// plugin's own loop, so the answer and the `Update` that follows see one state.
+type IReplayedCheckReader =
+    abstract CanAnswer: result: FileCheckResult -> bool
+
 /// A state whose plugin never inspects a compile item outside the repository (NuGet
 /// `_content` sources; `PathFilter.isOutsideRepoScoped`): its `Update` leaves the state
 /// unchanged for one and reports nothing. It caches nothing for such a file either, so after
@@ -1756,6 +1765,13 @@ let internal registerHandlerForOwner
                             FsHotWatch.PathFilter.isOutsideRepoScoped (Some services.RepoRoot) (AbsFilePath.value file)
                         | _ -> false
 
+                    /// Whether `state` answers this replayed check itself (`IReplayedCheckReader`).
+                    let answersReplayedFile (state: 'State) (event: PluginEvent<'Msg>) =
+                        match event, box state with
+                        | FileChecked({ CheckResults = Replayed _ } as result), (:? IReplayedCheckReader as reader) ->
+                            reader.CanAnswer result
+                        | _ -> false
+
                     /// The state a replayed event leaves. A replay skips `Update`, but a
                     /// `FileChecked` hit is a completed analysis of the same inputs, and a
                     /// state that records per-file outcomes records this one too, against
@@ -2141,6 +2157,13 @@ let internal registerHandlerForOwner
                                         // it is (`ISkipsOutOfRepoFiles`); so does this.
                                         | None when skipsReplayedFile state event ->
                                             return Result.Ok(state, None, false)
+                                        // AUTOMATION-1482: a state holding a record of this replay's work
+                                        // answers it in `Update`, without a live check.
+                                        | None when answersReplayedFile state event ->
+                                            let! result = runAndCache identity event state cacheKeyOpt
+
+                                            return
+                                                result |> Result.map (fun (candidate, write) -> candidate, write, true)
                                         | None ->
                                             // ADR-059 §17: `Update` never sees a replayed check. With
                                             // no cached answer for it, the plugin waits here for a

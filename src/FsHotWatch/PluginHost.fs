@@ -82,6 +82,10 @@ type PluginHost
     // agent threads.
     let mutable projectGraphAccessor = PluginFramework.ProjectGraphAccessor.none
 
+    /// How many replayed checks each plugin demanded live, by plugin name (AUTOMATION-1482).
+    let demandsByPlugin =
+        System.Collections.Concurrent.ConcurrentDictionary<string, int>(System.StringComparer.Ordinal)
+
     /// How a plugin with no cached answer for a replayed check gets a real one (ADR-059 §17).
     /// Until the daemon installs its pipeline's, asking is a defect, and says so.
     let mutable checkDemand: FileCheckResult -> Async<FileCheckResult option> =
@@ -253,6 +257,14 @@ type PluginHost
     /// Install how a replayed check is turned into a real one (`PluginHostServices.DemandCheck`).
     member _.SetCheckDemand(demand: FileCheckResult -> Async<FileCheckResult option>) = checkDemand <- demand
 
+    /// Each plugin's demanded live checks so far, as `name n` pairs by name, comma-separated;
+    /// empty when none demanded any (AUTOMATION-1482).
+    member _.DemandTally: string =
+        demandsByPlugin
+        |> Seq.sortBy _.Key
+        |> Seq.map (fun pair -> $"%s{pair.Key} %d{pair.Value}")
+        |> String.concat ", "
+
     /// This session's lane of its host's process scheduler; `None` for a per-worktree daemon.
     member _.Processes: WorkScheduler.Lane option = processes
 
@@ -317,7 +329,16 @@ type PluginHost
               StartAsync = Async.Start
               ClaimOrQueueSharedRun = fun key start -> sharedRunScheduler.ClaimOrQueue(key, start)
               ReleaseSharedRun = fun key state -> sharedRunScheduler.Release(key, state)
-              DemandCheck = fun result -> checkDemand result }
+              DemandCheck =
+                fun result ->
+                    let name = PluginFramework.PluginName.value handler.Name
+                    demandsByPlugin.AddOrUpdate(name, 1, fun _ n -> n + 1) |> ignore
+
+                    Logging.debug
+                        name
+                        $"demanded a live check of %s{AbsFilePath.value result.File}: no cached answer for its replay"
+
+                    checkDemand result }
 
         let plugin = PluginFramework.registerHandlerWithOwner workStore services handler
 
