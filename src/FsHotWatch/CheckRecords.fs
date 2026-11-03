@@ -210,7 +210,24 @@ type Walk
         // An in-repo assembly is built in this checkout too: named as an output is.
         addAssemblyParts parts outputIdentity fileStampText repoRoot opts
 
-        for reference in opts.ReferencedProjects do
+        // Only the references the project compiles against: FCS types a project against a
+        // referenced project only through its `-r:`, so one listed without it
+        // (`ReferenceOutputAssembly="false"`, a build-order dependency) is read by no check
+        // (AUTOMATION-1479).
+        let compiled =
+            opts.OtherOptions
+            |> Array.choose (fun o ->
+                if o.StartsWith("-r:", StringComparison.Ordinal) then
+                    Some(o.Substring 3)
+                else
+                    None)
+            |> Set.ofArray
+
+        let references =
+            opts.ReferencedProjects
+            |> Array.filter (fun reference -> compiled.Contains reference.OutputFile)
+
+        for reference in references do
             match reference with
             | FSharpReferencedProject.FSharpReference(_, referenced) ->
                 parts.Add $"project:%s{relativize referenced.ProjectFileName}=%s{snd (chain referenced)}"
@@ -220,7 +237,7 @@ type Walk
                 parts.Add(otherReferencePart repoRoot output (getStamp ()))
 
         let projectOutputs =
-            opts.ReferencedProjects
+            references
             |> Array.map (fun reference ->
                 $"%s{relativize reference.OutputFile}=%s{outputIdentity reference.OutputFile}")
             |> String.concat "\n"

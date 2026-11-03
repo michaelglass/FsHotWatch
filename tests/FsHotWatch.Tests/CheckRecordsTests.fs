@@ -652,3 +652,54 @@ let ``a commit id in the generated AssemblyInfo moves no record's key, and a ver
         test <@ keysAt ("1.0.0+" + String('b', 40)) "1.0.0.0" = first @>
         test <@ keysAt ("1.1.0+" + String('a', 40)) "1.0.0.0" <> first @>
         test <@ keysAt ("1.0.0+" + String('a', 40)) "1.1.0.0" <> first @>)
+
+/// B listing A as a project reference whose output it does not compile against, as MSBuild's
+/// `ReferenceOutputAssembly="false"` leaves it: in `ReferencedProjects`, with no `-r:`.
+let private bNotCompilingAgainstA (tree: Tree) =
+    { tree.B with
+        OtherOptions = tree.B.OtherOptions |> Array.filter (fun o -> o <> $"-r:%s{tree.ADll}") }
+
+[<Fact(Timeout = 240000)>]
+let ``FCS does not type a project against a referenced project it passes no -r: for`` () =
+    // The guard for AUTOMATION-1479: a key may leave such a reference out only because no
+    // check can read it.
+    withTempDir "check-records-unreferenced-fcs" (fun dir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let tree = treeIn checker (Path.Combine(dir, "repo"))
+
+        let errorsIn (b: FSharpProjectOptions) =
+            let pipeline, _ = restart tree None toolchain b
+
+            match pipeline.CheckFile(AbsFilePath.create tree.B1) |> Async.RunSynchronously with
+            | Some result ->
+                CheckRecords.CheckOutputs.ofResult (Some tree.Root) result
+                |> Option.map (fun outputs ->
+                    outputs.Diagnostics
+                    |> List.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                    |> List.length)
+            | None -> None
+
+        // Positive control: with its `-r:`, B1 types against A and is clean.
+        test <@ errorsIn tree.B = Some 0 @>
+        // Without it, B1 cannot see A1 or A2.
+        test <@ errorsIn (bNotCompilingAgainstA tree) |> Option.exists (fun n -> n > 0) @>)
+
+[<Fact(Timeout = 240000)>]
+let ``a project reference a project does not compile against moves none of its keys`` () =
+    // AUTOMATION-1479: FsHotWatch.Tests lists an xUnit fixture project with
+    // ReferenceOutputAssembly="false", whose build is different in every checkout.
+    withTempDir "check-records-unreferenced" (fun dir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let tree = treeIn checker (Path.Combine(dir, "repo"))
+        let b = bNotCompilingAgainstA tree
+        FakeFSharpAssembly.write tree.ADll (FakeFSharpAssembly.spec "A" tree.Root)
+        let before = keysOf (Path.Combine(dir, "store")) tree b
+        test <@ before.Length = 2 @>
+        // A's output and A's sources both change.
+        FakeFSharpAssembly.write tree.ADll (FakeFSharpAssembly.spec "A" (tree.Root + "-elsewhere"))
+        File.AppendAllLines(tree.A2, [| "let more = 1" |])
+        test <@ keysOf (Path.Combine(dir, "store")) tree b = before @>
+        // Positive control: compiled against, the same changes move B's keys.
+        let compiled = keysOf (Path.Combine(dir, "store")) tree tree.B
+        File.AppendAllLines(tree.A2, [| "let evenMore = 2" |])
+        test <@ keysOf (Path.Combine(dir, "store")) tree tree.B <> compiled @>)
