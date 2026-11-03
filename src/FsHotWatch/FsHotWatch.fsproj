@@ -121,6 +121,7 @@
     <Compile Include="TestEvidenceStore.fs" />
     <Compile Include="OutcomeStore.fs" />
     <Compile Include="TestFailureClearance.fs" />
+    <Compile Include="OutputIdentity.fs" />
     <Compile Include="CheckRecords.fs" />
     <Compile Include="OptionsRecords.fs" />
     <Compile Include="OptionsInputs.fs" />

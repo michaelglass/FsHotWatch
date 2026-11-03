@@ -252,6 +252,8 @@
     <Compile Include="ImportStoreTests.fs" />
     <Compile Include="SnapshotMemoTests.fs" />
     <Compile Include="CheckCacheReferencedOutputTests.fs" />
+    <Compile Include="FakeFSharpAssembly.fs" />
+    <Compile Include="OutputIdentityTests.fs" />
     <Compile Include="CheckRecordsTests.fs" />
     <Compile Include="OptionsRecordsTests.fs" />
     <Compile Include="SolutionScopeTests.fs" />

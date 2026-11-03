@@ -167,10 +167,14 @@ for that. Three runs on 2026-11-03 showed it:
 
 - A binary built from each tree replayed nothing from the step before: 0 of 704 checks.
 - A pinned binary across two commits replayed 179 of 704 on a laptop and 0 on a GitHub
-  runner (not yet explained). Across a release commit it would replay nothing: the release
+  runner. On a git checkout SourceLink puts the commit id in every project's generated
+  AssemblyInfo, the first file each project compiles (AUTOMATION-1480). Across a release commit it would replay nothing: the release
   bumps every project's version, which every record key depends on.
 - A second checkout of the same tree replayed only 153. A referenced project's output
-  embeds the checkout's path, so most records are keyed differently.
+  embeds the checkout's path, so most records were keyed differently. Since AUTOMATION-1478
+  an output is named by what a check reads of it (`OutputIdentity`), and the same setup
+  replays 351: everything except the projects that reference an xUnit test project
+  (AUTOMATION-1479).
 
 `.github/workflows/nightly-replay.yml` therefore runs every night on this repository's own
 tree as a restart, the case check records exist for. One fshw, built from main's tip, checks

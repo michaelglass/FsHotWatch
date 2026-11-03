@@ -17,9 +17,12 @@
 ///                   project's whole chain, then each earlier file in compile order named
 ///                   by the API signature IN ITS OWN RECORD under its own canonical key,
 ///                   or by its content where it has no record or no signature;
-///   * `project-outputs` — the bytes of every referenced project's output, which FCS
-///                   types against instead of the sources whenever it is newer
-///                   (ADR-037). Stricter than the in-memory guard, never looser.
+///   * `project-outputs` — every referenced project's output, which FCS types against
+///                   instead of the sources whenever it is newer (ADR-037), named by
+///                   `OutputIdentity`: what a check reads of it, not the checkout path
+///                   the build embedded, so a sibling checkout of the same tree keys its
+///                   records alike (AUTOMATION-1478). An in-repo `-r:` assembly in
+///                   `upstream` is named the same way.
 ///
 /// The in-memory API key cannot be persisted as it is: `UpstreamFingerprints.ForApi` names
 /// earlier files by whatever signatures were recorded BEFORE the table was built, so the
@@ -179,6 +182,7 @@ type Filer = FSharpProjectOptions -> string -> ActionKey.ActionKey -> CheckOutpu
 type Walk
     (store: OutcomeStore.Store, toolchain: string, repoRoot: string option, hashFile: string -> string, filer: Filer) =
     let relativize = relativizeOption repoRoot
+    let outputIdentity = OutputIdentity.identity repoRoot hashFile
     let chains = Dictionary<string, FileRecord list * string>()
 
     let lookup (key: ActionKey.ActionKey) =
@@ -203,7 +207,8 @@ type Walk
     and walkProject (opts: FSharpProjectOptions) (optionsHash: string) =
         let parts = List<string>()
         parts.Add $"options:%s{optionsHash}"
-        addAssemblyParts parts hashFile fileStampText repoRoot opts
+        // An in-repo assembly is built in this checkout too: named as an output is.
+        addAssemblyParts parts outputIdentity fileStampText repoRoot opts
 
         for reference in opts.ReferencedProjects do
             match reference with
@@ -216,7 +221,8 @@ type Walk
 
         let projectOutputs =
             opts.ReferencedProjects
-            |> Array.map (fun reference -> $"%s{relativize reference.OutputFile}=%s{hashFile reference.OutputFile}")
+            |> Array.map (fun reference ->
+                $"%s{relativize reference.OutputFile}=%s{outputIdentity reference.OutputFile}")
             |> String.concat "\n"
             |> sha256Hex
 

@@ -489,3 +489,115 @@ let ``a replayed result refuses, loudly, to stand in for a typed tree`` () =
 
         raises<ReplayedResultException> <@ FileCheckResult.requireTypedTree "a test" replayed @>
         raises<ReplayedResultException> <@ ApiSignature.signatureText replayed.Source replayed.CheckResults @>)
+
+/// What a walk keys B's files by in `tree`, with A's output written as an F# build of it
+/// in `tree`'s own checkout (AUTOMATION-1478).
+let private keysOfB (dir: string) (tree: Tree) (b: FSharpProjectOptions) =
+    let store = storeIn dir
+
+    CheckRecords
+        .Walk(store, toolchain, Some tree.Root, CheckCache.FileContentHasher().Hash, CheckRecords.readOnly)
+        .Project(b)
+    |> List.map (fun record -> Path.GetFileName record.File, record.Key)
+
+let private input (label: string) (key: ActionKey.ActionKey) =
+    key.Inputs |> List.find (fun (name, _) -> name = label) |> snd
+
+/// Two checkouts of one tree at roots of different lengths, so a path the pickler writes
+/// behind a one-byte length in one is behind a two-byte length in the other; A built in each.
+let private twoCheckouts (dir: string) =
+    let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+    let short = treeIn checker (Path.Combine(dir, "c"))
+    let long = treeIn checker (Path.Combine(dir, "checkout-" + String('w', 90)))
+
+    for tree in [ short; long ] do
+        FakeFSharpAssembly.write tree.ADll (FakeFSharpAssembly.spec "A" tree.Root)
+
+    short, long
+
+[<Fact(Timeout = 240000)>]
+let ``two checkouts of one tree key every check record the same, though A's output embeds each checkout's path`` () =
+    withTempDir "check-records-checkouts" (fun dir ->
+        let short, long = twoCheckouts dir
+        // Positive control: the outputs really differ, and each names its own checkout.
+        test <@ File.ReadAllBytes short.ADll <> File.ReadAllBytes long.ADll @>
+
+        let shortKeys = keysOfB (Path.Combine(dir, "store-short")) short short.B
+        let longKeys = keysOfB (Path.Combine(dir, "store-long")) long long.B
+        test <@ shortKeys.Length = 2 @>
+
+        for (file, shortKey), (_, longKey) in List.zip shortKeys longKeys do
+            test <@ (file, input "project-outputs" shortKey) = (file, input "project-outputs" longKey) @>
+            test <@ shortKey.Value = longKey.Value @>)
+
+[<Fact(Timeout = 240000)>]
+let ``a real change to a referenced output still moves its key across checkouts`` () =
+    withTempDir "check-records-output-change" (fun dir ->
+        let short, long = twoCheckouts dir
+        let baseline = keysOfB (Path.Combine(dir, "store-short")) short short.B
+
+        let projectOutputs (keys: (string * ActionKey.ActionKey) list) =
+            keys |> List.map (snd >> input "project-outputs")
+
+        let rebuiltLong (change: FakeFSharpAssembly.Spec -> FakeFSharpAssembly.Spec) =
+            FakeFSharpAssembly.write long.ADll (change (FakeFSharpAssembly.spec "A" long.Root))
+            projectOutputs (keysOfB (Path.Combine(dir, $"store-%d{Guid.NewGuid().GetHashCode()}")) long long.B)
+
+        // Positive control: unchanged, the other checkout keys alike.
+        test <@ rebuiltLong id = projectOutputs baseline @>
+
+        // Content: an entity added to the signature data, a method added, a source added.
+        test
+            <@
+                rebuiltLong (fun s ->
+                    { s with
+                        Entities = s.Entities @ [ "added" ] })
+                <> projectOutputs baseline
+            @>
+
+        test
+            <@
+                rebuiltLong (fun s ->
+                    { s with
+                        Methods = s.Methods @ [ "added" ] })
+                <> projectOutputs baseline
+            @>
+
+        test
+            <@
+                rebuiltLong (fun s ->
+                    { s with
+                        Sources = s.Sources @ [ "src/A/A3.fs" ] })
+                <> projectOutputs baseline
+            @>
+
+        // A different binary: another assembly's build, or bytes that are no assembly at all.
+        test <@ rebuiltLong (fun s -> { s with Name = "Other" }) <> projectOutputs baseline @>
+        File.WriteAllText(long.ADll, "not an assembly")
+
+        let garbage =
+            projectOutputs (keysOfB (Path.Combine(dir, "store-garbage")) long long.B)
+
+        test <@ garbage <> projectOutputs baseline @>)
+
+[<Fact(Timeout = 240000)>]
+let ``a different referenced project moves the key, though its bytes are the same`` () =
+    withTempDir "check-records-other-project" (fun dir ->
+        let short, _ = twoCheckouts dir
+        let baseline = keysOfB (Path.Combine(dir, "store-a")) short short.B
+        // The same bytes at another project's output path.
+        let otherDll = Path.Combine(short.Root, "Other", "bin", "A.dll")
+        Directory.CreateDirectory(Path.GetDirectoryName otherDll) |> ignore
+        File.Copy(short.ADll, otherDll)
+
+        let other =
+            short.Project
+                "B"
+                [ short.B1; short.B2 ]
+                [ otherDll, short.Project "Other" [ short.A1; short.A2 ] [] [] ]
+                []
+
+        let moved = keysOfB (Path.Combine(dir, "store-other")) short other
+
+        for (_, before), (_, after) in List.zip baseline moved do
+            test <@ input "project-outputs" before <> input "project-outputs" after @>)

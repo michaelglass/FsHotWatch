@@ -75,8 +75,9 @@ jobs:
         run: |
           # The same workspace and tree on a new daemon, as a restart is: every check can be
           # answered from the records just filed, and the forced run checks every file with
-          # FCS. The same checkout, because a referenced project's output embeds the checkout's
-          # path, so a second checkout keys most records differently. The tip, not a pair of
+          # FCS. The same checkout: a second checkout of the tree keys its records alike since
+          # AUTOMATION-1478, except in projects that reference an xUnit test project
+          # (AUTOMATION-1479), so it would replay only about half. The tip, not a pair of
           # commits: a release bump changes every project's version, and with it every record
           # key, so a pair across one would replay nothing (exit 3) every release day.
           dotnet bench/FsHotWatch.Bench/bin/Debug/net10.0/fshw-bench.dll replay \

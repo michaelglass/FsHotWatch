@@ -93,7 +93,9 @@ ActionKey kinds (`tree`, `test`, `project-inputs`, `task`) in one release, with 
   shared by every checkout of one repository, exactly as the test-evidence store is
   (`TestEvidenceStore.directoryFor`). Keys are content addresses with repo-relative paths,
   so two checkouts holding the same bytes compute the same key, and a record earned in one
-  speaks for the other. Every API takes its root explicitly. Tests use a temporary root
+  speaks for the other. A built output embeds its checkout's path, so a check record names a
+  referenced output by what a check reads of it, not by its bytes (§27).
+  Every API takes its root explicitly. Tests use a temporary root
   and never the user's cache (the 1100 lesson).
 - **Format:** one immutable JSON file per record, at
   `records/<key[4..5]>/<key>/<recordId>.json`. `recordId` is the sha256 of the payload, so
@@ -479,11 +481,13 @@ The "nothing replayed" refusal comes from measurement. On 2026-11-03 three setup
 vacuously:
 
 - a binary built from each tree replayed 0 of 704 checks from the step before;
-- a pinned binary across two commits replayed 0 on a GitHub runner (179 on a laptop);
+- a pinned binary across two commits replayed 0 on a GitHub runner (179 on a laptop; explained
+  in §27);
 - a second checkout of the same tree replayed 153, because the `project-outputs` label differed
   for the rest. A referenced project's built output embeds its checkout's path, so two
   checkouts of the same bytes key most check records differently. That limits the box-wide
-  reuse §2 intends. Recorded here; not changed by this amendment.
+  reuse §2 intends. Recorded here; not changed by this amendment. §27 (AUTOMATION-1478) changes
+  it: the same setup now replays 351.
 
 Measured, one records-on check plus one forced check:
 
@@ -1126,3 +1130,73 @@ their named failures (§25). A `full` record of the tree would satisfy `confirm`
 baseline. A watermark run the publication does not hold, or a verdict that names none (anything
 but green), files nothing. A baseline still names no tree and no binary (§19), so another tree or
 binary needs its own impact records, and `confirm` never reads one.
+
+## 27. Amendment (AUTOMATION-1478): a referenced output is named by what a check reads
+
+§14's AUTOMATION-1442 amendment recorded that a second checkout of the same tree replayed only
+153 of 704 checks. The `project-outputs` label hashed each referenced project's built output
+byte for byte, and an F# compiler output embeds its checkout's absolute path:
+
+- the PDB path, in the debug directory;
+- the source file of every range, in the F# signature and optimization data. Those resources
+  are deflated, so every byte after the first path moves too;
+- a module version id and PE timestamp derived from all of the above.
+
+So two checkouts of the same sources never had the same bytes, and §2's box-wide reuse held
+only within one checkout.
+
+**Decision.** A check record names a referenced output by `OutputIdentity`, a hash of what a
+dependent's check reads of it:
+
+- the metadata tables, with the columns that are file positions zeroed (a method's or field's
+  RVA, a resource's offset);
+- the `#Strings`, `#Blob` and `#GUID` heaps, the module version id zeroed;
+- every manifest resource by name. An F# resource is inflated where it is compressed, and each
+  occurrence of the checkout root is replaced by a placeholder. The pickled length in front of
+  it is re-stated as the length after the root, so a path behind a one-byte length in one
+  checkout and a two-byte length in another reads alike.
+
+The root is matched under every spelling a build can embed: as the daemon names it, and with
+symbolic links resolved (`/var` is `/private/var` on macOS), the longer first. An in-repo `-r:`
+assembly in `upstream` is named the same way. A file that is not a managed assembly, has moved
+since its plain hash was taken, or has no root to be independent of keeps its plain content
+hash.
+
+**What it does not hash, and why that is not looser.** Method bodies, the `#US` heap that only
+method bodies read, and the PE and debug headers. FCS types a dependent against metadata and the
+F# signature data. It never reads a method body, so a body-only change cannot change a
+dependent's diagnostics. The in-memory guard (`CachedCheck.ProjectOutputs`) still hashes the
+whole file. A real change still moves the key: an entity, a source file, a method, the assembly's
+name, a resource or a type abbreviation (signature data only, no IL). `OutputIdentityTests`,
+`CheckRecordsTests` and the real-compiler `OutputIdentityBuildTests` pin each of these. The
+format is versioned (`pe-v1`). Records filed under the old key miss once and are collected by GC.
+
+**Measured** with `fshw-bench replay` on FsHotWatch 276ae958: records filed in one workspace,
+then a fresh workspace of the same tree replayed against a forced re-check. Both gates said AGREE.
+
+| binary | checks replayed in the second checkout |
+|---|---|
+| main (276ae958) | 153 of 704 |
+| this change | 351 of 704 |
+
+Every project now replays in full except two test projects, `FsHotWatch.Tests` (288 files) and
+`TestPrune.Trace.Tests` (36). Each references an xUnit v3 test project (`Xunit4RunnerFixture`,
+`FxTests`), and those carry checkout-specific content that is not a path prefix:
+
+- xUnit's generated `XunitAutoGeneratedEntryPoint.fs` names its module randomly
+  (`Xunit.AutoGenerated._jWJcAJDyU`), once per `obj/`. The name differs in the generated file's
+  content and in the output's `#Strings` heap.
+- `[<Fact>]` takes `[<CallerFilePath>]`, so the absolute path of each test file sits in the
+  output's `#Blob` heap, behind a blob length.
+
+Those are filed separately (AUTOMATION-1479) and left as they are here. A miss is never wrong,
+only slow.
+
+**The other anomaly from §14** (one fshw across 2721c0648bd9 -> ca4c273eea4c replayed 0 on a
+GitHub runner and 179 on a laptop) is a separate cause, filed as AUTOMATION-1480. A throwaway
+run of that pair on a runner (41630045883) reproduced 0, and every subject filed at both steps
+differed in `upstream` alone. On a git-visible checkout, SourceLink stamps the commit id into the
+generated `AssemblyInfo.fs` (`InformationalVersion "14.0.0+ca4c273e…"`). F# compiles that file
+first (`CompileBefore`), so every record of every project changes key at every commit. The
+laptop's jj repository has no colocated git, so `Directory.Build.props` turns SourceLink off, and
+only the projects the version bump reached missed.
