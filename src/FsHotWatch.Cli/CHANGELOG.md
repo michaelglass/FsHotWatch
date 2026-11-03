@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.136 - 2026-11-03
+
 - fix: the shadow files each passing project's baseline from the full-suite run that earned the
   watermark when that run was not the graded run, as on a cold checkout's first check
   (AUTOMATION-1476, ADR-059 §26). New: `Observation.BaselineRunId`. Only baselines are filed; the

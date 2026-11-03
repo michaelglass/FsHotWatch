@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.103 - 2026-11-03
+
 - feat: `TestFailureClearance` (AUTOMATION-1444). A test fail record can name its failed tests
   in its outputs (`outputsOf`, `failedTestsOf`). A later passing run at the same key files a
   clearance of that fail (`clearanceOf`, keyed by `keyOf` on the fail's key and run). Under
