@@ -114,9 +114,21 @@ type Suite =
         /// The names of the failed tests when the report names every failure it counts;
         /// `None` when it does not (a raw throw, a crashed host, an unreadable report).
         FailedTests: string list option
-        /// The names of the tests the report lists as passed.
+        /// The names of the tests the report lists as passed. Empty when they were not read.
         PassedTests: Set<string>
+        /// The CTRF report, by absolute path: what a later publication reads the passed names
+        /// from when it has a failure on file to clear (AUTOMATION-1472). `None` when unknown.
+        Report: string option
     }
+
+/// The failures a suite names: `names`, the failed rows its report names, when they are every
+/// failure it counts and it counts nothing but passes, fails and skips. `None` for a project
+/// that `timedOut` in that run: a timeout is about the project, not the tests it named.
+let namedFailures (timedOut: bool) (counts: OutcomeStore.Counts) (names: string list option) : string list option =
+    if timedOut || counts.Total <> counts.Passed + counts.Failed + counts.Skipped then
+        None
+    else
+        names |> Option.filter (fun f -> List.length f = counts.Failed)
 
 /// What one publication says, reduced to what the shadow needs.
 type Observation =
@@ -391,6 +403,59 @@ let private lookupIn
     | Some outcome -> Some outcome
     | None -> kpStore |> Option.bind read
 
+/// File `records`, a publication's, in `store`; returns how many were filed.
+///
+/// A failed suite's test record carries the failures it names. A passing suite's test record
+/// also files the clearance it earns over a named fail that an EARLIER publication filed at
+/// this tree's test keys for its project (`TestFailureClearance`, AUTOMATION-1472): check N's
+/// full run failed a test, and check N+1 on the same tree ran it again and passed it. Its
+/// passed names are read from its report only when there is such a fail to clear.
+let private fileRecords (store: OutcomeStore.Store) (o: Observation) (records: OutcomeStore.Record list) : int =
+    let suiteOf (r: OutcomeStore.Record) =
+        if r.Key.Kind = "test" then
+            o.Suites
+            |> List.tryFind (fun s -> s.Project = r.Subject && s.RunId = r.Producer.RunId)
+        else
+            None
+
+    let filed =
+        records
+        |> List.filter (fun r ->
+            match suiteOf r with
+            | Some s when r.Outcome = OutcomeStore.Outcome.Fail ->
+                let outputs =
+                    s.FailedTests
+                    |> Option.filter (List.isEmpty >> not)
+                    |> Option.map TestFailureClearance.outputsOf
+
+                store.RecordWithOutputs(r, outputs)
+            | _ -> store.Record r)
+
+    for r in records do
+        match suiteOf r with
+        | Some s when r.Outcome = OutcomeStore.Outcome.Pass ->
+            let passed =
+                lazy
+                    (if s.PassedTests.IsEmpty then
+                         s.Report
+                         |> Option.bind Ctrf.tryReadTestNames
+                         |> Option.map _.Passed
+                         |> Option.defaultValue Set.empty
+                     else
+                         s.PassedTests)
+
+            for scope in [ FullScope; ImpactScope ] do
+                let key = testKey o s.Project scope
+
+                match store.LookupWithOutputs key with
+                | Some(newest, _) as onFile when newest.Outcome = OutcomeStore.Outcome.Fail ->
+                    TestFailureClearance.clearanceOf key.Value onFile passed.Value r
+                    |> Option.iter (store.Record >> ignore)
+                | _ -> ()
+        | _ -> ()
+
+    List.length filed
+
 /// File `o`'s records, look the tree up, and append the comparison to the shadow log.
 /// Returns the lookup's answer. `testProjects` are the configured test projects.
 let observeWith
@@ -401,7 +466,7 @@ let observeWith
     (o: Observation)
     =
     let records = recordsOf o testProjects
-    let recorded = records |> List.filter store.Record |> List.length
+    let recorded = fileRecords store o records
     let required = requirements o testProjects
 
     let answer = LookupVerdict.decide required (lookupIn o.Command store kpStore)
@@ -533,6 +598,11 @@ let ofVerdict (repoRoot: string) (v: Verdict.Verdict) : Observation =
             |> List.map _.Project
             |> Set.ofList
 
+        // A project that timed out in a run is a fact about the project, not about the tests
+        // its report names (`TestReports.failuresOf`): its failures are never named.
+        let timedOut =
+            v.TimedOut |> List.map (fun p -> Some p.RunId, p.Project) |> Set.ofList
+
         [ for run in v.Runs do
               for s in run.Suites do
                   let names =
@@ -550,10 +620,15 @@ let ofVerdict (repoRoot: string) (v: Verdict.Verdict) : Observation =
                         Skipped = s.Skipped }
                     Passed = s.Failed = 0 || (s.StarvedRerun |> Option.exists _.PassedAlone)
                     FailedTests =
-                      names
-                      |> Option.map _.Failed
-                      |> Option.filter (fun f -> List.length f = s.Failed)
-                    PassedTests = names |> Option.map _.Passed |> Option.defaultValue Set.empty } ]
+                      namedFailures
+                          (timedOut.Contains(runToken run.RunId, s.Project) || Option.isSome s.StarvedRerun)
+                          { Total = s.Total
+                            Passed = s.Passed
+                            Failed = s.Failed
+                            Skipped = s.Skipped }
+                          (names |> Option.map _.Failed)
+                    PassedTests = names |> Option.map _.Passed |> Option.defaultValue Set.empty
+                    Report = Some(Path.Combine(repoRoot, s.Ctrf)) } ]
       RunOrder = []
       RecordedAt = DateTimeOffset(DateTime.SpecifyKind(v.ProducedAt, DateTimeKind.Utc))
       OutcomeKeys = Map.empty }

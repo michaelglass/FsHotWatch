@@ -99,7 +99,8 @@ let private suite (run: string) (project: string) (failed: string list) (passed:
           Skipped = 0 }
       Passed = List.isEmpty failed
       FailedTests = Some failed
-      PassedTests = Set.ofList passed }
+      PassedTests = Set.ofList passed
+      Report = None }
 
 /// The check publication of step 34: graded from impact run r2, after full run r1 the same
 /// check produced; the daemon names each project's full-run K_P key.

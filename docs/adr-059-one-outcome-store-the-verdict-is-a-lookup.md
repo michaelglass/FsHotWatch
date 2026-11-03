@@ -1006,10 +1006,28 @@ It does not loosen the lookup. Each of these stays red: a failure nobody named, 
 failed again or did not pass every named failure, a pass filed before the fail, a newer fail at
 the same key (the clearance names the older fail's run), and any `confirm`.
 
-**Not changed: the tree-keyed records across publications.** When check N's graded full run
+**The tree-keyed records across publications (AUTOMATION-1472).** When check N's graded full run
 fails A.x on tree T (today red) and check N+1 on T re-runs A.x green (today green), the shadow's
-tree `full` key keeps N's fail, so N+1's lookup is red. `supersededFailures` sees only one
-publication's runs, and `ofVerdict` reads test names only for a project that failed in that
-verdict. The replay checks each tree once per mode, so it has not shown this case. If it appears,
-the same clearance applies to the tree keys, once the shadow reads the names of a passing
-project's later run.
+tree `full` key kept N's fail, so N+1's lookup was red. `supersededFailures` sees only one
+publication's runs. `ofVerdict` reads test names only for a project that failed in that verdict.
+A re-run after a flake is the normal recovery path, so this would have appeared in real use. The
+replay checks each tree once per mode and never exercised it.
+
+The tree-keyed records now get the same clearance:
+
+- A failed suite's test record carries the failures it names (`namedFailures`). The report must
+  name every failure it counts and count nothing but passes, fails and skips. A project the
+  verdict records as timed out in that run, or one re-run under starvation, names none.
+- When a passing suite's record is filed, each of this tree's test keys for its project
+  (`full` and `impact`) whose newest record is a named fail is offered to `clearanceOf`.
+  The suite's passed names are read from its report (`Suite.Report`) only then.
+- The rules are §25's: a different run, filed strictly after the fail, and every named failure
+  passed. A pass in the same publication is at the same instant, so it never clears. That case
+  stays with `supersededFailures`.
+- `check` reads the clearance and `confirm` does not, through the same `lookupIn` as the K_P
+  store.
+
+Stricter, deliberately: `namedFailures` also feeds `supersededFailures`. A timed-out suite, or one
+with `other` rows, is no longer superseded within one publication either. That matches today's
+outstanding-failure ledger, which files a timeout at project level so that a later class-filtered
+green cannot clear it (`TestReports.failuresOf`).

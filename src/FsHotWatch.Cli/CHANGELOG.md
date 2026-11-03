@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a check's shadow lookup no longer stays red on a tree whose earlier check failed a test that
+  a later check on the same tree ran again and passed (AUTOMATION-1472, ADR-059 §25). The shadow
+  files a failed suite with the failures it names. A later publication's passing suite files the
+  clearance of that fail. It reads its passed names from its report (new `Suite.Report`) only
+  when such a fail is on file. New: `ShadowVerdict.namedFailures`. A timed-out suite, or one with
+  `other` rows, names no failures, so neither path clears it.
+
 - fix: the shadow lookup of a `check` reads a K_P full-suite fail as a pass when a later run at the
   same K_P passed every failure it named (AUTOMATION-1444). That was 18 of the 19 disagreements in
   a replay of 100 intelligence commits: the full suite failed one test, the check's re-run passed

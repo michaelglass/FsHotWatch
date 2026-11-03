@@ -27,7 +27,8 @@ let private suite run project failed : Suite =
       Counts = counts 3 failed
       Passed = failed = 0
       FailedTests = Some [ for i in 1..failed -> $"%s{project}.t%d{i}" ]
-      PassedTests = Set.empty }
+      PassedTests = Set.empty
+      Report = None }
 
 /// A green confirm over tree T1 that ran both configured projects in full.
 let private confirmGreen: Observation =
@@ -572,7 +573,8 @@ let private named run project (failed: string list) (passed: string list) : Suit
           Skipped = 0 }
       Passed = List.isEmpty failed
       FailedTests = Some failed
-      PassedTests = Set.ofList passed }
+      PassedTests = Set.ofList passed
+      Report = None }
 
 /// An impact check over T1 graded from `r2`, after a full green over T0 earned both baselines.
 let private checkAfterBaseline repo store (suites: Suite list) (order: string list) =
