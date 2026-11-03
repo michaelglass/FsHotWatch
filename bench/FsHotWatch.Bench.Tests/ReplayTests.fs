@@ -444,3 +444,23 @@ let ``a verdict's test runs are named in the order it lists them, each once`` ()
     test <@ Diagnostics.verdictRunIds verdict = [ "b"; "a" ] @>
     test <@ Diagnostics.verdictRunIds "{}" = [] @>
     test <@ Diagnostics.verdictRunIds "not json" = [] @>
+
+[<Fact>]
+let ``a step whose forced run did not conclude is incomparable, not a diagnostics disagreement`` () =
+    let interrupted: Entry =
+        { Index = 50
+          Commit = "c"
+          Phase = Phase.Clean
+          StartedAt = DateTimeOffset.UnixEpoch
+          FinishedAt = DateTimeOffset.UnixEpoch
+          Replay = run "replay" 0 "green" []
+          Forced = Some(run "forced" 2 "incomplete" [])
+          Diff =
+            { OnlyReplay = [ d "fcs" "A" 1 "x" ]
+              OnlyForced = [] }
+          Fault = None }
+
+    let s = Summary.summarize [ interrupted ]
+    test <@ s.DiffSteps = 0 && s.DiffByPlugin = [] @>
+    test <@ s.Incomparable = [ "c" ] @>
+    test <@ (Summary.render s).Contains "not compared" @>
