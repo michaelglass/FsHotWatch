@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: the shadow files each passing project's baseline from the full-suite run that earned the
+  watermark when that run was not the graded run, as on a cold checkout's first check
+  (AUTOMATION-1476, ADR-059 §26). New: `Observation.BaselineRunId`. Only baselines are filed; the
+  run's suites stay impact records, so `confirm` is unaffected.
+
 - fix: a `fshw verdict` read finds the K_P test records the check it reads back found
   (AUTOMATION-1443, ADR-059 §26). Each publication files the K_P key the daemon named per project,
   under the tree and binary (`outcomeKeyKey`, `outcomeKeyRecords`). A read recovers the keys

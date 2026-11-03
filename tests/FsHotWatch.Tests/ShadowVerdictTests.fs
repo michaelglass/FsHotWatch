@@ -44,6 +44,7 @@ let private confirmGreen: Observation =
           "lint", Some OutcomeStore.Outcome.Pass ]
       DiagnosticsFailed = false
       GradedRunId = Some "r1"
+      BaselineRunId = None
       Scope = GradedScope.FullSuite
       Suites = [ suite "r1" "A.Tests" 0; suite "r1" "B.Tests" 0 ]
       RunOrder = []

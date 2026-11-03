@@ -44,6 +44,7 @@ let private checkN (aFailed: string list) : Observation =
       Plugins = [ "build", Some OutcomeStore.Outcome.Pass ]
       DiagnosticsFailed = false
       GradedRunId = Some "r1"
+      BaselineRunId = None
       Scope = GradedScope.FullSuite
       Suites =
         [ named "r1" "A.Tests" aFailed [ "A.y"; "A.z" ]

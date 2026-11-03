@@ -146,6 +146,8 @@ type Observation =
         /// A diagnostic the exit code was computed from reddened the run.
         DiagnosticsFailed: bool
         GradedRunId: string option
+        /// The full-suite run today's green is relative to (its watermark), when the verdict names one.
+        BaselineRunId: string option
         Scope: GradedScope
         Suites: Suite list
         /// The runs the suites came from, OLDEST FIRST, as the check attributed them
@@ -336,9 +338,16 @@ let recordsOf (o: Observation) (testProjects: string list) : OutcomeStore.Record
     let isFull (s: Suite) =
         o.Scope = GradedScope.FullSuite && s.RunId = o.GradedRunId
 
+    // The run today's watermark names earns baselines too when it is not the graded run: a
+    // check's own full-suite run, graded relative to by the impact run after it (AUTOMATION-1476).
+    // Only baselines: its suites stay `impact` records of the tree, because confirm grades the
+    // full suite it ran itself.
+    let earnsBaseline (s: Suite) =
+        isFull s || (Option.isSome o.BaselineRunId && s.RunId = o.BaselineRunId)
+
     let baselines =
         [ for s in o.Suites do
-              if isFull s && s.Passed then
+              if earnsBaseline s && s.Passed then
                   record (baselineKey s.Project) s.Project OutcomeStore.Outcome.Pass None s.RunId ]
 
     if not (concluded o) then
@@ -655,6 +664,10 @@ let ofVerdict (repoRoot: string) (v: Verdict.Verdict) : Observation =
         && v.RedCauses
            |> List.exists (fun c -> c.Source <> "tree" && c.Source <> "receipt")
       GradedRunId = runToken v.RunId
+      BaselineRunId =
+        (match v.Outcome with
+         | Verdict.Green(CheckVerdict.Baseline.FullSuiteRun r) -> Some(r.RunId.ToString "N")
+         | _ -> None)
       Scope =
         (match v.Scope with
          | IpcParsing.FullSuite _ -> GradedScope.FullSuite

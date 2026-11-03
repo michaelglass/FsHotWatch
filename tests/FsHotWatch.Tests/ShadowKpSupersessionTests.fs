@@ -115,6 +115,7 @@ let private check (suites: Suite list) : Observation =
       Plugins = [ "build", Some OutcomeStore.Outcome.Pass ]
       DiagnosticsFailed = false
       GradedRunId = Some "r2"
+      BaselineRunId = None
       Scope = GradedScope.ImpactFiltered
       Suites = suites
       RunOrder = [ "r1"; "r2" ]

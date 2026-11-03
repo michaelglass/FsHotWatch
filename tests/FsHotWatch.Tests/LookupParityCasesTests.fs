@@ -89,6 +89,7 @@ let ``699: a verdict whose own suites report a failure is never looked up green`
               Plugins = []
               DiagnosticsFailed = false
               GradedRunId = Some "r1"
+              BaselineRunId = None
               Scope = GradedScope.FullSuite
               Suites =
                 [ { RunId = Some "r1"
@@ -143,6 +144,7 @@ let ``1242: a configured test project the model never discovered is still requir
               Plugins = []
               DiagnosticsFailed = false
               GradedRunId = Some "r1"
+              BaselineRunId = None
               Scope = GradedScope.FullSuite
               Suites =
                 [ { RunId = Some "r1"

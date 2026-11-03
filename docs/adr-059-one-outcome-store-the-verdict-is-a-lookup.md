@@ -1060,7 +1060,16 @@ missing. What a key finds is judged as the check judges it: a K_P fail is red, a
 key records are not counted in `recorded`, so a publication that ran nothing still logs
 `recorded: 0`.
 
-**Also at step 0, and recorded rather than changed here.** The tree-keyed path missed those
-projects because the check's full-suite run (9089c471, which earned today's watermark) was not the
-graded run. `recordsOf` files baselines only from a graded full-suite run. With this change the read
-no longer depends on that, and the check already answered from K_P.
+**The watermark run that was not graded (AUTOMATION-1476).** At step 0 the tree-keyed path also
+missed those projects. The check's own full-suite run 9089c471 earned today's watermark, but the
+graded run was the impact run after it, and `recordsOf` filed baselines only from a graded
+full-suite run. A publication now knows the run its green is relative to (`BaselineRunId`, the
+verdict's `FullSuiteRun` baseline). When it holds that run's suites, each passing project files its
+`test-baseline` from it, as a graded full run's does.
+
+Only baselines are filed. That run's suites stay `impact` records of the tree, as before, with
+their named failures (§25). A `full` record of the tree would satisfy `confirm`, and today's
+`confirm` grades only the full suite it ran itself. A project the watermark run failed earns no
+baseline. A watermark run the publication does not hold, or a verdict that names none (anything
+but green), files nothing. A baseline still names no tree and no binary (§19), so another tree or
+binary needs its own impact records, and `confirm` never reads one.

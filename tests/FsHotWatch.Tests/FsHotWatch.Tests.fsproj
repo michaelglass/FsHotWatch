@@ -266,6 +266,7 @@
     <Compile Include="ShadowKpSupersessionTests.fs" />
     <Compile Include="ShadowCrossCheckSupersessionTests.fs" />
     <Compile Include="ShadowReadKpTests.fs" />
+    <Compile Include="ShadowBaselineRunTests.fs" />
     <Compile Include="TestFailureClearanceTests.fs" />
     <Compile Include="LookupParityCasesTests.fs" />
     <Compile Include="IpcOutputTests.fs" />

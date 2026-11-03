@@ -45,6 +45,7 @@ let private coldCheck: Observation =
       Plugins = [ "build", Some OutcomeStore.Outcome.Pass ]
       DiagnosticsFailed = false
       GradedRunId = Some "r2"
+      BaselineRunId = None
       Scope = GradedScope.ImpactFiltered
       Suites = []
       RunOrder = [ "r2" ]
