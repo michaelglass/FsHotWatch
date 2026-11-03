@@ -30,6 +30,7 @@ let private usage =
                     [--timeout-min 120] [--diff-plugins fcs,lint,analyzers,findings] [--forced-every 1 | --no-forced]
                     [--daemon-log logs/daemon.log] [--max-steps N] [--workspace-path <dir>]
   fshw-bench replay-summary <out dir>
+  fshw-bench replay-gate <out dir>      exit 0 agree, 1 records-vs-forced disagreement, 3 nothing compared
 """
 
 /// Parse `--key value` / `--flag` arguments. Repeated keys accumulate.
@@ -341,6 +342,12 @@ let main argv =
         | [ out ] ->
             printfn "%s" (ReplayRun.writeSummary (Path.GetFullPath out))
             0
+        | _ ->
+            eprintf "%s" usage
+            2
+    | "replay-gate" ->
+        match positional with
+        | [ out ] -> ReplayRun.gate (Path.GetFullPath out)
         | _ ->
             eprintf "%s" usage
             2

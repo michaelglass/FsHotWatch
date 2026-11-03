@@ -232,7 +232,8 @@ let private run mode exit outcome (shadow: ShadowLine list) : RunResult =
       Shadow = shadow
       Diagnostics = 2
       Findings = Some "clean"
-      RecordsLog = [ "check-records: this daemon: 2 replayed" ]
+      RecordsLog =
+        [ "[check-records] 2026-11-03T06:58:24.043Z this daemon: 2 check(s) replayed from check records, 0 FCS check(s) started, 0 demanded by a plugin" ]
       Artifacts = "/out/0-a-clean/" + mode }
 
 let private agreeLine =
@@ -464,3 +465,133 @@ let ``a step whose forced run did not conclude is incomparable, not a diagnostic
     test <@ s.DiffSteps = 0 && s.DiffByPlugin = [] @>
     test <@ s.Incomparable = [ "c" ] @>
     test <@ (Summary.render s).Contains "not compared" @>
+
+// ─── The nightly gate (AUTOMATION-1442, ADR-059 §14) ─────────────────────────
+
+let private compared commit (replayOutcome: string) (forced: RunResult option) diff : Entry =
+    { Index = 0
+      Commit = commit
+      Phase = Phase.Clean
+      StartedAt = DateTimeOffset.UnixEpoch
+      FinishedAt = DateTimeOffset.UnixEpoch
+      Replay = run "replay" (if replayOutcome = "red" then 1 else 0) replayOutcome []
+      Forced = forced
+      Diff = diff
+      Fault = None }
+
+[<Fact>]
+let ``the gate agrees only when a concluded step was compared and nothing differed`` () =
+    let agreeing = compared "a" "green" (Some(run "forced" 0 "green" [])) noDiff
+    test <@ Summary.gate (Summary.summarize [ agreeing ]) = Gate.Agree 1 @>
+
+[<Fact>]
+let ``a replayed diagnostic the forced run did not report fails the gate`` () =
+    let differing =
+        compared
+            "a"
+            "green"
+            (Some(run "forced" 0 "green" []))
+            { OnlyReplay = [ d "fcs" "A" 1 "x" ]
+              OnlyForced = [] }
+
+    match Summary.gate (Summary.summarize [ differing ]) with
+    | Gate.Disagree reasons -> test <@ reasons |> List.exists (fun r -> r.Contains "fcs") @>
+    | other -> failwith $"expected a disagreement, got %A{other}"
+
+[<Fact>]
+let ``a clean tree the replay graded green and the forced run red fails the gate`` () =
+    let mismatched = compared "a" "green" (Some(run "forced" 1 "red" [])) noDiff
+
+    match Summary.gate (Summary.summarize [ mismatched ]) with
+    | Gate.Disagree reasons -> test <@ reasons |> List.exists (fun r -> r.Contains "a: replay green, forced red") @>
+    | other -> failwith $"expected a disagreement, got %A{other}"
+
+[<Fact>]
+let ``a run that compared nothing is no answer, never an agreement`` () =
+    // No step at all, a step with no forced run, and a step whose forced run did not conclude.
+    test <@ Summary.gate (Summary.summarize []) = Gate.NothingCompared @>
+    test <@ Summary.gate (Summary.summarize [ compared "a" "green" None noDiff ]) = Gate.NothingCompared @>
+
+    let interrupted =
+        compared
+            "a"
+            "green"
+            (Some(run "forced" 2 "incomplete" []))
+            { OnlyReplay = [ d "fcs" "A" 1 "x" ]
+              OnlyForced = [] }
+
+    test <@ Summary.gate (Summary.summarize [ interrupted ]) = Gate.NothingCompared @>
+
+[<Fact>]
+let ``the gate's exit code is 0 for agreement, 1 for a disagreement and 3 for nothing compared`` () =
+    test <@ Gate.exitCode (Gate.Agree 2) = 0 @>
+    test <@ Gate.exitCode (Gate.Disagree [ "x" ]) = 1 @>
+    test <@ Gate.exitCode Gate.NothingCompared = 3 @>
+
+[<Fact>]
+let ``replay-gate reads the ledger in an out directory and answers with the gate's exit code`` () =
+    let dir = Directory.CreateTempSubdirectory "replay-gate"
+
+    try
+        let ledger = Path.Combine(dir.FullName, "ledger.jsonl")
+        test <@ FsHotWatch.Bench.ReplayRun.gate dir.FullName = 3 @>
+        Ledger.append ledger (compared "a" "green" (Some(run "forced" 0 "green" [])) noDiff)
+        test <@ FsHotWatch.Bench.ReplayRun.gate dir.FullName = 0 @>
+        test <@ File.Exists(Path.Combine(dir.FullName, "summary.txt")) @>
+        Ledger.append ledger (compared "b" "green" (Some(run "forced" 1 "red" [])) noDiff)
+        test <@ FsHotWatch.Bench.ReplayRun.gate dir.FullName = 1 @>
+    finally
+        dir.Delete true
+
+[<Fact>]
+let ``a command the harness must run says what it printed to stderr when it fails`` () =
+    // On the first scheduled run, `jj workspace add` failed and the error named only the exit
+    // code: the harness had thrown its stderr away.
+    let dir = Directory.CreateTempSubdirectory "replay-must"
+
+    try
+        let ex =
+            Assert.Throws<Exception>(fun () ->
+                FsHotWatch.Bench.ReplayRun.mustRun dir.FullName "echo 'the reason' >&2; exit 3"
+                |> ignore)
+
+        test <@ ex.Message.Contains "exited 3" && ex.Message.Contains "the reason" @>
+        test <@ FsHotWatch.Bench.ReplayRun.mustRun dir.FullName "echo out; echo noise >&2" = "out\n" @>
+    finally
+        dir.Delete true
+
+[<Fact>]
+let ``the checks a replay run answered from records are read from its tally line`` () =
+    test <@ Summary.replayedChecks (run "replay" 0 "green" []) = Some 2 @>
+
+    let tally n =
+        $"[check-records] 2026-11-03T07:35:31.162Z this daemon: %d{n} check(s) replayed from check records, 704 FCS check(s) started, 0 demanded by a plugin"
+
+    let withLog (log: string list) =
+        { run "replay" 0 "green" [] with
+            RecordsLog = log }
+
+    test <@ Summary.replayedChecks (withLog [ tally 0 ]) = Some 0 @>
+    // Several daemons in one run: their replays add up.
+    test <@ Summary.replayedChecks (withLog [ tally 3; "unrelated"; tally 4 ]) = Some 7 @>
+    test <@ Summary.replayedChecks (withLog [ "[check-records] filed 703 check record(s)" ]) = None @>
+
+[<Fact>]
+let ``steps whose replay answered nothing from records agree vacuously, so the gate says nothing was replayed`` () =
+    // The first scheduled run on GitHub: each step built fshw from its own tree, a new binary
+    // keys new records, and the tip replayed 0 of 704 checks. Diagnostics agreed, trivially.
+    let cold =
+        { run "replay" 0 "green" [] with
+            RecordsLog =
+                [ "[check-records] 2026-11-03T07:35:31.162Z this daemon: 0 check(s) replayed from check records, 704 FCS check(s) started, 0 demanded by a plugin" ] }
+
+    let step =
+        { compared "a" "green" (Some(run "forced" 0 "green" [])) noDiff with
+            Replay = cold }
+
+    test <@ Summary.gate (Summary.summarize [ step ]) = Gate.NothingReplayed 1 @>
+    test <@ Gate.exitCode (Gate.NothingReplayed 1) = 3 @>
+    test <@ (Gate.render (Gate.NothingReplayed 1)).Contains "NOTHING REPLAYED" @>
+    // One step that replayed is enough evidence for the agreement.
+    let warm = compared "b" "green" (Some(run "forced" 0 "green" [])) noDiff
+    test <@ Summary.gate (Summary.summarize [ step; warm ]) = Gate.Agree 2 @>

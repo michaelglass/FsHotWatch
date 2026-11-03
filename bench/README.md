@@ -149,6 +149,42 @@ kinds of requirement the lookup was missing or found failing), the replay-vs-for
 diagnostic differences by plugin, clean trees whose two runs published different outcomes,
 and the seeded-fault detections by kind.
 
+**The gate.** `fshw-bench replay-gate <dir>` turns a replay into a pass/fail answer for a
+scheduled job (ADR-059 §14, AUTOMATION-1442). It rewrites `summary.txt` and exits:
+
+- `0` when at least one step's replay and forced runs both concluded, nothing differed, and
+  some replay run actually answered checks from records;
+- `1` when a compared step's diagnostics differ, or a clean tree's two runs published green
+  against red (it names which);
+- `3` when nothing was compared (no step had a forced run that concluded), or when steps were
+  compared but no replay run answered a single check from records. Two FCS runs agreeing says
+  nothing about check records. Either case is no answer, never an agreement.
+
+Check records are keyed on the fshw binary that filed them, on every referenced project's
+built output, and on each project's options (its version among them). So a vacuous
+comparison is easy to set up by accident. The gate's exit 3 for "nothing replayed" is there
+for that. Three runs on 2026-11-03 showed it:
+
+- A binary built from each tree replayed nothing from the step before: 0 of 704 checks.
+- A pinned binary across two commits replayed 179 of 704 on a laptop and 0 on a GitHub
+  runner (not yet explained). Across a release commit it would replay nothing: the release
+  bumps every project's version, which every record key depends on.
+- A second checkout of the same tree replayed only 153. A referenced project's output
+  embeds the checkout's path, so most records are keyed differently.
+
+`.github/workflows/nightly-replay.yml` therefore runs every night on this repository's own
+tree as a restart, the case check records exist for. One fshw, built from main's tip, checks
+the tip with records on to file them. A fresh daemon in the same checkout then checks it
+again, answering from those records, and once more with records off (forced). The gate
+compares the last two.
+
+The cost of a records-on plus forced pair, measured on 2026-11-03:
+
+- **FsHotWatch:** 9 min of wall clock on a laptop and 15 min on a GitHub runner, per check with
+  its tests. The whole nightly job takes about 34 min.
+- **intelligence:** a median of 18.4 min per commit and a maximum of 69 min (AUTOMATION-1440,
+  51 forced steps).
+
 **Resuming.** The first run resolves the range once and writes it to `<dir>/plan.json`. A
 later run with the same `--out` resumes from the first step the ledger has no line for, even
 if the branch has moved since. A step interrupted part-way leaves no line and is re-run whole;
