@@ -341,7 +341,8 @@ let internal openerWithin
                     // before the client reads it, so discard them first.
                     do! drainUnread pipe RefusalDrainBound |> Async.AwaitTask
                     return None
-                | Error _ ->
+                | Error e ->
+                    Logging.info "host" $"DIAG-1481 closed without a preamble: %s{FrameError.describe e}"
                     // `Truncated` or `HungUp`: the client left without a preamble. A
                     // liveness probe (`isRunning`) connects and closes. Nobody is left to
                     // answer.
@@ -350,7 +351,9 @@ let internal openerWithin
 
                     match decodePreamble text with
                     | Error reason ->
+                        Logging.info "host" "DIAG-1481 refusing a malformed preamble"
                         do! refuse "malformed-preamble" reason
+                        Logging.info "host" "DIAG-1481 refused a malformed preamble; closing"
                         return None
                     | Ok(Preamble.Attach json) ->
                         let answer = handlers.Attach json

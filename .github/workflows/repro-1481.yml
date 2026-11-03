@@ -1,0 +1,36 @@
+name: repro-1481 (throwaway, never landed)
+on:
+  push:
+    branches: [a1481-repro]
+permissions:
+  contents: read
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.4xx'
+      - run: dotnet tool restore
+      - run: dotnet build tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj && dotnet build tests/TestPrune.Tests/TestPrune.Tests.fsproj
+      - name: Run the suite beside TestPrune.Tests, three times
+        run: |
+          mkdir -p out
+          for i in 1 2 3; do
+            ( dotnet run --project tests/TestPrune.Tests --no-build > out/tp-$i.log 2>&1 ) &
+            dotnet run --project tests/FsHotWatch.Tests --no-build > out/fshw-$i.log 2>&1 || true
+            wait
+            if grep -q "failed FsHotWatch.Tests.RepositoryHostTests.a malformed" out/fshw-$i.log; then echo "REPRODUCED in run $i"; echo reproduced > out/REPRODUCED; fi
+          done
+          grep -h "DIAG-1481" out/fshw-*.log | head -50 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repro-${{ matrix.shard }}
+          path: out
