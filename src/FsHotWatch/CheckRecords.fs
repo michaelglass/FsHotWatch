@@ -238,9 +238,10 @@ type Walk
                     let content = hashFile source
 
                     let part =
-                        // A generated compile item is never checked on its own.
+                        // A generated compile item is never checked on its own. It is named
+                        // without a commit id SourceLink stamped in (AUTOMATION-1480).
                         if PathFilter.isGeneratedPath source then
-                            "content:" + content
+                            "content:" + OutputIdentity.generatedSource hashFile source
                         else
                             let key =
                                 ActionKey.create

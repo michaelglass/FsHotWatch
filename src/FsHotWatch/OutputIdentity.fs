@@ -28,6 +28,7 @@ open System.Reflection.Metadata.Ecma335
 open System.Reflection.PortableExecutable
 open System.Security.Cryptography
 open System.Text
+open System.Text.RegularExpressions
 
 /// The identity's own format: bumping it re-keys every record that names an output.
 [<Literal>]
@@ -128,6 +129,75 @@ let internal normalizeResource (root: byte[]) (data: byte[]) : byte[] =
 
 /// The metadata-table columns that are file positions, each the first four bytes of its
 /// row: they move whenever anything before the method bodies, field data or resources does.
+/// The type whose assembly-level value carries build metadata: SourceLink appends
+/// `+<commit id>` to it on a git checkout (AUTOMATION-1480).
+[<Literal>]
+let private InformationalVersion =
+    "System.Reflection.AssemblyInformationalVersionAttribute"
+
+let private attributeTypeName (reader: MetadataReader) (attribute: CustomAttribute) =
+    if attribute.Constructor.Kind <> HandleKind.MemberReference then
+        None
+    else
+        let parent =
+            reader.GetMemberReference(MemberReferenceHandle.op_Explicit attribute.Constructor).Parent
+
+        if parent.Kind <> HandleKind.TypeReference then
+            None
+        else
+            let typeRef = reader.GetTypeReference(TypeReferenceHandle.op_Explicit parent)
+            Some(reader.GetString typeRef.Namespace + "." + reader.GetString typeRef.Name)
+
+/// `blobs` (the #Blob heap) with the build metadata of the assembly's informational version
+/// zeroed in place: everything from its `+` to the end of the string. No check reads that
+/// attribute (FCS imports only the assembly attributes it acts on, such as
+/// InternalsVisibleTo and AutoOpen), and a commit id is the same length at every commit,
+/// so no blob moves. The version before the `+` still counts. Returns each version masked,
+/// as UTF-8 before and after: fsc also pickles the assembly's attributes into its F#
+/// signature data, where `resourceContent` masks the same text.
+let private maskBuildMetadata (reader: MetadataReader) (blobs: byte[]) : (byte[] * byte[]) list =
+    let isVersion (attribute: CustomAttribute) =
+        attribute.Parent.Kind = HandleKind.AssemblyDefinition
+        && attributeTypeName reader attribute = Some InformationalVersion
+
+    // Scanned, not looked up by parent: on fsc's output `AssemblyDefinition.GetCustomAttributes`
+    // returns none of the assembly's attributes (measured on an SDK 10.0.401 build).
+    [ for handle in reader.CustomAttributes do
+          let attribute = reader.GetCustomAttribute handle
+
+          if isVersion attribute then
+              let mutable value = reader.GetBlobReader attribute.Value
+              value.ReadUInt16() |> ignore
+              let text = value.ReadSerializedString()
+              let plus = if isNull text then -1 else text.IndexOf '+'
+
+              if plus >= 0 then
+                  let utf8 = Encoding.UTF8.GetBytes text
+                  let metadata = utf8.Length - Encoding.UTF8.GetByteCount(text.Substring(0, plus))
+                  // The string ends where the reader stopped; its bytes run back from there.
+                  let start = value.Offset - metadata
+                  let length = reader.GetBlobBytes(attribute.Value).Length
+                  // The blob's own compressed length precedes it in the heap.
+                  let prefix =
+                      if length < 0x80 then 1
+                      elif length < 0x4000 then 2
+                      else 4
+
+                  Array.fill blobs (MetadataTokens.GetHeapOffset attribute.Value + prefix + start) metadata 0uy
+                  let masked = Array.copy utf8
+                  Array.fill masked (utf8.Length - metadata) metadata 0uy
+                  yield utf8, masked ]
+
+/// `data` with every occurrence of each original replaced by its same-length mask.
+let private maskAll (versions: (byte[] * byte[]) list) (data: byte[]) =
+    let data = Array.copy data
+
+    for original, masked in versions do
+        for at in indicesOf data original do
+            Array.blit masked 0 data at masked.Length
+
+    data
+
 let private positionTables =
     set [ TableIndex.MethodDef; TableIndex.FieldRva; TableIndex.ManifestResource ]
 
@@ -144,7 +214,7 @@ let private isFSharpResource (name: string) =
 
 /// What a resource of the assembly's own contributes: an F# one inflated where it is
 /// compressed and normalized under each root, longest first; any other as it is.
-let private resourceContent (roots: byte[] list) (name: string) (raw: byte[]) =
+let private resourceContent (roots: byte[] list) (versions: (byte[] * byte[]) list) (name: string) (raw: byte[]) =
     if not (isFSharpResource name) then
         raw
     else
@@ -154,7 +224,9 @@ let private resourceContent (roots: byte[] list) (name: string) (raw: byte[]) =
             else
                 raw
 
-        roots |> List.fold (fun data root -> normalizeResource root data) data
+        roots
+        |> List.fold (fun data root -> normalizeResource root data) data
+        |> maskAll versions
 
 let private appendLabelled (hash: IncrementalHash) (label: string) (bytes: ReadOnlySpan<byte>) =
     hash.AppendData(Encoding.UTF8.GetBytes $"\n%s{label}:%d{bytes.Length}:")
@@ -198,7 +270,9 @@ let ofBytes (roots: string list) (bytes: byte[]) : string option =
                 slice (reader.GetHeapMetadataOffset index) (reader.GetHeapSize index)
 
             appendLabelled hash "strings" (ReadOnlySpan(heap HeapIndex.String))
-            appendLabelled hash "blob" (ReadOnlySpan(heap HeapIndex.Blob))
+            let blobs = heap HeapIndex.Blob
+            let versions = maskBuildMetadata reader blobs
+            appendLabelled hash "blob" (ReadOnlySpan blobs)
             let guids = heap HeapIndex.Guid
             let mvid = reader.GetModuleDefinition().Mvid
 
@@ -223,7 +297,7 @@ let ofBytes (roots: string list) (bytes: byte[]) : string option =
                 let content =
                     if resource.Implementation.IsNil then
                         let mutable blob = pe.GetSectionData(resources + int resource.Offset).GetReader()
-                        resourceContent rootBytes name (blob.ReadBytes(blob.ReadInt32()))
+                        resourceContent rootBytes versions name (blob.ReadBytes(blob.ReadInt32()))
                     else
                         [||]
 
@@ -287,3 +361,50 @@ let identity (repoRoot: string option) (hashFile: string -> string) (path: strin
                     named
                 | None -> plain
             | _ -> plain
+
+/// The build metadata (`+…`) of an informational-version argument in F# source.
+let private buildMetadataArgument =
+    Regex("""(AssemblyInformationalVersion(?:Attribute)?\s*\(\s*"[^"+]*)\+[^"]*(")""", RegexOptions.Compiled)
+
+let private generatedKnown = ConcurrentDictionary<string, string>()
+
+/// The identity a check record's chain names a build-generated compile item by
+/// (AUTOMATION-1480). On a git checkout the SDK's SourceLink writes the commit id into the
+/// generated AssemblyInfo (`AssemblyInformationalVersion("1.0.0+<commit id>")`), and F#
+/// compiles that file before every source of the project, so the id would re-key every record
+/// of every project at every commit. No check can see it: the file declares nothing a later
+/// file can name, and a string argument cannot change its own diagnostics. So its content is
+/// hashed with that build metadata removed. Anything else in the file still counts, and a file
+/// with no such argument keeps `hashFile`'s answer.
+let generatedSource (hashFile: string -> string) (path: string) : string =
+    let plain = hashFile path
+
+    match generatedKnown.TryGetValue plain with
+    | true, named -> named
+    | false, _ ->
+        let bytes =
+            try
+                Some(File.ReadAllBytes path)
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException -> None
+
+        match bytes with
+        // Moved since `hashFile` read it: name it by the plain hash, as before.
+        | Some bytes when Convert.ToHexString(SHA256.HashData bytes).ToLowerInvariant() = plain ->
+            let text = Encoding.UTF8.GetString bytes
+            let canonical = buildMetadataArgument.Replace(text, "$1$2")
+
+            let named =
+                if canonical = text then
+                    plain
+                else
+                    "generated-v1:"
+                    + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes canonical)).ToLowerInvariant()
+
+            if generatedKnown.Count >= KnownLimit then
+                generatedKnown.Clear()
+
+            generatedKnown[plain] <- named
+            named
+        | _ -> plain

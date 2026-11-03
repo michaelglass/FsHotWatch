@@ -601,3 +601,54 @@ let ``a different referenced project moves the key, though its bytes are the sam
 
         for (_, before), (_, after) in List.zip baseline moved do
             test <@ input "project-outputs" before <> input "project-outputs" after @>)
+
+/// A's generated AssemblyInfo, compiled before its sources as the F# SDK does, with the given
+/// version attributes.
+let private withAssemblyInfo (tree: Tree) (informational: string) (version: string) =
+    let info =
+        Path.Combine(tree.Root, "A", "obj", "Debug", "net10.0", "A.AssemblyInfo.fs")
+
+    Directory.CreateDirectory(Path.GetDirectoryName info) |> ignore
+
+    File.WriteAllLines(
+        info,
+        [| "namespace FSharp"
+           "open System.Reflection"
+           $"[<assembly: AssemblyInformationalVersionAttribute(\"%s{informational}\")>]"
+           $"[<assembly: AssemblyVersionAttribute(\"%s{version}\")>]"
+           "do ()" |]
+    )
+
+    let a =
+        { tree.A with
+            SourceFiles = Array.append [| info |] tree.A.SourceFiles }
+
+    a,
+    { tree.B with
+        ReferencedProjects = [| FSharpReferencedProject.FSharpReference(tree.ADll, a) |] }
+
+let private keysOf (dir: string) (tree: Tree) (options: FSharpProjectOptions) =
+    CheckRecords
+        .Walk(storeIn dir, toolchain, Some tree.Root, CheckCache.FileContentHasher().Hash, CheckRecords.readOnly)
+        .Project(options)
+    |> List.map (fun record -> Path.GetFileName record.File, record.Key.Value)
+
+[<Fact(Timeout = 240000)>]
+let ``a commit id in the generated AssemblyInfo moves no record's key, and a version does`` () =
+    // AUTOMATION-1480: on a git checkout SourceLink stamps each commit's id there.
+    withTempDir "check-records-commit-id" (fun dir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let tree = treeIn checker (Path.Combine(dir, "repo"))
+
+        let keysAt (informational: string) (version: string) =
+            let a, b = withAssemblyInfo tree informational version
+
+            keysOf (Path.Combine(dir, "store")) tree a
+            @ keysOf (Path.Combine(dir, "store")) tree b
+
+        let first = keysAt ("1.0.0+" + String('a', 40)) "1.0.0.0"
+        // Positive control: A's two files and B's two files are keyed.
+        test <@ first.Length = 4 @>
+        test <@ keysAt ("1.0.0+" + String('b', 40)) "1.0.0.0" = first @>
+        test <@ keysAt ("1.1.0+" + String('a', 40)) "1.0.0.0" <> first @>
+        test <@ keysAt ("1.0.0+" + String('a', 40)) "1.1.0.0" <> first @>)
