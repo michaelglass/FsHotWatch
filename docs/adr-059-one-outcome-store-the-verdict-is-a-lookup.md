@@ -465,6 +465,59 @@ accelerator, and no verdict reads it. §18 records it.
   forced re-check in the nightly full suite. The restart-time half of the criterion no
   longer applies to check records alone.
 
+**Amendment (AUTOMATION-1442): the abandon criterion's detector.** Nothing ran the
+replayed-vs-forced comparison above. The detector is `fshw-bench replay` followed by
+`fshw-bench replay-gate`, which exits:
+
+- `0` when concluded steps were compared and agree, and some replay answered checks from
+  records;
+- `1` on any diagnostic difference, or a clean tree published green by one run and red by the
+  other;
+- `3` when nothing was compared, or nothing was replayed.
+
+The "nothing replayed" refusal comes from measurement. On 2026-11-03 three setups agreed
+vacuously:
+
+- a binary built from each tree replayed 0 of 704 checks from the step before;
+- a pinned binary across two commits replayed 0 on a GitHub runner (179 on a laptop);
+- a second checkout of the same tree replayed 153, because the `project-outputs` label differed
+  for the rest. A referenced project's built output embeds its checkout's path, so two
+  checkouts of the same bytes key most check records differently. That limits the box-wide
+  reuse §2 intends. Recorded here; not changed by this amendment.
+
+Measured, one records-on check plus one forced check:
+
+- **FsHotWatch:** about 9 min each on a laptop and 15 min on a GitHub runner, tests included.
+- **intelligence:** a median of 18.4 min per commit and a maximum of 69 min (the AUTOMATION-1440
+  replay, 51 forced steps), on two cold daemons of a box the land queue also uses.
+
+**Decision.**
+
+- **FsHotWatch, scheduled here.** `.github/workflows/nightly-replay.yml` runs every night at
+  06:17 UTC, plus `workflow_dispatch`, and takes about 34 min.
+  - It tests a restart, which is the case check records exist for. One fshw is built from
+    main's tip. It checks the tip with records on, then again on a fresh daemon in the same
+    checkout (answering from those records), then once more with records off. It gates on
+    the last two and uploads the replay and its outcome records.
+  - A pair of commits was rejected. A release bumps every project's version, so the
+    nightly after each release would replay nothing.
+  - A failed scheduled run notifies the repository owner.
+  - It exercises check records on a real F# tree with analyzers, lint and in-repo rules,
+    under the binary about to be released: a pre-release detector.
+- **intelligence: proposed, not yet scheduled.** The criterion guards intelligence's
+  `checkRecords: true`, so its detector must run on intelligence's tree. That belongs on
+  thellma-and-louisa beside `nightly-unfiltered`, and it is routed to the maintainer rather
+  than changed here.
+  - Proposed: a LaunchAgent `com.thellma.intelligence.nightly-records-replay` at 03:30 local.
+  - In a dedicated workspace it runs `fshw-bench replay --count 1 --from main@origin
+    --no-forced --check-cmd "./build.fsx check"` (filing records), then the same with
+    forced re-checks into a second out directory, then `replay-gate` on that directory.
+  - A non-zero gate reports through `nightly-unfiltered`'s loud-failure path (PostHog Error
+    Tracking, then Zulip).
+
+  Until it runs, the abandon criterion on intelligence has only this FsHotWatch-side detector
+  and the hand replays.
+
 ## 15. What a gate waits on, and the forced scan (AUTOMATION-1370)
 
 1370's handoff (intelligence `results/handoffs/AUTOMATION-1370-2026-10-29.md`) raised three

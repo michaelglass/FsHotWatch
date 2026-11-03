@@ -701,9 +701,63 @@ type Summary =
         /// publish no verdict; that is not a disagreement.
         VerdictMismatches: (string * string * string) list
         Faults: FaultTally list
+        /// Steps whose replayed and forced runs both concluded, so their diagnostics were compared.
+        ComparedSteps: int
+        /// Checks the compared steps' replay runs answered from check records, summed. Zero means the
+        /// comparison was vacuous: both runs checked every file with FCS.
+        ReplayedChecks: int
     }
 
+/// What a nightly comparison concludes (ADR-059 §14, AUTOMATION-1442).
+[<RequireQualifiedAccess>]
+type Gate =
+    /// This many concluded steps were compared, and nothing differed.
+    | Agree of compared: int
+    /// The replayed and forced runs differed; each reason names how.
+    | Disagree of reasons: string list
+    /// No step had a concluded forced run to compare with: no answer, never an agreement.
+    | NothingCompared
+    /// Steps were compared, but no replay run answered a check from records: an agreement
+    /// between two FCS runs says nothing about check records. No answer, never an agreement.
+    | NothingReplayed of compared: int
+
+module Gate =
+    /// 0 agree, 1 disagree, 3 nothing compared or nothing replayed: fshw's own green, red and
+    /// no-verdict codes.
+    let exitCode =
+        function
+        | Gate.Agree _ -> 0
+        | Gate.Disagree _ -> 1
+        | Gate.NothingCompared -> 3
+        | Gate.NothingReplayed _ -> 3
+
+    let render =
+        function
+        | Gate.Agree n -> $"replay gate: AGREE (%d{n} concluded step(s) compared, no difference)"
+        | Gate.Disagree reasons ->
+            "replay gate: DISAGREE\n"
+            + String.Join("\n", reasons |> List.map (fun r -> "  " + r))
+        | Gate.NothingCompared -> "replay gate: NOTHING COMPARED (no step had a concluded forced run)"
+        | Gate.NothingReplayed n ->
+            $"replay gate: NOTHING REPLAYED (%d{n} step(s) compared, but no replay run answered a check from records)"
+
 module Summary =
+    /// The checks a replay run answered from records, summed over every daemon tally it logged
+    /// (`this daemon: N check(s) replayed from check records`); `None` when it logged none.
+    let replayedChecks (r: RunResult) : int option =
+        let counts =
+            r.RecordsLog
+            |> List.choose (fun line ->
+                let m =
+                    Text.RegularExpressions.Regex.Match(
+                        line,
+                        @"this daemon: (\d+) check\(s\) replayed from check records"
+                    )
+
+                if m.Success then Some(int m.Groups[1].Value) else None)
+
+        if counts.IsEmpty then None else Some(List.sum counts)
+
     let summarize (entries: Entry list) : Summary =
         let runs = entries |> List.collect (fun e -> e.Replay :: Option.toList e.Forced)
 
@@ -770,7 +824,30 @@ module Summary =
                   LookupRed = count (fun (f, _) -> f.LookupRed)
                   ForcedRed = count (fun (f, _) -> f.ForcedRed)
                   DiagnosticsAgree = count snd })
-            |> List.sortBy _.Kind }
+            |> List.sortBy _.Kind
+          ComparedSteps = compared |> List.filter (fun e -> e.Forced.IsSome) |> List.length
+          ReplayedChecks =
+            compared
+            |> List.filter (fun e -> e.Forced.IsSome)
+            |> List.sumBy (fun e -> replayedChecks e.Replay |> Option.defaultValue 0) }
+
+    /// The nightly gate over `s`: a disagreement when any compared step's diagnostics differ or
+    /// a clean tree's two runs published green against red; no answer when no step was compared.
+    let gate (s: Summary) : Gate =
+        let reasons =
+            [ if s.DiffSteps > 0 then
+                  yield $"replay-vs-forced diagnostics: %d{s.DiffSteps} step(s) disagree"
+
+                  for (plugin, side), n in s.DiffByPlugin do
+                      yield $"  %s{plugin} %s{side}: %d{n}"
+              for commit, r, f in s.VerdictMismatches do
+                  yield $"verdicts differ on a clean tree: %s{commit}: replay %s{r}, forced %s{f}" ]
+
+        match reasons with
+        | _ :: _ -> Gate.Disagree reasons
+        | [] when s.ComparedSteps = 0 -> Gate.NothingCompared
+        | [] when s.ReplayedChecks = 0 -> Gate.NothingReplayed s.ComparedSteps
+        | [] -> Gate.Agree s.ComparedSteps
 
     let render (s: Summary) : string =
         let b = Text.StringBuilder()
@@ -800,6 +877,7 @@ module Summary =
 
         let skipped = String.Join(", ", s.Incomparable)
         line $"  not compared (a run published neither green nor red): %d{s.Incomparable.Length} %s{skipped}"
+        line $"  checks the compared replay runs answered from records: %d{s.ReplayedChecks}"
 
         line ""
         line $"replay-vs-forced verdict outcomes that differ on a clean tree: %d{s.VerdictMismatches.Length}"

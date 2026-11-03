@@ -1,0 +1,104 @@
+name: Nightly records-vs-forced replay
+
+# ADR-059 §14 / §17: the abandon criterion for check records is "a replayed result that
+# disagrees with a forced re-check". This job is its detector on FsHotWatch's own tree
+# (AUTOMATION-1442). One fshw, built from main's tip, checks the tip with check records on
+# (filing them), then again on a fresh daemon in the same checkout, where the check
+# answers from those records, and once more with records off (forced, every file through
+# FCS). `fshw-bench replay-gate` fails the job on any diagnostic or verdict difference
+# between the replayed and forced runs, and exits 3 when nothing was compared or nothing
+# was replayed, so a vacuous run can never pass for agreement. A scheduled run that fails
+# notifies the repository's owner; the replay and its outcome records are uploaded either
+# way.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      JJ_VERSION: v0.46.0
+      OUT_NAME: replay-out
+      # A cache of its own, uploaded with the replay: each record names the labelled inputs of
+      # its key, so a replay that missed can be told which input moved.
+      FSHW_CACHE_HOME: /tmp/fshw-nightly-cache
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v5
+        with:
+          # Same band as global.json and ci.yml.
+          dotnet-version: '10.0.4xx'
+      - name: Install jj
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$JJ_VERSION" -R jj-vcs/jj \
+            --pattern "jj-$JJ_VERSION-x86_64-unknown-linux-musl.tar.gz" -D "$RUNNER_TEMP"
+          tar -xzf "$RUNNER_TEMP/jj-$JJ_VERSION-x86_64-unknown-linux-musl.tar.gz" -C "$RUNNER_TEMP"
+          install -m 0755 "$RUNNER_TEMP/jj" /usr/local/bin/jj
+          jj --version
+      - name: Make the checkout a jj repository
+        run: |
+          jj git init --colocate
+          jj config set --repo user.name "nightly replay"
+          jj config set --repo user.email "nightly-replay@users.noreply.github.com"
+          jj bookmark track main@origin || true
+      - run: dotnet tool restore
+      - name: Build the replay harness and the fshw under test
+        run: |
+          dotnet build bench/FsHotWatch.Bench/FsHotWatch.Bench.fsproj
+          # One fshw, built from main's tip, checks both checkouts. Check records are keyed on the
+          # binary that filed them, so a binary built per checkout would replay nothing and the
+          # comparison would be vacuous; replay-gate refuses that as NOTHING REPLAYED.
+          dotnet build src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj -o "$RUNNER_TEMP/fshw"
+      - name: File check records from main's tip
+        run: |
+          # A records-on check with no forced re-check: it only files the records the next
+          # run replays.
+          dotnet bench/FsHotWatch.Bench/bin/Debug/net10.0/fshw-bench.dll replay \
+            --target "$GITHUB_WORKSPACE" --workspace nightly --out "$RUNNER_TEMP/warm" \
+            --count 1 --from main@origin --no-forced \
+            --prepare "dotnet tool restore && dotnet build" \
+            --check-cmd "dotnet $RUNNER_TEMP/fshw/FsHotWatch.Cli.dll check" \
+            --fshw "dotnet $RUNNER_TEMP/fshw/FsHotWatch.Cli.dll" \
+            --timeout-min 60
+      - name: Replay them on a fresh daemon, against a forced re-check
+        run: |
+          # The same workspace and tree on a new daemon, as a restart is: every check can be
+          # answered from the records just filed, and the forced run checks every file with
+          # FCS. The same checkout, because a referenced project's output embeds the checkout's
+          # path, so a second checkout keys most records differently. The tip, not a pair of
+          # commits: a release bump changes every project's version, and with it every record
+          # key, so a pair across one would replay nothing (exit 3) every release day.
+          dotnet bench/FsHotWatch.Bench/bin/Debug/net10.0/fshw-bench.dll replay \
+            --target "$GITHUB_WORKSPACE" --workspace nightly --out "$RUNNER_TEMP/$OUT_NAME" \
+            --count 1 --from main@origin \
+            --prepare "dotnet tool restore && dotnet build" \
+            --check-cmd "dotnet $RUNNER_TEMP/fshw/FsHotWatch.Cli.dll check" \
+            --fshw "dotnet $RUNNER_TEMP/fshw/FsHotWatch.Cli.dll" \
+            --timeout-min 60
+      - name: Gate on records-vs-forced agreement
+        run: dotnet bench/FsHotWatch.Bench/bin/Debug/net10.0/fshw-bench.dll replay-gate "$RUNNER_TEMP/$OUT_NAME"
+      - name: Upload the replay
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-replay
+          path: ${{ runner.temp }}/replay-out
+          if-no-files-found: warn
+      - name: Upload the outcome records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-replay-outcomes
+          path: /tmp/fshw-nightly-cache/cache/outcomes
+          if-no-files-found: warn

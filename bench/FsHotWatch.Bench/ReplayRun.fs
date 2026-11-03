@@ -100,10 +100,27 @@ let private capture (cwd: string) (cmd: string) : int * string =
 
 let private jj (cwd: string) (args: string) : int * string = capture cwd ("jj " + args)
 
-let private mustJj (cwd: string) (args: string) : string =
-    match jj cwd args with
-    | 0, out -> out
-    | code, out -> failwith $"jj %s{args} exited %d{code} in %s{cwd}: %s{out}"
+/// Run `cmd` under bash in `cwd` and return its standard output; on a non-zero exit, throw
+/// with what it printed to stderr, which is where a tool says why it failed.
+let internal mustRun (cwd: string) (cmd: string) : string =
+    let psi = ProcessStartInfo("/bin/bash")
+    psi.ArgumentList.Add "-c"
+    psi.ArgumentList.Add(cmd + " </dev/null")
+    psi.WorkingDirectory <- cwd
+    psi.UseShellExecute <- false
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardError <- true
+    use p = Process.Start psi
+    let err = p.StandardError.ReadToEndAsync()
+    let out = p.StandardOutput.ReadToEnd()
+    p.WaitForExit()
+
+    if p.ExitCode = 0 then
+        out
+    else
+        failwith $"%s{cmd} exited %d{p.ExitCode} in %s{cwd}: %s{err.Result.Trim()} %s{out.Trim()}"
+
+let private mustJj (cwd: string) (args: string) : string = mustRun cwd ("jj " + args)
 
 /// The range, oldest first, as full commit ids.
 let resolveRange (target: string) (revset: string) : string list =
@@ -115,6 +132,9 @@ let resolveRange (target: string) (revset: string) : string list =
 let private ensureWorkspace (opts: Options) (first: string) =
     if not (Directory.Exists(Path.Combine(opts.Workspace, ".jj"))) then
         log $"creating workspace %s{opts.WorkspaceName} at %s{opts.Workspace}"
+        // `jj workspace add` does not create the parent (`.workspaces/` in a fresh clone).
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.TrimEndingDirectorySeparator opts.Workspace))
+        |> ignore
 
         mustJj opts.Target $"workspace add {quote opts.Workspace} --name {quote opts.WorkspaceName} -r {first}"
         |> ignore
@@ -403,6 +423,18 @@ let writeSummary (out: string) : string =
     let text = Summary.render (Summary.summarize entries)
     File.WriteAllText(Path.Combine(out, "summary.txt"), text)
     text
+
+/// The nightly gate over the ledger in `out` (ADR-059 §14, AUTOMATION-1442): rewrites
+/// `summary.txt`, prints the gate's verdict, and returns its exit code (0 agree, 1 a
+/// records-vs-forced disagreement, 3 nothing compared).
+let gate (out: string) : int =
+    writeSummary out |> ignore
+
+    let verdict =
+        Summary.gate (Summary.summarize (Ledger.read (Path.Combine(out, "ledger.jsonl"))))
+
+    printfn "%s" (Gate.render verdict)
+    Gate.exitCode verdict
 
 /// Run (or resume) a replay. Exit 0 when every planned step is in the ledger, 4 when
 /// `MaxSteps` stopped it early, 2 on a usage error.
