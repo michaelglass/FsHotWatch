@@ -390,3 +390,18 @@ let ``a connection that sends no preamble within the bound is closed, and says s
     test <@ opened.Wait(FsHotWatch.Tests.TestHelpers.HangWait) && opened.Result.IsNone @>
     test <@ not attachSeen.Value @>
     test <@ logged |> Seq.exists (fun line -> line.Contains "no preamble within") @>
+
+[<Fact>]
+let ``a connection that fails before its preamble is named in the log; one that just ends is not`` () =
+    // AUTOMATION-1481: a client once read "Connection reset by peer" where a refusal was
+    // due. A liveness probe connects and closes (Truncated) on every check, so that stays
+    // quiet; a read that FAILS on the host's end is abnormal and now says so.
+    test <@ unansweredClose FrameError.Truncated = None @>
+
+    test
+        <@
+            unansweredClose (FrameError.HungUp "Bad file descriptor")
+            |> Option.exists (fun line -> line.Contains "Bad file descriptor")
+        @>
+
+    test <@ (unansweredClose (FrameError.TooLarge 9)).IsSome @>

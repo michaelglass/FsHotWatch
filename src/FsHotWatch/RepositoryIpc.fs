@@ -262,6 +262,15 @@ let private drainUnread (stream: Stream) (bound: TimeSpan) : Task =
             ()
     }
 
+/// What the host logs for a connection it closes because no preamble could be read: nothing
+/// for one that simply ended (a liveness probe connects and closes on every check), and the
+/// failure for any other, which is never an ordinary close (AUTOMATION-1481).
+let internal unansweredClose (error: FrameError) : string option =
+    match error with
+    | FrameError.Truncated -> None
+    | other ->
+        Some $"a connection failed before its preamble arrived (%s{FrameError.describe other}); it is closed unanswered"
+
 /// What the host does with each kind of connection.
 [<NoComparison; NoEquality>]
 type EndpointHandlers =
@@ -341,7 +350,8 @@ let internal openerWithin
                     // before the client reads it, so discard them first.
                     do! drainUnread pipe RefusalDrainBound |> Async.AwaitTask
                     return None
-                | Error _ ->
+                | Error error ->
+                    unansweredClose error |> Option.iter (Logging.warn "host")
                     // `Truncated` or `HungUp`: the client left without a preamble. A
                     // liveness probe (`isRunning`) connects and closes. Nobody is left to
                     // answer.

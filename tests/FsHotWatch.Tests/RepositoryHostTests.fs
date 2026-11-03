@@ -916,7 +916,12 @@ let ``a malformed preamble is refused, and the host keeps serving`` () =
             new Pipes.NamedPipeClientStream(".", settings.Control.Endpoint, Pipes.PipeDirection.InOut)
 
         pipe.Connect 5000
-        (writeFrame pipe "{\"schema\":\"something-else\"}" CancellationToken.None).Wait()
+
+        let written =
+            (writeFrame pipe "{\"schema\":\"something-else\"}" CancellationToken.None).Result
+        // AUTOMATION-1481: a reset in place of the refusal was seen once on Linux CI. Whether
+        // the preamble itself reached the host tells the two ways a reset can happen apart.
+        test <@ written = Ok() @>
         let reply = (readFrame pipe CancellationToken.None).Result
 
         test
