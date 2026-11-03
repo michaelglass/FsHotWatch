@@ -15,6 +15,8 @@ on:
   schedule:
     - cron: '17 6 * * *'
   workflow_dispatch:
+  push:
+    branches: [a1478-verify]
 
 permissions:
   contents: read
@@ -60,34 +62,23 @@ jobs:
           # binary that filed them, so a binary built per checkout would replay nothing and the
           # comparison would be vacuous; replay-gate refuses that as NOTHING REPLAYED.
           dotnet build src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj -o "$RUNNER_TEMP/fshw"
-      - name: File check records from main's tip
+      - name: Replay the pair 2721c0648bd9 -> ca4c273eea4c (AUTOMATION-1478 experiment)
         run: |
-          # A records-on check with no forced re-check: it only files the records the next
-          # run replays.
-          dotnet bench/FsHotWatch.Bench/bin/Debug/net10.0/fshw-bench.dll replay \
-            --target "$GITHUB_WORKSPACE" --workspace nightly --out "$RUNNER_TEMP/warm" \
-            --count 1 --from main@origin --no-forced \
-            --prepare "dotnet tool restore && dotnet build" \
-            --check-cmd "dotnet $RUNNER_TEMP/fshw/FsHotWatch.Cli.dll check" \
-            --fshw "dotnet $RUNNER_TEMP/fshw/FsHotWatch.Cli.dll" \
-            --timeout-min 60
-      - name: Replay them on a fresh daemon, against a forced re-check
-        run: |
-          # The same workspace and tree on a new daemon, as a restart is: every check can be
-          # answered from the records just filed, and the forced run checks every file with
-          # FCS. The same checkout, because a referenced project's output embeds the checkout's
-          # path, so a second checkout keys most records differently. The tip, not a pair of
-          # commits: a release bump changes every project's version, and with it every record
-          # key, so a pair across one would replay nothing (exit 3) every release day.
           dotnet bench/FsHotWatch.Bench/bin/Debug/net10.0/fshw-bench.dll replay \
             --target "$GITHUB_WORKSPACE" --workspace nightly --out "$RUNNER_TEMP/$OUT_NAME" \
-            --count 1 --from main@origin \
+            --count 2 --from ca4c273eea4c --no-forced \
             --prepare "dotnet tool restore && dotnet build" \
             --check-cmd "dotnet $RUNNER_TEMP/fshw/FsHotWatch.Cli.dll check" \
             --fshw "dotnet $RUNNER_TEMP/fshw/FsHotWatch.Cli.dll" \
             --timeout-min 60
-      - name: Gate on records-vs-forced agreement
-        run: dotnet bench/FsHotWatch.Bench/bin/Debug/net10.0/fshw-bench.dll replay-gate "$RUNNER_TEMP/$OUT_NAME"
+      - name: Keep each step.s generated AssemblyInfo and project options
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/$OUT_NAME/obj"
+          cd "$GITHUB_WORKSPACE/.workspaces/nightly"
+          find . -path "*/obj/*" -name "*.AssemblyInfo.fs" -exec cp --parents {} "$RUNNER_TEMP/$OUT_NAME/obj" \;
+          ls -la "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/.workspaces/nightly" || true
+          git -C "$GITHUB_WORKSPACE/.workspaces/nightly" rev-parse HEAD || true
       - name: Upload the replay
         if: always()
         uses: actions/upload-artifact@v4
