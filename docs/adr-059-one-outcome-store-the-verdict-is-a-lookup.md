@@ -1031,3 +1031,36 @@ Stricter, deliberately: `namedFailures` also feeds `supersededFailures`. A timed
 with `other` rows, is no longer superseded within one publication either. That matches today's
 outstanding-failure ledger, which files a timeout at project level so that a later class-filtered
 green cannot clear it (`TestReports.failuresOf`).
+
+## 26. Amendment (AUTOMATION-1443): a read finds the K_P keys the check named
+
+§19 predicted this case and the AUTOMATION-1440 replay showed it, at step 0 (intelligence
+6552ffddc769, the workspace's first full suite). The check line agreed green with `recorded`
+21. The `fshw verdict` read 3 s later on the same tree and binary was `stricter`. Today said
+`applies:green`. The lookup was missing `test:Intelligence.Build.Dev.Tests` and
+`test:Intelligence.Tests.Unit`. Only the test runner's K_P records answered for those two, and
+a read has no daemon to name K_P keys (`OutcomeKeys` is empty).
+
+**Decision: the read gains the keys. Nothing is exempted.** Each check publication files, per
+project, a record naming the K_P key the daemon gave it (`test-outcome-key`, keyed on tree,
+producer and project; the key is in its outputs). A read with no keys of its own recovers them
+(`withRecordedOutcomeKeys`) and looks them up in the box-wide store, through the same
+command-aware `lookupIn` as the check. Two alternatives were rejected:
+
+- **Exempt reads from K_P-only projects.** A read would then say less than the check it reads
+  back, and a `verdict` line could agree while the lookup lacked the evidence today's green
+  rests on. §8 counts `verdict` reads precisely because a read is the restart case.
+- **Recompute K_P in the read.** K_P needs the project model and its options hash. Those belong
+  to a daemon, and a read is defined as having none ("no socket, no run").
+
+**Why this is not looser.** The recovered key is addressed exactly as the verdict is: the tree
+and the fshw binary. A read on another tree, or under another binary, finds no key and stays
+missing. What a key finds is judged as the check judges it: a K_P fail is red, and a cleared fail
+(§25) is a pass only for a `check` read, never for `confirm`. The read still files nothing. The
+key records are not counted in `recorded`, so a publication that ran nothing still logs
+`recorded: 0`.
+
+**Also at step 0, and recorded rather than changed here.** The tree-keyed path missed those
+projects because the check's full-suite run (9089c471, which earned today's watermark) was not the
+graded run. `recordsOf` files baselines only from a graded full-suite run. With this change the read
+no longer depends on that, and the check already answered from K_P.

@@ -182,6 +182,66 @@ let testKey (o: Observation) (project: string) (scope: string) =
 let baselineKey (project: string) =
     ActionKey.create "test-baseline" [ "project", project ]
 
+/// The K_P key a publication named for `project` over this tree and binary (AUTOMATION-1443):
+/// a `fshw verdict` read has no daemon to name it, so it reads it back from here.
+let outcomeKeyKey (o: Observation) (project: string) =
+    ActionKey.create "test-outcome-key" [ "tree", o.Tree; "producer", o.Producer; "project", project ]
+
+[<Literal>]
+let private OutcomeKeyField = "outcomeKey"
+
+/// The records naming each K_P key `o` carries, with their outputs.
+let outcomeKeyRecords (o: Observation) : (OutcomeStore.Record * string) list =
+    [ for KeyValue(project, kp) in o.OutcomeKeys do
+          let outputs = JsonObject()
+          outputs[OutcomeKeyField] <- kp.Text
+
+          OutcomeStore.Record.ofAction
+              (outcomeKeyKey o project)
+              project
+              OutcomeStore.Outcome.Pass
+              o.Producer
+              o.Worktree
+              o.RecordedAt,
+          outputs.ToJsonString() ]
+
+/// The K_P keys publications over `o`'s tree and binary named, by project; a project none
+/// named, or whose record does not read back as a key, is absent.
+let recordedOutcomeKeys
+    (store: OutcomeStore.Store)
+    (testProjects: string list)
+    (o: Observation)
+    : Map<string, ActionKey.KeyValue> =
+    let keyIn (outputs: string) =
+        try
+            match JsonNode.Parse outputs with
+            | :? JsonObject as obj ->
+                match obj[OutcomeKeyField] with
+                | :? JsonValue as v ->
+                    match v.TryGetValue<string>() with
+                    | true, text -> ActionKey.KeyValue.tryParse text
+                    | _ -> None
+                | _ -> None
+            | _ -> None
+        with :? Text.Json.JsonException ->
+            None
+
+    testProjects
+    |> List.choose (fun project ->
+        store.LookupWithOutputs(outcomeKeyKey o project)
+        |> Option.bind snd
+        |> Option.bind keyIn
+        |> Option.map (fun key -> project, key))
+    |> Map.ofList
+
+/// `o` with the K_P keys earlier publications named, when it names none itself: a read.
+let withRecordedOutcomeKeys (store: OutcomeStore.Store) (testProjects: string list) (o: Observation) =
+    if Map.isEmpty o.OutcomeKeys then
+        { o with
+            OutcomeKeys = recordedOutcomeKeys store testProjects o }
+    else
+        o
+
 [<Literal>]
 let FullScope = "full"
 
@@ -467,6 +527,13 @@ let observeWith
     =
     let records = recordsOf o testProjects
     let recorded = fileRecords store o records
+
+    // Not counted in `recorded`: they name keys, not outcomes this publication established.
+    let named = outcomeKeyRecords o
+
+    for record, outputs in named do
+        store.RecordWithOutputs(record, Some outputs) |> ignore
+
     let required = requirements o testProjects
 
     let answer = LookupVerdict.decide required (lookupIn o.Command store kpStore)
@@ -476,7 +543,10 @@ let observeWith
     File.AppendAllText(path, line o answer recorded + "\n")
 
     let keep =
-        required |> List.collect (fun r -> List.concat r.Alternatives) |> Set.ofList
+        required
+        |> List.collect (fun r -> List.concat r.Alternatives)
+        |> Set.ofList
+        |> Set.union (named |> List.map (fun (r, _) -> r.Key.Value) |> Set.ofList)
 
     store.Gc(o.RecordedAt, keep) |> ignore
     answer
@@ -491,6 +561,8 @@ let observeReadWith
     (testProjects: string list)
     (o: Observation)
     =
+    let o = withRecordedOutcomeKeys store testProjects o
+
     let answer =
         LookupVerdict.decide (requirements o testProjects) (lookupIn o.Command store kpStore)
 
@@ -676,7 +748,8 @@ let observeRead (repoRoot: string) (report: Verdict.Report) (currentTree: TreeHa
                 match ofRead repoRoot report tree.Hash producer DateTimeOffset.UtcNow with
                 | None -> ()
                 | Some o ->
-                    observeReadWith repoRoot (storeAt repoRoot) (kpStoreFor repoRoot o) projects o
-                    |> ignore
+                    let store = storeAt repoRoot
+                    let o = withRecordedOutcomeKeys store projects o
+                    observeReadWith repoRoot store (kpStoreFor repoRoot o) projects o |> ignore
         with ex ->
             Logging.warn "shadow" $"lookup verdict not computed: %s{ex.GetType().Name}: %s{ex.Message}"

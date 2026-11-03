@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a `fshw verdict` read finds the K_P test records the check it reads back found
+  (AUTOMATION-1443, ADR-059 §26). Each publication files the K_P key the daemon named per project,
+  under the tree and binary (`outcomeKeyKey`, `outcomeKeyRecords`). A read recovers the keys
+  (`recordedOutcomeKeys`, `withRecordedOutcomeKeys`) and judges them as the check does. A read on
+  another tree or binary finds none, and a `confirm` read never reads a cleared fail as a pass.
+
 - fix: a check's shadow lookup no longer stays red on a tree whose earlier check failed a test that
   a later check on the same tree ran again and passed (AUTOMATION-1472, ADR-059 §25). The shadow
   files a failed suite with the failures it names. A later publication's passing suite files the
