@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: the test runner's K_P outcome records (ADR-059 step 7a) no longer leave a check's lookup
+  red after the check re-ran a full suite's failures green (AUTOMATION-1444). A failed run whose
+  report names every failure files those names with its record. A passing run that passed each
+  name of the newest full fail at the same K_P files that fail's clearance. New:
+  `TestEvidenceRun.fileOutcome`.
+
 - refactor: the plugin's remaining steps leave `createWithEvidenceAndQueries`, which keeps only its
   wiring: `PluginSteps` (its steps over state) and `PluginStartup` (its restored sidecars, starting
   debt and state, and its freshness cell).

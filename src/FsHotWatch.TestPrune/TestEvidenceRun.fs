@@ -407,6 +407,47 @@ let outcomeRecordOf
               RecordedAt = producer.EarnedAt }
     | _ -> None
 
+/// File `record`, the outcome of `run` (ADR-059 step 7), in `outcomes`. `fullKey` is the
+/// project's full-run key under the same K_P. Returns the keys it filed under.
+///
+/// A failed run whose report names every failure it counts is filed with those names. A
+/// passing run that passed each failure the newest full fail at `fullKey` names also files
+/// that fail's clearance (`TestFailureClearance`, AUTOMATION-1444). A timed-out run names
+/// nothing: what it did not finish is not among its failures.
+let fileOutcome
+    (outcomes: OutcomeStore.Store)
+    (fullKey: ActionKey.ActionKey)
+    (run: ProducedRun)
+    (record: OutcomeStore.Record)
+    : ActionKey.KeyValue list =
+    let names = run.Report |> Option.bind Ctrf.tryTestNames
+
+    match run.Result with
+    | TestsFailed _ ->
+        // Named only when the summary counts no failure but the named ones: no `other` row
+        // (an errored test, a crashed host) and no failed row without a name.
+        let outputs =
+            match names, run.Report |> Option.bind Ctrf.trySummary with
+            | Some n, Some summary when not n.Failed.IsEmpty && n.Failed.Length = summary.Failed && summary.Other = 0 ->
+                Some(TestFailureClearance.outputsOf n.Failed)
+            | _ -> None
+
+        outcomes.RecordWithOutputs(record, outputs) |> ignore
+        [ record.Key.Value ]
+    | _ ->
+        outcomes.Record record |> ignore
+
+        let clearance =
+            names
+            |> Option.bind (fun n ->
+                TestFailureClearance.clearanceOf fullKey.Value (outcomes.LookupWithOutputs fullKey) n.Passed record)
+
+        match clearance with
+        | Some c ->
+            outcomes.Record c |> ignore
+            [ record.Key.Value; c.Key.Value ]
+        | None -> [ record.Key.Value ]
+
 /// The entry a qualifying run publishes.
 let entryOf
     (repoRoot: string)
@@ -512,23 +553,24 @@ let publish
 
     match plan.Wiring.Outcomes with
     | Some outcomes ->
-        let records =
+        let filed =
             launched
-            |> List.choose (fun (candidate, run) ->
-                outcomeRecordOf
-                    candidate
-                    (Map.tryFind candidate.Project plan.LaunchKeys)
-                    (Map.tryFind candidate.Project reconciled.Keys)
-                    run
-                    producer)
-
-        for record in records do
-            outcomes.Record record |> ignore
+            |> List.collect (fun (candidate, run) ->
+                match Map.tryFind candidate.Project plan.LaunchKeys with
+                | Some(Ok atLaunch) ->
+                    outcomeRecordOf
+                        candidate
+                        (Some(Ok atLaunch))
+                        (Map.tryFind candidate.Project reconciled.Keys)
+                        run
+                        producer
+                    |> Option.map (fileOutcome outcomes (testActionKey atLaunch "full") run)
+                    |> Option.defaultValue []
+                | _ -> [])
 
         // The box-wide store is bounded by TTL and bytes (ADR-059 §2). GC can only turn a hit
         // into a miss, and it spares what this run just filed.
-        outcomes.Gc(producer.EarnedAt, records |> List.map _.Key.Value |> Set.ofList)
-        |> ignore
+        outcomes.Gc(producer.EarnedAt, Set.ofList filed) |> ignore
     | None -> ()
 
     launched

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: the shadow lookup of a `check` reads a K_P full-suite fail as a pass when a later run at the
+  same K_P passed every failure it named (AUTOMATION-1444). That was 18 of the 19 disagreements in
+  a replay of 100 intelligence commits: the full suite failed one test, the check's re-run passed
+  it, today graded green, and the lookup stayed red. `confirm` still requires the full suite
+  itself to pass. A failure nobody named, one the re-run did not pass, or a newer fail stays red.
+
 ## 0.14.0-alpha.135 - 2026-11-02
 
 - fix: the CLI passthrough of the last three commands that printed an empty status display now

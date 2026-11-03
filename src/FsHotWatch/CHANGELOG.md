@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `TestFailureClearance` (AUTOMATION-1444). A test fail record can name its failed tests
+  in its outputs (`outputsOf`, `failedTestsOf`). A later passing run at the same key files a
+  clearance of that fail (`clearanceOf`, keyed by `keyOf` on the fail's key and run). Under
+  `check`, `lookupForCheck` reads a cleared fail as a pass. A fail is cleared only when every
+  failure is named, the later run passed each one, and the pass was filed strictly after the fail.
+
 ## 0.10.0-alpha.102 - 2026-11-02
 
 - feat: `Json.tryBool` reads a boolean field, and `Json.tryReadDocument` applies a reader to the

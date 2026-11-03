@@ -972,3 +972,44 @@ its directory.
 
 Not changed: an absent input is still judged by its directory, so an ancestor that keeps changing
 (a busy home directory) still costs a miss, now after two evaluations instead of one.
+
+## 25. Amendment (AUTOMATION-1444): a K_P full fail the check re-ran green
+
+The AUTOMATION-1440 replay of 100 intelligence commits on fshotwatch.cli 0.14.0-alpha.133 logged
+19 disagreements. 18 of them were `stricter` checks: today green, the lookup red, with one test
+project failing. Step 34 (intelligence c76bd3aebef5) has the shape. Full-suite run 6ef651bd
+failed exactly one named Build.Dev test. The graded impact run eb571426 completed later in the
+same check, ran that test and passed it. The verdict read 2 s later on the same tree agreed green.
+
+**Cause.** §19's `supersededFailures` governs only what the shadow files under tree keys. The
+test runner files its own records under K_P (§16 step 7a): the full run's fail under
+`run-scope: full`, and the later impact pass under `run-scope: impact`. Step 7b's alternative
+for `test:<project>` is the K_P **full** key, whose newest record stayed the fail. `decide`
+reddens a requirement on any failing key of any alternative, so the check was red. The read
+saw green because it has no K_P keys (§19).
+
+**Change.** The clearance is a record in the store, so the lookup can see it:
+
+- A failed run whose report names every failure in its summary (no unnamed failed row, no
+  `other` row) is filed with the names in its outputs (§14). A timeout names nothing.
+- A later **passing** run at the same K_P that passed each named failure of the newest full fail
+  files a clearance. The clearance is keyed on that fail's key and run
+  (`TestFailureClearance.keyOf`). It must be filed strictly after the fail (a tie goes to the
+  fail, as in §2) and by a different run.
+- Under `check`, a full fail with its clearance reads as a pass. That is ledger #10 (§4): a
+  failure stands until it has passed at the current key. It is the evidence today's check grades
+  green on: the full suite ran at these inputs, and every test it failed has since passed at
+  these inputs. `confirm` never reads clearances, because today's confirm grades the full-suite
+  run itself.
+
+It does not loosen the lookup. Each of these stays red: a failure nobody named, a later run that
+failed again or did not pass every named failure, a pass filed before the fail, a newer fail at
+the same key (the clearance names the older fail's run), and any `confirm`.
+
+**Not changed: the tree-keyed records across publications.** When check N's graded full run
+fails A.x on tree T (today red) and check N+1 on T re-runs A.x green (today green), the shadow's
+tree `full` key keeps N's fail, so N+1's lookup is red. `supersededFailures` sees only one
+publication's runs, and `ofVerdict` reads test names only for a project that failed in that
+verdict. The replay checks each tree once per mode, so it has not shown this case. If it appears,
+the same clearance applies to the tree keys, once the shadow reads the names of a passing
+project's later run.

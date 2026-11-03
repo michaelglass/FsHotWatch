@@ -372,14 +372,27 @@ let lineAs (command: string) (o: Observation) (answer: LookupVerdict.Answer) (re
 let line (o: Observation) (answer: LookupVerdict.Answer) (recorded: int) : string =
     lineAs (Verdict.Command.token o.Command) o answer recorded
 
+/// The answer for a key under `command`: the shadow store's, else the K_P store's, where the
+/// test runner files. Under `check`, a K_P full fail whose every named failure a later run
+/// passed at the same K_P reads as a pass, as today's outstanding-failure ledger clears it
+/// (`TestFailureClearance`, AUTOMATION-1444); `confirm` grades the full suite itself.
+let private lookupIn
+    (command: Verdict.Command)
+    (store: OutcomeStore.Store)
+    (kpStore: OutcomeStore.Store option)
+    (key: ActionKey.KeyValue)
+    =
+    let read (s: OutcomeStore.Store) =
+        match command with
+        | Verdict.Check -> TestFailureClearance.lookupForCheck s key
+        | Verdict.Confirm -> s.Lookup key |> Option.map _.Outcome
+
+    match read store with
+    | Some outcome -> Some outcome
+    | None -> kpStore |> Option.bind read
+
 /// File `o`'s records, look the tree up, and append the comparison to the shadow log.
 /// Returns the lookup's answer. `testProjects` are the configured test projects.
-/// The answer for a key: the shadow store's, else the K_P store's, where the test runner files.
-let private lookupIn (store: OutcomeStore.Store) (kpStore: OutcomeStore.Store option) (key: ActionKey.KeyValue) =
-    match store.Lookup key with
-    | Some record -> Some record.Outcome
-    | None -> kpStore |> Option.bind (fun kp -> kp.Lookup key) |> Option.map _.Outcome
-
 let observeWith
     (repoRoot: string)
     (store: OutcomeStore.Store)
@@ -391,7 +404,7 @@ let observeWith
     let recorded = records |> List.filter store.Record |> List.length
     let required = requirements o testProjects
 
-    let answer = LookupVerdict.decide required (lookupIn store kpStore)
+    let answer = LookupVerdict.decide required (lookupIn o.Command store kpStore)
 
     let path = logPath repoRoot
     Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
@@ -414,7 +427,7 @@ let observeReadWith
     (o: Observation)
     =
     let answer =
-        LookupVerdict.decide (requirements o testProjects) (lookupIn store kpStore)
+        LookupVerdict.decide (requirements o testProjects) (lookupIn o.Command store kpStore)
 
     let path = logPath repoRoot
     Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore

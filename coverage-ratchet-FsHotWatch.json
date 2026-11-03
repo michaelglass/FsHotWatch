@@ -1632,6 +1632,11 @@
       "branch": 84,
       "reason": "new file (AUTOMATION-1447: the ScanStatus answer, typed). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down: a full local coverage run on 2026-11-02 measured line 95.3%, branch 84.7% (50/59). Pure, so platform-neutral."
     },
+    "TestFailureClearance.fs": {
+      "line": 100,
+      "branch": 91,
+      "reason": "new file (AUTOMATION-1444, ADR-059 §25: a K_P full fail the check re-ran green). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-02 on macOS by a coverage run of TestFailureClearanceTests + ShadowKpSupersessionTests: line 100% (53/53), branch 91.2% (31/34). Uncovered: compiler-generated arms only (the `use` disposal null check and the non-JsonException arm of the `with :? JsonException` filter). Pure apart from store reads, so platform-neutral."
+    },
     "LookupVerdict.fs": {
       "line": 100,
       "branch": 100,
