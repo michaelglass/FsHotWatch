@@ -260,3 +260,111 @@ let ``of two spellings of a root, the longer is replaced first`` () =
                 (roots "/var/bb")
                 (image "/private/var/bb")
         @>
+
+let private withAttribute (typeName: string) (value: string) =
+    identityOf
+        { FakeFSharpAssembly.spec "A" shortRoot with
+            Attributes = [ typeName, value ] }
+
+[<Fact>]
+let ``a commit id in the informational version does not move the identity, and the version does`` () =
+    // AUTOMATION-1480: on a git checkout SourceLink appends `+<commit id>` to it.
+    let version (text: string) =
+        withAttribute "AssemblyInformationalVersionAttribute" text
+
+    test <@ version ("1.0.0+" + String('a', 40)) = version ("1.0.0+" + String('b', 40)) @>
+    test <@ version ("1.0.0+" + String('a', 40)) <> version ("1.1.0+" + String('a', 40)) @>
+    test <@ version "1.0.0" <> version "1.1.0" @>
+
+[<Fact>]
+let ``every other attribute's value moves the identity, a plus sign or not`` () =
+    let description (text: string) =
+        withAttribute "AssemblyDescriptionAttribute" text
+
+    test <@ description "one" <> description "two" @>
+
+    test
+        <@
+            description ("1.0.0+" + String('a', 40))
+            <> description ("1.0.0+" + String('b', 40))
+        @>
+
+[<Fact>]
+let ``an informational version with no string is hashed as it is`` () =
+    test <@ (withAttribute "AssemblyInformationalVersionAttribute" null).IsSome @>
+
+[<Fact>]
+let ``a generated item is named without a commit id, and by its plain hash otherwise`` () =
+    withTempDir "generated-source" (fun dir ->
+        let plain (path: string) = sha (File.ReadAllBytes path)
+
+        let named (name: string) (lines: string list) =
+            let path = Path.Combine(dir, name)
+            File.WriteAllLines(path, lines)
+            path, OutputIdentity.generatedSource plain path
+
+        let info (version: string) =
+            [ "namespace FSharp"
+              $"[<assembly: System.Reflection.AssemblyInformationalVersionAttribute(\"%s{version}\")>]"
+              "do ()" ]
+
+        let _, first = named "A.fs" (info ("1.0.0+" + String('a', 40)))
+        // Asked again, remembered.
+        test <@ OutputIdentity.generatedSource plain (Path.Combine(dir, "A.fs")) = first @>
+        test <@ first.StartsWith "generated-v1:" @>
+        test <@ snd (named "B.fs" (info ("1.0.0+" + String('b', 40)))) = first @>
+        test <@ snd (named "C.fs" (info ("1.1.0+" + String('a', 40)))) <> first @>
+        // The short attribute name, as hand-written source spells it.
+        let _, short =
+            named "D.fs" [ "[<assembly: AssemblyInformationalVersion(\"2.0+abc\")>]" ]
+
+        test <@ short = snd (named "E.fs" [ "[<assembly: AssemblyInformationalVersion(\"2.0+def\")>]" ]) @>
+        // Anything else in the file still counts.
+        test <@ snd (named "F.fs" (info ("1.0.0+" + String('a', 40)) @ [ "// more" ])) <> first @>
+        // No build metadata: the plain hash.
+        let path, none = named "G.fs" (info "1.0.0")
+        test <@ none = plain path @>
+        // Moved since the plain hash, or nothing to read: the plain hash.
+        test <@ OutputIdentity.generatedSource (fun _ -> "0123") path = "0123" @>
+        test <@ OutputIdentity.generatedSource (fun _ -> "4567") dir = "4567" @>
+        // Remembered past its bound, the same answers.
+        for i in 0..4100 do
+            named "H.fs" (info $"1.0.%d{i}+x") |> ignore
+
+        test <@ snd (named "A.fs" (info ("1.0.0+" + String('a', 40)))) = first @>)
+
+[<Fact>]
+let ``a commit id is masked behind a blob length of any width`` () =
+    // A blob of 0x80 bytes or more has a two-byte length, of 0x4000 or more a four-byte one.
+    for padding in [ 0x90; 0x4010 ] do
+        let version (sha: char) =
+            withAttribute
+                "AssemblyInformationalVersionAttribute"
+                ("1.0.0-" + String('p', padding) + "+" + String(sha, 40))
+
+        test <@ (padding, version 'a') = (padding, version 'b') @>
+
+        test
+            <@
+                version 'a'
+                <> withAttribute
+                    "AssemblyInformationalVersionAttribute"
+                    ("1.0.0-" + String('q', padding) + "+" + String('a', 40))
+            @>
+
+[<Fact>]
+let ``attributes whose constructor is not a referenced type's are hashed as they are`` () =
+    let own (sha: char) =
+        identityOf
+            { FakeFSharpAssembly.spec "A" shortRoot with
+                OwnAttributes = true
+                Attributes = [ "AssemblyInformationalVersionAttribute", "1.0.0+" + String(sha, 40) ] }
+
+    test <@ (own 'a').IsSome @>
+    test <@ own 'a' = own 'b' @>
+
+    test
+        <@
+            own 'a'
+            <> withAttribute "AssemblyInformationalVersionAttribute" ("1.0.0+" + String('a', 40))
+        @>

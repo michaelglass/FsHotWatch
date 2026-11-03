@@ -49,10 +49,10 @@ let private checkout (root: string) =
     File.WriteAllText(Path.Combine(root, "Lib", "Lib.fsproj"), library)
     File.WriteAllText(Path.Combine(root, "Lib", "A.fs"), source)
 
-let private identity (root: string) (dll: string) =
-    let plain (path: string) =
-        Convert.ToHexString(Security.Cryptography.SHA256.HashData(File.ReadAllBytes path)).ToLowerInvariant()
+let private plain (path: string) =
+    Convert.ToHexString(Security.Cryptography.SHA256.HashData(File.ReadAllBytes path)).ToLowerInvariant()
 
+let private identity (root: string) (dll: string) =
     OutputIdentity.identity (Some root) plain dll
 
 [<Fact(Timeout = 900000)>]
@@ -73,6 +73,30 @@ let ``one library built in two checkouts has one identity, and an edit to it ano
         let named = identity short shortDll
         Assert.StartsWith(OutputIdentity.Schema + ":", named)
         Assert.Equal(named, identity long longDll)
+
+        // AUTOMATION-1480: a commit id SourceLink would stamp in moves neither the output nor the
+        // generated AssemblyInfo, though both carry it.
+        let stamped (sha: string) =
+            let code, text =
+                run
+                    clock
+                    long
+                    "dotnet"
+                    [ "build"
+                      "Lib/Lib.fsproj"
+                      "--disable-build-servers"
+                      $"-p:SourceRevisionId=%s{sha}" ]
+
+            Assert.True((code = 0), text)
+
+            let info =
+                Path.Combine(long, "Lib", "obj", "Debug", "net10.0", "Lib.AssemblyInfo.fs")
+
+            Assert.Contains(sha, File.ReadAllText info)
+            identity long longDll, OutputIdentity.generatedSource plain info
+
+        let first = stamped (String('a', 40))
+        Assert.Equal(first, stamped (String('b', 40)))
 
         // A type abbreviation lives only in the F# signature data: no IL changes.
         File.AppendAllText(Path.Combine(long, "Lib", "A.fs"), "type Length = int\n")

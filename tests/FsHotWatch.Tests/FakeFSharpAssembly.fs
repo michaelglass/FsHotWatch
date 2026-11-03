@@ -44,6 +44,12 @@ type Spec =
         /// Resources of the project's own, by name, and resources in another file of the assembly.
         Resources: (string * byte[]) list
         Linked: string list
+        /// Assembly-level attributes, by the full name of a System.Reflection attribute type that
+        /// takes one string, and the string: `AssemblyInformationalVersionAttribute`, say.
+        Attributes: (string * string) list
+        /// Also apply an attribute whose constructor this assembly defines, and one on a
+        /// constructed generic type, as a project that declares its own attributes does.
+        OwnAttributes: bool
     }
 
 let spec (name: string) (root: string) =
@@ -54,7 +60,9 @@ let spec (name: string) (root: string) =
       Methods = [ "v"; "w" ]
       Literal = ""
       Resources = []
-      Linked = [] }
+      Linked = []
+      Attributes = []
+      OwnAttributes = false }
 
 let private deflate (bytes: byte[]) =
     use output = new MemoryStream()
@@ -74,15 +82,55 @@ let build (spec: Spec) : byte[] =
     metadata.AddModule(0, metadata.GetOrAddString(spec.Name + ".dll"), mvid.Handle, GuidHandle(), GuidHandle())
     |> ignore
 
-    metadata.AddAssembly(
-        metadata.GetOrAddString spec.Name,
-        Version(1, 0, 0, 0),
-        StringHandle(),
-        BlobHandle(),
-        AssemblyFlags(),
-        AssemblyHashAlgorithm.Sha1
-    )
-    |> ignore
+    let assembly =
+        metadata.AddAssembly(
+            metadata.GetOrAddString spec.Name,
+            Version(1, 0, 0, 0),
+            StringHandle(),
+            BlobHandle(),
+            AssemblyFlags(),
+            AssemblyHashAlgorithm.Sha1
+        )
+
+    let runtime =
+        metadata.AddAssemblyReference(
+            metadata.GetOrAddString "System.Runtime",
+            Version(10, 0, 0, 0),
+            StringHandle(),
+            BlobHandle(),
+            AssemblyFlags(),
+            BlobHandle()
+        )
+
+    // instance void .ctor(string)
+    let stringConstructor = metadata.GetOrAddBlob [| 0x20uy; 0x01uy; 0x01uy; 0x0Euy |]
+
+    for typeName, value in spec.Attributes do
+        let attributeType =
+            metadata.AddTypeReference(
+                AssemblyReferenceHandle.op_Implicit runtime,
+                metadata.GetOrAddString "System.Reflection",
+                metadata.GetOrAddString typeName
+            )
+
+        let constructor =
+            metadata.AddMemberReference(
+                TypeReferenceHandle.op_Implicit attributeType,
+                metadata.GetOrAddString ".ctor",
+                stringConstructor
+            )
+
+        let argument = BlobBuilder()
+        argument.WriteUInt16 1us
+        argument.WriteSerializedString value
+        argument.WriteUInt16 0us
+
+        metadata.AddCustomAttribute(
+            AssemblyDefinitionHandle.op_Implicit assembly,
+            MemberReferenceHandle.op_Implicit constructor,
+            metadata.GetOrAddBlob argument
+        )
+        |> ignore
 
     metadata.AddTypeDefinition(
         TypeAttributes(),
@@ -126,6 +174,34 @@ let build (spec: Spec) : byte[] =
         )
         |> ignore
 
+    if spec.OwnAttributes then
+        let value = metadata.GetOrAddBlob [| 1uy; 0uy; 0uy; 0uy |]
+
+        metadata.AddCustomAttribute(
+            AssemblyDefinitionHandle.op_Implicit assembly,
+            MethodDefinitionHandle.op_Implicit (MetadataTokens.MethodDefinitionHandle 1),
+            value
+        )
+        |> ignore
+
+        // GENERICINST CLASS <first TypeRef> 1 STRING
+        let generic =
+            metadata.AddTypeSpecification(metadata.GetOrAddBlob [| 0x15uy; 0x12uy; 0x05uy; 0x01uy; 0x0Euy |])
+
+        let constructor =
+            metadata.AddMemberReference(
+                TypeSpecificationHandle.op_Implicit generic,
+                metadata.GetOrAddString ".ctor",
+                metadata.GetOrAddBlob [| 0x20uy; 0x00uy; 0x01uy |]
+            )
+
+        metadata.AddCustomAttribute(
+            AssemblyDefinitionHandle.op_Implicit assembly,
+            MemberReferenceHandle.op_Implicit constructor,
+            value
+        )
+        |> ignore
+
     let resources = BlobBuilder()
 
     let addResource (name: string) (content: byte[]) =
@@ -146,6 +222,10 @@ let build (spec: Spec) : byte[] =
         [ yield pickled "FSharp.Core"
           for source in spec.Sources -> pickled (path source)
           for entity in spec.Entities -> pickled entity
+          // fsc pickles the assembly's attributes into its signature data too.
+          for typeName, value in spec.Attributes do
+              yield pickled ("System.Reflection." + typeName)
+              yield pickled (if isNull value then "" else value)
           yield pickled spec.Root ]
         |> Array.concat
 
