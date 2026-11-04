@@ -518,3 +518,72 @@ let ``a traced run joins against the analysis admitted while it ran, however far
             test <@ (stat "unmappedIds", stat "complete") = (0, 1) @>
         finally
             release.Set())
+
+/// Whether the trace store at `root` holds a run of `project`, read without creating or
+/// migrating the file (the plugin owns that) and never throwing.
+let private storedYet (root: string) (project: string) =
+    let path = Path.Combine(root, ".fshw", "test-traces.db")
+
+    File.Exists path
+    && (try
+            use conn =
+                new Microsoft.Data.Sqlite.SqliteConnection($"Data Source=%s{path};Mode=ReadOnly;Pooling=False")
+
+            conn.Open()
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "SELECT COUNT(*) FROM trace_runs WHERE test_project = @p"
+            cmd.Parameters.AddWithValue("@p", project) |> ignore
+            (cmd.ExecuteScalar() :?> int64) > 0L
+        with _ ->
+            false)
+
+[<Fact(Timeout = 60000)>]
+let ``a traced project's traces are stored as soon as it finishes, while the rest of the run still runs`` () =
+    // AUTOMATION-1484: ingestion waited for the whole run, so a confirm's tail after its
+    // last test was every traced project's ingestion, one after another. A project that
+    // finished early is stored while the slower ones run.
+    withTempDir "tp-eager" (fun root ->
+        let fast = Path.Combine(root, "fast.sh")
+        let slow = Path.Combine(root, "slow.sh")
+        let go = Path.Combine(root, "fast-stored")
+        let slowDone = Path.Combine(root, "slow-done")
+        writeRunner fast (Path.Combine(root, "fast-ran")) false
+
+        // The slow project holds until the fast one's traces are in the store (or 20 s pass),
+        // then says it is done.
+        let prelude =
+            $"i=0; while [ ! -f '%s{go}' ] && [ $i -lt 200 ]; do sleep 0.1; i=$((i+1)); done\ntouch '%s{slowDone}'\n"
+
+        writeRunnerWith slow (Path.Combine(root, "slow-ran")) false prelude (dumpExecuting "")
+
+        let wiring =
+            { Policy = settings RecordEveryRun
+              OptedOut = Set.empty
+              WeaveOverrides = Map.empty
+              Decide =
+                fun ct rt project runDir extra ->
+                    let woven = if project.Project = "Fast" then fast else slow
+                    TraceRun.decideWith (preparedAs root woven) (fun () -> Some "/dotnet-root") rt project runDir extra }
+
+        let storedWhileSlowRan =
+            Tasks.Task.Run(fun () ->
+                if waitUntilTrue (fun () -> storedYet root "Fast") 40000 then
+                    let slowStillRunning = not (File.Exists slowDone)
+                    File.WriteAllText(go, "")
+                    Some slowStillRunning
+                else
+                    None)
+
+        let json, _ =
+            runTests
+                root
+                [ { config "Fast" "dotnet" "run --project tests/Fast --no-build" with
+                      Group = "fast" }
+                  { config "Slow" "dotnet" "run --project tests/Slow --no-build" with
+                      Group = "slow" } ]
+                (Some wiring)
+
+        test <@ statusOf json "Fast" = "passed" && statusOf json "Slow" = "passed" @>
+        test <@ storedWhileSlowRan.Result = Some true @>
+        test <@ (runsOf root "Fast" |> List.exactlyOne).Status = TraceStore.Recorded @>
+        test <@ (runsOf root "Slow" |> List.exactlyOne).Status = TraceStore.Recorded @>)

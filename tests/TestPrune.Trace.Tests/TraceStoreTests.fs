@@ -403,3 +403,28 @@ let ``a TestPrune.Core schema recreate of the index never touches the trace file
     test <@ db.WasRecreated @>
     use store = Store.Open tracePath
     test <@ store.TryRead("P|Ns.C|m", "E1") |> Option.isSome @>
+
+[<Fact>]
+let ``recording a run compiles each statement once, however many scopes, symbols, inputs and tests it holds`` () =
+    // AUTOMATION-1484: the store write was the run's ingestion tail, and it grew with every
+    // row because each row created, parsed and compiled its own command. The count a write
+    // creates must not depend on how many rows it writes.
+    let commandsFor (size: int) =
+        use store = Store.Open(tempPath ())
+        let before = store.CommandsCreated
+
+        let scopes =
+            [ for i in 1..size ->
+                  { Key = $"T:%d{i}"
+                    Symbols = [ for j in 1..size -> $"Lib.f%d{j}", $"h%d{j}" ]
+                    Inputs = [ for j in 1..size -> "read", $"cfg/%d{j}.json", "fh" ] } ]
+
+        let tests =
+            [ for i in 1..size -> passed $"P|Ns.C|m%d{i}" [ for j in 1..size -> $"T:%d{j}" ] ]
+
+        store.RecordRun(run "r1", scopes, tests)
+        store.CommandsCreated - before
+
+    let small = commandsFor 2
+    let large = commandsFor 12
+    test <@ large = small @>

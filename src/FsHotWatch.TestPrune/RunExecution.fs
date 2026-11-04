@@ -331,12 +331,10 @@ let internal beginRun
 let internal concludeRun
     (ctx: PluginCtx<'msg> option)
     (collected: RunCollector)
-    (traces: TraceRunHost option)
-    (db: Database)
+    (traceIngestion: TraceIngestion option)
     (repoRoot: string)
     (runId: Guid)
     (sw: Stopwatch)
-    (boundTree: ReceiptTree option)
     (configuredCoverageProjects: TestConfig list)
     : Async<TestResults * TestRunCompleted> =
     async {
@@ -354,27 +352,15 @@ let internal concludeRun
             | :? UnauthorizedAccessException
             | :? JsonException as ex -> Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}"
 
-        // Traces: after every project finished, before `tidyRunsDir` can rotate the run
-        // directory holding the dumps. `ingestAll` first waits, bounded, for this plugin's
-        // mailbox to fold the analysis events admitted before now, so the traces join
-        // against the index those events write. The folds never wait on this run, whose
-        // result is posted only after it returns. It never throws, and nothing it does
-        // reaches `cumulative`: a trace failure is a log line and a stored row, never a
-        // changed result.
-        match traces with
-        | Some host ->
-            let runs = collected.Read(fun c -> List.rev c.TraceRuns)
-
-            do!
-                TraceRun.ingestAll
-                    host.TraceRuntime
-                    (TestPrune.Ports.toSymbolStore db)
-                    host.IndexFold
-                    (runId.ToString("N"))
-                    (boundTree |> Option.map _.Identity)
-                    (fun () -> ReceiptInputTree.read repoRoot)
-                    runs
-                    host.TraceLog
+        // Traces: every project still being stored, and any that never settled, before
+        // `tidyRunsDir` can rotate the run directory holding the dumps. Each ingestion first
+        // waits, bounded, for this plugin's mailbox to fold the analysis events admitted
+        // before it began, so the traces join against the index those events write. The
+        // folds never wait on this run, whose result is posted only after it returns. It
+        // never throws, and nothing it does reaches `cumulative`: a trace failure is a log
+        // line and a stored row, never a changed result.
+        match traceIngestion with
+        | Some ingestion -> do! ingestion.Finish()
         | None -> ()
 
         // Bound what `.fshw/test-runs/` retains, and purge the DEAD `.log` format.
@@ -531,6 +517,29 @@ let internal executeTests
         // records that are used SERIALLY once the parallel section ends.
         let collected = RunCollector()
 
+        // TRACES: each project's traces are stored as soon as its result is final, while the
+        // rest of the run goes on (`TraceIngestion`); the run waits at its end only for what
+        // is left. Joined against the index admitted before each project's ingestion.
+        let! runCancellation = Async.CancellationToken
+
+        let traceIngestion =
+            traces
+            |> Option.map (fun (host: TraceRunHost) ->
+                TraceIngestion(
+                    collected,
+                    (fun runs ->
+                        TraceRun.ingestAll
+                            host.TraceRuntime
+                            (TestPrune.Ports.toSymbolStore db)
+                            host.IndexFold
+                            (runId.ToString("N"))
+                            (boundTree |> Option.map _.Identity)
+                            (fun () -> ReceiptInputTree.read repoRoot)
+                            runs
+                            host.TraceLog),
+                    runCancellation
+                ))
+
         /// Write a line to the plugin's activity log when there is a host to write to.
         /// One binding for the whole run: the preflight, the refusal path and the per-
         /// config runner all report through it, and it is allocated once rather than
@@ -646,6 +655,7 @@ let internal executeTests
 
         let watchEnv: WatchEnv =
             { Collected = collected
+              Settled = fun project -> traceIngestion |> Option.iter (fun t -> t.Settled project)
               LogToCtx = logToCtx
               LaunchProject = launchProject
               LaunchSampled = launchSampled
@@ -718,7 +728,7 @@ let internal executeTests
             reusedNow
 
         let! testResults, completed =
-            concludeRun ctx collected traces db repoRoot runId sw boundTree configuredCoverageProjects
+            concludeRun ctx collected traceIngestion repoRoot runId sw configuredCoverageProjects
 
         match afterRun with
         | Some hook -> hook testResults
