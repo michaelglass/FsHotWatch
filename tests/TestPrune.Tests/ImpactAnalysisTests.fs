@@ -21,11 +21,7 @@ module ``Changed symbol with dependent test`` =
                 [ "src/Lib.fs",
                   [ { FullName = "Lib.funcB"
                       Kind = Function
-                      SourceFile = "src/Lib.fs"
-                      LineStart = 1
-                      LineEnd = 10
-                      ContentHash = "changed"
-                      IsExtern = false } ] ]
+                      Location = InSource("src/Lib.fs", 1, 10, "changed") } ] ]
 
         let result, _events = selectTests store [ "src/Lib.fs" ] currentSymbols
 
@@ -47,11 +43,7 @@ module ``Changed symbol with transitive dependent test`` =
                 [ "src/Domain.fs",
                   [ { FullName = "Domain.TypeC"
                       Kind = Type
-                      SourceFile = "src/Domain.fs"
-                      LineStart = 1
-                      LineEnd = 8
-                      ContentHash = "changed"
-                      IsExtern = false } ] ]
+                      Location = InSource("src/Domain.fs", 1, 8, "changed") } ] ]
 
         let result, _events = selectTests store [ "src/Domain.fs" ] currentSymbols
 
@@ -73,11 +65,7 @@ module ``Changed symbol with no dependent tests`` =
                 [ "src/Other.fs",
                   [ { FullName = "Other.unrelated"
                       Kind = Function
-                      SourceFile = "src/Other.fs"
-                      LineStart = 1
-                      LineEnd = 10
-                      ContentHash = "changed"
-                      IsExtern = false } ] ]
+                      Location = InSource("src/Other.fs", 1, 10, "changed") } ] ]
 
         let result, _events = selectTests store [ "src/Other.fs" ] currentSymbols
 
@@ -93,29 +81,17 @@ module ``Runtime-only coupling`` =
             let runtimeOnly =
                 { FullName = "RuntimeOnly.dispatchTarget"
                   Kind = Function
-                  SourceFile = "src/RuntimeOnly.fs"
-                  LineStart = 1
-                  LineEnd = 5
-                  ContentHash = "before"
-                  IsExtern = false }
+                  Location = InSource("src/RuntimeOnly.fs", 1, 5, "before") }
 
             let runtimeTest =
                 { FullName = "RuntimeTests.viaReflection"
                   Kind = Function
-                  SourceFile = "tests/RuntimeTests.fs"
-                  LineStart = 1
-                  LineEnd = 5
-                  ContentHash = "test"
-                  IsExtern = false }
+                  Location = InSource("tests/RuntimeTests.fs", 1, 5, "test") }
 
             let siblingTest =
                 { FullName = "SiblingTests.unrelated"
                   Kind = Function
-                  SourceFile = "tests/SiblingTests.fs"
-                  LineStart = 1
-                  LineEnd = 5
-                  ContentHash = "test"
-                  IsExtern = false }
+                  Location = InSource("tests/SiblingTests.fs", 1, 5, "test") }
 
             db.RebuildProjects(
                 [ AnalysisResult.Create(
@@ -135,10 +111,7 @@ module ``Runtime-only coupling`` =
             db.ReplaceRuntimeCoverage("RuntimeTests", "full-1", [ runtimeOnly.SourceFile ])
 
             let current =
-                Map.ofList
-                    [ runtimeOnly.SourceFile,
-                      [ { runtimeOnly with
-                            ContentHash = "after" } ] ]
+                Map.ofList [ runtimeOnly.SourceFile, [ (SymbolInfo.withContentHash ("after") runtimeOnly) ] ]
 
             let selection, events =
                 selectTests (toSymbolStore db) [ runtimeOnly.SourceFile ] current
@@ -202,32 +175,16 @@ module ``Multiple changed symbols`` =
             { Symbols =
                 [ { FullName = "Tests.test1"
                     Kind = Function
-                    SourceFile = "tests/Tests.fs"
-                    LineStart = 1
-                    LineEnd = 3
-                    ContentHash = ""
-                    IsExtern = false }
+                    Location = InSource("tests/Tests.fs", 1, 3, "") }
                   { FullName = "Tests.test2"
                     Kind = Function
-                    SourceFile = "tests/Tests.fs"
-                    LineStart = 5
-                    LineEnd = 8
-                    ContentHash = ""
-                    IsExtern = false }
+                    Location = InSource("tests/Tests.fs", 5, 8, "") }
                   { FullName = "Lib.funcA"
                     Kind = Function
-                    SourceFile = "src/Lib.fs"
-                    LineStart = 1
-                    LineEnd = 5
-                    ContentHash = ""
-                    IsExtern = false }
+                    Location = InSource("src/Lib.fs", 1, 5, "") }
                   { FullName = "Lib.funcB"
                     Kind = Function
-                    SourceFile = "src/Lib.fs"
-                    LineStart = 7
-                    LineEnd = 12
-                    ContentHash = ""
-                    IsExtern = false } ]
+                    Location = InSource("src/Lib.fs", 7, 12, "") } ]
               Dependencies =
                 [ { FromSymbol = "Tests.test1"
                     ToSymbol = "Lib.funcA"
@@ -258,18 +215,10 @@ module ``Multiple changed symbols`` =
                 [ "src/Lib.fs",
                   [ { FullName = "Lib.funcA"
                       Kind = Function
-                      SourceFile = "src/Lib.fs"
-                      LineStart = 1
-                      LineEnd = 8
-                      ContentHash = "changed-a"
-                      IsExtern = false }
+                      Location = InSource("src/Lib.fs", 1, 8, "changed-a") }
                     { FullName = "Lib.funcB"
                       Kind = Function
-                      SourceFile = "src/Lib.fs"
-                      LineStart = 10
-                      LineEnd = 18
-                      ContentHash = "changed-b"
-                      IsExtern = false } ] ]
+                      Location = InSource("src/Lib.fs", 10, 18, "changed-b") } ] ]
 
         let result, _events = selectTests store [ "src/Lib.fs" ] currentSymbols
 
@@ -306,11 +255,7 @@ module ``New file not indexed`` =
                 [ "src/NewModule.fs",
                   [ { FullName = "NewModule.newFunc"
                       Kind = Function
-                      SourceFile = "src/NewModule.fs"
-                      LineStart = 1
-                      LineEnd = 5
-                      ContentHash = ""
-                      IsExtern = false } ] ]
+                      Location = InSource("src/NewModule.fs", 1, 5, "") } ] ]
 
         let result, _events = selectTests store [ "src/NewModule.fs" ] currentSymbols
 
@@ -386,11 +331,7 @@ module ``Unchanged file in changed list`` =
                 [ "src/Lib.fs",
                   [ { FullName = "Lib.funcB"
                       Kind = Function
-                      SourceFile = "src/Lib.fs"
-                      LineStart = 1
-                      LineEnd = 5
-                      ContentHash = ""
-                      IsExtern = false } ] ]
+                      Location = InSource("src/Lib.fs", 1, 5, "") } ] ]
 
         let result, _events = selectTests store [ "src/Lib.fs" ] currentSymbols
 
@@ -422,11 +363,7 @@ module ``Event emission`` =
                 [ "src/Lib.fs",
                   [ { FullName = "Lib.funcB"
                       Kind = Function
-                      SourceFile = "src/Lib.fs"
-                      LineStart = 1
-                      LineEnd = 10
-                      ContentHash = "changed"
-                      IsExtern = false } ] ]
+                      Location = InSource("src/Lib.fs", 1, 10, "changed") } ] ]
 
         let _result, events = selectTests store [ "src/Lib.fs" ] currentSymbols
 
@@ -661,11 +598,7 @@ module ``File-dependency attributes`` =
                 [ "src/Lib.fs",
                   [ { FullName = "Lib.funcB"
                       Kind = Function
-                      SourceFile = "src/Lib.fs"
-                      LineStart = 1
-                      LineEnd = 10
-                      ContentHash = "changed"
-                      IsExtern = false } ] ]
+                      Location = InSource("src/Lib.fs", 1, 10, "changed") } ] ]
 
         let _result, events =
             selectTests (store |> withAttributes attrs) [ "src/Lib.fs"; "data/x.json" ] currentSymbols

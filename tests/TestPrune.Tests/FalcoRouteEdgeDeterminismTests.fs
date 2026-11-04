@@ -32,11 +32,7 @@ let private ordersRoute =
 let private symbol (fullName: string) (sourceFile: string) : SymbolInfo =
     { FullName = fullName
       Kind = Function
-      SourceFile = sourceFile
-      LineStart = 1
-      LineEnd = 2
-      ContentHash = "h"
-      IsExtern = false }
+      Location = InSource(sourceFile, 1, 2, "h") }
 
 /// One source file of the tree: its path, its text (written to disk for test files), and the
 /// symbols its AST analysis would record.

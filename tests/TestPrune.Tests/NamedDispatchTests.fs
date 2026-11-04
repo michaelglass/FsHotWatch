@@ -370,11 +370,7 @@ module ``unattributable and malformed input`` =
     let private symbol (file: string) (line: int) (name: string) : SymbolInfo =
         { FullName = name
           Kind = Function
-          SourceFile = file
-          LineStart = line
-          LineEnd = line
-          ContentHash = name
-          IsExtern = false }
+          Location = InSource(file, line, line, name) }
 
     let private testMethod (name: string) : TestMethodInfo =
         { SymbolFullName = name

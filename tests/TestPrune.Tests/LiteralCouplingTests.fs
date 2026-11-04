@@ -162,11 +162,7 @@ let assertsMessage () =
         let symbol =
             { FullName = "TestPrune.__Literal__.0123456789abcdef"
               Kind = ExternRef
-              SourceFile = ExternSourceFile
-              LineStart = 0
-              LineEnd = 0
-              ContentHash = ""
-              IsExtern = true }
+              Location = Extern None }
 
         let normalized = normalizeSymbolPaths "/repo/root" [ symbol ] |> List.exactlyOne
         test <@ normalized.SourceFile = ExternSourceFile @>

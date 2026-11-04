@@ -24,11 +24,7 @@ open TestPrune.Tests.TestHelpers
 let private symbolOf (kind: SymbolKind) (name: string) =
     { FullName = name
       Kind = kind
-      SourceFile = $"src/%s{name}.fs"
-      LineStart = 1
-      LineEnd = 5
-      ContentHash = ""
-      IsExtern = false }
+      Location = InSource($"src/%s{name}.fs", 1, 5, "") }
 
 let private calls (from: string) (target: string) =
     { FromSymbol = from

@@ -8,11 +8,7 @@ open TestPrune.EdgeEmission
 let private sym (fullName: string) (sourceFile: string) : SymbolInfo =
     { FullName = fullName
       Kind = Function
-      SourceFile = sourceFile
-      LineStart = 1
-      LineEnd = 2
-      ContentHash = "h"
-      IsExtern = false }
+      Location = InSource(sourceFile, 1, 2, "h") }
 
 let private handlerFile =
     [ sym "App.Handlers.Multi.getUser" "src/Multi.fs"

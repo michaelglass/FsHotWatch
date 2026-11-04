@@ -18,15 +18,15 @@ let private analysisUnder (root: string) : AnalysisResult =
         [ for i, kind in List.indexed kinds ->
               { FullName = $"P.S%d{i}"
                 Kind = kind
-                SourceFile =
+                Location =
                   if kind = ExternRef then
-                      ExternSourceFile
+                      Extern None
                   else
-                      Path.Combine(root, "src", "P.fs")
-                LineStart = i
-                LineEnd = i + 1
-                ContentHash = $"h%d{i}"
-                IsExtern = (kind = ExternRef) } ]
+                      InSource(Path.Combine(root, "src", "P.fs"), i, i + 1, $"h%d{i}") } ]
+        // A DllImport: extern, declared in a repository file (AUTOMATION-1455).
+        @ [ { FullName = "P.native"
+              Kind = Function
+              Location = Extern(Some(Path.Combine(root, "src", "P.fs"))) } ]
       Dependencies =
         [ for i, kind in List.indexed [ Calls; UsesType; PatternMatches; References; SharedState; SharedLiteral ] ->
               { FromSymbol = $"P.S%d{i}"

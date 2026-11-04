@@ -86,11 +86,7 @@ let private callSites (needle: string) (lines: string[]) =
 let private libFooSymbol: TestPrune.AstAnalyzer.SymbolInfo =
     { FullName = "Lib.foo"
       Kind = TestPrune.AstAnalyzer.SymbolKind.Value
-      SourceFile = "src/Lib.fs"
-      LineStart = 1
-      LineEnd = 1
-      ContentHash = "hash-v1"
-      IsExtern = false }
+      Location = TestPrune.AstAnalyzer.InSource("src/Lib.fs", 1, 1, "hash-v1") }
 
 [<Fact(Timeout = 20000)>]
 let ``clearSqlitePool drops the pooled connections of its own database`` () =

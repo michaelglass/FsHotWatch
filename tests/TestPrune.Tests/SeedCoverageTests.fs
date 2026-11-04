@@ -24,11 +24,7 @@ open TestPrune.Tests.TestHelpers
 let private symbolIn (file: string) (name: string) (kind: SymbolKind) =
     { FullName = name
       Kind = kind
-      SourceFile = file
-      LineStart = 1
-      LineEnd = 2
-      ContentHash = $"%s{file}:%s{name}"
-      IsExtern = false }
+      Location = InSource(file, 1, 2, $"%s{file}:%s{name}") }
 
 let private symbolOf (name: string) (kind: SymbolKind) = symbolIn "src/Generated.fs" name kind
 

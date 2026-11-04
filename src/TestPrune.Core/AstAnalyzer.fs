@@ -24,24 +24,104 @@ type SymbolKind =
     | Property
     | ExternRef
 
-/// A symbol's fully-qualified name, kind, source file, and line span.
+/// The `SourceFile` an extern placeholder reports: a name declared outside the repository.
+[<Literal>]
+let ExternSourceFile = "_extern"
+
+/// Where a symbol is declared.
+type SymbolLocation =
+    /// Declared in a repository source file, at these lines, with the hash of its text.
+    | InSource of file: string * lineStart: int * lineEnd: int * contentHash: string
+    /// Extern: its body is not F# in this repository, so it has no lines or text to hash.
+    /// `declaringFile` is the repository file that declares it (a `DllImport`), or None for
+    /// a placeholder naming something declared outside the repository.
+    | Extern of declaringFile: string option
+
+/// A symbol's fully-qualified name, kind and location.
 type SymbolInfo =
     { FullName: string
       Kind: SymbolKind
-      SourceFile: string
-      LineStart: int
-      LineEnd: int
-      ContentHash: string
-      IsExtern: bool }
+      Location: SymbolLocation }
+
+    /// The declaring file; `ExternSourceFile` for an extern placeholder.
+    member this.SourceFile =
+        match this.Location with
+        | InSource(file, _, _, _)
+        | Extern(Some file) -> file
+        | Extern None -> ExternSourceFile
+
+    /// The first declared line; 0 for an extern.
+    member this.LineStart =
+        match this.Location with
+        | InSource(_, lineStart, _, _) -> lineStart
+        | Extern _ -> 0
+
+    /// The last declared line; 0 for an extern.
+    member this.LineEnd =
+        match this.Location with
+        | InSource(_, _, lineEnd, _) -> lineEnd
+        | Extern _ -> 0
+
+    /// The hash of the declaration's text; empty for an extern.
+    member this.ContentHash =
+        match this.Location with
+        | InSource(_, _, _, contentHash) -> contentHash
+        | Extern _ -> ""
+
+    /// Whether the symbol has no F# body in this repository.
+    member this.IsExtern =
+        match this.Location with
+        | Extern _ -> true
+        | InSource _ -> false
+
+/// Reading a location from flat columns.
+module SymbolLocation =
+    /// The location a stored row describes: its file, lines and hash, and whether it is
+    /// extern. An extern row at `ExternSourceFile` is a placeholder; one at a real file was
+    /// declared there.
+    let ofRow (file: string) (lineStart: int) (lineEnd: int) (contentHash: string) (isExtern: bool) =
+        if not isExtern then
+            InSource(file, lineStart, lineEnd, contentHash)
+        elif file = ExternSourceFile then
+            Extern None
+        else
+            Extern(Some file)
+
+/// Copies of a symbol at another place.
+module SymbolInfo =
+    /// The symbol declared in `file` instead. A placeholder stays one.
+    let withSourceFile (file: string) (symbol: SymbolInfo) =
+        match symbol.Location with
+        | InSource(_, lineStart, lineEnd, contentHash) ->
+            { symbol with
+                Location = InSource(file, lineStart, lineEnd, contentHash) }
+        | Extern(Some _) ->
+            { symbol with
+                Location = Extern(Some file) }
+        | Extern None -> symbol
+
+    /// The symbol with its text hashed as `contentHash`. An extern has no text, so stays as it is.
+    let withContentHash (contentHash: string) (symbol: SymbolInfo) =
+        match symbol.Location with
+        | InSource(file, lineStart, lineEnd, _) ->
+            { symbol with
+                Location = InSource(file, lineStart, lineEnd, contentHash) }
+        | Extern _ -> symbol
+
+    /// The symbol declared on lines `lineStart`..`lineEnd`. An extern has no lines, so stays as it is.
+    let withLines (lineStart: int) (lineEnd: int) (symbol: SymbolInfo) =
+        match symbol.Location with
+        | InSource(file, _, _, contentHash) ->
+            { symbol with
+                Location = InSource(file, lineStart, lineEnd, contentHash) }
+        | Extern _ -> symbol
+
 
 /// A containment relationship from a member symbol (`Child`) to the Type that declares it.
 /// Only emitted when the declaring entity is a type-with-state (class, record, DU, struct,
 /// interface) — NOT a module. Powers aggregate-type invalidation: when any member of a
 /// type is modified, consumers that touched any part of the type are re-selected.
 type SymbolParentLink = { Child: string; Parent: string }
-
-[<Literal>]
-let ExternSourceFile = "_extern"
 
 /// The synthetic attribute the analyser records on every `inline` member. `inline` is a
 /// keyword, not an attribute, so FCS reports no attribute for it; recording it here lets
@@ -112,14 +192,18 @@ type TestMethodInfo =
 
 /// Normalize symbol source paths from absolute to repo-relative.
 let normalizeSymbolPaths (repoRoot: string) (symbols: SymbolInfo list) =
+    let relative (file: string) =
+        System.IO.Path.GetRelativePath(repoRoot, file)
+
     symbols
     |> List.map (fun s ->
         { s with
-            SourceFile =
-                if s.SourceFile = ExternSourceFile then
-                    ExternSourceFile
-                else
-                    System.IO.Path.GetRelativePath(repoRoot, s.SourceFile) })
+            Location =
+                match s.Location with
+                | InSource(file, lineStart, lineEnd, contentHash) ->
+                    InSource(relative file, lineStart, lineEnd, contentHash)
+                | Extern(Some file) -> Extern(Some(relative file))
+                | Extern None -> Extern None })
 
 /// Counters for how many symbols/edges the analysis dropped, for diagnosing
 /// missing dependency edges.
@@ -1767,11 +1851,7 @@ let private collectionSynthesis
         syms <-
             { FullName = synthFullName
               Kind = Type
-              SourceFile = sourceFileName
-              LineStart = 0
-              LineEnd = 0
-              ContentHash = ""
-              IsExtern = false }
+              Location = InSource(sourceFileName, 0, 0, "") }
             :: syms
 
         edges <- coreEdge UsesType synthFullName fixtureFullName :: edges
@@ -1804,11 +1884,7 @@ let private sharedLiteralBridges
                     nodeName
                     { FullName = nodeName
                       Kind = ExternRef
-                      SourceFile = ExternSourceFile
-                      LineStart = 0
-                      LineEnd = 0
-                      ContentHash = ""
-                      IsExtern = true }
+                      Location = Extern None }
 
             let edge =
                 if testSymbolNames.Contains enclosing.FullName then
@@ -1878,11 +1954,7 @@ let private externPlaceholders
                 Some
                     { FullName = name
                       Kind = kind
-                      SourceFile = ExternSourceFile
-                      LineStart = 0
-                      LineEnd = 0
-                      ContentHash = ""
-                      IsExtern = true }
+                      Location = Extern None }
             else
                 None)
 
@@ -2409,11 +2481,11 @@ let private trackedDefinitions
 
                     { FullName = fullName
                       Kind = kind
-                      SourceFile = sourceFileName
-                      LineStart = u.Range.StartLine
-                      LineEnd = u.Range.EndLine
-                      ContentHash = hashSpan span
-                      IsExtern = isExtern },
+                      Location =
+                        if isExtern then
+                            Extern(Some sourceFileName)
+                        else
+                            InSource(sourceFileName, u.Range.StartLine, u.Range.EndLine, hashSpan span) },
                     u,
                     span)
             else
@@ -2460,9 +2532,12 @@ let private trackedDefinitions
         |> List.map (fun (si, u, _) ->
             match si.Kind with
             | Type ->
-                match headerHash si.FullName u with
-                | Some h -> { si with ContentHash = h }, u
-                | None -> si, u
+                match headerHash si.FullName u, si.Location with
+                | Some h, InSource(file, lineStart, lineEnd, _) ->
+                    { si with
+                        Location = InSource(file, lineStart, lineEnd, h) },
+                    u
+                | _ -> si, u
             | _ -> si, u)
 
     let symbols =

@@ -9,20 +9,12 @@ open TestPrune.SymbolDiff
 let private mkSymbol name kind lineStart lineEnd =
     { FullName = name
       Kind = kind
-      SourceFile = "src/Test.fs"
-      LineStart = lineStart
-      LineEnd = lineEnd
-      ContentHash = $"%s{name}:%d{lineStart}-%d{lineEnd}"
-      IsExtern = false }
+      Location = InSource("src/Test.fs", lineStart, lineEnd, $"%s{name}:%d{lineStart}-%d{lineEnd}") }
 
 let private mkSymbolWithHash name kind lineStart lineEnd hash =
     { FullName = name
       Kind = kind
-      SourceFile = "src/Test.fs"
-      LineStart = lineStart
-      LineEnd = lineEnd
-      ContentHash = hash
-      IsExtern = false }
+      Location = InSource("src/Test.fs", lineStart, lineEnd, hash) }
 
 module ``No changes`` =
 
@@ -148,7 +140,7 @@ module ``Extern filtering`` =
     let ``externs in current are filtered out (no phantom diffs vs stored without externs)`` () =
         let externSym =
             { mkSymbol "Lib.externedFn" Function 1 3 with
-                IsExtern = true }
+                Location = Extern None }
 
         let regularSym = mkSymbol "Lib.regularFn" Function 5 10
 
@@ -165,7 +157,7 @@ module ``Extern filtering`` =
         // Symmetric guard: an extern in a stored DB must not surface as a Removed change.
         let externSym =
             { mkSymbol "Lib.legacyExtern" Function 1 3 with
-                IsExtern = true }
+                Location = Extern None }
 
         let regularSym = mkSymbol "Lib.regularFn" Function 5 10
 
@@ -180,7 +172,7 @@ module ``Extern filtering`` =
         // Sanity: filtering externs must not swallow real diffs in the same call.
         let externSym =
             { mkSymbol "Lib.externedFn" Function 1 3 with
-                IsExtern = true }
+                Location = Extern None }
 
         let storedFn = mkSymbolWithHash "Lib.regularFn" Function 5 10 "old"
         let currentFn = mkSymbolWithHash "Lib.regularFn" Function 5 10 "new"
@@ -207,20 +199,12 @@ module ``Event emission`` =
         let stored =
             [ { FullName = "Lib.func"
                 Kind = Function
-                SourceFile = "src/Lib.fs"
-                LineStart = 1
-                LineEnd = 5
-                ContentHash = "old"
-                IsExtern = false } ]
+                Location = InSource("src/Lib.fs", 1, 5, "old") } ]
 
         let current =
             [ { FullName = "Lib.func"
                 Kind = Function
-                SourceFile = "src/Lib.fs"
-                LineStart = 1
-                LineEnd = 5
-                ContentHash = "new"
-                IsExtern = false } ]
+                Location = InSource("src/Lib.fs", 1, 5, "new") } ]
 
         let changes, events = detectChanges current stored
         test <@ changes.Length = 1 @>

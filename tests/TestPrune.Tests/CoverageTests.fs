@@ -28,11 +28,7 @@ let private seedSymbolWithHash
         AnalysisResult.Create(
             [ { FullName = fullName
                 Kind = Function
-                SourceFile = sourceFile
-                LineStart = lineStart
-                LineEnd = lineEnd
-                ContentHash = contentHash
-                IsExtern = false } ],
+                Location = InSource(sourceFile, lineStart, lineEnd, contentHash) } ],
             [],
             []
         )
@@ -422,11 +418,7 @@ module ``Re-index lifecycle`` =
             let mkSym fullName lineStart lineEnd hash =
                 { FullName = fullName
                   Kind = Function
-                  SourceFile = "Foo.fs"
-                  LineStart = lineStart
-                  LineEnd = lineEnd
-                  ContentHash = hash
-                  IsExtern = false }
+                  Location = InSource("Foo.fs", lineStart, lineEnd, hash) }
 
             db.RebuildProjects(
                 [ AnalysisResult.Create([ mkSym "Foo.bar" 10 20 "H"; mkSym "Foo.baz" 30 40 "G" ], [], []) ]
@@ -546,17 +538,12 @@ module ``Edge cases`` =
             let normal =
                 { FullName = "Foo.bar"
                   Kind = Function
-                  SourceFile = "Foo.fs"
-                  LineStart = 10
-                  LineEnd = 20
-                  ContentHash = "H"
-                  IsExtern = false }
+                  Location = InSource("Foo.fs", 10, 20, "H") }
 
             let ext =
                 { normal with
                     FullName = "Ext.ern"
-                    IsExtern = true
-                    ContentHash = "E" }
+                    Location = Extern None }
 
             db.RebuildProjects([ AnalysisResult.Create([ normal; ext ], [], []) ])
             db.RecordCoverage("Foo.fs", 15, 3)
@@ -564,7 +551,7 @@ module ``Edge cases`` =
             // Re-index with the extern symbol's hash changed: its content differs but the
             // `not IsExtern` guard skips the purge, and the normal symbol (unchanged) keeps
             // its coverage — exercising both arms of the guard.
-            let ext2 = { ext with ContentHash = "E2" }
+            let ext2 = (SymbolInfo.withContentHash ("E2") ext)
             db.RebuildProjects([ AnalysisResult.Create([ normal; ext2 ], [], []) ])
 
             test <@ db.GetFileCoverage "Foo.fs" = [ (15, 3) ] @>)
