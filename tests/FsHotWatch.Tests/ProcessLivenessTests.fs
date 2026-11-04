@@ -87,43 +87,51 @@ let ``every caller reads a pid that is not positive by its own policy, on every 
 
 // --- a zombie: exited, not yet reaped ---
 
-/// A shell that starts `true` in the background and then becomes `sleep`: the new image
-/// never reaps the shell's child, so the child stays a zombie until the shell is killed
-/// and its orphan is reaped by init. The zombie's pid, and the shell to kill.
+/// What `ps` says of `pid` in column `field` (`stat`, `comm`), or "" once it is gone.
+let private psField (field: string) (pid: int) =
+    let ps =
+        ProcessStartInfo("/bin/ps", $"-o %s{field}= -p %d{pid}", UseShellExecute = false, RedirectStandardOutput = true)
+
+    use p = Process.Start ps
+    let text = p.StandardOutput.ReadToEnd()
+    p.WaitForExit()
+    text.Trim()
+
+/// A shell that starts a child in the background and then becomes `sleep`, which never
+/// reaps: the child, once it exits, stays a zombie until the shell is killed and init
+/// reaps the orphan. The child exits only when the test creates `go`, after the shell has
+/// become `sleep`. A child that exited first could be reaped by the shell before its exec
+/// (dash does), which made this flaky on Linux. The zombie's pid.
 let private withZombie (body: int -> unit) =
-    let psi =
-        ProcessStartInfo(
-            "/bin/sh",
-            "-c \"/bin/sh -c true & echo $!; exec /bin/sleep 600\"",
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            WorkingDirectory = AppContext.BaseDirectory
-        )
+    withTempDir "liveness-zombie" (fun dir ->
+        let psi =
+            ProcessStartInfo("/bin/sh", UseShellExecute = false, RedirectStandardOutput = true, WorkingDirectory = dir)
 
-    use shell = Process.Start psi
+        psi.ArgumentList.Add "-c"
 
-    try
-        let zombie = int (shell.StandardOutput.ReadLine().Trim())
+        psi.ArgumentList.Add "/bin/sh -c 'while [ ! -f go ]; do /bin/sleep 0.05; done' & echo $!; exec /bin/sleep 600"
 
-        let state () =
-            let ps =
-                ProcessStartInfo(
-                    "/bin/ps",
-                    $"-o stat= -p %d{zombie}",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true
-                )
+        use shell = Process.Start psi
 
-            use p = Process.Start ps
-            let text = p.StandardOutput.ReadToEnd()
-            p.WaitForExit()
-            text.Trim()
+        try
+            let zombie = int (shell.StandardOutput.ReadLine().Trim())
 
-        waitUntilOr "the background child to exit and become a zombie" (fun () -> state().StartsWith "Z") HangWaitMs
-        body zombie
-    finally
-        shell.Kill()
-        shell.WaitForExit()
+            waitUntilOr
+                "the shell to become sleep"
+                (fun () -> Path.GetFileName(psField "comm" shell.Id) = "sleep")
+                HangWaitMs
+
+            File.WriteAllText(Path.Combine(dir, "go"), "")
+
+            waitUntilOr
+                "the background child to exit and become a zombie"
+                (fun () -> (psField "stat" zombie).StartsWith "Z")
+                HangWaitMs
+
+            body zombie
+        finally
+            shell.Kill()
+            shell.WaitForExit())
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a zombie is alive to the probe and to every caller until it is reaped`` () =
