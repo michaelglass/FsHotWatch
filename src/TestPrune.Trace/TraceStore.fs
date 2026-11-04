@@ -259,8 +259,19 @@ let private statusOf (code: string) =
     | "failed" -> FailedToRecord
     | _ -> TreeMovedDuringRun
 
+/// How many commands each connection has created: the measure `Store.CommandsCreated` reads,
+/// so a test can pin that a write compiles its statements once, not once per row.
+let private created =
+    System.Runtime.CompilerServices.ConditionalWeakTable<SqliteConnection, int64 ref>()
+
+let private newCommand (conn: SqliteConnection) =
+    // A store is used by one writer at a time (see `Store`), so a plain increment is enough.
+    let count = created.GetValue(conn, fun _ -> ref 0L)
+    count.Value <- count.Value + 1L
+    conn.CreateCommand()
+
 let private command (conn: SqliteConnection) (tx: SqliteTransaction) (sql: string) (ps: (string * obj) list) =
-    let cmd = conn.CreateCommand()
+    let cmd = newCommand conn
     cmd.Transaction <- tx
     cmd.CommandText <- sql
 
@@ -295,6 +306,38 @@ let private inTransaction (conn: SqliteConnection) (f: SqliteTransaction -> 'a) 
         tx.Commit()
         result)
 
+/// A command compiled once and re-bound per row: `names` are its parameters, in the order
+/// `runPrepared` and `scalarPrepared` take their values. Added to `owned`, which the caller
+/// disposes.
+let private prepared
+    (owned: ResizeArray<SqliteCommand>)
+    (conn: SqliteConnection)
+    (tx: SqliteTransaction)
+    (sql: string)
+    (names: string list)
+    =
+    let cmd = newCommand conn
+    owned.Add cmd
+    cmd.Transaction <- tx
+    cmd.CommandText <- sql
+
+    for n in names do
+        cmd.Parameters.Add(SqliteParameter(n, null)) |> ignore
+
+    cmd.Prepare()
+    cmd
+
+let private bind (cmd: SqliteCommand) (values: obj list) =
+    values |> List.iteri (fun i v -> cmd.Parameters.[i].Value <- v)
+
+let private runPrepared (cmd: SqliteCommand) (values: obj list) =
+    bind cmd values
+    cmd.ExecuteNonQuery() |> ignore
+
+let private scalarPrepared (cmd: SqliteCommand) (values: obj list) : int64 =
+    bind cmd values
+    cmd.ExecuteScalar() :?> int64
+
 /// An open trace database. Not thread-safe: one writer, used serially.
 type Store private (conn: SqliteConnection) =
 
@@ -316,7 +359,7 @@ type Store private (conn: SqliteConnection) =
             if found > supported then
                 raise (TraceSchemaNewerThanConsumer(path, found, supported))
 
-            exec conn null "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;" []
+            exec conn null "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA cache_size=-65536;" []
 
             // One transaction per migration: a failing step rolls back to the last good version.
             for version, ddl in migrations |> List.filter (fun (v, _) -> v > found) do
@@ -360,6 +403,10 @@ type Store private (conn: SqliteConnection) =
             "SELECT id FROM trace_runs WHERE run_id = @r AND test_project = @p"
             [ "@r", box run.RunId; "@p", box run.TestProject ]
 
+    /// Commands this store's connection has created so far.
+    member internal _.CommandsCreated: int64 =
+        created.GetValue(conn, fun _ -> ref 0L).Value
+
     /// Store a run that produced no traces (refused, failed, tree moved) as bookkeeping.
     member this.RecordRunWithoutTraces(run: TraceRun) : unit =
         inTransaction conn (fun tx -> this.UpsertRun(tx, run) |> ignore)
@@ -368,86 +415,158 @@ type Store private (conn: SqliteConnection) =
     /// replacing any earlier trace of the same (test, fingerprint). Re-recording a run
     /// replaces the content of the scopes it lists. Raises `ArgumentException`, writing
     /// nothing, when a test links a scope the run does not contain.
+    ///
+    /// Each statement is compiled once and re-bound per row, and each symbol version's id
+    /// is looked up once per call: a full run writes millions of rows, and compiling a
+    /// command per row was most of its ingestion time (AUTOMATION-1484).
     member this.RecordRun(run: TraceRun, scopes: ScopeContent list, tests: TestTrace list) : unit =
         inTransaction conn (fun tx ->
-            let runId = this.UpsertRun(tx, run)
+            let owned = ResizeArray<SqliteCommand>()
 
-            let scopeId (s: ScopeContent) =
-                let ps = [ "@r", box runId; "@k", box s.Key ]
-                exec conn tx "INSERT OR IGNORE INTO trace_scopes (trace_run_id, scope_key) VALUES (@r, @k)" ps
+            try
+                this.WriteRun(owned, tx, run, scopes, tests)
+            finally
+                for cmd in owned do
+                    cmd.Dispose())
 
-                let sid =
-                    scalar conn tx "SELECT id FROM trace_scopes WHERE trace_run_id = @r AND scope_key = @k" ps
+    member private this.WriteRun
+        (
+            owned: ResizeArray<SqliteCommand>,
+            tx: SqliteTransaction,
+            run: TraceRun,
+            scopes: ScopeContent list,
+            tests: TestTrace list
+        ) : unit =
+        let runId = this.UpsertRun(tx, run)
 
-                exec conn tx "DELETE FROM trace_entries WHERE scope_id = @s" [ "@s", box sid ]
-                exec conn tx "DELETE FROM trace_inputs WHERE scope_id = @s" [ "@s", box sid ]
+        let scopeInsert =
+            prepared
+                owned
+                conn
+                tx
+                "INSERT OR IGNORE INTO trace_scopes (trace_run_id, scope_key) VALUES (@r, @k)"
+                [ "@r"; "@k" ]
 
-                for name, hash in List.distinct s.Symbols do
-                    let ps = [ "@s", box sid; "@n", box name; "@h", box hash ]
+        let scopeSelect =
+            prepared
+                owned
+                conn
+                tx
+                "SELECT id FROM trace_scopes WHERE trace_run_id = @r AND scope_key = @k"
+                [ "@r"; "@k" ]
 
-                    exec
-                        conn
-                        tx
-                        "INSERT OR IGNORE INTO symbol_versions (symbol_full_name, content_hash) VALUES (@n, @h)"
-                        ps
+        let entriesClear =
+            prepared owned conn tx "DELETE FROM trace_entries WHERE scope_id = @s" [ "@s" ]
 
-                    exec
-                        conn
-                        tx
-                        """INSERT OR IGNORE INTO trace_entries (symbol_version_id, scope_id)
-                           SELECT id, @s FROM symbol_versions WHERE symbol_full_name = @n AND content_hash = @h"""
-                        ps
+        let inputsClear =
+            prepared owned conn tx "DELETE FROM trace_inputs WHERE scope_id = @s" [ "@s" ]
 
-                for kind, key, hash in List.distinct s.Inputs do
-                    exec
-                        conn
-                        tx
-                        "INSERT OR IGNORE INTO trace_inputs (scope_id, kind, key, hash) VALUES (@s, @k, @key, @h)"
-                        [ "@s", box sid; "@k", box kind; "@key", box key; "@h", box hash ]
+        let versionInsert =
+            prepared
+                owned
+                conn
+                tx
+                "INSERT OR IGNORE INTO symbol_versions (symbol_full_name, content_hash) VALUES (@n, @h)"
+                [ "@n"; "@h" ]
 
-                s.Key, sid
+        let versionSelect =
+            prepared
+                owned
+                conn
+                tx
+                "SELECT id FROM symbol_versions WHERE symbol_full_name = @n AND content_hash = @h"
+                [ "@n"; "@h" ]
 
-            let scopeIds = scopes |> List.map scopeId |> Map.ofList
+        let entryInsert =
+            prepared
+                owned
+                conn
+                tx
+                "INSERT OR IGNORE INTO trace_entries (symbol_version_id, scope_id) VALUES (@v, @s)"
+                [ "@v"; "@s" ]
 
-            for t in tests do
-                exec
-                    conn
-                    tx
-                    """INSERT INTO trace_tests (test_key, test_project, env_fingerprint, trace_run_id, status, complete, incomplete_reasons)
-                       VALUES (@k, @p, @e, @r, @s, @c, @why)
-                       ON CONFLICT (test_key, env_fingerprint) DO UPDATE SET
-                           test_project = excluded.test_project, trace_run_id = excluded.trace_run_id,
-                           status = excluded.status, complete = excluded.complete,
-                           incomplete_reasons = excluded.incomplete_reasons"""
-                    [ "@k", box t.TestKey
-                      "@p", box run.TestProject
-                      "@e", box run.EnvFingerprint
-                      "@r", box runId
-                      "@s", box (outcomeCode t.Status)
-                      "@c", box (if List.isEmpty t.Reasons then 1 else 0)
-                      "@why", box (JsonSerializer.Serialize(t.Reasons |> List.map reasonCode |> List.toArray)) ]
+        let inputInsert =
+            prepared
+                owned
+                conn
+                tx
+                "INSERT OR IGNORE INTO trace_inputs (scope_id, kind, key, hash) VALUES (@s, @k, @key, @h)"
+                [ "@s"; "@k"; "@key"; "@h" ]
 
-                let tid =
-                    scalar
-                        conn
-                        tx
-                        "SELECT id FROM trace_tests WHERE test_key = @k AND env_fingerprint = @e"
-                        [ "@k", box t.TestKey; "@e", box run.EnvFingerprint ]
+        let testUpsert =
+            prepared
+                owned
+                conn
+                tx
+                """INSERT INTO trace_tests (test_key, test_project, env_fingerprint, trace_run_id, status, complete, incomplete_reasons)
+                   VALUES (@k, @p, @e, @r, @s, @c, @why)
+                   ON CONFLICT (test_key, env_fingerprint) DO UPDATE SET
+                       test_project = excluded.test_project, trace_run_id = excluded.trace_run_id,
+                       status = excluded.status, complete = excluded.complete,
+                       incomplete_reasons = excluded.incomplete_reasons"""
+                [ "@k"; "@p"; "@e"; "@r"; "@s"; "@c"; "@why" ]
 
-                exec conn tx "DELETE FROM trace_test_scopes WHERE test_id = @t" [ "@t", box tid ]
+        let testSelect =
+            prepared
+                owned
+                conn
+                tx
+                "SELECT id FROM trace_tests WHERE test_key = @k AND env_fingerprint = @e"
+                [ "@k"; "@e" ]
 
-                for key in List.distinct t.ScopeKeys do
-                    match scopeIds.TryFind key with
-                    | Some sid ->
-                        exec
-                            conn
-                            tx
-                            "INSERT INTO trace_test_scopes (test_id, scope_id) VALUES (@t, @s)"
-                            [ "@t", box tid; "@s", box sid ]
-                    | None ->
-                        invalidArg
-                            (nameof tests)
-                            $"test %s{t.TestKey} links scope %s{key}, which this run does not contain")
+        let linksClear =
+            prepared owned conn tx "DELETE FROM trace_test_scopes WHERE test_id = @t" [ "@t" ]
+
+        let linkInsert =
+            prepared owned conn tx "INSERT INTO trace_test_scopes (test_id, scope_id) VALUES (@t, @s)" [ "@t"; "@s" ]
+
+        // A version recurs in most scopes of a run: look its id up once.
+        let versionIds = Collections.Generic.Dictionary<struct (string * string), int64>()
+
+        let versionId (name: string) (hash: string) =
+            match versionIds.TryGetValue(struct (name, hash)) with
+            | true, id -> id
+            | _ ->
+                runPrepared versionInsert [ box name; box hash ]
+                let id = scalarPrepared versionSelect [ box name; box hash ]
+                versionIds.[struct (name, hash)] <- id
+                id
+
+        let scopeId (s: ScopeContent) =
+            runPrepared scopeInsert [ box runId; box s.Key ]
+            let sid = scalarPrepared scopeSelect [ box runId; box s.Key ]
+            runPrepared entriesClear [ box sid ]
+            runPrepared inputsClear [ box sid ]
+
+            for name, hash in List.distinct s.Symbols do
+                runPrepared entryInsert [ box (versionId name hash); box sid ]
+
+            for kind, key, hash in List.distinct s.Inputs do
+                runPrepared inputInsert [ box sid; box kind; box key; box hash ]
+
+            s.Key, sid
+
+        let scopeIds = scopes |> List.map scopeId |> Map.ofList
+
+        for t in tests do
+            runPrepared
+                testUpsert
+                [ box t.TestKey
+                  box run.TestProject
+                  box run.EnvFingerprint
+                  box runId
+                  box (outcomeCode t.Status)
+                  box (if List.isEmpty t.Reasons then 1 else 0)
+                  box (JsonSerializer.Serialize(t.Reasons |> List.map reasonCode |> List.toArray)) ]
+
+            let tid = scalarPrepared testSelect [ box t.TestKey; box run.EnvFingerprint ]
+            runPrepared linksClear [ box tid ]
+
+            for key in List.distinct t.ScopeKeys do
+                match scopeIds.TryFind key with
+                | Some sid -> runPrepared linkInsert [ box tid; box sid ]
+                | None ->
+                    invalidArg (nameof tests) $"test %s{t.TestKey} links scope %s{key}, which this run does not contain"
 
     /// The current trace of a test under a fingerprint: the union of its scopes' content.
     member _.TryRead(testKey: string, envFingerprint: string) : StoredTrace option =

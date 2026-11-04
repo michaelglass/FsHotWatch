@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- perf: `Store.RecordRun` compiles each statement once per call and re-binds it per row, and looks
+  each symbol version's id up once per call, instead of creating and compiling a command for every
+  row; the store opens with a 64 MB page cache. Replaying a recorded 1,040-test run took 1.1 s
+  before and 0.58 s after; ten copies of it (1.77M test-scope links, 57 MB) 11.3 s before and
+  4.6 s after (AUTOMATION-1484). No schema or API change.
+
 ## 0.8.0 - 2026-11-02
 
 - feat: `Mutation.toJson`, the report as plain data a JSON serializer can write (`MutationReportJson`,
