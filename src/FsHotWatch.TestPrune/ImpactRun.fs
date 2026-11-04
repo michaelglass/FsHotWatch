@@ -221,7 +221,7 @@ let internal runTestsWithImpactWith
 
             // Build an Aborted lifecycle so subscribers see a coherent end
             // to this run rather than hanging at TestRunStarted.
-            let started, completed = abortedRunLifecycle emittedStart ex.Message
+            let started, completed = abortedRunLifecycle emittedStart (abortReasonOf ex)
 
             if emittedStart.IsNone then
                 emitStarted started

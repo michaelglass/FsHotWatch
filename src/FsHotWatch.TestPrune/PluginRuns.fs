@@ -226,7 +226,7 @@ let internal commandForceRunWith
                 // lifecycle drives the TestsFinished handler to a Failed
                 // status.
                 Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
-                let started, completed = abortedRunLifecycle (emittedStart ()) ex.Message
+                let started, completed = abortedRunLifecycle (emittedStart ()) (abortReasonOf ex)
 
                 if (emittedStart ()).IsNone then
                     emitStarted started
