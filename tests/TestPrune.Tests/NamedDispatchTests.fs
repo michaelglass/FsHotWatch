@@ -432,6 +432,41 @@ module ``unattributable and malformed input`` =
         test <@ edges (storeWith (Some unparsable) [ template; registration ]) = everyTestInFile @>
 
     [<Fact>]
+    let ``under the TransparentCompiler an informational parse diagnostic still attributes the match`` () =
+        // AUTOMATION-1454. The daemon's checker is a TransparentCompiler. On its CHECK path it
+        // sets ParseHadErrors for a file whose only parse diagnostic is informational (FS3520,
+        // a misplaced doc comment; see `AstAnalyzer.parseErrorDiagnostics`). NamedDispatch
+        // only parses, and through ParseFile the flag matches the Error diagnostics on both
+        // backends, so the file is attributed either way. It now asks the predicate
+        // AstAnalyzer recommends, and this pins that such a file never falls back to
+        // crediting every test in it.
+        let transparentChecker = FSharpChecker.Create(useTransparentCompiler = true)
+
+        let misplacedDocComment =
+            "module Tests\n\nlet first () = \"/jobs/Purge\"\n\nlet second () = 0\n\ntype Holder =\n    /// Not on a valid language element.\n    { Value: int }\n"
+
+        let root, store = storeWith (Some misplacedDocComment) [ template; registration ]
+
+        // Positive control: the file's only parse diagnostic is the informational FS3520.
+        let parsed =
+            transparentChecker.ParseFile(
+                Path.Combine(root, "Tests.fs"),
+                FSharp.Compiler.Text.SourceText.ofString misplacedDocComment,
+                { FSharpParsingOptions.Default with
+                    SourceFiles = [| Path.Combine(root, "Tests.fs") |] }
+            )
+            |> Async.RunSynchronously
+
+        test <@ parsed.Diagnostics |> Array.map _.ErrorNumber = [| 3520 |] @>
+        test <@ parseErrorDiagnostics parsed |> Array.isEmpty @>
+
+        let attributed =
+            (NamedDispatchExtension(transparentChecker) :> ITestPruneExtension).AnalyzeEdges store root
+            |> List.map (fun e -> e.FromSymbol, e.ToSymbol)
+
+        test <@ attributed = [ "Tests.first", "App.runPurge" ] @>
+
+    [<Fact>]
     let ``a match outside every binding couples every test in that file`` () =
         let header = "// dispatches \"/jobs/Purge\"\nmodule Tests\n\nlet unrelated () = 1\n"
 
