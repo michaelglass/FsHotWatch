@@ -1414,25 +1414,8 @@ let private writePid (root: string) (pid: int) =
     Directory.CreateDirectory(Path.Combine(root, ".fshw")) |> ignore
     File.WriteAllText(pidPathOf root, string pid)
 
-// --- the liveness probe: only ESRCH proves death ---
-
-[<Fact(Timeout = 15000)>]
-let ``kill probe returning 0 means the process is alive`` () =
-    test <@ processAliveByProbe (fun _ -> 0) (fun () -> 0) 4242 @>
-
-[<Fact(Timeout = 15000)>]
-let ``kill probe failing with ESRCH is the one answer that proves death`` () =
-    test <@ not (processAliveByProbe (fun _ -> -1) (fun () -> 3) 4242) @>
-
-[<Fact(Timeout = 15000)>]
-let ``a kill probe refused with EPERM means alive, not gone`` () =
-    // The process exists and belongs to somebody else. Reading that as death is how a
-    // live daemon's pidfile gets deleted out from under it.
-    test <@ processAliveByProbe (fun _ -> -1) (fun () -> 1) 4242 @>
-
-[<Fact(Timeout = 15000)>]
-let ``a nonsense pid is never probed`` () =
-    test <@ not (processAliveByProbe (fun _ -> failwith "should not be probed") (fun () -> 0) 0) @>
+// The liveness probe's table (only ESRCH proves death) and the CLI's reading of it are in
+// ProcessLivenessTests (AUTOMATION-1456).
 
 // --- what a stop interrupted (AUTOMATION-670) ---
 

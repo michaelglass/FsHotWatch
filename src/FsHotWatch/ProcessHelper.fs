@@ -1139,21 +1139,39 @@ module private Libc =
     [<System.Runtime.InteropServices.DllImport("libc", SetLastError = true)>]
     extern nativeint signal(int signum, nativeint handler)
 
-/// `kill(pid, 0)`: signal 0 delivers nothing and only checks the pid. 0 = it exists;
-/// ESRCH = no such process; EPERM = it exists but is not ours to signal (alive).
+/// What a `kill(pid, 0)` result establishes, with the call and `errno` injected so every
+/// row is testable without a process: 0 = it exists; ESRCH = no such process; EPERM = it
+/// exists but is not ours to signal (alive); any other failure is unknown.
+///
+/// A pid that is not positive is never probed: `kill` reads 0 as this process group and
+/// -1 as every process it may signal, so its answer is about no one recorded process.
+let internal livenessFrom (probe: int -> int) (lastError: unit -> int) (pid: int) : Liveness =
+    if pid <= 0 then
+        Liveness.Unknown $"pid %d{pid} names no single process"
+    elif probe pid = 0 then
+        Liveness.Alive
+    else
+        match lastError () with
+        | 3 -> Liveness.Gone // ESRCH
+        | 1 -> Liveness.Alive // EPERM
+        | errno -> Liveness.Unknown $"kill(%d{pid}, 0) failed with errno %d{errno}"
+
+/// THE process-alive probe (AUTOMATION-1456): every question fshw asks about whether a
+/// pid it recorded is still running goes through here, and each caller reads `Unknown` by
+/// a policy stated next to it (`RepositoryHost.isLive`, `RunClaim.isRunning`,
+/// `Program.daemonAlive`). Before, the repository host and the run claims asked
+/// `Process.GetProcessById`, which found a process for pid -1 on macOS and threw on
+/// Linux, and each read an undecidable answer its own way without saying so.
+///
+/// `kill(pid, 0)`: signal 0 delivers nothing and only checks the pid. A zombie (exited,
+/// not yet reaped) still holds its pid and reads `Alive` until its parent reaps it.
 ///
 /// Not `ps -p <pid>`: on macOS its EXIT CODE is 1 for a live pid it is not entitled to
 /// inspect, which would read a survivor as dead. Called directly, not via `kill -0`,
 /// so the settle poll spawns nothing on a box that is already overloaded.
 let internal isProcessAlive (pid: int) : Liveness =
     try
-        if Libc.kill (pid, 0) = 0 then
-            Liveness.Alive
-        else
-            match System.Runtime.InteropServices.Marshal.GetLastPInvokeError() with
-            | 3 -> Liveness.Gone // ESRCH
-            | 1 -> Liveness.Alive // EPERM
-            | errno -> Liveness.Unknown $"kill(%d{pid}, 0) failed with errno %d{errno}"
+        livenessFrom (fun p -> Libc.kill (p, 0)) System.Runtime.InteropServices.Marshal.GetLastPInvokeError pid
     with ex ->
         Liveness.Unknown $"kill(2) is unavailable: %s{ex.GetType().Name}: %s{ex.Message}"
 
