@@ -93,6 +93,29 @@ let internal failedTestConfigs
 /// impact path and the manual `run-tests` command so the two stay in lockstep.
 /// `Results = Map.empty` ⇒ the handler commits nothing from the pending queue; `reason`
 /// carries the hook's failure output so `fshw check` / `fshw errors` shows WHY.
+/// What a run that threw says about why it aborted: its message, except that a database
+/// schema mismatch (a table without a column or table this fshw reads) is named as one. A
+/// mismatch aborts every re-run the same way on a quiet box too, so reading it as load
+/// sends its reader to wait for headroom that changes nothing (AUTOMATION-1434).
+let internal abortReasonOf (ex: exn) : string =
+    let causes =
+        match ex with
+        | :? AggregateException as many -> List.ofSeq (many.Flatten().InnerExceptions)
+        | one -> [ one ]
+
+    let isSchemaMismatch (e: exn) =
+        match e with
+        | :? Microsoft.Data.Sqlite.SqliteException as sqlite ->
+            Text.RegularExpressions.Regex.IsMatch(sqlite.Message, "no such (column|table)|has no column named")
+        | _ -> false
+
+    match List.tryFind isSchemaMismatch causes with
+    | Some schema ->
+        $"a database schema mismatch, not load: %s{schema.Message}. A table does not have the shape this fshw \
+          reads, so every re-run aborts the same way, on a quiet box too. Stop the daemon and delete \
+          .fshw/test-impact.db (the test-impact index); the next daemon rebuilds it"
+    | None -> ex.Message
+
 let internal abortedRunLifecycle
     (emittedStart: TestRunStarted option)
     (reason: string)

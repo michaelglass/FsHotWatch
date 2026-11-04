@@ -108,3 +108,115 @@ let ``ratchet mapping retains symbol ownership until its coverage write commits`
         removeAfterCommit.CommandText <- DeleteCoveredOccurrence
         Assert.Equal(1, removeAfterCommit.ExecuteNonQuery())
         Assert.Equal(0L, Convert.ToInt64(coverage.ExecuteScalar())))
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a ratchet table left in its symbol-keyed shape by an older fshw is rebuilt, not aborted on`` () =
+    // AUTOMATION-1434: a TestPrune index rebuild keeps every non-core table, so a DB an
+    // older fshw wrote kept `fshw_project_ratchet_coverage` keyed on `symbol_id`, with no
+    // `occurrence_id`, and its metadata still said schema 1. `CREATE TABLE IF NOT EXISTS`
+    // left it alone, and every run then aborted on "no such column: occurrence_id".
+    withTempDir "ratchet-old-shape" (fun directory ->
+        let db = Database.create (Path.Combine(directory, "impact.db"))
+
+        let symbol: SymbolInfo =
+            { FullName = "Fixture.covered"
+              Kind = SymbolKind.Value
+              Location = InSource("src/Fixture.fs", 10, 10, "original") }
+
+        db.RebuildProjects([ AnalysisResult.Create([ symbol ], [], []) ])
+
+        do
+            use conn = db.OpenConnection()
+            use old = conn.CreateCommand()
+
+            old.CommandText <-
+                """CREATE TABLE fshw_project_ratchet_coverage (
+                       project TEXT NOT NULL,
+                       symbol_id INTEGER NOT NULL,
+                       line_offset INTEGER NOT NULL,
+                       hits INTEGER NOT NULL DEFAULT 0,
+                       PRIMARY KEY (project, symbol_id, line_offset));
+                   CREATE INDEX idx_fshw_project_ratchet_coverage_symbol ON fshw_project_ratchet_coverage (symbol_id);
+                   INSERT INTO fshw_project_ratchet_coverage VALUES ('Fixture.Tests', 1, 0, 3);
+                   CREATE TABLE fshw_project_ratchet_metadata (
+                       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                       schema_version INTEGER NOT NULL,
+                       legacy_output_invalidated INTEGER NOT NULL CHECK (legacy_output_invalidated IN (0, 1)));
+                   INSERT INTO fshw_project_ratchet_metadata VALUES (1, 1, 1);"""
+
+            old.ExecuteNonQuery() |> ignore
+
+        let raw = Path.Combine(directory, "coverage.xml")
+
+        File.WriteAllText(
+            raw,
+            """<coverage><packages><package name="Fixture"><classes><class name="Fixture" filename="src/Fixture.fs"><lines><line number="10" hits="7" /></lines></class></classes></package></packages></coverage>"""
+        )
+
+        let input: CoverageInput =
+            { Project = "Fixture.Tests"
+              RawPath = raw
+              IncludeInRatchet = true
+              Scope = CoverageRunScope.Full }
+
+        let output = Path.Combine(directory, "out", "coverage.cobertura.xml")
+
+        let outcome =
+            ingestAndEmitCoverageForProjects
+                db
+                directory
+                "run-1"
+                (Set.ofList [ "Fixture.Tests" ])
+                (Some output)
+                [ input ]
+
+        Assert.Empty outcome.Failures
+        use inspection = db.OpenConnection()
+        use coverage = inspection.CreateCommand()
+
+        coverage.CommandText <-
+            """SELECT COUNT(*) FROM fshw_project_ratchet_coverage c
+               JOIN symbol_occurrences o ON o.id = c.occurrence_id
+               WHERE c.project = 'Fixture.Tests' AND c.line_offset = 0 AND c.hits = 7;"""
+
+        Assert.Equal(1L, Convert.ToInt64(coverage.ExecuteScalar()))
+        use columns = inspection.CreateCommand()
+
+        columns.CommandText <-
+            "SELECT COUNT(*) FROM pragma_table_info('fshw_project_ratchet_coverage') WHERE name = 'symbol_id';"
+
+        Assert.Equal(0L, Convert.ToInt64(columns.ExecuteScalar())))
+
+[<Fact>]
+let ``a run that aborts on a database schema error names the schema as the cause, not load`` () =
+    // AUTOMATION-1434: the old-shape abort read as "uncompletable — re-run once there is
+    // headroom". A schema mismatch aborts again on every re-run, quiet box or not.
+    withTempDir "schema-abort" (fun directory ->
+        use conn =
+            new SqliteConnection($"""Data Source=%s{Path.Combine(directory, "impact.db")};Pooling=False""")
+
+        conn.Open()
+        use make = conn.CreateCommand()
+        make.CommandText <- "CREATE TABLE fshw_project_ratchet_coverage (symbol_id INTEGER);"
+        make.ExecuteNonQuery() |> ignore
+        use query = conn.CreateCommand()
+        query.CommandText <- "SELECT occurrence_id FROM fshw_project_ratchet_coverage;"
+
+        let schemaError =
+            Assert.Throws<SqliteException>(fun () -> query.ExecuteScalar() |> ignore)
+
+        let reason =
+            FsHotWatch.TestPrune.RunSupport.abortReasonOf (AggregateException(schemaError))
+
+        Assert.Contains("no such column: occurrence_id", reason)
+        Assert.Contains("schema", reason)
+        Assert.Contains("not load", reason)
+        // Any other failure, a database one included, keeps its own message.
+        use broken = conn.CreateCommand()
+        broken.CommandText <- "SELECT FROM;"
+
+        let syntaxError =
+            Assert.Throws<SqliteException>(fun () -> broken.ExecuteScalar() |> ignore)
+
+        Assert.Equal(syntaxError.Message, FsHotWatch.TestPrune.RunSupport.abortReasonOf syntaxError)
+        Assert.Equal("boom", FsHotWatch.TestPrune.RunSupport.abortReasonOf (InvalidOperationException "boom")))

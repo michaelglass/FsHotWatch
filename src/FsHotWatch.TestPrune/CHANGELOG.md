@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a test-impact DB an older fshw wrote, whose `fshw_project_ratchet_coverage` is still keyed on
+  `symbol_id`, is repaired instead of aborting every run on "no such column: occurrence_id"
+  (AUTOMATION-1434). A TestPrune.Core schema bump rebuilds only core's tables, and
+  `CREATE TABLE IF NOT EXISTS` kept the old shape; the table is now dropped when it lacks
+  `occurrence_id` (its rows named ids the rebuild renumbered) and the next coverage run refills it.
+- fix: a run that aborts on a SQLite schema mismatch (a missing column or table) says so, and says
+  it is not load: every re-run aborts the same way on a quiet box too (AUTOMATION-1434).
+
 ## 0.13.0-alpha.104 - 2026-11-04
 
 - Finish: AUTOMATION-1482 a fresh workspace answers TestPrune's replayed checks from filed analyses
