@@ -80,11 +80,13 @@ type RunningHealth =
     /// Past the bound: by definition wedged.
     | Wedged of since: DateTime * elapsed: TimeSpan
 
-/// Classify one Running plugin. A `since` in the future (clock skew) clamps
-/// elapsed to zero rather than going negative.
-let classifyRunning (bound: TimeSpan) (now: DateTime) (since: DateTime) : RunningHealth =
-    let elapsed = if now > since then now - since else TimeSpan.Zero
-
+/// Classify one Running plugin that started at `since` and has run for `elapsed`.
+///
+/// The age is the caller's to measure, on a clock that does not count a sleep of the box:
+/// the daemon's monitor on `HostClock.awakeUtc`, the CLI from the awake age the status
+/// reply carries (AUTOMATION-1489). A wall-clock age read as running time is how a plugin
+/// still running after a laptop sleep was called WEDGED.
+let classifyAge (bound: TimeSpan) (since: DateTime) (elapsed: TimeSpan) : RunningHealth =
     if elapsed >= bound then
         RunningHealth.Wedged(since, elapsed)
     else
@@ -291,7 +293,15 @@ let decideTick
     let mutable newBuckets = Map.empty
 
     for (plugin, since) in inputs.RunningPlugins do
-        match classifyRunning bound inputs.Now since with
+        // `Now` and the start stamps are both on the awake clock. A `since` in the future
+        // clamps the age to zero rather than going negative.
+        let age =
+            if inputs.Now > since then
+                inputs.Now - since
+            else
+                TimeSpan.Zero
+
+        match classifyAge bound since age with
         | RunningHealth.Wedged(s, e) -> actions <- TickAction.DeclareWedged(plugin, s, e) :: actions
         | RunningHealth.StillRunning elapsed ->
             let key = runKey plugin since

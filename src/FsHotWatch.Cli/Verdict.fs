@@ -190,8 +190,10 @@ let pluginOutcomeOf (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedP
         | None -> false
 
     match parsed.Status with
-    | StatusView.Running since ->
-        match PluginWedge.classifyRunning (PluginWedge.ambientBound ()) now since with
+    // Judged on the daemon's awake age, so a plugin still running after a sleep of the box
+    // is not WEDGED (AUTOMATION-1489).
+    | StatusView.Running(since, awake) ->
+        match PluginWedge.classifyAge (PluginWedge.ambientBound ()) since (StatusView.runningAge now since awake) with
         | PluginWedge.RunningHealth.Wedged _ -> Some PluginOutcome.Wedged
         | PluginWedge.RunningHealth.StillRunning _ -> Some PluginOutcome.Running
     // A status this build could not read is `Fail`, and `Some`: the plugin STAYS IN the

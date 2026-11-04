@@ -327,6 +327,57 @@ let ``every wall clock handed to a seam in src is one that measures no wait`` ()
               with why."
         )
 
+// --- the CLI: no Running plugin aged on the CLI's own wall clock (AUTOMATION-1489) ---
+
+/// The age of a Running plugin taken as the CLI's wall clock minus the daemon's
+/// wall-clock start stamp (`now - since`, `now > since`). After a sleep of the box that
+/// age is the sleep, and a running plugin read as WEDGED in `fshw status` and the verdict.
+let private wallAgeOfRunning =
+    Regex(@"\b\w*[Nn]ow\b(\s*\(\s*\))?\s*(-|>=|>)\s*since\b")
+
+/// The one place in the CLI that may still take that age, and why.
+let private allowedWallAges =
+    Map
+        [ "src/FsHotWatch.Cli/RunOnceOutput.fs",
+          (1,
+           "an older daemon's reply carries no awake age; its wall age is never shorter than the awake age, so it can call a running plugin wedged but never hide a wedge") ]
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``no CLI surface ages a Running plugin on its own wall clock`` () =
+    let counts =
+        [ for relative, lines in sourcesUnder (repoRoot ()) do
+              if relative.StartsWith "src/FsHotWatch.Cli/" then
+                  let n =
+                      lines
+                      |> Array.filter (fun l -> code l && wallAgeOfRunning.IsMatch l)
+                      |> Array.length
+
+                  if n > 0 then
+                      yield relative, n ]
+        |> Map.ofList
+
+    let allowed = allowedWallAges |> Map.map (fun _ (n, _) -> n)
+
+    if counts <> allowed then
+        Assert.Fail(
+            $"Wall-clock ages of a Running plugin in the CLI changed. Found %A{counts}, allowed %A{allowed}. \
+              The CLI judges a Running plugin on the awake age the daemon sends (StatusView.runningAge), \
+              never on its own wall clock against the daemon's start stamp."
+        )
+
+[<Theory(Timeout = SyncHangBackstopMs)>]
+[<InlineData("                    let elapsed = if now > since then now - since else TimeSpan.Zero")>]
+[<InlineData("    let age = DateTime.UtcNow - since")>]
+[<InlineData("    let age = clock.WallNow() - since")>]
+let ``a wall-clock age of a Running plugin is found`` (line: string) =
+    test <@ wallAgeOfRunning.IsMatch line @>
+
+[<Theory(Timeout = SyncHangBackstopMs)>]
+[<InlineData("    | StatusView.Running(since, awake) -> StatusView.runningAge now since awake")>]
+[<InlineData("    let ago = now - startedAt")>]
+let ``an awake age or another stamp is not a wall-clock age of a Running plugin`` (line: string) =
+    test <@ not (wallAgeOfRunning.IsMatch line) @>
+
 [<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("    let deadline = DateTime.UtcNow.AddSeconds 60.0")>]
 [<InlineData("            System.DateTime.UtcNow + timeout")>]

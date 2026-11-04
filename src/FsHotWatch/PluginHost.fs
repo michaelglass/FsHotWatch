@@ -46,8 +46,12 @@ type PluginHost
         ?processes: WorkScheduler.Lane,
         // How many `FileChecked` results the plugins may hold at once (AUTOMATION-683,
         // ADR-054). `LiveResults.DefaultBound` when absent.
-        ?liveResultBound: int
+        ?liveResultBound: int,
+        // The awake clock as a `DateTime` that host activity and each Running plugin's age are
+        // measured on. `HostClock.awakeUtc` when absent; a test passes a hand-moved one.
+        ?awakeNow: unit -> System.DateTime
     ) =
+    let awakeNow = defaultArg awakeNow HostClock.awakeUtc
     let fcsSuppressedCodes = defaultArg fcsSuppressedCodes Set.empty
 
     let liveResults =
@@ -110,7 +114,7 @@ type PluginHost
     // diagnostic measure from it against the same clock, so a sleep of the box is never
     // idleness or a stall (AUTOMATION-1488). It is not an ownership record, and
     // `WaitForComplete` does not consult it.
-    let mutable lastActivityAtTicks = HostClock.awakeUtc().Ticks
+    let mutable lastActivityAtTicks = awakeNow().Ticks
 
     // Live "checked files" coverage set: the files that currently hold a valid FULL
     // type-check result. A request-time completeness signal, NOT the stale
@@ -126,7 +130,7 @@ type PluginHost
     let checkedFiles = ConcurrentDictionary<AbsFilePath, unit>()
 
     let touchActivity () =
-        System.Threading.Volatile.Write(&lastActivityAtTicks, HostClock.awakeUtc().Ticks)
+        System.Threading.Volatile.Write(&lastActivityAtTicks, awakeNow().Ticks)
 
     // statusChanged.Trigger dispatch is owned by its own agent: `setStatus` posts
     // the (name, status) pair here AFTER publishing the mutation, and this loop
@@ -172,6 +176,22 @@ type PluginHost
     let readStatuses () =
         System.Threading.Volatile.Read(&statuses)
 
+    // Where each plugin's current `Running` interval began on the awake clock, with the
+    // interval's wall-clock `since` it belongs to (AUTOMATION-1489). The status reply sends
+    // the age read from it, so a CLI never has to subtract the daemon's wall-clock `since`
+    // from its own wall clock, which counts a sleep of the box as running time. Written
+    // under `statusGate` before the status it belongs to is published, so a reader that
+    // sees a `Running since` finds its stamp.
+    let mutable runningAwake: Map<string, System.DateTime * System.DateTime> = Map.empty
+
+    // A `Running` with the `since` already stamped is the same interval reported again, and
+    // keeps its stamp: restamping it would let a plugin that re-reports `Running` hide a
+    // wedge. A new `since` is a new interval, which starts at zero.
+    let stampRunning (name: string) (since: System.DateTime) =
+        match Map.tryFind name runningAwake with
+        | Some(stamped, _) when stamped = since -> ()
+        | _ -> System.Threading.Volatile.Write(&runningAwake, Map.add name (since, awakeNow ()) runningAwake)
+
     let applyStatus (name: string) (status: PluginStatus) =
         let prev = Map.tryFind name statuses
 
@@ -184,8 +204,8 @@ type PluginHost
             let outcome = RunOutcome.ofCompletedVerdict verdict
             activity.RecordTerminal(name, outcome, at - verdict.Elapsed, at)
         | Failed(err, at, verdict) -> activity.RecordTerminal(name, FailedRun err, at - verdict.Elapsed, at)
-        | Idle
-        | Running _ -> ()
+        | Idle -> ()
+        | Running since -> stampRunning name since
 
         // The plugin's WHOLE `Running` interval, not the run it measured itself:
         // test-prune is `Running` through symbol analysis and selection long before
@@ -694,6 +714,20 @@ type PluginHost
 
     /// Get all plugin statuses as an immutable map.
     member _.GetAllStatuses() : Map<string, PluginStatus> = readStatuses ()
+
+    /// How long the `Running since` interval of `pluginName` has run in awake time: time
+    /// the box slept is not counted (AUTOMATION-1489). `None` when `since` is not the
+    /// plugin's current interval.
+    member _.AwakeAgeOf(pluginName: string, since: System.DateTime) : System.TimeSpan option =
+        match Map.tryFind pluginName (System.Threading.Volatile.Read(&runningAwake)) with
+        | Some(stamped, startedAt) when stamped = since -> Some(max System.TimeSpan.Zero (awakeNow () - startedAt))
+        | _ -> None
+
+    /// `AwakeAgeOf` the plugin's current status: its age in awake time when it is Running.
+    member this.RunningAwakeAge(pluginName: string) : System.TimeSpan option =
+        match this.GetStatus pluginName with
+        | Some(Running since) -> this.AwakeAgeOf(pluginName, since)
+        | _ -> None
 
     /// Test seam: hold the status write lock on another thread until `release` is set,
     /// and return once it is held — a writer that cannot finish, for proving that reads

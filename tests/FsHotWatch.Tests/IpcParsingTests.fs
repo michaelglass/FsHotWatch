@@ -25,8 +25,8 @@ let ``parseTaggedStatus parses running`` () =
     let el = parseEl """{"tag":"running","since":"2026-04-05T12:00:00.0000000Z"}"""
 
     match parseTaggedStatus el with
-    | StatusView.Running dt ->
-        let isExpected = dt.Year = 2026 && dt.Month = 4
+    | StatusView.Running(dt, awake) ->
+        let isExpected = dt.Year = 2026 && dt.Month = 4 && awake.IsNone
         test <@ isExpected @>
     | other -> failwithf "expected Running, got %A" other
 
