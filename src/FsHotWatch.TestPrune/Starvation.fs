@@ -12,7 +12,8 @@
 ///     (`.fshw.json` `tests.projects[].starvation`), optionally for named classes only;
 ///   * fshw SAMPLES the load average while the project runs;
 ///   * a red qualifies only when every failure is a timeout — the project's own
-///     `timeoutSec`, or per-test timeouts in a report whose every failed row is one —
+///     `timeoutSec`, or per-test timeouts in a report whose every failed row is one (xUnit's,
+///     or a failure whose message matches one the project declared, ADR-064) —
 ///     and most of the samples were over the threshold. An assertion failure is never
 ///     re-run;
 ///   * a qualifying project is re-run ONCE, after every other project of the run has
@@ -25,6 +26,7 @@ open System
 open System.IO
 open System.Text.Json
 open System.Text.Json.Nodes
+open System.Text.RegularExpressions
 open FsHotWatch
 open FsHotWatch.Events
 
@@ -38,6 +40,10 @@ type Policy =
         LoadPerCore: float
         /// A run is starved when at least this share of its samples is.
         StarvedShare: float
+        /// Regular expressions a failed row's message matches when it is a timeout the runner
+        /// reports as an assertion (Playwright's action timeout, `Timeout 45000ms exceeded`).
+        /// Empty: only xUnit's own timeouts count.
+        TimeoutMessages: string list
     }
 
 module Policy =
@@ -54,7 +60,8 @@ module Policy =
     let rerunAlone (classes: string list) : Policy =
         { Classes = classes
           LoadPerCore = DefaultLoadPerCore
-          StarvedShare = DefaultStarvedShare }
+          StarvedShare = DefaultStarvedShare
+          TimeoutMessages = [] }
 
     /// Is `testClass` (a CTRF row's `extra.type`, or a filter's class) covered? A nested
     /// type (`Outer+Inner`) is covered by its declared outer class.
@@ -78,7 +85,8 @@ module Policy =
             let unknown =
                 element.EnumerateObject()
                 |> Seq.map _.Name
-                |> Seq.filter (fun name -> not (List.contains name [ "onTimeout"; "classes"; "loadPerCore"; "share" ]))
+                |> Seq.filter (fun name ->
+                    not (List.contains name [ "onTimeout"; "classes"; "loadPerCore"; "share"; "timeoutMessages" ]))
                 |> Seq.toList
 
             let onTimeout =
@@ -104,25 +112,58 @@ module Policy =
                         Error $"%s{key}.classes: expected an array of non-blank class names"
                 | true, _ -> Error $"%s{key}.classes: expected an array of class names"
 
+            // Each must compile: a pattern that cannot match is a typo that would leave the
+            // declaration silently never applying.
+            let timeoutMessages =
+                let compiles (pattern: string) =
+                    try
+                        Regex(pattern) |> ignore
+                        true
+                    with :? ArgumentException ->
+                        false
+
+                match element.TryGetProperty "timeoutMessages" with
+                | false, _ -> Ok []
+                | true, v when v.ValueKind = JsonValueKind.Array ->
+                    let items = v.EnumerateArray() |> Seq.toList
+
+                    if
+                        items
+                        |> List.forall (fun i ->
+                            i.ValueKind = JsonValueKind.String
+                            && not (String.IsNullOrWhiteSpace(i.GetString()))
+                            && compiles (i.GetString()))
+                    then
+                        Ok(items |> List.map _.GetString() |> List.distinct)
+                    else
+                        Error
+                            $"%s{key}.timeoutMessages: expected an array of non-blank regular expressions, each one that compiles"
+                | true, _ -> Error $"%s{key}.timeoutMessages: expected an array of regular expressions"
+
             match
                 unknown,
                 onTimeout,
                 classes,
+                timeoutMessages,
                 number "loadPerCore" DefaultLoadPerCore (fun v -> v >= 0.0) "a number ≥ 0",
                 number "share" DefaultStarvedShare (fun v -> v > 0.0 && v <= 1.0) "a number in (0, 1]"
             with
-            | (_ :: _ as names), _, _, _, _ ->
+            | (_ :: _ as names), _, _, _, _, _ ->
                 let listed = names |> String.concat ", "
-                Error $"%s{key}: unknown key(s) %s{listed} — expected onTimeout, classes, loadPerCore, share"
-            | [], Ok(), Ok classes, Ok loadPerCore, Ok share ->
+
+                Error
+                    $"%s{key}: unknown key(s) %s{listed} — expected onTimeout, classes, loadPerCore, share, timeoutMessages"
+            | [], Ok(), Ok classes, Ok timeoutMessages, Ok loadPerCore, Ok share ->
                 Ok
                     { Classes = classes
                       LoadPerCore = loadPerCore
-                      StarvedShare = share }
-            | [], Error e, _, _, _
-            | [], _, Error e, _, _
-            | [], _, _, Error e, _
-            | [], _, _, _, Error e -> Error e
+                      StarvedShare = share
+                      TimeoutMessages = timeoutMessages }
+            | [], Error e, _, _, _, _
+            | [], _, Error e, _, _, _
+            | [], _, _, Error e, _, _
+            | [], _, _, _, Error e, _
+            | [], _, _, _, _, Error e -> Error e
 
 /// One reading of the 1-minute load average.
 type Sample = { At: DateTime; Load: float }
@@ -234,9 +275,14 @@ let private field (node: JsonNode) (name: string) : string =
             | _ -> ""
         | _ -> ""
 
-let private isTimeoutRow (row: JsonNode) =
+/// xUnit's own timeout, or a failure whose message matches one the project declared
+/// (`Policy.TimeoutMessages`, ADR-064).
+let private isTimeoutRow (policy: Policy) (row: JsonNode) =
     field (row["extra"]) "exception" = "Xunit.Sdk.TestTimeoutException"
     || (field row "message").StartsWith("Test execution timed out after")
+    || policy.TimeoutMessages
+       |> List.exists (fun pattern ->
+           Regex.IsMatch(field row "message", pattern, RegexOptions.CultureInvariant, TimeSpan.FromSeconds 1.0))
 
 /// A row's class: `extra.type` when the runner wrote one, otherwise its name up to the
 /// last dot.
@@ -275,11 +321,11 @@ let timeoutsOfReport (policy: Policy) (json: string) : Result<string list, strin
             rows
             |> List.filter (fun r -> not (List.contains (field r "status") [ "passed"; "skipped"; "pending" ]))
 
-        let notTimeouts = red |> List.filter (isTimeoutRow >> not)
+        let notTimeouts = red |> List.filter (isTimeoutRow policy >> not)
 
         let undeclared =
             red
-            |> List.filter (fun r -> isTimeoutRow r && not (Policy.covers policy (classOf r)))
+            |> List.filter (fun r -> isTimeoutRow policy r && not (Policy.covers policy (classOf r)))
 
         match red, notTimeouts, undeclared with
         | [], _, _ -> Error "its report names no failed test"

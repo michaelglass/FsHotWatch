@@ -309,7 +309,8 @@ let ``the declaration takes classes and thresholds`` () =
             parsed = Ok
                 { Classes = [ "A.Slow" ]
                   LoadPerCore = 1.5
-                  StarvedShare = 0.75 }
+                  StarvedShare = 0.75
+                  TimeoutMessages = [] }
         @>
 
 [<Fact>]
@@ -415,3 +416,77 @@ let ``an unknown key or a non-array classes is named in the refusal`` () =
     match parse """{ "onTimeout": 1 }""" with
     | Error reason -> test <@ reason.Contains "onTimeout" @>
     | Ok p -> failwith $"expected a refusal, got %A{p}"
+
+// ---------------------------------------------------------------------------------------
+// Declared timeout messages (AUTOMATION-1473)
+// ---------------------------------------------------------------------------------------
+
+/// A browser test that failed on Playwright's action timeout: an assertion to xUnit, a
+/// timeout by its message.
+let private playwrightTimeoutReport =
+    """{"results": {"tests": [
+         {"name": "Web.ProfileImportAcceptanceTests.imports a profile", "status": "failed",
+          "message": "System.AggregateException : One or more errors occurred. (Timeout 45000ms exceeded.\nCall log:\n  - waiting for Locator(\"[data-import-preview]\") to be visible)",
+          "extra": {"type": "Web.ProfileImportAcceptanceTests", "exception": "System.AggregateException"}},
+         {"name": "Web.ProfileImportAcceptanceTests.renders", "status": "passed",
+          "extra": {"type": "Web.ProfileImportAcceptanceTests"}}]}}"""
+
+let private playwrightTimeouts =
+    { everyClass with
+        TimeoutMessages = [ @"Timeout \d+ms exceeded" ] }
+
+[<Fact>]
+let ``the declaration takes the messages that count as a timeout`` () =
+    test
+        <@
+            parse """{ "onTimeout": "rerun-alone", "timeoutMessages": ["Timeout \\d+ms exceeded"] }""" = Ok
+                playwrightTimeouts
+        @>
+
+[<Fact>]
+let ``a timeout message that is not a regular expression, or not a string, is refused`` () =
+    for bad in
+        [ """{ "onTimeout": "rerun-alone", "timeoutMessages": ["Timeout (\\d+ms"] }"""
+          """{ "onTimeout": "rerun-alone", "timeoutMessages": [""] }"""
+          """{ "onTimeout": "rerun-alone", "timeoutMessages": [45000] }"""
+          """{ "onTimeout": "rerun-alone", "timeoutMessages": "Timeout" }""" ] do
+        test <@ Result.isError (parse bad) @>
+
+[<Fact>]
+let ``a failure whose message matches a declared timeout message is a timeout`` () =
+    test
+        <@
+            Starvation.timeoutsOfReport playwrightTimeouts playwrightTimeoutReport = Ok
+                [ "Web.ProfileImportAcceptanceTests.imports a profile" ]
+        @>
+
+[<Fact>]
+let ``without the declaration the same failure is an assertion and is never re-run`` () =
+    match Starvation.timeoutsOfReport everyClass playwrightTimeoutReport with
+    | Error reason -> test <@ reason.Contains "not every failure was a timeout" @>
+    | Ok names -> failwith $"expected an error, got %A{names}"
+
+[<Fact>]
+let ``a declared timeout message on a starved box is re-run alone, and on a quiet one is reported`` () =
+    test
+        <@
+            Starvation.decide (Some playwrightTimeouts) None failedRed (Some playwrightTimeoutReport) starved
+            |> Starvation.isRerun
+        @>
+
+    test
+        <@
+            Starvation.decide (Some playwrightTimeouts) None failedRed (Some playwrightTimeoutReport) quiet
+            |> Starvation.isRerun
+            |> not
+        @>
+
+[<Fact>]
+let ``an assertion beside a declared timeout message keeps the red`` () =
+    let json =
+        playwrightTimeoutReport.Replace(
+            "\"status\": \"passed\"",
+            "\"status\": \"failed\", \"message\": \"Expected 3 rows, found 2\""
+        )
+
+    test <@ Result.isError (Starvation.timeoutsOfReport playwrightTimeouts json) @>

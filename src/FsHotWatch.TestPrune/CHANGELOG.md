@@ -8,6 +8,13 @@
   the sum of every traced project's ingestion (AUTOMATION-1484). A project held for a starvation
   re-run is stored after its re-run, as before.
 
+- feat: `tests.projects[].starvation.timeoutMessages`, regular expressions a failed CTRF row's
+  `message` matches when it is a timeout its runner reports as a failure (Playwright's
+  `Timeout 45000ms exceeded`). Such a row counts as a timeout for the starvation re-run, beside
+  xUnit's own; every other condition of ADR-040 stands (AUTOMATION-1473, ADR-064). A pattern that
+  does not compile is a config error.
+- BREAKING (API): `Starvation.Policy` has a `TimeoutMessages` field.
+
 ## 0.13.0-alpha.104 - 2026-11-04
 
 - Finish: AUTOMATION-1482 a fresh workspace answers TestPrune's replayed checks from filed analyses
