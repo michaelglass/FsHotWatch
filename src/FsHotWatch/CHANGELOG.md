@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.104 - 2026-11-04
+
+- Finish: AUTOMATION-1481 a host connection that fails before its preamble says so
+- Finish: AUTOMATION-1482 a fresh workspace answers TestPrune's replayed checks from filed analyses
+- Finish: AUTOMATION-1479 a check record keys only the references its project compiles against
+- Finish: AUTOMATION-1480 a commit id SourceLink stamps in moves no check record's key
+- Finish: AUTOMATION-1478 check records name a referenced output by what a check reads, not its checkout path
+
+
 ## 0.10.0-alpha.103 - 2026-11-03
 
 - feat: `TestFailureClearance` (AUTOMATION-1444). A test fail record can name its failed tests

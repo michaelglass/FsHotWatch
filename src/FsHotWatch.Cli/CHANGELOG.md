@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.137 - 2026-11-04
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.136 - 2026-11-03
 
 - fix: the shadow files each passing project's baseline from the full-suite run that earned the

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.104 - 2026-11-04
+
+- Finish: AUTOMATION-1482 a fresh workspace answers TestPrune's replayed checks from filed analyses
+
+
 ## 0.13.0-alpha.103 - 2026-11-03
 
 - fix: the test runner's K_P outcome records (ADR-059 step 7a) no longer leave a check's lookup
