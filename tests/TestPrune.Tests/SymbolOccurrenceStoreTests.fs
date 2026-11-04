@@ -57,31 +57,39 @@ let private signatureResult calculateHash =
         [ { Child = "Library.Token.Value"
             Parent = "Library.Token" } ]
 
+/// An attribute that changes no selection, so the fixture's walks are unaffected.
+let private obsolete symbolName : SymbolAttribute =
+    { SymbolFullName = symbolName
+      AttributeName = "ObsoleteAttribute"
+      ArgsJson = "[]" }
+
 /// `Library.fs`: the implementation of the same names.
 let private implementationResult =
-    result
-        [ symbol "Library" Module "Library.fs" 1 "impl-module"
-          symbol "Library.Token" Type "Library.fs" 2 "impl-token"
-          symbol "Library.Token.Value" Property "Library.fs" 2 "impl-value"
-          symbol "Library.calculate" Function "Library.fs" 3 "impl-calculate"
-          placeholder "Microsoft.FSharp.Core.Operators.(+)" ExternRef ]
-        [ edge "Library.calculate" "Microsoft.FSharp.Core.Operators.(+)" Calls ]
-        []
-        [ { Child = "Library.Token.Value"
-            Parent = "Library.Token" } ]
+    { result
+          [ symbol "Library" Module "Library.fs" 1 "impl-module"
+            symbol "Library.Token" Type "Library.fs" 2 "impl-token"
+            symbol "Library.Token.Value" Property "Library.fs" 2 "impl-value"
+            symbol "Library.calculate" Function "Library.fs" 3 "impl-calculate"
+            placeholder "Microsoft.FSharp.Core.Operators.(+)" ExternRef ]
+          [ edge "Library.calculate" "Microsoft.FSharp.Core.Operators.(+)" Calls ]
+          []
+          [ { Child = "Library.Token.Value"
+              Parent = "Library.Token" } ] with
+        Attributes = [ obsolete "Library.calculate" ] }
 
 /// `Consumer.fs`: a test that calls `Library.calculate`.
 let private consumerResult =
-    result
-        [ symbol "Consumer" Module "Consumer.fs" 1 "consumer-module"
-          symbol "Consumer.exercisesLibrary" Function "Consumer.fs" 3 "consumer-test"
-          placeholder "Library.calculate" ExternRef ]
-        [ edge "Consumer.exercisesLibrary" "Library.calculate" Calls ]
-        [ { SymbolFullName = "Consumer.exercisesLibrary"
-            TestProject = "Consumer.Tests"
-            TestClass = "Consumer"
-            TestMethod = "exercisesLibrary" } ]
-        []
+    { result
+          [ symbol "Consumer" Module "Consumer.fs" 1 "consumer-module"
+            symbol "Consumer.exercisesLibrary" Function "Consumer.fs" 3 "consumer-test"
+            placeholder "Library.calculate" ExternRef ]
+          [ edge "Consumer.exercisesLibrary" "Library.calculate" Calls ]
+          [ { SymbolFullName = "Consumer.exercisesLibrary"
+              TestProject = "Consumer.Tests"
+              TestClass = "Consumer"
+              TestMethod = "exercisesLibrary" } ]
+          [] with
+        Attributes = [ obsolete "Consumer.exercisesLibrary" ] }
 
 let private allResults =
     [ signatureResult "sig-calculate"; implementationResult; consumerResult ]
@@ -198,6 +206,7 @@ type StoreSnapshot =
       Dependencies: (string * Dependency list) list
       Tests: (string * TestMethodInfo list) list
       ParentLinks: (string * SymbolParentLink list) list
+      Attributes: (string * SymbolAttribute list) list
       AllSymbols: SymbolInfo list
       Names: string list
       Affected: (string * TestMethodInfo list) list
@@ -279,6 +288,7 @@ module ``Store parity`` =
           Dependencies = perFile store.GetDependenciesFromFile
           Tests = perFile store.GetTestMethodsInFile
           ParentLinks = perFile store.GetParentLinksInFile
+          Attributes = perFile store.GetAttributesInFile
           AllSymbols = store.GetAllSymbols() |> List.sort
           Names = names
           Affected =
@@ -293,6 +303,13 @@ module ``Store parity`` =
     [<Fact>]
     let ``SQLite and in-memory stores agree on every read, whatever file was re-indexed last`` () =
         let memory = snapshot (fromAnalysisResults allResults)
+        // Each file's attributes are read back by the file that carried them, not vacuously.
+        test
+            <@
+                memory.Attributes
+                |> List.filter (fun (_, attrs) -> not attrs.IsEmpty)
+                |> List.length = 2
+            @>
 
         for reindex in
             [ allResults
