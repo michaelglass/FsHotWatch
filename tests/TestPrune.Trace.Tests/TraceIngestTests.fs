@@ -15,11 +15,7 @@ open TestPrune.Trace.TraceIngest
 let private sym name file line hash =
     { FullName = name
       Kind = Function
-      SourceFile = file
-      LineStart = line
-      LineEnd = line
-      ContentHash = hash
-      IsExtern = false }
+      Location = InSource(file, line, line, hash) }
 
 let private row id kind typ mem doc line =
     { Id = id

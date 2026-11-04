@@ -27,11 +27,7 @@ let private SqlSource = "sql-hydra"
 let private symbol (name: string) =
     { FullName = name
       Kind = Function
-      SourceFile = $"src/%s{name}.fs"
-      LineStart = 1
-      LineEnd = 2
-      ContentHash = $"h-%s{name}"
-      IsExtern = false }
+      Location = InSource($"src/%s{name}.fs", 1, 2, $"h-%s{name}") }
 
 let private edge (source: string) (from: string) (target: string) =
     { FromSymbol = from

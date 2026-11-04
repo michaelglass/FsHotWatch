@@ -1491,11 +1491,7 @@ type Route =
 let private fn (fullName: string) (sourceFile: string) : SymbolInfo =
     { FullName = fullName
       Kind = Function
-      SourceFile = sourceFile
-      LineStart = 1
-      LineEnd = 2
-      ContentHash = "h"
-      IsExtern = false }
+      Location = InSource(sourceFile, 1, 2, "h") }
 
 /// Drive `AnalyzeEdges` with a DB-backed route store and an in-memory symbol
 /// store, writing the given integration test files to disk so per-route URL
@@ -1929,9 +1925,8 @@ type BrowserErrorTracker() =
         // ...yet the fixture still carries the route on the edge path.
         let symbols =
             [ fn "App.Handlers.Users.getUser" "src/Handlers/Users.fs"
-              { fn "App.Tests.BrowserErrorTracker.Track" "tests/IntTests/BrowserFixtures.fs" with
-                  LineStart = 6
-                  LineEnd = 6 } ]
+              (fn "App.Tests.BrowserErrorTracker.Track" "tests/IntTests/BrowserFixtures.fs"
+               |> SymbolInfo.withLines 6 6) ]
 
         withAnalyzeEdges routes symbols [ ("BrowserFixtures.fs", headerUrl) ] (fun edges ->
             let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
@@ -1982,11 +1977,7 @@ module ``AnalyzeEdges attributes a match to the symbol that holds it`` =
     let private at (fullName: string) (kind: SymbolKind) (line: int) : SymbolInfo =
         { FullName = fullName
           Kind = kind
-          SourceFile = "tests/IntTests/BrowserTests.fs"
-          LineStart = line
-          LineEnd = line
-          ContentHash = "h"
-          IsExtern = false }
+          Location = InSource("tests/IntTests/BrowserTests.fs", line, line, "h") }
 
     let private route =
         { UrlPattern = "/api/users/{id}"
@@ -2102,8 +2093,7 @@ type UsersTests() =
             [ at "App.Tests.BrowserTests.UsersTests" Type 3
               at "App.Tests.BrowserTests.UsersTests.Visits" Function 7
               { at "App.Tests.BrowserTests.UsersTests.url" Function 0 with
-                  SourceFile = ExternSourceFile
-                  IsExtern = true } ]
+                  Location = Extern None } ]
 
         test
             <@
@@ -2230,8 +2220,8 @@ type OtherTests() =
 
         let symbols =
             widthSymbols
-            @ [ { at "App.Tests.OtherTests.OtherTests.Skips" Function 5 with
-                    SourceFile = $"tests/IntTests/%s{otherFile}" } ]
+            @ [ (at "App.Tests.OtherTests.OtherTests.Skips" Function 5
+                 |> SymbolInfo.withSourceFile $"tests/IntTests/%s{otherFile}") ]
 
         let uses (from: string) (target: string) =
             { FromSymbol = from
@@ -2273,8 +2263,7 @@ let saves () = ignore "/api/users/1"
 """
 
         let elsewhere (fullName: string) (kind: SymbolKind) (line: int) =
-            { at fullName kind line with
-                SourceFile = "src/Database/OrgQueries.fs" }
+            at fullName kind line |> SymbolInfo.withSourceFile "src/Database/OrgQueries.fs"
 
         let symbols =
             [ at "App.Tests.FeedbackFlow" Module 1

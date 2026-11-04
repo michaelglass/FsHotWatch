@@ -40,11 +40,7 @@ let private seedIndex (dbPath: string) =
             [ for i in 1..queued ->
                   { FullName = symbolName i
                     Kind = Function
-                    SourceFile = "Lib.fs"
-                    LineStart = i
-                    LineEnd = i
-                    ContentHash = symbolName i
-                    IsExtern = false } ]
+                    Location = InSource("Lib.fs", i, i, symbolName i) } ]
           Dependencies = []
           TestMethods = []
           Attributes = []
@@ -55,11 +51,7 @@ let private seedIndex (dbPath: string) =
         { Symbols =
             [ { FullName = "Tests.callsEverything"
                 Kind = Function
-                SourceFile = "Tests.fs"
-                LineStart = 1
-                LineEnd = 1
-                ContentHash = "t"
-                IsExtern = false } ]
+                Location = InSource("Tests.fs", 1, 1, "t") } ]
           Dependencies =
             [ for i in 1..queued ->
                   { FromSymbol = "Tests.callsEverything"

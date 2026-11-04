@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: the SQLite and in-memory symbol stores agree on a `DllImport` symbol (AUTOMATION-1455).
+  SQLite stored it as a bare extern row and read it back at `_extern`, and the in-memory
+  store kept its real file but lost it to a later placeholder of the same name, so
+  dead-code analysis saw different inputs depending on the store. **BREAKING (API):**
+  `SymbolInfo` names its place with `Location: SymbolLocation`, either `InSource(file,
+  lineStart, lineEnd, contentHash)` or `Extern of declaringFile: string option` (a
+  `DllImport` declared in a repository file, or None for a placeholder). Its old fields
+  are read-only members, and `SymbolInfo.withSourceFile`/`withContentHash`/`withLines` copy
+  one with another place. **Schema 24** (`symbols.extern_file`): a REBUILD, so every index
+  re-indexes once. Selection and dead-code output do not change: every consumer leaves
+  externs out.
 - fix: the CLI `index` keeps a file's attributes when it rebuilds the file's project without
   re-analysing it (AUTOMATION-1453). The unchanged file's result was read back from the store
   with no attributes, and the rebuild deletes the attribute rows of every file it is handed,

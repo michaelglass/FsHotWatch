@@ -101,12 +101,8 @@ let private generateCorpus (rng: Random) (n: int) : Corpus =
         |> List.mapi (fun i name ->
             { FullName = name
               Kind = Function
-              SourceFile = fileOf i
-              LineStart = 1
-              LineEnd = 5
               // A stable baseline hash; the mutation below changes it.
-              ContentHash = "v1"
-              IsExtern = false })
+              Location = InSource(fileOf i, 1, 5, "v1") })
 
     let dependencies =
         [ for KeyValue(from, tos) in edges do
@@ -175,7 +171,7 @@ let private mutatedSymbolsByFile (corpus: Corpus) (changed: Set<string>) =
     corpus.Result.Symbols
     |> List.map (fun s ->
         if changed.Contains s.FullName then
-            { s with ContentHash = "v2-mutated" }
+            (SymbolInfo.withContentHash ("v2-mutated") s)
         else
             s)
     |> List.groupBy _.SourceFile
@@ -702,8 +698,7 @@ module ``Extraction-inclusive soundness`` =
                 effective.Symbols
                 |> List.map (fun sym ->
                     if changed.Contains sym.FullName then
-                        { sym with
-                            ContentHash = sym.ContentHash + "-mutated" }
+                        (SymbolInfo.withContentHash (sym.ContentHash + "-mutated") sym)
                     else
                         sym)
                 |> List.groupBy _.SourceFile

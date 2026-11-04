@@ -14,6 +14,7 @@ let private schema =
         full_name TEXT NOT NULL UNIQUE,
         kind TEXT NOT NULL,
         is_extern INTEGER NOT NULL DEFAULT 0,
+        extern_file TEXT,
         parent_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
         CONSTRAINT symbols_full_name_is_qualified
             CHECK (kind = 'Module' OR full_name LIKE '%.%')
@@ -186,11 +187,8 @@ let private readTestMethodAt (offset: int) (r: SqliteDataReader) : TestMethodInf
 let private readSymbol (warnedUnknownKinds: HashSet<string>) (r: SqliteDataReader) : SymbolInfo =
     { FullName = r.GetString(0)
       Kind = stringToSymbolKind warnedUnknownKinds (r.GetString(1))
-      SourceFile = r.GetString(2)
-      LineStart = r.GetInt32(3)
-      LineEnd = r.GetInt32(4)
-      ContentHash = r.GetString(5)
-      IsExtern = r.GetInt32(6) = 1 }
+      Location =
+        SymbolLocation.ofRow (r.GetString(2)) (r.GetInt32(3)) (r.GetInt32(4)) (r.GetString(5)) (r.GetInt32(6) = 1) }
 
 /// The right-hand side of an `IN (...)` membership test over a caller-supplied set of
 /// names, as a subquery over ONE bound parameter carrying the whole set as a JSON array.
@@ -461,6 +459,10 @@ let private openConnectionWaiting (busyTimeout: TimeSpan) (dbPath: string) =
 ///          reader could parse, and its `DependsOnFile` declaration seeded nothing. A file
 ///          not re-indexed would keep those payloads, which selection now reports as
 ///          unreadable and answers by running everything.
+/// v24    — `symbols.extern_file`: the repository file that declares an extern symbol
+///          (a `DllImport`), NULL for a placeholder. The symbol was stored as a bare
+///          extern row and read back at `ExternSourceFile`, while the in-memory store kept
+///          its real file, so dead-code analysis saw different inputs per store.
 ///
 /// A `SchemaVersion` bump rebuilds the tables core's DDL creates and nothing else
 /// (FsHotWatch ADR-059 §5). Every other table in the file (a plugin's, a host's such as FsHotWatch's)
@@ -478,7 +480,7 @@ let private openConnectionWaiting (busyTimeout: TimeSpan) (dbPath: string) =
 /// the newer open path. A consumer that only needs its own plugin table needs no probe:
 /// `Ports.pluginStoreAt` opens the file without core's version check or DDL.
 [<Literal>]
-let SchemaVersion = 23
+let SchemaVersion = 24
 
 /// The `source_files.path` that owns the edges an extension contributes
 /// (see `Database.ReplaceExtensionEdges`). The leading underscore keeps it out of the
@@ -815,7 +817,8 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
                     VALUES (@fullName, @kind, 0)
                     ON CONFLICT(full_name) DO UPDATE SET
                         kind = excluded.kind,
-                        is_extern = 0
+                        is_extern = 0,
+                        extern_file = NULL
                     RETURNING id
                     """
 
@@ -824,10 +827,15 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
 
                 externSymbolCmd.CommandText <-
                     """
-                    INSERT INTO symbols (full_name, kind, is_extern)
-                    VALUES (@fullName, @kind, 1)
-                    ON CONFLICT(full_name) DO NOTHING
+                    INSERT INTO symbols (full_name, kind, is_extern, extern_file)
+                    VALUES (@fullName, @kind, 1, @externFile)
+                    ON CONFLICT(full_name) DO UPDATE SET
+                        kind = excluded.kind,
+                        extern_file = excluded.extern_file
+                    WHERE symbols.is_extern = 1 AND excluded.extern_file IS NOT NULL
                     """
+
+                let pExternFile = externSymbolCmd.Parameters.Add("@externFile", SqliteType.Text)
 
                 for cmd in [ realSymbolCmd; externSymbolCmd ] do
                     cmd.Parameters.Add("@fullName", SqliteType.Text) |> ignore
@@ -899,11 +907,30 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
                             pPurgeHash.Value <- sym.ContentHash
                             purgeCovCmd.ExecuteNonQuery() |> ignore
 
+                // A re-indexed file declares only the externs it is handed now: one it no
+                // longer declares falls back to a placeholder (a DllImport name is qualified,
+                // so its placeholder is an ExternRef), as the in-memory store has it.
+                if not sourceFiles.IsEmpty then
+                    use clearExternFiles = conn.CreateCommand()
+                    clearExternFiles.Transaction <- txn
+
+                    clearExternFiles.CommandText <-
+                        $"UPDATE symbols SET extern_file = NULL, kind = 'ExternRef' WHERE extern_file IN (%s{nameSet})"
+
+                    bindNameSet clearExternFiles sourceFiles
+                    clearExternFiles.ExecuteNonQuery() |> ignore
+
                 for result in results do
                     for sym in result.Symbols do
                         let cmd = if sym.IsExtern then externSymbolCmd else realSymbolCmd
                         cmd.Parameters["@fullName"].Value <- sym.FullName
                         cmd.Parameters["@kind"].Value <- symbolKindToString sym.Kind
+
+                        pExternFile.Value <-
+                            match sym.Location with
+                            | Extern(Some file) -> box file
+                            | Extern None
+                            | InSource _ -> box DBNull.Value
 
                         // SQLite reports only the constraint name
                         // (`symbols_full_name_is_qualified`), never the offending row. Since the
@@ -1589,7 +1616,7 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
             FROM symbol_occurrences o
             JOIN symbols s ON s.id = o.symbol_id
             UNION ALL
-            SELECT full_name, kind, @externFile, 0, 0, '', is_extern
+            SELECT full_name, kind, COALESCE(extern_file, @externFile), 0, 0, '', is_extern
             FROM symbols WHERE is_extern = 1
             ORDER BY 3, 4
             """

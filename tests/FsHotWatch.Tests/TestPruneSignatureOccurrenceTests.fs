@@ -294,11 +294,7 @@ let ``a signature-node name queued by TestPrune.Core 9 is verified by a real run
         let occurrence name file line : SymbolInfo =
             { FullName = name
               Kind = SymbolKind.Function
-              SourceFile = file
-              LineStart = line
-              LineEnd = line
-              ContentHash = $"{file}:{name}"
-              IsExtern = false }
+              Location = InSource(file, line, line, $"{file}:{name}") }
 
         let db = Database.create dbPath
         test <@ not db.WasRecreated @> // the plugin's open already recreated it

@@ -238,11 +238,7 @@ let ``classify: Unknown is distinct from Dirty — the load-bearing polarity spl
 let private libFoo: SymbolInfo =
     { FullName = "Lib.foo"
       Kind = SymbolKind.Value
-      SourceFile = "src/Lib.fs"
-      LineStart = 1
-      LineEnd = 1
-      ContentHash = "hash-v1"
-      IsExtern = false }
+      Location = InSource("src/Lib.fs", 1, 1, "hash-v1") }
 
 /// Index `libFoo`, stamp `src/Lib.fs` clean in the sidecar, then force a REAL
 /// schema recreate. Returns the reopened database and the sidecar as the plugin
@@ -439,11 +435,7 @@ let private changedName (change: SymbolChange) : string =
 let private guardTest (name: string) (hash: string) : SymbolInfo =
     { FullName = $"Heartbeat.%s{name}"
       Kind = SymbolKind.Value
-      SourceFile = "tests/HeartbeatAlarmWiringTests.fs"
-      LineStart = 1
-      LineEnd = 1
-      ContentHash = hash
-      IsExtern = false }
+      Location = InSource("tests/HeartbeatAlarmWiringTests.fs", 1, 1, hash) }
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the pass that RECOVERS from a transient FCS error selects the file's tests`` () =

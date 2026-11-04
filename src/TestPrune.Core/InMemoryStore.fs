@@ -21,12 +21,18 @@ let fromAnalysisResultsWith (policy: Domain.WalkPolicy) (results: AnalysisResult
 
     let occurrenceNames = occurrences |> List.map _.FullName |> Set.ofList
 
+    // An extern declared in a repository file (a `DllImport`) wins over a placeholder of
+    // the same name, the last declaration over an earlier one; among placeholders the
+    // first stands. SQLite's upsert keeps exactly these.
     let externs =
         results
         |> List.collect (fun r -> r.Symbols)
         |> List.filter (fun symbol -> symbol.IsExtern && not (occurrenceNames.Contains symbol.FullName))
         |> List.groupBy _.FullName
-        |> List.map (fun (_, duplicates) -> List.last duplicates)
+        |> List.map (fun (_, duplicates) ->
+            match duplicates |> List.filter (fun s -> s.Location <> Extern None) with
+            | [] -> List.head duplicates
+            | declared -> List.last declared)
 
     let allSymbols = occurrences @ externs
 

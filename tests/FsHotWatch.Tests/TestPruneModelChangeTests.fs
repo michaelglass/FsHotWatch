@@ -296,11 +296,7 @@ let ``with current evidence a change no test covers runs nothing`` () =
     let orphan: TestPrune.AstAnalyzer.SymbolInfo =
         { FullName = "Orphan.uncovered"
           Kind = TestPrune.AstAnalyzer.SymbolKind.Value
-          SourceFile = "src/Orphan.fs"
-          LineStart = 1
-          LineEnd = 1
-          ContentHash = "orphan-hash"
-          IsExtern = false }
+          Location = TestPrune.AstAnalyzer.InSource("src/Orphan.fs", 1, 1, "orphan-hash") }
 
     let db = Database.create (Path.Combine(f.Ctx.RepoRoot, "tp.db"))
     db.RebuildProjects([ TestPrune.AstAnalyzer.AnalysisResult.Create([ orphan ], [], []) ])

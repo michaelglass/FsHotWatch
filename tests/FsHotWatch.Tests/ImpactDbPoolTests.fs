@@ -9,11 +9,7 @@ open FsHotWatch.Tests.TestHelpers
 let private libFooSymbol: TestPrune.AstAnalyzer.SymbolInfo =
     { FullName = "Lib.foo"
       Kind = TestPrune.AstAnalyzer.SymbolKind.Value
-      SourceFile = "src/Lib.fs"
-      LineStart = 1
-      LineEnd = 1
-      ContentHash = "hash-v1"
-      IsExtern = false }
+      Location = TestPrune.AstAnalyzer.InSource("src/Lib.fs", 1, 1, "hash-v1") }
 
 /// A database at `dbPath` holding one symbol, whose file is then deleted. A pooled
 /// connection still reads the deleted file; a new one sees an empty database.

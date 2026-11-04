@@ -780,11 +780,7 @@ let private indexTypeM (root: string) =
     let symbol: TestPrune.AstAnalyzer.SymbolInfo =
         { FullName = "L.M"
           Kind = TestPrune.AstAnalyzer.SymbolKind.Type
-          SourceFile = "src/L.fs"
-          LineStart = 1
-          LineEnd = 3
-          ContentHash = "m-v1"
-          IsExtern = false }
+          Location = TestPrune.AstAnalyzer.InSource("src/L.fs", 1, 3, "m-v1") }
 
     (TestPrune.Database.Database.create (Path.Combine(root, "i.db"))).RebuildProjects
         [ TestPrune.AstAnalyzer.AnalysisResult.Create([ symbol ], [], []) ]

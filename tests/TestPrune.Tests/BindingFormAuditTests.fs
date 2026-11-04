@@ -1100,7 +1100,7 @@ let ``a property body edit selects the property's tests`` (form: string) (body: 
         current.Symbols
         |> List.map (fun s ->
             if s.FullName = "M.T.Prop" then
-                { s with ContentHash = storedHash }
+                (SymbolInfo.withContentHash (storedHash) s)
             else
                 s)
 
