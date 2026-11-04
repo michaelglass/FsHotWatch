@@ -109,28 +109,45 @@ let private outcomes (verdict: JsonElement) =
     |> Seq.sort
     |> List.ofSeq
 
-/// Wait until the daemon serving `root` has completed its startup scan.
-let private startupScanSettled clock root =
+/// `root` as the daemon's child CLI sees it: macOS temp paths are symlinks, and the daemon
+/// keys its pipe and its records by the physical directory.
+let private physicalRoot clock root =
     let code, physical = run clock root "/bin/pwd" [ "-P" ]
     Assert.True((code = 0), physical)
-    let pipe = FsHotWatch.Cli.Program.computePipeName (physical.Trim())
+    physical.Trim()
+
+/// Wait until the daemon serving `root` has completed its startup scan.
+let private startupScanSettled clock root =
+    let pipe = FsHotWatch.Cli.Program.computePipeName (physicalRoot clock root)
 
     Async.RunSynchronously(FsHotWatch.Ipc.IpcClient.waitForScan pipe 0L, remaining clock 120000)
     |> ignore
+
+/// The `check` records on file for `root`'s repository, in the store its daemon opens.
+let private checkRecordsOnFile clock root =
+    let store = FsHotWatch.OutcomeStore.directoryFor (physicalRoot clock root)
+
+    (FsHotWatch.OutcomeStore.readAll store).Records
+    |> List.filter (fun record -> record.Key.Kind = FsHotWatch.CheckRecords.CheckKind)
 
 /// Check `root` with a cold daemon, stop it, run `between`, then check again with a new one;
 /// with `settleFirst`, only once the new daemon has completed its start-up scan. The second
 /// daemon's tally and log.
 let private checkTwice clock root (between: unit -> unit) (settleFirst: bool) =
+    // Cold means no record on file, not "the start-up scan replayed nothing" (AUTOMATION-1460):
+    // the build plugin's restore rewrites obj/project.assets.json while the daemon starts, and
+    // the change batch that follows checks every file and files its records. A start-up scan
+    // that reaches the files after that batch replays them, from records this daemon filed.
+    Assert.Empty(checkRecordsOnFile clock root)
+
     let first, firstLog =
         withDaemonOutput true clock root (fun cli -> check clock root cli)
 
     assertGreen first
-    let replayedFirst, startedFirst, _ = tally firstLog
-    // The cold daemon had no records to answer from: its first scan checked every file, and a
-    // second scan, when `check` asked after the first completed, replayed what it had filed.
-    Assert.Equal(scans firstLog |> List.skip 1 |> List.sumBy fst, replayedFirst)
+    let _, startedFirst, _ = tally firstLog
     Assert.True(startedFirst >= 3, firstLog)
+    // The store the assertion above found empty is the one this daemon filed into.
+    Assert.NotEmpty(checkRecordsOnFile clock root)
     between ()
 
     let second, secondLog =
