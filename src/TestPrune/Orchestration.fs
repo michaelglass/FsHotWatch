@@ -273,7 +273,9 @@ let indexProject
                 { Symbols = store.GetSymbolsInFile(relPath)
                   Dependencies = store.GetDependenciesFromFile(relPath)
                   TestMethods = store.GetTestMethodsInFile(relPath)
-                  Attributes = []
+                  // The rebuild deletes this file's attribute rows before writing what
+                  // it is handed, so a cached result must carry them (AUTOMATION-1453).
+                  Attributes = store.GetAttributesInFile(relPath)
                   ParentLinks = store.GetParentLinksInFile(relPath)
                   Diagnostics = AnalysisDiagnostics.Zero }
 

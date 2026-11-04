@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: the CLI `index` keeps a file's attributes when it rebuilds the file's project without
+  re-analysing it (AUTOMATION-1453). The unchanged file's result was read back from the store
+  with no attributes, and the rebuild deletes the attribute rows of every file it is handed,
+  so its `CompositionRoot` and `Inline` markers were lost and selection widened past those
+  barriers. **BREAKING (API):** `Ports.SymbolStore` gains `GetAttributesInFile: string ->
+  SymbolAttribute list` (`Database.GetAttributesInFile`, and the in-memory store).
+
 ## 14.0.0 - 2026-11-02
 
 - refactor: `AstAnalyzer.extractResults` (865 lines) is a sequence of named stages, each a

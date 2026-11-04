@@ -1907,6 +1907,28 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
         use reader = cmd.ExecuteReader()
         readAll reader (fun r -> r.GetString(0), r.GetString(1))
 
+    /// Get the attributes the given source file's analysis contributed, as
+    /// `RebuildProjects` recorded them (`AstAnalyzer.factOwner`).
+    member _.GetAttributesInFile(sourceFile: string) : SymbolAttribute list =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """
+            SELECT s.full_name, sa.attribute_name, sa.args_json
+            FROM symbol_attributes sa
+            JOIN symbols s ON s.id = sa.symbol_id
+            WHERE sa.source_file = @sourceFile
+            """
+
+        cmd.Parameters.AddWithValue("@sourceFile", sourceFile) |> ignore
+        use reader = cmd.ExecuteReader()
+
+        readAll reader (fun r ->
+            { SymbolFullName = r.GetString(0)
+              AttributeName = r.GetString(1)
+              ArgsJson = r.GetString(2) })
+
     /// Get the test methods the given source file's analysis contributed.
     member _.GetTestMethodsInFile(sourceFile: string) : TestMethodInfo list =
         use conn = openConnection dbPath
