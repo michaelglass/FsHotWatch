@@ -396,9 +396,9 @@ let ``overlapping ticks never beat concurrently`` () =
     // thread-pool callbacks can be starved for the whole sleep, leaving maxSeen at 0 —
     // and the test then reds having never exercised the invariant. So the two claims
     // are asserted separately: absence means UNKNOWN, never a verdict.
-    let deadline = DateTime.UtcNow.AddSeconds 8.0
+    let deadline = Deadline.After(TimeSpan.FromSeconds 8.0)
 
-    while lock maxSeen (fun () -> maxSeen.Value) = 0 && DateTime.UtcNow < deadline do
+    while lock maxSeen (fun () -> maxSeen.Value) = 0 && deadline.Remains do
         System.Threading.Thread.Sleep 25
 
     // Nothing observed at all: the run proved nothing, and fails saying so rather than

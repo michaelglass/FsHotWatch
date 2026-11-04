@@ -146,10 +146,10 @@ let ``test-prune error path sets Failed status on null check results`` () =
     with _ ->
         ()
 
-    let deadline = DateTime.UtcNow.AddSeconds(5.0)
+    let deadline = Deadline.After(TimeSpan.FromSeconds 5.0)
     let mutable statusChanged = false
 
-    while not statusChanged && DateTime.UtcNow < deadline do
+    while not statusChanged && deadline.Remains do
         match host.GetStatus("test-prune") with
         | Some(Failed _)
         | Some(Running _) -> statusChanged <- true
@@ -410,9 +410,9 @@ let ``extension is invoked via AnalyzeEdges during test run`` () =
 
         host.EmitBuildCompleted(BuildSucceeded)
 
-        let deadline = DateTime.UtcNow.AddSeconds(10.0)
+        let deadline = Deadline.After(TimeSpan.FromSeconds 10.0)
 
-        while not extensionCalled && DateTime.UtcNow < deadline do
+        while not extensionCalled && deadline.Remains do
             System.Threading.Thread.Sleep(50)
 
         test <@ extensionCalled @>)
@@ -759,10 +759,10 @@ let ``FileChecked replaces test-run Completed status with error state`` () =
         with _ ->
             ()
 
-        let deadline = DateTime.UtcNow.AddSeconds(5.0)
+        let deadline = Deadline.After(TimeSpan.FromSeconds 5.0)
         let mutable statusChanged = false
 
-        while not statusChanged && DateTime.UtcNow < deadline do
+        while not statusChanged && deadline.Remains do
             match host.GetStatus("test-prune") with
             | Some(Completed _) -> System.Threading.Thread.Sleep(50)
             | _ -> statusChanged <- true

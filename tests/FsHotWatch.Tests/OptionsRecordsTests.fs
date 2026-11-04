@@ -203,14 +203,14 @@ let private untilFileClockReachesNow () =
     let probe =
         Path.Combine(Path.GetTempPath(), "fshw-file-clock-" + Guid.NewGuid().ToString("N"))
 
-    let deadline = DateTime.UtcNow.AddSeconds 5.0
+    let deadline = Deadline.After(TimeSpan.FromSeconds 5.0)
 
     try
         let rec wait () =
             File.WriteAllText(probe, "")
 
             match FileStamp.read probe with
-            | ValueSome s when s.ChangedAt < now && DateTime.UtcNow < deadline -> wait ()
+            | ValueSome s when s.ChangedAt < now && deadline.Remains -> wait ()
             | _ -> ()
 
         wait ()

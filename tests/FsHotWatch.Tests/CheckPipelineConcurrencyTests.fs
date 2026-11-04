@@ -172,9 +172,9 @@ let ``a session flooding the checker cannot keep another session's check behind 
 
         let flood = [ for f in aFiles -> a.CheckFile f |> Async.StartAsTask ]
 
-        let deadline = System.DateTime.UtcNow.AddSeconds 30.0
+        let deadline = Deadline.After(System.TimeSpan.FromSeconds 30.0)
 
-        while scheduler.Queued < 8 && System.DateTime.UtcNow < deadline do
+        while scheduler.Queued < 8 && deadline.Remains do
             Thread.Sleep 5
 
         test <@ scheduler.Queued >= 8 @>
@@ -282,9 +282,9 @@ let ``work two sessions share survives one of them cancelling`` () =
         let b, bStarted, _, bFile = session "b"
 
         let waitFor what (condition: unit -> bool) =
-            let deadline = System.DateTime.UtcNow.AddSeconds 60.0
+            let deadline = Deadline.After(System.TimeSpan.FromSeconds 60.0)
 
-            while not (condition ()) && System.DateTime.UtcNow < deadline do
+            while not (condition ()) && deadline.Remains do
                 Thread.Sleep 2
 
             if not (condition ()) then

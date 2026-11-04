@@ -2945,10 +2945,10 @@ let ``a cached whole-run replay leaves findings for files outside the batch`` ()
                 // load — a flake I shipped and hit the same day.
                 // A fixed wait encodes an assumption about the machine, which is
                 // exactly the assumption a loaded CI box breaks.
-                let deadline = System.DateTime.UtcNow.AddSeconds 10.0
+                let deadline = Deadline.After(System.TimeSpan.FromSeconds 10.0)
                 let mutable seen = false
 
-                while not seen && System.DateTime.UtcNow < deadline do
+                while not seen && deadline.Remains do
                     if ledger.Snapshot() |> List.exists (fun (f, _) -> f = "/tmp/repo/B.fs") then
                         seen <- true
                     else

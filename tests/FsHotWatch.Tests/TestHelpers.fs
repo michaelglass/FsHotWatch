@@ -207,22 +207,53 @@ let withTrackedSleep (seconds: int) (body: Process -> 'a) : 'a =
 
         proc.Dispose()
 
+/// A wait's deadline: `budget` after it was taken, on the monotonic clock.
+///
+/// Never the wall clock (AUTOMATION-1461). The wall clock counts the time the box slept,
+/// and the gate's laptop is put to sleep mid-run ("Dark Wake Thermal Emergency"), so a
+/// wall-clock deadline that spans a sleep has run out at the first poll after it: a
+/// 30 s wait failed in 729 ms of the test's own (monotonic) time. A budget is time the
+/// box spent running the work, which a frozen process does not.
+/// `MonotonicDeadlineTests` refuses a wall-clock deadline anywhere in `tests/`.
+[<Sealed>]
+type Deadline private (now: unit -> TimeSpan, budget: TimeSpan) =
+    let start = now ()
+
+    /// A deadline `budget` from now on `now`, a clock that only moves forward.
+    static member On(now: unit -> TimeSpan, budget: TimeSpan) = Deadline(now, budget)
+
+    /// A deadline `budget` from now on a fresh `Stopwatch`.
+    static member After(budget: TimeSpan) =
+        let clock = Stopwatch.StartNew()
+        Deadline((fun () -> clock.Elapsed), budget)
+
+    /// A deadline `ms` milliseconds from now on a fresh `Stopwatch`.
+    static member AfterMs(ms: int) =
+        Deadline.After(TimeSpan.FromMilliseconds(float ms))
+
+    /// Whether any of the budget is left.
+    member _.Remains = now () - start < budget
+
+/// `waitUntilTrue` with the deadline it measures against made by `deadlineFor`.
+[<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
+let waitUntilTrueOn (deadlineFor: TimeSpan -> Deadline) (condition: unit -> bool) (timeoutMs: int) : bool =
+    let deadline = deadlineFor (TimeSpan.FromMilliseconds(float timeoutMs))
+    let mutable ok = condition ()
+
+    while not ok && deadline.Remains do
+        Thread.Sleep(50)
+        ok <- condition ()
+
+    ok
+
 /// Poll until condition is true or timeout (50ms poll interval). Returns whether it
 /// actually became true.
 ///
 /// For a caller that HANDLES an expiry itself — asserts on the bool with its own message,
 /// or expects the condition to stay false. Every other caller wants `waitUntil`, which
 /// fails the test on expiry.
-[<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
 let waitUntilTrue (condition: unit -> bool) (timeoutMs: int) : bool =
-    let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
-    let mutable ok = condition ()
-
-    while not ok && DateTime.UtcNow < deadline do
-        Thread.Sleep(50)
-        ok <- condition ()
-
-    ok
+    waitUntilTrueOn Deadline.After condition timeoutMs
 
 /// What a timer's tick saw when it cancelled the daemon's `CancellationTokenSource`
 /// across its owner's teardown: `None` when the cancel went through, the exception
@@ -390,15 +421,15 @@ let awaitServing (pipe: string) (stopped: unit -> string option) : unit =
 /// finish in about a second on their own.
 [<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
 let probeLoop (write: int -> unit) (hasEvent: unit -> bool) (timeoutMs: int) =
-    let overall = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
+    let overall = Deadline.AfterMs timeoutMs
     let mutable probe = 0
 
-    while not (hasEvent ()) && DateTime.UtcNow < overall do
+    while not (hasEvent ()) && overall.Remains do
         write probe
         probe <- probe + 1
-        let batchEnd = min overall (DateTime.UtcNow.AddMilliseconds(2000.0))
+        let batch = Deadline.AfterMs 2000
 
-        while not (hasEvent ()) && DateTime.UtcNow < batchEnd do
+        while not (hasEvent ()) && overall.Remains && batch.Remains do
             Thread.Sleep(50)
 
 /// Repeatedly write probe files to a directory every 2s until hasEvent returns true.
@@ -733,7 +764,7 @@ let private deleteTempDirResilient (tmpDir: string) =
     // daemon's discovery writing project options after the evaluation a teardown waited
     // for) stops on its own; ten 25 ms tries measured the box, not the writer, and a loaded
     // gate outlasted them (2026-11-02).
-    let deadline = DateTime.UtcNow.AddMilliseconds(float HangWaitMs)
+    let deadline = Deadline.AfterMs HangWaitMs
     let mutable deleted = false
 
     while not deleted do
@@ -747,7 +778,7 @@ let private deleteTempDirResilient (tmpDir: string) =
         | :? UnauthorizedAccessException ->
             // A not-yet-drained daemon is still writing into the tree. Past the budget,
             // give up: leaking a scratch temp dir beats failing the test.
-            if DateTime.UtcNow >= deadline then
+            if not deadline.Remains then
                 deleted <- true
             else
                 System.Threading.Thread.Sleep(25)
