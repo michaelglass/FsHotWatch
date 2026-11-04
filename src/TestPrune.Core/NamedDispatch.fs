@@ -156,7 +156,10 @@ let private enclosingSymbols
         checker.ParseFile(path, SourceText.ofString text, options)
         |> Async.RunSynchronously
 
-    if parsed.ParseHadErrors then
+    // Not `ParseHadErrors`, whose meaning varies by compiler backend
+    // (`parseErrorDiagnostics`): only an Error-severity parse diagnostic leaves the tree
+    // unusable.
+    if not (Array.isEmpty (parseErrorDiagnostics parsed)) then
         None
     else
         let tree = parsed.ParseTree

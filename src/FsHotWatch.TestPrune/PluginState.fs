@@ -390,17 +390,31 @@ type TestPruneState =
 
     // A replayed `FileChecked` is recorded by the rule a live fold applies: only a result
     // published against the model published now describes it (see `notCurrent`).
+    //
+    // A replayed analysis that completed and left no findings for the file is the file
+    // analysing cleanly, so it leaves `UnanalyzableFiles` as a live clean fold makes it
+    // leave (AUTOMATION-1469). Keeping the entry made every later run re-report a parse
+    // error the file no longer has. A failed replay, or one that left findings, keeps it.
     interface IFileReplayState<TestPruneState> with
         member this.Replayed suppressedCodes currentModel result analysis =
             if result.ModelGeneration.IsNone || result.ModelGeneration <> currentModel then
                 this
             else
+                let file = AbsFilePath.value result.File
+
+                let unanalysable =
+                    match analysis with
+                    | Ok [] -> this.UnanalyzableFiles |> Map.filter (fun _ entry -> entry.File <> file)
+                    | Ok _
+                    | Error _ -> this.UnanalyzableFiles
+
                 { this with
                     AnalysisFiles =
                         Map.add
                             result.File
                             (AnalysisFileEvidence.fromResult suppressedCodes result (Result.map ignore analysis))
-                            this.AnalysisFiles }
+                            this.AnalysisFiles
+                    UnanalyzableFiles = unanalysable }
 
 module TestPruneState =
     /// The evidence that decides which projects still need a whole-project run: what this

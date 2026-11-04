@@ -376,6 +376,42 @@ let ``a replayed FileChecked records the cached run's outcome only for the curre
         Assert.NotEmpty(replay None (Ok [])))
 
 [<Fact(Timeout = RealCheckTestCapMs)>]
+let ``a replayed clean analysis clears the file's could-not-be-analysed state`` () =
+    // AUTOMATION-1469. Conflict markers made a file unanalysable; the restored clean file's
+    // checks were then served from the task cache (the index already held that analysis),
+    // which skips `Update`. The replay recorded only the file's evidence, so the stale
+    // "could not be analysed" entry stayed, every test run re-reported it to the ledger, and
+    // three lands went red until a project-model reset.
+    withCheckedText "module Lib\nlet answer = (\n" (fun root broken ->
+        let handler = analysisHandler root "replay-clears"
+
+        let unanalysable =
+            handler.Update (analysisContext root 1L) handler.Init (FileChecked broken)
+            |> fun work -> Async.RunSynchronously(work, timeout = RealCheckWaitMs)
+
+        // Positive control: the live analysis of the broken file left it unanalysable.
+        Assert.True(unanalysable.UnanalyzableFiles.ContainsKey "Lib.fs")
+
+        let stillUnanalysable currentModel analysis =
+            ((unanalysable :> IFileReplayState<TestPruneState>).Replayed Set.empty currentModel broken analysis)
+                .UnanalyzableFiles.ContainsKey
+                "Lib.fs"
+
+        // A replayed clean analysis of the file under the current model is the file analysing
+        // cleanly: it leaves the set, so the next ledger rewrite stops reporting it.
+        Assert.False(stillUnanalysable (Some 1L) (Ok []))
+        // A replayed FAILED analysis is still a failure, and keeps it.
+        Assert.True(stillUnanalysable (Some 1L) (Error "symbol analysis failed"))
+        // A completed analysis that left findings for the file is not a clean one.
+        let finding =
+            FsHotWatch.ErrorLedger.ErrorEntry.warningWithDetail "Lib.fs: symbol analysis failed" "detail"
+
+        Assert.True(stillUnanalysable (Some 1L) (Ok [ finding ]))
+        // A result from another model, or replayed under none, describes nothing now.
+        Assert.True(stillUnanalysable (Some 2L) (Ok []))
+        Assert.True(stillUnanalysable None (Ok [])))
+
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``retiring an old model's pending analysis keeps the outcomes already replayed for the new one`` () =
     // A replay skips `Update`, so it records its outcome for the current model without
     // retiring the analysis the previous model left pending. The next live fold retires

@@ -44,6 +44,15 @@ let fromAnalysisResultsWith (policy: Domain.WalkPolicy) (results: AnalysisResult
             let owner = factOwner r
             r.TestMethods |> List.map (fun t -> owner t.SymbolFullName, t))
 
+    let attrsByFile =
+        results
+        |> List.collect (fun r ->
+            let owner = factOwner r
+            r.Attributes |> List.map (fun a -> owner a.SymbolFullName, a))
+        |> List.groupBy fst
+        |> Map.ofList
+        |> Map.map (fun _ owned -> owned |> List.map snd)
+
     let allDeps = ownedDeps |> List.map snd
     let allTests = ownedTests |> List.map snd
     let allAttrs = results |> List.collect (fun r -> r.Attributes)
@@ -194,6 +203,7 @@ let fromAnalysisResultsWith (policy: Domain.WalkPolicy) (results: AnalysisResult
       GetDependenciesFromFile = fun file -> depsByFile |> Map.tryFind file |> Option.defaultValue []
       GetParentLinksInFile = fun file -> parentLinksByFile |> Map.tryFind file |> Option.defaultValue []
       GetTestMethodsInFile = fun file -> testsByFile |> Map.tryFind file |> Option.defaultValue []
+      GetAttributesInFile = fun file -> attrsByFile |> Map.tryFind file |> Option.defaultValue []
       GetFileKey = fun _ -> None
       GetProjectKey = fun _ -> None
       // Built whole from its inputs and never re-indexed: complete, at one generation.

@@ -2046,6 +2046,67 @@ module ``runIndexWith`` =
             Directory.Delete(tmpDir, true)
 
     [<Fact>]
+    let ``a project rebuild keeps the attributes of the files it did not re-analyse`` () =
+        // AUTOMATION-1453. A later file of the project changes, so the project is rebuilt
+        // with the unchanged earlier file's results read from the store. Those results had
+        // no attributes, and the rebuild deletes the file's attribute rows before writing
+        // what it is handed, so a CompositionRoot or Inline barrier vanished.
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let srcDir = Path.Combine(tmpDir, "src", "Lib")
+        Directory.CreateDirectory(srcDir) |> ignore
+
+        let writeProject (files: string list) =
+            let items =
+                files
+                |> List.map (fun f -> $"""    <Compile Include="%s{f}" />""")
+                |> String.concat "\n"
+
+            File.WriteAllText(
+                Path.Combine(srcDir, "Lib.fsproj"),
+                $"""<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+%s{items}
+  </ItemGroup>
+</Project>"""
+            )
+
+        writeProject [ "Lib.fs" ]
+
+        File.WriteAllText(
+            Path.Combine(srcDir, "Lib.fs"),
+            "module Lib\n\ntype CompositionRootAttribute() =\n    inherit System.Attribute()\n\n[<CompositionRoot>]\nlet wire () = 1\n"
+        )
+
+        let sw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(sw)
+
+        try
+            let dbPath = Path.Combine(tmpDir, ".test-prune.db")
+            let db = Database.create dbPath
+
+            let barrierOnWire () =
+                db.GetAttributesForSymbol "Lib.wire"
+                |> List.exists (fun (name, _) -> name = "CompositionRootAttribute")
+
+            test <@ runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ()) = 0 @>
+            // Positive control: the live analysis stored the barrier.
+            test <@ barrierOnWire () @>
+
+            // A second, later file changes the project; Lib.fs is unchanged and comes
+            // from the store.
+            writeProject [ "Lib.fs"; "Lib2.fs" ]
+            File.WriteAllText(Path.Combine(srcDir, "Lib2.fs"), "module Lib2\nlet mul x y = x * y\n")
+
+            test <@ runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ()) = 0 @>
+            // Positive control: only Lib2.fs was analysed; Lib.fs's result came from the store.
+            test <@ sw.ToString().Contains "(1/2 files analyzed)" @>
+            test <@ barrierOnWire () @>
+        finally
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
     let ``prints warning when dropped edges occur`` () =
         let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
         let srcDir = Path.Combine(tmpDir, "src", "Lib")

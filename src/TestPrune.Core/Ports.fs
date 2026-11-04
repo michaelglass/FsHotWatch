@@ -10,6 +10,7 @@ type SymbolStore =
       GetDependenciesFromFile: string -> Dependency list
       GetParentLinksInFile: string -> SymbolParentLink list
       GetTestMethodsInFile: string -> TestMethodInfo list
+      GetAttributesInFile: string -> SymbolAttribute list
       GetFileKey: string -> string option
       GetProjectKey: string -> string option
       GetIndexState: unit -> TestPrune.Domain.IndexState
@@ -42,6 +43,7 @@ let toSymbolStore (db: Database) : SymbolStore =
       GetDependenciesFromFile = db.GetDependenciesFromFile
       GetParentLinksInFile = db.GetParentLinksInFile
       GetTestMethodsInFile = db.GetTestMethodsInFile
+      GetAttributesInFile = db.GetAttributesInFile
       GetFileKey = db.GetFileKey
       GetProjectKey = db.GetProjectKey
       GetIndexState = db.GetIndexState
