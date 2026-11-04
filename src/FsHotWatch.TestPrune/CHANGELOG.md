@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- perf: a traced project's traces are stored as soon as its result is final, one project at a time,
+  while the rest of the run goes on (`TraceIngestion`), instead of every project after the last one
+  finished. The run waits at its end only for what is left, so a confirm's tail no longer grows by
+  the sum of every traced project's ingestion (AUTOMATION-1484). A project held for a starvation
+  re-run is stored after its re-run, as before.
+
 ## 0.13.0-alpha.104 - 2026-11-04
 
 - Finish: AUTOMATION-1482 a fresh workspace answers TestPrune's replayed checks from filed analyses

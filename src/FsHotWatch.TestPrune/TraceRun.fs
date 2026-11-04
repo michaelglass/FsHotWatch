@@ -1,6 +1,6 @@
 /// Recording per-test traces inside a test run (`tests.traces`).
 ///
-/// Two steps, one on each side of the run's parallel section:
+/// Two steps, one before each project launches and one once its result is final:
 ///
 /// 1. `decide`, per project about to launch: trace it or not. A traced project launches
 ///    its woven apphost from `bin/Traced/<tfm>/` with the recorder's environment instead
@@ -8,9 +8,11 @@
 ///    report, an underivable project, an unknown `dotnet run` option, no dotnet root, a
 ///    weave or JIT-verification refusal) is a named REFUSAL: the project launches exactly
 ///    as it would without traces.
-/// 2. `ingestAll`, once every project finished: store each traced project's traces, or
-///    its refusal, in the separate trace store, and log one line per project naming the
-///    counts or the reason.
+/// 2. `ingestAll`, once a project's result is final (the run's `TraceIngestion` calls it
+///    per project, while the rest of the run goes on, and once more at its end for any
+///    project that never settled): store each traced project's traces, or its refusal, in
+///    the separate trace store, and log one line per project naming the counts or the
+///    reason.
 ///
 /// Neither step throws, except that `decide` lets a cancelled run's
 /// `OperationCanceledException` through. Tracing records evidence about a run; it never
@@ -515,7 +517,7 @@ module TraceRun =
                 storeAll ingest rt symbols indexState runId launchTreeHash currentTreeHash recorded log
         }
 
-    /// After the run's parallel section: wait (bounded by `index.Bound`) for the symbol
+    /// Once `runs` are final: wait (bounded by `index.Bound`) for the symbol
     /// index to fold the analysis events admitted before now, then store each traced
     /// project's traces, or the refusal of each project tracing refused, and log one line
     /// per project. Never throws, except that a cancelled run's wait raises

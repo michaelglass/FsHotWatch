@@ -348,11 +348,15 @@ type internal ProjectLauncher = Threading.CancellationToken -> TestConfig -> Asy
 
 /// What watching one project's launch reads from its run (`launchWatchedWith`).
 type internal WatchEnv =
-    { Collected: RunCollector
-      LogToCtx: string -> unit
-      LaunchProject: ProjectLauncher
-      LaunchSampled: SampledLauncher
-      SelectionOf: TestConfig -> string list option }
+    {
+        Collected: RunCollector
+        /// A project's result is final: no starvation re-run is pending for it.
+        Settled: string -> unit
+        LogToCtx: string -> unit
+        LaunchProject: ProjectLauncher
+        LaunchSampled: SampledLauncher
+        SelectionOf: TestConfig -> string list option
+    }
 
 /// Launch `config`'s project; `None` when it timed out under starvation and is
 /// held back for its re-run alone.
@@ -371,6 +375,7 @@ let internal launchWatchedWith
         match config.Starvation with
         | None ->
             let! result, _ = launchProject runToken config
+            env.Settled config.Project
             return Some result
         | Some policy ->
             let! result, reportJson, reading = launchSampled runToken config
@@ -394,6 +399,8 @@ let internal launchWatchedWith
                 why
                 |> Option.iter (fun reason ->
                     Logging.info "test-prune" $"%s{config.Project}: starvation declared; %s{reason}")
+
+                env.Settled config.Project
 
                 return Some result
     }
