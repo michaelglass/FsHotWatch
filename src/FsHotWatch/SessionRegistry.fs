@@ -138,6 +138,11 @@ type SessionRegistry internal (factory: SessionFactory, run: SessionRun) =
             let startedAt = DateTime.UtcNow
             let daemon = factory spec
 
+            // Marked before `Start` returns, so before the attach is answered: the run
+            // below is only queued, and a client holding the answer may delete the
+            // worktree before it begins (AUTOMATION-1486).
+            daemon.MarkRoot()
+
             // One line naming the process and the session, after the configuration lines
             // the build wrote: the session's log says who is behind it.
             Logging.info

@@ -1185,6 +1185,36 @@ let ``a host whose only worktree is deleted ends that session, and then exits id
             cts.Cancel()
             running.Wait(TimeSpan.FromSeconds 30.0) |> ignore)
 
+// The attach answers once the session is started, not once it runs: its run is queued,
+// and on a loaded box the client can delete the worktree before the run begins. The
+// root must already be the session's by then, or the deletion is never noticed and the
+// host never goes idle (AUTOMATION-1486). The run is held here until the root is gone.
+[<Fact(Timeout = 120000)>]
+let ``a worktree deleted before its session's run begins still ends that session`` () =
+    withRepository (fun fx ->
+        let mayRun = TaskCompletionSource()
+
+        let heldRun: SessionRun =
+            fun daemon serve startedAt cts ->
+                async {
+                    do! Async.AwaitTask mayRun.Task
+                    return! defaultRun daemon serve startedAt cts
+                }
+
+        use registry = new SessionRegistry(checkingFactory, heldRun)
+
+        let host =
+            RepositoryHost(settingsFor fx, registry, ignore, TimeSpan.FromSeconds 10.0)
+
+        let id = attachedId (attachVia host (requestFrom fx.Primary "a"))
+        let session = (registry.TryGet id).Value
+
+        test <@ deleteWhileWritten fx.Primary.Root.Value 10000 @>
+        mayRun.SetResult()
+
+        test <@ session.Ended.Wait(HangWait) @>
+        test <@ session.Ended.Result = SessionEnd.Stopped @>)
+
 // ---------------------------------------------------------------------------
 // Observing the host: footprint and lifecycle (AUTOMATION-939)
 // ---------------------------------------------------------------------------

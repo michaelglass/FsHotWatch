@@ -3506,6 +3506,10 @@ type Daemon
     // The trees this daemon has already re-checked suspect answers for (`SuspectRecheck`).
     let retriedTrees = SuspectRecheck.RetriedTrees()
 
+    // This daemon's mark on its root (`VanishedRoot`), made once: by `MarkRoot` when
+    // someone can learn of the daemon before it runs, otherwise by `RunWith`.
+    let rootMark = lazy (VanishedRoot.mark repoRoot (Logging.warn "daemon"))
+
     // Expose a read-only view of the live project graph to plugins (via
     // PluginCtx.ProjectGraph) BEFORE DaemonConfig.registerPlugins runs, so the
     // TestPrune plugin can compute dependency fingerprints + fan out to dependent
@@ -3627,6 +3631,13 @@ type Daemon
 
     /// The repository root directory.
     member _.RepoRoot = repoRoot
+
+    /// Mark the root as this daemon's now, not when its run begins (`VanishedRoot.mark`).
+    /// A repository host answers an attach before the session's run is scheduled, and a
+    /// client may delete the worktree as soon as it has the answer: a root deleted before
+    /// it is marked cannot be told from one this daemon never owned, so the session would
+    /// never end (AUTOMATION-1486). Idempotent; `RunWith` keeps the first mark.
+    member internal _.MarkRoot() : unit = rootMark.Force() |> ignore
 
     /// Signalled when the daemon is ready to accept file change events.
     member _.Ready = ready
@@ -3976,8 +3987,9 @@ type Daemon
 
                 // Marked before the daemon serves: a client that sees it serving may
                 // delete the root at once, and a root deleted before it is marked
-                // cannot be told from one this daemon never owned.
-                let rootPresent = VanishedRoot.mark repoRoot (Logging.warn "daemon")
+                // cannot be told from one this daemon never owned. A hosted session was
+                // marked earlier, before its attach was answered (`MarkRoot`).
+                let rootPresent = rootMark.Force()
 
                 // Every way this daemon ends is `cts.Cancel()`: a stop request, a signal, a
                 // `.fshw.json` edit, idle exit, a vanished root. The work it owns at that
