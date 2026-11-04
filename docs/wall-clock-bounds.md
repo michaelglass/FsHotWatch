@@ -43,6 +43,15 @@ The literals that encode rule 2 live in `tests/FsHotWatch.Tests/TestHelpers.fs`
 product's `FormatTimeoutDefaultSec`, so raising the product bound without the caps goes
 red.
 
+A wait measures its budget on the monotonic clock (`TestHelpers.Deadline`, a `Stopwatch`),
+never on `DateTime.UtcNow`. The wall clock counts the time the box slept, and the gate's
+laptop is put to sleep mid-run, so a wall-clock deadline that spans a sleep runs out at the
+first poll after it: a 30 s `waitUntil` failed after 729 ms of the test's own time
+(AUTOMATION-1461). `MonotonicDeadlineTests` refuses a wall-clock deadline in `tests/`, and
+`HangCapFloorTests` refuses a test that goes through `withProcessWorkingDirectory` or
+`atSettledWorkingDirectory`, which wait for in-flight evaluations, under a cap below
+`InProcessEvaluationTestCapMs`.
+
 ## Timing assertions
 
 Every upper wall-clock bound on a measured duration, as of this commit.
@@ -126,6 +135,11 @@ that meets rule 2.
 | `IntegrationTests` "TestPrunePlugin with failing test reports failure" | a 5 s xUnit cap below its own 10 s and 30 s waits, over one `false` child | CAN-FLAKE (cancelled at load ~150 10-29) | **Fixed.** Waits `HangWaitMs`, cap `SyncHangBackstopMs`. |
 | `WorkSchedulerFairnessTests` "sessions with 1 s and 10 s jobs hold the slot for about the same time", and every other `WorkScheduler*Tests` fact | 5–20 s xUnit caps over in-process work on the injected clock: ~400 hand-overs, each awaiting a grant continuation on the pool | CAN-FLAKE (overran 10 s at load 197–274 10-29, green on rerun) | **Fixed.** The time the scheduler reads was already `ManualClock`; the caps are `SyncHangBackstopMs`, so they only report a hang. |
 | `ProjectGraphTests` (4 facts), `CheckCacheTests` (9), `DaemonConfigTests` (11), `SafeWalkTests` (4), `TestPrunePluginTests` (8) | 2 s caps over pure functions, injected sleeps and temp files: below rule 2's 5 s floor | CAN-FLAKE (`ProjectGraphTests` "extractTargetFramework returns first entry of TargetFrameworks", one in-memory XML parse, cancelled at 2 s in a loaded full gate 11-02 while FsHotWatch.Tests ran 497 s; 3 of 3 isolated passes) | **Fixed.** `SyncHangBackstopMs`. The work does no I/O beyond temp files and shares no fixture, so the cancel was the test thread going unscheduled, plus the cold JIT of the fact and its Unquote quotation, on a saturated box. `HangCapFloorTests` refuses any literal `Fact`/`Theory` cap under 5 s. |
+| `TestHelpers.waitUntilTrue` and 17 other loops (`probeLoop`, the temp-dir delete, `OptionsRecordsTests`, `HeartbeatTests`, `DrainedTimerTests`, `PluginWedgeTests`, `PluginFrameworkTests`, `PluginFrameworkQueuedResultTests`, `TestPrunePluginTests`, `CheckPipelineConcurrencyTests`, `WorkSchedulerTests`, `TestHelpersTests`) | deadlines compared against `DateTime.UtcNow` | CAN-FLAKE (a 30 s wait failed after 729 ms in a loaded gate 11-02; AUTOMATION-1461) | **Fixed.** The wall clock counts a sleep of the box and the test's `Stopwatch` does not. Every deadline is a `TestHelpers.Deadline`, which reads a `Stopwatch`; `MonotonicDeadlineTests` refuses the old shape |
+| `emitBuildAndWaitTerminal` (`TestPrunePluginTestSupport`), and `TestEvidenceRunTests`' `run` | 20 s waits over in-process work and a trivial child; callers capped at 30–90 s with up to four of them | CAN-FLAKE (ran out twice at load ~100 11-02; AUTOMATION-1461) | **Fixed.** Waits `HangWaitMs`; caps above the waits a test makes: `TestEvidenceRunTests` `3 * SyncHangBackstopMs`, the four `scopeSequence` facts `5 * HangWaitMs`, the named-dispatch recovery fact `3 * HangWaitMs` |
+| `PluginTimeoutTests` "build plugin honors timeoutSec…", "FileCommandPlugin honors timeoutSec…", "a descendant that outlives the killed shell…" | 15 s caps over a 1 s product timeout and a teardown with its own 10 s read and 10 s kill; a 15 s wait for `sh` to fork | CAN-FLAKE (AUTOMATION-1461) | **Fixed.** Waits `ProductTeardownMs (25 s) + HangWaitMs` and `HangWaitMs`, caps `2 * SyncHangBackstopMs`. "an overrunning quiet dotnet build…" installs `TeardownPatience` like its neighbour: its summary read "tree termination UNKNOWN" and named no target |
+| `InProcessEvaluationTests` (5 facts), `EventTests` `RelativePathResolution` (3), `RepositoryIdentityTests` "a relative path canonicalizes…", `WorkingDirectoryDeletionTests` "deleting a scratch tree a daemon is evaluating in…" | 15–180 s caps over `withProcessWorkingDirectory` / `atSettledWorkingDirectory`, which wait for every in-flight MSBuild evaluation | CAN-FLAKE (cancelled at 15 s at load 72 11-03; the abandoned body then deleted the directory the next test stood in) | **Fixed.** `InProcessEvaluationTestCapMs`; `HangCapFloorTests` refuses less |
+| `DetachedLaunchTests` "a helper whose stderr outlives it…" | a 2 s helper bound over a dotnet host start, with a 4 s `sleep` racing the 2 s drain | CAN-FLAKE (the helper timed out at load ~100 11-01, and DetachedLaunch.fs fell under its coverage floor) | **Fixed.** Helper bound `HangWait`; the sleep holds stderr until the test kills it, so it outlives the 5 s drain by construction |
 
 ## Hang caps (fail-safe, excluded from the tables)
 

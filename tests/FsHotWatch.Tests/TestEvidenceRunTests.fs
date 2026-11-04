@@ -254,12 +254,17 @@ let private launches (c: Checkout) =
     else
         []
 
+/// The xUnit cap of a test here: up to three `run`s, each two `HangWaitMs` waits over in-process
+/// work and a trivial child, so only a hang reaches it (AUTOMATION-1461).
+[<Literal>]
+let private RunsTestCapMs = 3 * SyncHangBackstopMs
+
 /// Run one check and return the projects it LAUNCHED and the results it completed with.
 let private run (c: Checkout) =
     let before = launches c |> List.length
     let completedBefore = c.Completions.Count
     emitBuildAndWaitTerminal c.Host
-    test <@ waitUntilTrue (fun () -> c.Completions.Count > completedBefore) 20000 @>
+    waitUntilOr "the run's completion to be recorded" (fun () -> c.Completions.Count > completedBefore) HangWaitMs
     let launched = launches c |> List.skip before |> List.sort
     let completed = c.Completions |> Seq.last
     launched, completed
@@ -311,7 +316,7 @@ let private edit (root: string) (lib: string) (line: string) =
 // Producer and consumer
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``a fresh checkout of an earned tree launches nothing and reports every project reused`` () =
     withRepo (fun store rootNamed ->
         let a = checkout (rootNamed "a") (Some(wiringFor store)) false
@@ -336,7 +341,7 @@ let ``a fresh checkout of an earned tree launches nothing and reports every proj
         test <@ runIdOf b.Root <> Some completedB.RunId @>
         test <@ Option.isSome (runIdOf b.Root) @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``a checkout owed a full-suite baseline consults no evidence and runs every project`` () =
     // A green is graded relative to a full-suite baseline, and only running earns one. A
     // checkout owed one that reused instead would answer "no verdict" on every check for
@@ -362,7 +367,7 @@ let ``a checkout owed a full-suite baseline consults no evidence and runs every 
         test <@ launchedNext = [ "TZ" ] @>
         test <@ store.Lookups > lookupsEarned @>)
 
-[<Fact(Timeout = 90000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``a merge launches exactly the projects whose closure differs from both parents`` () =
     // A touched X, B touched Y, and the merge M has both plus an edit of its own to Z.
     // TX's closure in M is A's, TY's is B's, and TZ's is nobody's.
@@ -386,7 +391,7 @@ let ``a merge launches exactly the projects whose closure differs from both pare
         test <@ reusedIn completedM = [ "TX"; "TY" ] @>
         test <@ allGreen completedM @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``a merge that changes a shared closure re-verifies every test project over it`` () =
     withRepo (fun store rootNamed ->
         run (checkout (rootNamed "a") (Some(wiringFor store)) false) |> ignore
@@ -396,7 +401,7 @@ let ``a merge that changes a shared closure re-verifies every test project over 
         test <@ launchedM = [ "TX"; "TY" ] @>
         test <@ reusedIn completedM = [ "TZ" ] @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``evidence from a non-identical closure is never reused`` () =
     withRepo (fun store rootNamed ->
         run (checkout (rootNamed "a") (Some(wiringFor store)) false) |> ignore
@@ -407,7 +412,7 @@ let ``evidence from a non-identical closure is never reused`` () =
         test <@ launchedB = [ "TX" ] @>
         test <@ not (List.contains "TX" (reusedIn completedB)) @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``an old green never covers a failing current tree`` () =
     withRepo (fun store rootNamed ->
         run (checkout (rootNamed "a") (Some(wiringFor store)) false) |> ignore
@@ -425,7 +430,7 @@ let ``an old green never covers a failing current tree`` () =
 
         test <@ not (allGreen completedB) @>)
 
-[<Fact(Timeout = 90000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``an outstanding failure blocks reuse until the project earns a green itself`` () =
     withRepo (fun store rootNamed ->
         run (checkout (rootNamed "a") (Some(wiringFor store)) false) |> ignore
@@ -442,7 +447,7 @@ let ``an outstanding failure blocks reuse until the project earns a green itself
         test <@ not (List.contains "TX" (reusedIn completed2)) @>
         test <@ TestResult.verifiedGreen completed2.Results["TX"] @>)
 
-[<Fact(Timeout = 90000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``a reused project whose closure moves mid-run is withdrawn and launched next`` () =
     withRepo (fun store rootNamed ->
         run (checkout (rootNamed "a") (Some(wiringFor store)) false) |> ignore
@@ -468,7 +473,7 @@ let ``a reused project whose closure moves mid-run is withdrawn and launched nex
         test <@ List.contains "TX" launched2 @>
         test <@ TestResult.verifiedGreen completed2.Results["TX"] @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``confirm performs zero lookups and launches every project`` () =
     withRepo (fun store rootNamed ->
         run (checkout (rootNamed "a") (Some(wiringFor store)) false) |> ignore
@@ -481,7 +486,7 @@ let ``confirm performs zero lookups and launches every project`` () =
         test <@ List.isEmpty (reusedIn completed) @>
         test <@ store.Lookups = lookupsBefore @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``with the kill switch off every project launches exactly as without a store`` () =
     withRepo (fun store rootNamed ->
         let first, completedFirst =
@@ -498,7 +503,7 @@ let ``with the kill switch off every project launches exactly as without a store
         test <@ completedOff.Verification = completedFirst.Verification @>
         test <@ evidenceWiringWhen false [] (rootNamed "c") |> Option.isNone @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``a failing run writes no evidence`` () =
     withRepo (fun store rootNamed ->
         let a = rootNamed "a"
@@ -510,7 +515,7 @@ let ``a failing run writes no evidence`` () =
         let launched, _ = run (checkout b (Some(wiringFor store)) false)
         test <@ launched = [ "TX" ] @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``a run whose tree moved writes no evidence for any project`` () =
     withRepo (fun store rootNamed ->
         let a = rootNamed "a"
@@ -523,7 +528,7 @@ let ``a run whose tree moved writes no evidence for any project`` () =
         let launched, _ = run (checkout b (Some(wiringFor store)) false)
         test <@ List.contains "TY" launched @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``a reused report names its producer in the run directory`` () =
     withRepo (fun store rootNamed ->
         let a = rootNamed "a"
@@ -549,7 +554,7 @@ let ``a reused report names its producer in the run directory`` () =
                     |> Option.exists (fun r -> r.Worktree = Path.GetFullPath a && r.RunId.Length = 32))
             @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``an executed suite names no producer`` () =
     withRepo (fun store rootNamed ->
         let a = rootNamed "a"
@@ -562,7 +567,7 @@ let ``an executed suite names no producer`` () =
 // Coverage the gate grades
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``a coverage-graded project reuses its stored coverage, rebound into this checkout`` () =
     withRepo (fun store rootNamed ->
         let a = rootNamed "a"
@@ -581,7 +586,7 @@ let ``a coverage-graded project reuses its stored coverage, rebound into this ch
         test <@ not (baseline.Contains a) @>
         test <@ File.Exists(Path.Combine(Ctrf.runDir b completed.RunId, "TX.coverage.cobertura.xml")) @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``evidence without the coverage a checkout grades is not reused`` () =
     withRepo (fun store rootNamed ->
         run (checkout (rootNamed "a") (Some(wiringFor store)) false) |> ignore
@@ -593,7 +598,7 @@ let ``evidence without the coverage a checkout grades is not reused`` () =
         test <@ launched = testProjects @>
         test <@ List.isEmpty (reusedIn completed) @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``evidence that cannot be filed is launched instead`` () =
     withRepo (fun store rootNamed ->
         let a = rootNamed "a"
@@ -610,7 +615,7 @@ let ``evidence that cannot be filed is launched instead`` () =
         test <@ launched = [ "TX" ] @>
         test <@ reusedIn completed = [ "TY"; "TZ" ] @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``no progress subscriber sees a reused green before the completion re-check`` () =
     withRepo (fun store rootNamed ->
         run (checkout (rootNamed "a") (Some(wiringFor store)) false) |> ignore
@@ -621,7 +626,7 @@ let ``no progress subscriber sees a reused green before the completion re-check`
         test <@ progressSeen[b] |> Seq.exists isReused |> not @>
         test <@ progressSeen[b] |> Seq.isEmpty |> not @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``a green whose coverage failed to ingest is not published`` () =
     withRepo (fun store rootNamed ->
         let a = rootNamed "a"
@@ -638,7 +643,7 @@ let ``a green whose coverage failed to ingest is not published`` () =
 
         test <@ launched = [ "TX" ] @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``every project a run launched is recorded in the outcome store under its K_P (ADR-059 step 7)`` () =
     withRepo (fun store rootNamed ->
         let root = rootNamed "a"
@@ -680,7 +685,7 @@ let private outcomeKeysIn (c: Checkout) : Map<string, string> =
         | _ -> Map.empty
     | None -> Map.empty
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``a settled test-scope reply names the outcome key each project's full run over THIS tree has (ADR-059 step 7b)``
     ()
     =

@@ -240,16 +240,32 @@ let ``a successful helper hands its stderr to the caller's report, and a silent 
         DetachedLaunch.launchWithin messages.Add (TimeSpan.FromSeconds 20.0) root "exit 0"
         Assert.Empty(messages))
 
-[<Fact(Timeout = 30000)>]
+// The backgrounded sleep inherits the helper's stderr and holds it until the test kills it,
+// so the stream outlives the caller's 5 s drain whatever the box's load. The helper's own
+// bound is `HangWait`: it starts a dotnet host, which a loaded box took more than the 2 s
+// this test once gave it (AUTOMATION-1461), and only a hang reaches it. Under the old 2 s
+// bound the 4 s sleep was also the drain's competitor, so load decided the outcome.
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a helper whose stderr outlives it is reported as still open, not waited on`` () =
     withTempDir "detached-launch-held-stderr" (fun root ->
-        // The backgrounded sleep inherits the helper's stderr and keeps it open past the
-        // two-second drain; it ends on its own soon after.
-        let error =
-            Assert.Throws<InvalidOperationException>(fun () ->
-                DetachedLaunch.launchWithin ignore (TimeSpan.FromSeconds 2.0) root "/bin/sleep 4 & exit 3")
+        let command = "/bin/sleep 600 & echo $! > holder.pid; exit 3"
 
-        Assert.Equal(
-            "Detached daemon launch helper exited 3 launching: /bin/sleep 4 & exit 3\nHelper stderr: still open when the wait for it ended.",
-            error.Message
-        ))
+        try
+            let error =
+                Assert.Throws<InvalidOperationException>(fun () ->
+                    DetachedLaunch.launchWithin ignore HangWait root command)
+
+            Assert.Equal(
+                $"Detached daemon launch helper exited 3 launching: %s{command}\nHelper stderr: still open when the wait for it ended.",
+                error.Message
+            )
+        finally
+            let pidFile = Path.Combine(root, "holder.pid")
+
+            if File.Exists pidFile then
+                try
+                    // The sleep this test's own command started, by the pid it wrote.
+                    (Process.GetProcessById(int (File.ReadAllText(pidFile).Trim()))).Kill()
+                with
+                | :? ArgumentException
+                | :? InvalidOperationException -> ())

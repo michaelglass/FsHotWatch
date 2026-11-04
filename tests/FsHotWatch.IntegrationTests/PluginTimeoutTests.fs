@@ -16,7 +16,15 @@ open FsHotWatch.Tests.TestHelpers
 // BuildPlugin.fs / FileCommandPlugin.fs coverage jitter under CPU load. They live
 // here (no coverage package) to keep that metric deterministic.
 
-[<Fact(Timeout = 15000)>]
+/// The product decides these two: a 1 s timeout, then a teardown whose own bounds (a 10 s
+/// process-table read, a 10 s kill, about 4 s of settle and drain) end it within
+/// `ProductTeardownMs`. The waits sit a `HangWaitMs` above that and the caps above the
+/// waits, so a loaded box (AUTOMATION-1461: a 15 s cap, at load ~100) cannot end the test
+/// before the product reports.
+[<Literal>]
+let private ProductTeardownMs = 25_000
+
+[<Fact(Timeout = 2 * SyncHangBackstopMs)>]
 let ``build plugin honors timeoutSec and records TimedOut outcome`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -26,7 +34,7 @@ let ``build plugin honors timeoutSec and records TimedOut outcome`` () =
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitForTerminalStatus host "build" 8000
+    waitForTerminalStatus host "build" (ProductTeardownMs + HangWaitMs)
 
     let history = host.GetHistory("build")
     test <@ not history.IsEmpty @>
@@ -39,7 +47,7 @@ let ``build plugin honors timeoutSec and records TimedOut outcome`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = 2 * SyncHangBackstopMs)>]
 let ``FileCommandPlugin honors timeoutSec and records TimedOut`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -61,7 +69,7 @@ let ``FileCommandPlugin honors timeoutSec and records TimedOut`` () =
             match host.GetStatus("slow-cmd") with
             | Some(Failed _) -> true
             | _ -> false)
-        8000
+        (ProductTeardownMs + HangWaitMs)
 
     let history = host.GetHistory("slow-cmd")
     test <@ not history.IsEmpty @>
@@ -142,8 +150,11 @@ let ``an overrunning build names its command, budget, tree and what the kill lef
 /// A backgrounded descendant that outlives the shell that spawned it is NAMED as
 /// leaked. The kill is injected to take only the root — the shape of a tree kill that
 /// misses a descendant — and the real process table must then show the child alive.
+///
+/// The shell forking its `sleep` is one trivial child: `HangWaitMs` ends only a hang (15 s ran
+/// out at load ~100, AUTOMATION-1461). The cap sits above that wait and the teardown's reads.
 [<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = 2 * SyncHangBackstopMs)>]
 let ``a descendant that outlives the killed shell is named as a survivor`` () =
     let psi =
         // The test assembly's directory, never the inherited one, which a parallel daemon
@@ -170,7 +181,7 @@ let ``a descendant that outlives the killed shell is named as a survivor`` () =
         | Ok rows -> FsHotWatch.ProcessHelper.treeOf root rows |> List.length
         | Error _ -> 0
 
-    test <@ waitUntilTrue (fun () -> treeSize () = 2) 15000 @>
+    waitUntilOr "the shell to fork its sleep" (fun () -> treeSize () = 2) HangWaitMs
 
     let teardown =
         FsHotWatch.ProcessHelper.accountTeardown
@@ -209,8 +220,15 @@ let ``a descendant that outlives the killed shell is named as a survivor`` () =
 /// bounds the build: a `dotnet build` of a project with no references. After it, the
 /// product's own bounds (15 s interrupt grace, 10 s table read, 10 s kill, 60 s binlog
 /// replay) decide well inside the wait.
+///
+/// Its teardown reads the tree under `TeardownPatience`, as the test above does: in a loaded
+/// gate a `ps` read missed the product's 10 s `TeardownBudget`, and the summary said "tree
+/// termination UNKNOWN" and named no target (AUTOMATION-1461).
 [<Fact(Timeout = 300000)>]
 let ``an overrunning quiet dotnet build names the target it was stalled in`` () =
+    use _patience =
+        FsHotWatch.ProcessHelper.TeardownPatience.install (System.TimeSpan.FromMilliseconds(float HangWaitMs))
+
     let root =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fshw-stall-" + System.Guid.NewGuid().ToString("N"))
 

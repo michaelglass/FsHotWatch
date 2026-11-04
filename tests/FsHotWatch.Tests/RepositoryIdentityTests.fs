@@ -246,7 +246,7 @@ let ``. segments and .. above the filesystem root canonicalize`` () =
 /// runs serialized, and stands the process in a directory of its own.
 [<Collection(LogGlobalCollectionName)>]
 type RelativePathTests() =
-    [<Fact(Timeout = 15000)>]
+    [<Fact(Timeout = InProcessEvaluationTestCapMs)>]
     member _.``a relative path canonicalizes against the working directory``() =
         withTempDir "rid-relative" (fun dir ->
             let primary = jjPrimary (mkdir (Path.Combine(dir, "repo")))

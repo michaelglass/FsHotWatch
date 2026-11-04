@@ -117,7 +117,7 @@ type private HeldLoader
 // in a directory that no longer exists, so every relative path and every `Process.Start`
 // of every test beside it fails. A test's scratch tree is torn down while its daemon may
 // still be re-evaluating a project change, so the teardown waits the evaluation out.
-[<Fact(Timeout = 180000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``deleting a scratch tree a daemon is evaluating in waits the evaluation out`` () =
     let root = Path.Combine(Path.GetTempPath(), $"fshw-eval-delete-{Guid.NewGuid():N}")
     let projectDir = Path.Combine(root, "src", "MyProj")
