@@ -150,7 +150,7 @@ let ``compact Completed with only warnings respects warningsAreFailures flag`` (
 [<Fact(Timeout = 15000)>]
 let ``compact Running with subtasks lists them`` () =
     let parsed: ParsedPluginStatus =
-        { Status = StatusView.Running(now - TimeSpan.FromSeconds(72.0))
+        { Status = StatusView.Running(now - TimeSpan.FromSeconds(72.0), None)
           Subtasks =
             [ makeSubtask "A" "running A" 10.0
               makeSubtask "B" "running B" 8.0
@@ -170,7 +170,7 @@ let ``compact Running with subtasks lists them`` () =
 [<Fact(Timeout = 15000)>]
 let ``compact Running with no subtasks shows last activity line`` () =
     let parsed: ParsedPluginStatus =
-        { Status = StatusView.Running(now - TimeSpan.FromSeconds(5.0))
+        { Status = StatusView.Running(now - TimeSpan.FromSeconds(5.0), None)
           Subtasks = []
           ActivityTail = [ "loading rules"; "linting FileA.fs" ]
           LastRun = None
@@ -247,7 +247,7 @@ let ``compact Idle with no history is single line name`` () =
 [<Fact(Timeout = 15000)>]
 let ``verbose Running emits header plus subtask tree plus recent`` () =
     let parsed: ParsedPluginStatus =
-        { Status = StatusView.Running(now - TimeSpan.FromSeconds(72.0))
+        { Status = StatusView.Running(now - TimeSpan.FromSeconds(72.0), None)
           Subtasks =
             [ makeSubtask "FooTests" "running FooTests" 48.0
               makeSubtask "BarTests" "compiling" 62.0
@@ -277,7 +277,7 @@ let ``verbose Running preserves leading whitespace in activity tail entries (que
     // under the in-flight test-result lines. The renderer must not strip or
     // collapse embedded leading whitespace.
     let parsed: ParsedPluginStatus =
-        { Status = StatusView.Running(now - TimeSpan.FromSeconds 30.0)
+        { Status = StatusView.Running(now - TimeSpan.FromSeconds 30.0, None)
           Subtasks = []
           ActivityTail =
             [ "Intelligence.Build.Dev.Tests: failed"
@@ -426,7 +426,7 @@ module private AgentFixtures =
           Diagnostics = DiagnosticCounts.empty }
 
     let runningStatus () : ParsedPluginStatus =
-        { Status = StatusView.Running(now - TimeSpan.FromSeconds 2.0)
+        { Status = StatusView.Running(now - TimeSpan.FromSeconds 2.0, None)
           Subtasks = []
           ActivityTail = []
           LastRun = None
@@ -724,7 +724,7 @@ let ``agent next is done when all clean`` () =
 [<Fact(Timeout = 15000)>]
 let ``compact Running prefers primary subtask label over activity tail`` () =
     let parsed: ParsedPluginStatus =
-        { Status = StatusView.Running(now - TimeSpan.FromSeconds(1.5))
+        { Status = StatusView.Running(now - TimeSpan.FromSeconds(1.5), None)
           Subtasks = [ makeSubtask "primary" "running 3 selected tests" 1.5 ]
           ActivityTail = [ "processing bar.fs" ]
           LastRun = None
@@ -816,7 +816,7 @@ module private WedgeFixtures =
     let wedgedSince = now - TimeSpan.FromHours 2.0
 
     let running (since: DateTime) : ParsedPluginStatus =
-        { Status = StatusView.Running since
+        { Status = StatusView.Running(since, None)
           Subtasks = []
           ActivityTail = []
           LastRun = None

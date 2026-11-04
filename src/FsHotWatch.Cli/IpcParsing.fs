@@ -582,16 +582,35 @@ let private tryParseUtcOr (fallback: DateTime) (s: string) : DateTime =
     | Some dt -> dt
     | None -> fallback
 
+/// The `awakeElapsedMs` of a `running` status: how long the run has gone on in the
+/// daemon's awake time (AUTOMATION-1489). `Ok None` when it is absent or `null` (an older
+/// daemon, or one holding no stamp for this run), and the CLI then judges the wedge on the
+/// wall age (`StatusView.runningAge`). `Error` when it is there and is not a whole,
+/// non-negative count of milliseconds: a value this build cannot read is not a young run.
+let private readAwakeAge (el: JsonElement) : Result<TimeSpan option, string> =
+    let unreadable =
+        Result.Error "a `running` status whose `awakeElapsedMs` is not a whole, non-negative count of milliseconds"
+
+    match el.TryGetProperty "awakeElapsedMs" with
+    | false, _ -> Ok None
+    | true, v when v.ValueKind = JsonValueKind.Null -> Ok None
+    | true, v when v.ValueKind = JsonValueKind.Number ->
+        match v.TryGetInt64() with
+        | true, ms when ms >= 0L -> Ok(Some(TimeSpan.FromMilliseconds(float ms)))
+        | _ -> unreadable
+    | true, _ -> unreadable
+
 /// Parse a tagged status object, e.g. {"tag":"running","since":"..."}, into the CLI-side
 /// `StatusView`. TOTAL — every way of not understanding the element is a
 /// `StatusView.Unreadable` carrying WHY, never a silent `Idle` and never a drop from the
 /// map (which would hide that plugin from every reader of the map).
 /// The verdict travels in `lastRun`, not here.
 ///
-/// The `running`/`since` arm bites hardest: `since` is the ONLY input to the wedge
-/// classifier (`pluginOutcomeOf` fires it on `StatusView.Running since` and nowhere
-/// else), so an unparseable `since` must read as unreadable rather than idle — otherwise
-/// a WEDGED plugin becomes an idle one and wedge detection is defeated by a timestamp.
+/// The `running` arm bites hardest: `since` and `awakeElapsedMs` are the ONLY inputs to
+/// the wedge classifier (`pluginOutcomeOf` fires it on `StatusView.Running` and nowhere
+/// else), so an unparseable `since` or awake age must read as unreadable rather than idle
+/// or young — otherwise a WEDGED plugin becomes an idle one and wedge detection is
+/// defeated by a timestamp.
 let parseTaggedStatus (el: JsonElement) : StatusView =
     let unreadable (why: string) =
         StatusView.Unreadable $"unreadable plugin status: %s{why}"
@@ -603,7 +622,10 @@ let parseTaggedStatus (el: JsonElement) : StatusView =
         | Some "idle" -> StatusView.Idle
         | Some "running" ->
             match Json.tryString el "since" |> Option.bind tryParseUtcOpt with
-            | Some since -> StatusView.Running since
+            | Some since ->
+                match readAwakeAge el with
+                | Ok awake -> StatusView.Running(since, awake)
+                | Result.Error why -> unreadable why
             | None -> unreadable "a `running` status with no readable `since` — the wedge bound cannot be applied to it"
         | Some "completed" ->
             match Json.tryString el "at" |> Option.bind tryParseUtcOpt with

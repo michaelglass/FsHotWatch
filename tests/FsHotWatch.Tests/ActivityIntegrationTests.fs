@@ -20,7 +20,9 @@ let private nullChecker =
 /// renderer can consume it exactly like the IPC payload parser would.
 let private parsedFor (host: PluginHost) (name: string) : ParsedPluginStatus =
     let status =
-        host.GetStatus(name) |> Option.defaultValue Idle |> StatusView.ofPluginStatus
+        host.GetStatus(name)
+        |> Option.defaultValue Idle
+        |> StatusView.ofPluginStatus (fun since -> host.AwakeAgeOf(name, since))
 
     let lastRun = host.GetHistory(name) |> List.tryHead
 

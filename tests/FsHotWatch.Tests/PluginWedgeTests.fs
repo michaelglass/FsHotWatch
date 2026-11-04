@@ -56,25 +56,39 @@ let ``resolveBound derives from an overridden verdict deadline`` () =
     test <@ resolveBound None (Some "120") = TimeSpan.FromSeconds 120.0 + WedgeGrace @>
 
 // ---------------------------------------------------------------------------
-// classifyRunning — never healthy-by-default.
+// classifyAge — never healthy-by-default.
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 15000)>]
-let ``classifyRunning under the bound is StillRunning — cannot tell, says so`` () =
+let ``classifyAge under the bound is StillRunning — cannot tell, says so`` () =
     let since = now - TimeSpan.FromMinutes 12.0
 
-    test <@ classifyRunning bound now since = RunningHealth.StillRunning(TimeSpan.FromMinutes 12.0) @>
+    test
+        <@ classifyAge bound since (TimeSpan.FromMinutes 12.0) = RunningHealth.StillRunning(TimeSpan.FromMinutes 12.0) @>
 
 [<Fact(Timeout = 15000)>]
-let ``classifyRunning past the bound is Wedged by definition`` () =
+let ``classifyAge past the bound is Wedged by definition`` () =
     let since = now - TimeSpan.FromMinutes 65.0
 
-    test <@ classifyRunning bound now since = RunningHealth.Wedged(since, TimeSpan.FromMinutes 65.0) @>
+    test
+        <@ classifyAge bound since (TimeSpan.FromMinutes 65.0) = RunningHealth.Wedged(since, TimeSpan.FromMinutes 65.0) @>
 
 [<Fact(Timeout = 15000)>]
-let ``classifyRunning clamps a future since to zero elapsed instead of going negative`` () =
-    let since = now + TimeSpan.FromMinutes 3.0
-    test <@ classifyRunning bound now since = RunningHealth.StillRunning TimeSpan.Zero @>
+let ``the monitor ages a future since at zero, so it escalates nothing and declares no wedge`` () =
+    let actions, buckets =
+        decideTick
+            bound
+            bound
+            (TimeSpan.FromMinutes 5.0)
+            { Now = now
+              RunningPlugins = [ "p", now + TimeSpan.FromMinutes 3.0 ]
+              QueuedResults = []
+              AnyBusy = true
+              LastActivityAt = now }
+            Map.empty
+
+    test <@ List.isEmpty actions @>
+    test <@ buckets |> Map.toList |> List.map snd = [ 0 ] @>
 
 // ---------------------------------------------------------------------------
 // Wording — the exact words both surfaces share.

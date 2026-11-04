@@ -177,12 +177,23 @@ let internal RpcDeadlineGrace = TimeSpan.FromSeconds 30.0
 /// failure diagnosis ONLY — the verdict (summary + elapsed) travels exclusively in
 /// `lastRun`. One channel on the wire, so the status line and the run record cannot
 /// disagree.
-let private statusPayload (status: PluginStatus) : obj =
+///
+/// A `running` status also carries `awakeElapsedMs`: how long the run has gone on in the
+/// daemon's awake time (`PluginHost.AwakeAgeOf`), from which the CLI judges a wedge
+/// (AUTOMATION-1489). `since` is a wall-clock stamp, and a CLI that subtracts it from its
+/// own wall clock counts a sleep of the box as running time.
+let private statusPayload (awakeAgeOf: DateTime -> TimeSpan option) (status: PluginStatus) : obj =
     match status with
     | Idle -> {| tag = "idle" |} :> obj
     | Running since ->
+        // `null` when the host holds no stamp for this `since`: the CLI then reads the reply
+        // as an older daemon's.
         {| tag = "running"
-           since = since.ToString("O") |}
+           since = since.ToString("O")
+           awakeElapsedMs =
+            awakeAgeOf since
+            |> Option.map (fun age -> int64 age.TotalMilliseconds)
+            |> Option.toNullable |}
         :> obj
     | Completed(at, _) ->
         {| tag = "completed"
@@ -239,7 +250,7 @@ let private pluginStatusPayload
 
     let d = Map.tryFind name counts |> Option.defaultValue DiagnosticCounts.empty
 
-    {| status = statusPayload status
+    {| status = statusPayload (fun since -> host.AwakeAgeOf(name, since)) status
        subtasks = subtasks
        activityTail = snap.ActivityTail
        lastRun = lastRun

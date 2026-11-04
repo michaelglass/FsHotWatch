@@ -3649,7 +3649,7 @@ let private gradeAsCheck
         { PluginStatuses =
             Map.ofList
                 [ "test-prune",
-                  { Status = FsHotWatch.Cli.RunOnceOutput.StatusView.ofPluginStatus status
+                  { Status = FsHotWatch.Cli.RunOnceOutput.StatusView.ofPluginStatus (fun _ -> None) status
                     Subtasks = []
                     ActivityTail = []
                     LastRun = None

@@ -32,9 +32,12 @@ let progressLine (now: DateTime) (waited: TimeSpan) (statuses: Map<string, Parse
         |> Map.toList
         |> List.choose (fun (name, s) ->
             match s.Status with
-            | StatusView.Running since ->
+            | StatusView.Running(since, awake) ->
                 let subtasks = s.Subtasks |> List.map (fun t -> t.Key, t.StartedAt)
-                Some(FsHotWatch.Daemon.formatPluginWait now name since subtasks)
+                // The run's age is the daemon's awake age, so a sleep of the box does not
+                // read as running time (AUTOMATION-1489).
+                let started = now - StatusView.runningAge now since awake
+                Some(FsHotWatch.Daemon.formatPluginWait now name started subtasks)
             | _ -> None)
 
     let elapsed = FsHotWatch.Daemon.formatElapsed waited

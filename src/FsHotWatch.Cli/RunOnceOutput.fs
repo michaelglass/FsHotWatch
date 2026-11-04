@@ -16,7 +16,10 @@ open FsHotWatch.ErrorLedger
 [<RequireQualifiedAccess; NoComparison>]
 type StatusView =
     | Idle
-    | Running of since: DateTime
+    /// `since` is the daemon's wall-clock start stamp, shown as a time of day. `awake` is how
+    /// long the run has gone on in the daemon's awake time, which the wedge is judged on
+    /// (AUTOMATION-1489); `None` from an older daemon that does not send it.
+    | Running of since: DateTime * awake: TimeSpan option
     | Completed of at: DateTime
     | Failed of error: string * at: DateTime
     /// The daemon SENT a status and this build could not read it — an unrecognized
@@ -39,12 +42,28 @@ module StatusView =
     /// Total, and note there is no `Unreadable` here: in-process we hold the daemon's
     /// own `PluginStatus` value, not a wire encoding of it. Absence of an answer is not
     /// a possible state, so it is not a representable one.
-    let ofPluginStatus (status: PluginStatus) : StatusView =
+    ///
+    /// `awakeAgeOf` is the host's `PluginHost.AwakeAgeOf` for this plugin.
+    let ofPluginStatus (awakeAgeOf: DateTime -> TimeSpan option) (status: PluginStatus) : StatusView =
         match status with
         | Idle -> StatusView.Idle
-        | Running since -> StatusView.Running since
+        | Running since -> StatusView.Running(since, awakeAgeOf since)
         | Completed(at, _) -> StatusView.Completed at
         | Failed(error, at, _) -> StatusView.Failed(error, at)
+
+    /// How long a Running plugin has run, as its wedge is judged: the daemon's awake age.
+    ///
+    /// The one place the CLI takes a Running plugin's age from its own wall clock: an older
+    /// daemon's reply carries no awake age (`awake = None`). The wall age counts any sleep
+    /// of the box, so it is never shorter than the awake age: the fallback can call a
+    /// running plugin wedged after a sleep, as every CLI did before AUTOMATION-1489, but can
+    /// never hide a wedge. A verb that brings the daemon up (`ensureDaemon`) restarts a
+    /// daemon of another binary first, so an older reply mostly reaches observers such as
+    /// `fshw status`.
+    let runningAge (now: DateTime) (since: DateTime) (awake: TimeSpan option) : TimeSpan =
+        match awake with
+        | Some age -> age
+        | None -> if now > since then now - since else TimeSpan.Zero
 
 type ParsedPluginStatus =
     { Status: StatusView
@@ -242,7 +261,7 @@ let snapshotHost (host: FsHotWatch.PluginHost.PluginHost) (statuses: Map<string,
     |> Map.map (fun name status ->
         let snap = host.GetActivitySnapshot(name)
 
-        { Status = StatusView.ofPluginStatus status
+        { Status = StatusView.ofPluginStatus (fun since -> host.AwakeAgeOf(name, since)) status
           Subtasks = snap.Subtasks
           ActivityTail = snap.ActivityTail
           LastRun = snap.LastRun

@@ -86,9 +86,17 @@ let private isTimedOut (parsed: ParsedPluginStatus) : bool =
 /// Wedge classification for a Running plugin — the SAME ambient bound and the SAME
 /// words as the daemon-side monitor, so `fshw status` and the daemon log can never
 /// disagree about a wedge. Past the bound a plugin is never rendered as merely
-/// "running".
-let private runningWedge (now: DateTime) (since: DateTime) : FsHotWatch.PluginWedge.RunningHealth =
-    FsHotWatch.PluginWedge.classifyRunning (FsHotWatch.PluginWedge.ambientBound ()) now since
+/// "running". Judged on the daemon's awake age (`StatusView.runningAge`), so a plugin still
+/// running after a sleep of the box is not WEDGED (AUTOMATION-1489).
+let private runningWedge
+    (now: DateTime)
+    (since: DateTime)
+    (awake: TimeSpan option)
+    : FsHotWatch.PluginWedge.RunningHealth =
+    FsHotWatch.PluginWedge.classifyAge
+        (FsHotWatch.PluginWedge.ambientBound ())
+        since
+        (StatusView.runningAge now since awake)
 
 /// The one wedged status line body (name-independent part), local-time clock
 /// to match the renderer's other timestamps.
@@ -208,8 +216,8 @@ let private renderCompact
                     short
 
             $"  %s{glyph} %s{padded}%s{timingPart} %s{Color.dim}{Glyph.sep} %s{label}%s{Color.reset}"
-        | StatusView.Running since ->
-            match runningWedge now since with
+        | StatusView.Running(since, awake) ->
+            match runningWedge now since awake with
             | FsHotWatch.PluginWedge.RunningHealth.Wedged(s, e) ->
                 $"  %s{Glyph.warn} %s{padded} %s{Color.red}%s{wedgedBody s e}%s{Color.reset}"
             | FsHotWatch.PluginWedge.RunningHealth.StillRunning elapsed ->
@@ -269,8 +277,8 @@ let private verboseHeader
     let glyph = glyphForParsed warningsAreFailures parsed
 
     match parsed.Status with
-    | StatusView.Running since ->
-        match runningWedge now since with
+    | StatusView.Running(since, awake) ->
+        match runningWedge now since awake with
         | FsHotWatch.PluginWedge.RunningHealth.Wedged(s, e) ->
             $"  %s{Glyph.warn} %s{padded} %s{Color.red}%s{wedgedBody s e}%s{Color.reset}"
         | FsHotWatch.PluginWedge.RunningHealth.StillRunning elapsed ->
@@ -480,9 +488,7 @@ module private Agent =
             // and the daemon log — no inference from a missing field.
             let body =
                 match parsed.Status with
-                | StatusView.Running since ->
-                    let elapsed = if now > since then now - since else TimeSpan.Zero
-                    wedgedBody since elapsed
+                | StatusView.Running(since, awake) -> wedgedBody since (StatusView.runningAge now since awake)
                 | _ -> "WEDGED"
 
             $"%s{name}: %s{tokenOf state} summary=\"%s{escapeSummary body}\""

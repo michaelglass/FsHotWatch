@@ -407,7 +407,7 @@ let ``a status tag this build does not recognize is a FAILURE, not idle`` () =
 [<Fact(Timeout = 15000)>]
 let ``a running status whose since cannot be parsed is a FAILURE, not idle`` () =
     // This silently defeated all of the wedge detection: the classifier only
-    // fires on `StatusView.Running since`, so an unparseable `since` turned a WEDGED plugin
+    // fires on `StatusView.Running`, so an unparseable `since` turned a WEDGED plugin
     // into an idle one.
     let resp = responseWithStatus """{"tag":"running","since":"not-a-timestamp"}"""
     test <@ hasFailures false resp @>

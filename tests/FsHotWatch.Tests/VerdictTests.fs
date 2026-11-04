@@ -2996,7 +2996,7 @@ let ``the wire tokens are stable — consumers key off them`` () =
 [<Fact>]
 let ``a running plugin is running; a timed-out one is timed-out, never merely failed`` () =
     let running =
-        status (StatusView.Running DateTime.UtcNow) TimeSpan.Zero CompletedRun None
+        status (StatusView.Running(DateTime.UtcNow, None)) TimeSpan.Zero CompletedRun None
 
     let timedOut =
         status
@@ -3673,10 +3673,10 @@ let ``a WEDGED plugin is wedged in the verdict file too — never laundered into
     let now = DateTime.UtcNow
 
     let wedged =
-        status (StatusView.Running(now - TimeSpan.FromHours 3.0)) TimeSpan.Zero CompletedRun None
+        status (StatusView.Running(now - TimeSpan.FromHours 3.0, None)) TimeSpan.Zero CompletedRun None
 
     let healthy =
-        status (StatusView.Running(now - TimeSpan.FromSeconds 5.0)) TimeSpan.Zero CompletedRun None
+        status (StatusView.Running(now - TimeSpan.FromSeconds 5.0, None)) TimeSpan.Zero CompletedRun None
 
     test <@ Verdict.pluginOutcomeOf true now wedged = Some Verdict.PluginOutcome.Wedged @>
     test <@ Verdict.pluginOutcomeOf true now healthy = Some Verdict.PluginOutcome.Running @>

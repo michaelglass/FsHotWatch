@@ -58,6 +58,16 @@ times out a wait nor reads as idleness, a stall or a wedge. `ProductDeadlineTest
 wall-clock deadline in `src/`, and lists the few wall clocks a seam may still take (log
 timestamps, file-time comparisons, persisted TTLs) with why.
 
+The CLI follows it too (AUTOMATION-1489). It cannot read the daemon's awake clock, so the
+status reply carries each Running plugin's awake age (`awakeElapsedMs`, from
+`PluginHost.AwakeAgeOf`), and `fshw status` and the verdict judge a wedge from that, never
+from their own wall clock against the daemon's wall-clock `since`. A reply without the field
+(an older daemon) falls back to the wall age, which is never shorter than the awake age, so
+it can call a running plugin wedged but never hide a wedge. `ProductDeadlineTests` refuses
+a wall-clock age of a Running plugin in `src/FsHotWatch.Cli/` outside that one fallback
+(`StatusView.runningAge`), and `StatusAwakeAgeTests` moves a `ManualClock` through a sleep
+longer than the wedge bound.
+
 ## Timing assertions
 
 Every upper wall-clock bound on a measured duration, as of this commit.

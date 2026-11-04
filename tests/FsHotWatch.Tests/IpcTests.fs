@@ -27,7 +27,7 @@ let private waitForServer (pipeName: string) =
                 false)
         5000
 
-let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
+let defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
     { Host = host
       RequestShutdown = ignore
       RequestScan = ignore
