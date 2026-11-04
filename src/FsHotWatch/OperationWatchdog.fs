@@ -318,7 +318,28 @@ type Watchdog
     let resources = defaultArg resources readResources
     let heapValve = defaultArg heapValve (defaultHeapValvePolicy ())
     let collect = defaultArg collect compactingCollect
-    let awake = defaultArg awake HostClock.system.AwakeNow
+    // Without an awake clock, `now` is the only clock: no suspension can be seen, and the
+    // durations below are read on it. Production passes `HostClock.system.AwakeNow`.
+    let awake =
+        defaultArg
+            awake
+            (let origin = now ()
+             fun () -> now () - origin)
+
+    // `now` is the wall clock: what a suspension is measured against, and the time a heap-valve
+    // firing is stamped with. Every duration the watchdog decides on (an overrun, the heartbeat
+    // cadence, how long the heap has been quiet) is awake time, so a sleep of the box is none
+    // of them (AUTOMATION-1488).
+    let wallNow = now
+    let clock: HostClock.Clock = { WallNow = wallNow; AwakeNow = awake }
+    // Both clocks, wall first, read as one pair: a tick never reads one without the other.
+    let readBoth () = HostClock.read clock
+    let origin = readBoth ()
+
+    let awakeDate (reading: HostClock.Reading) =
+        origin.Wall + (reading.Awake - origin.Awake)
+
+    let now () = awakeDate (readBoth ())
     let gate = Lock()
     let inFlight = Dictionary<int64, InFlightOp>()
     // Ops whose overrun record has already been emitted, so a long op logs its overrun
@@ -328,7 +349,7 @@ type Watchdog
     let mutable lastHeartbeat = now ()
     let mutable lastGcPause = gcPauseTotal ()
     let mutable lastResources = resources ()
-    let mutable lastTick: HostClock.Reading = { Wall = now (); Awake = awake () }
+    let mutable lastTick: HostClock.Reading = origin
 
     let mutable valveState =
         { Gen2 = lastResources.Gen2
@@ -346,8 +367,9 @@ type Watchdog
               Threshold = threshold })
 
     let onTick () =
-        let n = now ()
-        let clocks: HostClock.Reading = { Wall = n; Awake = awake () }
+        let clocks = readBoth ()
+        let n = awakeDate clocks
+        let wall = clocks.Wall
         // Read + decide under the lock so Begin/End can't mutate mid-read.
         let valve = ref None
 
@@ -402,7 +424,7 @@ type Watchdog
             collect ()
 
             let firing =
-                { At = n
+                { At = wall
                   HeapBefore = heapBefore
                   HeapAfter = (resources ()).HeapBytes
                   QuietFor = quietFor

@@ -2398,12 +2398,14 @@ let private withWriteLock (repoRoot: string) (action: unit -> 'T) : 'T =
     let lockPath = Path.Combine(FsHwPaths.root repoRoot, "verdict.write.lock")
     Directory.CreateDirectory(Path.GetDirectoryName lockPath) |> ignore
 
-    let deadline = DateTime.UtcNow.AddSeconds 5.0
+    // 5 s of awake time (AUTOMATION-1488): a sleep while another invocation holds the
+    // lock does not spend it.
+    let deadline = HostClock.awakeUtc () + TimeSpan.FromSeconds 5.0
 
     let rec acquire () =
         try
             new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None)
-        with :? IOException when DateTime.UtcNow < deadline ->
+        with :? IOException when HostClock.awakeUtc () < deadline ->
             Threading.Thread.Sleep 10
             acquire ()
 

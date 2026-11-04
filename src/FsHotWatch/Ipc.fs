@@ -1092,7 +1092,8 @@ module IpcServer =
                     OperationWatchdog.DefaultThreshold,
                     heartbeatEvery = TimeSpan.FromSeconds(30.0),
                     now = (fun () -> DateTime.UtcNow),
-                    log = Logging.info "watchdog"
+                    log = Logging.info "watchdog",
+                    awake = HostClock.system.AwakeNow
                 )
 
             return! serveWith watchdog drainBound pipeName config cts

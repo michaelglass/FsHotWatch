@@ -52,6 +52,12 @@ first poll after it: a 30 s `waitUntil` failed after 729 ms of the test's own ti
 `atSettledWorkingDirectory`, which wait for in-flight evaluations, under a cap below
 `InProcessEvaluationTestCapMs`.
 
+The product follows the same rule (AUTOMATION-1488): every deadline a product wait holds
+is taken on `HostClock.awakeUtc` or `HostClock.pollWhile`, so a sleep of the box neither
+times out a wait nor reads as idleness, a stall or a wedge. `ProductDeadlineTests` refuses a
+wall-clock deadline in `src/`, and lists the few wall clocks a seam may still take (log
+timestamps, file-time comparisons, persisted TTLs) with why.
+
 ## Timing assertions
 
 Every upper wall-clock bound on a measured duration, as of this commit.

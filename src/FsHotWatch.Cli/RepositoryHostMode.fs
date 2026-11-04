@@ -157,10 +157,9 @@ let internal attachWith
         let upOrLaunched () =
             if not (up ()) then
                 launch control
-                let deadline = DateTime.UtcNow + startupBound
-
-                while not (up ()) && DateTime.UtcNow < deadline do
-                    Thread.Sleep 100
+                // `startupBound` of awake time (AUTOMATION-1488).
+                HostClock.pollWhile HostClock.awakeUtc (fun () -> Thread.Sleep 100) startupBound (up >> not)
+                |> ignore
 
             up ()
 

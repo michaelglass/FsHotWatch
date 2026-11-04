@@ -2975,21 +2975,24 @@ let internal DaemonShuttingDownMessage = "daemon shutting down"
 /// pass for a stalled host. The deadline and every rendered elapsed time stay on real time.
 let private waitCoreWith
     (restRequires: PluginWorkOwner.HostSnapshot -> bool)
+    // The wait's own clock: its timeout, its log cadence and its stall detector all read it.
+    // Production passes `HostClock.awakeUtc`, which does not count a sleep of the box
+    // (AUTOMATION-1488).
     (stallClock: unit -> System.DateTime)
     (host: PluginHost)
     (timeout: System.TimeSpan)
     (stallThreshold: System.TimeSpan)
     (ct: CancellationToken)
     : Task<unit> =
-    // TimeSpan.MaxValue signals "no timeout"; adding it to UtcNow overflows, so skip
+    // TimeSpan.MaxValue signals "no timeout"; adding it to a time overflows, so skip
     // deadline computation entirely in that case and rely on the MaxValue guard in loop.
     let deadline =
         if timeout = System.TimeSpan.MaxValue then
             System.DateTime.MaxValue
         else
-            System.DateTime.UtcNow + timeout
+            stallClock () + timeout
 
-    let mutable lastLogTime = System.DateTime.UtcNow
+    let mutable lastLogTime = stallClock ()
 
     let getRunningPlugins () =
         let now = System.DateTime.UtcNow
@@ -3095,7 +3098,7 @@ let private waitCoreWith
         | running -> $"""still running: %s{String.concat ", " running}"""
 
     let logRunningPlugins () =
-        let now = System.DateTime.UtcNow
+        let now = stallClock ()
 
         if (now - lastLogTime).TotalSeconds >= 10.0 then
             lastLogTime <- now
@@ -3223,7 +3226,7 @@ let private waitCoreWith
 
             checkForWedgedPlugin ()
 
-            if timeout <> System.TimeSpan.MaxValue && System.DateTime.UtcNow >= deadline then
+            if timeout <> System.TimeSpan.MaxValue && stallClock () >= deadline then
                 let detail = formatTimeoutDetail ()
 
                 raise (System.TimeoutException($"WaitForComplete timed out after %O{timeout} — %s{detail}"))
@@ -3257,7 +3260,7 @@ let internal waitForAllTerminalCore
     (stallThreshold: System.TimeSpan)
     (ct: CancellationToken)
     : Task<unit> =
-    waitForAllTerminalCoreOn (fun () -> System.DateTime.UtcNow) host timeout stallThreshold ct
+    waitForAllTerminalCoreOn HostClock.awakeUtc host timeout stallThreshold ct
 
 let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) (ct: CancellationToken) : Task<unit> =
     waitForAllTerminalCore host timeout waitForAllTerminalBusyStallThreshold ct
@@ -3308,8 +3311,7 @@ let internal waitForEvidenceCore
     task {
         use _observation = host.WorkStore.Observe()
 
-        return!
-            waitCoreWith hasEvidenceForCurrentModel (fun () -> System.DateTime.UtcNow) host timeout stallThreshold ct
+        return! waitCoreWith hasEvidenceForCurrentModel HostClock.awakeUtc host timeout stallThreshold ct
     }
 
 let internal waitForVerdict (host: PluginHost) (timeout: System.TimeSpan) (ct: CancellationToken) : Task<unit> =
@@ -3333,7 +3335,8 @@ let internal waitForVerdict (host: PluginHost) (timeout: System.TimeSpan) (ct: C
 /// Parameterised on a status-reader so unit tests can drive deterministic state
 /// sequences without Task.Delay; the PluginHost adapter below is the production
 /// caller.
-let internal waitForPluginTerminalIfRunningWith
+let internal waitForPluginTerminalIfRunningOn
+    (now: unit -> System.DateTime)
     (getStatus: string -> PluginStatus option)
     (pluginName: string)
     (timeout: System.TimeSpan)
@@ -3343,7 +3346,7 @@ let internal waitForPluginTerminalIfRunningWith
             if timeout = System.TimeSpan.MaxValue then
                 System.DateTime.MaxValue
             else
-                System.DateTime.UtcNow + timeout
+                now () + timeout
 
         // A status read is a snapshot read (`PluginHost.GetStatus`): it cannot time
         // out or wait on another thread, so there is no "unknown" answer to handle.
@@ -3352,14 +3355,13 @@ let internal waitForPluginTerminalIfRunningWith
             | Some(Running _) -> true
             | _ -> false
 
-        let before (limit: System.DateTime) = System.DateTime.UtcNow < limit
+        let before (limit: System.DateTime) = now () < limit
 
         // EmitFileChanged dispatches to mailboxes synchronously but plugins
         // transition to Running asynchronously when their handler runs. Give
         // the dispatch a brief settle window so we don't observe the plugin
         // as "Idle" right before it enters Running.
-        let settleDeadline =
-            System.DateTime.UtcNow + System.TimeSpan.FromMilliseconds(200.0)
+        let settleDeadline = now () + System.TimeSpan.FromMilliseconds(200.0)
 
         let mutable last = running ()
 
@@ -3372,13 +3374,13 @@ let internal waitForPluginTerminalIfRunningWith
         last <- running ()
 
         if last then
-            let mutable lastLogTime = System.DateTime.UtcNow
+            let mutable lastLogTime = now ()
 
             while last && (timeout = System.TimeSpan.MaxValue || before deadline) do
-                let now = System.DateTime.UtcNow
+                let at = now ()
 
-                if (now - lastLogTime).TotalSeconds >= 10.0 then
-                    lastLogTime <- now
+                if (at - lastLogTime).TotalSeconds >= 10.0 then
+                    lastLogTime <- at
                     Logging.info "scan" $"Waiting for plugin '%s{pluginName}' to leave Running..."
 
                 do! Async.Sleep 50
@@ -3389,6 +3391,15 @@ let internal waitForPluginTerminalIfRunningWith
                     "scan"
                     $"waitForPluginTerminalIfRunning: '%s{pluginName}' still Running after %O{timeout}; proceeding anyway"
     }
+
+/// `waitForPluginTerminalIfRunningOn` on the awake clock (`HostClock.awakeUtc`): a sleep of
+/// the box spends none of `timeout` (AUTOMATION-1488).
+let internal waitForPluginTerminalIfRunningWith
+    (getStatus: string -> PluginStatus option)
+    (pluginName: string)
+    (timeout: System.TimeSpan)
+    : Async<unit> =
+    waitForPluginTerminalIfRunningOn HostClock.awakeUtc getStatus pluginName timeout
 
 let internal waitForPluginTerminalIfRunning
     (host: PluginHost)
@@ -4041,7 +4052,7 @@ type Daemon
                               Source = idleExitSource
                               PressureFloorMin = pressureIdleFloorMin
                               Pressure = IdleExit.readPressure
-                              Now = fun () -> System.DateTime.UtcNow
+                              Now = HostClock.awakeUtc
                               // Inhibited by plugin work in flight (mailbox events
                               // or an exclusive background run), a client blocked
                               // on a verdict wait, or a scan in flight. The wait
@@ -4114,31 +4125,47 @@ type Daemon
                 // bound sits above the verdict deadline plus grace, so a client
                 // blocked on WaitForComplete gets its own more specific
                 // TimeoutException first and a healthy long run is never restarted.
+                // Every age the monitor judges is awake time (AUTOMATION-1488): its clock is
+                // `HostClock.awakeUtc`, the clock `LastActivityAt` is stamped on, and the start
+                // stamps statuses take on the wall clock are anchored onto it, so a box that
+                // slept through a run is not restarted as wedged when it wakes.
+                let runningAnchors =
+                    PluginWedge.AwakeAnchors(
+                        HostClock.system,
+                        HostClock.awakeUtc,
+                        fun () ->
+                            host.GetAllStatuses()
+                            |> Map.toList
+                            |> List.choose (fun (name, s) ->
+                                match s with
+                                | Running since -> Some(name, since)
+                                | _ -> None)
+                    )
+
+                let queuedAnchors =
+                    PluginWedge.AwakeAnchors(
+                        HostClock.system,
+                        HostClock.awakeUtc,
+                        fun () ->
+                            host.GetAllStatuses()
+                            |> Map.toList
+                            |> List.collect (fun (name, s) ->
+                                match s with
+                                | Running _ ->
+                                    host.GetActivitySnapshot(name).Subtasks
+                                    |> List.filter (fun t -> PluginFramework.QueuedResult.isSubtaskKey t.Key)
+                                    |> List.map (fun t -> name, t.StartedAt)
+                                | _ -> [])
+                    )
+
                 use _wedgeMonitor: IDisposable =
                     PluginWedge.createMonitor
                         { Bound = PluginWedge.ambientBound ()
                           ResultQueuedBound = PluginWedge.DefaultResultQueuedBound
                           EscalateEvery = PluginWedge.DefaultEscalateEvery
-                          Now = fun () -> System.DateTime.UtcNow
-                          RunningPlugins =
-                            fun () ->
-                                host.GetAllStatuses()
-                                |> Map.toList
-                                |> List.choose (fun (name, s) ->
-                                    match s with
-                                    | Running since -> Some(name, since)
-                                    | _ -> None)
-                          QueuedResults =
-                            fun () ->
-                                host.GetAllStatuses()
-                                |> Map.toList
-                                |> List.collect (fun (name, s) ->
-                                    match s with
-                                    | Running _ ->
-                                        host.GetActivitySnapshot(name).Subtasks
-                                        |> List.filter (fun t -> PluginFramework.QueuedResult.isSubtaskKey t.Key)
-                                        |> List.map (fun t -> name, t.StartedAt)
-                                    | _ -> [])
+                          Now = HostClock.awakeUtc
+                          RunningPlugins = runningAnchors.Read
+                          QueuedResults = queuedAnchors.Read
                           Awaiting =
                             fun name ->
                                 let work = host.WorkSnapshot

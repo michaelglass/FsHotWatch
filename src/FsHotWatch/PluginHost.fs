@@ -105,10 +105,12 @@ type PluginHost
     // fault answers are read from one pinned snapshot of it.
     let workStore = PluginWorkOwner.Store()
 
-    // UTC ticks of the most recent host-level activity (event dispatch, plugin status
-    // change, preprocessor run). Idle-exit and the wedge diagnostic read it; it is
-    // not an ownership record, and `WaitForComplete` does not consult it.
-    let mutable lastActivityAtTicks = System.DateTime.UtcNow.Ticks
+    // Ticks of the most recent host-level activity (event dispatch, plugin status change,
+    // preprocessor run) on the AWAKE clock (`HostClock.awakeUtc`). Idle-exit and the wedge
+    // diagnostic measure from it against the same clock, so a sleep of the box is never
+    // idleness or a stall (AUTOMATION-1488). It is not an ownership record, and
+    // `WaitForComplete` does not consult it.
+    let mutable lastActivityAtTicks = HostClock.awakeUtc().Ticks
 
     // Live "checked files" coverage set: the files that currently hold a valid FULL
     // type-check result. A request-time completeness signal, NOT the stale
@@ -124,7 +126,7 @@ type PluginHost
     let checkedFiles = ConcurrentDictionary<AbsFilePath, unit>()
 
     let touchActivity () =
-        System.Threading.Volatile.Write(&lastActivityAtTicks, System.DateTime.UtcNow.Ticks)
+        System.Threading.Volatile.Write(&lastActivityAtTicks, HostClock.awakeUtc().Ticks)
 
     // statusChanged.Trigger dispatch is owned by its own agent: `setStatus` posts
     // the (name, status) pair here AFTER publishing the mutation, and this loop
@@ -716,8 +718,8 @@ type PluginHost
         finally
             held.Dispose()
 
-    /// UTC timestamp of the most recent host activity: an event dispatch or a
-    /// plugin status transition. Idle-exit measures idleness from it and the wedge
+    /// The most recent host activity on the awake clock (`HostClock.awakeUtc`), never a time
+    /// of day: an event dispatch or a plugin status transition. Idle-exit measures idleness from it and the wedge
     /// diagnostic reports how long the host has been quiet. Rest is never read from
     /// it: an event emitted but not yet processed is already owned in `WorkSnapshot`.
     member _.LastActivityAt() : System.DateTime =

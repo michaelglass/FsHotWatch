@@ -438,10 +438,10 @@ type HostRun =
     /// Something exists at the repository's virtual root, which must never exist.
     | VirtualRootExists of path: string
 
-/// `runObserved`, reading the idle watch's time from `wallNow`: a test moves it to cross the
+/// `runObserved`, reading the idle watch's time from `now`: a test moves it to cross the
 /// grace when it says, not when a loaded box gets there.
 let internal runObservedOn
-    (wallNow: unit -> DateTime)
+    (now: unit -> DateTime)
     (observe: SessionRegistry -> IDisposable)
     (settings: HostSettings)
     (factory: SessionFactory)
@@ -493,14 +493,14 @@ let internal runObservedOn
                             Async.StartImmediateAsTask(RepositoryIpc.serve settings.Control.Endpoint host.Handlers cts)
 
                         // Idle exit: no session attached for the whole grace period.
-                        let mutable idleSince = wallNow ()
+                        let mutable idleSince = now ()
 
                         while not cts.IsCancellationRequested do
                             cts.Token.WaitHandle.WaitOne(TimeSpan.FromSeconds 1.0) |> ignore
 
                             let busy = not (List.isEmpty registry.Sessions)
 
-                            match idleTick idleGrace (wallNow ()) idleSince busy host.TryRetire with
+                            match idleTick idleGrace (now ()) idleSince busy host.TryRetire with
                             | Some since -> idleSince <- since
                             | None ->
                                 Logging.info "host" $"no session for %s{string idleGrace}; exiting"
@@ -536,7 +536,8 @@ let runObserved
     (idleGrace: TimeSpan)
     (cts: CancellationTokenSource)
     : HostRun =
-    runObservedOn (fun () -> DateTime.UtcNow) observe settings factory idleGrace cts
+    // The idle grace is awake time (AUTOMATION-1488): a host is not idle for the time the box slept.
+    runObservedOn HostClock.awakeUtc observe settings factory idleGrace cts
 
 /// Take the repository's host lock, serve the endpoint until `cts` is cancelled or no
 /// session has been attached for `idleGrace`, then end every session and release the

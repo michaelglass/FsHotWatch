@@ -31,13 +31,15 @@ let private wallClockDeadline =
 let internal testsWallClockDeadline (line: string) =
     not (line.TrimStart().StartsWith "//") && wallClockDeadline.IsMatch line
 
-/// Every wall-clock deadline in `tests/`, as `file:line: code`. This file is left out: its
-/// cases spell the shape it looks for.
+/// Every wall-clock deadline in `tests/`, as `file:line: code`. This file and
+/// `ProductDeadlineTests` (the same rule for `src/`) are left out: their cases spell the shape
+/// they look for.
 let private wallClockDeadlines (root: string) =
     filesUnder FsHotWatch.SafeWalk.SourceExcludedDirs "*.fs" (Path.Combine(root, "tests"))
     |> Seq.map (fun path -> Path.GetRelativePath(root, path).Replace('\\', '/'), path)
     |> Seq.filter (fun (relative, _) -> not (relative.Contains "/obj/" || relative.Contains "/bin/"))
-    |> Seq.filter (fun (relative, _) -> Path.GetFileName relative <> "MonotonicDeadlineTests.fs")
+    |> Seq.filter (fun (relative, _) ->
+        not (Set.contains (Path.GetFileName relative) (set [ "MonotonicDeadlineTests.fs"; "ProductDeadlineTests.fs" ])))
     |> Seq.collect (fun (relative, path) ->
         File.ReadAllLines path
         |> Seq.mapi (fun i line -> i + 1, line)

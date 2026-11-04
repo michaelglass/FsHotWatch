@@ -197,6 +197,61 @@ type TickInputs =
         LastActivityAt: DateTime
     }
 
+/// Start stamps taken on the wall clock (a `Running` status, a queued result), each
+/// re-read once on the awake clock, so a sleep of the box never counts toward a wedge
+/// (AUTOMATION-1488).
+///
+/// A stamp seen for the first time is given the awake age it can have had: its wall age,
+/// but no more than the awake time since the previous read, because it was not there
+/// then. That is exact when the box did not sleep, and errs short (a later wedge, never a
+/// false one) when it did. Once anchored, a stamp keeps its awake stamp, so its age grows
+/// only with awake time. A stamp no longer listed is forgotten.
+///
+/// `awakeNow` is the awake clock as a `DateTime` (`HostClock.awakeUtcOn`), so the stamps
+/// it returns are read against it, never against the wall clock.
+let internal anchorStamps
+    (previous: HostClock.Reading)
+    (current: HostClock.Reading)
+    (awakeNow: DateTime)
+    (anchored: Map<string * int64, DateTime>)
+    (stamps: (string * DateTime) list)
+    : (string * DateTime) list * Map<string * int64, DateTime> =
+    let sincePrevious = max TimeSpan.Zero (current.Awake - previous.Awake)
+
+    let read =
+        stamps
+        |> List.map (fun (name, stamp: DateTime) ->
+            let key = name, stamp.Ticks
+
+            match Map.tryFind key anchored with
+            | Some awake -> key, (name, awake)
+            | None ->
+                let wallAge = max TimeSpan.Zero (current.Wall - stamp)
+                key, (name, awakeNow - min wallAge sincePrevious))
+
+    read |> List.map snd, read |> List.map (fun (key, (_, awake)) -> key, awake) |> Map.ofList
+
+/// `anchorStamps` over a live list, on `clock`: each `Read` anchors what `stamps` lists now.
+/// `awakeNow` is `clock`'s awake time as a `DateTime` (`HostClock.awakeUtcOn clock`, or the
+/// process-wide `HostClock.awakeUtc` in production, which other stamps are taken on).
+type internal AwakeAnchors(clock: HostClock.Clock, awakeNow: unit -> DateTime, stamps: unit -> (string * DateTime) list)
+    =
+    let gate = obj ()
+    let mutable previous = HostClock.read clock
+    let mutable anchored = Map.empty
+
+    /// The listed stamps, each on the awake clock.
+    member _.Read() : (string * DateTime) list =
+        lock gate (fun () ->
+            let current = HostClock.read clock
+            let read, next = anchorStamps previous current (awakeNow ()) anchored (stamps ())
+            previous <- current
+            anchored <- next
+            read)
+
+    /// The awake clock these stamps are read against.
+    member _.Now() : DateTime = awakeNow ()
+
 /// Escalation bucket: how many whole `escalateEvery` intervals have elapsed.
 /// A plugin logs one escalation line per bucket, not one per tick.
 let internal escalationBucket (escalateEvery: TimeSpan) (elapsed: TimeSpan) : int =

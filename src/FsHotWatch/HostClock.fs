@@ -59,3 +59,31 @@ let suspensionLine (during: string) (earlier: Reading) (later: Reading) : string
             $"host was suspended ~%d{int suspended.TotalSeconds}s %s{during} (wall clock advanced %d{int wall.TotalSeconds}s, awake %d{int awake.TotalSeconds}s)"
     else
         None
+
+/// `clock`'s awake time as a `DateTime`: the wall time when this was made, plus the awake
+/// time since. It moves only while the host is awake, so a deadline held as a `DateTime`
+/// (`now () + timeout`, `now () < deadline`) and taken from it never counts a sleep
+/// (AUTOMATION-1488). The wall clock does count one: a laptop that sleeps mid-wait came
+/// back to waits that had "timed out" in under a second of awake time.
+///
+/// Only for intervals: it drifts behind the wall clock by every sleep since it was made,
+/// so it is never shown as a time of day, persisted, or compared with a wall-clock stamp
+/// (a file's mtime, `DateTime.UtcNow`).
+let awakeUtcOn (clock: Clock) : unit -> DateTime =
+    let origin = read clock
+    fun () -> origin.Wall + (clock.AwakeNow() - origin.Awake)
+
+/// `awakeUtcOn system`, made once for the process: the clock every product deadline held
+/// as a `DateTime` reads.
+let awakeUtc: unit -> DateTime = awakeUtcOn system
+
+/// Poll `holds`, pausing with `pause` between reads, while it holds and less than `bound`
+/// has passed on `now`, a clock that does not count a sleep (`awakeUtc`). Whether it still
+/// holds at the end, read once more.
+let pollWhile (now: unit -> DateTime) (pause: unit -> unit) (bound: TimeSpan) (holds: unit -> bool) : bool =
+    let deadline = now () + bound
+
+    while holds () && now () < deadline do
+        pause ()
+
+    holds ()

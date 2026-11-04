@@ -1613,7 +1613,7 @@ let startFreshDaemonWith
     (startupTimeoutSeconds: float)
     : bool =
     startFreshDaemonOn
-        (fun () -> DateTime.UtcNow)
+        FsHotWatch.HostClock.awakeUtc
         Thread.Sleep
         fileOps
         ipc
@@ -1784,7 +1784,7 @@ let internal ensureDaemonWith
     (startupTimeoutSeconds: float)
     : EnsureOutcome =
     ensureDaemonOn
-        (fun () -> DateTime.UtcNow)
+        FsHotWatch.HostClock.awakeUtc
         Thread.Sleep
         fileOps
         processOps
@@ -1948,7 +1948,7 @@ type StopOps =
 
 let defaultStopOps: StopOps =
     { IsProcessAlive = daemonPidAlive
-      Now = fun () -> DateTime.UtcNow
+      Now = FsHotWatch.HostClock.awakeUtc
       SleepMs = fun (ms: int) -> Thread.Sleep ms }
 
 /// How long `stop` keeps asking a live pipe to shut down before giving up.
@@ -2213,7 +2213,7 @@ let private waitForDaemonReady
     waitForDaemonReadyWith
         probe
         (fun () -> daemonProcessAliveWith defaultFileOps repoRoot)
-        (fun () -> DateTime.UtcNow)
+        FsHotWatch.HostClock.awakeUtc
         Thread.Sleep
         (fun () -> eprintfn "  Waiting for the daemon to finish starting...")
         200
@@ -3251,13 +3251,15 @@ let internal stopRepositoryHost (repoRoot: string) : int =
         match repositoryCall control.Endpoint "StopHost" with
         | Error e -> repositoryCallFailed control e
         | Ok _ ->
-            let deadline = DateTime.UtcNow.AddSeconds 60.0
+            // 60 s of awake time: a sleep of the box is not the host refusing to stop.
+            let stillServing =
+                FsHotWatch.HostClock.pollWhile
+                    FsHotWatch.HostClock.awakeUtc
+                    (fun () -> Thread.Sleep 100)
+                    (TimeSpan.FromSeconds 60.0)
+                    (fun () -> FsHotWatch.RepositoryIpc.isRunning control.Endpoint)
 
-            while FsHotWatch.RepositoryIpc.isRunning control.Endpoint
-                  && DateTime.UtcNow < deadline do
-                Thread.Sleep 100
-
-            if FsHotWatch.RepositoryIpc.isRunning control.Endpoint then
+            if stillServing then
                 eprintfn $"The repository host is still serving 60s after it was asked to stop; see %s{control.HostLog}"
                 1
             else
@@ -4083,7 +4085,7 @@ let private executeCommandRendered
                         |> Async.RunSynchronously
                   TreeHash = fun () -> TreeHash.compute repoRoot config.Exclude
                   Disk = fun reply -> FsHotWatch.Analyzers.AnalyzerFindings.diskView reply.ScopeRoot
-                  Now = fun () -> DateTime.UtcNow
+                  Now = FsHotWatch.HostClock.awakeUtc
                   Sleep = fun span -> Thread.Sleep span }
 
             let answer =

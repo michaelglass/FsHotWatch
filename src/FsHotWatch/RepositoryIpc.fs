@@ -401,7 +401,8 @@ let serve (endpoint: string) (handlers: EndpointHandlers) (cts: CancellationToke
                 OperationWatchdog.DefaultThreshold,
                 heartbeatEvery = TimeSpan.FromSeconds(30.0),
                 now = (fun () -> DateTime.UtcNow),
-                log = Logging.info "watchdog"
+                log = Logging.info "watchdog",
+                awake = HostClock.system.AwakeNow
             )
 
         return! IpcServer.serveConnections IpcServer.ConnectionDrainBound endpoint (opener handlers watchdog) cts
