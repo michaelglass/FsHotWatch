@@ -224,3 +224,53 @@ type internal RunCollector() =
             after ())
 
     member _.Read(f: RunCollection -> 'a) : 'a = lock gate (fun () -> f current)
+
+    /// Remove and return the trace decisions of the projects `pick` selects, oldest first.
+    member _.TakeTraceRuns(pick: TracedProjectRun -> bool) : TracedProjectRun list =
+        lock gate (fun () ->
+            let taken, kept = current.TraceRuns |> List.partition pick
+            current <- { current with TraceRuns = kept }
+            List.rev taken)
+
+/// Stores each traced project's traces as soon as its result is final, while the rest of
+/// the run goes on, instead of storing every project after the last one finished. That
+/// serial tail was the whole cost of tracing a confirm (AUTOMATION-1484): a project that
+/// finishes early is now stored while the slower ones still run, and the run waits at its
+/// end only for what is left.
+///
+/// Projects are stored one at a time, in the order they settled: the trace store has one
+/// writer. `ingest` is `TraceRun.ingestAll` bound to the run, and never throws except that a
+/// cancelled run raises `OperationCanceledException`, which `Finish` lets through.
+type internal TraceIngestion
+    (collected: RunCollector, ingest: TracedProjectRun list -> Async<unit>, runToken: CancellationToken) =
+    let gate = obj ()
+    let mutable tail: Tasks.Task = Tasks.Task.CompletedTask
+
+    let enqueue (runs: TracedProjectRun list) =
+        if not runs.IsEmpty then
+            lock gate (fun () ->
+                let previous = tail
+
+                tail <-
+                    Async.StartAsTask(
+                        async {
+                            do! Async.AwaitTask previous
+                            do! ingest runs
+                        },
+                        cancellationToken = runToken
+                    )
+                    :> Tasks.Task)
+
+    /// `project`'s result is final (a starvation re-run is not pending for it): store its
+    /// traces now, after any project that settled before it.
+    member _.Settled(project: string) =
+        enqueue (collected.TakeTraceRuns(fun r -> r.Project = project))
+
+    /// Every project has finished: wait for the projects already being stored, then store
+    /// any project that never settled.
+    member _.Finish() : Async<unit> =
+        async {
+            enqueue (collected.TakeTraceRuns(fun _ -> true))
+            let pending = lock gate (fun () -> tail)
+            do! Async.AwaitTask pending
+        }
