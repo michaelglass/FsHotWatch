@@ -144,19 +144,19 @@ let internal isHeld (thisHost: string) (isAlive: int -> bool) (c: Claim) : bool 
     else
         isAlive c.Pid
 
-/// True unless the process is PROVABLY gone. Mirrors `Program.daemonProcessAliveWith`'s
-/// probe: only "no process with that id" is proof; every other outcome is unknown, and
-/// unknown means alive.
-///
-/// Note that pid 0 and pid 1 answer ALIVE on macOS — the probe finds real kernel/launchd
-/// processes there. That is not a defect to work around: this asks "may I release this
-/// claim?", and the answer for a pid that resolves to a running process is no.
+/// Whether a claim whose process probed `liveness` is still running. Only `Gone` releases
+/// it: `Unknown`, which includes a pid that is not positive, keeps the claim, for the
+/// fail-closed reason `isHeld` gives.
+let internal isRunning (liveness: ProcessHelper.Liveness) : bool =
+    match liveness with
+    | ProcessHelper.Liveness.Gone -> false
+    | ProcessHelper.Liveness.Alive
+    | ProcessHelper.Liveness.Unknown _ -> true
+
+/// True unless the process is PROVABLY gone, by the one probe
+/// (`ProcessHelper.isProcessAlive`) read through `isRunning`.
 let internal processAlive (pid: int) : bool =
-    try
-        not (Diagnostics.Process.GetProcessById(pid).HasExited)
-    with
-    | :? ArgumentException -> false
-    | _ -> true
+    isRunning (ProcessHelper.isProcessAlive pid)
 
 /// The claims held on this repo right now, from the files on disk.
 ///

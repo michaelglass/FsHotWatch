@@ -88,19 +88,21 @@ module HostSessionRecord =
         else
             None
 
-/// Whether a process with this pid exists and has not exited. Only a positive pid
-/// names one process; the OS reads zero and negative ones as process groups.
-let processAlive (pid: int) : bool =
-    pid > 0
-    && (try
-            let p = Diagnostics.Process.GetProcessById pid
+/// Whether a host whose pid probed `liveness` is one to route to. Only `Alive` is: a host
+/// record names an endpoint, and one that cannot be shown alive (`Unknown`, which includes
+/// a pid that is not positive) is not routed to. The worktree's own daemon serves
+/// instead, and the repository lock still keeps a second host from starting beside a
+/// live one.
+let internal isLive (liveness: ProcessHelper.Liveness) : bool =
+    match liveness with
+    | ProcessHelper.Liveness.Alive -> true
+    | ProcessHelper.Liveness.Gone
+    | ProcessHelper.Liveness.Unknown _ -> false
 
-            try
-                not p.HasExited
-            finally
-                p.Dispose()
-        with _ ->
-            false)
+/// Whether the host process with this pid is running, by the one probe
+/// (`ProcessHelper.isProcessAlive`) read through `isLive`.
+let processAlive (pid: int) : bool =
+    isLive (ProcessHelper.isProcessAlive pid)
 
 // ---------------------------------------------------------------------------
 // The worktree lock

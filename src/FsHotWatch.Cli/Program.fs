@@ -1857,6 +1857,25 @@ let decideReadinessStep (probe: Result<unit, exn>) (daemonAlive: bool) (deadline
         else
             ReadinessStep.KeepWaiting
 
+/// Whether a daemon whose pid probed `liveness` is still running. Only `Gone` proves it
+/// is not: every unknown leans ALIVE, because mis-declaring a live daemon dead is how a
+/// pidfile gets deleted out from under a running process, and how `stop` reports a daemon
+/// gone while it still scans.
+///
+/// The probe is `kill(pid, 0)` (`ProcessHelper.isProcessAlive`), the only one that holds
+/// for this daemon: its argv is a bare `FsHotWatch.Cli.dll start` carrying neither the tool
+/// name nor the workspace path, so no name- or path-based match can find it, and the `ps`
+/// and `%cpu` readings available here are not dependable either.
+let internal daemonAlive (liveness: FsHotWatch.ProcessHelper.Liveness) : bool =
+    match liveness with
+    | FsHotWatch.ProcessHelper.Liveness.Gone -> false
+    | FsHotWatch.ProcessHelper.Liveness.Alive
+    | FsHotWatch.ProcessHelper.Liveness.Unknown _ -> true
+
+/// The production liveness probe: the one probe, read through `daemonAlive`.
+let internal daemonPidAlive (pid: int) : bool =
+    daemonAlive (FsHotWatch.ProcessHelper.isProcessAlive pid)
+
 /// True unless the daemon's recorded PID is PROVABLY gone. Reads `.fshw/daemon.pid`;
 /// a missing or unparseable pidfile is treated as ALIVE (unknown ⇒ keep waiting,
 /// never mis-declare a crash), while a pid whose process no longer exists is a
@@ -1869,12 +1888,7 @@ let daemonProcessAliveWith (fileOps: FileOps) (repoRoot: string) : bool =
     else
         match Int32.TryParse((fileOps.ReadAllText pidPath).Trim()) with
         | false, _ -> true
-        | true, pid ->
-            try
-                not (System.Diagnostics.Process.GetProcessById(pid).HasExited)
-            with
-            | :? ArgumentException -> false // no process with that id — proven dead
-            | _ -> true // any other probe error — assume alive rather than false-crash
+        | true, pid -> daemonPidAlive pid
 
 /// Stale pidfile hygiene: delete `.fshw/daemon.pid` when the process it names is
 /// PROVABLY dead — cleaned up on the next command, not left for an external reaper.
@@ -1910,50 +1924,6 @@ let private cleanStalePidfile (repoRoot: string) : unit =
 // — the process can still be scanning files after the last endpoint closed. The
 // code below never conflates the two: only a process proven to have left the
 // process table earns the success line.
-
-/// `kill(2)`. Signal 0 runs the existence and permission checks and delivers
-/// nothing. It is the only liveness probe that holds for this daemon: its argv is
-/// a bare `FsHotWatch.Cli.dll start` carrying neither the tool name nor the
-/// workspace path, so no name- or path-based match can find it, and the `ps` and
-/// `%cpu` readings available here are not dependable either.
-[<DllImport("libc", EntryPoint = "kill", SetLastError = true)>]
-extern int private signalProcess(int pid, int signal)
-
-/// `errno` for "no such process" — 3 on both macOS and Linux.
-[<Literal>]
-let private ESRCH = 3
-
-/// True unless `pid` is PROVABLY gone, as decided by a `kill(pid, 0)` probe:
-///
-/// | result      | meaning                                       | verdict |
-/// |-------------|-----------------------------------------------|---------|
-/// | `0`         | the process exists and we may signal it        | alive   |
-/// | `-1` ESRCH  | no such process — the one answer proving death | dead    |
-/// | `-1` other  | exists but not ours (EPERM), or probe failed   | alive   |
-///
-/// Every unknown leans ALIVE, the same convention `daemonProcessAliveWith` uses:
-/// mis-declaring a live daemon dead is how a pidfile gets deleted out from under a
-/// running process. Probe and `errno` reader are injected so the table above is
-/// testable without a process to kill.
-let internal processAliveByProbe (probe: int -> int) (lastError: unit -> int) (pid: int) : bool =
-    if pid <= 0 then false
-    elif probe pid = 0 then true
-    else lastError () <> ESRCH
-
-/// The production liveness probe. Falls back to the managed process table where
-/// there is no `libc` `kill` — a host that could not have launched this daemon in
-/// the first place, since the detached launch itself calls `setsid`/`execv`.
-let private daemonPidAlive (pid: int) : bool =
-    try
-        processAliveByProbe (fun p -> signalProcess (p, 0)) Marshal.GetLastPInvokeError pid
-    with
-    | :? EntryPointNotFoundException
-    | :? DllNotFoundException ->
-        try
-            not (System.Diagnostics.Process.GetProcessById(pid).HasExited)
-        with
-        | :? ArgumentException -> false
-        | _ -> true
 
 /// The pid `.fshw/daemon.pid` names, or `None` when there is no pidfile or it does
 /// not hold a positive number. `None` means "nothing to watch", never "nothing is
