@@ -69,9 +69,9 @@ let ``a timer ticks until it is disposed, and not after`` () =
     let timer =
         DrainedTimer.every (TimeSpan.FromMilliseconds 10.0) (fun () -> Interlocked.Increment &ran.contents |> ignore)
 
-    let deadline = DateTime.UtcNow.AddSeconds 10.0
+    let deadline = TestHelpers.Deadline.After(TimeSpan.FromSeconds 10.0)
 
-    while Volatile.Read &ran.contents < 2 && DateTime.UtcNow < deadline do
+    while Volatile.Read &ran.contents < 2 && deadline.Remains do
         Thread.Sleep 10
 
     timer.Dispose()

@@ -60,17 +60,17 @@ let ``PluginStatus constructors work`` () =
 /// read it only while no evaluation runs.
 [<Collection(LogGlobalCollectionName)>]
 type RelativePathResolution() =
-    [<Fact(Timeout = 15000)>]
+    [<Fact(Timeout = InProcessEvaluationTestCapMs)>]
     member _.``AbsFilePath round-trips and normalizes``() =
         let p = atSettledWorkingDirectory (fun () -> AbsFilePath.create "foo.fs")
         test <@ System.IO.Path.IsPathRooted(AbsFilePath.value p) @>
 
-    [<Fact(Timeout = 15000)>]
+    [<Fact(Timeout = InProcessEvaluationTestCapMs)>]
     member _.``AbsProjectPath round-trips``() =
         let p = atSettledWorkingDirectory (fun () -> AbsProjectPath.create "x.fsproj")
         test <@ AbsProjectPath.value p |> System.IO.Path.IsPathRooted @>
 
-    [<Fact(Timeout = 15000)>]
+    [<Fact(Timeout = InProcessEvaluationTestCapMs)>]
     member _.``absolute paths resolve a relative path against the process working directory``() =
         atSettledWorkingDirectory (fun () ->
             let cwd = Directory.GetCurrentDirectory()

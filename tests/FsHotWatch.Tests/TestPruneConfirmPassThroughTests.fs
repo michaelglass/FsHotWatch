@@ -621,10 +621,15 @@ let private scopeSequence name (steps: string option list) =
 
         File.ReadAllLines(runs) |> Array.countBy id |> Map.ofArray)
 
+/// The xUnit cap of a `scopeSequence` test: up to four `emitBuildAndWaitTerminal` waits
+/// (`HangWaitMs` each) over a trivial child, and the set-up before them (AUTOMATION-1461).
+[<Literal>]
+let private ScopeSequenceCapMs = 5 * HangWaitMs
+
 let private confirmStep = Some "full"
 let private checkStep = None
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = ScopeSequenceCapMs)>]
 let ``full-suite scope ends with the confirm's run`` () =
     // `set-scope full` lasts for the run launched under it. A later build in the same
     // daemon is `check`'s: nothing is owed and the confirm earned the baseline, so it runs
@@ -632,7 +637,7 @@ let ``full-suite scope ends with the confirm's run`` () =
     let executions = scopeSequence "tp-pt-ends" [ confirmStep; checkStep ]
     test <@ executions = Map.ofList [ "ProjA", 1; "ProjB", 1 ] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = ScopeSequenceCapMs)>]
 let ``check, confirm, check in one daemon: the last check runs nothing`` () =
     // The first check selects ProjA for `Lib.foo`, and runs ProjB too: a fresh daemon has
     // no whole-project run of it under its model, so a filtered or skipped ProjB would
@@ -641,7 +646,7 @@ let ``check, confirm, check in one daemon: the last check runs nothing`` () =
     let executions = scopeSequence "tp-pt-ccc" [ checkStep; confirmStep; checkStep ]
     test <@ executions = Map.ofList [ "ProjA", 2; "ProjB", 2 ] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = ScopeSequenceCapMs)>]
 let ``every confirm runs the suite, never a cached one`` () =
     // A confirm bypasses cache reads for its evidence. Each one in a warm daemon over an
     // unchanged tree runs both projects again. The first check runs both as well: a fresh
@@ -651,7 +656,7 @@ let ``every confirm runs the suite, never a cached one`` () =
 
     test <@ executions = Map.ofList [ "ProjA", 4; "ProjB", 4 ] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = ScopeSequenceCapMs)>]
 let ``set-scope impact ends pass-through before any run`` () =
     let executions = scopeSequence "tp-pt-impact" [ confirmStep; Some "impact" ]
     // The confirm's run, then a check that owes nothing.

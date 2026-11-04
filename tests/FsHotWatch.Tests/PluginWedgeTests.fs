@@ -328,9 +328,9 @@ let ``createMonitor fires the recovery on a wedged plugin and stops after dispos
 
     let monitor = createMonitorWith (TimeSpan.FromMilliseconds 50.0) deps
 
-    let deadline = DateTime.UtcNow.AddSeconds 5.0
+    let deadline = Deadline.After(TimeSpan.FromSeconds 5.0)
 
-    while lock wedges (fun () -> wedges.Count = 0) && DateTime.UtcNow < deadline do
+    while lock wedges (fun () -> wedges.Count = 0) && deadline.Remains do
         Threading.Thread.Sleep 25
 
     monitor.Dispose()

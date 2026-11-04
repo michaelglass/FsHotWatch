@@ -15,10 +15,10 @@ open FsHotWatch.WorkScheduler
 /// Waits until `condition` holds, failing the test after five seconds.
 [<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
 let private waitUntil (what: string) (condition: unit -> bool) =
-    let deadline = DateTime.UtcNow.AddSeconds 5.0
+    let deadline = Deadline.After(TimeSpan.FromSeconds 5.0)
 
     while not (condition ()) do
-        if DateTime.UtcNow > deadline then
+        if not deadline.Remains then
             failwith $"timed out waiting for %s{what}"
 
         Thread.Sleep 5

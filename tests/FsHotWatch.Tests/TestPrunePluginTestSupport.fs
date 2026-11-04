@@ -164,21 +164,21 @@ let emitBuildAndWaitTerminal (host: PluginHost) =
     // Admission is synchronous, so the event is owned from here until it commits.
     host.EmitBuildCompleted(BuildSucceeded)
 
-    let completedNewCycle =
-        waitUntilTrue
-            (fun () ->
-                let terminal =
-                    match host.GetStatus("test-prune") with
-                    | Some(Completed _)
-                    | Some(Failed _) -> true
-                    | _ -> false
+    // A hang cap, not a claim about speed: two 20 s waits here ran out at load ~100
+    // (AUTOMATION-1461) over in-process work and a trivial child.
+    waitUntilOr
+        "the BuildCompleted to commit, and test-prune to reach a terminal status with every plugin drained"
+        (fun () ->
+            let terminal =
+                match host.GetStatus("test-prune") with
+                | Some(Completed _)
+                | Some(Failed _) -> true
+                | _ -> false
 
-                host.CompletedDispatches() > committedBefore
-                && terminal
-                && not (host.AnyPluginBusy()))
-            20000
-
-    test <@ completedNewCycle @>
+            host.CompletedDispatches() > committedBefore
+            && terminal
+            && not (host.AnyPluginBusy()))
+        HangWaitMs
 
 /// Stand up a test-prune plugin around a single one-project test config whose
 /// command is `sh -c "touch <sentinel>"`. Returns `(host, sentinel)`.

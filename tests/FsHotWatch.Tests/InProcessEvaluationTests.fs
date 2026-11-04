@@ -40,7 +40,7 @@ let private repository (root: string) (name: string) : string =
     File.WriteAllText(Path.Combine(projectDir, $"%s{name}.fsproj"), "<Project />")
     projectDir
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``overlapping evaluations leave the process standing where it stood`` () =
     // Two daemons in one process evaluate at once: the first stands in its project, the
     // second stands in its own, the first finishes and puts back where it started, and
@@ -97,7 +97,7 @@ let ``overlapping evaluations leave the process standing where it stood`` () =
             test <@ deleteWhileWritten (Path.Combine(root, "first")) 10000 @>
             test <@ processWorkingDirectoryExists () @>))
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``an evaluation in flight when a test moves back cannot leave the process in the test's scratch tree`` () =
     // The cascade behind AUTOMATION-1295, in one test. The host verb stands the process in
     // its control directory, inside the test's scratch tree; a session's evaluation starts
@@ -161,7 +161,7 @@ let ``an evaluation in flight when a test moves back cannot leave the process in
         test <@ processWorkingDirectoryExists () @>
         test <@ afterEvaluation = original @>)
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``a read at a settled working directory waits out an evaluation in flight`` () =
     // AUTOMATION-1411: a test reading the working directory while a daemon evaluates
     // read that daemon's scratch project, not its own. The evaluation is held standing in
@@ -217,7 +217,7 @@ let ``a read at a settled working directory waits out an evaluation in flight`` 
             test <@ evaluation.Wait(HangWait) @>
             test <@ seen.Value = original @>))
 
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``deleting a scratch tree the process stands in fails the test that did it and moves the process out`` () =
     // A test that leaves the process standing in its own scratch tree (as the host verb
     // does) must fail ITSELF, with the process moved somewhere that exists, rather than
@@ -241,7 +241,7 @@ let ``deleting a scratch tree the process stands in fails the test that did it a
         test <@ raised |> Option.exists (fun message -> message.Contains scratch) @>
         test <@ not (Directory.Exists scratch) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``after a test that leaves the process in a deleted directory, the guard fails it and moves the process out`` () =
     withProcessWorkingDirectory None (fun () ->
         let gone = Path.Combine(Path.GetTempPath(), $"fshw-gone-{Guid.NewGuid():N}")

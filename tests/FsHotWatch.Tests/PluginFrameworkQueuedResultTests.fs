@@ -17,9 +17,9 @@ type private Msg = Finished
 
 [<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
 let private waitFor (deadline: TimeSpan) (condition: unit -> bool) =
-    let until = DateTime.UtcNow + deadline
+    let until = TestHelpers.Deadline.After deadline
 
-    while not (condition ()) && DateTime.UtcNow < until do
+    while not (condition ()) && until.Remains do
         Thread.Sleep 10
 
     condition ()

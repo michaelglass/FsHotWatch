@@ -138,7 +138,8 @@ let ``without the extension the dispatching test is not selected`` () =
         let affected = affectedAfterHandlerEdit tmpDir []
         test <@ not (affected.Contains "purgeJobTest") @>)
 
-[<Fact(Timeout = 30000)>]
+// Two `emitBuildAndWaitTerminal` waits (`HangWaitMs` each), and the set-up before them.
+[<Fact(Timeout = 3 * HangWaitMs)>]
 let ``an extension failure stays reported until the extension answers again`` () =
     withTempDir "tp-ext-recover" (fun tmpDir ->
         let broken = ref true

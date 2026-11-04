@@ -22,10 +22,10 @@ open FsHotWatch.Tests.TestHelpers
 let private hammerTreeBriefly (dir: string) (burst: TimeSpan) : Thread =
     let run () =
         let nested = Path.Combine(dir, ".fshw", "errors")
-        let deadline = DateTime.UtcNow + burst
+        let deadline = Deadline.After burst
         let mutable n = 0
 
-        while DateTime.UtcNow < deadline do
+        while deadline.Remains do
             try
                 Directory.CreateDirectory(nested) |> ignore
                 File.WriteAllText(Path.Combine(nested, $"fcs-{n}.json"), "{}")
@@ -414,11 +414,11 @@ let ``deleteTempDir outlasts a writer that keeps the tree busy for longer than a
 
     let writer =
         Thread(fun () ->
-            let until = DateTime.UtcNow.AddSeconds 1.5
+            let until = Deadline.After(TimeSpan.FromSeconds 1.5)
             let mutable n = 0
             let mutable gone = false
 
-            while not gone && DateTime.UtcNow < until do
+            while not gone && until.Remains do
                 try
                     File.WriteAllText(Path.Combine(logs, $"opts-%d{n % 8}.txt"), "options")
                     n <- n + 1
