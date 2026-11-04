@@ -9,11 +9,7 @@ open TestPrune.Trace.Joiner
 let private sym name kind file line =
     { FullName = name
       Kind = kind
-      SourceFile = file
-      LineStart = line
-      LineEnd = line
-      ContentHash = "h"
-      IsExtern = false }
+      Location = InSource(file, line, line, "h") }
 
 let private index (syms: SymbolInfo list) =
     { InFile = fun f -> syms |> List.filter (fun s -> s.SourceFile = f)

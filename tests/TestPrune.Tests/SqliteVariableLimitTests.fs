@@ -72,15 +72,11 @@ let private padded (names: string list) =
 let private symbol fullName kind sourceFile =
     { FullName = fullName
       Kind = kind
-      SourceFile = sourceFile
-      LineStart = 1
-      LineEnd = 2
-      ContentHash = ""
-      IsExtern = false }
+      Location = InSource(sourceFile, 1, 2, "") }
 
 let private externSymbol fullName =
     { symbol fullName Function "_extern" with
-        IsExtern = true }
+        Location = Extern None }
 
 let private dependency from' to' kind =
     { FromSymbol = from'

@@ -3045,11 +3045,7 @@ module ``AnalysisResult Create helper`` =
             AnalysisResult.Create(
                 [ { FullName = "M.f"
                     Kind = Function
-                    SourceFile = "test.fs"
-                    LineStart = 1
-                    LineEnd = 1
-                    ContentHash = ""
-                    IsExtern = false } ],
+                    Location = InSource("test.fs", 1, 1, "") } ],
                 [],
                 []
             )
@@ -3065,11 +3061,7 @@ module ``normalizeSymbolPaths`` =
         let symbols =
             [ { FullName = "M.f"
                 Kind = Function
-                SourceFile = "/repo/root/src/MyModule.fs"
-                LineStart = 1
-                LineEnd = 5
-                ContentHash = ""
-                IsExtern = false } ]
+                Location = InSource("/repo/root/src/MyModule.fs", 1, 5, "") } ]
 
         let normalized = normalizeSymbolPaths "/repo/root" symbols
         test <@ normalized[0].SourceFile = "src/MyModule.fs" @>

@@ -124,11 +124,7 @@ let ``POSITIVE CONTROL - the audit predicates do see the rows they are meant to 
     let row name kind isExtern =
         { FullName = name
           Kind = kind
-          SourceFile = ExternSourceFile
-          LineStart = 0
-          LineEnd = 0
-          ContentHash = ""
-          IsExtern = isExtern }
+          Location = SymbolLocation.ofRow ExternSourceFile 0 0 "" isExtern }
 
     // Exactly the shape v9 shipped: the keyword, wearing the exempt kind.
     test <@ unqualifiedUnderTheExemption (row "where" Module true) @>
@@ -148,18 +144,10 @@ let ``an unqualified target with no module evidence stays ExternRef and the DB r
         { Symbols =
             [ { FullName = "M.consume"
                 Kind = Function
-                SourceFile = "src/M.fs"
-                LineStart = 1
-                LineEnd = 2
-                ContentHash = "h"
-                IsExtern = false }
+                Location = InSource("src/M.fs", 1, 2, "h") }
               { FullName = "where"
                 Kind = ExternRef
-                SourceFile = ExternSourceFile
-                LineStart = 0
-                LineEnd = 0
-                ContentHash = ""
-                IsExtern = true } ]
+                Location = Extern None } ]
           Dependencies =
             [ { FromSymbol = "M.consume"
                 ToSymbol = "where"

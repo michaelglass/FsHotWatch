@@ -869,11 +869,7 @@ let ``the test-impact DB write declares itself, naming its file count and databa
     let symbol: TestPrune.AstAnalyzer.SymbolInfo =
         { FullName = "Lib.value"
           Kind = TestPrune.AstAnalyzer.SymbolKind.Value
-          SourceFile = "Lib.fs"
-          LineStart = 1
-          LineEnd = 1
-          ContentHash = "h"
-          IsExtern = false }
+          Location = TestPrune.AstAnalyzer.InSource("Lib.fs", 1, 1, "h") }
 
     let pending =
         { handler.Init with

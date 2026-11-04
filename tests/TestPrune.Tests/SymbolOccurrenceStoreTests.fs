@@ -25,15 +25,11 @@ open TestPrune.Tests.TestHelpers
 let private symbol name kind file line hash =
     { FullName = name
       Kind = kind
-      SourceFile = file
-      LineStart = line
-      LineEnd = line
-      ContentHash = hash
-      IsExtern = false }
+      Location = InSource(file, line, line, hash) }
 
 let private placeholder name kind =
     { symbol name kind ExternSourceFile 0 "" with
-        IsExtern = true }
+        Location = Extern None }
 
 let private edge from target kind =
     { FromSymbol = from
@@ -149,8 +145,7 @@ module ``Signature under-selection (8_2_0 regression)`` =
                 |> List.filter (fun s -> not s.IsExtern)
                 |> List.map (fun s ->
                     if s.FullName = "Library.calculate" then
-                        { s with
-                            ContentHash = "impl-calculate-EDITED" }
+                        (SymbolInfo.withContentHash ("impl-calculate-EDITED") s)
                     else
                         s)
 
@@ -322,6 +317,68 @@ module ``Store parity`` =
                 db.RebuildProjects reindex
                 let persisted = snapshot (toSymbolStore db)
                 test <@ persisted = memory @>)
+
+    /// `Native.fs` declares `getpid` by DllImport: an extern with no F# body, but a real
+    /// declaring file. `Caller.fs` references it, so its result carries a placeholder of
+    /// the same name.
+    let private dllImportResults =
+        let native =
+            { symbol "Native.getpid" Function "Native.fs" 3 "native-getpid" with
+                Location = Extern(Some "Native.fs") }
+
+        [ result [ symbol "Native" Module "Native.fs" 1 "native-module"; native ] [] [] []
+          result
+              [ symbol "Caller" Module "Caller.fs" 1 "caller-module"
+                symbol "Caller.pid" Function "Caller.fs" 2 "caller-pid"
+                placeholder "Native.getpid" ExternRef ]
+              [ edge "Caller.pid" "Native.getpid" Calls ]
+              []
+              [] ]
+
+    [<Fact>]
+    let ``SQLite and in-memory stores agree on a DllImport symbol's declaring file`` () =
+        // AUTOMATION-1455. SQLite stored a DllImport symbol as a bare extern row and read it
+        // back at `_extern`; the in-memory store kept its real file. Dead-code analysis saw
+        // different inputs depending on the store.
+        let allSymbols (store: SymbolStore) = store.GetAllSymbols() |> List.sort
+
+        for results in [ dllImportResults; List.rev dllImportResults ] do
+            let memory = allSymbols (fromAnalysisResults results)
+
+            // The declaring file is what both stores report, whichever result came last.
+            test
+                <@
+                    memory
+                    |> List.filter (fun s -> s.FullName = "Native.getpid")
+                    |> List.map (fun s -> s.SourceFile, s.IsExtern) = [ "Native.fs", true ]
+                @>
+
+            withDb (fun db ->
+                db.RebuildProjects results
+                test <@ allSymbols (toSymbolStore db) = memory @>)
+
+    [<Fact>]
+    let ``a re-indexed file that no longer declares a DllImport leaves a placeholder in both stores`` () =
+        let allSymbols (store: SymbolStore) = store.GetAllSymbols() |> List.sort
+
+        let withoutImport =
+            result [ symbol "Native" Module "Native.fs" 1 "native-module" ] [] [] []
+
+        let current = withoutImport :: List.tail dllImportResults
+        let memory = allSymbols (fromAnalysisResults current)
+
+        // Positive control: only the caller's placeholder is left.
+        test
+            <@
+                memory
+                |> List.filter (fun s -> s.FullName = "Native.getpid")
+                |> List.map (fun s -> s.Location, s.Kind) = [ Extern None, ExternRef ]
+            @>
+
+        withDb (fun db ->
+            db.RebuildProjects dllImportResults
+            db.RebuildProjects [ withoutImport ]
+            test <@ allSymbols (toSymbolStore db) = memory @>)
 
 module ``Schema 13 to 14`` =
 

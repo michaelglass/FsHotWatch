@@ -87,11 +87,7 @@ let private allTestNames = [ TranslateTest; OtherTest; UnrelatedTest ]
 let private symbol (name: string) (file: string) =
     { FullName = name
       Kind = Function
-      SourceFile = file
-      LineStart = 1
-      LineEnd = 5
-      ContentHash = ""
-      IsExtern = false }
+      Location = InSource(file, 1, 5, "") }
 
 let private edge (from: string) (target: string) =
     { FromSymbol = from

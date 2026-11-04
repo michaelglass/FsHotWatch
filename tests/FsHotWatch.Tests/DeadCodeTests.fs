@@ -98,11 +98,7 @@ let private seedDb (repoRoot: string) : SymbolStore =
     let sym (name: string) (line: int) : SymbolInfo =
         { FullName = name
           Kind = SymbolKind.Value
-          SourceFile = "src/Lib.fs"
-          LineStart = line
-          LineEnd = line
-          ContentHash = "h"
-          IsExtern = false }
+          Location = InSource("src/Lib.fs", line, line, "h") }
 
     let entry = sym "App.Program.run" 10
     let used = sym "App.Lib.used" 20
@@ -214,11 +210,7 @@ let private unreachableIn (sources: string list) : TestPrune.DeadCode.VerboseDea
     let symbol: SymbolInfo =
         { FullName = "App.Lib.island"
           Kind = SymbolKind.Value
-          SourceFile = "src/Lib.fs"
-          LineStart = 40
-          LineEnd = 40
-          ContentHash = "h"
-          IsExtern = false }
+          Location = InSource("src/Lib.fs", 40, 40, "h") }
 
     { Base =
         { TotalSymbols = 1

@@ -478,11 +478,7 @@ let ``a symbol with no covering test anywhere is uncovered, and names no unrunna
         let orphan: TestPrune.AstAnalyzer.SymbolInfo =
             { FullName = "Lib.lonely"
               Kind = TestPrune.AstAnalyzer.SymbolKind.Value
-              SourceFile = "Lib.fs"
-              LineStart = 1
-              LineEnd = 1
-              ContentHash = "lonely"
-              IsExtern = false }
+              Location = TestPrune.AstAnalyzer.InSource("Lib.fs", 1, 1, "lonely") }
 
         db.RebuildProjects([ TestPrune.AstAnalyzer.AnalysisResult.Create([ orphan ], [], []) ])
         clearSqlitePool dbPath

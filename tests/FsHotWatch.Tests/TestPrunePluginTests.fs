@@ -480,11 +480,7 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
         let symbol1: SymbolInfo =
             { FullName = "MyModule.foo"
               Kind = SymbolKind.Value
-              SourceFile = "src/Lib.fs"
-              LineStart = 1
-              LineEnd = 1
-              ContentHash = "abc123"
-              IsExtern = false }
+              Location = InSource("src/Lib.fs", 1, 1, "abc123") }
 
         let testMethod1: TestMethodInfo =
             { SymbolFullName = "Tests.myTest"
@@ -505,9 +501,9 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
         db.RebuildProjects([ result1 ])
 
         let symbol2 =
-            { symbol1 with
-                LineEnd = 5
-                ContentHash = "changed" }
+            symbol1
+            |> SymbolInfo.withLines symbol1.LineStart 5
+            |> SymbolInfo.withContentHash "changed"
 
         let result2 = { result1 with Symbols = [ symbol2 ] }
 
@@ -1988,11 +1984,7 @@ let ``a cold cycle whose changes have no covering test runs once for evidence an
         let orphan: SymbolInfo =
             { FullName = "Orphan.uncovered"
               Kind = SymbolKind.Value
-              SourceFile = "src/Orphan.fs"
-              LineStart = 1
-              LineEnd = 1
-              ContentHash = "orphan-hash"
-              IsExtern = false }
+              Location = InSource("src/Orphan.fs", 1, 1, "orphan-hash") }
 
         let seedDb = Database.create dbPath
         seedDb.RebuildProjects([ AnalysisResult.Create([ orphan ], [], []) ])
@@ -2070,11 +2062,7 @@ let ``a pending symbol orphaned by a DB recreate must not discharge as a zero-te
         let symbol: SymbolInfo =
             { FullName = "Lib.foo"
               Kind = SymbolKind.Value
-              SourceFile = "src/Lib.fs"
-              LineStart = 1
-              LineEnd = 1
-              ContentHash = "hash-v1"
-              IsExtern = false }
+              Location = InSource("src/Lib.fs", 1, 1, "hash-v1") }
 
         // The test method needs a `symbols` row of its own: `QueryAffectedTests` reaches
         // tests by joining `test_methods.symbol_id`, so a test method with no symbol row
@@ -2082,11 +2070,7 @@ let ``a pending symbol orphaned by a DB recreate must not discharge as a zero-te
         let testSymbol: SymbolInfo =
             { FullName = "Tests.myTest"
               Kind = SymbolKind.Value
-              SourceFile = "tests/Tests.fs"
-              LineStart = 1
-              LineEnd = 1
-              ContentHash = "test-hash-v1"
-              IsExtern = false }
+              Location = InSource("tests/Tests.fs", 1, 1, "test-hash-v1") }
 
         let testMethod: TestMethodInfo =
             { SymbolFullName = "Tests.myTest"
@@ -2177,11 +2161,7 @@ let ``a queued symbol the index has never heard of must not discharge as a zero-
         let liveSymbol: SymbolInfo =
             { FullName = "Lib.stillHere"
               Kind = SymbolKind.Value
-              SourceFile = "src/Lib.fs"
-              LineStart = 1
-              LineEnd = 1
-              ContentHash = "hash-v1"
-              IsExtern = false }
+              Location = InSource("src/Lib.fs", 1, 1, "hash-v1") }
 
         let db = Database.create dbPath
         db.RebuildProjects([ AnalysisResult.Create([ liveSymbol ], [], []) ])
@@ -4295,11 +4275,7 @@ let private seedSymbolDb (dbPath: string) (sourceFile: string) (lineStart: int) 
     let symbol: SymbolInfo =
         { FullName = "Foo.bar"
           Kind = SymbolKind.Value
-          SourceFile = sourceFile
-          LineStart = lineStart
-          LineEnd = lineEnd
-          ContentHash = "h"
-          IsExtern = false }
+          Location = InSource(sourceFile, lineStart, lineEnd, "h") }
 
     db.RebuildProjects([ AnalysisResult.Create([ symbol ], [], []) ])
     db
@@ -4322,20 +4298,12 @@ let ``runtime selector widens missing and stale configured projects with typed r
             |> List.map (fun method ->
                 { FullName = method.SymbolFullName
                   Kind = SymbolKind.Value
-                  SourceFile = $"tests/%s{method.TestProject}.fs"
-                  LineStart = 1
-                  LineEnd = 1
-                  ContentHash = "h"
-                  IsExtern = false })
+                  Location = InSource($"tests/%s{method.TestProject}.fs", 1, 1, "h") })
 
         let runtimeTarget =
             { FullName = "RuntimeDispatch.target"
               Kind = SymbolKind.Value
-              SourceFile = "src/Foo.fs"
-              LineStart = 1
-              LineEnd = 3
-              ContentHash = "target"
-              IsExtern = false }
+              Location = InSource("src/Foo.fs", 1, 3, "target") }
 
         // Deliberately no dependency edge from any test to runtimeTarget: this
         // is the tracer's static miss. Only project-attributed runtime coverage

@@ -301,11 +301,7 @@ module PendingQueueHelpers =
         let symbol: SymbolInfo =
             { FullName = symbolFullName
               Kind = SymbolKind.Value
-              SourceFile = sourceFile
-              LineStart = 1
-              LineEnd = 1
-              ContentHash = "seed-hash"
-              IsExtern = false }
+              Location = InSource(sourceFile, 1, 1, "seed-hash") }
 
         // The test method is ALSO a symbol: `dependencies.from_symbol_id` and
         // `test_methods.symbol_id` are NOT-NULL FKs into symbols(id), so without a row for
@@ -314,11 +310,7 @@ module PendingQueueHelpers =
         let testSymbol: SymbolInfo =
             { FullName = $"{testClass}.{testMethod}"
               Kind = SymbolKind.Value
-              SourceFile = $"{testClass}.fs"
-              LineStart = 1
-              LineEnd = 1
-              ContentHash = "seed-test-hash"
-              IsExtern = false }
+              Location = InSource($"{testClass}.fs", 1, 1, "seed-test-hash") }
 
         let tm: TestMethodInfo =
             { SymbolFullName = $"{testClass}.{testMethod}"

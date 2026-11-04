@@ -79,7 +79,7 @@ let ``counter starts at zero`` () =
 
             // Remap source files so they look like project paths
             let remapSymbols file symbols =
-                symbols |> List.map (fun s -> { s with SourceFile = file })
+                symbols |> List.map (fun s -> (SymbolInfo.withSourceFile (file) s))
 
             let libAnalysis =
                 { Symbols = remapSymbols "src/Lib.fs" libResult.Symbols
@@ -119,7 +119,7 @@ let ``counter starts at zero`` () =
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("add", StringComparison.Ordinal) then
-                        { s with ContentHash = "modified" }
+                        (SymbolInfo.withContentHash ("modified") s)
                     else
                         s)
 
@@ -152,7 +152,7 @@ let testMethod () = helperFunc 5 |> ignore
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
@@ -184,7 +184,7 @@ let testMethod () = helperFunc 5 |> ignore
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("baseFunc", StringComparison.Ordinal) then
-                        { s with ContentHash = "modified" }
+                        (SymbolInfo.withContentHash ("modified") s)
                     else
                         s)
 
@@ -230,7 +230,7 @@ let testDescribe () = describe (Circle 1.0) |> ignore
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
@@ -252,7 +252,7 @@ let testDescribe () = describe (Circle 1.0) |> ignore
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("Shape", StringComparison.Ordinal) && s.Kind = Type then
-                        { s with ContentHash = "modified" }
+                        (SymbolInfo.withContentHash ("modified") s)
                     else
                         s)
 
@@ -286,7 +286,7 @@ let f x = x
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = []
                   Attributes = []
@@ -301,11 +301,7 @@ let f x = x
                     [ "src/NewModule.fs",
                       [ { FullName = "NewModule.newFunc"
                           Kind = Function
-                          SourceFile = "src/NewModule.fs"
-                          LineStart = 1
-                          LineEnd = 5
-                          ContentHash = ""
-                          IsExtern = false } ] ]
+                          Location = InSource("src/NewModule.fs", 1, 5, "") } ] ]
 
             let result, _events =
                 selectTests (toSymbolStore db) [ "src/NewModule.fs" ] currentSymbols
@@ -329,7 +325,7 @@ let f x = x
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = []
                   Attributes = []
@@ -362,7 +358,7 @@ let deadFunc x = x * 2
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = []
                   Attributes = []
@@ -411,7 +407,7 @@ let orphan x = x - 1
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = []
                   Attributes = []
@@ -467,7 +463,7 @@ let main () = area (Circle 1.0) |> ignore
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = []
                   Attributes = []
@@ -514,8 +510,12 @@ module M
 let compute x = x * 2 + 1
 """
 
-        let v1Symbols = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
-        let v2Symbols = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let v1Symbols =
+            v1.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
+        let v2Symbols =
+            v2.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
         let changes, _ = detectChanges v2Symbols v1Symbols
         let names = changedSymbolNames changes
         test <@ names |> List.exists (fun n -> n.EndsWith("compute", StringComparison.Ordinal)) @>
@@ -536,8 +536,12 @@ module M
 type Config = { Host: string; Port: int }
 """
 
-        let v1Symbols = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
-        let v2Symbols = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let v1Symbols =
+            v1.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
+        let v2Symbols =
+            v2.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
         let changes, _ = detectChanges v2Symbols v1Symbols
         let names = changedSymbolNames changes
         test <@ names |> List.exists (fun n -> n.EndsWith("Config", StringComparison.Ordinal)) @>
@@ -563,8 +567,12 @@ type Shape =
     | Triangle of float * float
 """
 
-        let v1Symbols = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
-        let v2Symbols = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let v1Symbols =
+            v1.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
+        let v2Symbols =
+            v2.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
         let changes, _ = detectChanges v2Symbols v1Symbols
         let names = changedSymbolNames changes
         // Shape type itself should be Modified (line range changed)
@@ -600,8 +608,12 @@ type Msg =
     | Decrement
 """
 
-        let v1Symbols = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
-        let v2Symbols = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let v1Symbols =
+            v1.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
+        let v2Symbols =
+            v2.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
         let changes, _ = detectChanges v2Symbols v1Symbols
         // Reset should be Removed
         test
@@ -632,8 +644,12 @@ open System
 let oldFunc x = x + 1
 """
 
-        let v1Symbols = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
-        let v2Symbols = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let v1Symbols =
+            v1.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
+        let v2Symbols =
+            v2.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
         let changes, _ = detectChanges v2Symbols v1Symbols
         let names = changedSymbolNames changes
         test <@ names |> List.exists (fun n -> n.EndsWith("oldFunc", StringComparison.Ordinal)) @>
@@ -649,8 +665,13 @@ let g y = y * 2
 
         let r1 = analyze source
         let r2 = analyze source
-        let s1 = r1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
-        let s2 = r2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+
+        let s1 =
+            r1.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
+        let s2 =
+            r2.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
         let changes, _ = detectChanges s2 s1
         test <@ changes |> List.isEmpty @>
 
@@ -673,8 +694,12 @@ let compute x =
     x + 1
 """
 
-        let s1 = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
-        let s2 = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let s1 =
+            v1.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
+        let s2 =
+            v2.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
         let changes, _ = detectChanges s2 s1
         test <@ changes |> List.isEmpty @>
 
@@ -697,8 +722,12 @@ let compute x =
     x + 1
 """
 
-        let s1 = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
-        let s2 = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let s1 =
+            v1.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
+        let s2 =
+            v2.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
         let changes, _ = detectChanges s2 s1
         test <@ changes |> List.isEmpty @>
 
@@ -724,8 +753,12 @@ type Shape =
     | Square of float
 """
 
-        let s1 = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
-        let s2 = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let s1 =
+            v1.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
+        let s2 =
+            v2.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
         let changes, _ = detectChanges s2 s1
         test <@ changes |> List.isEmpty @>
 
@@ -746,8 +779,12 @@ module M
 let getUrl () = "http://example.com/v2"
 """
 
-        let s1 = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
-        let s2 = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let s1 =
+            v1.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
+        let s2 =
+            v2.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
         let changes, _ = detectChanges s2 s1
         let names = changedSymbolNames changes
         test <@ names |> List.exists (fun n -> n.EndsWith("getUrl", StringComparison.Ordinal)) @>
@@ -769,8 +806,12 @@ let msg () = "hello\nworld"
 // a comment
 """
 
-        let s1 = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
-        let s2 = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let s1 =
+            v1.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
+        let s2 =
+            v2.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
         let changes, _ = detectChanges s2 s1
         test <@ changes |> List.isEmpty @>
 
@@ -792,8 +833,12 @@ let compute x =
     x + 1
 """
 
-        let s1 = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
-        let s2 = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let s1 =
+            v1.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
+        let s2 =
+            v2.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
         let changes, _ = detectChanges s2 s1
         test <@ changes |> List.isEmpty @>
 
@@ -813,8 +858,12 @@ module M
 let path () = @"C:\new\path"
 """
 
-        let s1 = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
-        let s2 = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let s1 =
+            v1.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
+        let s2 =
+            v2.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
+
         let changes, _ = detectChanges s2 s1
         let names = changedSymbolNames changes
         test <@ names |> List.exists (fun n -> n.EndsWith("path", StringComparison.Ordinal)) @>
@@ -842,7 +891,7 @@ let myTest () = used 5 |> ignore
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
@@ -858,7 +907,7 @@ let myTest () = used 5 |> ignore
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("isolated", StringComparison.Ordinal) then
-                        { s with ContentHash = "modified" }
+                        (SymbolInfo.withContentHash ("modified") s)
                     else
                         s)
 
@@ -895,7 +944,7 @@ let testBeta () = wrapperB 2 |> ignore
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
@@ -911,7 +960,7 @@ let testBeta () = wrapperB 2 |> ignore
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("sharedHelper", StringComparison.Ordinal) then
-                        { s with ContentHash = "modified" }
+                        (SymbolInfo.withContentHash ("modified") s)
                     else
                         s)
 
@@ -945,7 +994,7 @@ let testLoad () = loadConfigs () |> ignore
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
@@ -961,7 +1010,7 @@ let testLoad () = loadConfigs () |> ignore
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("Config", StringComparison.Ordinal) && s.Kind = Type then
-                        { s with ContentHash = "modified" }
+                        (SymbolInfo.withContentHash ("modified") s)
                     else
                         s)
 
@@ -995,7 +1044,7 @@ let testMake () = makePerson () |> ignore
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
@@ -1010,7 +1059,7 @@ let testMake () = makePerson () |> ignore
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("Person", StringComparison.Ordinal) && s.Kind = Type then
-                        { s with ContentHash = "modified" }
+                        (SymbolInfo.withContentHash ("modified") s)
                     else
                         s)
 
@@ -1051,7 +1100,7 @@ let testDescribe () = describe Red |> ignore
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
@@ -1067,7 +1116,7 @@ let testDescribe () = describe Red |> ignore
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("Color", StringComparison.Ordinal) && s.Kind = Type then
-                        { s with ContentHash = "modified" }
+                        (SymbolInfo.withContentHash ("modified") s)
                     else
                         s)
 
@@ -1102,7 +1151,7 @@ let testDeep () = depth1 5 |> ignore
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
@@ -1118,7 +1167,7 @@ let testDeep () = depth1 5 |> ignore
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("depth4", StringComparison.Ordinal) then
-                        { s with ContentHash = "modified" }
+                        (SymbolInfo.withContentHash ("modified") s)
                     else
                         s)
 
@@ -1162,7 +1211,7 @@ let testProcess () =
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
@@ -1178,7 +1227,7 @@ let testProcess () =
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("Config", StringComparison.Ordinal) && s.Kind = Type then
-                        { s with ContentHash = "modified" }
+                        (SymbolInfo.withContentHash ("modified") s)
                     else
                         s)
 
@@ -1207,7 +1256,7 @@ let main () = loadAll () |> ignore
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = []
                   Attributes = []
@@ -1246,7 +1295,7 @@ let main () = defaultSettings () |> ignore
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = []
                   Attributes = []
@@ -1292,7 +1341,7 @@ let main () = isVertical North |> ignore
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = []
                   Attributes = []
@@ -1369,7 +1418,7 @@ type MyTests() =
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = result.Attributes
@@ -1384,7 +1433,7 @@ type MyTests() =
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("helper", StringComparison.Ordinal) && s.Kind = Function then
-                        { s with ContentHash = "modified" }
+                        (SymbolInfo.withContentHash ("modified") s)
                     else
                         s)
 
@@ -1456,7 +1505,9 @@ type ComputeTests() =
             let testResult = analyze testSource
 
             let libAnalysis =
-                { Symbols = libResult.Symbols |> List.map (fun s -> { s with SourceFile = "src/Lib.fs" })
+                { Symbols =
+                    libResult.Symbols
+                    |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/Lib.fs") s))
                   Dependencies = libResult.Dependencies
                   TestMethods = []
                   Attributes = libResult.Attributes
@@ -1466,9 +1517,7 @@ type ComputeTests() =
             let testAnalysis =
                 { Symbols =
                     testResult.Symbols
-                    |> List.map (fun s ->
-                        { s with
-                            SourceFile = "tests/LibTests.fs" })
+                    |> List.map (fun s -> (SymbolInfo.withSourceFile ("tests/LibTests.fs") s))
                   Dependencies = testResult.Dependencies
                   TestMethods =
                     testResult.TestMethods
@@ -1543,7 +1592,9 @@ let ``test uses string builder`` () =
             let result = analyze testSource
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "tests/Tests.fs" })
+                { Symbols =
+                    result.Symbols
+                    |> List.map (fun s -> (SymbolInfo.withSourceFile ("tests/Tests.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
@@ -1583,7 +1634,7 @@ type BrowserTests(fixture: TestServerFixture) =
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
@@ -1628,13 +1679,12 @@ type BrowserTests(fixture: TestServerFixture) =
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("TestServerFixture.shutdown", StringComparison.Ordinal) then
-                        { s with
-                            ContentHash = "modified_member" }
+                        (SymbolInfo.withContentHash ("modified_member") s)
                     elif
                         s.FullName.EndsWith("TestServerFixture", StringComparison.Ordinal)
                         && s.Kind = Type
                     then
-                        { s with ContentHash = "modified_type" }
+                        (SymbolInfo.withContentHash ("modified_type") s)
                     else
                         s)
 
@@ -1679,7 +1729,7 @@ type Tests(_fixture: TestFix) =
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
@@ -1698,10 +1748,9 @@ type Tests(_fixture: TestFix) =
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("TestFix.start", StringComparison.Ordinal) then
-                        { s with
-                            ContentHash = "modified_start" }
+                        (SymbolInfo.withContentHash ("modified_start") s)
                     elif s.FullName.EndsWith("TestFix", StringComparison.Ordinal) && s.Kind = Type then
-                        { s with ContentHash = "modified_type" }
+                        (SymbolInfo.withContentHash ("modified_type") s)
                     else
                         s)
 
@@ -1751,7 +1800,7 @@ type Tests() =
             test <@ testToFixture @>
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
@@ -1766,9 +1815,9 @@ type Tests() =
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("TestFix.start", StringComparison.Ordinal) then
-                        { s with ContentHash = "modified" }
+                        (SymbolInfo.withContentHash ("modified") s)
                     elif s.FullName.EndsWith("TestFix", StringComparison.Ordinal) && s.Kind = Type then
-                        { s with ContentHash = "modified_type" }
+                        (SymbolInfo.withContentHash ("modified_type") s)
                     else
                         s)
 
@@ -1942,7 +1991,7 @@ type BrowserTests() =
 
             // End-to-end: editing the fixture flows through the synthetic to the test.
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
@@ -1960,8 +2009,7 @@ type BrowserTests() =
                         s.FullName.EndsWith("TestServerFixture", StringComparison.Ordinal)
                         && s.Kind = Type
                     then
-                        { s with
-                            ContentHash = "modified_fixture" }
+                        (SymbolInfo.withContentHash ("modified_fixture") s)
                     else
                         s)
 
@@ -1993,7 +2041,7 @@ let ``uses alpha only`` () = alpha 3 |> ignore
             let result = analyze source
 
             let analysis =
-                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                { Symbols = result.Symbols |> List.map (fun s -> (SymbolInfo.withSourceFile ("src/M.fs") s))
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
@@ -2010,7 +2058,7 @@ let ``uses alpha only`` () = alpha 3 |> ignore
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("beta", StringComparison.Ordinal) then
-                        { s with ContentHash = "modified_beta" }
+                        (SymbolInfo.withContentHash ("modified_beta") s)
                     else
                         s)
 

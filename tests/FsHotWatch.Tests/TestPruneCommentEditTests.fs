@@ -173,11 +173,7 @@ let private seedIndex (db: TestPrune.Database.Database) =
     let symbol name file : SymbolInfo =
         { FullName = name
           Kind = SymbolKind.Value
-          SourceFile = file
-          LineStart = 1
-          LineEnd = 1
-          ContentHash = $"%s{name}-hash"
-          IsExtern = false }
+          Location = InSource(file, 1, 1, $"%s{name}-hash") }
 
     let covering: TestMethodInfo =
         { SymbolFullName = "LibTests.f works"

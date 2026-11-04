@@ -218,25 +218,13 @@ module ``SQL coupling end-to-end`` =
                 AnalysisResult.Create(
                     [ { FullName = "Tests.testA"
                         Kind = Function
-                        SourceFile = "tests/Tests.fs"
-                        LineStart = 1
-                        LineEnd = 5
-                        ContentHash = "t1"
-                        IsExtern = false }
+                        Location = InSource("tests/Tests.fs", 1, 5, "t1") }
                       { FullName = "Queries.getArticle"
                         Kind = Function
-                        SourceFile = "src/Queries.fs"
-                        LineStart = 1
-                        LineEnd = 5
-                        ContentHash = "q1"
-                        IsExtern = false }
+                        Location = InSource("src/Queries.fs", 1, 5, "q1") }
                       { FullName = "Queries.saveArticle"
                         Kind = Function
-                        SourceFile = "src/Commands.fs"
-                        LineStart = 1
-                        LineEnd = 5
-                        ContentHash = "q2"
-                        IsExtern = false } ],
+                        Location = InSource("src/Commands.fs", 1, 5, "q2") } ],
                     [ // testA calls getArticle (direct)
                       { FromSymbol = "Tests.testA"
                         ToSymbol = "Queries.getArticle"
@@ -268,32 +256,16 @@ module ``SQL coupling end-to-end`` =
                 AnalysisResult.Create(
                     [ { FullName = "Tests.testA"
                         Kind = Function
-                        SourceFile = "tests/Tests.fs"
-                        LineStart = 1
-                        LineEnd = 5
-                        ContentHash = "t1"
-                        IsExtern = false }
+                        Location = InSource("tests/Tests.fs", 1, 5, "t1") }
                       { FullName = "Service.process"
                         Kind = Function
-                        SourceFile = "src/Service.fs"
-                        LineStart = 1
-                        LineEnd = 5
-                        ContentHash = "s1"
-                        IsExtern = false }
+                        Location = InSource("src/Service.fs", 1, 5, "s1") }
                       { FullName = "Queries.readItems"
                         Kind = Function
-                        SourceFile = "src/Queries.fs"
-                        LineStart = 1
-                        LineEnd = 5
-                        ContentHash = "q1"
-                        IsExtern = false }
+                        Location = InSource("src/Queries.fs", 1, 5, "q1") }
                       { FullName = "Jobs.writeItems"
                         Kind = Function
-                        SourceFile = "src/Jobs.fs"
-                        LineStart = 1
-                        LineEnd = 5
-                        ContentHash = "j1"
-                        IsExtern = false } ],
+                        Location = InSource("src/Jobs.fs", 1, 5, "j1") } ],
                     [ // testA → Service.process → Queries.readItems (direct calls)
                       { FromSymbol = "Tests.testA"
                         ToSymbol = "Service.process"
@@ -362,18 +334,10 @@ module ``SqlExtension auto-discovery`` =
             { AnalysisResult.Create(
                   [ { FullName = "Queries.save"
                       Kind = Function
-                      SourceFile = "src/Queries.fs"
-                      LineStart = 1
-                      LineEnd = 5
-                      ContentHash = "a"
-                      IsExtern = false }
+                      Location = InSource("src/Queries.fs", 1, 5, "a") }
                     { FullName = "Queries.load"
                       Kind = Function
-                      SourceFile = "src/Queries.fs"
-                      LineStart = 6
-                      LineEnd = 10
-                      ContentHash = "b"
-                      IsExtern = false } ],
+                      Location = InSource("src/Queries.fs", 6, 10, "b") } ],
                   [],
                   []
               ) with
@@ -408,11 +372,7 @@ module ``SqlExtension auto-discovery`` =
         let symbolIn file name : SymbolInfo =
             { FullName = name
               Kind = Function
-              SourceFile = file
-              LineStart = 1
-              LineEnd = 5
-              ContentHash = name
-              IsExtern = false }
+              Location = InSource(file, 1, 5, name) }
 
         // Every symbol lives in ONE file.
         let result =
@@ -460,11 +420,7 @@ module ``SqlColumn`` =
         let symbol name =
             { FullName = name
               Kind = Function
-              SourceFile = "src/Queries.fs"
-              LineStart = 1
-              LineEnd = 1
-              ContentHash = name
-              IsExtern = false }
+              Location = InSource("src/Queries.fs", 1, 1, name) }
 
         let attribute symbolName attributeName argsJson =
             { SymbolFullName = symbolName

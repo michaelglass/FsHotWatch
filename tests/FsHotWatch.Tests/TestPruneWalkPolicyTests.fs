@@ -77,11 +77,7 @@ let private Reader = "Repo.getById"
 let private symbol (name: string) (file: string) : SymbolInfo =
     { FullName = name
       Kind = Function
-      SourceFile = file
-      LineStart = 1
-      LineEnd = 1
-      ContentHash = name
-      IsExtern = false }
+      Location = InSource(file, 1, 1, name) }
 
 let private seedIndex (dbPath: string) =
     Directory.CreateDirectory(Path.GetDirectoryName dbPath) |> ignore

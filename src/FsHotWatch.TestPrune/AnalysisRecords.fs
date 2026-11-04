@@ -203,11 +203,13 @@ let tryOfJson (root: string) (text: string) : AnalysisResult option =
                     [ for e in o.GetProperty("symbols").EnumerateArray() ->
                           { FullName = str e "name"
                             Kind = kindOf (str e "kind")
-                            SourceFile = absoluteUnder root (str e "file")
-                            LineStart = int e "lineStart"
-                            LineEnd = int e "lineEnd"
-                            ContentHash = str e "hash"
-                            IsExtern = e.GetProperty("extern").GetBoolean() } ]
+                            Location =
+                              SymbolLocation.ofRow
+                                  (absoluteUnder root (str e "file"))
+                                  (int e "lineStart")
+                                  (int e "lineEnd")
+                                  (str e "hash")
+                                  (e.GetProperty("extern").GetBoolean()) } ]
                   Dependencies =
                     [ for row in rows "dependencies" 4 ->
                           { FromSymbol = row[0]

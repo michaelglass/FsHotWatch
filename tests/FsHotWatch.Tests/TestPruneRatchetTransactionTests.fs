@@ -36,11 +36,7 @@ let ``ratchet mapping retains symbol ownership until its coverage write commits`
         let symbol: SymbolInfo =
             { FullName = "Fixture.covered"
               Kind = SymbolKind.Value
-              SourceFile = "src/Fixture.fs"
-              LineStart = 10
-              LineEnd = 10
-              ContentHash = "original"
-              IsExtern = false }
+              Location = InSource("src/Fixture.fs", 10, 10, "original") }
 
         db.RebuildProjects([ AnalysisResult.Create([ symbol ], [], []) ])
 
