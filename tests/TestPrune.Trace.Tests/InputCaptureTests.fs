@@ -134,7 +134,15 @@ let ``inputs go to static init, then the current scope, then ambient`` () =
 [<Fact>]
 let ``every file shim notes its input and does what the original does`` () =
     let root = Fixtures.repoRoot
-    let file = Path.Combine(root, "global.json")
+
+    // A private copy under the root: some shims open with FileShare.None, which fails while
+    // any other process reads the repository's own global.json.
+    let inputDir =
+        Path.Combine(root, "tests", "TraceFixtures", "bin-scratch", Guid.NewGuid().ToString "N")
+
+    let file = Path.Combine(inputDir, "global.json")
+    Directory.CreateDirectory inputDir |> ignore
+    File.Copy(Path.Combine(root, "global.json"), file)
     let text = File.ReadAllText file
     let solution = Path.Combine(root, "FsHotWatch.slnx")
     let size = FileInfo(file).Length
@@ -147,6 +155,11 @@ let ``every file shim notes its input and does what the original does`` () =
 
     Directory.CreateDirectory scratch |> ignore
     let written = Path.Combine(scratch, "w.txt")
+
+    // A build or daemon reading the repository's own global.json while this runs, as one
+    // did when this test failed with "being used by another process" in a full-suite run.
+    use _concurrentReader =
+        new FileStream(Path.Combine(root, "global.json"), FileMode.Open, FileAccess.Read, FileShare.Read)
 
     try
         withRecorder state (fun () ->
@@ -317,6 +330,7 @@ let ``every file shim notes its input and does what the original does`` () =
                 w.WriteByte 1uy)
     finally
         Directory.Delete(scratch, true)
+        Directory.Delete(inputDir, true)
 
     test
         <@
