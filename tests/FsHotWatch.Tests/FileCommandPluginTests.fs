@@ -794,9 +794,24 @@ let private anyTestTrigger: CommandTrigger =
     { FilePattern = None
       AfterTests = Some AnyTest }
 
-/// The one env-probe harness: temp-dir lifecycle, status budget and swallowed cleanup
-/// live here only. Returns the value the child observed in `FSHW_RAN_FULL_SUITE`.
-let private runEnvProbeWith (pluginName: string) (trigger: CommandTrigger) (drive: PluginHost -> unit) : string =
+/// How an env probe's command is spelled: the `(command, args)` the plugin runs for the
+/// probe script at the given path.
+type private ProbeCommand = string -> string * string
+
+/// The command the env probes run: the script itself.
+let private probeCommand: ProbeCommand = fun script -> script, ""
+
+/// The env-probe harness, given the command the plugin runs and whether the probe script
+/// is still open for writing when that command fires. Temp-dir lifecycle, status budget
+/// and swallowed cleanup live here only. Returns the value the child observed in
+/// `FSHW_RAN_FULL_SUITE`.
+let private runEnvProbeAs
+    (command: ProbeCommand)
+    (scriptHeldOpen: bool)
+    (pluginName: string)
+    (trigger: CommandTrigger)
+    (drive: PluginHost -> unit)
+    : string =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
 
@@ -806,19 +821,40 @@ let private runEnvProbeWith (pluginName: string) (trigger: CommandTrigger) (driv
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let script = writeEnvProbeScript tmpDir outFile
+        let commandName, args = command script
 
         let handler =
-            create (FsHotWatch.PluginFramework.PluginName.create pluginName) trigger script "" tmpDir None
+            create (FsHotWatch.PluginFramework.PluginName.create pluginName) trigger commandName args tmpDir None
 
         host.RegisterHandler(handler)
-        drive host
 
-        waitUntil
-            (fun () ->
-                match host.GetStatus(pluginName) with
-                | Some(Completed _) -> true
-                | _ -> false)
-            8000
+        // A process that forks while the script is open for writing gives its child a
+        // copy of that write handle, which the child holds until it execs. Holding the
+        // handle across the fire makes that ordering certain.
+        let held =
+            if scriptHeldOpen then
+                Some(
+                    new System.IO.FileStream(
+                        script,
+                        System.IO.FileMode.Append,
+                        System.IO.FileAccess.Write,
+                        System.IO.FileShare.ReadWrite
+                    )
+                )
+            else
+                None
+
+        try
+            drive host
+
+            waitUntil
+                (fun () ->
+                    match host.GetStatus(pluginName) with
+                    | Some(Completed _) -> true
+                    | _ -> false)
+                8000
+        finally
+            held |> Option.iter (fun stream -> stream.Dispose())
 
         test <@ System.IO.File.Exists(outFile) @>
         System.IO.File.ReadAllText(outFile)
@@ -827,6 +863,10 @@ let private runEnvProbeWith (pluginName: string) (trigger: CommandTrigger) (driv
             System.IO.Directory.Delete(tmpDir, true)
         with _ ->
             ()
+
+/// The one env-probe harness: `runEnvProbeAs` with the probes' own command.
+let private runEnvProbeWith (pluginName: string) (trigger: CommandTrigger) (drive: PluginHost -> unit) : string =
+    runEnvProbeAs probeCommand false pluginName trigger drive
 
 /// A complete run of one project, `afterTests: true`. The project is filtered iff
 /// the run is not a full suite, so the results agree with the claim.
@@ -864,6 +904,38 @@ let ``afterTests command is not told the full suite ran while the run is still i
                 emitProgress host runId [ "GroupOne", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero) ])
 
     test <@ contents = "unknown" @>
+
+// AUTOMATION-1494. In a loaded CI run the mid-run probe never wrote its file, its status
+// never became Completed, and the test was cancelled at its 20 s cap: nothing said why.
+// A probe whose command cannot start ends Failed, and a harness that waits only for
+// Completed sits out its whole budget instead of naming that failure.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``an env probe whose command cannot start reports that failure, not a missing result`` () =
+    let unstartable: ProbeCommand =
+        fun script -> System.IO.Path.Combine(System.IO.Path.GetDirectoryName script, "no-such-probe"), ""
+
+    let failure =
+        Assert.ThrowsAny<exn>(fun () ->
+            runEnvProbeAs unstartable false "env-unstartable" anyTestTrigger (fun host ->
+                emitRunCompletedFor host [ "P", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero) ])
+            |> ignore)
+
+    test <@ not (failure :? TimeoutException) @>
+    test <@ failure.Message.Contains "env-unstartable" @>
+    test <@ failure.Message.Contains "Failed" @>
+
+// The ordering that leaves a command unable to start in a parallel suite. The probe
+// script is written just before it is run, and a process that forks while the script is
+// open for writing gives its child a copy of that write handle until the child execs.
+// Linux refuses to exec a file open for writing (ETXTBSY, "Text file busy"). The test
+// holds the handle across the fire, so the ordering is certain rather than a race.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``an env probe still reports what its command saw while the script is open for writing`` () =
+    let contents =
+        runEnvProbeAs probeCommand true "env-held-open" anyTestTrigger (fun host ->
+            emitRunCompletedFor host [ "P", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero) ])
+
+    test <@ contents = "true" @>
 
 // A run that EXECUTED NOTHING must never tell a hook the full suite ran. Both degenerate
 // lifecycles TestPrune builds — the aborted preflight and the "0 affected classes"
