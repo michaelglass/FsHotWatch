@@ -28,6 +28,13 @@ type StaleReason =
     /// them is left behind. Reachable from here since the rule moved into core's
     /// `OutputCopyFreshness`.
     | CopyPendingFromOrigin of origin: string * copy: string
+    /// A project's published reference assembly (`obj/<cfg>/<tfm>/ref/X.dll`, what its
+    /// dependents compile against) holds other bytes than the one the compiler last wrote
+    /// (`refint/X.dll`): `CopyRefAssembly` skipped the copy because the MVIDs matched, which
+    /// the F# compiler's signature hash allows across a real API change
+    /// (`RefAssemblyFreshness`). Every dependent compiled since was checked against an
+    /// API that no longer exists.
+    | RefAssemblyStale of intermediate: string * published: string
 
 type StaleArtifact =
     { Project: string; Reason: StaleReason }
@@ -1391,6 +1398,68 @@ let internal createArmedWith
     let pendingCopyFindings () : StaleArtifact list =
         pendingCopies () |> List.map copyFinding
 
+    let refFinding (pair: FsHotWatch.RefAssemblyFreshness.RefPair) : StaleArtifact =
+        { Project = pair.Project
+          Reason = RefAssemblyStale(pair.Intermediate, pair.Published) }
+
+    /// The projects' published reference assemblies that are not what the compiler last
+    /// wrote. Stat-first, so a lookup reads file bodies only for a project whose `refint`
+    /// was rewritten since its `ref` was copied (`RefAssemblyFreshness.isStale`).
+    let staleRefPairs () =
+        graph.GetAllProjects()
+        |> List.map AbsProjectPath.value
+        |> FsHotWatch.RefAssemblyFreshness.stalePairs
+
+    /// Copy every stale reference assembly's intermediate over it, which is what
+    /// `CopyRefAssembly` skipped. Returns the pairs it repaired; one it could not repair
+    /// stays stale, so `verifyAndDemote` still refuses the build.
+    let settleRefAssemblies () : FsHotWatch.RefAssemblyFreshness.RefPair list =
+        match staleRefPairs () with
+        | [] -> []
+        | stale ->
+            let failed = FsHotWatch.RefAssemblyFreshness.repair stale
+
+            for pair, reason in failed do
+                warn "build" $"could not repair the reference assembly %s{pair.Published}: %s{reason}"
+
+            let failedPaths = failed |> List.map (fun (p, _) -> p.Published) |> Set.ofList
+
+            let repaired =
+                stale |> List.filter (fun p -> not (failedPaths.Contains p.Published))
+
+            for pair in repaired do
+                info
+                    "build"
+                    $"%s{pair.Published} was not the reference assembly the compiler wrote (%s{pair.Intermediate}); \
+                      copied it, so dependents compile against the current API."
+
+            repaired
+
+    /// One build spawn with the published reference assemblies settled around it.
+    ///
+    /// Before: a stale one left by an earlier build (fshw's or anyone's) is repaired, so
+    /// this build already compiles dependents against the current API. After: a build that
+    /// itself left one stale compiled its dependents against the old API (or skipped
+    /// them, their inputs unchanged), so whatever it said is not the answer. The repair
+    /// makes those dependents out of date, and the build runs ONCE more; what that run
+    /// leaves stale `verifyAndDemote` refuses. An overrun is reported as it is.
+    let runSettled (repoRoot: string) command args : ProcessOutcome * TreeTeardown option * SideLogReading =
+        settleRefAssemblies () |> ignore
+        let first = runWithSideLog repoRoot command args
+
+        match first with
+        | TimedOut _, _, _ -> first
+        | _ ->
+            match settleRefAssemblies () with
+            | [] -> first
+            | repaired ->
+                info
+                    "build"
+                    $"the build left %d{List.length repaired} reference assembly copies stale; building again \
+                      against the repaired ones."
+
+                runWithSideLog repoRoot command args
+
     /// Post-build contract enforcement, over a walk the caller already took. For every
     /// project the graph knows about, compare the canonical DLL's mtime against the max
     /// source mtime. Returns the stale projects so the worker can demote BuildPassed to
@@ -1414,7 +1483,9 @@ let internal createArmedWith
     /// mint or retain cached success.
     ///
     let replayBlockers () : StaleArtifact list =
-        (examineNow () |> staleArtifactsOf) @ pendingCopyFindings ()
+        (examineNow () |> staleArtifactsOf)
+        @ pendingCopyFindings ()
+        @ (staleRefPairs () |> List.map refFinding)
 
     /// After a build that PASSED: whatever dependency copies it left pending, it did not
     /// settle — and THIS is where the byte comparison earns its cost, because a build
@@ -1479,6 +1550,9 @@ let internal createArmedWith
             sprintf "%s: DLL %O older than newest source %O" s.Project dllTime srcTime
         | CopyPendingFromOrigin(origin, copy) ->
             $"%s{s.Project}: %s{origin} has not been copied to %s{copy} — the build still owes that copy"
+        | RefAssemblyStale(intermediate, published) ->
+            $"%s{s.Project}: the reference assembly dependents compile against (%s{published}) is not the \
+              one the compiler wrote (%s{intermediate})"
 
     /// The same stale-artifact list phrased as a cache-BYPASS diagnostic.
     ///
@@ -1554,7 +1628,11 @@ let internal createArmedWith
             // calls stay off the synchronous handler's capture window, and because a
             // build that FAILED is not evidence about either question.
             let examinations = examineNow ()
-            let stale = verifyArtifactsFresh examinations @ verifyPendingCopiesAfterBuild ()
+
+            let stale =
+                verifyArtifactsFresh examinations
+                @ verifyPendingCopiesAfterBuild ()
+                @ (staleRefPairs () |> List.map refFinding)
 
             match stale with
             | [] -> outcome
@@ -1621,7 +1699,7 @@ let internal createArmedWith
                                 let ranFrom = FsHotWatch.HostClock.read FsHotWatch.HostClock.system
 
                                 let result, teardown, sideLogReading =
-                                    runWithSideLog ctx.RepoRoot buildCommand buildArgs
+                                    runSettled ctx.RepoRoot buildCommand buildArgs
 
                                 let overrun =
                                     match result with
@@ -1783,8 +1861,7 @@ let internal createArmedWith
                                         let rootRanFrom = FsHotWatch.HostClock.read FsHotWatch.HostClock.system
 
                                         try
-                                            let result, teardown, sideLogReading =
-                                                runWithSideLog ctx.RepoRoot cmd cmdArgs
+                                            let result, teardown, sideLogReading = runSettled ctx.RepoRoot cmd cmdArgs
 
                                             match result with
                                             | Succeeded _ -> outputs <- outputOf result :: outputs

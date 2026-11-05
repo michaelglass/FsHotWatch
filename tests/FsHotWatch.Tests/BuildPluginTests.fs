@@ -4032,3 +4032,145 @@ let ``a passing build folded over a failed one retires the failure proof`` () =
         foldFrom recovered (BuildOutputFailed [ "error FS0001: type mismatch" ])
 
     test <@ (failedAgain :> ICompletedBuildFailureState).CompletedBuildFailure.IsSome @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-1498 — the PUBLISHED reference assembly (`obj/<cfg>/<tfm>/ref/`), which is
+// what every dependent compiles against (`-r:.../obj/<cfg>/<tfm>/ref/X.dll`).
+//
+// The compiler writes `refint/X.dll`; MSBuild's `CopyRefAssembly` copies it to `ref/X.dll`
+// only when the two MVIDs differ. The F# compiler derives a reference assembly's MVID
+// from a 32-bit signature hash that folds each file in with `(acc <<< 1) + h + 631`, so a
+// file followed by 32 or more others no longer reaches the MVID: change a public
+// signature there and `refint` changes while the MVID does not, the copy is skipped, and
+// every dependent compiles against the OLD API (measured: FS0003 on a 34-file library).
+// These tests stand in for that build with a script that rewrites `refint` and leaves
+// `ref` alone, which is exactly what the skipped copy does.
+// ---------------------------------------------------------------------------
+
+/// One project `MyLib` with its output newer than its sources, and an
+/// `obj/Debug/net10.0/refint` + `ref` pair. `stale` leaves the published `ref` holding
+/// other bytes than `refint` (same length, so no size difference does the work); otherwise
+/// it holds the same bytes at an OLDER timestamp — what an implementation-only change
+/// leaves, since the compiler rewrites `refint` and `CopyRefAssembly` skips the copy.
+let private withRefAssemblyGraph
+    (label: string)
+    (stale: bool)
+    (body: ProjectGraph * string * string * string * string -> 'a)
+    : 'a =
+    withTempDir label (fun tmpDir ->
+        let projDir = System.IO.Path.Combine(tmpDir, "MyLib")
+        let projPath = System.IO.Path.Combine(projDir, "MyLib.fsproj")
+        let srcPath = System.IO.Path.Combine(projDir, "Lib.fs")
+        let dllDir = System.IO.Path.Combine(projDir, "bin", "Debug", "net10.0")
+        let dllPath = System.IO.Path.Combine(dllDir, "MyLib.dll")
+        let objDir = System.IO.Path.Combine(projDir, "obj", "Debug", "net10.0")
+        let intermediate = System.IO.Path.Combine(objDir, "refint", "MyLib.dll")
+        let published = System.IO.Path.Combine(objDir, "ref", "MyLib.dll")
+        System.IO.Directory.CreateDirectory(dllDir) |> ignore
+
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName intermediate)
+        |> ignore
+
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName published)
+        |> ignore
+
+        writeMinimalFsproj projPath "net10.0" [ "Lib.fs" ]
+        System.IO.File.WriteAllText(srcPath, "let x = 1")
+        System.IO.File.WriteAllText(dllPath, "fake-dll")
+        System.IO.File.WriteAllText(intermediate, "MyLib-ref-v2")
+        System.IO.File.WriteAllText(published, (if stale then "MyLib-ref-v1" else "MyLib-ref-v2"))
+
+        let now = DateTime.UtcNow
+        System.IO.File.SetLastWriteTimeUtc(srcPath, now - TimeSpan.FromMinutes 10.0)
+        System.IO.File.SetLastWriteTimeUtc(published, now - TimeSpan.FromMinutes 5.0)
+        System.IO.File.SetLastWriteTimeUtc(intermediate, now - TimeSpan.FromMinutes 1.0)
+        System.IO.File.SetLastWriteTimeUtc(dllPath, now)
+
+        let graph = ProjectGraph()
+        graph.RegisterProject(AbsProjectPath.create projPath, [ AbsFilePath.create srcPath ], [])
+        graph.RegisterProjectOutput(AbsProjectPath.create projPath, dllPath)
+        body (graph, srcPath, intermediate, published, tmpDir))
+
+/// A build stand-in: appends a line to `build-count` per run, then runs `step`.
+let private countingBuildScript (tmpDir: string) (step: string) =
+    let script = System.IO.Path.Combine(tmpDir, "build.sh")
+    let count = System.IO.Path.Combine(tmpDir, "build-count")
+    System.IO.File.WriteAllText(script, $"#!/bin/sh\necho ran >> '%s{count}'\n%s{step}\n")
+
+    script,
+    (fun () ->
+        if System.IO.File.Exists count then
+            System.IO.File.ReadAllLines(count).Length
+        else
+            0)
+
+let private buildFailed (host: PluginHost) =
+    match host.GetStatus("build") with
+    | Some(Failed _) -> true
+    | _ -> false
+
+[<Fact(Timeout = 15000)>]
+let ``a published reference assembly the build left behind bypasses the cache`` () =
+    withRefAssemblyGraph "ref-stale-replay" true (fun (graph, srcPath, _, _, _) ->
+        let cacheKeyFn = keyOf (BuildPlugin.create "true" "" [] graph [] None [] None)
+        test <@ (cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))).IsNone @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a published reference assembly holding the intermediate's bytes serves the cache at any timestamp`` () =
+    // The control: after every implementation-only change `refint` is newer than `ref`
+    // with the same bytes. Treating that as stale would turn every lookup into a build.
+    withRefAssemblyGraph "ref-fresh-replay" false (fun (graph, srcPath, _, _, _) ->
+        let cacheKeyFn = keyOf (BuildPlugin.create "true" "" [] graph [] None [] None)
+        test <@ (cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))).IsSome @>)
+
+[<Fact(Timeout = 30000)>]
+let ``a build that leaves the reference assembly behind is repaired and rebuilt before it can pass`` () =
+    withRefAssemblyGraph "ref-stale-rebuild" false (fun (graph, srcPath, intermediate, published, tmpDir) ->
+        let marker = System.IO.Path.Combine(tmpDir, "compiled")
+        // The first build changes the signature: `refint` gets new bytes, `ref` is skipped.
+        let script, runs =
+            countingBuildScript
+                tmpDir
+                $"if [ ! -e '%s{marker}' ]; then printf 'MyLib-ref-v3' > '%s{intermediate}'; touch '%s{marker}'; fi"
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        host.RegisterHandler(BuildPlugin.create "sh" script [] graph [] None [] None)
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+        waitForTerminalStatus host "build" 20000
+
+        test <@ System.IO.File.ReadAllText published = "MyLib-ref-v3" @>
+        // The build that compiled dependents against the old API is not the answer: a
+        // second build runs against the repaired reference assembly.
+        test <@ runs () = 2 @>
+        test <@ not (buildFailed host) @>)
+
+[<Fact(Timeout = 30000)>]
+let ``a reference assembly the build keeps leaving behind fails the build`` () =
+    withRefAssemblyGraph "ref-stale-persists" false (fun (graph, srcPath, intermediate, _, tmpDir) ->
+        let count = System.IO.Path.Combine(tmpDir, "build-count")
+        // Every build writes `refint` bytes no earlier build wrote.
+        let script, runs =
+            countingBuildScript tmpDir $"printf 'MyLib-ref-%%03d' $(wc -l < '%s{count}') > '%s{intermediate}'"
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        host.RegisterHandler(BuildPlugin.create "sh" script [] graph [] None [] None)
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+        waitForTerminalStatus host "build" 20000
+
+        test <@ buildFailed host @>
+        test <@ (terminalSummary host).Contains "stale" @>
+        // Bounded: one repair and one rebuild, never a loop.
+        test <@ runs () = 2 @>)
+
+[<Fact(Timeout = 30000)>]
+let ``a stale reference assembly from an earlier build is repaired before the build runs`` () =
+    withRefAssemblyGraph "ref-stale-prebuild" true (fun (graph, srcPath, _, published, tmpDir) ->
+        let script, runs = countingBuildScript tmpDir ":"
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        host.RegisterHandler(BuildPlugin.create "sh" script [] graph [] None [] None)
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+        waitForTerminalStatus host "build" 20000
+
+        test <@ System.IO.File.ReadAllText published = "MyLib-ref-v2" @>
+        test <@ runs () = 1 @>
+        test <@ not (buildFailed host) @>)
