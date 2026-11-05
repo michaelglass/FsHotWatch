@@ -28,7 +28,7 @@ let private emitProgress (host: PluginHost) (runId: System.Guid) (delta: (string
         { RunId = runId
           NewResults = Map.ofList delta }
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugin has correct name`` () =
     let handler =
         create
@@ -41,7 +41,7 @@ let ``plugin has correct name`` () =
 
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "run-scripts" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``command runs when matching files change`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -75,7 +75,7 @@ let ``command runs when matching files change`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``command does not run for non-matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -100,7 +100,7 @@ let ``command does not run for non-matching files`` () =
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``command captures stdout output`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -131,7 +131,7 @@ let ``command captures stdout output`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("true") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``command with environment variables`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -165,7 +165,7 @@ let ``command with environment variables`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``command runs on ProjectChanged with matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -199,7 +199,7 @@ let ``command runs on ProjectChanged with matching files`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``command ignores SolutionChanged`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -224,7 +224,7 @@ let ``command ignores SolutionChanged`` () =
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``command reports Failed status on command failure`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -258,7 +258,7 @@ let ``command reports Failed status on command failure`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``command reports Failed status on exception`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -295,7 +295,7 @@ let ``command reports Failed status on exception`` () =
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the status command declares its reply schema`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -315,7 +315,7 @@ let ``the status command declares its reply schema`` () =
 
     test <@ declared = Some(ReplySchema.Typed FsHotWatch.FileCommand.FileCommandReplies.StatusSchema) @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``status command returns not run when no files matched`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -342,7 +342,7 @@ let ``status command returns not run when no files matched`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("not run") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``status command returns false when command failed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -372,7 +372,7 @@ let ``status command returns false when command failed`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("false") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``emits CommandCompleted on success`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getCommand, recorder) = commandRecorder ()
@@ -409,7 +409,7 @@ let ``emits CommandCompleted on success`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``emits CommandCompleted on failure`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getCommand, recorder) = commandRecorder ()
@@ -446,7 +446,7 @@ let ``emits CommandCompleted on failure`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests TestProjects fires when ALL listed projects have results`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -482,7 +482,7 @@ let ``afterTests TestProjects fires when ALL listed projects have results`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests TestProjects does not fire when only some listed projects have completed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -506,7 +506,7 @@ let ``afterTests TestProjects does not fire when only some listed projects have 
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests TestProjects does not fire when no listed project matches`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -530,7 +530,7 @@ let ``afterTests TestProjects does not fire when no listed project matches`` () 
     test <@ status.Value = Idle @>
 
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests TestProjects fires exactly once across progressive deltas`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getCount, counter) = commandCounter "afterTests-once"
@@ -563,7 +563,7 @@ let ``afterTests TestProjects fires exactly once across progressive deltas`` () 
 
     test <@ getCount () = 1 @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests TestProjects fires again on a fresh batch`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getCount, counter) = commandCounter "afterTests-rebatch"
@@ -600,7 +600,7 @@ let ``afterTests TestProjects fires again on a fresh batch`` () =
 // (a parser yielding AfterTests = None for a valid JSON list) would pass all of them.
 // This one goes through parseConfig.
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style plugin`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -683,7 +683,7 @@ let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style
             | _ -> false
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests AnyTest fires on TestRunCompleted regardless of projects`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -701,7 +701,7 @@ let ``afterTests AnyTest fires on TestRunCompleted regardless of projects`` () =
     // watchdog still has seconds to spare. Awaiting OnStatusChanged has no such window.
     let completion = beginAwaitTerminal host "afterTests-any"
     emitRunCompleted host [ "AnyProject", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero) ]
-    completion.Wait(TimeSpan.FromSeconds 12.0) |> ignore
+    completion.Wait HangWait |> ignore
 
     test
         <@
@@ -712,7 +712,7 @@ let ``afterTests AnyTest fires on TestRunCompleted regardless of projects`` () =
 
 // --- Combined trigger: pattern + afterTests ---
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugin with both pattern and afterTests fires on file change`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -726,7 +726,7 @@ let ``plugin with both pattern and afterTests fires on file change`` () =
     host.RegisterHandler(handler)
     let completion = beginAwaitTerminal host "combined-a"
     host.EmitFileChanged(SourceChanged [ "coverage.ratchet.json" ])
-    completion.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+    completion.Wait HangWait |> ignore
 
     test
         <@
@@ -735,7 +735,7 @@ let ``plugin with both pattern and afterTests fires on file change`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugin with both pattern and afterTests fires on test completion`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -749,7 +749,7 @@ let ``plugin with both pattern and afterTests fires on test completion`` () =
     host.RegisterHandler(handler)
     let completion = beginAwaitTerminal host "combined-b"
     emitRunCompleted host [ "proj-a", TestsPassed("ok", false, TimeSpan.Zero) ]
-    completion.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+    completion.Wait HangWait |> ignore
 
     test
         <@
@@ -891,12 +891,12 @@ let private runEnvProbe (pluginName: string) (ranFullSuite: bool) : string =
     runEnvProbeWith pluginName anyTestTrigger (fun host ->
         emitRunCompletedFor host [ "P", FsHotWatch.Events.TestsPassed("", not ranFullSuite, TimeSpan.Zero) ])
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests command receives FSHW_RAN_FULL_SUITE=true on a full run`` () =
     let contents = runEnvProbe "env-full" true
     test <@ contents = "true" @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests command receives FSHW_RAN_FULL_SUITE=false on a partial run`` () =
     let contents = runEnvProbe "env-partial" false
     test <@ contents = "false" @>
@@ -907,7 +907,7 @@ let ``afterTests command receives FSHW_RAN_FULL_SUITE=false on a partial run`` (
 // group alone; if a later group was impact-filtered the hook had been told `"true"`, and
 // RunId dedupe meant the truthful TestRunCompleted could never correct it. A prefix can
 // prove "partial" but never "full", so mid-run the only honest answer is `"unknown"`.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests command is not told the full suite ran while the run is still in flight`` () =
     let runId = System.Guid.NewGuid()
 
@@ -959,7 +959,7 @@ let ``an env probe still reports what its command saw while the script is open f
 // impact-skip — carry `Results = Map.empty` with a vacuous full-suite claim. They are
 // blocked only because `CommandTrigger.matches AnyTest` requires a non-empty results map
 // and config rejects an empty `afterTests` list: an incidental guard nothing pinned.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests command does not fire for a run that executed nothing`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1128,7 +1128,7 @@ let private cacheKeyFnFor (command: string) (args: string) =
 
     handler.CacheKey.Value handler.Init
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cache key is independent of commit_id`` () =
     // `create` no longer accepts getCommitId, so this is now the structural invariant:
     // two handlers with identical (command, args, file content) hash the same.
@@ -1165,7 +1165,7 @@ let ``cache key is independent of commit_id`` () =
     test <@ kA.IsSome @>
     test <@ kA = kB @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cache key changes when content of a path-arg file changes`` () =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
@@ -1192,7 +1192,7 @@ let ``cache key changes when content of a path-arg file changes`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``single handler: cache key reflects current file content per event`` () =
     // The salt must be re-evaluated per event, or mid-session edits to a config file
     // never invalidate the cache. A "compute once at create" optimisation reintroduces
@@ -1221,7 +1221,7 @@ let ``single handler: cache key reflects current file content per event`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cache key changes when args change`` () =
     let keyFn1 = cacheKeyFnFor "echo" "alpha"
     let keyFn2 = cacheKeyFnFor "echo" "beta"
@@ -1231,7 +1231,7 @@ let ``cache key changes when args change`` () =
     test <@ k1.IsSome @>
     test <@ k1 <> k2 @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cache key changes when command changes`` () =
     let keyFn1 = cacheKeyFnFor "echo" "x"
     let keyFn2 = cacheKeyFnFor "true" "x"
@@ -1246,7 +1246,7 @@ let ``cache key changes when command changes`` () =
 // Used by run-once reporters to flag inputs that were modified after a
 // plugin's last run, hinting that cached output may be stale.
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``collectArgFiles returns absolute path of an existing relative arg`` () =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
@@ -1264,7 +1264,7 @@ let ``collectArgFiles returns absolute path of an existing relative arg`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``collectArgFiles ignores non-file tokens`` () =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
@@ -1281,7 +1281,7 @@ let ``collectArgFiles ignores non-file tokens`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``collectArgFiles accepts absolute paths`` () =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
@@ -1303,7 +1303,7 @@ let ``collectArgFiles accepts absolute paths`` () =
 // --- argsStalerThan: arg-file paths whose mtime exceeds `referenceTime`. A non-empty
 // result means a cached run from before that time may not reflect current input. ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``argsStalerThan flags files modified after the reference time`` () =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
@@ -1323,12 +1323,12 @@ let ``argsStalerThan flags files modified after the reference time`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``argsStalerThan skips a token whose modification time cannot be read`` () =
     // A NUL in a path makes the stat throw; the token is skipped, not the whole list.
     test <@ List.isEmpty (argsStalerThan "/tmp" "cfg\u0000.json" DateTime.UtcNow) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``events a file command does not act on leave its state alone`` () =
     let handler =
         create (FsHotWatch.PluginFramework.PluginName.create "cmd") (fileTrigger (fun _ -> true)) "echo" "" "/tmp" None
@@ -1353,7 +1353,7 @@ let ``events a file command does not act on leave its state alone`` () =
 // errors. The integration suite confirms the injected behaviour matches reality — without
 // that positive control these would be assertions about a mock.
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``computeArgsSaltWith differs when an arg-file's hash returns None vs Some`` () =
     // computeArgsSalt's Option.map None branch is reached when a path passes File.Exists
     // in collectArgFiles but tryHashFile returns None — injectable, unlike the real race.
@@ -1380,7 +1380,7 @@ let ``computeArgsSaltWith differs when an arg-file's hash returns None vs Some``
         with _ ->
             ()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hashFileWith returns None when reader throws IOException`` () =
     let throwing _ =
         raise (System.IO.IOException("simulated read failure"))
@@ -1388,7 +1388,7 @@ let ``hashFileWith returns None when reader throws IOException`` () =
     let result = hashFileWith throwing "/any/path"
     test <@ result = None @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hashFileWith returns None when reader throws UnauthorizedAccessException`` () =
     // It does not derive from IOException, so the narrow catch has to name it
     // explicitly — a chmod-000 file is expected, not a bug.
@@ -1398,7 +1398,7 @@ let ``hashFileWith returns None when reader throws UnauthorizedAccessException``
     let result = hashFileWith throwing "/any/path"
     test <@ result = None @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hashFileWith propagates non-IO exceptions (F5)`` () =
     // A bare `with _` here swallowed real bugs. With the catch narrowed to IOException +
     // UnauthorizedAccessException, a programming bug must surface rather than become a
@@ -1415,7 +1415,7 @@ let ``hashFileWith propagates non-IO exceptions (F5)`` () =
 
     test <@ thrown @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hashFileWith returns Some hex for successful read`` () =
     let constReader (_: string) =
         System.Text.Encoding.UTF8.GetBytes("hello")
@@ -1424,7 +1424,7 @@ let ``hashFileWith returns Some hex for successful read`` () =
     // sha256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
     test <@ result = Some "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
     // Subscriptions already filter this out before dispatch, so Update is invoked
     // directly to reach the safety net at all.
@@ -1469,7 +1469,7 @@ let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
 
     test <@ nextState = initialState @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``argsStalerThan returns empty when files are older than reference`` () =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
@@ -1495,7 +1495,7 @@ let ``argsStalerThan returns empty when files are older than reference`` () =
 // carrying an honest verdict — never a ✓, and never a zero-length run.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a command that exceeds its timeout reports Failed with a timed-out verdict`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1541,7 +1541,7 @@ let ``a command that exceeds its timeout reports Failed with a timed-out verdict
 // FILE-COMMAND's own cold-vs-cached ledger parity
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a cached file-command replay leaves an out-of-batch finding standing`` () =
     // Same shape as the build control, different plugin: FileCommandPlugin reports
     // and clears exactly one pseudo-file, `<run-scripts>`, and never calls
