@@ -1313,3 +1313,33 @@ The count holds the bound: the edited file, the 351 files after it and the 1597 
 its dependents. But 1948 of those checks reproduced records already filed under their
 post-edit keys, because no check waited for the edited file's API signature
 (AUTOMATION-1507).
+
+## 29. Amendment (AUTOMATION-1506): the byte budget holds what one large tree files
+
+§28 traced the 119 files B demanded to TestPrune analysis records missing from the store. A filed
+them, and GC evicted them. §2's GC evicts the keys with the oldest newest record once the store is
+over `MaxBytes`, and the default was 256 MB. One intelligence tree files about 300 MB:
+
+- TestPrune analyses are about 120 KB a file (symbols, dependency edges, tests). The largest
+  is over 1 MB. There are 2731 of them, about 250 MB on disk;
+- check, format and options records add the rest.
+
+The evidence points to GC after A's test run (it runs at evidence filing and at the shadow's
+publication). It evicted the oldest keys: options first, then the first check tier's analyses.
+Those were filed at 16:45:53–57, and the first record that survived is stamped 16:46:16.
+By the end of the measurement the store sat at 256 MB, every check record had been evicted by
+the newer analyses, and no log said so, because both callers discard `Gc`'s result.
+
+**Decision.**
+
+- The default budget is 2 GiB, enough for six such trees. Workspaces of one repository at
+  different trees share the store, and a land, a fresh agent workspace and the nightly replay
+  each file a tree.
+- `Gc` logs every eviction: how many keys, how many past the TTL and how many over the
+  budget, the kinds, the bytes freed and the bytes left. An eviction is the one way a filed
+  record becomes a miss, and it must not be silent.
+
+**Rejected for now: compressing analysis outputs.** The JSON compresses about tenfold, but
+compressing it changes the record format and every reader. The budget alone fixes the
+measured miss. If a store at 2 GiB still evicts a tree's records in use, compressing the
+outputs is the next step. A recency that counts reads, not only filings, is another.
