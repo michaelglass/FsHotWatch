@@ -1273,3 +1273,43 @@ Measured with `fshw-bench replay` on 276ae958, second checkout, fresh cache home
 | + AUTOMATION-1482 | 704 of 704 | 0 | none |
 
 The gate said AGREE.
+
+## 28. Amendment (AUTOMATION-1502): a fresh, land-shaped intelligence workspace, measured
+
+§27's second-checkout figures came from this repository's tree. AUTOMATION-1502 measured
+the same sequence on intelligence (25 projects, 2731 checked files), with the fshw it pins
+(0.14.0-alpha.137, which contains 1478, 1479, 1480 and 1482). Every run shared one fresh
+cache home. Workspace A ran a cold `./build.fsx check`, filing records (2731 FCS checks,
+1168 s). Workspace B was then created fresh on the same tree. Workspace C was also fresh,
+with `FSHW_CHECK_RECORDS=0`.
+
+| fresh workspace, same tree | records on (B) | records off (C) |
+|---|---|---|
+| checks replayed / total | 2731 / 2731 | 0 / 2731 |
+| FCS checks started | 119 | 2731 |
+| demanded, by plugin | test-prune 119 | none |
+| FCS scan, build done to all checked | 3 s (+8 s demanded) | 375 s |
+| wall time to verdict | 593 s | 767 s |
+| test projects reused from evidence | first run 0 of 7 (0 lookups), second run 4 of 6 | first run 0 of 7 (0 lookups), second run 6 of 6 |
+| bytes hashed for evidence keys, per test launch | 287 MB | 287 MB |
+
+`replay-gate` on B (records-on run against a forced re-check): AGREE, 1117 diagnostics in
+each, both green.
+
+The 119 are the first check tier's files (8 projects). A analysed them but filed no
+analysis record (AUTOMATION-1506). Most of the wall time is now the first test run: an
+evidence-gap full suite that does not consult the evidence store (AUTOMATION-1508).
+
+**One edit while the daemon is stopped** (a string literal in a function body, compile item
+304 of 655 in the largest project):
+
+| | records on (B) | records off (C) |
+|---|---|---|
+| FCS checks started | 1949 (782 replayed) | 2728 |
+| the CheckRecordsRestartTests bound | 1949 | |
+| new check records filed | 1 | |
+
+The count holds the bound: the edited file, the 351 files after it and the 1597 files of
+its dependents. But 1948 of those checks reproduced records already filed under their
+post-edit keys, because no check waited for the edited file's API signature
+(AUTOMATION-1507).
