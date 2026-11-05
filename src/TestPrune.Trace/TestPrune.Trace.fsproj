@@ -35,6 +35,7 @@
         <Compile Include="RunScopes.fs" />
         <Compile Include="TraceStore.fs" />
         <Compile Include="Fingerprint.fs" />
+        <Compile Include="RuntimeResolution.fs" />
         <Compile Include="Manifest.fs" />
         <Compile Include="PdbCheck.fs" />
         <Compile Include="Launch.fs" />
@@ -47,6 +48,7 @@
         <Compile Include="HardLink.fs" />
         <Compile Include="DepsJson.fs" />
         <Compile Include="ShadowBin.fs" />
+        <Compile Include="FingerprintPrediction.fs" />
         <Compile Include="TraceIngest.fs" />
         <Compile Include="TraceSession.fs" />
         <Compile Include="Census.fs" />

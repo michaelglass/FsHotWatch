@@ -51,9 +51,9 @@ type CanonicalFingerprint =
 let private sha256Hex (bytes: byte[]) =
     Convert.ToHexString(SHA256.HashData bytes).ToLowerInvariant()
 
-/// Lowercase SHA-256 hex of the inputs' canonical JSON. Configured files and variables are
-/// sorted, so the order they were configured in does not matter.
-let compute (i: Inputs) : string =
+/// The canonical JSON a fingerprint hashes. Configured files and variables are sorted, so the
+/// order they were configured in does not matter.
+let toJson (i: Inputs) : string =
     let pairs (xs: (string * string) list) =
         xs |> List.sort |> List.map (fun (k, v) -> k + "=" + v) |> List.toArray
 
@@ -73,8 +73,27 @@ let compute (i: Inputs) : string =
           weaver = i.WeaverVersion }
         : CanonicalFingerprint
     )
-    |> Encoding.UTF8.GetBytes
-    |> sha256Hex
+
+/// Lowercase SHA-256 hex of the inputs' canonical JSON (`toJson`).
+let compute (i: Inputs) : string =
+    toJson i |> Encoding.UTF8.GetBytes |> sha256Hex
+
+/// The canonical field names whose values differ between two fingerprints' inputs, sorted:
+/// what a prediction miss names.
+let diff (a: Inputs) (b: Inputs) : string list =
+    let fields (i: Inputs) =
+        using (JsonDocument.Parse(toJson i)) (fun doc ->
+            doc.RootElement.EnumerateObject()
+            |> Seq.map (fun p -> p.Name, p.Value.GetRawText())
+            |> Map.ofSeq)
+
+    let fa, fb = fields a, fields b
+
+    fa
+    |> Map.toList
+    |> List.filter (fun (k, v) -> fb.[k] <> v)
+    |> List.map fst
+    |> List.sort
 
 /// SHA-256 hex of a repo-relative file's bytes, or "missing" when it does not exist.
 let hashFile (repoRoot: string) (relPath: string) : string =
@@ -87,21 +106,22 @@ let hashFile (repoRoot: string) (relPath: string) : string =
 
 let private version (asm: Reflection.Assembly) = asm.GetName().Version.ToString 3
 
-/// Gather the inputs for one traced launch: the runtime from its main process's dump, the
-/// original deps.json hash, this weaver's and recorder's versions, core's schema version as
-/// the hash scheme, the test assembly's weave mode, and the configured files and environment
-/// variables.
-let gather
+/// The inputs of a launch that runs on `runtime`, `os` and `arch`: those, the original
+/// deps.json hash, this weaver's and recorder's versions, core's schema version as the hash
+/// scheme, the test assembly's weave mode, and the configured files and environment
+/// variables. `gather` reads the three strings from a recorded dump; a prediction from
+/// `RuntimeIdentity` and the resolved runtime.
+let ofEnvironment
     (repoRoot: string)
     (files: string list)
     (env: string list)
-    (dump: ProcessDump)
+    (runtime: string, os: string, arch: string)
     (depsJsonSha256: string)
     (weaveTests: WeaveMode)
     : Inputs =
-    { Runtime = dump.Runtime
-      Os = dump.Os
-      Arch = dump.Arch
+    { Runtime = runtime
+      Os = os
+      Arch = arch
       DepsJsonSha256 = depsJsonSha256
       RecorderVersion = version typeof<TestPrune.Trace.Recorder.Probes>.Assembly
       WeaverVersion = version typeof<Inputs>.Assembly
@@ -118,3 +138,14 @@ let gather
             match Environment.GetEnvironmentVariable n with
             | null -> "unset"
             | v -> sha256Hex (Encoding.UTF8.GetBytes v)) }
+
+/// Gather the inputs for one traced launch from its main process's dump (`ofEnvironment`).
+let gather
+    (repoRoot: string)
+    (files: string list)
+    (env: string list)
+    (dump: ProcessDump)
+    (depsJsonSha256: string)
+    (weaveTests: WeaveMode)
+    : Inputs =
+    ofEnvironment repoRoot files env (dump.Runtime, dump.Os, dump.Arch) depsJsonSha256 weaveTests

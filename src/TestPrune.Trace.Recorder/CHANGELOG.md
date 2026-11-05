@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `RuntimeIdentity` (`runtime`, `os`, `arch`): the environment strings a dump records, shared with a
+  host's fingerprint prediction (AUTOMATION-975). The dump bytes are unchanged.
+
 ## 0.8.1 - 2026-11-04
 
 - Finish: AUTOMATION-975 shadow judges theory-row failures and pins that it never changes a launch

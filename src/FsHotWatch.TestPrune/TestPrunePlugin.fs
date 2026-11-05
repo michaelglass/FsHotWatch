@@ -739,7 +739,16 @@ let createWithTracesIn
              { Policy = settings
                OptedOut = untracedProjects
                WeaveOverrides = weaveOverrides
-               Decide = TraceRun.decide }))
+               Decide = TraceRun.decide
+               PredictFingerprint =
+                 fun project args env ->
+                     TraceShadow.predictFingerprint
+                         settings
+                         (weaveOverrides.TryFind project |> Option.defaultValue settings.WeaveTests)
+                         repoRoot
+                         (deriveProjectBin args repoRoot)
+                         env
+                         TracedLaunch.dotnetRootOfThisProcess }))
         initialMode
 
 /// `createWithTracesIn` for a daemon session, which starts in `TestMode.initial`.

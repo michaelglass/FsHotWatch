@@ -266,6 +266,28 @@ let private weaveKey (req: ShadowRequest) (inputs: Weaver.WeaveInput list) =
                   yield $"%s{Path.GetFileName i.Path}|%A{i.Mode}|%s{sha256File i.Path}|%s{sha256File pdb}" ]
     )
 
+/// The one `bin/Debug/<tfm>/` directory holding `<assemblyName>.dll`: the build a traced
+/// launch weaves, and the one whose deps.json and runtimeconfig a prediction reads.
+let buildOutput (projectDir: string) (assemblyName: string) : Result<string, ShadowRefusal> =
+    let binDebug = Path.Combine(projectDir, "bin", "Debug")
+
+    let tfmDirs =
+        if Directory.Exists binDebug then
+            Directory.GetDirectories binDebug
+            |> Array.filter (fun d -> File.Exists(Path.Combine(d, assemblyName + ".dll")))
+            |> Array.sort
+            |> List.ofArray
+        else
+            []
+
+    match tfmDirs with
+    | [] -> Error(NoBuildOutput binDebug)
+    | [ sourceDir ] -> Ok sourceDir
+    | _ -> Error(AmbiguousTfm tfmDirs)
+
+/// The hash a fingerprint keys an app's original deps.json text by.
+let depsJsonSha256 (text: string) = sha256Text text
+
 /// `prepare`, verifying with `launcher` and cancellable: `ct` is checked before the work
 /// starts, between assemblies while weaving, and abandons the verification launch. A
 /// cancelled prepare raises `OperationCanceledException` and leaves no cache entry a
@@ -278,21 +300,10 @@ let prepareWith
     (req: ShadowRequest)
     : Result<Shadow, ShadowRefusal> =
     ct.ThrowIfCancellationRequested()
-    let binDebug = Path.Combine(req.ProjectDir, "bin", "Debug")
 
-    let tfmDirs =
-        if Directory.Exists binDebug then
-            Directory.GetDirectories binDebug
-            |> Array.filter (fun d -> File.Exists(Path.Combine(d, req.AssemblyName + ".dll")))
-            |> Array.sort
-            |> List.ofArray
-        else
-            []
-
-    match tfmDirs with
-    | [] -> Error(NoBuildOutput binDebug)
-    | _ :: _ :: _ -> Error(AmbiguousTfm tfmDirs)
-    | [ sourceDir ] ->
+    match buildOutput req.ProjectDir req.AssemblyName with
+    | Error refusal -> Error refusal
+    | Ok sourceDir ->
         let shadowDir =
             Path.Combine(req.ProjectDir, "bin", "Traced", Path.GetFileName sourceDir)
 
@@ -411,7 +422,7 @@ let prepareWith
                               WeaveKey = key
                               WeaveTests = req.WeaveTests
                               Reused = reused
-                              OriginalDepsJsonSha256 = sha256Text originalDeps
+                              OriginalDepsJsonSha256 = depsJsonSha256 originalDeps
                               Verify = report }
 
 /// Build (or reuse) the shadow bin for `req`: refuse an app that ships its own recorder

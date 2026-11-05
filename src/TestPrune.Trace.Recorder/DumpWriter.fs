@@ -8,12 +8,8 @@ open System.Runtime.CompilerServices
 open System.Runtime.InteropServices
 open System.Text.Json
 
-/// The dump's `os` value, given a platform test (injected so every branch is testable).
-let internal osNameOf (isOs: OSPlatform -> bool) =
-    if isOs OSPlatform.OSX then "OSX"
-    elif isOs OSPlatform.Linux then "Linux"
-    elif isOs OSPlatform.Windows then "Windows"
-    else "Other"
+/// The dump's `os` value, given a platform test (`RuntimeIdentity.osNameOf`).
+let internal osNameOf (isOs: OSPlatform -> bool) = RuntimeIdentity.osNameOf isOs
 
 let private counterNames =
     [| "test"
@@ -36,9 +32,9 @@ let private writeHeader (w: Utf8JsonWriter) (state: RecorderState) =
     else
         w.WriteString("parentScope", state.ParentScope)
 
-    w.WriteString("runtime", RuntimeInformation.FrameworkDescription)
-    w.WriteString("os", osNameOf RuntimeInformation.IsOSPlatform)
-    w.WriteString("arch", string RuntimeInformation.ProcessArchitecture)
+    w.WriteString("runtime", RuntimeIdentity.runtime ())
+    w.WriteString("os", RuntimeIdentity.os ())
+    w.WriteString("arch", RuntimeIdentity.arch ())
     w.WriteNumber("ids", state.IdCount)
 
     let cpu =

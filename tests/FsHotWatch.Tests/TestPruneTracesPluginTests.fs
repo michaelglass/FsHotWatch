@@ -192,7 +192,8 @@ let ``a traced project runs its woven copy, and its traces are stored and logged
             { Policy = settings RecordEveryRun
               OptedOut = Set.empty
               WeaveOverrides = Map.empty
-              Decide = fun _ -> TraceRun.decideWith (preparedAs root woven) (fun () -> Some "/dotnet-root") }
+              Decide = fun _ -> TraceRun.decideWith (preparedAs root woven) (fun () -> Some "/dotnet-root")
+              PredictFingerprint = fun _ _ _ -> Ok "E" }
 
         let json, activity =
             runTests root [ config "T" "dotnet" "run --project tests/T --no-build" ] (Some wiring)
@@ -214,6 +215,7 @@ let ``trace preparation is given the run's cancellation token`` () =
             { Policy = settings RecordEveryRun
               OptedOut = Set.empty
               WeaveOverrides = Map.empty
+              PredictFingerprint = fun _ _ _ -> Ok "E"
               Decide =
                 fun ct _ _ _ _ ->
                     tokens.Add ct
@@ -234,6 +236,7 @@ let ``each project is decided with its own weaveTests, and none where it set non
             { Policy = settings RecordEveryRun
               OptedOut = Set.empty
               WeaveOverrides = Map.ofList [ "A", WeaveTestFull ]
+              PredictFingerprint = fun _ _ _ -> Ok "E"
               Decide =
                 fun _ _ project _ _ ->
                     lock weaves (fun () -> weaves.Add((project.Project, project.TraceWeave)))
@@ -255,7 +258,8 @@ let ``a refused project runs as configured with the same verdict, and the refusa
             { Policy = settings RecordEveryRun
               OptedOut = Set.empty
               WeaveOverrides = Map.empty
-              Decide = TraceRun.decide }
+              Decide = TraceRun.decide
+              PredictFingerprint = fun _ _ _ -> Ok "E" }
 
         let json, activity = runTests root [ config "T" runner "" ] (Some wiring)
 
@@ -275,7 +279,8 @@ let ``a full run that full-runs does not record says why, and stores it`` () =
             { Policy = settings RecordFullRuns
               OptedOut = Set.empty
               WeaveOverrides = Map.empty
-              Decide = TraceRun.decide }
+              Decide = TraceRun.decide
+              PredictFingerprint = fun _ _ _ -> Ok "E" }
 
         // run-tests launches every project in full under `check`'s mode, which full-runs
         // does not record: the reader who configured traces expects this run traced.
@@ -308,7 +313,8 @@ let ``a filtered run that full-runs does not record stays silent and stores noth
             { Policy = settings RecordFullRuns
               OptedOut = Set.empty
               WeaveOverrides = Map.empty
-              Decide = TraceRun.decide }
+              Decide = TraceRun.decide
+              PredictFingerprint = fun _ _ _ -> Ok "E" }
 
         let host = createModelHost (Unchecked.defaultof<_>) root
 
@@ -384,7 +390,8 @@ let ``a traced launch that verified nothing re-runs untraced, and the refusal sa
             { Policy = settings RecordEveryRun
               OptedOut = Set.empty
               WeaveOverrides = Map.empty
-              Decide = decide }
+              Decide = decide
+              PredictFingerprint = fun _ _ _ -> Ok "E" }
 
         let json, activity = runTests root [ config "T" runner "" ] (Some wiring)
 
@@ -455,7 +462,8 @@ let ``a traced run joins against the analysis admitted while it ran, however far
             { Policy = settings RecordEveryRun
               OptedOut = Set.empty
               WeaveOverrides = Map.empty
-              Decide = fun _ -> TraceRun.decideWith (preparedAs root woven) (fun () -> Some "/dotnet-root") }
+              Decide = fun _ -> TraceRun.decideWith (preparedAs root woven) (fun () -> Some "/dotnet-root")
+              PredictFingerprint = fun _ _ _ -> Ok "E" }
 
         let host = createModelHost (Unchecked.defaultof<_>) root
 
@@ -561,6 +569,7 @@ let ``a traced project's traces are stored as soon as it finishes, while the res
             { Policy = settings RecordEveryRun
               OptedOut = Set.empty
               WeaveOverrides = Map.empty
+              PredictFingerprint = fun _ _ _ -> Ok "E"
               Decide =
                 fun ct rt project runDir extra ->
                     let woven = if project.Project = "Fast" then fast else slow

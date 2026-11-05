@@ -123,6 +123,10 @@ type internal TraceWiring =
         /// Project -> its own `traces.weaveTests`, for the projects that set one.
         WeaveOverrides: Map<string, TraceWeaveTests>
         Decide: CancellationToken -> TraceRuntime -> TraceProject -> string -> string list -> TraceDecision
+        /// The fingerprint a project's traced run will record, from its project name, `dotnet run`
+        /// arguments and environment (`TraceShadow.predictFingerprint`, or a test's stand-in).
+        /// Shadow selection reads only that fingerprint's traces.
+        PredictFingerprint: string -> string -> (string * string) list -> Result<string, string>
     }
 
 /// Deciding which projects a run traces, and storing what they recorded.
@@ -142,7 +146,7 @@ module TraceRun =
     let indexUnsettledReason (waited: TimeSpan) =
         $"index-unsettled: the symbol index was still folding analysis events after %.0f{waited.TotalSeconds}s, so no probe id could be joined reliably"
 
-    let private weaveMode (weave: TraceWeaveTests) =
+    let internal weaveMode (weave: TraceWeaveTests) =
         match weave with
         | WeaveTestSites -> Model.SitesOnly
         | WeaveTestFull -> Model.Full

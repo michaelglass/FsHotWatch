@@ -81,6 +81,7 @@ let private launch root select (lines: ResizeArray<string>) =
         (lazy versions)
         [ test' "C" "a" ]
         ShadowFallbacks.none
+        (fun _ -> Ok "E")
         lines.Add
 
 [<Fact>]
@@ -485,6 +486,7 @@ let ``at launch a seed no probe represents selects what the static walk reaches,
                 (lazy versions)
                 [ test' "C" "a" ]
                 fallbacks
+                (fun _ -> Ok "E")
                 lines.Add
             |> List.exactlyOne
 
@@ -506,3 +508,128 @@ let ``fallback inputs that add nothing walk to nothing, select no file and index
     test <@ none.StaticWalk [ "N.f" ] |> List.isEmpty @>
     test <@ none.FileFallback [ "a.json" ] = Some [] @>
     test <@ not (none.IsIndexed "src/A.fs") && none.AttributesOf "N.f" |> List.isEmpty @>
+
+// --- the fingerprint is predicted before the run (AUTOMATION-975, plan Task 3) ----------
+
+let private launchPredicting root (predict: string -> Result<string, string>) (lines: ResizeArray<string>) =
+    TraceShadow.atLaunch
+        (settings SelectShadow)
+        root
+        [ "P" ]
+        (fun _ -> universe)
+        (lazy versions)
+        [ test' "C" "a" ]
+        ShadowFallbacks.none
+        predict
+        lines.Add
+
+[<Fact>]
+let ``at launch shadow reads the traces of the predicted fingerprint, never the newest run's`` () =
+    withStore (fun root ->
+        let lines = ResizeArray<string>()
+        // The newest recorded run is E's; the run about to start is predicted to record Z.
+        let reading = launchPredicting root (fun _ -> Ok "Z") lines |> List.exactlyOne
+        test <@ reading.Fingerprint = "Z" @>
+
+        test
+            <@
+                reading.Selection.Selected = Map
+                    [ "P|C|a", [ TraceSelect.NoTrace ]
+                      "P|C|b", [ TraceSelect.NoTrace ]
+                      "P|C|c", [ TraceSelect.NoTrace ] ]
+            @>)
+
+[<Fact>]
+let ``a fingerprint that cannot be predicted reads no trace, and says why`` () =
+    withStore (fun root ->
+        let lines = ResizeArray<string>()
+
+        let reading =
+            launchPredicting root (fun _ -> Error "no build output under x") lines
+            |> List.exactlyOne
+
+        test <@ reading.Fingerprint = "" && reading.Selection.Selected.Count = 3 @>
+
+        test
+            <@
+                lines
+                |> Seq.exists (fun l -> l.Contains "fingerprint not predicted" && l.Contains "no build output under x")
+            @>)
+
+[<Fact>]
+let ``a prediction the run then contradicts is a safe miss when nothing was stored under it`` () =
+    withStore (fun root ->
+        let lines = ResizeArray<string>()
+        let readings = launchPredicting root (fun _ -> Ok "Z") lines
+        recordRun root "run-z" "E" Recorded
+        TraceShadow.atCompletion (settings SelectShadow) root readings "run-z" (fun _ -> false) (Some []) lines.Add
+        use store = Store.Open(Path.Combine(root, "shadow.db"))
+        let row = store.ShadowRows "P" |> List.exactlyOne
+        test <@ row.FingerprintOutcome = SafeMiss && row.EnvFingerprint = "Z" @>)
+
+[<Fact>]
+let ``a project's fingerprint is predicted from its build output, with its own DOTNET_ROOT and roll-forward first`` () =
+    let root = Directory.CreateTempSubdirectory("fshw-predict-").FullName
+
+    try
+        let projectDir = Path.Combine(root, "app")
+        let out = Path.Combine(projectDir, "bin", "Debug", "net10.0")
+        Directory.CreateDirectory out |> ignore
+        File.WriteAllText(Path.Combine(out, "App.dll"), "")
+        File.WriteAllText(Path.Combine(out, "App.deps.json"), "{}")
+
+        File.WriteAllText(
+            Path.Combine(out, "App.runtimeconfig.json"),
+            """{"runtimeOptions":{"framework":{"name":"Microsoft.NETCore.App","version":"8.0.0"}}}"""
+        )
+
+        // A fake dotnet root holding 8.0.1 and 9.0.0.
+        let dotnet = Path.Combine(root, "dotnet")
+
+        for v in [ "8.0.1"; "9.0.0" ] do
+            Directory.CreateDirectory(Path.Combine(dotnet, "shared", "Microsoft.NETCore.App", v))
+            |> ignore
+
+        let target: ArtifactFreshness.RunnerTarget =
+            { ProjectFile = None
+              ProjectDir = projectDir
+              AssemblyName = "App"
+              BinDir = Path.Combine(projectDir, "bin", "Debug") }
+
+        let expected runtime =
+            TestPrune.Trace.Fingerprint.ofEnvironment
+                root
+                []
+                []
+                (runtime,
+                 TestPrune.Trace.Recorder.RuntimeIdentity.os (),
+                 TestPrune.Trace.Recorder.RuntimeIdentity.arch ())
+                (TestPrune.Trace.FingerprintPrediction.depsJsonSha256 "{}")
+                SitesOnly
+            |> TestPrune.Trace.Fingerprint.compute
+
+        let predict env host =
+            TraceShadow.predictFingerprint (settings SelectShadow) WeaveTestSites root (Some target) env host
+
+        test <@ predict [ "DOTNET_ROOT", dotnet ] (fun () -> None) = Ok(expected ".NET 8.0.1") @>
+
+        test
+            <@
+                predict [ "DOTNET_ROOT", dotnet; "DOTNET_ROLL_FORWARD", "LatestMajor" ] (fun () -> None) = Ok(
+                    expected ".NET 9.0.0"
+                )
+            @>
+
+        // No DOTNET_ROOT of its own: the host's.
+        test <@ predict [] (fun () -> Some dotnet) = Ok(expected ".NET 8.0.1") @>
+        test <@ predict [] (fun () -> None) = Error "no-dotnet-root" @>
+
+        test
+            <@
+                TraceShadow.predictFingerprint (settings SelectShadow) WeaveTestSites root None [] (fun () ->
+                    Some dotnet) = Error "no-derivable-project"
+            @>
+
+        test <@ predict [ "DOTNET_ROOT", root ] (fun () -> None) |> Result.isError @>
+    finally
+        Directory.Delete(root, true)

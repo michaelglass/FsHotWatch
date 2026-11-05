@@ -38,6 +38,7 @@
         <Compile Include="Scope.fs" />
         <Compile Include="ContextSource.fs" />
         <Compile Include="RecorderState.fs" />
+        <Compile Include="RuntimeIdentity.fs" />
         <Compile Include="DumpWriter.fs" />
         <Compile Include="Probes.fs" />
         <Compile Include="Io.fs" />

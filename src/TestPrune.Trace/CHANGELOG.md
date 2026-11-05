@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: predict a traced run's environment fingerprint before it starts (AUTOMATION-975, plan D4).
+  `RuntimeResolution` resolves the Microsoft.NETCore.App an apphost will load the way the host does (the
+  runtimeconfig's `rollForward`, else `DOTNET_ROLL_FORWARD`, else `Minor`, over the runtimes under
+  DOTNET_ROOT); `FingerprintPrediction.predict` reads the same build output the shadow bin weaves
+  (`ShadowBin.buildOutput`) and returns the inputs ingestion will gather. New: `Fingerprint.toJson`,
+  `Fingerprint.diff`, `Fingerprint.ofEnvironment` (`gather` is built on it; `compute` is unchanged).
+
 - feat: trace selection rules R6 and R7 (AUTOMATION-975). `TraceSelect.withFallbacks` adds, for each changed
   seed traces cannot verify (`fallReason`: order-unstable, static-init only, literal, inline, not probed),
   the tests the static walk from it reaches (R6), and for changed files that are neither indexed sources nor
