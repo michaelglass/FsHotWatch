@@ -116,11 +116,18 @@ let ``no test clears the process-wide SQLite pool`` () =
     // Spelled in halves so this guard is not itself a match for what it forbids.
     let processWideClear = "ClearAll" + "Pools"
 
+    // Every test project in the repository, not only this one: TestPrune's suites open
+    // SQLite databases in parallel too (AUTOMATION-1022).
+    let testsDir =
+        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../.."))
+
     let offenders =
-        testProjectSources ()
-        |> Array.filter (fun (_, lines) -> callSites processWideClear lines |> Array.isEmpty |> not)
-        |> Array.map fst
-        |> List.ofArray
+        filesUnder FsHotWatch.SafeWalk.SourceExcludedDirs "*.fs" testsDir
+        |> List.filter (fun path ->
+            let relative = Path.GetRelativePath(testsDir, path).Replace('\\', '/')
+            not (relative.Contains "/bin/" || relative.Contains "/obj/"))
+        |> List.filter (fun path -> callSites processWideClear (File.ReadAllLines path) |> Array.isEmpty |> not)
+        |> List.map (fun path -> Path.GetRelativePath(testsDir, path).Replace('\\', '/'))
 
     Assert.True(List.isEmpty offenders, $"these sources clear every pool in the process: %A{offenders}")
 
