@@ -80,7 +80,7 @@ let ``a process registering after shutdown cannot escape its owning registry`` (
 
         Assert.Empty(registry.Snapshot()))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``closed process scope refuses launch before target side effects`` () =
     withTempDir "closed-admission" (fun directory ->
         let registry = ProcessRegistry.Registry()
@@ -221,7 +221,7 @@ let ``a launch with no scope installed reserves nothing`` () =
 // A disposed handle is not evidence of exit
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``shutdown records a disposed live handle as uncertain termination`` () =
     let registry = ProcessRegistry.Registry()
     let child = startSleep 30
@@ -240,7 +240,7 @@ let ``shutdown records a disposed live handle as uncertain termination`` () =
         child.Dispose()
         reap observer
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``disposing a tracked live child cannot earn successful operation retirement`` () =
     let parent = ProcessRegistry.Registry()
     use _ = ProcessRegistry.install parent
@@ -355,7 +355,7 @@ let ``a timed-out operation cannot launch a child after its deadline`` () =
 // Child scopes
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``synchronous child scope settles and restores its parent registry`` () =
     let parent = ProcessRegistry.Registry()
     use _ = ProcessRegistry.install parent

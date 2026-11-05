@@ -118,7 +118,7 @@ let ``computeFlakiness is 0 when history has fewer than 2 effective runs`` () =
 
 // --- persistence: appendRecords / loadHistory / trim ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``appendRecords + loadHistory round-trips a record`` () =
     withTempDir "fshw-flake-rt" (fun tmp ->
         let path = Path.Combine(tmp, "test-history.json")
@@ -136,7 +136,7 @@ let ``appendRecords + loadHistory round-trips a record`` () =
         test <@ Map.find "A.B.C" history |> List.length = 1 @>
         test <@ (Map.find "A.B.C" history).[0].DurationMs = 100 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``appendRecords trims per-test history to the last N`` () =
     withTempDir "fshw-flake-trim" (fun tmp ->
         let path = Path.Combine(tmp, "test-history.json")
@@ -159,13 +159,13 @@ let ``appendRecords trims per-test history to the last N`` () =
         test <@ records.[0].DurationMs = 30 @>
         test <@ records.[4].DurationMs = 26 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``loadHistory returns empty Map when file is missing`` () =
     withTempDir "fshw-flake-missing" (fun tmp ->
         let path = Path.Combine(tmp, "missing.json")
         test <@ loadHistory path = Map.empty @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``topFlaky returns tests sorted by flakiness descending`` () =
     withTempDir "fshw-flake-top" (fun tmp ->
         let path = Path.Combine(tmp, "test-history.json")
@@ -259,7 +259,7 @@ let ``mergeRecords keeps the N most-recent per test and expires the rest`` () =
     test <@ (Map.find "Kept" merged).Head.RunStartedAt = t0 @>
     test <@ (Map.find "New" merged).Length = 1 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``appendRecords records EVERY project's tests in one write (no lost update)`` () =
     // The shape of the race the per-config call created: several projects' records
     // arriving together. One call with all of them retains all of them, where N
@@ -282,7 +282,7 @@ let ``appendRecords records EVERY project's tests in one write (no lost update)`
         for r in allProjects do
             test <@ history |> Map.containsKey r.Name @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``appendRecords expires a test that has not run inside the retention window`` () =
     withTempDir "fshw-flake-expire" (fun tmp ->
         let path = Path.Combine(tmp, "test-history.json")

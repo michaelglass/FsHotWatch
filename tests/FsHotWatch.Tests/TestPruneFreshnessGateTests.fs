@@ -61,7 +61,7 @@ let private checkSourceForReal (tmpDir: string) (fileName: string) (source: stri
         return result
     }
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a cached helper-file analysis cannot relabel a freshly executed test failure as cached`` () =
     withTempDir "tp-fresh-red-provenance" (fun tmpDir ->
         let cache =
@@ -131,7 +131,7 @@ let ``a cached helper-file analysis cannot relabel a freshly executed test failu
         test <@ host.GetStatus("test-prune") = freshStatus @>
         test <@ host.GetErrorsByPlugin("test-prune") = freshLedger @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileChecked analyzes its existing FCS payload without re-entering the checker`` () =
     withTempDir "tp-no-checker-reentry" (fun tmpDir ->
         let source = "module AlreadyChecked\nlet value = 42\n"
@@ -164,7 +164,7 @@ let ``hasFcsErrors returns false for ParseOnly`` () =
             )
         @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hasFcsErrors returns true for source with type error`` () =
     withTempDir "tp-poisoning-err" (fun tmpDir ->
         let brokenSource =
@@ -184,7 +184,7 @@ let x : int = "not an int"
                     result.CheckResults
             @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hasFcsErrors returns false for clean source`` () =
     withTempDir "tp-poisoning-clean" (fun tmpDir ->
         let cleanSource =
@@ -206,7 +206,7 @@ let answer = 42
                 )
             @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hasFcsErrors returns false for warning-only source`` () =
     withTempDir "tp-poisoning-warn" (fun tmpDir ->
         // An incomplete pattern match: FCS reports FS0025 at Warning severity.
@@ -254,7 +254,7 @@ let f x =
 // cache replay across daemon restarts on cold scans.
 // =============================================================================
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hasFcsErrors does not let #nowarn suppress a genuine error`` () =
     withTempDir "tp-poisoning-nowarn" (fun tmpDir ->
         let source =
@@ -290,7 +290,7 @@ let x : int = "not-an-int"
                     result.CheckResults
             @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hasFcsErrors respects configured FcsSuppressedCodes`` () =
     withTempDir "tp-poisoning-config" (fun tmpDir ->
         // No `#nowarn` in source: the caller passes the set instead, which is how daemons
@@ -322,7 +322,7 @@ let x : int = "not-an-int"
                 )
             @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hasFcsErrors still trips on real error not covered by suppression`` () =
     // The positive control for the two suppression tests above: they would both pass
     // against a gate that had simply stopped firing.
@@ -352,7 +352,7 @@ let x : int = "not-an-int"
                     result.CheckResults
             @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileChecked with FCS errors persists symbols to DB and stamps sidecar dirty`` () =
     // Dirty FCS results do NOT block the symbol-DB write. The protection against Phase B
     // seeing "0 stored" lives in the freshness sidecar, which marks the file
@@ -427,7 +427,7 @@ let badTypeUse : int = "not-an-int"
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
         test <@ not (FsHotWatch.TestPrune.FileFreshness.isClean "Broken.fsx" freshness) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a changed file FCS reported errors for is named in test-scope as not selected until it checks clean`` () =
     // `FileFreshness.FileUnverified` drops the file's changes from the selection. That
     // used to reach daemon.log only, as a NOT SELECTED warning; `test-scope` is what the
@@ -481,7 +481,7 @@ let ``a changed file FCS reported errors for is named in test-scope as not selec
         emitFileAndQuiesce host (check "module Broken\nlet fixedTypeUse : int = 42\n")
         test <@ notSelected () = Some [] @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileChecked without FCS errors flushes symbols to DB (gate doesn't break clean path)`` () =
     withTempDir "tp-poisoning-cleanflush" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -563,7 +563,7 @@ let cleanTest () = ()
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
         test <@ FsHotWatch.TestPrune.FileFreshness.isClean "Clean.fsx" freshness @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BatchChecked persists accumulated symbols to DB without a follow-up BuildCompleted`` () =
     // On a cold scan `performScan` awaits BuildPlugin terminal BEFORE the FCS tier checks,
     // so BuildCompleted reaches the mailbox before any FileChecked and flushes an empty
@@ -768,7 +768,7 @@ let badTypeUse : int = "wrong-type"
 // and every symbol in the file is new.
 // =============================================================================
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Phase B replay: stored=dirty, current=clean → the file's tests are SELECTED, not dropped`` () =
     withTempDir "tp-phaseb-bypass" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -864,7 +864,7 @@ let phaseBTest () = ()
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
         test <@ FsHotWatch.TestPrune.FileFreshness.isClean relPath freshness @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Phase B replay: stored=clean → detectChanges runs as today`` () =
     // The guard against an over-aggressive gate that would mask legitimate changes.
     let initialSource = "module Lib\nlet x = 1\n"
@@ -896,7 +896,7 @@ let ``Phase B replay: stored=clean → detectChanges runs as today`` () =
 // events extract the same number of symbols a warm Phase B rerun would.
 // =============================================================================
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Item 3: pre-BuildCompleted clean FileChecked → sidecar stays dirty`` () =
     // `currentClean = true` is necessary but not sufficient; BuildCompleted is what
     // signals warm-enough state.
@@ -955,7 +955,7 @@ let ``Item 3: pre-BuildCompleted clean FileChecked → sidecar stays dirty`` () 
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
         test <@ not (FsHotWatch.TestPrune.FileFreshness.isClean "Pre.fsx" freshness) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Item 3: post-BuildCompleted clean FileChecked → sidecar stamped clean`` () =
     // Same harness as the pre-build case, with the ordering reversed.
     withTempDir "tp-item3-post-build-clean" (fun tmpDir ->
@@ -1004,7 +1004,7 @@ let ``Item 3: post-BuildCompleted clean FileChecked → sidecar stamped clean`` 
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
         test <@ FsHotWatch.TestPrune.FileFreshness.isClean "Post.fsx" freshness @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Item 3: clean check after prior dirty, still pre-build → stays dirty`` () =
     // Two FileCheckeds and no BuildCompleted: dirty, then clean. The clean one must not
     // promote the entry, because warm extraction stability is still not guaranteed.
@@ -1099,7 +1099,7 @@ let bad : int = "not-an-int"
 // real file's allSymbols, hence "Phase B always reports 4921 affected tests".
 // =============================================================================
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detectChanges: re-check of unchanged source with externs reports no changes`` () =
     // `List.length` makes the extractor pull in Microsoft.FSharp.Collections.List.length
     // as an extern symbol.
@@ -1169,14 +1169,14 @@ let ``tryApphostPresent returns None when args carry no --project`` () =
     test <@ tryApphostPresent "/tmp/runner.sh" "/repo" = None @>
     test <@ tryApphostPresent "test" "/repo" = None @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``tryApphostPresent reports false when the bin dir is absent`` () =
     withTempDir "tp-apphost-struct-missing" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
         Directory.CreateDirectory(projDir) |> ignore
         test <@ tryApphostPresent $"run --project {projDir} --no-build --" tmpDir = Some false @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``tryApphostPresent reports false when bin exists but apphost is missing`` () =
     withTempDir "tp-apphost-struct-empty-bin" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
@@ -1186,7 +1186,7 @@ let ``tryApphostPresent reports false when bin exists but apphost is missing`` (
         File.WriteAllText(Path.Combine(tfmDir, "Unit.dll"), "")
         test <@ tryApphostPresent $"run --project {projDir} --no-build --" tmpDir = Some false @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``tryApphostPresent reports true when the apphost binary exists`` () =
     withTempDir "tp-apphost-struct-present" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
@@ -1196,7 +1196,7 @@ let ``tryApphostPresent reports true when the apphost binary exists`` () =
         File.WriteAllText(Path.Combine(tfmDir, "Unit"), "")
         test <@ tryApphostPresent $"run --project {projDir} --no-build --" tmpDir = Some(true) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``tryApphostPresent resolves an fsproj --project to its assembly name`` () =
     withTempDir "tp-apphost-struct-fsproj" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
@@ -1208,7 +1208,7 @@ let ``tryApphostPresent resolves an fsproj --project to its assembly name`` () =
         File.WriteAllText(Path.Combine(tfmDir, "MyTests"), "")
         test <@ tryApphostPresent $"run --project {fsproj} --no-build --" tmpDir = Some(true) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``tryApphostPresent finds a Windows .exe apphost`` () =
     withTempDir "tp-apphost-struct-exe" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
@@ -1220,7 +1220,7 @@ let ``tryApphostPresent finds a Windows .exe apphost`` () =
 // An unlistable `bin/Debug` threw here. Answering `Some false` instead would DEFER the
 // run as "waiting on build" over a directory nobody could look in; `None` is this
 // function's "the filesystem cannot answer", and hands over to the output sniff.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``tryApphostPresent cannot answer for an UNREADABLE bin, rather than throwing or saying absent`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "tp-apphost-struct-sealed-bin" (fun tmpDir ->
@@ -1247,7 +1247,7 @@ let ``tryApphostPresent cannot answer for an UNREADABLE bin, rather than throwin
 // otherwise it persists every run. The configs run a bare `sh <script>` with no
 // `--project`, so `tryApphostPresent` returns None and the plugin falls back to the
 // `looksLikeApphostMissing` output sniff — exercising that path end-to-end.
-[<Theory(Timeout = 20000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(true)>] // cold-start: fails once with the launch signature, then succeeds
 [<InlineData(false)>] // persistent: apphost never appears
 let ``apphost-missing cold-start retries green; persistent defers non-green (never FAILED test)`` (transient: bool) =
@@ -1510,7 +1510,7 @@ let ``freshness is None when args carry no --project`` () =
     test <@ staleOf "/tmp/runner.sh" "/repo" = None @>
     test <@ staleOf "test" "/repo" = None @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``freshness is None when no build output exists`` () =
     withTempDir "tp-stale-nobin" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
@@ -1519,7 +1519,7 @@ let ``freshness is None when no build output exists`` () =
         // Absence is tryApphostPresent's job, not staleness'.
         test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``freshness is None when there are no sources to be stale against`` () =
     withTempDir "tp-stale-nosrc" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
@@ -1528,7 +1528,7 @@ let ``freshness is None when there are no sources to be stale against`` () =
         File.WriteAllText(Path.Combine(tfmDir, "Unit.dll"), "")
         test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``freshness is None when the DLL is newer than every source`` () =
     withTempDir "tp-stale-fresh" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
@@ -1543,7 +1543,7 @@ let ``freshness is None when the DLL is newer than every source`` () =
         File.SetLastWriteTimeUtc(dll, t)
         test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``freshness is STALE when the project's own DLL predates its own source`` () =
     withTempDir "tp-stale-own" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
@@ -1566,7 +1566,7 @@ let ``freshness is STALE when the project's own DLL predates its own source`` ()
 // refuses to relink that suite, so no plain build could ever clear the accusation. On a
 // repo-wide watermark this test FAILS — Leaf.fs is the newest source in the repo and
 // Tests.dll predates it.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an edit OUTSIDE the test project's closure leaves it FRESH`` () =
     withTempDir "tp-stale-outside" (fun tmpDir ->
         let s = synth tmpDir
@@ -1593,7 +1593,7 @@ let ``an edit OUTSIDE the test project's closure leaves it FRESH`` () =
 /// `Could not load file or assembly 'Lib'` while `Lib.dll` sat beside it in the output
 /// folder, every assembly was newer than every source, and every copy was byte-identical
 /// to its origin.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a deps manifest older than its restore is STALE though every assembly is current`` () =
     withTempDir "tp-superseded" (fun tmpDir ->
         let projDir = p [ tmpDir; "Unit" ]
@@ -1622,7 +1622,7 @@ let ``a deps manifest older than its restore is STALE though every assembly is c
 /// (a coarse filesystem, or a build fast enough that both land on one timestamp). A
 /// detector that fired on every built tree would refuse every run and teach people to
 /// ignore it.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a deps manifest at or after its restore is fresh`` () =
     withTempDir "tp-control" (fun tmpDir ->
         let projDir = p [ tmpDir; "Unit" ]
@@ -1651,7 +1651,7 @@ let ``a deps manifest at or after its restore is fresh`` () =
 /// Pinned because every OTHER freshness test in this file builds a tree with no `obj/`, so
 /// a check that read a missing assets file as stale would redden all of them at once and
 /// the cause would present as a mass regression rather than as this one decision.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``neither half of the pair missing is judged as stale`` () =
     withTempDir "tp-absent" (fun tmpDir ->
         let projDir = p [ tmpDir; "Unit" ]
@@ -1675,7 +1675,7 @@ let ``neither half of the pair missing is judged as stale`` () =
 // Direction 2 — the real hole. A dependency's source newer than the dependency's own
 // assembly means the build has not run since the edit, so the DLL in the test project's
 // output dir is old code and `--no-build` must not run.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an edit to a DEPENDENCY inside the closure is STALE`` () =
     withTempDir "tp-stale-inside" (fun tmpDir ->
         let s = synth tmpDir
@@ -1693,7 +1693,7 @@ let ``an edit to a DEPENDENCY inside the closure is STALE`` () =
 // — a private-only change to a dependency need not relink its consumers (reference
 // assemblies exist to avoid exactly that), and demanding it would be the same
 // unanswerable accusation in a smaller costume.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a dependency edit followed by a plain rebuild of that dependency is FRESH`` () =
     withTempDir "tp-stale-rebuilt" (fun tmpDir ->
         let s = synth tmpDir
@@ -1711,7 +1711,7 @@ let ``a dependency edit followed by a plain rebuild of that dependency is FRESH`
 // The dependency's DLL is fresh in its OWN bin, but the copy the test run would load was
 // never refreshed. A rebuild emits new BYTES — moving the origin's mtime alone would
 // assert the old `copy < origin` rule rather than the real event.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a dependency DLL rebuilt but not re-copied into the test output is STALE`` () =
     withTempDir "tp-stale-depcopy" (fun tmpDir ->
         let s = synth tmpDir
@@ -1730,7 +1730,7 @@ let ``a dependency DLL rebuilt but not re-copied into the test output is STALE``
 // `-t:Rebuild` exposed it. A stale copy of a content item must make the run stale exactly
 // as a stale apphost does.
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a FIXTURE edited but not re-copied into the test output is STALE`` () =
     withTempDir "tp-stale-fixture" (fun tmpDir ->
         let s = synth tmpDir
@@ -1749,7 +1749,7 @@ let ``a FIXTURE edited but not re-copied into the test output is STALE`` () =
 
 // What a plain `dotnet build` does: re-copy the fixture, carrying the origin's mtime
 // (verified against real MSBuild, 2026-07-14).
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a FIXTURE re-copied by a plain build is FRESH`` () =
     withTempDir "tp-stale-fixture-copied" (fun tmpDir ->
         let s = synth tmpDir
@@ -1764,7 +1764,7 @@ let ``a FIXTURE re-copied by a plain build is FRESH`` () =
 
 // The test project's OWN fixtures count too — the copy is what the run reads,
 // whoever owns the origin.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the test project's OWN stale fixture copy is STALE`` () =
     withTempDir "tp-stale-own-fixture" (fun tmpDir ->
         let s = synth tmpDir
@@ -1786,7 +1786,7 @@ let ``the test project's OWN stale fixture copy is STALE`` () =
 // and no build can answer that. A CONTENT comparison would make that accusation PERMANENT
 // where an mtime one only fired when the shadowed file happened to be newer — so a copy
 // is checked against every claimant and is current if it matches ANY of them.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a fixture SHADOWED by another project's file at the same path is not stale`` () =
     withTempDir "tp-stale-shadowed" (fun tmpDir ->
         let s = synth tmpDir
@@ -1813,7 +1813,7 @@ let ``a fixture SHADOWED by another project's file at the same path is not stale
 // destination in the output dir, so editing it can never fire the gate. Otherwise the
 // content check becomes a new wolf-cry, every README and .fsproj edit condemning a
 // project no build would ever clear.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a file the build never copies cannot make the run stale`` () =
     withTempDir "tp-stale-uncopied" (fun tmpDir ->
         let s = synth tmpDir
@@ -1823,7 +1823,7 @@ let ``a file the build never copies cannot make the run stale`` () =
         test <@ synthStale s = None @>)
 
 // A guard that cries "something, somewhere is stale" is a guard people learn to bypass.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the stale reason names the offending file`` () =
     withTempDir "tp-stale-describe" (fun tmpDir ->
         let s = synth tmpDir
@@ -1845,7 +1845,7 @@ let ``the stale reason names the offending file`` () =
 // dependency sail through as fresh.
 // =============================================================================
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unparseable project file is REFUSED, not called fresh`` () =
     withTempDir "tp-stale-badxml" (fun tmpDir ->
         let s = synth tmpDir
@@ -1855,7 +1855,7 @@ let ``an unparseable project file is REFUSED, not called fresh`` () =
         | Some(ArtifactFreshness.InputsUndeterminable(project, _)) -> test <@ project = "Tests" @>
         | other -> Assert.Fail($"an unreadable project file must fail CLOSED, got %A{other}"))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a ProjectReference without an Include is REFUSED, not ignored`` () =
     withTempDir "tp-stale-noinclude" (fun tmpDir ->
         let s = synth tmpDir
@@ -1871,7 +1871,7 @@ let ``a ProjectReference without an Include is REFUSED, not ignored`` () =
 
 // The same ignorance: we cannot know a missing project's sources, so we cannot certify
 // this run.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a ProjectReference to a missing project is REFUSED, not called fresh`` () =
     withTempDir "tp-stale-missingref" (fun tmpDir ->
         let s = synth tmpDir
@@ -1886,7 +1886,7 @@ let ``a ProjectReference to a missing project is REFUSED, not called fresh`` () 
         | other -> Assert.Fail($"a reference to a missing project must fail CLOSED, got %A{other}"))
 
 // Ignorance ANYWHERE in the closure fails closed, not just at its root.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unparseable project file DEEP in the closure is REFUSED`` () =
     withTempDir "tp-stale-badxml-deep" (fun tmpDir ->
         let s = synth tmpDir
@@ -1901,7 +1901,7 @@ let ``an unparseable project file DEEP in the closure is REFUSED`` () =
 // so an unreadable source dir produced no sources, nothing was newer than the assembly,
 // and the gate certified a `--no-build` run over bits it had never looked at. The walk
 // now reports its holes and the gate refuses on them.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an UNREADABLE SOURCE DIRECTORY in the closure is REFUSED, not called fresh`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "tp-stale-unreadable-src" (fun tmpDir ->
@@ -1931,7 +1931,7 @@ let ``an UNREADABLE SOURCE DIRECTORY in the closure is REFUSED, not called fresh
 // The same hole on the OTHER side of the gate. `outputs` is read as "did the build put
 // something here?", and a copy the walk never saw is a destination nobody checks — so a
 // stale copy under an unreadable output subdirectory used to sail through as fresh.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an UNREADABLE OUTPUT DIRECTORY is REFUSED, not called fresh`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "tp-stale-unreadable-out" (fun tmpDir ->
@@ -1958,7 +1958,7 @@ let ``an UNREADABLE OUTPUT DIRECTORY is REFUSED, not called fresh`` () =
 // `tfmOutputDirs` was a bare `Directory.GetDirectories` behind a `Directory.Exists`, so a
 // mode-000 `bin/Debug` THREW out of the gate. An empty listing would have been worse:
 // "no TFM dirs" is read as "nothing built", which this gate waves through. It is ignorance.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an UNREADABLE bin Debug is REFUSED, not a throw and not "nothing built"`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "tp-stale-unreadable-bin" (fun tmpDir ->
@@ -1983,7 +1983,7 @@ let ``an UNREADABLE bin Debug is REFUSED, not a throw and not "nothing built"`` 
 
 // The same hole in a DEPENDENCY's output. Its assembly is what the compile and copy
 // checks compare against, and an unlistable `bin/Debug` used to throw there too.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an UNREADABLE bin Debug in the closure is REFUSED, naming the dependency`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "tp-stale-unreadable-dep-bin" (fun tmpDir ->
@@ -2007,7 +2007,7 @@ let ``an UNREADABLE bin Debug in the closure is REFUSED, naming the dependency``
 
 // A reference cycle is MSBuild's error to report; the closure walk must terminate rather
 // than hang on it.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a project reference cycle terminates`` () =
     withTempDir "tp-stale-cycle" (fun tmpDir ->
         let s = synth tmpDir
@@ -2025,7 +2025,7 @@ let ``a project reference cycle terminates`` () =
 // A dependency never built at all is the build's business, not staleness': there is no
 // out-of-date artifact to refuse, and a build in flight may still land it. Same for a
 // dependency assembly not yet copied into the test output.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unbuilt dependency is not reported stale`` () =
     withTempDir "tp-stale-unbuilt-dep" (fun tmpDir ->
         let s = synth tmpDir
@@ -2033,7 +2033,7 @@ let ``an unbuilt dependency is not reported stale`` () =
 
         test <@ synthStale s = None @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a dependency assembly not yet copied into the test output is not reported stale`` () =
     withTempDir "tp-stale-uncopied-dep" (fun tmpDir ->
         let s = synth tmpDir
@@ -2112,7 +2112,7 @@ let private multiTfmStale (m: MultiTfm) =
 
 // Nothing is stale: the copy is byte-identical to the net10.0 output it came from. A
 // newest-mtime gate calls it nine minutes "older" than net8.0 and cries stale.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a copy of a multi-TFM dependency is FRESH even when a SIBLING TFM is newer`` () =
     withTempDir "tp-stale-tfm-sibling" (fun tmpDir ->
         let m = multiTfmSynth tmpDir
@@ -2124,7 +2124,7 @@ let ``a copy of a multi-TFM dependency is FRESH even when a SIBLING TFM is newer
 // `copy < origin` rule calls it fresh and runs the stale bits — this is the jj/git
 // working-copy restamp, the coarse-timestamp filesystem, and "rebuilt within the same
 // second", all at once.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a copy whose bytes match NO output of its origin is STALE, even at an equal mtime`` () =
     withTempDir "tp-stale-tfm-realstale" (fun tmpDir ->
         let m = multiTfmSynth tmpDir
@@ -2146,7 +2146,7 @@ let ``a copy whose bytes match NO output of its origin is STALE, even at an equa
 // Fail closed at the copy check too: a file we cannot read is not one we may certify, so
 // `ContentHash` hands back `UnhashableContent` and that is `InputsUndeterminable`, never
 // "fresh". An exclusive lock is how a real build in flight holds a file mid-write.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an UNREADABLE copy is REFUSED, not called fresh`` () =
     withTempDir "tp-stale-unreadable-copy" (fun tmpDir ->
         let m = multiTfmSynth tmpDir
@@ -2162,7 +2162,7 @@ let ``an UNREADABLE copy is REFUSED, not called fresh`` () =
 // not, so "it matches none of them" is a conclusion we did not earn: an unhashable origin
 // cannot match anything, and calling that a MISMATCH manufactures a stale verdict out of
 // a permissions error.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an UNREADABLE origin is REFUSED, not called stale`` () =
     withTempDir "tp-stale-unreadable-origin" (fun tmpDir ->
         let m = multiTfmSynth tmpDir
@@ -2179,7 +2179,7 @@ let ``an UNREADABLE origin is REFUSED, not called stale`` () =
 // A multi-targeted project is stale only when EVERY per-TFM output dir is: which TFM
 // `dotnet run` selects is not knowable here, so one fresh output dir means there is a
 // fresh way to run.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a multi-TFM project with one FRESH output dir is not stale`` () =
     withTempDir "tp-stale-multitfm" (fun tmpDir ->
         let s = synth tmpDir
@@ -2207,7 +2207,7 @@ let ``a multi-TFM project with one FRESH output dir is not stale`` () =
 // no assembly in it. Judging it would mean walking an empty output tree, finding no copy
 // of anything, and — since every project in the closure then contributes no finding —
 // quietly calling the run fresh on the strength of a directory containing nothing.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a TFM dir of the test project holding no assembly is not a candidate`` () =
     withTempDir "tp-stale-empty-tfmdir" (fun tmpDir ->
         let s = synth tmpDir
@@ -2227,7 +2227,7 @@ let ``a TFM dir of the test project holding no assembly is not a candidate`` () 
 // self-loop symlinks (`ncurses -> .`, `ncursesw -> .`) — branching factor 2 per level,
 // bounded only by ENAMETOOLONG, so ~2^90 paths. A symlink-following walk wedged every
 // `fshw check` forever (observed 8h36m, silent) and trips this test's Timeout.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``freshness terminates despite self-loop symlink cycles`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "tp-nsm-cycle" (fun tmpDir ->
@@ -2245,7 +2245,7 @@ let ``freshness terminates despite self-loop symlink cycles`` () =
 // (`.devenv/profile` → the nix store). Freshness is computed from the REAL tree only — a
 // newer file behind a symlinked dir is not an input to this project, and following it is
 // how the walk left the repo in the first place.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``freshness does not follow a symlinked directory out of the project`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "tp-nsm-outside" (fun tmpDir ->
@@ -2261,7 +2261,7 @@ let ``freshness does not follow a symlinked directory out of the project`` () =
 
 // `.devenv`/`.direnv` are excluded by NAME as well: even a regular, non-symlinked file
 // under them must not count as an input.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``freshness ignores sources under .devenv and .direnv`` () =
     withTempDir "tp-nsm-devenv" (fun tmpDir ->
         let s = synth tmpDir
@@ -2271,7 +2271,7 @@ let ``freshness ignores sources under .devenv and .direnv`` () =
 
 // The gate end-to-end through the plugin. Without it the runner exits 0, yielding
 // TestsPassed and a false green on stale bits.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a present-but-stale apphost defers as 'waiting on build' instead of passing on stale bits`` () =
     withTempDir "tp-stale-defer" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
@@ -2344,7 +2344,7 @@ let ``a present-but-stale apphost defers as 'waiting on build' instead of passin
                 |> List.forall (fun e -> not (e.Message.ToLowerInvariant().Contains("tests failed")))
             @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``stale failures from a prior cycle are cleared when the next cycle supersedes them`` () =
     // Cycle 1 reds ProjA; cycle 2 passes ProjA and reds ProjB, so only ProjB may remain.
     // The Custom(TestsFinished) handler used to clear only on the all-pass branch, so

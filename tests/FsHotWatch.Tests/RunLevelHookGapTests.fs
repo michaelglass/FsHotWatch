@@ -556,7 +556,7 @@ let ``runHooksApplyTo reads the configured verb set`` () =
 
 /// The bracket's evidence lands on the verdict the action published: both run-level
 /// hooks, timed and placed on the timeline, plus the observed wall time.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run-level hooks are attached to the invocation's own verdict with observed wall time`` () =
     withTempDir "run-hook-attached" (fun root ->
         let code =
@@ -578,7 +578,7 @@ let ``run-level hooks are attached to the invocation's own verdict with observed
 
 /// The failed `beforeRun` is the ONLY record of the invocation, and it is timed and
 /// named like any other hook.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a refused beforeRun publishes an invocation-owned incomplete naming the hook`` () =
     withTempDir "run-hook-refused" (fun root ->
         let code =
@@ -594,7 +594,7 @@ let ``a refused beforeRun publishes an invocation-owned incomplete naming the ho
             test <@ verdict.Hooks |> List.map (fun h -> h.Scope, h.Outcome) = [ "run.beforeRun", "fail" ] @>
         | other -> failwith $"expected the refusal verdict, got %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``transport exit without a verdict publishes correlated incomplete timing`` () =
     withTempDir "run-hook-terminal-verdict" (fun root ->
         let code =
@@ -615,7 +615,7 @@ let ``transport exit without a verdict publishes correlated incomplete timing`` 
                 @>
         | other -> failwith $"expected terminal invocation verdict, got %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``transport exception publishes correlated incomplete timing before rethrow`` () =
     withTempDir "run-hook-exception-verdict" (fun root ->
         let thrown =
@@ -638,7 +638,7 @@ let ``transport exception publishes correlated incomplete timing before rethrow`
                 @>
         | other -> failwith $"expected exception terminal verdict, got %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``transport exception replaces its own already-published normal verdict with incomplete`` () =
     withTempDir "run-hook-exception-after-verdict" (fun root ->
         let mutable ownedInvocation = None
@@ -668,7 +668,7 @@ let ``transport exception replaces its own already-published normal verdict with
                 @>
         | other -> failwith $"expected premature terminal verdict, got %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``transport exception replaces malformed verdict JSON with its terminal fallback`` () =
     withTempDir "run-hook-exception-malformed-verdict" (fun root ->
         let mutable ownedInvocation = None
@@ -693,7 +693,7 @@ let ``transport exception replaces malformed verdict JSON with its terminal fall
             test <@ isIncomplete verdict.Outcome @>
         | other -> failwith $"malformed verdict was not replaced by terminal evidence: %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``signal replaces a non-object verdict with its terminal fallback`` () =
     withTempDir "run-hook-signal-nonobject-verdict" (fun root ->
         let signalFinalize = ref None
@@ -729,7 +729,7 @@ let ``signal replaces a non-object verdict with its terminal fallback`` () =
                 @>
         | other -> failwith $"non-object verdict was not replaced by terminal evidence: %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``premature terminal fallback never overwrites a newer invocation verdict`` () =
     withTempDir "run-hook-newer-verdict" (fun root ->
         let thrown =
@@ -783,7 +783,7 @@ let private runEndingWithoutVerdict (root: string) (ending: string) (before: str
 /// that judges a verdict by its tree hash (`fshw verdict`, `confirm`'s reuse, a
 /// consumer's gate) would take the old green as this check's answer. It must not
 /// survive: the check that ended last is recorded as incomplete, under its own id.
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("returned")>]
 [<InlineData("signal")>]
 [<InlineData("exception")>]
@@ -825,7 +825,7 @@ let ``a check that ends without a verdict supersedes an older green on the same 
 /// The protection 1416 must keep: a verdict published AFTER this check began belongs
 /// to a newer (or concurrent) invocation and is a better answer than this one's
 /// absence, however this check ends.
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("returned")>]
 [<InlineData("signal")>]
 [<InlineData("exception")>]
@@ -844,7 +844,7 @@ let ``a check that ends without a verdict never overwrites one published after i
 /// full-suite green already earned over this tree (`IpcOutput.priorVerdictToPreserve`)
 /// byte for byte. It answered, so its bracket must not treat it as having ended
 /// without a verdict.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a check that answered by keeping an earned green leaves it byte for byte`` () =
     withTempDir "run-hook-preserved-green" (fun root ->
         publishCleanInvocation "earlier-invocation" root
@@ -873,7 +873,7 @@ let ``a check that answered by keeping an earned green leaves it byte for byte``
 /// AUTOMATION-1420: a check SIGKILLed after the green ran no bracket, so only its
 /// abandoned claim says it happened. A later check with nothing to run must not keep the
 /// green it never got to confirm: it publishes its own answer instead.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a check with nothing to run does not keep a green that a SIGKILLed check died over`` () =
     withTempDir "run-hook-killed-then-kept" (fun root ->
         publishCleanInvocation "earlier-invocation" root
@@ -926,7 +926,7 @@ let ``a check with nothing to run does not keep a green that a SIGKILLed check d
 /// `--run-once` over a tree with no projects: the hooks still bracket it, and the
 /// refusal is published as an invocation-owned incomplete instead of a bare exit 2
 /// that would leave a prior green readable.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``zero-project run-once failure remains inside the run hook bracket`` () =
     withTempDir "run-hook-zero-project" (fun root ->
         let beforeSentinel = freshSentinel ()
@@ -974,7 +974,7 @@ let ``zero-project run-once failure remains inside the run hook bracket`` () =
             tryDelete beforeSentinel
             tryDelete afterSentinel)
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``every active invocation installs signal finalization even without afterRun`` (beforeRunOnly: bool) =
@@ -1008,7 +1008,7 @@ let ``every active invocation installs signal finalization even without afterRun
                 @>
         | other -> failwith $"signal finalizer did not publish its terminal verdict: %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``signal downgrade still wins after ordinary finalization already won the teardown latch`` () =
     withTempDir "run-hook-signal-after-ordinary" (fun root ->
         let signalFinalize = ref None
@@ -1152,7 +1152,7 @@ let private runConfirm (root: string) (config: DaemonConfiguration) =
 /// inputs. A fast path that certifies a stored green without running it certifies a
 /// claim nobody checked: edit only excluded files after a green, and `confirm`
 /// answers 0 having verified nothing about them.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``confirm StillApplies fast-path fires the run-level hooks`` () =
     withTempDir "confirm-fastpath-hooks" (fun root ->
         seedStillApplyingGreen root
@@ -1176,7 +1176,7 @@ let ``confirm StillApplies fast-path fires the run-level hooks`` () =
 
 /// The verb policy is the SAME one the slow path obeys: a consumer that brackets only
 /// `check` gets no `confirm` hooks here either.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``confirm StillApplies fast-path obeys runHookCommands`` () =
     withTempDir "confirm-fastpath-verb" (fun root ->
         seedStillApplyingGreen root
@@ -1203,7 +1203,7 @@ let ``confirm StillApplies fast-path obeys runHookCommands`` () =
 /// NOW", which would make a concurrent `fshw verdict` withhold an answer for a run
 /// that runs nothing. The `beforeRun` hook reports the claim directory AS IT RAN, so
 /// this observes the window rather than the tidy-up after it.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``confirm StillApplies fast-path claims nothing and rewrites nothing`` () =
     withTempDir "confirm-fastpath-unclaimed" (fun root ->
         seedStillApplyingGreen root
@@ -1235,7 +1235,7 @@ let ``confirm StillApplies fast-path claims nothing and rewrites nothing`` () =
 /// must refuse rather than certify the pre-write hash. The stored verdict is left
 /// alone: it still describes the tree that earned it, and `fshw verdict` already
 /// reports it stale against this one.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``confirm StillApplies fast-path refuses a tree that moved while the hooks ran`` () =
     withTempDir "confirm-fastpath-moved" (fun root ->
         seedStillApplyingGreen root
@@ -1270,7 +1270,7 @@ let ``confirm StillApplies fast-path refuses a tree that moved while the hooks r
 /// leaves an invocation-owned `incomplete` behind, so the green it declined to
 /// certify cannot be read back out of `.fshw/verdict.json` as the answer. `afterRun`
 /// does NOT fire — a failed acquire has nothing to release.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``confirm StillApplies fast-path fails closed when beforeRun refuses`` () =
     withTempDir "confirm-fastpath-refused" (fun root ->
         seedStillApplyingGreen root

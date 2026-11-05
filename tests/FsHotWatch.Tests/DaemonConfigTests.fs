@@ -730,7 +730,7 @@ let ``cacheAdmits exclude drops matching projects and wins over include`` () =
     test <@ not (admits "/repo/src/Libs/Lib/Lib.fsproj") @>
     test <@ not (admits "/repo/src/App/Legacy/Legacy.fsproj") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``createCacheComponents builds no cache in a secondary workspace under default-workspace scope`` () =
     withTempDir "cfg-cc-scope" (fun tmpDir ->
         let store =
@@ -750,7 +750,7 @@ let ``createCacheComponents builds no cache in a secondary workspace under defau
         | CheckCacheSetup.OffInThisCheckout scope -> test <@ scope.Contains "secondary jj workspace" @>
         | other -> failwith $"expected the cache off in this checkout, got %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a secondary workspace under default-workspace scope logs one check-cache line, the scope's`` () =
     // The scope decision already says the cache is off and why; a second, generic
     // "OFF ... enables it" line contradicted it with advice that does not apply.
@@ -777,7 +777,7 @@ let ``a secondary workspace under default-workspace scope logs one check-cache l
                 && lines.Head.Contains "secondary jj workspace"
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``with no cache configured the daemon logs one check-cache line, the generic OFF`` () =
     withTempDir "cfg-cc-off-line" (fun tmpDir ->
         let lines = startupCacheLines tmpDir NoCache
@@ -785,7 +785,7 @@ let ``with no cache configured the daemon logs one check-cache line, the generic
         test <@ lines.Length = 1 @>
         test <@ lines.Head.Contains "OFF — every scan re-asks FCS" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a cache that runs is named by one check-cache line saying its size and its scope`` () =
     withTempDir "cfg-cc-on-line" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj", "repo")) |> ignore
@@ -800,7 +800,7 @@ let ``a cache that runs is named by one check-cache line saying its size and its
         test <@ lines.Length = 1 @>
         test <@ lines.Head.Contains "in-memory" && lines.Head.Contains "default-workspace" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``createCacheComponents builds a cache in the default workspace under default-workspace scope`` () =
     withTempDir "cfg-cc-scope-default" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj", "repo")) |> ignore
@@ -815,7 +815,7 @@ let ``createCacheComponents builds a cache in the default workspace under defaul
         | CheckCacheSetup.On(_, _, Some scope) -> test <@ scope.Contains "jj default workspace" @>
         | other -> failwith $"expected a running cache, got %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``createCacheComponents passes maxEntries and the project filter to the cache`` () =
     withTempDir "cfg-cc-settings" (fun tmpDir ->
         match
@@ -861,7 +861,7 @@ let ``FSHW_CHECK_CACHE parses on and off, case- and whitespace-insensitively`` (
 
     test <@ parseCheckCacheOverride " sometimes " = CheckCacheOverride.Invalid "sometimes" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FSHW_CHECK_CACHE=on runs the cache in a secondary workspace the scope leaves out, and the line names it`` () =
     // The land workspace is a secondary jj workspace of a repository whose shared
     // .fshw.json says "default-workspace"; scope "all" would cost every daemon the cache.
@@ -884,7 +884,7 @@ let ``FSHW_CHECK_CACHE=on runs the cache in a secondary workspace the scope leav
                 @>
         | other -> failwith $"expected a running in-memory cache, got %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FSHW_CHECK_CACHE=on keeps the configured size and project filter`` () =
     withTempDir "cfg-cc-env-on-settings" (fun tmpDir ->
         makeSecondaryWorkspace tmpDir
@@ -905,7 +905,7 @@ let ``FSHW_CHECK_CACHE=on keeps the configured size and project filter`` () =
             test <@ not (scoped.Admits(Path.Combine(tmpDir, "src", "Libs", "L", "L.fsproj"))) @>
         | other -> failwith $"expected an InMemoryCheckCache, got %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FSHW_CHECK_CACHE=on with no cache configured runs the default in-memory cache, and says so`` () =
     withTempDir "cfg-cc-env-on-nocache" (fun tmpDir ->
         let setup = createCacheComponentsWith CheckCacheOverride.ForcedOn tmpDir NoCache
@@ -916,7 +916,7 @@ let ``FSHW_CHECK_CACHE=on with no cache configured runs the default in-memory ca
             test <@ line.Contains "FSHW_CHECK_CACHE=on" && line.Contains "no cache" @>
         | other -> failwith $"expected a running in-memory cache, got %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FSHW_CHECK_CACHE=off turns off a cache the scope would run, and the line names it`` () =
     // Scope "all" in a plain directory: the file alone would cache here.
     withTempDir "cfg-cc-env-off" (fun tmpDir ->
@@ -929,7 +929,7 @@ let ``FSHW_CHECK_CACHE=off turns off a cache the scope would run, and the line n
                 test <@ line.Contains "OFF" && line.Contains "FSHW_CHECK_CACHE=off" @>
             | other -> failwith $"expected the cache off, got %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unset or unreadable FSHW_CHECK_CACHE leaves the scope's answer exactly as it was`` () =
     withTempDir "cfg-cc-env-unset" (fun tmpDir ->
         makeSecondaryWorkspace tmpDir
@@ -1532,14 +1532,14 @@ let ``parseConfig with full configuration`` () =
 
 // --- createCacheComponents ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``createCacheComponents NoCache runs no cache`` () =
     withTempDir "cfg-cc" (fun tmpDir ->
         match createCacheComponents tmpDir NoCache with
         | CheckCacheSetup.Off -> ()
         | other -> failwith $"expected no cache, got %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``createCacheComponents InMemory runs a cache with a key provider`` () =
     withTempDir "cfg-cc-mem" (fun tmpDir ->
         match createCacheComponents tmpDir (InMemory defaultInMemoryCache) with
@@ -1548,7 +1548,7 @@ let ``createCacheComponents InMemory runs a cache with a key provider`` () =
 
 // --- defaultConfigFor ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``loadConfig with no config file returns expected defaults`` () =
     withTempDir "cfg-def" (fun tmpDir ->
         let config = loadConfig tmpDir
@@ -1822,7 +1822,7 @@ let ``parseConfig reads named-dispatch as a settings-free extension`` () =
 
     test <@ config.Tests.Value.Extensions = [ NamedDispatchExtension; SqlExtension ] @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``test extension factory constructs named-dispatch`` () =
     withTempDir "cfg-named-dispatch-factory" (fun tmpDir ->
         let db = TestPrune.Database.Database.create (Path.Combine(tmpDir, "test-impact.db"))
@@ -1844,7 +1844,7 @@ let ``parseConfig accepts sqlhydra as compatibility alias`` () =
                                                   { GeneratedModulePrefix = "Intelligence.Database.Generated" } ]
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``test extension factory constructs sql and sqlhydra in declared order`` () =
     withTempDir "cfg-sql-extension-factories" (fun tmpDir ->
         let db = TestPrune.Database.Database.create (Path.Combine(tmpDir, "test-impact.db"))
@@ -1917,7 +1917,7 @@ let ``parseConfig refuses a malformed tests.selection`` (selectionJson: string) 
     test <@ ex.Message.Contains "tests.selection" @>
     test <@ ex.Message.Contains expected @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``loadConfig defaults to NoCache regardless of .jj presence`` () =
     withTempDir "cfg-def-jj" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
@@ -2109,7 +2109,7 @@ let ``registerPlugins with afterTests-only plugin does not register pattern`` ()
 
 // --- loadConfig: strict parse errors ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``loadConfig throws ConfigErrorException on malformed JSON`` () =
     withTempDir "cfg-malformed" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), "{not valid json")
@@ -2195,7 +2195,7 @@ let ``countPlugins returns 0 for stripped config`` () =
 // --- watchConfigFile ---
 
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``watchRepoConfigFile returns no-op disposable when no config file exists`` () =
     withTempDir "cfg-watch-none" (fun tmpDir ->
         let mutable called = false
@@ -2284,7 +2284,7 @@ let ``the config poller reports a config saved by rename into place`` () =
         test <@ observed.Value.Contains("invalid") @>)
 
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the config poller stays silent for an untouched or deleted .fshw.json`` () =
     // A deletion is not a config change: only a write, creation or rename into
     // place is.
@@ -2360,7 +2360,7 @@ let ``debounceShouldFire fires on first event and suppresses within the window``
 
     test <@ first && not withinWindow && afterWindow @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``configChangeReason distinguishes valid from invalid config`` () =
     withTempDir "cfg-reason" (fun tmpDir ->
         let configPath = Path.Combine(tmpDir, ".fshw.json")
@@ -2371,7 +2371,7 @@ let ``configChangeReason distinguishes valid from invalid config`` () =
         File.WriteAllText(configPath, "{not valid json")
         test <@ (configChangeReason configPath defaults).Contains("config invalid") @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``onConfigFsEvent dispatches once per debounce window`` () =
     withTempDir "cfg-fsevent" (fun tmpDir ->
         let configPath = Path.Combine(tmpDir, ".fshw.json")
@@ -2703,7 +2703,7 @@ let private gatingOnlyAppTests =
     """{ "tests": { "projects": [ { "project": "App.Tests",
                                    "args": "run --project tests/App.Tests --no-build --" } ] } }"""
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``loadConfig REFUSES a config whose test scope omits a solution test project`` () =
     withTempDir "cfg-scope-undeclared" (fun tmpDir ->
         stageSolutionRepo tmpDir gatingOnlyAppTests
@@ -2716,7 +2716,7 @@ let ``loadConfig REFUSES a config whose test scope omits a solution test project
         Assert.Contains("Repo.slnx", ex.Message)
         Assert.Contains("tests.excluded", ex.Message))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``loadConfig ACCEPTS the same repo once the omission is declared with a reason`` () =
     // The other direction of the mutation. Without this, "fail closed" could be
     // satisfied by a check that never passes, and the escape hatch the design
@@ -2735,7 +2735,7 @@ let ``loadConfig ACCEPTS the same repo once the omission is declared with a reas
         test <@ config.Tests.Value.Excluded |> List.map (fun e -> e.Project) = [ "tests/App.Dummy.Tests" ] @>
         test <@ config.Tests.Value.Excluded.Head.Reason.Contains "test-integration" @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``loadConfig REFUSES an exclusion with no reason — a declaration must declare something`` () =
     withTempDir "cfg-scope-noreason" (fun tmpDir ->
         let json =
@@ -2748,7 +2748,7 @@ let ``loadConfig REFUSES an exclusion with no reason — a declaration must decl
         let ex = Assert.Throws<ConfigErrorException>(fun () -> loadConfig tmpDir |> ignore)
         Assert.Contains("reason", ex.Message))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``loadConfig leaves a repo that configures no tests alone`` () =
     // A repo that gates no suites makes no full-suite claim to be incomplete —
     // its scope is `NoTestsRun`/`ScopeUnknown` and `confirm` already refuses to
@@ -2762,7 +2762,7 @@ let ``loadConfig leaves a repo that configures no tests alone`` () =
 
 // --- loadConfig: a verdictInputs declaration is never half-understood ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``loadConfig REFUSES a verdictInputs declaration it cannot honour as written`` () =
     // The defect this closes is a declaration with no consumer: a consuming repo
     // listed the files that decide its checks, the tool read none of them, and
@@ -2779,7 +2779,7 @@ let ``loadConfig REFUSES a verdictInputs declaration it cannot honour as written
         Assert.Contains("verdictInputs", ex.Message)
         Assert.Contains("why", ex.Message))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``loadConfig ACCEPTS a well-formed verdictInputs declaration — the control for the refusal above`` () =
     // Without this, the test above would also pass against a build that rejected
     // every config containing the key at all.
@@ -2794,7 +2794,7 @@ let ``loadConfig ACCEPTS a well-formed verdictInputs declaration — the control
 
         loadConfig tmpDir |> ignore)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``loadConfig tolerates a declared input that is not on disk yet — but the tree hash still records it`` () =
     // An analyzer assembly a repo declares does not exist until the first build, and
     // refusing to start would wedge the very command that creates it. So this is a

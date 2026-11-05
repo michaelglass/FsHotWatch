@@ -146,7 +146,7 @@ let ``isExcludedPath does not match when repo root is inside the excluded direct
 
 // --- loadIgnoreFile ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``loadIgnoreFile returns matcher that respects gitignore patterns`` () =
     withTempDir "ignorefile" (fun tmpDir ->
         let ignoreFile = Path.Combine(tmpDir, ".testignore")
@@ -157,7 +157,7 @@ let ``loadIgnoreFile returns matcher that respects gitignore patterns`` () =
         test <@ isIgnored (Path.Combine(tmpDir, "vendor", "lib.fs")) @>
         test <@ not (isIgnored (Path.Combine(tmpDir, "src", "Program.fs"))) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``loadIgnoreFile handles comments and blank lines`` () =
     withTempDir "ignorefile-comments" (fun tmpDir ->
         let ignoreFile = Path.Combine(tmpDir, ".testignore")
@@ -167,7 +167,7 @@ let ``loadIgnoreFile handles comments and blank lines`` () =
         test <@ isIgnored (Path.Combine(tmpDir, "Foo.generated.fs")) @>
         test <@ not (isIgnored (Path.Combine(tmpDir, "Foo.fs"))) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``loadIgnoreFile does not match files outside repo root`` () =
     // Linux's temp root is /tmp, so a file there is `../../tmp/...` relative to a repo;
     // a repo's `tmp/` pattern must not reach it, any more than git's would.
@@ -181,7 +181,7 @@ let ``loadIgnoreFile does not match files outside repo root`` () =
         test <@ isIgnored (Path.Combine(repoRoot, "tmp", "Scratch.fs")) @>
         test <@ not (isIgnored (Path.Combine(tmpDir, "tmp", "fshw-test", "Temp.fs"))) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``loadIgnoreFile returns false-for-all when file does not exist`` () =
     withTempDir "ignorefile-missing" (fun tmpDir ->
         let isIgnored = loadIgnoreFile tmpDir (Path.Combine(tmpDir, ".nonexistent"))
@@ -189,7 +189,7 @@ let ``loadIgnoreFile returns false-for-all when file does not exist`` () =
 
 // --- collectIgnoreRules ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``collectIgnoreRules combines gitignore and fantomasignore`` () =
     withTempDir "collect-rules" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.fsx\n")
@@ -200,7 +200,7 @@ let ``collectIgnoreRules combines gitignore and fantomasignore`` () =
         test <@ isIgnored (Path.Combine(tmpDir, "vendor", "lib.fs")) @>
         test <@ not (isIgnored (Path.Combine(tmpDir, "src", "Program.fs"))) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``collectIgnoreRules works when only gitignore exists`` () =
     withTempDir "collect-gitonly" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.fsx\n")
@@ -209,7 +209,7 @@ let ``collectIgnoreRules works when only gitignore exists`` () =
         test <@ isIgnored (Path.Combine(tmpDir, "build.fsx")) @>
         test <@ not (isIgnored (Path.Combine(tmpDir, "src", "Program.fs"))) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``collectIgnoreRules works when no ignore files exist`` () =
     withTempDir "collect-none" (fun tmpDir ->
         let isIgnored = collectIgnoreRules tmpDir
@@ -218,7 +218,7 @@ let ``collectIgnoreRules works when no ignore files exist`` () =
 // --- IgnoreFilterCache invalidation ---
 
 [<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``IgnoreFilterCache reloads when gitignore is modified`` () =
     withTempDir "cache-reload-gitignore" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.log\n")
@@ -237,7 +237,7 @@ let ``IgnoreFilterCache reloads when gitignore is modified`` () =
         test <@ not (filter2 (Path.Combine(tmpDir, "debug.log"))) @>)
 
 [<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``IgnoreFilterCache reloads when fantomasignore is modified`` () =
     withTempDir "cache-reload-fantomas" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".fantomasignore"), "vendor/\n")
@@ -254,7 +254,7 @@ let ``IgnoreFilterCache reloads when fantomasignore is modified`` () =
         test <@ not (filter2 (Path.Combine(tmpDir, "vendor", "lib.fs"))) @>
         test <@ filter2 (Path.Combine(tmpDir, "generated", "Types.fs")) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``IgnoreFilterCache reloads when ignore file is created`` () =
     withTempDir "cache-reload-created" (fun tmpDir ->
         let cache = IgnoreFilterCache()
@@ -266,7 +266,7 @@ let ``IgnoreFilterCache reloads when ignore file is created`` () =
         let filter2 = cache.Get(tmpDir)
         test <@ filter2 (Path.Combine(tmpDir, "vendor", "lib.fs")) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``IgnoreFilterCache reloads when ignore file is deleted`` () =
     withTempDir "cache-reload-deleted" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "vendor/\n")
@@ -280,7 +280,7 @@ let ``IgnoreFilterCache reloads when ignore file is deleted`` () =
         let filter2 = cache.Get(tmpDir)
         test <@ not (filter2 (Path.Combine(tmpDir, "vendor", "lib.fs"))) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``IgnoreFilterCache returns cached result when files unchanged`` () =
     withTempDir "cache-stable" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.log\n")
@@ -296,7 +296,7 @@ let ``IgnoreFilterCache returns cached result when files unchanged`` () =
 // because coverlet recorded the inner-lock-fresh branch inconsistently when the
 // threads happened to serialize. The barrier-coordinated 2-thread test below
 // drives that same branch deterministically via the internal test hook.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``IgnoreFilterCache double-checked lock returns cached entry on contended populate`` () =
     withTempDir "cache-double-check" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.log\n")

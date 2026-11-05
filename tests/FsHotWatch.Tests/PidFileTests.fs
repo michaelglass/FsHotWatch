@@ -21,7 +21,7 @@ let ``zero, a negative number and text name no process`` () =
     test <@ PidFile.parse "daemon" = None @>
     test <@ PidFile.parse "12 34" = None @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the daemon pid file is read from .fshw under the root, and an absent one reads as none`` () =
     withTempDir "pidfile" (fun root ->
         test <@ PidFile.daemonPath root = Path.Combine(root, ".fshw", "daemon.pid") @>

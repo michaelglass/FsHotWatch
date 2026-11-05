@@ -50,7 +50,7 @@ let private formatKeyOf (dir: string) (files: string list) =
 // format-check — the plugin whose cold-workspace cost was measured
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format-check key is identical in a second checkout with identical content`` () =
     // THE acceptance criterion, at the level of the key: nothing about WHICH
     // directory the bytes were read from may reach the key.
@@ -65,7 +65,7 @@ let ``format-check key is identical in a second checkout with identical content`
             test <@ keyA.IsSome @>
             test <@ keyA = keyB @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format-check key differs in a second checkout when a single byte differs`` () =
     withTwinCheckouts
         "format-byte"
@@ -79,7 +79,7 @@ let ``format-check key differs in a second checkout when a single byte differs``
             test <@ keyA.IsSome && keyB.IsSome @>
             test <@ keyA <> keyB @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format-check key differs across checkouts when the pinned toolchain differs`` () =
     // Same bytes, different formatter: the two checkouts must NOT share a verdict.
     withTwinCheckouts
@@ -96,7 +96,7 @@ let ``format-check key differs across checkouts when the pinned toolchain differ
                     <> formatKeyOf b [ Path.Combine(b, "A.fs") ]
                 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format-check key differs across checkouts when the editorconfig differs`` () =
     withTwinCheckouts
         "format-editorconfig"
@@ -112,7 +112,7 @@ let ``format-check key differs across checkouts when the editorconfig differs`` 
                     <> formatKeyOf b [ Path.Combine(b, "A.fs") ]
                 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format-check key still distinguishes two files inside one checkout`` () =
     // Relativizing the path must not COLLAPSE it: two files with the same content in
     // different places are still different work.
@@ -163,7 +163,7 @@ let ``lint key differs across checkouts when the source differs`` () =
             <> lintKeyOf b (Path.Combine(b, "src", "A.fs")) "let x = 2\n"
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``lint key differs across checkouts when the lint configuration differs`` () =
     let configured (root: string) (config: string) =
         let configPath = Path.Combine(root, "fsharplint.json")
@@ -203,7 +203,7 @@ let private compositeFor (repoRoot: string) (file: string) : CompositeKey =
     { Plugin = "format-check"
       File = Some(CachePathIdentity.keyOf (Some repoRoot) file) }
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an entry written in one checkout is a HIT in another sharing the store`` () =
     withTempDir "store" (fun store ->
         withTwinCheckouts
@@ -228,7 +228,7 @@ let ``an entry written in one checkout is a HIT in another sharing the store`` (
                     test <@ result.Errors |> List.map fst = [ Path.Combine(b, "A.fs") ] @>
                 | CacheMiss reason -> failwith $"expected a cross-checkout hit, got %A{reason}"))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a byte change is a MISS across checkouts and the reason names the source input`` () =
     withTempDir "store-miss" (fun store ->
         withTwinCheckouts
@@ -254,7 +254,7 @@ let ``a byte change is a MISS across checkouts and the reason names the source i
                 | CacheHit _ -> failwith "a changed source must never hit"
                 | CacheMiss reason -> test <@ reason = CacheMissReason.InputsChanged [ "source" ] @>))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a toolchain change is a MISS across checkouts and the reason names the tool input`` () =
     withTempDir "store-tool" (fun store ->
         withTwinCheckouts
@@ -280,7 +280,7 @@ let ``a toolchain change is a MISS across checkouts and the reason names the too
                 | CacheHit _ -> failwith "a bumped toolchain must never hit"
                 | CacheMiss reason -> test <@ reason = CacheMissReason.InputsChanged [ "tool" ] @>))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a key nothing was ever written under misses with no input to blame`` () =
     withTempDir "store-cold" (fun store ->
         withTempDir "store-cold-repo" (fun repo ->
@@ -296,7 +296,7 @@ let ``a key nothing was ever written under misses with no input to blame`` () =
 
             test <@ reason = CacheMissReason.NoEntryForKey @>))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an entry naming a file outside the repository is refused in another checkout`` () =
     // An `external:` path is machine-local BY CONSTRUCTION. It must not be silently
     // rebound into the reading checkout, and a replay that cannot be honestly
@@ -392,7 +392,7 @@ let private withJjWorkspace (pointer: string -> string -> string) (body: string 
         File.WriteAllText(Path.Combine(secondary, ".jj", "repo"), pointer sharedRepoDir secondary)
         body main secondary)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a jj workspace with the RELATIVE pointer jj writes shares the main checkout's store directory`` () =
     // What `jj workspace add` actually writes: a path relative to the `.jj` directory
     // the pointer lives in. Hashing the pointer text gave every same-depth workspace
@@ -401,13 +401,13 @@ let ``a jj workspace with the RELATIVE pointer jj writes shares the main checkou
         test <@ RepoIdentity.describe secondary = RepoIdentity.describe main @>
         test <@ RepoIdentity.namespaceOf secondary = RepoIdentity.namespaceOf main @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a jj workspace with an ABSOLUTE pointer shares the main checkout's store directory`` () =
     withJjWorkspace (fun sharedRepoDir _ -> sharedRepoDir) (fun main secondary ->
         test <@ RepoIdentity.describe secondary = RepoIdentity.describe main @>
         test <@ RepoIdentity.namespaceOf secondary = RepoIdentity.namespaceOf main @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the store directory is named after the repository, not the checkout`` () =
     // The label is the REPOSITORY's directory name (`main` here), read off the
     // identity, so it is the same string in every checkout; the checkout's own name
@@ -417,7 +417,7 @@ let ``the store directory is named after the repository, not the checkout`` () =
         test <@ (RepoIdentity.namespaceOf secondary).StartsWith "main-" @>
         test <@ (RepoIdentity.namespaceOf main).StartsWith "main-" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a corrupt workspace pointer still yields a namespace instead of crashing daemon start`` () =
     // A pointer that cannot be made a path (a null character) is unreadable metadata:
     // the checkout gets a private, stable namespace named after itself — never an
@@ -448,7 +448,7 @@ let ``this checkout's identity resolves to a directory that exists`` () =
     | RepoIdentity.RepoIdentitySource.Unreadable(_, error) ->
         failwith $"this checkout's layout should read: %s{RepositoryIdentity.IdentityError.describe error}"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``two unrelated checkouts never share a cache namespace`` () =
     withTwinCheckouts "unrelated" (fun _ -> ()) (fun a b ->
         test <@ RepoIdentity.namespaceOf a <> RepoIdentity.namespaceOf b @>)
@@ -469,7 +469,7 @@ let private gitLinkedWorktree (main: string) (name: string) (worktree: string) =
     File.WriteAllText(Path.Combine(worktree, ".git"), $"gitdir: %s{perWorktree}\n")
     worktree
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``unrelated repositories under a directory named worktrees get two cache namespaces`` () =
     // Cutting the git dir at its last `/worktrees/` segment turned both `.git`
     // directories into `<dir>`, so two unrelated repositories shared one store.
@@ -481,7 +481,7 @@ let ``unrelated repositories under a directory named worktrees get two cache nam
         test <@ (RepoIdentity.namespaceOf a).StartsWith "a-" @>
         test <@ (RepoIdentity.namespaceOf b).StartsWith "b-" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a linked worktree of a repository under a worktrees directory shares only its own repository's namespace`` () =
     withTempDir "ns-worktrees-linked" (fun dir ->
         let main = gitRepoAt (Path.Combine(dir, "worktrees", "main"))
@@ -491,7 +491,7 @@ let ``a linked worktree of a repository under a worktrees directory shares only 
         test <@ RepoIdentity.namespaceOf linked = RepoIdentity.namespaceOf main @>
         test <@ RepoIdentity.namespaceOf linked <> RepoIdentity.namespaceOf sibling @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``one repository reached through a symlink gets the same cache namespace`` () =
     withTempDir "ns-symlink" (fun dir ->
         let repo = gitRepoAt (Path.Combine(dir, "repo"))
@@ -500,7 +500,7 @@ let ``one repository reached through a symlink gets the same cache namespace`` (
 
         test <@ RepoIdentity.namespaceOf link = RepoIdentity.namespaceOf repo @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a case-variant spelling gets the same cache namespace on a case-insensitive volume`` () =
     withTempDir "ns-case" (fun dir ->
         let repo = gitRepoAt (Path.Combine(dir, "MyRepo"))
@@ -511,7 +511,7 @@ let ``a case-variant spelling gets the same cache namespace on a case-insensitiv
         if Directory.Exists variant then
             test <@ RepoIdentity.namespaceOf variant = RepoIdentity.namespaceOf repo @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a checkout under no recognised version control gets a private namespace`` () =
     withTempDir "novcs" (fun dir ->
         match RepoIdentity.describe dir with
@@ -744,7 +744,7 @@ let ``every miss reason renders a distinct log line`` () =
     test <@ rendered[1] = "inputs-changed:config,source" @>
     test <@ rendered[3].Contains "locked" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a corrupt entry file is a miss that says so`` () =
     withTempDir "corrupt" (fun store ->
         withTempDir "corrupt-repo" (fun repo ->
@@ -791,7 +791,7 @@ let private isUnreadable (source: RepoIdentity.RepoIdentitySource) =
     | RepoIdentity.RepoIdentitySource.Unreadable(root, _) -> Path.IsPathRooted root
     | RepoIdentity.RepoIdentitySource.Store _ -> false
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an empty or unrecognised pointer file leaves the checkout on its own`` () =
     withTempDir "emptyptr" (fun dir ->
         Directory.CreateDirectory(Path.Combine(dir, ".jj")) |> ignore
@@ -802,7 +802,7 @@ let ``an empty or unrecognised pointer file leaves the checkout on its own`` () 
         File.WriteAllText(Path.Combine(dir, ".git"), "something else\n")
         test <@ isUnreadable (RepoIdentity.describe dir) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a colocated git checkout and its worktrees share an identity`` () =
     withTempDir "git" (fun root ->
         let main = Path.Combine(root, "main")
@@ -824,7 +824,7 @@ let ``a colocated git checkout and its worktrees share an identity`` () =
 
         test <@ RepoIdentity.namespaceOf main = RepoIdentity.namespaceOf worktree @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the identity source is tagged by kind so two kinds cannot collide`` () =
     withTempDir "tagged" (fun dir ->
         let path =
@@ -889,7 +889,7 @@ let ``the shared cache home treats an empty variable exactly like an unset one``
     test <@ FsHwPaths.sharedCacheHomeFrom "" "" "/home/u" = Path.Combine("/home/u", ".cache", "fshw") @>
     test <@ FsHwPaths.sharedCacheHomeFrom null "/xdg" "/home/u" = Path.Combine("/xdg", "fshw") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unreadable repository pointer leaves the checkout on its own`` () =
     // A pointer that exists but cannot be READ is not evidence of anything. It must
     // degrade to a private namespace, not throw out of daemon startup.
@@ -1020,7 +1020,7 @@ let private withBuiltTwins (prefix: string) (body: string -> string -> string ->
         test <@ File.ReadAllBytes dllA <> File.ReadAllBytes dllB @>
         body a dllA b dllB)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an analyzers entry written in one checkout is a HIT in another whose analyzer DLL bytes differ`` () =
     // THE acceptance criterion: the DLL bytes differ between the checkouts (they did
     // under v4's byte-keyed slot too, which is why every fresh workspace missed), and
@@ -1047,7 +1047,7 @@ let ``an analyzers entry written in one checkout is a HIT in another whose analy
             | CacheHit result -> test <@ result.Errors |> List.map fst = [ fileB ] @>
             | CacheMiss reason -> failwith $"expected a cross-checkout hit, got %A{reason}"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an analyzer built from different SOURCE is a MISS across checkouts naming analyzer-inputs`` () =
     withTempDir "store-miss" (fun store ->
         withBuiltTwins "twin-miss" (fun a dllA b dllB ->
@@ -1074,7 +1074,7 @@ let ``an analyzer built from different SOURCE is a MISS across checkouts naming 
             | CacheHit _ -> failwith "a changed analyzer must never hit"
             | CacheMiss reason -> test <@ reason = CacheMissReason.InputsChanged [ "analyzer-inputs" ] @>))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an analyzer whose source drifted after its build has no analyzers key at all`` () =
     // An edited source with the OLD build beside it is neither the old analyzer nor
     // the new one. No key: the analyzers run, nothing is read or written.

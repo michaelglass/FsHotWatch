@@ -44,7 +44,7 @@ let private readPid (path: string) =
     | true, pid -> Some pid
     | _ -> None
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a run-level hook runs inside a process scope`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "run-hook-scope" (fun root ->
@@ -226,7 +226,7 @@ let ``an afterRun the signal's teardown runs keeps its own failure`` () =
 
 /// A confirm fast path signalled after its beforeRun passed has no refusal to record:
 /// it leaves the verdict on disk as it was.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a confirm fast path signalled after beforeRun writes no record`` () =
     withTempDir "run-hook-signalled-after-before" (fun root ->
         let finalize = ref None
@@ -245,7 +245,7 @@ let ``a confirm fast path signalled after beforeRun writes no record`` () =
         test <@ not (File.Exists(Path.Combine(root, ".fshw", "verdict.json"))) @>)
 
 /// A signal's teardown waits for the hook in flight to be recorded, but only so long.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a hook runner waits for its hook in flight, up to the timeout`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "run-hook-await-idle" (fun root ->
@@ -304,12 +304,12 @@ let private refusedAtLaunch (bracket: DaemonConfiguration -> string -> int) =
             test <@ exitCode = 2 @>
             test <@ not (File.Exists hookPid) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a run interrupted before its beforeRun launches refuses the hook and exits 2`` () =
     refusedAtLaunch (fun config root ->
         withRunHooksCommandUsingSignals signalledOnInstall FsHotWatch.Cli.Verdict.Check root config (fun _ -> 0))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a confirm fast path interrupted before its beforeRun launches refuses the hook and exits 2`` () =
     refusedAtLaunch (fun config root ->
         withRunHooksUnclaimedUsingSignals signalledOnInstall FsHotWatch.Cli.Verdict.Confirm root config (fun () -> 0))

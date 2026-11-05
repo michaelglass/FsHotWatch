@@ -228,7 +228,7 @@ let ``a run where one project matched zero tests and another really ran is still
     | PluginStatus.Completed _ -> ()
     | other -> Assert.Fail($"ProjB executed tests and passed, so this run IS green — got %A{other}")
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a COVERING impact-filtered green DOES clear the red (no stuck-red)`` () =
     // The over-correction guard. A filtered run that DID execute the failing class and
     // passed it is real evidence; a check that can never go green again is not a fix, it
@@ -670,7 +670,7 @@ let private testsFinishedEventWithReports
 
     Custom(TestsFinished(started, completed, launch))
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a quarantined method passing in the exact CTRF receipt retires its red`` () =
     withTempDir "quarantine-receipt-reconcile" (fun repoRoot ->
         let project = "Intelligence.Tests.Integration"
@@ -707,7 +707,7 @@ let ``a quarantined method passing in the exact CTRF receipt retires its red`` (
         | PluginStatus.Completed _ -> ()
         | other -> Assert.Fail($"the exact previously failing method passed, so its red must retire; got %A{other}"))
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a different passing method in the quarantined class cannot erase the red`` () =
     withTempDir "method-receipt" (fun repoRoot ->
         let project = "Intelligence.Tests.Integration"
@@ -779,7 +779,7 @@ let ``recall denominator requires every CTRF failed row promised by the summary`
 
     test <@ failedTestsOfReport omittedRow = None @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``non-executing and shared-infrastructure runs cannot produce exact recall evidence`` () =
     withTempDir "typed-run-evidence" (fun repoRoot ->
         let runId = Guid.NewGuid()
@@ -844,7 +844,7 @@ let ``longer identifiers containing exception type names are not infrastructure 
 
     test <@ sharedInfrastructureFailureOfReport longerIdentifiers = None @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``malformed parseable CTRF structure becomes unknown evidence`` () =
     withTempDir "malformed-structure" (fun repoRoot ->
         let runId = Guid.NewGuid()
@@ -861,7 +861,7 @@ let ``malformed parseable CTRF structure becomes unknown evidence`` () =
         | Error _ -> ()
         | Ok evidence -> failwithf "malformed CTRF produced exact evidence: %A" evidence)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``completion publishes real CTRF recall through check-reach IPC`` () =
     withTempDir "recall-ipc" (fun repoRoot ->
         let project = "Acme.Tests"
@@ -918,7 +918,7 @@ let ``completion publishes real CTRF recall through check-reach IPC`` () =
 /// own scan provokes is the common one. The reach must still be served for the GRADED
 /// run, asked for by id; answering with the newest completion's reach made every such
 /// recall "names run X, but the graded run is Y".
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``check-reach answers for the requested run after a later skip completes`` () =
     withTempDir "recall-graded-run" (fun repoRoot ->
         let project = "Acme.Tests"
@@ -1474,7 +1474,7 @@ let ``x 112: a raw-filter run WITH evidence is a FILTERED scope, and confirm sti
 
     test <@ FsHotWatch.Cli.CheckVerdict.exitCode confirmed = 3 @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a test run does not erase the unanalysable-file warning`` () =
     // The same defect on a different diagnostic. The `TestsFinished` ledger rewrite
     // cleared this plugin's whole slice, so the FIRST test run after an analysis failure
@@ -1529,7 +1529,7 @@ let ``a test run does not erase the unanalysable-file warning`` () =
 
         test <@ ledger2.Count = 0 @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a test run does not erase a failed extension's error`` () =
     // The same ledger rewrite as the unanalysable-file case: a failed extension's stored
     // edges describe an older tree, and the error saying so must outlive the next green run
@@ -1630,7 +1630,7 @@ let private bindReceiptTree repoRoot (launch: TestRunLaunch) =
     Assert.True(tree.IsSome, "fixture source tree must be readable")
     { launch with InputTree = tree }
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a queued narrow drain cannot replace the full-suite receipt exposed to the verdict writer`` () =
     withReceiptSource (fun repoRoot _ ->
         let handler =
@@ -1679,7 +1679,7 @@ let ``a queued narrow drain cannot replace the full-suite receipt exposed to the
         | PluginStatus.Completed(_, verdict) -> test <@ verdict.Summary.Contains("2 projects") @>
         | other -> Assert.Fail($"latest run status must remain independently visible, got %A{other}"))
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``test-scope declares EVERY run the session completed, not only the one the receipt names`` () =
     withReceiptSource (fun repoRoot _ ->
         // The receipt deliberately holds ONE run — the full-suite one, which
@@ -1956,7 +1956,7 @@ let ``a zero-selection completion keeps the receipt whose seeds last selected te
     test <@ receipt.Seeds = previousSeeds @>
     test <@ final.LastZeroSelection = ZeroSelection.AlreadyVerified @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a queued narrow failure remains red while the earlier full-suite receipt is retained`` () =
     withReceiptSource (fun repoRoot _ ->
         let handler =
@@ -2043,7 +2043,7 @@ let private writeProj (path: string) (contents: string) =
     Directory.CreateDirectory(Path.GetDirectoryName path: string) |> ignore
     File.WriteAllText(path, contents)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ProjectReference Include is resolved through MSBuild properties`` () =
     withTempDir "af-msbuild-prop" (fun tmpDir ->
         let other = Path.Combine(tmpDir, "Other", "Other.fsproj")
@@ -2070,7 +2070,7 @@ let ``ProjectReference Include is resolved through MSBuild properties`` () =
             test <@ refs |> List.exists (fun r -> Path.GetFileName r = "Other.fsproj") @>
         | Error e -> Assert.Fail($"a property-computed ProjectReference must resolve, got: %s{e}"))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unresolvable ProjectReference still fails closed`` () =
     // The positive control for the test above: if expansion made every reference
     // resolvable, the gate would answer "fresh" for a project whose inputs it cannot
@@ -2090,7 +2090,7 @@ let ``an unresolvable ProjectReference still fails closed`` () =
         | Ok refs -> Assert.Fail($"a missing ProjectReference must NOT resolve, got: %A{refs}")
         | Error _ -> ())
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a CONDITIONAL ProjectReference to a missing project is optional, not undeterminable`` () =
     // The one trade-off this fix makes, so it gets its own test. A project guards an
     // optional sibling checkout with a Condition, and on a machine that has not cloned it
@@ -2117,7 +2117,7 @@ let ``a CONDITIONAL ProjectReference to a missing project is optional, not undet
             test <@ refs |> List.forall (fun r -> Path.GetFileName r <> "Absent.fsproj") @>
         | Error e -> Assert.Fail($"a conditional reference to an absent project must not be an error, got: %s{e}"))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an UNCONDITIONAL reference to an unexpandable property still fails closed`` () =
     // The other side of that trade-off. Nothing defines `$(Nope)`, so it stays unexpanded
     // and the path cannot exist — and with no Condition marking it optional, the gate must
@@ -2137,7 +2137,7 @@ let ``an UNCONDITIONAL reference to an unexpandable property still fails closed`
         | Ok refs -> Assert.Fail($"an unexpandable unconditional reference must fail closed, got: %A{refs}")
         | Error _ -> ())
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a self-referential property does not spin`` () =
     // A property defined in terms of itself never reaches a fixed point, so the expansion
     // loop is bounded; the bound turns it into an ordinary unresolvable path, which then
@@ -2187,7 +2187,7 @@ let private fsprojWithCompiles (compiles: string list) : string =
 
     $"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n%s{items}\n  </ItemGroup>\n</Project>"
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``adding a compile item moves the BuildCompleted cache key`` () =
     withTempDir "tp-structure-key" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "src", "Lib")
@@ -2226,7 +2226,7 @@ let ``adding a compile item moves the BuildCompleted cache key`` () =
         File.WriteAllText(proj, fsprojWithCompiles [ "A.fs"; "NewTests.fs" ])
         test <@ keyOf () <> three @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the structure hash sees a compile item, not a source edit`` () =
     // The scope of the fix, pinned. Source EDITS are already covered by the symbol-diff
     // pipeline that runs after BuildCompleted and supersedes the entry; what that
@@ -2260,7 +2260,7 @@ let ``the structure hash sees a compile item, not a source edit`` () =
         File.WriteAllText(Path.Combine(objDir, "Generated.fsproj"), fsprojWithCompiles [ "Z.fs" ])
         test <@ projectStructureHash tmpDir = withItems @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the structure hash sees EVERY MSBuild implicit import, not just Directory.Build.props`` () =
     // The list this hash walks was a private copy that knew about `Directory.Build.props`
     // and not about `Directory.Build.targets` or `Directory.Packages.props` — all three
@@ -2289,7 +2289,7 @@ let ``the structure hash sees EVERY MSBuild implicit import, not just Directory.
 // Built on the best-effort walk, a directory it could not see contributed nothing, so
 // the hash did not move and the scan-skip guard replayed a project graph built from a
 // tree it never fully saw. A hole is now an entry, as it is in `TreeHash`.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the structure hash MOVES when a directory beneath it cannot be read`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "tp-structure-unreadable" (fun tmpDir ->
@@ -2324,7 +2324,7 @@ let ``the structure hash MOVES when a directory beneath it cannot be read`` () =
 // case 4 — a DELETED file must not keep blocking the verdict
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unanalysable file that was DELETED stops blocking the verdict`` () =
     // `UnanalyzableFiles` entries leave only when the file analyses CLEANLY,
     // and a deleted file never analyses again — no `FileChecked`
@@ -3065,7 +3065,7 @@ let private partialReceiptRun repoRoot =
     // One whole project from a two-project configuration is genuine filtered scope.
     testsFinishedEvent [ "ProjA", passed false ] (fullSuiteLaunch [ "ProjA" ] |> bindReceiptTree repoRoot)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``same-input already-verified drain retains a filtered receipt`` () =
     withReceiptSource (fun repoRoot _ ->
         let handler =
@@ -3090,7 +3090,7 @@ let ``same-input already-verified drain retains a filtered receipt`` () =
         test <@ report.RunId = Some runId @>
         test <@ report.Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 2) @>)
 
-[<Theory(Timeout = 20000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(true)>]
 [<InlineData(false)>]
 let ``source changes before completion or after completion invalidate receipt scope`` beforeCompletion =
@@ -3119,7 +3119,7 @@ let ``source changes before completion or after completion invalidate receipt sc
         | FsHotWatch.Cli.IpcParsing.NoTestsRun _ -> ()
         | other -> Assert.Fail($"changed bytes retained positive scope: {other}"))
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unreadable source cannot expose an earlier passing receipt`` () =
     withReceiptSource (fun repoRoot source ->
         let handler =
@@ -3134,7 +3134,7 @@ let ``an unreadable source cannot expose an earlier passing receipt`` () =
         test <@ ReceiptInputTree.read repoRoot = None @>
         test <@ (receiptScope repoRoot handler final).RunId.IsNone @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an aborted same-input run cannot reuse an earlier passing receipt`` () =
     withReceiptSource (fun repoRoot _ ->
         let handler =
@@ -3182,7 +3182,7 @@ let private unboundQuietCompletion () =
 
     event
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unbound quiet completion on an unchanged tree keeps the earned receipt`` () =
     withReceiptSource (fun repoRoot _ ->
         let handler =
@@ -3202,7 +3202,7 @@ let ``an unbound quiet completion on an unchanged tree keeps the earned receipt`
         test <@ report.RunId = Some earnedRunId @>
         test <@ report.Scope = FsHotWatch.Cli.IpcParsing.ImpactFiltered(1, 2) @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unbound quiet completion after a real edit serves no receipt`` () =
     withReceiptSource (fun repoRoot source ->
         let handler =
@@ -3226,7 +3226,7 @@ let ``an unbound quiet completion after a real edit serves no receipt`` () =
         | FsHotWatch.Cli.IpcParsing.NoTestsRun _ -> ()
         | other -> Assert.Fail($"a moved tree served positive scope: {other}"))
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a quiet completion keeps the receipt AND the ledger keeps the plugin red`` () =
     withReceiptSource (fun repoRoot _ ->
         let handler =
@@ -3250,7 +3250,7 @@ let ``a quiet completion keeps the receipt AND the ledger keeps the plugin red``
         | PluginStatus.Failed _ -> ()
         | other -> Assert.Fail($"the ledger's red must survive a quiet completion, got %A{other}"))
 
-[<Theory(Timeout = 20000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``ordinary unchanged build preserves executed evidence through AlreadyVerified completion`` (filtered: bool) =
@@ -3350,7 +3350,7 @@ let ``ordinary unchanged build preserves executed evidence through AlreadyVerifi
 
         test <@ report.Scope = expectedScope @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a suspect re-check of an unchanged file leaves the earned receipt and launches nothing`` () =
     // The settle re-check (`SuspectRecheck`) checks a file again inside the daemon that
     // earned the receipt: TestPrune sees a fresh FileChecked and its cohort seal for bytes
@@ -3436,7 +3436,7 @@ let ``a suspect re-check of an unchanged file leaves the earned receipt and laun
                 )
             @>)
 
-[<Theory(Timeout = 20000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``unavailable execution revokes a previously earned receipt`` (artifactsUnavailable: bool) =
@@ -3465,7 +3465,7 @@ let ``unavailable execution revokes a previously earned receipt`` (artifactsUnav
         | PluginStatus.Failed _ -> ()
         | other -> Assert.Fail($"an unavailable new execution must stay failed, got %A{other}"))
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``new dependency debt is not retired by unavailable execution after a pass`` () =
     withTempDir "new-dependency-debt" (fun root ->
         let handler =
@@ -3675,7 +3675,7 @@ let private foldAndPublish (handler: PluginHandler<TestPruneState, TestPruneMsg>
     prepared.Finalize |> Async.RunSynchronously
     candidate
 
-[<Theory(Timeout = 30000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("same-session")>]
 [<InlineData("restart")>]
 [<InlineData("quiet")>]
@@ -3743,7 +3743,7 @@ let ``a red full-suite baseline cannot lend a green to a filtered run that never
                 Assert.Fail($"%s{sequence}/%A{mode}: ProjA failed and never ran again, yet the check is green")
             | _ -> ())
 
-[<Theory(Timeout = 30000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("no report was written")>]
 [<InlineData("the summary counts tests its rows do not account for")>]
 let ``a full suite whose report could not vouch for it cannot lend a green to a later filtered run`` (reason: string) =
@@ -3799,7 +3799,7 @@ let private abortedAs (reason: string) (event: PluginEvent<TestPruneMsg>) =
         )
     | other -> other
 
-[<Theory(Timeout = 30000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("later-full-run-aborted-before-the-red-project")>]
 [<InlineData("later-full-run-ends-without-the-red-project")>]
 [<InlineData("later-full-run-errors-the-red-project")>]
@@ -3870,7 +3870,7 @@ let ``a superseded or partial full run cannot turn an earlier red into a baselin
 // turns a green check into exit 2 with nothing failing anywhere.
 // ---------------------------------------------------------------------------
 
-[<Theory(Timeout = 20000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("covered-by-the-full-suite", true)>]
 [<InlineData("covering-project-never-ran", false)>]
 [<InlineData("covering-project-failed", false)>]
@@ -3942,7 +3942,7 @@ let ``a receipt refuses only the obligations its run did not cover`` (shape: str
         else
             test <@ not (List.isEmpty earned.FailureReasons) @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a retained receipt beside an outstanding failure earns a refusal, never a green`` () =
     withReceiptSource (fun repoRoot _ ->
         // ADR-022's written rule says a quiet already-verified drain may retain its receipt
@@ -4194,7 +4194,7 @@ let ``a long delta is capped per kind and says how many it left out`` () =
 /// project's fixture rebuilt while another planted probe files in the scanned tree — which
 /// the receipt walk hashes and the watcher does not report. Finding it took an hour of
 /// ctimes and ctrf timestamps; the revocation now says it.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a receipt revoked because the tree moved names the file that moved`` () =
     withReceiptSource (fun repoRoot _ ->
         let css = Path.Combine(repoRoot, "src", "wwwroot", "css", "app.css")
@@ -4402,7 +4402,7 @@ let private runWithGeneratingBeforeRunAnd
 let private runWithGeneratingBeforeRun repoRoot configs =
     runWithGeneratingBeforeRunAnd repoRoot configs (fun _ _ -> ())
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a run whose beforeRun generates output is not revoked as moved`` () =
     withReceiptSource (fun repoRoot _ ->
         let logged =
@@ -4430,7 +4430,7 @@ let ``a run whose beforeRun generates output is not revoked as moved`` () =
 /// and the revocation names the stylesheet the tests wrote, not the bundle `beforeRun`
 /// did. The watcher does not observe stylesheets, so its silence cannot rule out an edit
 /// made while the tests ran, and the revocation says so rather than naming the test run.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a write the watcher cannot observe is revoked as written while the tests ran`` () =
     withReceiptSource (fun repoRoot _ ->
         let css = Path.Combine(repoRoot, "src", "wwwroot", "css", "app.css")
@@ -4468,7 +4468,7 @@ let ``a write the watcher cannot observe is revoked as written while the tests r
 
 /// An F# source the tests write is one the watcher would have reported had anybody else
 /// edited it, so its silence is evidence: the revocation names the test run as the writer.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a write the watcher would have seen is revoked as the test run writing into the repository`` () =
     withReceiptSource (fun repoRoot _ ->
         let generated = Path.Combine(repoRoot, "src", "Generated.fs")
@@ -4493,7 +4493,7 @@ let ``a write the watcher would have seen is revoked as the test run writing int
 /// The other side: a source file edited while the tests run, which the watcher reports
 /// (as a `FileChecked`) before the run completes. That is an edit made mid-run, not the
 /// test run writing, so it stays a plain MOVED.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an edit the watcher saw during the run stays a plain MOVED`` () =
     withReceiptSource (fun repoRoot source ->
         let handshake =
@@ -4608,7 +4608,7 @@ let private receiptGate (report: FsHotWatch.Cli.IpcParsing.TestRunReport) (state
         | [] -> None
         | refusals -> Some(String.concat "; " refusals)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a narrower run after a full suite on one tree and model keeps the full suite's receipt AND its evidence`` () =
     // The confirm that went red on a long-lived daemon: its full-suite run passed every
     // project, then a late cohort over the SAME tree and model launched an impact-filtered
@@ -4647,7 +4647,7 @@ let ``a narrower run after a full suite on one tree and model keeps the full sui
         test <@ report.Scope = FsHotWatch.Cli.IpcParsing.FullSuite(2, Some FullSuiteCause.Requested) @>
         test <@ receiptGate report final 7L = None @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a narrower run after a REFUSING full suite replaces its receipt, and its green stands`` () =
     // The gate that stayed incomplete over a green tree: the full suite failed one project,
     // so its receipt's evidence refused a green; later `check`s were narrower, ran that
@@ -4690,7 +4690,7 @@ let ``a narrower run after a REFUSING full suite replaces its receipt, and its g
         test <@ report.RunId = Some(runIdOfFinished narrowRerun) @>
         test <@ receiptGate report final 7L = None @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a narrower run under a NEW model does not keep a full-suite receipt earned under the old one`` () =
     // A full suite under generation 6 says nothing about generation 7. A narrower run
     // under 7 must therefore not be read as "says nothing the receipt does not": that kept
@@ -4733,7 +4733,7 @@ let ``a narrower run under a NEW model does not keep a full-suite receipt earned
         // And the evidence names the same run the receipt does.
         test <@ (final :> IEarnedEvidenceState).EarnedEvidence |> Option.map _.RunId = report.RunId @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a receipt earned under a replaced model grades nothing, so confirm escalates instead of refusing`` () =
     // The long-lived daemon: a full suite earned its receipt under generation 6, then a
     // re-evaluation published 7 with no run since. `test-scope` served the generation-6
@@ -4933,7 +4933,7 @@ let ``a receipt speaks for a later model only while every project it covered is 
             )
         @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an already-verified skip after a full suite shows the full suite, not NOTHING VERIFIED`` () =
     // A green confirm: the full suite passed, then the build that followed it launched a
     // run that selected nothing because nothing had changed. The verdict was green, but
@@ -4969,7 +4969,7 @@ let ``an already-verified skip after a full suite shows the full suite, not NOTH
         test <@ report.RunId = Some fullRunId @>
         test <@ report.SessionRuns = [ fullRunId ] @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a run that selected nothing with no earlier receipt still says NOTHING VERIFIED`` () =
     // The control: with no full suite behind it, an empty run is an absence of evidence.
     withReceiptSource (fun repoRoot _ ->
@@ -4988,7 +4988,7 @@ let ``a run that selected nothing with no earlier receipt still says NOTHING VER
         | PluginStatus.Completed(_, verdict) -> test <@ verdict.NothingVerified.IsSome @>
         | other -> Assert.Fail($"expected a completed status, got %A{other}"))
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a run that completes while the model is being re-discovered waits for it, then is carried`` () =
     // The completion lands mid re-discovery: no generation to compare against, so it used
     // to be revoked whole. It waits for the re-discovery to settle (the host reports
@@ -5035,7 +5035,7 @@ let ``a run that completes while the model is being re-discovered waits for it, 
                 |> Option.map (fun evidence -> evidence.Generation, evidence.FailureReasons) = Some(2L, [])
             @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a narrower run that keeps the receipt leaves no revocation reason behind`` () =
     // `ReceiptRevoked` says why no receipt stands; a narrower run keeps one standing, so
     // no reason survives it for `test-scope` to report. A reason beside a standing receipt
@@ -5071,7 +5071,7 @@ let ``a narrower run that keeps the receipt leaves no revocation reason behind``
         test <@ final.EvidenceReceipt |> Option.map _.RunId = Some(runIdOfFinished fullRun) @>
         test <@ final.ReceiptRevoked = None @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a quiet completion that folds while an obligation is owed keeps the receipt's evidence, so a later narrower run grades the full suite``
     ()
     =
@@ -5143,7 +5143,7 @@ let ``a quiet completion that folds while an obligation is owed keeps the receip
         test <@ report.Scope = FsHotWatch.Cli.IpcParsing.FullSuite(2, Some FullSuiteCause.Requested) @>
         test <@ receiptGate report final 7L = None @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a quiet completion that keeps a narrower receipt while an obligation is owed refuses with that receipt's run``
     ()
     =
@@ -5195,7 +5195,7 @@ let ``a quiet completion that keeps a narrower receipt while an obligation is ow
                     |> List.contains "1 verification obligation(s) remain pending")
             @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a receipt whose run's evidence is not held is not kept over a narrower run`` () =
     // However the state came to hold a receipt with no evidence for its run, a narrower
     // run must not keep it: it would publish its own evidence beside a receipt naming
@@ -5239,7 +5239,7 @@ let ``a receipt whose run's evidence is not held is not kept over a narrower run
                 |> not
             @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``test-scope sends the evidence for the run it grades from the same state`` () =
     withReceiptSource (fun repoRoot _ ->
         let handler =
@@ -5271,7 +5271,7 @@ let ``test-scope sends the evidence for the run it grades from the same state`` 
         test <@ unvouched.RunId = Some(runIdOfFinished fullRun) @>
         test <@ unvouched.GradedEvidence = FsHotWatch.Cli.IpcParsing.GradedEvidenceReading.Reported None @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a cohort seal that left a checkable file unchecked refuses the test receipt it grades`` () =
     // A daemon that runs tests earns its green from a test receipt, and a scan that
     // failed to check a file of the model leaves that file's symbols out of the impact
@@ -5379,7 +5379,7 @@ let ``a completion warns when its receipt and its evidence name different runs``
 // moved) discharge nothing: the re-run still owes them.
 // ---------------------------------------------------------------------------
 
-[<Theory(Timeout = 20000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("unfiltered-green-over-the-launch-tree", true)>]
 [<InlineData("filtered-run-missing-the-classes", false)>]
 [<InlineData("covering-project-failed", false)>]
@@ -5439,7 +5439,7 @@ let ``a trigger raised during an unfiltered run of its project is absorbed by th
             test <@ after.Debt.RuntimeObligations = rederived @>
             test <@ after.PendingForceRunProjects = Set.ofList [ "ProjA" ] @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unfiltered run absorbs only its own project's triggers`` () =
     withReceiptSource (fun repoRoot _ ->
         let handler =

@@ -46,7 +46,7 @@ let private daemonLockIsFree (root: string) =
     with :? IOException ->
         false
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(true)>]
 [<InlineData(false)>]
 let ``launcher cannot overwrite or manufacture daemon loaded config identity`` (publishes: bool) =
@@ -73,7 +73,7 @@ let ``launcher cannot overwrite or manufacture daemon loaded config identity`` (
         else
             Assert.False(File.Exists identity, "a launch attempt cannot attest to a loaded configuration"))
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(true)>]
 [<InlineData(false)>]
 let ``loaded configuration identity retains the parsed snapshot across later file changes`` (exists: bool) =

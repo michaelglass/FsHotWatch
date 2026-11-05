@@ -855,7 +855,7 @@ let private diagnosticsJsonFor (testRunFinished: bool) : string =
     else
         """{"count":0,"files":{},"statuses":{},"unchecked":0, "projectModel":{"schema":"fshw-project-model-v1","status":"available","generation":7,"counts":{"discovered":3,"loaded":3,"optionsMapped":3,"registered":3},"reasonCode":null}}"""
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``pollAndRender waits for the test-prune verdict before deciding (no false green while test-prune is Idle)`` () =
     // The test-prune run's terminal state, flipped true ONLY by the authoritative wait —
     // mirroring `waitForVerdict` blocking until the BuildCompleted -> run reaches terminal.
@@ -923,7 +923,7 @@ let ``pollAndRender waits for the test-prune verdict before deciding (no false g
     // window and returns 0 — the false green.
     test <@ exitCode = 1 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` () =
     // The legitimate "nothing failed" case — guards against the fix over-blocking or
     // mis-reporting a genuinely green run.
@@ -1056,7 +1056,7 @@ let private driveWithModel
         let raw = System.IO.File.ReadAllText(Verdict.path repoRoot)
         code, Verdict.read repoRoot, seenFileOf raw)
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("rediscovering", "rediscovering")>]
 [<InlineData("loading-failed", "unavailable")>]
 [<InlineData("unobserved", "unobserved")>]
@@ -1108,7 +1108,7 @@ let ``a check over a passing FULL-SUITE run is NOT green when the daemon's proje
         | None -> ()
     | other -> failwith $"the refusal must still be a READABLE verdict, got %A{other}"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``POSITIVE CONTROL: a healthy model that selected nothing records its own answer and the available model`` () =
     let exitCode, reading, file =
         driveWithModel
@@ -1133,7 +1133,7 @@ let ``POSITIVE CONTROL: a healthy model that selected nothing records its own an
         test <@ v.ProjectModel = ProjectModelFixtures.available @>
     | other -> failwith $"expected a readable verdict, got %A{other}"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a green verdict file records the available project model it was graded against`` () =
     let exitCode, _, file =
         driveWithModel
@@ -1163,7 +1163,7 @@ let private writeRunReport (repoRoot: string) (runId: System.Guid) (project: str
 
     System.IO.File.WriteAllText(System.IO.Path.Combine(runDir, project + FsHotWatch.Ctrf.ReportSuffix), json)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a check whose daemon ran the tests TWICE publishes a verdict covering BOTH run directories`` () =
     // The reported case, driven through the real check loop.
     //
@@ -1328,7 +1328,7 @@ let ``isDaemonShutdownDuringWait ignores unrelated faults`` () =
     test <@ not (isDaemonShutdownDuringWait (System.TimeoutException("WaitForComplete timed out after 00:30:00"))) @>
     test <@ not (isDaemonShutdownDuringWait (exn "boom")) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``pollAndRender returns exit 2 when the daemon drops mid-wait`` () =
     // End-to-end: a faulting WaitForComplete reaches the diagnostic exit-2 path rather than
     // propagating a crash.
@@ -1383,7 +1383,7 @@ let ``isVerdictWaitTimeout ignores unrelated faults`` () =
     test <@ not (isVerdictWaitTimeout (System.IO.IOException("pipe is broken"))) @>
     test <@ not (isVerdictWaitTimeout (System.TimeoutException("some other timeout"))) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``pollAndRender returns exit 2 when the verdict deadline is breached`` () =
     // End-to-end: the daemon's deadline TimeoutException reaches the diagnostic exit-2 path
     // instead of crashing.
@@ -1456,7 +1456,7 @@ let private driveConfirm (checkMode: CheckVerdict.CheckMode) : int * int =
 
     exitCode, forceCalls
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a confirm with no full-suite evidence FORCES the run and then goes green`` () =
     // Without the force, `confirm` reads the stale ImpactFiltered scope and returns exit 3
     // (UnearnedScope) with no way for the caller to get a different answer.
@@ -1465,7 +1465,7 @@ let ``a confirm with no full-suite evidence FORCES the run and then goes green``
     test <@ forceCalls = 1 @>
     test <@ exitCode = 0 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a confirm that already has full-suite evidence does NOT run the suite twice`` () =
     // The force is a BACKSTOP, not the mechanism. On a cold daemon the scan already provoked
     // the unfiltered run (`set-scope full` was sent first), so the scope reads full-suite
@@ -1495,7 +1495,7 @@ let ``a confirm that already has full-suite evidence does NOT run the suite twic
     test <@ forceCalls = 0 @>
     test <@ exitCode = 0 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the inner loop NEVER forces a full suite`` () =
     // An impact-filtered green is precisely the answer the inner loop wants.
     let exitCode, forceCalls = driveConfirm CheckVerdict.InnerLoop
@@ -1565,7 +1565,7 @@ let private driveFresh
 /// scan launched nothing.
 let private retainedReceipt = fullSuiteRun earlierRun [ earlierRun ]
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``POSITIVE CONTROL: a plain confirm grades the daemon's retained full-suite receipt without a run`` () =
     let exitCode, forceCalls, v =
         driveFresh CheckVerdict.Freshness.MayReuse retainedReceipt retainedReceipt None
@@ -1574,7 +1574,7 @@ let ``POSITIVE CONTROL: a plain confirm grades the daemon's retained full-suite 
     test <@ exitCode = 0 @>
     test <@ v.RunId = Some earlierRun @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``confirm --fresh forces a new run over a retained receipt and grades the new run`` () =
     let exitCode, forceCalls, v =
         driveFresh
@@ -1588,7 +1588,7 @@ let ``confirm --fresh forces a new run over a retained receipt and grades the ne
     test <@ BaselineFixtures.isGreen v.Outcome @>
     test <@ v.RunId = Some freshRun @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``confirm --fresh refuses a green when the forced run never replaced the retained receipt`` () =
     // The forced `run-tests` was refused or faulted, so the only full-suite evidence left
     // is the earlier run's. A plain confirm would accept it; `--fresh` promised a new run.
@@ -1604,7 +1604,7 @@ let ``confirm --fresh refuses a green when the forced run never replaced the ret
         test <@ reason.Contains(earlierRun.ToString("N")) @>
     | other -> failwith $"expected a refusal naming the graded run, got %A{other}"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``confirm --fresh does not run the suite twice when its own scan already launched it`` () =
     // A cold daemon: nothing had run before this confirm, and the scan it provoked ran the
     // full suite. That run IS new, so there is nothing left to force.
@@ -1619,7 +1619,7 @@ let ``confirm --fresh does not run the suite twice when its own scan already lau
     test <@ exitCode = 0 @>
     test <@ v.RunId = Some freshRun @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``confirm --fresh cannot prove a run new without a baseline, so it forces one`` () =
     // The pre-scan read faulted: an earlier run cannot be told from a new one.
     let mutable reads = 0
@@ -1720,7 +1720,7 @@ let private offering
 let private offersNothing (_: System.Guid option) : IpcParsing.CheckReachReading =
     IpcParsing.ReachUnavailable "this drive offers no projection"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an escalating confirm records the impact-scoped reading it escalated away from`` () =
     let v =
         driveConfirmForVerdict CheckVerdict.Confirmation (ImpactFiltered(1, 1)) offersNothing
@@ -1738,7 +1738,7 @@ let ``an escalating confirm records the impact-scoped reading it escalated away 
         test <@ pre.Basis = Verdict.SampleBasis.Executed @>
     | None -> failwith "an escalating confirm must record the reading it escalated away from"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a confirm that did NOT escalate records the PROJECTED sample, not a bare "nothing compared"`` () =
     // Rework of the check-vs-confirm sample. `confirm` widens the scope BEFORE the scan,
     // so the run its own scan provokes is unfiltered and this branch — not the escalating
@@ -1759,7 +1759,7 @@ let ``a confirm that did NOT escalate records the PROJECTED sample, not a bare "
         test <@ pre.Scope = ImpactFiltered(1, 1) @>
     | None -> failwith "a non-escalating confirm must record the projected reading"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a confirm asks for the GRADED run's projection, so recall measures when a later run completed`` () =
     // The daemon completed another run after the one this verdict grades (the
     // zero-selection skip a confirm's own scan provokes leaves the receipt standing). Its
@@ -1791,7 +1791,7 @@ let ``a confirm asks for the GRADED run's projection, so recall measures when a 
     test <@ v.ConditionalFailureRecall = Some measured @>
     test <@ v.Divergence = Verdict.Divergence.Agreed @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a confirm with no projection on offer says nothing was compared, and a check records no comparison at all`` () =
     // The controls, one on each side. Without them, a transport that recorded a reading
     // unconditionally, or one that recorded nothing ever, would still satisfy the two
@@ -2111,7 +2111,7 @@ let private driveWithTreeMovedMidCheck (moveTree: bool) : int * Verdict.Verdict 
         | Verdict.Reading.Found v -> exitCode, v
         | other -> failwithf "the drive must leave a readable verdict, got %A" other)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a tree that moves mid-check exits 2 AND records incomplete — the file and the process agree`` () =
     let exitCode, v = driveWithTreeMovedMidCheck true
 
@@ -2144,7 +2144,7 @@ let private captureVerdictTerminal (f: unit -> 'a) : string * 'a =
 
     lock writer (fun () -> buffer.ToString()), result
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a tree that moves mid-check says so at the terminal, not only in the verdict file`` () =
     // The file was already right and silent at the terminal: an operator saw exit 2 with
     // no sentence at all, because the caller explains the outcome it handed in (clean).
@@ -2161,7 +2161,7 @@ let ``a tree that moves mid-check says so at the terminal, not only in the verdi
     test <@ greenExit = 0 @>
     test <@ not (quiet.Contains "working tree changed") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the same drive over a tree that HOLDS STILL is green — 0 in both renderings`` () =
     // The control. Without it, a publisher that answered `incomplete`/2 unconditionally
     // would satisfy the test above, and `check` would never go green again.
@@ -2195,7 +2195,7 @@ let private writeSevenSuiteRun (repoRoot: string) (runId: System.Guid) : string 
 
     List.sort projects
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a zero-test convergence result preserves a prior applicable full-suite green`` () =
     // A re-scan can settle successfully while TestPrune has no test work to do. That
     // result is correctly refused as NEW evidence, but it must not erase a full-suite
@@ -2342,7 +2342,7 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
         | Verdict.PriorConfirmation.MustEarn ->
             failwith "the zero-test re-scan erased a full-suite green that still applies")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a zero-test convergence never preserves a full-suite green from a different tree`` () =
     // Preservation is evidence reuse, not a way for a no-test run to hide an edit.
     // Drive the publisher (rather than `priorConfirmation` alone) so this asserts the
@@ -2448,7 +2448,7 @@ let private publishPrior (repoRoot: string) (kind: string) =
         System.IO.File.WriteAllText(verdictPath, changed)
     | other -> failwithf "unknown prior kind %s" other
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("different-producer")>]
 [<InlineData("filtered")>]
 [<InlineData("red")>]
@@ -2494,7 +2494,7 @@ let ``ordinary outcomes do not inspect prior confirmation evidence`` () =
 
     test <@ preserved = None @>
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``daemon check and confirm overwrite green on discovery failure before diagnostics or convergence``
@@ -2600,7 +2600,7 @@ let ``isMemoryExhaustion ignores unrelated faults`` () =
     test <@ not (isMemoryExhaustion (System.IO.IOException("pipe is broken"))) @>
     test <@ not (isMemoryExhaustion (System.TimeoutException("WaitForComplete timed out"))) @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``pollAndRender returns exit 7 and PUBLISHES when the result is lost after the run settled`` () =
     // Settle succeeds — the daemon finished the run — and the diagnostics read then dies.
     let getErrors () : string =
@@ -2642,7 +2642,7 @@ let ``pollAndRender returns exit 7 and PUBLISHES when the result is lost after t
         | other -> failwithf "expected an incomplete outcome, got %A" other
     | other -> failwithf "expected a published verdict, got %A" other
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a memory fault BEFORE the run settles is NOT claimed as a lost result`` () =
     // The distinction the new exit code exists to carry, in the other direction. Dying
     // on the way IN is a run that never happened, and calling that "the result was lost"
@@ -2681,7 +2681,7 @@ let ``a memory fault BEFORE the run settles is NOT claimed as a lost result`` ()
 // tree mid-drive; with the loop gone there is no second reading to move it under. The
 // property is the store's, and it is stated here directly: evidence is keyed to the tree
 // it was earned on, so a quiet read taken over a DIFFERENT tree earns nothing.
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false, "already-verified")>]
 [<InlineData(true, "already-verified")>]
 [<InlineData(false, "unstated")>]
@@ -2795,7 +2795,7 @@ let private publishWithReceipts
 /// The generation `ProjectModelFixtures.available` reports.
 let private currentGeneration = 7L
 
-[<Theory(Timeout = 20000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("matching", 0)>]
 [<InlineData("missing", 2)>]
 [<InlineData("different-run", 2)>]
@@ -2830,7 +2830,7 @@ let ``green publication requires the graded run's current model receipt`` (kind:
 
         test <@ publishWithReceipts repoRoot receipts gradedRun = expectedExit @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a missing receipt names every receipt the daemon did hold`` () =
     withTempDir "ipcoutput-receipt-held" (fun repoRoot ->
         // The refusal is the one line an operator sees. Naming what the daemon held tells
@@ -2876,7 +2876,7 @@ let ``a missing receipt names every receipt the daemon did hold`` () =
         test <@ otherNamed.Contains $"run %s{other} at generation %d{currentGeneration}" @>
         test <@ (reasonFor []).Contains "the daemon holds no receipt" @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the graded run is looked up in the evidence its own test-scope reply sent`` () =
     withTempDir "ipcoutput-graded-evidence" (fun repoRoot ->
         // `check` reads the diagnostics ledger and then `test-scope`: two replies, and a
@@ -2988,7 +2988,7 @@ let ``the receipt reads line names the graded run, its reply's evidence and the 
             describeReceiptReads (BaselineFixtures.reportOf ScopeUnknown) IpcParsing.DaemonEvidence.NotServed = "test-scope graded no run (evidence in that reply: not sent); diagnostics receipt ledger: not served"
         @>
 
-[<Theory(Timeout = 20000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("matching", 0)>]
 [<InlineData("missing", 2)>]
 [<InlineData("test-run", 2)>]
@@ -3021,7 +3021,7 @@ let ``analysis-only green requires its own completed model receipt`` (kind: stri
 
         test <@ publishWithReceipts repoRoot receipts analysisOnly = expectedExit @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a daemon that serves no receipts keeps its verdict, so the analysis-only path cannot silently ungate`` () =
     withTempDir "ipcoutput-receipts-not-served" (fun repoRoot ->
         // A daemon older than the receipt rule says nothing about evidence. This gate
@@ -3053,7 +3053,7 @@ let ``a daemon that serves no receipts keeps its verdict, so the analysis-only p
         // the pair is the point: the skew path is narrow and deliberate.
         test <@ publishWithReceipts repoRoot [] gradedRun = 2 @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a refused receipt says why at the terminal, not only in the verdict file`` () =
     withTempDir "ipcoutput-receipt-terminal" (fun repoRoot ->
         let gradedRun =
@@ -3102,7 +3102,7 @@ let private writeStderrAsAnotherClass (started: System.Threading.ManualResetEven
 
     thread, finished
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a capture holds only its own sentences while another class writes to stderr mid-capture`` () =
     withTempDir "ipcoutput-capture-isolation" (fun repoRoot ->
         let gradedRun =
@@ -3127,7 +3127,7 @@ let ``a capture holds only its own sentences while another class writes to stder
         test <@ captured.Contains "no evidence receipt" @>
         test <@ not (captured.Contains "another class") @>)
 
-[<Theory(Timeout = 20000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("no-receipt")>]
 [<InlineData("refusing-receipt")>]
 let ``a receipt refusal is a recorded cause, so the summary names it instead of UNEXPLAINED`` (kind: string) =
@@ -3173,7 +3173,7 @@ let ``a receipt refusal is a recorded cause, so the summary names it instead of 
                 test <@ causes.Contains "fshw confirm" @>
         | other -> failwithf "expected a published verdict, got %A" other)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a clean publication records no cause, so the refusal cause is not furniture`` () =
     withTempDir "ipcoutput-receipt-cause-control" (fun repoRoot ->
         // Negative control for the theory above: without it, recording a cause on every
@@ -3196,7 +3196,7 @@ let ``a clean publication records no cause, so the refusal cause is not furnitur
         | Verdict.Reading.Found verdict -> test <@ List.isEmpty verdict.RedCauses @>
         | other -> failwithf "expected a published verdict, got %A" other)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a verdict wait that RESOLVES on a no-model host still exits 2 with a named reason`` () =
     // The guarantee the deleted `requireVerdict` used to hold, re-pinned where a user can
     // see it. That guard made the daemon-side wait BLOCK on a host that had verified
@@ -3254,7 +3254,7 @@ let ``a verdict wait that RESOLVES on a no-model host still exits 2 with a named
 // ONE SETTLED READ IS THE ANSWER.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an incomplete read is the answer: one read, no re-scan, even where a later read would differ`` () =
     withTempDir "ipcoutput-one-settled-read" (fun repoRoot ->
         // The convergence loop re-scanned an incomplete-but-clean reading up to three

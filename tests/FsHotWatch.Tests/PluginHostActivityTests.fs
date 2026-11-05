@@ -39,7 +39,7 @@ let private makeCtxAwareHandlerWithVerdict
 let private makeCtxAwareHandler (name: string) (action: PluginCtx<unit> -> Async<unit>) =
     makeCtxAwareHandlerWithVerdict name testVerdict action
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ctx.Log appears in host activity tail`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -59,7 +59,7 @@ let ``ctx.Log appears in host activity tail`` () =
     let r = List.head hist
     test <@ r.ActivityTail = [ "first"; "second" ] @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ctx.StartSubtask and EndSubtask reflected in host`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let observedDuring = ref []
@@ -81,7 +81,7 @@ let ``ctx.StartSubtask and EndSubtask reflected in host`` () =
     test <@ observedDuring.Value |> List.length = 2 @>
     test <@ List.isEmpty (host.GetSubtasks("subtasker")) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Completed verdict summary is captured in history`` () =
     // The status IS the summary channel — CompleteWithSummary is gone,
     // so no side-channel is left to disagree with it.
@@ -99,7 +99,7 @@ let ``Completed verdict summary is captured in history`` () =
     test <@ r.Summary = Some "did the thing" @>
 
 [<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Completed verdict elapsed is recorded in history`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -117,7 +117,7 @@ let ``Completed verdict elapsed is recorded in history`` () =
     // The verdict's measured duration, exactly — not a host wall-clock estimate.
     test <@ r.Elapsed = TimeSpan.FromMilliseconds 25.0 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Terminal transition auto-ends open subtasks`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -157,7 +157,7 @@ let private failWithoutRunning (name: string) (error: string) (verdict: RunVerdi
       CacheKey = None
       Teardown = None }
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a Failed with no preceding Running still records the verdict's measured elapsed`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -181,7 +181,7 @@ let ``a Failed with no preceding Running still records the verdict's measured el
     | FailedRun err -> test <@ err = "analysis failed: boom" @>
     | other -> failwithf "expected FailedRun, got %A" other
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a Failed run's history summary comes from the verdict, not a side-channel`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 

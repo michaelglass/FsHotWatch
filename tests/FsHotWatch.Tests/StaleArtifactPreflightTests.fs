@@ -91,7 +91,7 @@ let private runPreflight (s: Synth) =
 /// POSITIVE CONTROL for every "it refused" assertion below: a fresh tree is passed
 /// through untouched. A preflight that refused everything would satisfy the refusal
 /// tests trivially, and repair nothing.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a fresh tree is neither repaired nor refused`` () =
     withTempDir "fresh" (fun tmpDir ->
         let s = synth tmpDir
@@ -102,7 +102,7 @@ let ``a fresh tree is neither repaired nor refused`` () =
         // No ledger entry either: nothing happened, so nothing is recorded.
         test <@ not (File.Exists(StaleArtifactPreflight.ledgerPath tmpDir)) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an inverted copy is repaired to its origin's bytes and recorded`` () =
     withTempDir "repair" (fun tmpDir ->
         let s = synth tmpDir
@@ -122,7 +122,7 @@ let ``an inverted copy is repaired to its origin's bytes and recorded`` () =
 /// A stale COMPILE is not repairable and must not pretend to be. There is no file on
 /// disk holding the bytes that compile would produce, so the only honest answer is a
 /// refusal that names the command which does produce them.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a stale compile refuses with a remedy instead of being 'repaired'`` () =
     withTempDir "compile" (fun tmpDir ->
         let s = synth tmpDir
@@ -145,7 +145,7 @@ let ``a stale compile refuses with a remedy instead of being 'repaired'`` () =
 /// whatever failed to load puts an entry in the manifest and makes the symptom vanish
 /// while the superseded restore stays exactly where it was — a fix that works for the
 /// wrong reason, and the one a reader reaches for first.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a superseded restore refuses, names both files, and rules out the wrong fix`` () =
     withTempDir "superseded" (fun tmpDir ->
         let s = synth tmpDir
@@ -175,7 +175,7 @@ let ``a superseded restore refuses, names both files, and rules out the wrong fi
 
 /// POSITIVE CONTROL for the test above: the same tree with the manifest generated AFTER
 /// its restore — the shape every healthy build leaves — still gates normally.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a manifest generated after its restore is not reported`` () =
     withTempDir "control" (fun tmpDir ->
         let s = synth tmpDir
@@ -283,7 +283,7 @@ let ``exactly one stale case is repairable`` () =
 
 /// A repair that cannot be made must REFUSE, never proceed. Proceeding on bytes the
 /// gate could not certify is the silent degradation the gate exists to prevent.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a repair that fails refuses the run and says so`` () =
     withTempDir "repair-fails" (fun tmpDir ->
         let s = synth tmpDir
@@ -303,7 +303,7 @@ let ``a repair that fails refuses the run and says so`` () =
 
 /// Exhausting the repair budget REFUSES rather than proceeding. Driven with a budget of
 /// zero, which is the same arm a pathological tree reaches after `MaxRepairRounds`.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``exhausting the repair budget refuses rather than running unverified bytes`` () =
     withTempDir "budget" (fun tmpDir ->
         let s = synth tmpDir
@@ -322,7 +322,7 @@ let ``exhausting the repair budget refuses rather than running unverified bytes`
 // The ledger and the circuit breaker.
 // -----------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the ledger round-trips and drops records outside the window`` () =
     withTempDir "ledger" (fun tmpDir ->
         let now = DateTime.UtcNow
@@ -345,7 +345,7 @@ let ``the ledger round-trips and drops records outside the window`` () =
 /// HISTORY, and the only thing losing it can do is delay a breaker trip. Failing closed
 /// here would make a corrupt diagnostic file refuse every run — a brand-new wedge, in
 /// the change that exists to delete one.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a corrupt heal ledger reads as empty rather than wedging the run`` () =
     withTempDir "ledger-corrupt" (fun tmpDir ->
         let path = StaleArtifactPreflight.ledgerPath tmpDir
@@ -381,7 +381,7 @@ let ``healsInWindow counts only this file, only inside the window`` () =
 /// Repeated repair of ONE file is a finding, not a habit. Past the threshold the
 /// preflight stops absorbing the inversion and says so — naming the file, the observed
 /// count, and (required, not optional) how to get moving again.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the breaker trips on a file repaired too often, and names its own reset`` () =
     withTempDir "breaker" (fun tmpDir ->
         let s = synth tmpDir
@@ -415,7 +415,7 @@ let ``the breaker trips on a file repaired too often, and names its own reset`` 
         test <@ File.ReadAllText s.CommonCopy = "COMMON-STALE" @>)
 
 /// Trip → reset → normal operation. The reset the message names must actually work.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the documented reset clears a tripped breaker and repairs resume`` () =
     withTempDir "breaker-reset" (fun tmpDir ->
         let s = synth tmpDir
@@ -440,7 +440,7 @@ let ``the documented reset clears a tripped breaker and repairs resume`` () =
 
 /// The window ages out on its own — the second reset route the message promises, and
 /// the one that needs no human at all.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a tripped breaker ages out of its own window`` () =
     withTempDir "breaker-ages" (fun tmpDir ->
         let s = synth tmpDir
@@ -473,7 +473,7 @@ let ``a tripped breaker ages out of its own window`` () =
 /// THE ANTI-WEDGE PROPERTY. The breaker gates the REPAIR, not the run, so a tripped
 /// breaker on a clean tree changes nothing at all. Without this the breaker would be
 /// exactly the new wedge class this preflight must not create.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a tripped breaker does NOT block a run with nothing stale in it`` () =
     withTempDir "breaker-clean" (fun tmpDir ->
         let s = synth tmpDir
@@ -510,7 +510,7 @@ let ``a tripped breaker does NOT block a run with nothing stale in it`` () =
 /// run, and the only exit was a human deleting the ledger. Observed twice in
 /// a large private downstream repository: every project passed, a queued re-run refused, executed
 /// nothing, and recorded `outcome: red, scope: none, reddenedByCount: 0`.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a file the breaker has tripped does not block another project's repair`` () =
     withTempDir "per-file" (fun tmpDir ->
         let now = DateTime.UtcNow
@@ -552,7 +552,7 @@ let ``a file the breaker has tripped does not block another project's repair`` (
 /// THE CONVERGENCE PROPERTY, which is the reason the claim above matters: the refusal
 /// set SHRINKS across runs with no human in the loop. Before the fix these two runs were
 /// identical, forever.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the run after a tripped refusal refuses only the still-tripped file`` () =
     withTempDir "converges" (fun tmpDir ->
         let now = DateTime.UtcNow
@@ -585,7 +585,7 @@ let ``the run after a tripped refusal refuses only the still-tripped file`` () =
 /// The same per-file rule for the OTHER refusal source. A stale COMPILE is unrepairable
 /// by construction, and it used to suppress every repairable copy in the round for the
 /// identical reason — the guard tested `unrepairable` and `tripped` together.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a project needing a compile does not block another project's copy repair`` () =
     withTempDir "compile-neighbour" (fun tmpDir ->
         let needsCompile = synth (Path.Combine(tmpDir, "needs-compile"))
@@ -607,7 +607,7 @@ let ``a project needing a compile does not block another project's copy repair``
 /// A bare JSON `null` where the array should be. Distinct from a parse throw: `Parse`
 /// succeeds and hands back a null node, so the guard is a real arm rather than a
 /// theoretical one.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a ledger holding a bare JSON null reads as empty`` () =
     withTempDir "ledger-null" (fun tmpDir ->
         let path = StaleArtifactPreflight.ledgerPath tmpDir
@@ -621,7 +621,7 @@ let ``a ledger holding a bare JSON null reads as empty`` () =
 /// direction is deliberate and safe: a dropped record can only UNDERcount heals, so the
 /// breaker trips late, never early. It cannot cause a stale run, because the launch is
 /// gated by the post-repair byte re-verification, not by this file.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``unreadable ledger entries are skipped, readable neighbours survive`` () =
     withTempDir "ledger-entries" (fun tmpDir ->
         let now = DateTime.UtcNow
@@ -691,7 +691,7 @@ let ``a build-ordering defer is NOT a stale-output deferral`` () =
 /// `refusalMessages` is a hand-written list, so on its own it proves only that the list
 /// agrees with itself. This drives the REAL preflight into three of its refusal arms and
 /// asserts the marker on what it actually emitted.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the refusals a real preflight emits carry the marker`` () =
     withTempDir "marker-real" (fun tmpDir ->
         // (1) unrepairable — a stale compile.
@@ -810,7 +810,7 @@ let private synthManyInverted (root: string) (count: int) =
 /// More stale copies in one bin than the old 8-round cap: every one is repaired and the
 /// run is cleared to launch. Before, each round repaired only the FIRST stale copy the
 /// detector reported, so the ninth copy hit the cap and the whole run refused.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a bin holding more stale copies than the round cap is repaired in full`` () =
     withTempDir "many-stale" (fun tmpDir ->
         let target, pairs = synthManyInverted tmpDir 24
@@ -826,7 +826,7 @@ let ``a bin holding more stale copies than the round cap is repaired in full`` (
 
 /// The budget counts rounds of RE-DETECTION, not files: one round repairs every stale
 /// copy it can see, so a single round clears a bin of any size.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``one repair round repairs every stale copy in the bin`` () =
     withTempDir "one-round" (fun tmpDir ->
         let target, pairs = synthManyInverted tmpDir 20
@@ -841,7 +841,7 @@ let ``one repair round repairs every stale copy in the bin`` () =
 /// into one that waves through a copy whose repair does not stick. The injected write
 /// reports success and changes nothing, so the copy is stale again at the next
 /// re-detection. It refuses at once, naming the file, instead of spending rounds on it.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a copy that re-stales after its repair refuses and names the file`` () =
     withTempDir "restale" (fun tmpDir ->
         let s = synth tmpDir
@@ -863,7 +863,7 @@ let ``a copy that re-stales after its repair refuses and names the file`` () =
 
 /// `differingCopies` lists every stale copy, but only for a closure it can read. An
 /// unreadable one is `stale`'s `InputsUndeterminable` refusal, never a repair list.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``differingCopies lists every stale copy, and nothing for an unreadable closure`` () =
     withTempDir "differing" (fun tmpDir ->
         let target, pairs = synthManyInverted tmpDir 3

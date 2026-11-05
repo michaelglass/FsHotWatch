@@ -213,7 +213,7 @@ let ``analyzers load guard does not fire when a real analyzer loads`` () =
 // one path loads ≥1 and others load 0, registerPlugins must still raise, naming only
 // the zero-loading paths. Lives here rather than the unit suite because it needs the
 // real SDK load.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``analyzers load guard fires per-path when one of several paths loads zero`` () =
     let goodPath = exampleAnalyzerPath.Value
 
@@ -877,7 +877,7 @@ let ``in-process lint and the analyzer shim report the same findings for one con
 // AnalyzersPlugin — success and failure
 // ===========================================================================
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``AnalyzersPlugin completes without crashing on checked file`` () =
     withAnalyzerGate (fun () ->
         let repoRoot = findRepoRoot ()
@@ -918,7 +918,7 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
             | other -> Assert.Fail($"Unexpected status: %A{other}")
         | None -> Assert.True(true, "Skipped: FCS could not check file"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``AnalyzersPlugin loads real analyzers from example project`` () =
     withAnalyzerGate (fun () ->
         let repoRoot = findRepoRoot ()
@@ -963,7 +963,7 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
             | other -> Assert.Fail($"Unexpected status: %A{other}")
         | None -> Assert.True(true, "Skipped: FCS could not check file"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``AnalyzersPlugin produces warning on wildcard DU match`` () =
     let source =
         "module Test\ntype Shape = Circle | Square\nlet f s = match s with | Circle -> 1 | _ -> 2\n"
@@ -981,7 +981,7 @@ let ``AnalyzersPlugin produces warning on wildcard DU match`` () =
         | PluginStatus.Failed(msg, _, _) -> Assert.Fail($"Analyzer should succeed but failed: {msg}")
         | other -> Assert.Fail($"Unexpected status: %A{other}"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``AnalyzersPlugin produces no warning on exhaustive DU match`` () =
     let source =
         "module Test\ntype Shape = Circle | Square\nlet f s = match s with | Circle -> 1 | Square -> 2\n"
@@ -1540,7 +1540,7 @@ let ``FSHW-WALL-001 is scoped to test sources`` () =
 // BuildPlugin — success and failure
 // ===========================================================================
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildPlugin succeeds with echo command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable receivedBuild: BuildResult option = None
@@ -1586,7 +1586,7 @@ let ``BuildPlugin succeeds with echo command`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildPlugin fails with false command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable receivedBuild: BuildResult option = None
@@ -1641,7 +1641,7 @@ let ``BuildPlugin fails with false command`` () =
 // TestPrunePlugin — success and failure
 // ===========================================================================
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
     withTempDir "fshw-tp-inttest" (fun repoRoot ->
         let dbPath = Path.Combine(repoRoot, "test-impact.db")
@@ -1763,7 +1763,7 @@ let private fileTrigger (filter: string -> bool) : FsHotWatch.FileCommand.FileCo
     { FilePattern = Some filter
       AfterTests = None }
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileCommandPlugin runs command for matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1790,7 +1790,7 @@ let ``FileCommandPlugin runs command for matching files`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileCommandPlugin ignores non-matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1808,7 +1808,7 @@ let ``FileCommandPlugin ignores non-matching files`` () =
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileCommandPlugin reports failure on bad command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1840,7 +1840,7 @@ let ``FileCommandPlugin reports failure on bad command`` () =
 // ===========================================================================
 
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``rerun re-executes a cached FileCommandPlugin`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-rerun-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
@@ -2014,7 +2014,7 @@ let ``Full pipeline: format → build → test`` () =
 // Regression: concurrent build/test guards
 // ===========================================================================
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildPlugin serializes changes that arrive during a build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable buildCount = 0
@@ -2084,7 +2084,7 @@ let ``BuildPlugin serializes changes that arrive during a build`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``TestPrunePlugin does not run concurrent test suites`` () =
     withTempDir "fshw-tp-concurrent" (fun repoRoot ->
         let dbPath = Path.Combine(repoRoot, "test-impact.db")
@@ -2157,7 +2157,7 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
 // (permission denied, deletion races) flaky enough to jitter the ratchet.
 // ===========================================================================
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hashFileWith: real File.ReadAllBytes throws on unreadable file`` () =
     // The unit tests reach hashFileWith's None branch through an injected throwing
     // reader. If the OS ever stops throwing on an unreadable file, that mock no longer
@@ -2271,7 +2271,7 @@ let ``ProcessRegistry.killAll kills a child started via runProcess from another 
 // ProcessHelper.fs (drain branches).
 // ===========================================================================
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``TestPrune honors per-project TimeoutSec and records TimedOut`` () =
     withTempDir "fshw-tp-timeout" (fun tmpDir ->
         let configs =
@@ -2320,7 +2320,7 @@ let ``TestPrune honors per-project TimeoutSec and records TimedOut`` () =
 // caches replay stale results.
 // ===========================================================================
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = RealCheckTestCapMs)>]
 let ``§1 regression: Bar's fcsCheckSignature changes when Foo's signature breaks Bar`` () =
     withTempDir "fshw-fcs-sig-cross-file" (fun tmpDir ->
         let fooPath = Path.Combine(tmpDir, "Foo.fs")
@@ -2371,7 +2371,7 @@ let ``§1 regression: Bar's fcsCheckSignature changes when Foo's signature break
 // branch inconsistently under this much contention, flickering PathFilter.fs between
 // 68.2% and 63.6% branch coverage. The correctness assertion still runs, just outside the
 // ratchet.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``IgnoreFilterCache is safe under concurrent Get`` () =
     withTempDir "cache-concurrent" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.log\n")
@@ -2414,7 +2414,7 @@ let ``IgnoreFilterCache is safe under concurrent Get`` () =
 // ---------------------------------------------------------------------------
 
 [<WallClock("real host: two real `sleep 1` builds, and the elapsed time is asserted only as a LOWER bound, which load can lengthen but never break")>]
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``concurrent FileChanged events run two builds sequentially`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -2463,7 +2463,7 @@ let ``concurrent FileChanged events run two builds sequentially`` () =
     test <@ !buildCompletedCount = 2 @>
     test <@ elapsed.Elapsed >= TimeSpan.FromMilliseconds 1800.0 @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run summary names the slowest project when 2+ projects ran`` () =
     withTempDir "tp-slowest" (fun tmpDir ->
         // 20× differential — wide enough that fork-exec / first-time JIT overhead
@@ -2520,7 +2520,7 @@ let ``run summary names the slowest project when 2+ projects ran`` () =
 // Four plugins plus a DaemonRpcTarget serialization roundtrip: integration-grade. Under
 // unit-suite contention the wait for handler "d" to reach Failed flaked ~20% at 5s,
 // hence the generous timeouts here.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -2649,7 +2649,7 @@ let private makeControllablePlugin (name: string) =
        Release = release |}
 
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``waitForPluginTerminalIfRunning returns when plugin reaches terminal`` () =
     let host = FsHotWatch.PluginHost.PluginHost(Unchecked.defaultof<_>, "/tmp")
     let plugin = makeControllablePlugin "build"
@@ -2684,7 +2684,7 @@ let ``waitForPluginTerminalIfRunning returns when plugin reaches terminal`` () =
     | Some(Running _) -> failwith "build should be terminal after wait"
     | _ -> ()
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``waitForPluginTerminalIfRunning times out when plugin never leaves Running`` () =
     let host = FsHotWatch.PluginHost.PluginHost(Unchecked.defaultof<_>, "/tmp")
     let plugin = makeControllablePlugin "build"

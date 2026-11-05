@@ -15,7 +15,7 @@ open FsHotWatch.Tests.TestHelpers
 let private names (files: seq<FileInfo>) =
     files |> Seq.map (fun f -> f.Name) |> Seq.sort |> Seq.toList
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``enumerateFiles yields files recursively and skips excluded dir names`` () =
     withTempDir "sw-basic" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, "root.fs"), "")
@@ -38,7 +38,7 @@ let ``enumerateFiles is empty for a missing root`` () =
 // entered. Two of them in one dir is the exact /nix/store ncurses shape that
 // made the pre-SafeWalk recursion ~2^90 paths. On a walker that follows
 // symlinked dirs this test trips its Timeout.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``enumerateFiles never descends into symlinked directories`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "sw-symlink" (fun tmpDir ->
@@ -66,7 +66,7 @@ let ``enumerateFiles never descends into symlinked directories`` () =
 // is a linear chain (`loop/loop/…`), so a walker that follows it reaches `SafeWalk.MaxDepth`
 // and reports a capped subtree instead of hanging. A walker that never enters a
 // symlinked directory sees one directory, one file and nothing skipped.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``walk never enters a self-loop symlink, so nothing is depth-capped`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "sw-one-loop" (fun tmpDir ->
@@ -82,7 +82,7 @@ let ``walk never enters a self-loop symlink, so nothing is depth-capped`` () =
 // (a freshness scan that throws on one permission hole would fail the gate for
 // an unrelated reason). Both IO-error arms — GetFiles and GetDirectories on the
 // locked dir — are exercised here.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``enumerateFiles survives an unreadable subtree and keeps walking`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "sw-perm" (fun tmpDir ->
@@ -105,7 +105,7 @@ let ``enumerateFiles survives an unreadable subtree and keeps walking`` () =
 
 // The pruning walk is best-effort too: an unreadable directory it is allowed into
 // contributes no paths and does not fault the walk.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``bestEffortFilePathsPruning drops an unreadable subtree and keeps walking`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "sw-prune-perm" (fun tmpDir ->
@@ -133,7 +133,7 @@ let ``bestEffortFilePathsPruning drops an unreadable subtree and keeps walking``
 // The depth cap is the belt for cycles that evade the symlink guard (e.g.
 // bind mounts): a subtree nested beyond MaxDepth is skipped — with a warning,
 // not silently — while everything above the cap is still enumerated.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``enumerateFiles stops at the depth cap`` () =
     withTempDir "sw-depth" (fun tmpDir ->
         // Build a chain 5 levels DEEPER than the cap. Depth here counts dirs
@@ -164,7 +164,7 @@ let ``enumerateFiles stops at the depth cap`` () =
 // EVERYTHING as skipped — or returned no files at all — would pass the
 // unreadable-directory tests while being useless, and "fail closed" would have
 // been implemented as "fail always".
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``walk over a fully readable tree reports its files and NOTHING skipped`` () =
     withTempDir "sw-walk-clean" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, "root.fs"), "")
@@ -185,7 +185,7 @@ let ``walk over a missing root reports nothing seen and nothing skipped`` () =
 
 // An EXCLUDED directory is not a hole either — it was never in scope, so
 // reporting it would drown the real holes in noise.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``walk does not report an excluded directory as skipped`` () =
     withTempDir "sw-walk-excluded" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "bin")) |> ignore
@@ -198,7 +198,7 @@ let ``walk does not report an excluded directory as skipped`` () =
 // THE BUG. Before this, an unreadable directory contributed zero entries and was
 // invisible: the freshness gate found no source newer than the assembly and said
 // FRESH, and TreeHash hashed a tree it had never fully seen.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``walk REPORTS an unreadable directory instead of dropping it`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "sw-walk-perm" (fun tmpDir ->
@@ -260,7 +260,7 @@ let private expectUnreadableAt (path: string) (skipped: SafeWalk.SkippedDir) =
     | SafeWalk.Unreadable _ -> ()
     | other -> failwithf "expected Unreadable, got %A" other
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``walk REPORTS a root it could not look up instead of calling it missing`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "sw-walk-unreachable-root" (fun tmpDir ->
@@ -283,14 +283,14 @@ let ``walk REPORTS a root it could not look up instead of calling it missing`` (
 // Positive controls for the root probe: each way a root is genuinely NOT a directory
 // to walk stays an absence. Without these, a probe that called every non-existent
 // root unreadable would pass the test above.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``walk over a missing root under a READABLE parent is still an absence`` () =
     withTempDir "sw-walk-missing-leaf" (fun tmpDir ->
         let result = SafeWalk.walk Set.empty "*" (Path.Combine(tmpDir, "not-there"))
         test <@ List.isEmpty result.Files @>
         test <@ List.isEmpty result.Skipped @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``walk over a root that is a FILE is an absence, not a hole`` () =
     withTempDir "sw-walk-file-root" (fun tmpDir ->
         let file = Path.Combine(tmpDir, "a-file")
@@ -302,7 +302,7 @@ let ``walk over a root that is a FILE is an absence, not a hole`` () =
 
 // --- subdirectories: the one-level listing, with the same three answers ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``subdirectories lists one level of a readable directory`` () =
     withTempDir "sw-subdirs" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "net10.0", "nested")) |> ignore
@@ -313,12 +313,12 @@ let ``subdirectories lists one level of a readable directory`` () =
         | Ok dirs -> test <@ dirs |> Array.map Path.GetFileName |> Array.sort = [| "net10.0"; "net8.0" |] @>
         | Error hole -> failwithf "expected a listing, got %A" hole)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``subdirectories of a missing directory is an empty listing, not a hole`` () =
     withTempDir "sw-subdirs-missing" (fun tmpDir ->
         test <@ SafeWalk.subdirectories (Path.Combine(tmpDir, "bin")) = Ok [||] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``subdirectories of an UNREADABLE directory is a hole, never an empty listing`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "sw-subdirs-sealed" (fun tmpDir ->
@@ -330,7 +330,7 @@ let ``subdirectories of an UNREADABLE directory is a hole, never an empty listin
                 | Error hole -> expectUnreadableAt bin hole
                 | Ok dirs -> failwithf "expected a hole, got a listing of %d" dirs.Length))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``subdirectories of an UNREACHABLE directory is a hole, never an empty listing`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "sw-subdirs-unreachable" (fun tmpDir ->
@@ -346,7 +346,7 @@ let ``subdirectories of an UNREACHABLE directory is a hole, never an empty listi
 // "A MaxDepth truncation is reported, not merely logged": a warning in a log is
 // not something a caller can branch on, and the caller is the one deciding
 // whether its claim still holds.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``walk REPORTS a subtree cut off by the depth cap`` () =
     withTempDir "sw-walk-depth" (fun tmpDir ->
         let mutable dir = tmpDir
@@ -371,7 +371,7 @@ let ``walk REPORTS a subtree cut off by the depth cap`` () =
 // The laziness `RunOnceOutput` depends on (`Seq.exists` stopping at the first
 // .fsproj) is why the walk is a stream of entries rather than a record whose
 // skip list is only correct once fully enumerated.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``enumerateEntries is lazy — an early-stopping caller never walks the rest`` () =
     withTempDir "sw-lazy" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, "a.fsproj"), "")

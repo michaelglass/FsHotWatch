@@ -1752,7 +1752,7 @@ let private withFileSink (dir: string) (body: (string -> unit) -> string -> unit
     writer.AutoFlush <- true
     body (fun chunk -> writer.Write(chunk: string)) path
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``runProcessTo keeps what a SIGKILLed child said BEFORE the kill`` () =
     // The child announces its cause and then hangs forever, so the timeout kills its tree
     // and nothing downstream of the process ever runs. A sink fed at the end leaves this
@@ -1780,7 +1780,7 @@ let ``runProcessTo keeps what a SIGKILLed child said BEFORE the kill`` () =
             Assert.True(IO.File.Exists path, $"no log at %s{path} — a killed run left no evidence at all")
             Assert.Contains("SHARD-POOL-IN-USE-BY-PID-18024", IO.File.ReadAllText path)))
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``runProcessTo sees the head of a run whose 40-line TAIL has buried it`` () =
     // The incident, reduced: the cause is line 1 and the next 59 are the indistinguishable
     // noise a tail would show instead. Without this, the change could "pass" while surfacing
@@ -1809,7 +1809,7 @@ let ``runProcessTo sees the head of a run whose 40-line TAIL has buried it`` () 
 
             Assert.DoesNotContain("REAL-CAUSE-AT-HEAD", tail)))
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``runProcessTo streams DURING the run — on disk, mid-flight`` () =
     // The discriminating test for "as it arrives": every other sink test here passes just as
     // happily against a `runProcessTo` that hands over the whole capture at exit. Two things
@@ -2053,7 +2053,7 @@ let ``a start observer that throws does not stop the run it observes`` () =
 
     outcome |> expectStdout "hi"
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a child never inherits the trace recorder's variables, and a caller's own still reach it`` () =
     // A traced test process carries TESTPRUNE_TRACE_*: where its dumps go, which scope a
     // child records into. A child fshw spawns from it (a test run, a build) must not record

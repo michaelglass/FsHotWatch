@@ -116,7 +116,7 @@ let private runIn repoRoot (opts: Explain.ExplainOptions) =
 
     code, List.ofSeq out, List.ofSeq err
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``fshw explain names the classes and alwaysClasses a check would run for an edit to the file`` () =
     withTempDir "explain-file" (fun repoRoot ->
         seeded repoRoot |> ignore
@@ -131,7 +131,7 @@ let ``fshw explain names the classes and alwaysClasses a check would run for an 
         test <@ text.Contains "ProjB: ProjB.GuardTests" @>
         test <@ text.Contains "Lib.f" @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``fshw explain --json writes the selection as a document`` () =
     withTempDir "explain-file-json" (fun repoRoot ->
         seeded repoRoot |> ignore
@@ -166,7 +166,7 @@ let ``fshw explain --json writes the selection as a document`` () =
         test <@ fanout = "top" @>
         test <@ testCount = 1 @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a file the index holds no symbol for is explained as a whole-suite edit`` () =
     withTempDir "explain-file-unindexed" (fun repoRoot ->
         seeded repoRoot |> ignore
@@ -185,7 +185,7 @@ let ``a file the index holds no symbol for is explained as a whole-suite edit`` 
         let indexed = doc.RootElement.GetProperty("indexed").GetBoolean()
         test <@ not indexed @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``fshw explain without an index, or without tests configured, exits 1 and says why`` () =
     withTempDir "explain-file-missing" (fun repoRoot ->
         let code, out, err =
@@ -264,7 +264,7 @@ let ``a path is named as the index names it, relative to the repository`` () =
 
 // --- the default wiring -----------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the tests scope is read from .fshw.json, and is absent when no tests are configured`` () =
     withTempDir "explain-scope" (fun repoRoot ->
         File.WriteAllText(
@@ -282,7 +282,7 @@ let ``the tests scope is read from .fshw.json, and is absent when no tests are c
         File.WriteAllText(Path.Combine(repoRoot, ".fshw.json"), "{}")
         test <@ Explain.TestsScope.load repoRoot = None @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``with no projects named, every indexed project counts as runnable`` () =
     withTempDir "explain-file-any" (fun repoRoot ->
         let db = seeded repoRoot
@@ -296,7 +296,7 @@ let ``with no projects named, every indexed project counts as runnable`` () =
 
         test <@ explained.Selection |> Option.map _.Classes = Some(Map.ofList [ "ProjA", [ "ProjA.FreshTests" ] ]) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the default wiring refuses a repository with no index`` () =
     withTempDir "explain-default" (fun repoRoot ->
         test <@ Explain.runDefault repoRoot ({ File = "src/Lib.fs"; Json = false }: Explain.ExplainOptions) = 1 @>)
@@ -311,7 +311,7 @@ let private recordRun (repoRoot: string) (ms: int64) =
 
     File.WriteAllText(Path.Combine(dir, "ProjA" + FsHotWatch.Ctrf.ReportSuffix), report)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``fshw explain prices the selection from the newest recorded runs`` () =
     withTempDir "explain-file-priced" (fun repoRoot ->
         seeded repoRoot |> ignore

@@ -32,7 +32,7 @@ let private createAndDispose (dir: string) =
 
     (daemon :> IDisposable).Dispose()
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a spawn after a daemon is created and disposed is not refused by its shut registry`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "daemon-scope-refused" (fun dir ->
@@ -143,7 +143,7 @@ let ``a daemon run started on the caller's thread leaves the caller's scope as i
             test <@ isSucceeded outcome @>)
 
 [<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a child scope started on the caller's thread leaves the caller's scope as it was`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "daemon-scope-child" (fun dir ->
@@ -158,7 +158,7 @@ let ``a child scope started on the caller's thread leaves the caller's scope as 
 
             test <@ isSucceeded outcome @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``with context flow suppressed, work runs in its registry and the caller's is restored`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "daemon-scope-suppressed" (fun dir ->

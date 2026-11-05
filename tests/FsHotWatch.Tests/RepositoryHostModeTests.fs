@@ -210,7 +210,7 @@ let ``a directory that cannot be resolved is refused before anything is launched
 
     test <@ not launched.Value @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a host that never comes up leaves the worktree to its own daemon within the bound, naming its log`` () =
     withTempDir "mode-nohost" (fun dir ->
         Directory.CreateDirectory(Path.Combine(dir, ".jj", "repo")) |> ignore
@@ -242,7 +242,7 @@ let private attachedReplyFor (dir: string) =
             AttachHandshake.Attached(id, AttachHandshake.AttachDisposition.NewSession, identity)
         )
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a host that leaves between the probe and the reply is relaunched once`` () =
     // The host answered the liveness probe, then idled out before it read the attach:
     // the exchange ends with no reply. That is a host that has gone, not a failure.
@@ -280,7 +280,7 @@ let ``a host that leaves between the probe and the reply is relaunched once`` ()
 
         test <@ launches.Value = 1 && exchanges.Value = 2 @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a host that never answers the attach is asked once more, then left to the worktree's own daemon`` () =
     withTempDir "mode-silent" (fun dir ->
         attachedReplyFor dir |> ignore
@@ -404,7 +404,7 @@ let private attachAnswered (dir: string) (reply: string) =
         dir
         ""
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a host of a different fshw build is still a stop, and no fallback is recorded`` () =
     withTempDir "mode-otherbuild" (fun dir ->
         attachedReplyFor dir |> ignore
@@ -441,7 +441,7 @@ let ``a host of a different fshw build is still a stop, and no fallback is recor
 
         test <@ not (File.Exists(HostLifecycle.eventLogPath control)) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a host that stopped answering but still holds this worktree's session is a stop, naming its pid`` () =
     // Its own daemon cannot take the worktree while that session holds its lock, so a
     // fallback would only fail later, and less clearly.
@@ -479,7 +479,7 @@ let ``a host that stopped answering but still holds this worktree's session is a
                 @>
         | other -> failwith $"%A{other}")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a fallback is recorded in the repository's event log, naming the host's pid when one is recorded`` () =
     withTempDir "mode-fellback" (fun dir ->
         attachedReplyFor dir |> ignore

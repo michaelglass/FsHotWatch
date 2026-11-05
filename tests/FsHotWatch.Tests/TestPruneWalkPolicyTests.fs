@@ -27,7 +27,7 @@ open TestPrune.Domain
 
 let private gated = TestPrune.Sql.SqlCoupling.reachabilityGated
 
-[<Theory(Timeout = 30000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``the plugin opens its index under the policy it is given`` (scoped: bool) =

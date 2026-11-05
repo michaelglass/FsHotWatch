@@ -29,7 +29,7 @@ let ``plugin has correct name`` () =
 // must skip compile items outside the repo root — NuGet-injected `_content`
 // source etc. — since they're not ours to lint. The `Some repoRoot` enables the
 // skip; the `includeOutsideRepo` config maps to `None` to disable it.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``lint skips compile items outside the repo`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
@@ -102,7 +102,7 @@ let ``warnings command with args passes through`` () =
     test <@ result.Value.Contains("\"files\": 0") @>
 
 [<WallClock("product timeout under test: the work deliberately outlasts the product's own bound, and the assertion is the typed timeout outcome the product reports")>]
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``lint handler times out when runner exceeds TimeoutSec`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
@@ -125,7 +125,7 @@ let ``lint handler times out when runner exceeds TimeoutSec`` () =
         | other -> Assert.Fail($"Expected TimedOut, got {other}")
     | None -> Assert.Fail "Expected LastRun record"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``lint runner returning Failure reports errors and sets Failed status`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
@@ -148,7 +148,7 @@ let ``lint runner returning Failure reports errors and sets Failed status`` () =
     let errors = host.GetErrorsByPlugin("lint")
     test <@ errors |> Map.isEmpty |> not @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``lint runner returning Success with warnings reports them to error ledger`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
@@ -191,7 +191,7 @@ let ``lint runner returning Success with warnings reports them to error ledger``
     test <@ entries.[0].Line = 10 @>
     test <@ entries.[0].Column = 4 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``lint runner returning Success with no warnings clears errors`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
@@ -220,7 +220,7 @@ let ``lint runner returning Success with no warnings clears errors`` () =
     test <@ cmdResult.IsSome @>
     test <@ cmdResult.Value.Contains("\"warnings\": 0") @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``warnings command reflects warning count after lint with warnings`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
@@ -254,7 +254,7 @@ let ``warnings command reflects warning count after lint with warnings`` () =
     test <@ cmdResult.Value.Contains("\"files\": 1") @>
     test <@ cmdResult.Value.Contains("\"warnings\": 2") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``lint per-file cache replay derives its summary from the live ledger`` () =
     // Lint is a `FileChecked` plugin (per-file, `File = Some`), so it shares the
     // analyzers' defect class: its status summary is built from whole-session
@@ -325,7 +325,7 @@ let ``lint per-file cache replay derives its summary from the live ledger`` () =
 // mailbox is folded after that clear, and nothing checks a dropped path again: the
 // finding it re-reports is about a file outside the build and stands until the daemon
 // restarts. So the fold must refuse what the current model did not stamp.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``lint refuses a FileChecked captured against a superseded model`` () =
     let repoRoot = "/my/repo"
     let removed = "/my/repo/src/Removed.fs"
@@ -410,7 +410,7 @@ let ``lint refuses a FileChecked captured against a superseded model`` () =
 // its inputs, not the model. So a superseded result for a file the new model dropped
 // must not be served from the cache either — otherwise the replay re-adds the finding
 // the rediscovery just cleared.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``lint does not replay a cached finding for a superseded model's result`` () =
     let repoRoot = "/my/repo"
     let removed = "/my/repo/src/Removed.fs"
@@ -480,7 +480,7 @@ let ``lint does not replay a cached finding for a superseded model's result`` ()
 // under test, a replayed cache entry, or a future emitter can. It is refused for a
 // different reason than being out of date — nothing stamped it, so there is no model
 // it can be said to describe, and admitting it would mean trusting a claim no one made.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``lint refuses a FileChecked that carries no model generation at all`` () =
     let repoRoot = "/my/repo"
     let unstamped = "/my/repo/src/Unstamped.fs"
@@ -532,7 +532,7 @@ let private lintHostIn (store: string) (root: string) (shared: bool) =
 // findings, but the `warnings` command counted only the files this session linted itself.
 // A replay is the same analysis of the same inputs, so the state it leaves must be the
 // state a fresh lint leaves.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a lint result replayed from a sibling checkout's cache fills WarningsByFile like a fresh lint`` () =
     withTempDir "lint-replay-store" (fun store ->
         withTempDir "lint-replay-sibling" (fun siblingRoot ->
@@ -609,7 +609,7 @@ let ``a replay records a completed lint for the current model, and nothing else`
 
 // A project `fsharplint.json` is loaded by the real FSharpLint, not a stubbed runner, and
 // the lint step settles on it: the plugin reaches a terminal status inside the bound.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``lint with a project config reaches a terminal status`` () =
     withTempDir "lint-project-config" (fun dir ->
         let configPath = System.IO.Path.Combine(dir, "fsharplint.json")
@@ -682,7 +682,7 @@ let private lintThroughPlugin (dir: string) (configPath: string option) (fileNam
 
     host.GetStatus "lint", entries
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a lint runner that throws reports Failed naming the exception, never zero issues`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
@@ -747,7 +747,7 @@ let ``a core that reaches the end without failing passes its result through`` ()
 // Positive controls: the REAL FSharpLint, through the plugin, finds a planted finding.
 // A step that merely completes proves nothing — "linted 1 files, 0 issues" was exactly
 // what a linter that threw on every file reported.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``real FSharpLint through the plugin reports a planted FL0065 hint`` () =
     withTempDir "lint-planted-fl0065" (fun dir ->
         let source = "module Planted\n\nlet isNone (x: int list) = x = []\n"
@@ -759,7 +759,7 @@ let ``real FSharpLint through the plugin reports a planted FL0065 hint`` () =
 
         test <@ entries |> List.exists (fun m -> m.Contains "List.isEmpty") @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``real FSharpLint through the plugin reports a project-config rule`` () =
     withTempDir "lint-planted-config" (fun dir ->
         let configPath = System.IO.Path.Combine(dir, "fsharplint.json")
@@ -800,7 +800,7 @@ let private lintWithConfig (configJson: string) =
         waitForTerminalStatus host "lint" 15000
         runs, host.GetStatus("lint"))
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a group wrapped in enabled and config fails the lint naming the key`` () =
     // The shape both of this repo's own configs once used. FSharpLint's loader binds
     // nothing under it, so every rule in the group silently never runs.
@@ -817,7 +817,7 @@ let ``a group wrapped in enabled and config fails the lint naming the key`` () =
     // Nothing is linted against a config that cannot say what it enforces.
     test <@ runs = 0 @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unknown top-level key fails the lint naming the key`` () =
     let _, status =
         lintWithConfig """{ "binding": { "enabled": true, "config": { "uselessBinding": { "enabled": true } } } }"""
@@ -826,7 +826,7 @@ let ``an unknown top-level key fails the lint naming the key`` () =
     | Some(Failed(message, _, _)) -> test <@ message.Contains "binding" @>
     | other -> Assert.Fail($"Expected Failed naming the unknown key, got: %A{other}")
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a config every key of which FSharpLint binds lints normally`` () =
     let runs, status =
         lintWithConfig
@@ -852,7 +852,7 @@ let private longSource = "module Long\n\nlet aVeryLongIdentifierName = 1\n"
 
 // FSharpLint applies ignoreFiles only when it lints a whole project itself; the plugin
 // lints one parsed file at a time, which never consults it.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a file matched by ignoreFiles is not linted, while its unignored sibling is`` () =
     withTempDir "lint-ignore-files" (fun dir ->
         let configPath = System.IO.Path.Combine(dir, "fsharplint.json")
@@ -901,7 +901,7 @@ let private lintAfterConfigEdit (dir: string) (edited: string) (fileName: string
 
     host.GetErrorsByPlugin "lint" |> Map.toList |> List.collect snd
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an ignoreFiles entry added after the plugin started is honoured`` () =
     withTempDir "lint-ignore-edit" (fun dir ->
         test
@@ -918,7 +918,7 @@ let ``an ignoreFiles entry added after the plugin started is honoured`` () =
             @>)
 
 // The result cache must not serve a verdict reached under a config the file no longer holds.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the cache key follows an edit to the config after the plugin started`` () =
     withTempDir "lint-config-key-edit" (fun dir ->
         let configPath = System.IO.Path.Combine(dir, "fsharplint.json")

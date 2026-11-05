@@ -278,7 +278,7 @@ let private afterFaithfulRecreate (tmpDir: string) : Database * Store =
 
     (reopened, load tmpDir)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a schema recreate empties the index but the freshness sidecar survives saying Clean`` () =
     // The premise of the whole fix, measured rather than assumed: the two files
     // DO drift apart, and the surviving sidecar keeps making a claim about rows the

@@ -76,7 +76,7 @@ let private failure (root: string) =
 // One repository, many worktrees
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``jj primary and secondary workspaces share a RepositoryId and keep distinct WorktreeIds`` () =
     withTempDir "rid-jj" (fun dir ->
         let primary = jjPrimary (mkdir (Path.Combine(dir, "repo")))
@@ -92,7 +92,7 @@ let ``jj primary and secondary workspaces share a RepositoryId and keep distinct
         test <@ s.Repository = p.Repository @>
         test <@ s.Worktree <> p.Worktree @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an absolute jj pointer resolves to the same repository as a relative one`` () =
     withTempDir "rid-jj-abs" (fun dir ->
         let primary = jjPrimary (mkdir (Path.Combine(dir, "repo")))
@@ -101,7 +101,7 @@ let ``an absolute jj pointer resolves to the same repository as a relative one``
 
         test <@ (resolved (Path.Combine(dir, "ws"))).Repository = (resolved primary).Repository @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``git main checkout and linked worktree share a RepositoryId and keep distinct WorktreeIds`` () =
     withTempDir "rid-git" (fun dir ->
         let main = gitMain "git@example.com:o/r.git" (mkdir (Path.Combine(dir, "main")))
@@ -115,7 +115,7 @@ let ``git main checkout and linked worktree share a RepositoryId and keep distin
         test <@ w.Repository = m.Repository @>
         test <@ w.Worktree <> m.Worktree @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a colocated jj repository and a git worktree made from it are ONE repository`` () =
     // `git worktree add` from a colocated repo is a worktree of the same repository as
     // its jj workspaces. The link is proven by jj's own `git_target` pointing back at
@@ -131,7 +131,7 @@ let ``a colocated jj repository and a git worktree made from it are ONE reposito
         test <@ ids |> List.map _.Worktree |> List.distinct |> List.length = 3 @>
         test <@ ids |> List.forall (fun r -> r.Store.Provider = VcsProvider.Jujutsu) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a .jj directory merely beside a git directory does not adopt it`` () =
     // Without `git_target` pointing back, a stray `.jj` next to `.git` proves nothing.
     withTempDir "rid-stray-jj" (fun dir ->
@@ -146,7 +146,7 @@ let ``a .jj directory merely beside a git directory does not adopt it`` () =
 // Independent repositories never collide
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``two independent git clones of the same origin have DIFFERENT RepositoryIds`` () =
     withTempDir "rid-clones" (fun dir ->
         let origin = "git@github.com:owner/same.git"
@@ -155,7 +155,7 @@ let ``two independent git clones of the same origin have DIFFERENT RepositoryIds
 
         test <@ (resolved a).Repository <> (resolved b).Repository @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``two independent jj clones have DIFFERENT RepositoryIds`` () =
     withTempDir "rid-jj-clones" (fun dir ->
         let a = colocate (jjPrimary (mkdir (Path.Combine(dir, "a", "same"))))
@@ -163,7 +163,7 @@ let ``two independent jj clones have DIFFERENT RepositoryIds`` () =
 
         test <@ (resolved a).Repository <> (resolved b).Repository @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``repositories living under a directory named worktrees are not truncated into one`` () =
     // Guessing the common dir from a `/worktrees/` path segment would cut both of these
     // back to `<dir>` and merge two unrelated repositories. `commondir` is the truth.
@@ -174,7 +174,7 @@ let ``repositories living under a directory named worktrees are not truncated in
         test <@ (resolved a).Repository <> (resolved b).Repository @>
         test <@ (resolved a).Store.Path.Value.EndsWith(Path.Combine("worktrees", "a", ".git")) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a directory under no VCS is a standalone repository of its own`` () =
     withTempDir "rid-standalone" (fun dir ->
         let a = mkdir (Path.Combine(dir, "a"))
@@ -184,7 +184,7 @@ let ``a directory under no VCS is a standalone repository of its own`` () =
         test <@ (resolved a).Store.Path = (resolved a).Root @>
         test <@ (resolved a).Repository <> (resolved b).Repository @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the provider is part of the RepositoryId`` () =
     withTempDir "rid-provider" (fun dir ->
         let store = (resolved (mkdir (Path.Combine(dir, "x")))).Root
@@ -199,7 +199,7 @@ let ``the provider is part of the RepositoryId`` () =
 // Canonical roots: symlinks, case, `..`, recreation
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a symlinked root resolves to exactly its target's identity`` () =
     withTempDir "rid-symlink" (fun dir ->
         let primary = jjPrimary (mkdir (Path.Combine(dir, "repo")))
@@ -213,7 +213,7 @@ let ``a symlinked root resolves to exactly its target's identity`` () =
         test <@ viaLink.Repository = direct.Repository @>
         test <@ viaLink.Worktree = direct.Worktree @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a symlink in the MIDDLE of the path, relative, is resolved too`` () =
     withTempDir "rid-mid-symlink" (fun dir ->
         let primary = jjPrimary (mkdir (Path.Combine(dir, "real", "repo")))
@@ -221,7 +221,7 @@ let ``a symlink in the MIDDLE of the path, relative, is resolved too`` () =
 
         test <@ (resolved (Path.Combine(dir, "alias", "repo"))).Worktree = (resolved primary).Worktree @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``.. after a symlink is the PHYSICAL parent, not the lexical one`` () =
     withTempDir "rid-dotdot" (fun dir ->
         let target = mkdir (Path.Combine(dir, "deep", "inner"))
@@ -231,7 +231,7 @@ let ``.. after a symlink is the PHYSICAL parent, not the lexical one`` () =
         // physically it is `deep/sibling`.
         test <@ (resolved (dir + "/shortcut/../sibling")).Worktree = (resolved sibling).Worktree @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``. segments and .. above the filesystem root canonicalize`` () =
     withTempDir "rid-segments" (fun dir ->
         let primary = jjPrimary (mkdir (Path.Combine(dir, "repo")))
@@ -256,7 +256,7 @@ type RelativePathTests() =
                 test <@ (resolved "repo").Root = expected @>
                 test <@ (resolved "./repo/../repo").Root = expected @>))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an exactly spelled name stops the listing at its entry and normalizes nothing`` () =
     // Canonicalizing lists each parent directory, and a temp directory can hold tens of
     // thousands of entries. An exact match is the common case: it must cost a scan up to
@@ -281,7 +281,7 @@ let ``an exactly spelled name stops the listing at its entry and normalizes noth
         test <@ storedNameIn listNames dir "Name" = Some "Name" @>
         test <@ pulled.Value = 2 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``without an exact entry, only a single equivalent entry is the stored spelling`` () =
     // The fallback, on any volume: one entry equal ignoring case and normalization is
     // what the name resolved to; none, or several, leaves the name as given.
@@ -294,7 +294,7 @@ let ``without an exact entry, only a single equivalent entry is the stored spell
         test <@ storedNameIn (listing [ "NAME"; "name" ]) dir "Name" = Some "Name" @>
         test <@ storedNameIn (listing [ "Name" ]) dir "Absent" = None @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a directory that cannot be listed keeps the name as given`` () =
     // Search permission without read permission: the entry is reachable, its stored
     // spelling just cannot be learned by listing.
@@ -311,7 +311,7 @@ let ``a directory that cannot be listed keeps the name as given`` () =
         finally
             File.SetUnixFileMode(locked, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a listing that fails while it is read keeps the name as given`` () =
     // The listing is lazy, so an unreadable directory fails while its names are walked.
     withTempDir "rid-listing-fails" (fun dir ->
@@ -325,7 +325,7 @@ let ``a listing that fails while it is read keeps the name as given`` () =
 
         test <@ storedNameIn failing dir "Name" = Some "Name" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a case-variant root is the same worktree on a case-insensitive volume and absent on a sensitive one`` () =
     withTempDir "rid-case" (fun dir ->
         let primary = jjPrimary (mkdir (Path.Combine(dir, "MyRepo")))
@@ -341,7 +341,7 @@ let ``a case-variant root is the same worktree on a case-insensitive volume and 
         else
             test <@ failure variant = IdentityError.PathNotFound variant @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a worktree deleted and recreated at the same path keeps its WorktreeId`` () =
     withTempDir "rid-recreate" (fun dir ->
         let primary = jjPrimary (mkdir (Path.Combine(dir, "repo")))
@@ -358,7 +358,7 @@ let ``a worktree deleted and recreated at the same path keeps its WorktreeId`` (
 // Malformed layouts fail loudly
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an empty jj pointer is malformed, not a private repository`` () =
     withTempDir "rid-empty-ptr" (fun dir ->
         let jjDir = mkdir (Path.Combine(dir, ".jj"))
@@ -371,7 +371,7 @@ let ``an empty jj pointer is malformed, not a private repository`` () =
                 | _ -> false
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a jj pointer of blank lines is malformed`` () =
     withTempDir "rid-blank-ptr" (fun dir ->
         let jjDir = mkdir (Path.Combine(dir, ".jj"))
@@ -384,7 +384,7 @@ let ``a jj pointer of blank lines is malformed`` () =
                 | _ -> false
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unreadable jj pointer is malformed, not a private repository`` () =
     withTempDir "rid-unreadable-ptr" (fun dir ->
         let jjDir = mkdir (Path.Combine(dir, ".jj"))
@@ -402,7 +402,7 @@ let ``an unreadable jj pointer is malformed, not a private repository`` () =
         finally
             File.SetUnixFileMode(pointer, UnixFileMode.UserRead ||| UnixFileMode.UserWrite))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a jj pointer into a symlink loop reports the loop`` () =
     withTempDir "rid-ptr-loop" (fun dir ->
         let loopA = Path.Combine(dir, "loopA")
@@ -419,7 +419,7 @@ let ``a jj pointer into a symlink loop reports the loop`` () =
                 | _ -> false
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a jj pointer at a directory that is not there is a dangling pointer`` () =
     withTempDir "rid-dangling" (fun dir ->
         let jjDir = mkdir (Path.Combine(dir, ".jj"))
@@ -432,7 +432,7 @@ let ``a jj pointer at a directory that is not there is a dangling pointer`` () =
                 | _ -> false
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a jj pointer with a NUL in it is malformed`` () =
     withTempDir "rid-nul" (fun dir ->
         let jjDir = mkdir (Path.Combine(dir, ".jj"))
@@ -445,7 +445,7 @@ let ``a jj pointer with a NUL in it is malformed`` () =
                 | _ -> false
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a .jj directory with no repo entry is malformed`` () =
     withTempDir "rid-no-repo" (fun dir ->
         mkdir (Path.Combine(dir, ".jj")) |> ignore
@@ -457,7 +457,7 @@ let ``a .jj directory with no repo entry is malformed`` () =
                 | _ -> false
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a .git file that is not a gitdir pointer is malformed`` () =
     withTempDir "rid-bad-git" (fun dir ->
         File.WriteAllText(Path.Combine(dir, ".git"), "something else\n")
@@ -469,7 +469,7 @@ let ``a .git file that is not a gitdir pointer is malformed`` () =
                 | _ -> false
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a gitdir pointer at a missing directory is a dangling pointer`` () =
     withTempDir "rid-bad-gitdir" (fun dir ->
         File.WriteAllText(Path.Combine(dir, ".git"), "gitdir: /nonexistent/.git/worktrees/x\n")
@@ -481,7 +481,7 @@ let ``a gitdir pointer at a missing directory is a dangling pointer`` () =
                 | _ -> false
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a gitdir pointer keeps a trailing space, as git reads it`` () =
     // Git strips only the line ending from a `.git` file, so a space at the end of the
     // path is part of the path.
@@ -493,7 +493,7 @@ let ``a gitdir pointer keeps a trailing space, as git reads it`` () =
 
             test <@ (resolved checkout).Kind = CheckoutKind.GitWorktree @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a commondir pointing nowhere is a dangling pointer`` () =
     withTempDir "rid-bad-commondir" (fun dir ->
         let main = gitMain "o" (mkdir (Path.Combine(dir, "main")))
@@ -507,7 +507,7 @@ let ``a commondir pointing nowhere is a dangling pointer`` () =
                 | _ -> false
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``canonicalizing lists no directory where the platform names a stored entry itself`` () =
     // A listing costs O(entries in the parent) per component; a symlink loop repeats
     // the walk per hop. Under a temp directory of 100,000 entries one loop took 2 s.
@@ -546,7 +546,7 @@ let ``canonicalizing lists no directory where the platform names a stored entry 
 
             test <@ listings.Value = 0 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``on Linux an existing entry keeps the name as given and another case of it is absent`` () =
     if not (OperatingSystem.IsLinux()) then
         Assert.Skip "Linux: the name as given is the stored name"
@@ -567,7 +567,7 @@ let ``on Linux an existing entry keeps the name as given and another case of it 
             let otherCase = Path.Combine(dir, "myrepo")
             test <@ canonicalize otherCase = Error(IdentityError.PathNotFound otherCase) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a root that is missing, a file, or a symlink loop fails with its own reason`` () =
     withTempDir "rid-bad-root" (fun dir ->
         let missing = Path.Combine(dir, "missing")
@@ -612,7 +612,7 @@ let ``every identity error describes itself with the path it is about`` () =
 // Id formats
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ids round-trip through their rendered form and reject anything else`` () =
     withTempDir "rid-parse" (fun dir ->
         let r = resolved dir
@@ -642,7 +642,7 @@ let ``ids round-trip through their rendered form and reject anything else`` () =
         test <@ SessionId.tryParse null = None @>
         test <@ SessionId.tryParse (r.Repository.Value + "." + r.Worktree.Value) = None @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``every identity renders as its value`` () =
     withTempDir "rid-render" (fun dir ->
         let r = resolved dir
@@ -704,7 +704,7 @@ let ``control state is keyed by repository, shared by its worktrees, and outside
         test <@ control.Endpoint.Length <= 32 @>
         test <@ control.Endpoint <> (paths other).Endpoint @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``control state survives the deletion of a worktree`` () =
     withTempDir "rid-survive" (fun dir ->
         let stateHome = Path.Combine(dir, "state")
@@ -716,7 +716,7 @@ let ``control state survives the deletion of a worktree`` () =
 
         test <@ repositoryControlPaths stateHome (resolved main).Repository = before @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``shared cache is per repository and results stay in the worktree's own .fshw`` () =
     withTempDir "rid-result-root" (fun dir ->
         let primary = jjPrimary (mkdir (Path.Combine(dir, "repo")))
@@ -732,7 +732,7 @@ let ``shared cache is per repository and results stay in the worktree's own .fsh
 // Checkout kind: read from the entries that locate the store
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``every checkout kind is read alongside its store`` () =
     withTempDir "kind" (fun dir ->
         let jj = jjPrimary (mkdir (Path.Combine(dir, "jj")))
@@ -754,7 +754,7 @@ let ``every checkout kind is read alongside its store`` () =
                           CheckoutKind.PlainDirectory, VcsProvider.Standalone ]
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a colocated repository's checkouts keep their own kinds while sharing the jj store`` () =
     // jj is read first: a colocated secondary workspace that also carries a `.git` is a
     // jj workspace. A git worktree adopted into the jj repository is still a git
@@ -799,7 +799,7 @@ let ``every checkout kind describes itself with the evidence it was read from`` 
 // The shared cache namespace reads the same layout
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``repositories living under a directory named worktrees get distinct cache namespaces`` () =
     // Cutting a git directory at its last `/worktrees/` segment turned both of these
     // into `<dir>` and gave two unrelated repositories one shared cache.
@@ -809,7 +809,7 @@ let ``repositories living under a directory named worktrees get distinct cache n
 
         test <@ RepoIdentity.namespaceOf a <> RepoIdentity.namespaceOf b @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a git worktree of a colocated jj repository shares the jj workspaces' cache namespace`` () =
     withTempDir "ns-coloc" (fun dir ->
         let primary = colocate (jjPrimary (mkdir (Path.Combine(dir, "repo"))))
@@ -821,7 +821,7 @@ let ``a git worktree of a colocated jj repository shares the jj workspaces' cach
         test <@ namespaces |> List.distinct |> List.length = 1 @>
         test <@ namespaces.Head.StartsWith "repo-" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the cache namespace is keyed by the same store as the RepositoryId`` () =
     // Every checkout that resolves to one RepositoryId lands in one namespace, and a
     // symlinked spelling of a checkout is the same checkout.
@@ -846,7 +846,7 @@ let ``the cache namespace is keyed by the same store as the RepositoryId`` () =
 
         test <@ identities |> List.forall (fun a -> identities |> List.forall (agree a)) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a checkout whose layout cannot be read gets a private cache namespace`` () =
     // The cache falls back rather than failing: a dangling jj pointer shares nothing,
     // not even with the repository it claims.
@@ -962,7 +962,7 @@ let ``real jj: colocated primary, jj workspace and git worktree are one reposito
         run dir "jj" [ "git"; "init"; "--colocate"; other ]
         test <@ (resolved other).Repository <> ids.Head.Repository @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the import store is per repository, shared by its worktrees, and in its shared cache`` () =
     withTempDir "rid-imports" (fun dir ->
         let primary = jjPrimary (mkdir (Path.Combine(dir, "repo")))

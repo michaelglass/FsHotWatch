@@ -73,7 +73,7 @@ let ``a running step is described by label, index, command, pid and bound`` () =
             |> fun s -> s.EndsWith("(pid 12345, no bound)")
         @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a held-open tests.beforeRun step is named by index, command and pid in the wait and wedge lines`` () =
     withTempDir "hookstep-held" (fun tmpDir ->
         let configs =
@@ -152,7 +152,7 @@ let ``a held-open tests.beforeRun step is named by index, command and pid in the
         test <@ waitUntilTrue (fun () -> List.isEmpty (stepSubtasks host)) 10000 @>
         await.Wait(TimeSpan.FromSeconds 10.0) |> ignore)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``every step is released when it exits, including the one that fails`` () =
     withTempDir "hookstep-fail" (fun tmpDir ->
         let recorder = Recorder()

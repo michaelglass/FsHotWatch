@@ -247,7 +247,7 @@ let ``handoff transition failure settles accepted receipts and closes admission`
 
         queue.Close()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``worker scope charges teardown failures to its owner rather than the request caller`` () =
     let store = Store()
     let ownerRegistry = ProcessRegistry.Registry()
@@ -552,7 +552,7 @@ let ``invalid queue deadline admits no owner or worker`` kind =
     Assert.Equal(0L, store.Snapshot.Version)
     Assert.Empty store.Snapshot.BusyNames
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``supervisor constructed without flowing context still settles its actual worker`` () =
     let store = Store()
 

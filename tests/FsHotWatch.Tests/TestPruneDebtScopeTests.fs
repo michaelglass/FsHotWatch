@@ -31,7 +31,7 @@ let private settleBuild (tmpDir: string) (dbPath: string) (configs: TestConfig l
     waitForQuiescent host 20000
     host
 
-[<Theory(Timeout = 30000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(true, "separate integration gate", false)>]
 [<InlineData(false, "separate integration gate", false)>]
 [<InlineData(true, null, true)>]
@@ -83,7 +83,7 @@ let ``declared exclusions retire only governed covering debt`` (mixed: bool) (re
             PendingVerification.save tmpDir (Set.singleton "Lib.shared")
             Assert.Contains("Lib.shared", run Map.empty))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a configured project stays required even when an exclusion names it`` () =
     withTempDir "tp-configured-excluded" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -103,7 +103,7 @@ let ``a configured project stays required even when an exclusion names it`` () =
         finally
             host.Teardown())
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``scope resolution failure at completion settles owned work and retains debt`` () =
     withTempDir "tp-scope-failure" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")

@@ -741,7 +741,7 @@ let ``check-reach says what check would have reached, and an undecided reach is 
     test <@ fst unrecorded = NoVerdictExitCode @>
     test <@ (snd unrecorded).Contains "no run has completed" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``analyzer-findings answers as fshw findings does, with its exit codes`` () =
     FsHotWatch.Tests.TestHelpers.withTempDir "pa-findings" (fun root ->
         let replyWith expected =

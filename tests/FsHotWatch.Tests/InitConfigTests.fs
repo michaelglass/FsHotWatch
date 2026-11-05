@@ -364,7 +364,7 @@ let ``serializeConfig test project without filterTemplate omits it`` () =
 
 // --- discoverProjects ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``discoverProjects finds fsproj files in directory tree`` () =
     withTempDir "init-disc" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src", "MyApp")
@@ -379,7 +379,7 @@ let ``discoverProjects finds fsproj files in directory tree`` () =
         test <@ projects |> List.exists (fun p -> p.Contains("MyApp.fsproj")) @>
         test <@ projects |> List.exists (fun p -> p.Contains("MyApp.Tests.fsproj")) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``discoverProjects returns paths relative to repo root`` () =
     withTempDir "init-rel" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src", "App")
@@ -391,7 +391,7 @@ let ``discoverProjects returns paths relative to repo root`` () =
         test <@ not (Path.IsPathRooted(projects.[0])) @>
         test <@ projects.[0] = Path.Combine("src", "App", "App.fsproj") @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``discoverProjects excludes bin directories`` () =
     withTempDir "init-bin" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src", "App")
@@ -405,7 +405,7 @@ let ``discoverProjects excludes bin directories`` () =
         test <@ projects.Length = 1 @>
         test <@ projects.[0] = Path.Combine("src", "App", "App.fsproj") @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``discoverProjects excludes obj directories`` () =
     withTempDir "init-obj" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src", "App")
@@ -419,13 +419,13 @@ let ``discoverProjects excludes obj directories`` () =
         test <@ projects.Length = 1 @>
         test <@ projects.[0] = Path.Combine("src", "App", "App.fsproj") @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``discoverProjects returns empty list for empty directory`` () =
     withTempDir "init-empty" (fun tmpDir ->
         let projects = discoverProjects tmpDir None
         test <@ List.isEmpty projects @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``discoverProjects returns sorted results`` () =
     withTempDir "init-sort" (fun tmpDir ->
         let dir1 = Path.Combine(tmpDir, "z-project")
@@ -492,7 +492,7 @@ let ``discoverProjects with injected enumerator still filters bin and obj`` () =
 // the REPO ROOT, one hop from `.devenv/profile` → /nix/store → two self-loop
 // symlinks in one dir. The pre-SafeWalk `SearchOption.AllDirectories` follows
 // them and enumerates ~2^32 paths; on that code this test trips its Timeout.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``discoverProjects terminates on a repo containing a symlink cycle`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "init-cycle" (fun tmpDir ->
