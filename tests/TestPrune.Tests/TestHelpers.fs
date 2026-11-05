@@ -10,6 +10,14 @@ open TestPrune.Domain
 let tempDbPath () =
     Path.Combine(Path.GetTempPath(), $"test-prune-%A{Guid.NewGuid()}.db")
 
+/// Drop the pooled SQLite connections of the database at `dbPath`, and only that one:
+/// `Database` pools under `Data Source=<path>`. `SqliteConnection.ClearAllPools` disposes
+/// the handles of every class opening a database in parallel, and fails one that did
+/// nothing wrong (AUTOMATION-842, AUTOMATION-1022).
+let clearSqlitePool (dbPath: string) =
+    use conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source=%s{dbPath}")
+    Microsoft.Data.Sqlite.SqliteConnection.ClearPool conn
+
 let cleanupDb (path: string) =
     for ext in [ ""; "-wal"; "-shm" ] do
         let p = path + ext
