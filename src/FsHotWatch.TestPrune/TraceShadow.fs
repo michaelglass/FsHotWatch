@@ -114,6 +114,14 @@ module TraceShadow =
                     readings
                     |> List.iter (fun r ->
                         store.RecordShadow(TraceSelect.row runId r.Fingerprint at r.SelectMs r.Selection r.Comparison)
+                        let unknown = TraceSelect.unknownFailures r.Selection failedKeys
+
+                        if not unknown.IsEmpty then
+                            let names = String.concat ", " unknown
+
+                            log
+                                $"trace-shadow: %d{unknown.Length} failed test(s) in %s{r.Selection.TestProject} that no traced key names: %s{names} — not judged as misses"
+
                         let misses = TraceSelect.verifiedFailureMisses r.Selection failedKeys
 
                         if not misses.IsEmpty then

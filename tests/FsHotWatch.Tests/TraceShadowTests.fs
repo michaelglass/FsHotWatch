@@ -179,3 +179,61 @@ let ``a store that cannot be written at completion is one log line, never an exc
         TraceShadow.atCompletion (settings SelectShadow) root readings "run-3" [ "P|C|a" ] lines.Add
 
         test <@ lines |> Seq.last |> (fun l -> l.StartsWith "trace-shadow: not stored") @>)
+
+[<Fact>]
+let ``a failed theory row of a nested class with a backticked name is keyed as the index keys its test`` () =
+    // AUTOMATION-975 QA: a failure key that does not match its universe key is dropped by
+    // `verifiedFailureMisses` without a word, so a real miss would never be recorded. The
+    // runner reports a nested class with '+', a backticked method by its compiled name and
+    // a theory row with its arguments in the name only; the index stores the class with
+    // '+' and the method with backticks.
+    let json =
+        """{"results": {"summary": {"tests": 3, "passed": 1, "failed": 2, "skipped": 0, "pending": 0, "other": 0},
+           "tests": [
+             {"name": "Ns.Outer+Inner.a theory, with a comma(x: 1, y: \"a\")", "status": "failed", "message": "boom",
+              "extra": {"type": "Ns.Outer+Inner", "method": "a theory, with a comma"}},
+             {"name": "Ns.Outer+Inner.a theory, with a comma(x: 2, y: \"b\")", "status": "passed",
+              "extra": {"type": "Ns.Outer+Inner", "method": "a theory, with a comma"}},
+             {"name": "Ns.Plain.plain", "status": "failed", "message": "boom",
+              "extra": {"type": "Ns.Plain", "method": "plain"}}]}}"""
+
+    let failedKeys =
+        TestReports.failedTestsOfReport json
+        |> Option.defaultValue []
+        |> List.map (fun (cls, meth) -> TraceShadow.failureKey "P" cls meth)
+
+    let indexed =
+        [ { SymbolFullName = "Ns.Outer.Inner.a theory"
+            TestProject = "P"
+            TestClass = "Ns.Outer+Inner"
+            TestMethod = "``a theory, with a comma``" }
+          { SymbolFullName = "Ns.Plain.plain"
+            TestProject = "P"
+            TestClass = "Ns.Plain"
+            TestMethod = "plain" } ]
+
+    // A selection that left both out records both as misses, under their index keys.
+    let selection =
+        TraceSelect.select "P" (indexed |> List.map TraceShadow.keyOf) (fun _ -> None) (fun _ -> None) (fun _ -> None)
+
+    let nothingSelected = { selection with Selected = Map.empty }
+
+    test
+        <@
+            TraceSelect.verifiedFailureMisses nothingSelected failedKeys = (indexed
+                                                                            |> List.map TraceShadow.keyOf
+                                                                            |> List.sort)
+        @>
+
+[<Fact>]
+let ``a failed test the traced universe does not know is said out loud, not dropped`` () =
+    withStore (fun root ->
+        let lines = ResizeArray<string>()
+        let readings = launch root SelectShadow lines
+        TraceShadow.atCompletion (settings SelectShadow) root readings "run-4" [ "P|Gone|x" ] lines.Add
+
+        test
+            <@
+                lines
+                |> Seq.exists (fun l -> l.Contains "1 failed test(s) in P that no traced key names: P|Gone|x")
+            @>)

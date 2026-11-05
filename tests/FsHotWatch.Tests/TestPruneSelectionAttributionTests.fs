@@ -191,16 +191,18 @@ type private Fixture =
 
 /// A plugin over an index in which `Lib.f` is covered by `ProjA.FreshTests` only, with
 /// launches captured rather than started.
-let private fixtureWith (queriesOf: (Database -> ImpactQueries) option) =
+let private fixtureWithTraces (queriesOf: (Database -> ImpactQueries) option) (traces: TraceWiring option) =
     let root = isolatedRoot ()
     let dbPath = Path.Combine(root, "tp.db")
     let db = Database.create dbPath
     PendingQueueHelpers.seedCoveredSymbol db "Lib.f" "src/Lib.fs" "ProjA" "ProjA.FreshTests" "covers f"
 
     let handler =
-        match queriesOf with
-        | None -> create dbPath root (Some configs) None None None None []
-        | Some queriesOf ->
+        match queriesOf, traces with
+        | None, None -> create dbPath root (Some configs) None None None None []
+        | queriesOf, traces ->
+            let queriesOf = queriesOf |> Option.defaultValue ImpactQueries.ofDatabase
+
             createWithQueries
                 queriesOf
                 (TimeSpan.FromMinutes 5.0)
@@ -215,7 +217,7 @@ let private fixtureWith (queriesOf: (Database -> ImpactQueries) option) =
                 None
                 None
                 []
-                None
+                traces
                 TestMode.initial
 
     let scheduled = ref None
@@ -255,6 +257,8 @@ let private fixtureWith (queriesOf: (Database -> ImpactQueries) option) =
     { Handler = handler
       Ctx = ctx
       Scheduled = scheduled }
+
+let private fixtureWith (queriesOf: (Database -> ImpactQueries) option) = fixtureWithTraces queriesOf None
 
 let private fixture () = fixtureWith None
 
@@ -491,3 +495,68 @@ let ``a narrow launch says its fanout was not measured`` () =
     let state = verified f
     let _, launch = buildAndLaunch f (owing "Lib.f" state)
     test <@ launch.SeedFanout = SeedFanoutReading.Narrow @>
+
+// --- shadow trace selection never changes a launch (AUTOMATION-975) -------------------
+
+/// `tests.traces.select: "shadow"`, with a store at `.fshw/test-traces.db`.
+let private shadowWiring: TraceWiring =
+    { Policy =
+        { Record = RecordEveryRun
+          DbPath = ".fshw/test-traces.db"
+          WeaveTests = WeaveTestSites
+          FingerprintInputs = []
+          FingerprintEnv = []
+          VerifyTimeoutSec = 60
+          Select = SelectShadow }
+      OptedOut = Set.empty
+      WeaveOverrides = Map.empty
+      Decide = fun _ _ _ _ _ -> Untraced None }
+
+/// A recorded run of ProjA whose complete trace of `ProjA.FreshTests.covers f` executed
+/// nothing: the trace selection leaves the test out, where the static walk from `Lib.f`
+/// selects it.
+let private recordQuietTrace (root: string) =
+    use store =
+        TestPrune.Trace.TraceStore.Store.Open(Path.Combine(root, ".fshw", "test-traces.db"))
+
+    store.RecordRun(
+        { RunId = "r1"
+          TestProject = "ProjA"
+          TreeHash = "tree"
+          EnvFingerprint = "E"
+          RecordedAt = DateTimeOffset.UtcNow
+          Kind = TestPrune.Trace.TraceStore.FullRun
+          Status = TestPrune.Trace.TraceStore.Recorded
+          Reason = ""
+          StatsJson = "{}" },
+        [ { Key = "T:1"
+            Symbols = []
+            Inputs = [] } ],
+        [ { TestKey = TestPrune.Trace.TraceIngest.testKey "ProjA" "ProjA.FreshTests" "covers f"
+            Status = Some TestPrune.Trace.Model.Passed
+            Reasons = []
+            ScopeKeys = [ "T:1" ] } ]
+    )
+
+[<Fact(Timeout = 30000)>]
+let ``an impact launch selects the same tests with shadow trace selection on as with it off`` () =
+    let plain = fixture ()
+    let _, without = buildAndLaunch plain (owing "Lib.f" (verified plain))
+
+    let shadowed = fixtureWithTraces None (Some shadowWiring)
+    recordQuietTrace shadowed.Ctx.RepoRoot
+    let _, withShadow = buildAndLaunch shadowed (owing "Lib.f" (verified shadowed))
+
+    // Positive control: shadow ran, and disagreed with the static selection.
+    let reading = withShadow.TraceShadow |> List.exactlyOne
+
+    test
+        <@
+            reading.Comparison.StaticOnly = set
+                [ TestPrune.Trace.TraceIngest.testKey "ProjA" "ProjA.FreshTests" "covers f" ]
+        @>
+
+    // The pin: the launch is the one it would have been without shadow.
+    test <@ withShadow.Selection = without.Selection @>
+    test <@ withShadow.SelectedBy = without.SelectedBy @>
+    test <@ without.TraceShadow.IsEmpty @>

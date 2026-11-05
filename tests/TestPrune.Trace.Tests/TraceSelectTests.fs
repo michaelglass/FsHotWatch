@@ -148,3 +148,18 @@ let ``an empty universe is wholly complete, and a run where no rule fired says s
     let c = TraceSelect.compare [ "unkeyed" ] s
     test <@ c.StaticClasses = set [ "unkeyed" ] @>
     test <@ (TraceSelect.logLine s c 0L).Contains ", no rule fired, " @>
+
+[<Fact>]
+let ``a failed theory row is judged under its test's key, and a key naming no test is listed, not judged`` () =
+    let s = selectAll [ "P|C|unchanged"; "P|C|symbol" ]
+
+    let failed =
+        [ "P|C|unchanged(x: 1)" // a theory row of a test the trace left out
+          "P|C|symbol(x: 2)" // a theory row of a test the trace selected
+          "P|C|gone(x: 3)" // a theory row of a test outside the universe
+          "P|C|plain" // no argument list, outside the universe
+          "Q|D|other" ] // another project's failure
+
+    test <@ TraceSelect.verifiedFailureMisses s failed = [ "P|C|unchanged" ] @>
+    test <@ TraceSelect.unknownFailures s failed = [ "P|C|gone(x: 3)"; "P|C|plain" ] @>
+    test <@ TraceSelect.universeKeyOf s.Universe "P|C|unchanged" = Some "P|C|unchanged" @>

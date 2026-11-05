@@ -139,11 +139,39 @@ let compare (staticSelection: string list) (s: Selection) : Comparison =
       StaticClasses = st |> Set.map classOf
       TraceClasses = tr |> Set.map classOf }
 
-/// The failed tests trace selection left out: each failed while its trace said nothing it
-/// depends on changed. Keys outside the selection's universe are not judged.
+/// The universe key a failed row's key names: the key itself, or, for a theory row, whose
+/// reported method carries its arguments (`m(x: 1, y: "a")`), the key before that
+/// argument list. Only an existing universe key is ever returned, so a method whose own
+/// name holds parentheses still matches exactly. `None` when no universe key is named.
+let universeKeyOf (universe: Set<string>) (failedKey: string) : string option =
+    if universe.Contains failedKey then
+        Some failedKey
+    elif failedKey.EndsWith(")", StringComparison.Ordinal) then
+        failedKey
+        |> Seq.mapi (fun i c -> i, c)
+        |> Seq.filter (fun (_, c) -> c = '(')
+        |> Seq.map (fun (i, _) -> failedKey.Substring(0, i))
+        |> Seq.tryFind universe.Contains
+    else
+        None
+
+/// The failed tests trace selection left out, by universe key: each failed while its trace
+/// said nothing it depends on changed. A key no universe key names is not judged here;
+/// `unknownFailures` lists those.
 let verifiedFailureMisses (s: Selection) (failedKeys: string list) : string list =
     failedKeys
-    |> List.filter (fun k -> s.Universe.Contains k && not (s.Selected.ContainsKey k))
+    |> List.choose (universeKeyOf s.Universe)
+    |> List.filter (fun k -> not (s.Selected.ContainsKey k))
+    |> List.distinct
+    |> List.sort
+
+/// The failed keys of `s`'s project that name no key of its universe, so no miss can be
+/// judged for them. A caller says these out loud: dropping them silently would hide a miss
+/// behind a key mismatch.
+let unknownFailures (s: Selection) (failedKeys: string list) : string list =
+    failedKeys
+    |> List.filter (fun k -> k.StartsWith(s.TestProject + "|", StringComparison.Ordinal))
+    |> List.filter (universeKeyOf s.Universe >> Option.isNone)
     |> List.distinct
     |> List.sort
 

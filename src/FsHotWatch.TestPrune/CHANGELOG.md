@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: trace shadow records a failed theory row as a verified-failure miss under its test, and logs every
+  failed test whose key names no traced test instead of dropping it (AUTOMATION-975). A test now pins that
+  an impact launch selects the same tests with `tests.traces.select: "shadow"` as without it.
+
 - perf: a traced project's traces are stored as soon as its result is final, one project at a time,
   while the rest of the run goes on (`TraceIngestion`), instead of every project after the last one
   finished. The run waits at its end only for what is left, so a confirm's tail no longer grows by

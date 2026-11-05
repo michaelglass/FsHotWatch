@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: `TraceSelect.verifiedFailureMisses` judges a failed theory row under its test's key. A runner reports a
+  theory row's method with its arguments (`m(x: 1)`), which named no universe key, so the miss was dropped
+  without a word (AUTOMATION-975). New: `TraceSelect.universeKeyOf` (a key, or the key before a theory
+  row's argument list; only an existing universe key is returned) and `TraceSelect.unknownFailures` (the
+  failed keys of the project that name no universe key, for the caller to report).
+
 - perf: trace schema migration 3 stores a test's static-init scopes as one shared, per-run scope
   set (`trace_scope_sets`, `trace_scope_set_members`, `trace_tests.scope_set_id`) instead of a
   `trace_test_scopes` row each (AUTOMATION-1490). Those rows were 99% of the links. On a recorded
