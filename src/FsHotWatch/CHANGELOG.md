@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `RefAssemblyFreshness` says whether a project's published reference assembly is the one the
+  compiler last wrote, and repairs it (AUTOMATION-1498).
+
 ## 0.10.0-alpha.105 - 2026-11-04
 
 - Finish: AUTOMATION-1489 the wedge monitor reads the host's awake stamps, the age fshw status reads

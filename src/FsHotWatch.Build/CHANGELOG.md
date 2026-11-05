@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a stale published reference assembly (`obj/<cfg>/<tfm>/ref/`) is repaired and the build runs
+  again (AUTOMATION-1498). The F# compiler can leave the reference-assembly MVID unchanged across a
+  real API change, so MSBuild skips the copy and dependents compile against the old API: FS0003 on
+  correct code, or a dependent never recompiled. The plugin now copies `refint` over a stale `ref`
+  before a build, rebuilds once when the build itself left one stale, refuses a build that still
+  leaves one, and never replays a cached result over one. ADR-065.
+
 ## 0.7.0-alpha.53 - 2026-11-02
 
 - feat: `build-status` and `force-rebuild` declare their reply schemas (`build/build-status-v1`,

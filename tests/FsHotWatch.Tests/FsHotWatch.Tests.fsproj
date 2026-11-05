@@ -240,6 +240,7 @@
     <Compile Include="SafeWalkTests.fs" />
     <Compile Include="ProjectGraphTests.fs" />
     <Compile Include="OutputCopyFreshnessTests.fs" />
+    <Compile Include="RefAssemblyFreshnessTests.fs" />
     <Compile Include="DepsFreshnessTests.fs" />
     <Compile Include="CheckPipelineTests.fs" />
     <Compile Include="CheckPipelineCancellationTests.fs" />

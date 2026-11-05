@@ -46,6 +46,7 @@
     <Compile Include="IntegrationTests.fs" />
     <Compile Include="CheckRecordsRestartTests.fs" />
     <Compile Include="OutputIdentityBuildTests.fs" />
+    <Compile Include="RefAssemblyBuildTests.fs" />
     <Compile Include="CrossTmpdirDaemonTests.fs" />
   </ItemGroup>
 
