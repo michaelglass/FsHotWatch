@@ -644,7 +644,11 @@ let ``the fold after a declaration longer than the stall threshold is not instan
         )
 
         host.EmitBuildCompleted(BuildSucceeded)
-        test <@ waitUntilTrue (fun () -> host.AnyPluginBusy()) HangWaitMs @>
+        // Wait for the DECLARATION, not for the event to be owned: the host is busy from
+        // admission, before the fold has entered `DeclareBoundedWork`, and a detector that
+        // samples a busy host with nothing declared yet, across the advance below, calls
+        // it stalled (seen in a loaded gate 11-05).
+        test <@ waitUntilTrue (fun () -> host.WorkSnapshot.SupervisedWorkInFlight) HangWaitMs @>
 
         let threshold = TimeSpan.FromSeconds 2.0
 

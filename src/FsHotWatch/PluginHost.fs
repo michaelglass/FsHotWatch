@@ -729,6 +729,22 @@ type PluginHost
         | Some(Running since) -> this.AwakeAgeOf(pluginName, since)
         | _ -> None
 
+    /// Every Running plugin with the time its run began on the awake clock: the stamps the
+    /// status reply's ages are read from, so the wedge monitor that judges these and
+    /// `fshw status` read one age. Statuses are read before stamps, and a stamp is written
+    /// before its status is published, so a Running plugin always has one; at worst it is
+    /// a newer run's, which is younger.
+    member _.RunningAwakeStarts() : (string * System.DateTime) list =
+        let running = readStatuses ()
+        let stamps = System.Threading.Volatile.Read(&runningAwake)
+
+        running
+        |> Map.toList
+        |> List.choose (fun (name, status) ->
+            match status, Map.tryFind name stamps with
+            | Running _, Some(_, startedAt) -> Some(name, startedAt)
+            | _ -> None)
+
     /// Test seam: hold the status write lock on another thread until `release` is set,
     /// and return once it is held — a writer that cannot finish, for proving that reads
     /// do not wait for one.

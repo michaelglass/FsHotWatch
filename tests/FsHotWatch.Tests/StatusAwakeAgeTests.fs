@@ -97,9 +97,9 @@ let ``an older daemon's reply, with no awake age, is judged on the wall age, whi
 
 /// A host on `clock`'s awake time, with one plugin, `build`, that reports `Running`
 /// stamped on the clock's wall time each time a file changes.
-let private hostOn (clock: ManualClock) =
+let private hostOnWith (awakeNow: unit -> DateTime) (clock: ManualClock) =
     let host =
-        PluginHost.PluginHost(Unchecked.defaultof<_>, "/tmp", awakeNow = HostClock.awakeUtcOn clock.Clock)
+        PluginHost.PluginHost(Unchecked.defaultof<_>, "/tmp", awakeNow = awakeNow)
 
     host.RegisterHandler(
         { Name = PluginName.create "build"
@@ -121,6 +121,9 @@ let private hostOn (clock: ManualClock) =
     )
 
     host
+
+let private hostOn (clock: ManualClock) =
+    hostOnWith (HostClock.awakeUtcOn clock.Clock) clock
 
 /// Start a run of `build` and wait until the host holds its `Running`, stamped at the
 /// clock's current wall time.
@@ -257,3 +260,71 @@ let ``a Running reported again with the same since keeps its age, so re-reportin
     test <@ host.RunningAwakeAge "build" = Some(TimeSpan.FromHours 1.0) @>
     // A `since` that is not the plugin's current interval has no age.
     test <@ host.AwakeAgeOf("build", Origin + TimeSpan.FromDays 1.0) = None @>
+
+// --- the daemon's own wedge monitor reads the same age ---
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the wedge monitor and fshw status judge one awake age, with no lag between them`` () =
+    let clock = ManualClock()
+    let now = HostClock.awakeUtcOn clock.Clock
+    let host = hostOnWith now clock
+    // The monitor is made with the daemon, before any run, as in production.
+    let running = PluginWedge.monitoredRunning host
+    let wedgeBound = TimeSpan.FromSeconds 30.0
+    clock.AdvanceSeconds 20.0
+    test <@ List.isEmpty (running ()) @>
+    startRun host clock
+    // 10 s into the run the box sleeps a day, and wakes for 10 s more: 20 s of awake time.
+    clock.AdvanceSeconds 10.0
+    clock.Suspend(TimeSpan.FromDays 1.0)
+    clock.AdvanceSeconds 10.0
+
+    let judge () =
+        let monitorAge =
+            match running () with
+            | [ "build", started ] -> now () - started
+            | other -> failwith $"%A{other}"
+
+        let statusAge =
+            match (snd (replyOf host)).Status with
+            | StatusView.Running(_, Some age) -> age
+            | other -> failwith $"%A{other}"
+
+        let monitorDeclares =
+            PluginWedge.decideTick
+                wedgeBound
+                wedgeBound
+                (TimeSpan.FromMinutes 5.0)
+                { Now = now ()
+                  RunningPlugins = running ()
+                  QueuedResults = []
+                  AnyBusy = true
+                  LastActivityAt = now () }
+                Map.empty
+            |> fst
+            |> List.exists (function
+                | PluginWedge.TickAction.DeclareWedged _ -> true
+                | _ -> false)
+
+        let statusSays =
+            match PluginWedge.classifyAge wedgeBound Origin statusAge with
+            | PluginWedge.RunningHealth.Wedged _ -> true
+            | PluginWedge.RunningHealth.StillRunning _ -> false
+
+        monitorAge, statusAge, monitorDeclares, statusSays
+
+    // The first look after the sleep: both read 20 s, and neither calls it wedged.
+    test <@ judge () = (TimeSpan.FromSeconds 20.0, TimeSpan.FromSeconds 20.0, false, false) @>
+    // One millisecond under the bound, then at it: they cross together.
+    clock.Advance(TimeSpan.FromSeconds 10.0 - TimeSpan.FromMilliseconds 1.0)
+
+    test
+        <@
+            judge () = (wedgeBound - TimeSpan.FromMilliseconds 1.0,
+                        wedgeBound - TimeSpan.FromMilliseconds 1.0,
+                        false,
+                        false)
+        @>
+
+    clock.Advance(TimeSpan.FromMilliseconds 1.0)
+    test <@ judge () = (wedgeBound, wedgeBound, true, true) @>

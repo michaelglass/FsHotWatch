@@ -199,14 +199,16 @@ type TickInputs =
         LastActivityAt: DateTime
     }
 
-/// Start stamps taken on the wall clock (a `Running` status, a queued result), each
-/// re-read once on the awake clock, so a sleep of the box never counts toward a wedge
-/// (AUTOMATION-1488).
+/// Start stamps taken on the wall clock (a queued result), each re-read once on the awake
+/// clock, so a sleep of the box is not counted whole (AUTOMATION-1488). Running plugins no
+/// longer go through it: the monitor reads the host's own stamps (`monitoredRunning`).
 ///
 /// A stamp seen for the first time is given the awake age it can have had: its wall age,
 /// but no more than the awake time since the previous read, because it was not there
-/// then. That is exact when the box did not sleep, and errs short (a later wedge, never a
-/// false one) when it did. Once anchored, a stamp keeps its awake stamp, so its age grows
+/// then. That is exact when the box did not sleep. When it did, the age is bounded by the
+/// awake time since the previous read, which can include awake time from before the stamp:
+/// a stamp 20 s old after a sleep, first seen 40 s of awake time after the previous read,
+/// reads as 40 s (AUTOMATION-1489). Once anchored, a stamp keeps its awake stamp, so its age grows
 /// only with awake time. A stamp no longer listed is forgotten.
 ///
 /// `awakeNow` is the awake clock as a `DateTime` (`HostClock.awakeUtcOn`), so the stamps
@@ -253,6 +255,17 @@ type internal AwakeAnchors(clock: HostClock.Clock, awakeNow: unit -> DateTime, s
 
     /// The awake clock these stamps are read against.
     member _.Now() : DateTime = awakeNow ()
+
+/// The Running plugins the wedge monitor judges, each with the time its run began on the
+/// host's awake clock, which the monitor's `Now` must read too (`HostClock.awakeUtc` in
+/// production).
+///
+/// They are the host's own stamps (`PluginHost.RunningAwakeStarts`), the ones the status
+/// reply's `awakeElapsedMs` is read from, so the daemon restarts itself over a wedge at the
+/// same awake age at which `fshw status` and the verdict call it WEDGED (AUTOMATION-1489).
+/// `AwakeAnchors` re-read wall-clock stamps a tick later, and could not see when a run
+/// began inside an interval that held a sleep: a run 20 s old after a sleep read as 40 s.
+let internal monitoredRunning (host: PluginHost.PluginHost) : unit -> (string * DateTime) list = host.RunningAwakeStarts
 
 /// Escalation bucket: how many whole `escalateEvery` intervals have elapsed.
 /// A plugin logs one escalation line per bucket, not one per tick.
