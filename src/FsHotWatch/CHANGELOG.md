@@ -7,6 +7,11 @@
   exceeded 256 MB (about 120 KB a file over 2731 files), so a cold daemon's own GC evicted the
   first analyses it had filed, then the check records. A fresh workspace demanded those files
   live, and no log said why (AUTOMATION-1506).
+- fix: supervised work whose owner was cancelled before it returned no longer completes Ok. `Queue.Close`
+  cancels a live request with `CancelAsync`, which marks the owner at once but cancels the work's
+  linked token from a pool callback; a work that returned before that callback ran was accepted, so
+  a closed queue's receipt could succeed. `execute` now checks the owner's token as well
+  (AUTOMATION-1509).
 - feat: shared task-cache namespaces nothing uses are reclaimed. Opening a repository's stores (the
   daemon, `fshw invalidate`) marks its namespace used and removes, at most 64 per pass, the others
   that are empty after a day or unused for 30 days. Before, nothing removed one, and a harness that

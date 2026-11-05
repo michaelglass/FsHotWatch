@@ -122,7 +122,8 @@ let declare
 /// - `finish` receives the outcome after the work and its children are torn down, while
 ///   the deadline is still armed. It is given the deadline's release, so completion
 ///   notification stays covered by the deadline until `finish` releases it.
-/// - A work token cancelled for any reason refuses a successful outcome.
+/// - A work token cancelled for any reason refuses a successful outcome, and so does `ct`
+///   cancelled before the work returned, even while its link to the work token is pending.
 let execute
     (name: string)
     (deadline: TimeSpan)
@@ -170,6 +171,10 @@ let execute
                                     (async {
                                         cancellation.Token.ThrowIfCancellationRequested()
                                         let! result = work cancellation.Token
+                                        // The owner too: `CancelAsync` marks `ct` at once but cancels this
+                                        // linked source from a pool callback, which may not have run yet
+                                        // (AUTOMATION-1509).
+                                        ct.ThrowIfCancellationRequested()
                                         cancellation.Token.ThrowIfCancellationRequested()
                                         return result
                                     })
