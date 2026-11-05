@@ -308,22 +308,32 @@ let internal beginRun
     emitStarted started
 
     // The tree this run's receipt binds to: re-read once `beforeRun` has done its
-    // generating, so its own output does not count as an edit made mid-run.
-    let boundTree =
+    // generating, so its own output does not count as an edit made mid-run. `settled`
+    // says whether that is the tree the tests run against: no `beforeRun`, or one that
+    // moved nothing a build compiles. Test evidence is keyed only over a settled tree.
+    let boundTree, settled =
         match beforeRun with
         | Some setup ->
             Logging.info "test-prune" "Running beforeRun setup..."
             setup runId trackHookStep
             Logging.info "test-prune" "beforeRun complete"
 
+            let afterSetup = ReceiptInputTree.readTree repoRoot
+
             let binding, why =
-                ReceiptInputTree.afterBeforeRun (feedsCompile ()) launchTree (ReceiptInputTree.readTree repoRoot)
+                ReceiptInputTree.afterBeforeRun (feedsCompile ()) launchTree afterSetup
 
             why |> Option.iter (Logging.info "test-prune")
-            binding
-        | None -> launchTree
 
-    traces, started, boundTree
+            let settled =
+                match binding, afterSetup with
+                | Some bound, Some after -> bound.Identity = after.Identity
+                | _ -> false
+
+            binding, settled
+        | None -> launchTree, true
+
+    traces, started, boundTree, settled
 
 /// Conclude a run whose groups have all finished: record flakiness, ingest its traces,
 /// tidy the run directories, stop the clock and close the primary subtask, and build the
@@ -449,10 +459,12 @@ let internal executeTests
     // (`buildExcludeArgs`). Empty for every run that skips nothing.
     (excludedClassesByProject: Map<string, string list>)
     (rawFilter: string option)
-    // The test-evidence plan made at launch (`TestEvidenceRun.plan`): the projects this
-    // run reuses instead of launching, and every key it publishes against. `None` runs
-    // every selected project exactly as it would without a store.
-    (evidence: TestEvidenceRun.Plan option)
+    // Makes the test-evidence plan (`TestEvidenceRun.plan`): the projects this run reuses
+    // instead of launching, and every key it publishes against. Called once `beforeRun` has
+    // settled the tree, so a key names the tree the tests run against (AUTOMATION-1510).
+    // `None`, or a plan of `None`, runs every selected project exactly as it would without
+    // a store.
+    (evidencePlan: (unit -> TestEvidenceRun.Plan option) option)
     =
     async {
         Logging.info "test-prune" $"executeTests starting with %d{configs.Length} configs"
@@ -471,7 +483,7 @@ let internal executeTests
         | :? UnauthorizedAccessException as ex ->
             Logging.warn "test-prune" $"could not create the run directory %s{runDir}: %s{ex.Message}"
 
-        let traces, started, boundTree =
+        let traces, started, boundTree, settled =
             beginRun
                 ctx
                 traces
@@ -487,6 +499,20 @@ let internal executeTests
                 feedsCompile
                 launchTree
                 trackHookStep
+
+        // TEST EVIDENCE: keyed now, over the tree the tests are about to run against. A
+        // `beforeRun` that moved a compile input left binaries older than that tree, so no
+        // key names what they run: such a run neither reuses nor publishes.
+        let evidence =
+            match evidencePlan with
+            | None -> None
+            | Some planOf when settled -> planOf ()
+            | Some _ ->
+                Logging.info
+                    "test-prune"
+                    "test evidence: none reused or published — beforeRun moved a compile input, so the tests run against a tree they were not built from"
+
+                None
 
         let testHostStartedAt = DateTime.UtcNow
 

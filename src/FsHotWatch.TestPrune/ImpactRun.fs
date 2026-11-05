@@ -200,7 +200,7 @@ let internal runTestsWithImpactWith
                         affectedByProject
                         excludedByProject
                         None
-                        evidencePlan
+                        (Some evidencePlan)
 
                 // `executeTests` emits Started before launching the host and still
                 // emits per-group TestProgress live; the synchronous handler captures

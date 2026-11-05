@@ -4,10 +4,11 @@
 /// publish for others.
 ///
 /// Every rule here can only WIDEN what runs. A project is reused only when its key,
-/// computed before the run touched anything, matches an entry a real full-project green
-/// wrote; it stays reused only when the key still matches at completion. A green is
-/// published only when the project ran in full, every test passed on its first attempt,
-/// every artifact the gate grades exists, and the key held still for the whole run.
+/// computed once `beforeRun` has settled the tree and before any test ran, matches an
+/// entry a real full-project green wrote; it stays reused only when the key still matches
+/// at completion. A green is published only when the project ran in full, every test
+/// passed on its first attempt, every artifact the gate grades exists, and the key held
+/// still for the whole run.
 module FsHotWatch.TestPrune.TestEvidenceRun
 
 open System
@@ -131,7 +132,7 @@ type Plan =
         /// launch. The completion re-key uses the same lookup.
         OptionsHash: string -> string option
         Candidates: Candidate list
-        /// Each candidate's key before the run touched the tree.
+        /// Each candidate's key over the settled tree, before any test ran.
         LaunchKeys: Map<string, Result<TestEvidenceKey.Key, string>>
         /// The projects this run does not launch, and the entry each reuses.
         Reused: Map<string, TestEvidenceStore.Entry>

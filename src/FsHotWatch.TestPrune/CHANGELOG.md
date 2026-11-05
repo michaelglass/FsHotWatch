@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: test evidence is keyed once `beforeRun` has run, over the tree the tests run against (AUTOMATION-1510).
+  A `beforeRun` that generates a file the tests read (a bundle) moved every key it covered while the run was in
+  flight, so a fresh checkout's first run published nothing and the next fresh checkout looked up a key no run
+  ever filed. A `beforeRun` that moves a compile input leaves binaries older than the tree, so that run neither
+  reuses nor publishes evidence, and the log says so.
+
 - feat: a fresh checkout's first test run reuses byte-identical test evidence (AUTOMATION-1508). A run owed a
   full-suite baseline now looks every project up in the box-wide evidence store and launches only the ones that
   miss. A full-suite run whose every project either ran or held its reuse at completion earns the baseline,
