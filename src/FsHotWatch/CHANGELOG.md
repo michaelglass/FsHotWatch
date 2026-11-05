@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: a restart after an edit that keeps a file's API signature checks only that file (AUTOMATION-1507,
+  ADR-059 §14's early cutoff). A scan declares the checks it dispatches (`CheckPipeline.ExpectChecks`,
+  `EndExpectedChecks`). A file whose check record misses only because an earlier file of its project has
+  none waits for that file's check, then looks again with the earlier file named by the API signature it
+  just declared, read from the pipeline's pending checks before anything is filed. The projects downstream
+  are keyed the same way. Before, every later file and every dependent was checked in FCS at once, though
+  their records were on file. An edit that changes the signature still re-checks the files after it, and a
+  scan with no records waits for nothing. `CheckRecords.Walk` takes an optional memo of store reads.
+
 - feat: shared task-cache namespaces nothing uses are reclaimed. Opening a repository's stores (the
   daemon, `fshw invalidate`) marks its namespace used and removes, at most 64 per pass, the others
   that are empty after a day or unused for 30 days. Before, nothing removed one, and a harness that

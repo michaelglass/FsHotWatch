@@ -179,16 +179,33 @@ type Filer = FSharpProjectOptions -> string -> ActionKey.ActionKey -> CheckOutpu
 
 /// One pass over the canonical chains of some projects: each project's chain is computed
 /// once per walk, a referenced project's before the project that references it.
+///
+/// `reads`, when given, remembers what the store answered for each key, for walks that are
+/// taken again and again over the same records (a restart's early cutoff, AUTOMATION-1507).
+/// A record is immutable, so a remembered hit stays true; a remembered miss can only cost
+/// a check, and whoever files a record clears the memo.
 type Walk
-    (store: OutcomeStore.Store, toolchain: string, repoRoot: string option, hashFile: string -> string, filer: Filer) =
+    (
+        store: OutcomeStore.Store,
+        toolchain: string,
+        repoRoot: string option,
+        hashFile: string -> string,
+        filer: Filer,
+        ?reads: Collections.Concurrent.ConcurrentDictionary<string, CheckOutputs option>
+    ) =
     let relativize = relativizeOption repoRoot
     let outputIdentity = OutputIdentity.identity repoRoot hashFile
     let chains = Dictionary<string, FileRecord list * string>()
 
-    let lookup (key: ActionKey.ActionKey) =
+    let read (key: ActionKey.ActionKey) =
         store.LookupWithOutputs key
         |> Option.bind snd
         |> Option.bind (CheckOutputs.tryOfJson repoRoot)
+
+    let lookup (key: ActionKey.ActionKey) =
+        match reads with
+        | Some reads -> reads.GetOrAdd(key.Value.Text, fun _ -> read key)
+        | None -> read key
 
     let rec chain (opts: FSharpProjectOptions) : FileRecord list * string =
         let optionsHash = getProjectOptionsHashRelativeTo repoRoot opts
