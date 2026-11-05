@@ -49,7 +49,32 @@ type private ProjectRatchetCoverageMapping =
       Ingested: int
       Skipped: int }
 
+/// A ratchet table an older fshw created keyed on `symbol_id`, with no `occurrence_id`. A
+/// TestPrune.Core schema bump rebuilds only core's own tables, so the table outlives the
+/// upgrade, and `CREATE TABLE IF NOT EXISTS` would leave it as it is: every later run then
+/// aborts on "no such column: occurrence_id" (AUTOMATION-1434). Its rows name ids the core
+/// rebuild renumbered, so none of them can be kept: drop it, and let the next coverage run
+/// earn the points again. The table's shape is the evidence; its metadata row says
+/// schema 1 in both shapes.
+let private dropOutdatedProjectRatchetCoverageTable (conn: Microsoft.Data.Sqlite.SqliteConnection) =
+    use probe = conn.CreateCommand()
+
+    probe.CommandText <-
+        $"""SELECT EXISTS (SELECT 1 FROM pragma_table_info('%s{ProjectRatchetCoverageTable}'))
+                   AND NOT EXISTS (SELECT 1 FROM pragma_table_info('%s{ProjectRatchetCoverageTable}')
+                                   WHERE name = 'occurrence_id');"""
+
+    if Convert.ToInt64(probe.ExecuteScalar(), CultureInfo.InvariantCulture) = 1L then
+        Logging.warn
+            "test-prune"
+            $"%s{ProjectRatchetCoverageTable} has an older fshw's shape (no occurrence_id); dropping it, so the ratchet coverage is earned again by the next coverage run"
+
+        use drop = conn.CreateCommand()
+        drop.CommandText <- $"DROP TABLE %s{ProjectRatchetCoverageTable};"
+        drop.ExecuteNonQuery() |> ignore
+
 let private ensureProjectRatchetCoverageTable (conn: Microsoft.Data.Sqlite.SqliteConnection) =
+    dropOutdatedProjectRatchetCoverageTable conn
     use cmd = conn.CreateCommand()
 
     cmd.CommandText <-
