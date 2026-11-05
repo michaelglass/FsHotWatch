@@ -539,6 +539,9 @@ let private recordQuietTrace (root: string) =
             ScopeKeys = [ "T:1" ] } ]
     )
 
+    // Lib.f is probed: a change to it is one traces can verify, so R6 does not walk it.
+    store.RecordSymbolFacts("ProjA", "E", TestPrune.Trace.TraceStore.ProbedFact, [ "Lib.f" ])
+
 [<Fact(Timeout = 30000)>]
 let ``an impact launch selects the same tests with shadow trace selection on as with it off`` () =
     let plain = fixture ()

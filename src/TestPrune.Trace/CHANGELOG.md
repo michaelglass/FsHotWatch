@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- feat: trace selection rules R6 and R7 (AUTOMATION-975). `TraceSelect.withFallbacks` adds, for each changed
+  seed traces cannot verify (`fallReason`: order-unstable, static-init only, literal, inline, not probed),
+  the tests the static walk from it reaches (R6), and for changed files that are neither indexed sources nor
+  claimed by a trace input (a read, or a `list`/`list-deep` of a directory above it), what the static file
+  rules select (R7; every test when they answer "run all"). It never removes a selected test.
+- feat: ingestion records symbol facts per project and fingerprint (`trace_symbol_facts`, trace schema
+  migration 5): the symbols the weave probes (replaced each run), symbols run only by type initializers no test
+  inherited, and order-unstable symbols (`TraceIngest.detectUnstable`: a trace that changed while nothing it
+  ran or read did). `IngestSummary.UnstableSymbols` counts them. A shadow row stores its fallback seeds.
+- BREAKING (API): `TraceSelect.Rule` gains `StaticFallback` and `UntracedInput`; `Selection.FallbackSeeds`;
+  `ShadowRow.FallbackSeeds`; `IngestSummary.UnstableSymbols`. New: `Store.RecordSymbolFacts`,
+  `Store.SymbolFacts`, `Store.ClaimedInputs`.
+
 - feat: a shadow row records what it measured (AUTOMATION-975): the run kind (`impact` or `full`), the
   recording policy, eligibility (`TraceSelect.EligibilityThreshold`, 0.99 of the universe with a complete
   trace), the fingerprint the run recorded under and its outcome against the one shadow read (`hit`,

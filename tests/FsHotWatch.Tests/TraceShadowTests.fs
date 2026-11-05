@@ -80,6 +80,7 @@ let private launch root select (lines: ResizeArray<string>) =
         (fun p -> if p = "P" then universe else [])
         (lazy versions)
         [ test' "C" "a" ]
+        ShadowFallbacks.none
         lines.Add
 
 [<Fact>]
@@ -458,3 +459,50 @@ let ``a row records the run's recording policy, and a checkout with no trace dat
         use store = Store.Open(Path.Combine(root, "shadow.db"))
         let row = store.ShadowRows "P" |> List.exactlyOne
         test <@ row.RecordPolicy = "full-runs" && row.FingerprintOutcome = NotTraced @>)
+
+// --- R6 and R7 at launch (AUTOMATION-975) -------------------------------------------------
+
+[<Fact>]
+let ``at launch a seed no probe represents selects what the static walk reaches, and the row names it`` () =
+    withStore (fun root ->
+        let lines = ResizeArray<string>()
+        let walked = ResizeArray<string list>()
+
+        let fallbacks =
+            { ShadowFallbacks.none with
+                Seeds = [ "N.unprobed" ]
+                StaticWalk =
+                    fun seeds ->
+                        walked.Add seeds
+                        [ test' "C" "a" ] }
+
+        let reading =
+            TraceShadow.atLaunch
+                (settings SelectShadow)
+                root
+                [ "P" ]
+                (fun _ -> universe)
+                (lazy versions)
+                [ test' "C" "a" ]
+                fallbacks
+                lines.Add
+            |> List.exactlyOne
+
+        test <@ List.ofSeq walked = [ [ "N.unprobed" ] ] @>
+
+        test <@ reading.Selection.Selected.["P|C|a"] = [ TraceSelect.StaticFallback TraceSelect.NotProbed ] @>
+
+        // The static selection's test is no longer a static-only extra.
+        test <@ reading.Comparison.StaticOnly.IsEmpty @>
+        test <@ lines.[0].Contains "R6 1" @>
+        TraceShadow.atCompletion (settings SelectShadow) root [ reading ] "run-6" (fun _ -> false) (Some []) lines.Add
+        use store = Store.Open(Path.Combine(root, "shadow.db"))
+        test <@ (store.ShadowRows "P" |> List.exactlyOne).FallbackSeeds = Map [ "N.unprobed", "not-probed" ] @>)
+
+[<Fact>]
+let ``fallback inputs that add nothing walk to nothing, select no file and index no file`` () =
+    let none = ShadowFallbacks.none
+    test <@ none.Seeds.IsEmpty && none.ChangedFiles.IsEmpty @>
+    test <@ none.StaticWalk [ "N.f" ] |> List.isEmpty @>
+    test <@ none.FileFallback [ "a.json" ] = Some [] @>
+    test <@ not (none.IsIndexed "src/A.fs") && none.AttributesOf "N.f" |> List.isEmpty @>

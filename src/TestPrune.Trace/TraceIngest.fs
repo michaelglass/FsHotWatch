@@ -73,6 +73,8 @@ type IngestSummary =
         CpuMs: int64
         /// Distinct executed probe ids that mapped to neither a symbol nor a file.
         UnmappedIds: int
+        /// Symbols this ingestion found order-unstable (`detectUnstable`).
+        UnstableSymbols: int
     }
 
 /// The `stats_json` of a recorded run. Field names are the serialized names; the type is
@@ -199,10 +201,9 @@ let private validate (idCount: int) (d: ProcessDump) : Result<ProcessDump, strin
 
 /// The effects of every probe id: its joined symbol or file-level entry, plus the reason
 /// its source document makes it incomplete.
-let private effectsOf (req: IngestRequest) : Effect list[] * bool[] =
+let private effectsOf (req: IngestRequest) (versions: Map<string, string>) : Effect list[] * bool[] * string list =
     let manifest = req.Shadow.Manifest
     let targets = joinManifest (ofStore req.Symbols req.RepoRoot) manifest
-    let versions = versionHashes req.Symbols
 
     let docState =
         manifest.Documents
@@ -252,7 +253,15 @@ let private effectsOf (req: IngestRequest) : Effect list[] * bool[] =
         effects.[row.Id] <- drift @ joined
         unmapped.[row.Id] <- isUnmapped
 
-    effects, unmapped
+    let probed =
+        targets
+        |> Seq.choose (function
+            | ToSymbol n -> Some n
+            | _ -> None)
+        |> Seq.distinct
+        |> List.ofSeq
+
+    effects, unmapped, probed
 
 /// The hash of a directory's entries (paths relative to it, '/'-separated, sorted), or
 /// "absent" when it does not exist.
@@ -333,6 +342,27 @@ let private unknownInputs (inputs: RecordedInput list) =
         | UnknownInputKind kind -> Some(UnknownInput kind)
         | _ -> None)
 
+/// Symbols that appeared in or vanished from a test's trace although nothing the test ran
+/// or read changed: every symbol of the old trace still has the version it was recorded at,
+/// the inputs are identical, and both traces are complete. A deterministic test runs the
+/// same code then, so a difference is order or memoisation (a factory only the first test
+/// to force it records). Those symbols are a fallback class for selection (R6).
+let detectUnstable
+    (currentVersions: Map<string, string>)
+    (old: StoredTrace)
+    (newSymbols: Set<string * string>)
+    (newInputs: Set<string * string * string>)
+    (newComplete: bool)
+    : Set<string> =
+    let unchanged =
+        old.Symbols |> Set.forall (fun (n, h) -> currentVersions.TryFind n = Some h)
+
+    if not (old.Complete && newComplete && unchanged && old.Inputs = newInputs) then
+        Set.empty
+    else
+        let o, n = Set.map fst old.Symbols, Set.map fst newSymbols
+        Set.union (Set.difference o n) (Set.difference n o)
+
 let private summaryOf status reason (executed: string list) counters rejected cpu =
     { Status = status
       Reason = reason
@@ -345,7 +375,8 @@ let private summaryOf status reason (executed: string list) counters rejected cp
       Counters = counters
       RejectedDumps = rejected
       CpuMs = cpu
-      UnmappedIds = 0 }
+      UnmappedIds = 0
+      UnstableSymbols = 0 }
 
 /// Ingest one traced run of one test project into `store`. A run with an empty weave set
 /// is stored `refused`; a run with no usable main-process dump is stored `failed` with no
@@ -431,7 +462,8 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
                     req.Shadow.WeaveTests
             )
 
-        let effects, unmappedId = effectsOf req
+        let versions = versionHashes req.Symbols
+        let effects, unmappedId, probed = effectsOf req versions
         let merged = RunScopes.merged dumps
 
         let tracedChildren =
@@ -572,6 +604,33 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
             else
                 Recorded
 
+        // Order-unstable symbols: read each test's previous trace before this run replaces it.
+        let unstable =
+            traces
+            |> List.collect (fun t ->
+                match store.TryRead(t.TestKey, fp) with
+                | None -> []
+                | Some old ->
+                    let content = t.ScopeKeys |> List.map (fun k -> fst contents.[k])
+
+                    detectUnstable
+                        versions
+                        old
+                        (content |> List.collect _.Symbols |> Set.ofList)
+                        (content |> List.collect _.Inputs |> Set.ofList)
+                        t.Reasons.IsEmpty
+                    |> Set.toList)
+            |> List.distinct
+
+        // Symbols run only by type initializers no test of this run inherited: no trace
+        // names them, so a change to one is verified by nothing but the static walk.
+        let staticInitOnly =
+            contents
+            |> Map.toList
+            |> List.filter (fun (k, _) -> RunScopes.isStaticInit k && not (linkedScopes.Contains k))
+            |> List.collect (fun (_, (content, _)) -> content.Symbols |> List.map fst)
+            |> List.distinct
+
         store.RecordRun(run fp status "" (JsonSerializer.Serialize stats), scopes, traces)
 
         store.CollectGarbage(
@@ -581,6 +640,10 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
              | FullRun -> Some(traces |> List.map (fun t -> t.TestKey) |> Set.ofList)
              | PartialRun -> None)
         )
+
+        store.RecordSymbolFacts(req.TestProject, fp, ProbedFact, probed)
+        store.RecordSymbolFacts(req.TestProject, fp, StaticInitFact, staticInitOnly)
+        store.RecordSymbolFacts(req.TestProject, fp, UnstableFact, unstable)
 
         { Status = status
           Reason = ""
@@ -597,4 +660,5 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
           Counters = counters
           RejectedDumps = rejected
           CpuMs = cpu
-          UnmappedIds = unmappedIds }
+          UnmappedIds = unmappedIds
+          UnstableSymbols = unstable.Length }

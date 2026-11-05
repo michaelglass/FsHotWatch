@@ -25,6 +25,34 @@ type ShadowReading =
         SelectMs: int64
     }
 
+/// What R6 and R7 read at launch beside the traces, from the static selection's own inputs.
+type ShadowFallbacks =
+    {
+        /// The seeds the static selection walked from.
+        Seeds: string list
+        /// The files changed since the last run, repo-relative.
+        ChangedFiles: string list
+        /// The static walk from seeds (the static selection's own query).
+        StaticWalk: string list -> TestMethodInfo list
+        /// The static file rules over changed files; `None` selects every test.
+        FileFallback: string list -> TestMethodInfo list option
+        /// Whether a file is an indexed source.
+        IsIndexed: string -> bool
+        /// A symbol's attribute names in the index.
+        AttributesOf: string -> string list
+    }
+
+/// Fallback inputs that add nothing: no seed and no changed file.
+[<RequireQualifiedAccess>]
+module ShadowFallbacks =
+    let none: ShadowFallbacks =
+        { Seeds = []
+          ChangedFiles = []
+          StaticWalk = fun _ -> []
+          FileFallback = fun _ -> Some []
+          IsIndexed = fun _ -> false
+          AttributesOf = fun _ -> [] }
+
 [<RequireQualifiedAccess>]
 module TraceShadow =
     /// The trace key of an indexed test: the compiled method name xUnit reports.
@@ -60,6 +88,7 @@ module TraceShadow =
         (universe: TestMethodInfo list)
         (versions: Lazy<Map<string, string>>)
         (staticSelection: TestMethodInfo list)
+        (fallbacks: ShadowFallbacks)
         (project: string)
         (run: TraceStore.TraceRun)
         : ShadowReading =
@@ -72,6 +101,15 @@ module TraceShadow =
                 (fun key -> store.TryRead(key, run.EnvFingerprint))
                 versions.Value.TryFind
                 (TraceIngest.currentInputHash repoRoot)
+            |> TraceSelect.withFallbacks
+                { Seeds = fallbacks.Seeds
+                  ChangedFiles = fallbacks.ChangedFiles
+                  Facts = store.SymbolFacts(project, run.EnvFingerprint)
+                  ClaimedInputs = store.ClaimedInputs(project, run.EnvFingerprint)
+                  IsIndexed = fallbacks.IsIndexed
+                  AttributesOf = fallbacks.AttributesOf
+                  StaticWalk = fallbacks.StaticWalk >> List.map keyOf
+                  FileFallback = fallbacks.FileFallback >> Option.map (List.map keyOf) }
 
         let staticKeys =
             staticSelection
@@ -95,6 +133,7 @@ module TraceShadow =
         (universeOf: string -> TestMethodInfo list)
         (versions: Lazy<Map<string, string>>)
         (staticSelection: TestMethodInfo list)
+        (fallbacks: ShadowFallbacks)
         (log: string -> unit)
         : ShadowReading list =
         match settings.Select with
@@ -106,7 +145,9 @@ module TraceShadow =
                     |> List.choose (fun project ->
                         store.Runs project
                         |> List.tryFind (fun r -> r.Status = TraceStore.Recorded)
-                        |> Option.map (readingOf store repoRoot (universeOf project) versions staticSelection project))
+                        |> Option.map (
+                            readingOf store repoRoot (universeOf project) versions staticSelection fallbacks project
+                        ))
                     |> List.map (fun r ->
                         log (TraceSelect.logLine r.Selection r.Comparison r.SelectMs)
                         r))
