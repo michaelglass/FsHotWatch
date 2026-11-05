@@ -1356,6 +1356,14 @@ type private ScanSignalMsg =
     /// programming bugs instead of swallowing them.
     | RaiseFaultForTest of exn
 
+/// The failure a settled, unsuccessful scan receipt stands for. One cancelled rather than
+/// failed carries no exception of its own, so it stands for its cancellation; reading
+/// its `Exception` crashed the scan-signal agent and left every later waiter hanging.
+let private scanFailure (settled: Task<unit>) : exn =
+    match settled.Exception with
+    | null -> OperationCanceledException "the scan request was cancelled before it settled" :> exn
+    | failure -> failure.GetBaseException()
+
 /// Wakes `WaitForScan` callers. A waiter bound to a scan request resolves when that
 /// request settles, and receives its failure if it fails, instead of hanging on a
 /// generation that request will never produce. An unbound waiter resolves when the scan
@@ -1403,9 +1411,9 @@ type ScanSignal(?cancellationToken: CancellationToken) =
                                 tcs.TrySetResult(()) |> ignore
                                 return! loop latestGeneration latestReceipt waiters
                             | Some receipt when receipt.IsCompleted ->
-                                // Receipts settle only by result or exception, never by
-                                // cancellation, so a completed unsuccessful one carries it.
-                                tcs.TrySetException(receipt.Exception.GetBaseException()) |> ignore
+                                // A completed unsuccessful receipt failed or was cancelled;
+                                // `scanFailure` names either.
+                                tcs.TrySetException(scanFailure receipt) |> ignore
                                 return! loop latestGeneration latestReceipt waiters
                             | _ ->
                                 Logging.debug "scan-signal" $"WaitFor(%d{afterGeneration}) — registering waiter"
@@ -1516,7 +1524,7 @@ type ScanSignal(?cancellationToken: CancellationToken) =
                     if settled.IsCompletedSuccessfully then
                         Ok(generation ())
                     else
-                        Result.Error(settled.Exception.GetBaseException())
+                        Result.Error(scanFailure settled)
 
                 agent.Post(ScanSettled(receipt, outcome))),
             CancellationToken.None,
@@ -1680,7 +1688,7 @@ let private requestScan scanAgent ct =
         let! settled = receipt.ContinueWith(fun (settled: Task<unit>) -> settled) |> Async.AwaitTask
 
         if not settled.IsCompletedSuccessfully then
-            raise (settled.Exception.GetBaseException())
+            raise (scanFailure settled)
     }
 
 let private getScanGeneration (ScanAgent(owner, _)) = owner.State.Generation
