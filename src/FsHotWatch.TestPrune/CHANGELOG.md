@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: trace shadow applies R6 and R7 (AUTOMATION-975): a launched seed traces cannot verify adds what the
+  static selection's own walk from it reaches, and a changed file no trace input claims adds what the static
+  file rules select. This changes the trace side of every shadow row, so the shadow window restarts at this
+  release. BREAKING (API): `TraceShadow.atLaunch` takes `ShadowFallbacks`.
+
 - feat: a trace shadow row says what it measured: `full` when the project ran every test in the run
   (unfiltered and not reused), else `impact`; the trace selection's recall over a full run's failures;
   eligibility; and whether the run recorded under the fingerprint shadow read (AUTOMATION-975).

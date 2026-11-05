@@ -174,6 +174,30 @@ let private mutationOutcomeOf =
     | "not-mutable" -> NotMutable
     | _ -> RunFailed
 
+/// A fact ingestion records about a symbol, per (test project, fingerprint), that tells
+/// selection whether traces can verify a change to it.
+type SymbolFact =
+    /// Some probe of the latest weave joins to the symbol. Replaced by every ingestion.
+    | ProbedFact
+    /// The symbol ran inside a type initializer whose scope no test of the run inherited, so
+    /// no trace names it. Accumulated.
+    | StaticInitFact
+    /// The symbol appeared in or vanished from a test's trace while nothing the test ran or
+    /// read changed (order or memoisation). Accumulated.
+    | UnstableFact
+
+/// The symbol facts of one project under one fingerprint.
+type SymbolFacts =
+    { Probed: Set<string>
+      StaticInit: Set<string>
+      Unstable: Set<string> }
+
+let private factCode =
+    function
+    | ProbedFact -> "probed"
+    | StaticInitFact -> "static-init"
+    | UnstableFact -> "unstable"
+
 /// One shadow comparison: what trace selection would have run for a test project at one
 /// run's launch, next to what the static selection did run. Shadow rows never change a run.
 type ShadowRow =
@@ -217,6 +241,9 @@ type ShadowRow =
         /// Selected tests whose only reason is an incomplete trace caused by an untraced
         /// child process.
         ChildUntracedTests: int
+        /// Seeds traces could not verify, by why (`TraceSelect.fallCode`): the seeds R6 walked
+        /// statically. Empty before schema 5.
+        FallbackSeeds: Map<string, string>
     }
 
 // Public API: consumers catch `TraceSchemaNewerThanConsumer` by name, so a rename breaks them.
@@ -242,6 +269,9 @@ exception TraceSchemaNewerThanConsumer of path: string * found: int * supported:
 /// policy, eligibility, the fingerprint outcome, trace recall, launched tests after class
 /// expansion, tests held by untraced children), and `mutation_samples` holds the mutation
 /// harness's samples. Rows written before it read back as not recorded.
+///
+/// Version 5 (AUTOMATION-975): `trace_symbol_facts` holds what ingestion learnt about symbols
+/// traces cannot verify (probed, static-init, unstable), and a shadow row its fallback seeds.
 let internal migrations: (int * string) list =
     [ 1,
       """
@@ -363,6 +393,16 @@ let internal migrations: (int * string) list =
           selected INTEGER NOT NULL,
           missed TEXT NOT NULL);
       CREATE INDEX mutation_samples_by_project ON mutation_samples (test_project);
+      """
+      5,
+      """
+      CREATE TABLE trace_symbol_facts (
+          test_project TEXT NOT NULL,
+          env_fingerprint TEXT NOT NULL,
+          fact TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          PRIMARY KEY (test_project, env_fingerprint, fact, symbol)) WITHOUT ROWID;
+      ALTER TABLE shadow_selections ADD COLUMN fallback_seeds TEXT NOT NULL DEFAULT '{}';
       """ ]
 
 /// Versions must start at 1 and increase by exactly one, so "apply every entry above the
@@ -882,9 +922,9 @@ type Store private (conn: SqliteConnection) =
                 """INSERT INTO shadow_selections (run_id, test_project, env_fingerprint, recorded_at, universe,
                        complete_share, static_tests, trace_tests, static_classes, trace_classes, rule_counts,
                        static_only, trace_only, select_ms, mode, record_policy, eligible, actual_fingerprint,
-                       fingerprint_outcome, trace_recall, static_class_tests, trace_class_tests, child_untraced_tests)
+                       fingerprint_outcome, trace_recall, static_class_tests, trace_class_tests, child_untraced_tests, fallback_seeds)
                    VALUES (@r, @p, @e, @at, @u, @cs, @st, @tt, @sc, @tc, @rules, @so, @to, @ms, @mode, @rp, @el, @af,
-                       @fo, @rec, @sct, @tct, @cut)
+                       @fo, @rec, @sct, @tct, @cut, @fs)
                    ON CONFLICT (run_id, test_project) DO UPDATE SET
                        env_fingerprint = excluded.env_fingerprint, recorded_at = excluded.recorded_at,
                        universe = excluded.universe, complete_share = excluded.complete_share,
@@ -896,7 +936,7 @@ type Store private (conn: SqliteConnection) =
                        actual_fingerprint = excluded.actual_fingerprint,
                        fingerprint_outcome = excluded.fingerprint_outcome, trace_recall = excluded.trace_recall,
                        static_class_tests = excluded.static_class_tests, trace_class_tests = excluded.trace_class_tests,
-                       child_untraced_tests = excluded.child_untraced_tests"""
+                       child_untraced_tests = excluded.child_untraced_tests, fallback_seeds = excluded.fallback_seeds"""
                 [ "@r", box row.RunId
                   "@p", box row.TestProject
                   "@e", box row.EnvFingerprint
@@ -925,7 +965,8 @@ type Store private (conn: SqliteConnection) =
                   "@rec", box row.TraceRecall
                   "@sct", box row.StaticClassTests
                   "@tct", box row.TraceClassTests
-                  "@cut", box row.ChildUntracedTests ])
+                  "@cut", box row.ChildUntracedTests
+                  "@fs", box (JsonSerializer.Serialize(row.FallbackSeeds)) ])
 
     /// A project's shadow rows, oldest first.
     member _.ShadowRows(testProject: string) : ShadowRow list =
@@ -942,7 +983,7 @@ type Store private (conn: SqliteConnection) =
         readRows conn """SELECT run_id, env_fingerprint, recorded_at, universe, complete_share, static_tests, trace_tests,
                       static_classes, trace_classes, rule_counts, static_only, trace_only, select_ms, mode, record_policy,
                       eligible, actual_fingerprint, fingerprint_outcome, trace_recall, static_class_tests,
-                      trace_class_tests, child_untraced_tests
+                      trace_class_tests, child_untraced_tests, fallback_seeds
                FROM shadow_selections WHERE test_project = @p ORDER BY id""" [ "@p", box testProject ] (fun r ->
             { RunId = r.GetString 0
               TestProject = testProject
@@ -966,7 +1007,11 @@ type Store private (conn: SqliteConnection) =
               TraceRecall = r.GetString 18
               StaticClassTests = r.GetInt32 19
               TraceClassTests = r.GetInt32 20
-              ChildUntracedTests = r.GetInt32 21 })
+              ChildUntracedTests = r.GetInt32 21
+              FallbackSeeds =
+                JsonSerializer.Deserialize<Collections.Generic.Dictionary<string, string>>(r.GetString 22)
+                |> Seq.map (fun kv -> kv.Key, kv.Value)
+                |> Map.ofSeq })
 
     /// Store tests that failed in a run while trace selection, computed at that run's
     /// launch, did not select them: verified-failure misses. A repeat is ignored.
@@ -1028,6 +1073,57 @@ type Store private (conn: SqliteConnection) =
               Failing = r.GetInt32 5
               Selected = r.GetInt32 6
               Missed = JsonSerializer.Deserialize<string[]>(r.GetString 7) |> List.ofArray })
+
+    /// Record `fact` for `symbols` of a project under a fingerprint. `ProbedFact` replaces the
+    /// earlier set (it describes the latest weave); the others accumulate. The set travels as
+    /// one JSON parameter through `json_each` (ADR 0003).
+    member _.RecordSymbolFacts(testProject: string, envFingerprint: string, fact: SymbolFact, symbols: string list) =
+        inTransaction conn (fun tx ->
+            let ps =
+                [ "@p", box testProject; "@e", box envFingerprint; "@f", box (factCode fact) ]
+
+            if fact = ProbedFact then
+                exec
+                    conn
+                    tx
+                    "DELETE FROM trace_symbol_facts WHERE test_project = @p AND env_fingerprint = @e AND fact = @f"
+                    ps
+
+            exec
+                conn
+                tx
+                """INSERT OR IGNORE INTO trace_symbol_facts (test_project, env_fingerprint, fact, symbol)
+                   SELECT @p, @e, @f, value FROM json_each(@s)"""
+                (ps @ [ "@s", box (JsonSerializer.Serialize(Array.ofList symbols)) ]))
+
+    /// A project's symbol facts under a fingerprint.
+    member _.SymbolFacts(testProject: string, envFingerprint: string) : SymbolFacts =
+        let rows =
+            readRows
+                conn
+                "SELECT fact, symbol FROM trace_symbol_facts WHERE test_project = @p AND env_fingerprint = @e"
+                [ "@p", box testProject; "@e", box envFingerprint ]
+                (fun r -> r.GetString 0, r.GetString 1)
+
+        let of' fact =
+            rows
+            |> List.filter (fun (f, _) -> f = factCode fact)
+            |> List.map snd
+            |> Set.ofList
+
+        { Probed = of' ProbedFact
+          StaticInit = of' StaticInitFact
+          Unstable = of' UnstableFact }
+
+    /// The distinct (kind, key) inputs of a project's scopes under a fingerprint, sorted: the
+    /// files a changed-file check can leave to R3.
+    member _.ClaimedInputs(testProject: string, envFingerprint: string) : (string * string) list =
+        readRows conn """SELECT DISTINCT i.kind, i.key FROM trace_inputs i
+               JOIN trace_scopes s ON s.id = i.scope_id
+               JOIN trace_runs r ON r.id = s.trace_run_id
+               WHERE r.test_project = @p AND r.env_fingerprint = @e
+               ORDER BY i.kind, i.key""" [ "@p", box testProject; "@e", box envFingerprint ] (fun r ->
+            r.GetString 0, r.GetString 1)
 
     /// A project's runs, newest first.
     member _.Runs(testProject: string) : TraceRun list =
