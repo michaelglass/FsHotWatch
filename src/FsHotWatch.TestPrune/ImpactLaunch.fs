@@ -548,9 +548,13 @@ let internal selectForLaunch
 
 /// The run an impact launch assembled (`assembleLaunch`).
 type internal LaunchAssembly =
-    { EvidencePlan: TestEvidenceRun.Plan option
-      ExcludedByProject: Map<string, string list>
-      Launch: TestRunLaunch }
+    {
+        /// The run's test-evidence plan, made when `executeTests` calls it: once `beforeRun` has
+        /// settled the tree, so every key names the tree the tests run against.
+        EvidencePlan: unit -> TestEvidenceRun.Plan option
+        ExcludedByProject: Map<string, string list>
+        Launch: TestRunLaunch
+    }
 
 /// Assemble the run an impact launch starts: the test-evidence plan, the check-skip
 /// decisions, the selection and its attribution, what a full run would have run, and the
@@ -588,19 +592,21 @@ let internal assembleLaunch
     let narrowedSeeds = selected.NarrowedSeeds
 
     // TEST EVIDENCE, at launch: AFTER selection, so it can only take away
-    // launches the selector chose, never add a green it did not. Keyed now,
-    // before `beforeRun` touches anything. Every run keys (so its greens can be
-    // published); only a run that owes nothing a reuse cannot pay looks
-    // anything up. `confirm` owes a run of everything. An unreadable ledger is
-    // owed a full suite that passed. A run owed a full-suite baseline looks up
-    // too: a project whose inputs are byte-identical to another checkout's
-    // green had every test run at exactly these inputs, and a run whose every
-    // project ran or held such a reuse earns the baseline (`CompletionStages`).
-    // So a fresh checkout of an already-tested tree launches only what misses
-    // (AUTOMATION-1508).
+    // launches the selector chose, never add a green it did not. Keyed when
+    // `executeTests` asks, once `beforeRun` has run and before any test has: the
+    // tree a key names is the tree the tests run against, so the output of a
+    // generating setup step is not an edit made mid-run (AUTOMATION-1510).
+    // Every run keys (so its greens can be published); only a run that owes
+    // nothing a reuse cannot pay looks anything up. `confirm` owes a run of
+    // everything. An unreadable ledger is owed a full suite that passed. A run
+    // owed a full-suite baseline looks up too: a project whose inputs are
+    // byte-identical to another checkout's green had every test run at exactly
+    // these inputs, and a run whose every project ran or held such a reuse earns
+    // the baseline (`CompletionStages`). So a fresh checkout of an already-tested
+    // tree launches only what misses (AUTOMATION-1508).
     let evidenceLookups = not scopeIsFullSuite && not ledgerUnreadable
 
-    let evidencePlan =
+    let evidencePlan () =
         evidencePlanFor
             ctx
             configs

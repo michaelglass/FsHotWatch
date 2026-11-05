@@ -123,3 +123,26 @@ keying it costs at most a re-run when it differs between checkouts. A repository
 wants an ignored path out of the key excludes it. Pinned by `a gitignored file the config
 does not exclude is keyed, by the snapshot and by a direct closure walk`
 (TestEvidenceKeyTests).
+
+## Amendment: test-evidence keys bind at the same point (2026-11-05, AUTOMATION-1510)
+
+The 2026-09-27 amendment moved the receipt's binding past `beforeRun`, but the box-wide
+test-evidence keys (`TestEvidenceRun.plan`) were still computed at launch, before it. A
+`beforeRun` that generates a file under a closure project's directory (Intelligence's
+bundle-preflight rewriting `src/Intelligence/wwwroot/js/app.js`) then moved every key over
+that project while the run was in flight, so a fresh checkout's first run published nothing,
+and the next fresh checkout looked up a pre-`beforeRun` key that no settled run ever files.
+
+The keys are now computed once `beforeRun` has finished, by the same rule as the receipt:
+the post-`beforeRun` tree when it moved nothing a build compiles. When it moved a compile
+input the binaries predate the tree, so no key names what the tests ran, and the run neither
+reuses nor publishes evidence (and logs why). Excluding generated output from the key was
+rejected: which paths a setup step writes is the repository's knowledge, not fshw's, and
+leaving them out would key a run over bytes it did not read. A setup step whose output
+differs between checkouts still gives each its own key.
+
+Pinned by `a run whose beforeRun generates a runtime file publishes, and a fresh checkout's
+first run reuses it`, `with a generating beforeRun a source edit still launches exactly the
+projects over it`, `a beforeRun whose output differs between checkouts never reuses a green
+earned over other output` and `a beforeRun that rewrites a compile input neither reuses nor
+publishes evidence` (TestEvidenceRunTests).

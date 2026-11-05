@@ -183,8 +183,9 @@ let private wiringFor (store: TestEvidenceStore.Store) : TestEvidenceRun.Wiring 
 /// checkout: one that earned a full-suite baseline before these runs, the way the default
 /// checkout has by the time anything lands in it. (A checkout owed a baseline consults no
 /// evidence at all; `a checkout owed a full-suite baseline` below pins that.)
-let private checkoutFull
+let private checkoutSetUp
     (coverage: (string -> string option) option)
+    (beforeRun: (Guid -> HookStep.Tracker -> unit) option)
     (seeded: bool)
     (root: string)
     (evidence: TestEvidenceRun.Wiring option)
@@ -212,7 +213,7 @@ let private checkoutFull
             root
             (Some configs)
             None
-            None
+            beforeRun
             None
             (coverage
              |> Option.map (fun baselineOf ->
@@ -237,6 +238,8 @@ let private checkoutFull
     { Root = root
       Host = host
       Completions = completions }
+
+let private checkoutFull coverage = checkoutSetUp coverage None
 
 let private checkoutWith = checkoutFull None
 
@@ -612,6 +615,82 @@ let ``a run whose tree moved writes no evidence for any project`` () =
         // b holds the bytes a LAUNCHED with, so only what a published can be reused.
         let launched, _ = run (checkout b (Some(wiringFor store)) false)
         test <@ List.contains "TY" launched @>)
+
+/// A `beforeRun` that writes `rel` (repo-relative) with the text `contentOf root`: the
+/// setup step that generates what the tests read at run time (a bundle) before they start.
+let private generating (rel: string) (contentOf: string -> string) (root: string) =
+    Some(fun (_: Guid) (_: HookStep.Tracker) -> write root rel (contentOf root))
+
+/// A seeded checkout of `root` whose `beforeRun` is `generating rel contentOf`.
+let private checkoutGenerating (rel: string) (contentOf: string -> string) store (root: string) =
+    checkoutSetUp None (generating rel contentOf root) true root (Some(wiringFor store)) false
+
+[<Fact(Timeout = RunsTestCapMs)>]
+let ``a run whose beforeRun generates a runtime file publishes, and a fresh checkout's first run reuses it`` () =
+    // AUTOMATION-1510: the key a run publishes under names the tree its tests ran
+    // against, which is the tree AFTER beforeRun. Keyed before it, a fresh checkout's
+    // first run (the generated file absent) saw its own key move and published nothing,
+    // and the next fresh checkout looked up a key no settled run ever has.
+    withRepo (fun store rootNamed ->
+        let bundle = "src/S/wwwroot/app.js"
+
+        let launchedA, completedA =
+            run (checkoutGenerating bundle (fun _ -> "bundle") store (rootNamed "a"))
+
+        test <@ launchedA = testProjects @>
+        test <@ allGreen completedA @>
+
+        let launchedB, completedB =
+            run (checkoutGenerating bundle (fun _ -> "bundle") store (rootNamed "b"))
+
+        test <@ List.isEmpty launchedB @>
+        test <@ reusedIn completedB = testProjects @>
+        test <@ allGreen completedB @>)
+
+[<Fact(Timeout = RunsTestCapMs)>]
+let ``with a generating beforeRun a source edit still launches exactly the projects over it`` () =
+    withRepo (fun store rootNamed ->
+        let bundle = "src/S/wwwroot/app.js"
+
+        run (checkoutGenerating bundle (fun _ -> "bundle") store (rootNamed "a"))
+        |> ignore
+
+        let b = rootNamed "b"
+        edit b "X" "// a real change"
+
+        let launched, completed =
+            run (checkoutGenerating bundle (fun _ -> "bundle") store b)
+
+        test <@ launched = [ "TX" ] @>
+        test <@ reusedIn completed = [ "TY"; "TZ" ] @>)
+
+[<Fact(Timeout = RunsTestCapMs)>]
+let ``a beforeRun whose output differs between checkouts never reuses a green earned over other output`` () =
+    withRepo (fun store rootNamed ->
+        // The generated text is the checkout's own path, so no two checkouts agree on it.
+        let bundle = "src/S/wwwroot/app.js"
+        run (checkoutGenerating bundle id store (rootNamed "a")) |> ignore
+        let launched, completed = run (checkoutGenerating bundle id store (rootNamed "b"))
+        test <@ launched = [ "TX"; "TY" ] @>
+        test <@ reusedIn completed = [ "TZ" ] @>)
+
+[<Fact(Timeout = RunsTestCapMs)>]
+let ``a beforeRun that rewrites a compile input neither reuses nor publishes evidence`` () =
+    // The binaries predate what beforeRun wrote, so the settled tree is not the tree the
+    // tests were built from: no key names what they ran. A `.props` is a compile input
+    // whatever the model says.
+    withRepo (fun store rootNamed ->
+        let generated = "src/S/Directory.Build.props"
+        let props = "<Project />"
+
+        run (checkoutGenerating generated (fun _ -> props) store (rootNamed "a"))
+        |> ignore
+
+        let launched, completed =
+            run (checkoutGenerating generated (fun _ -> props) store (rootNamed "b"))
+
+        test <@ launched = testProjects @>
+        test <@ List.isEmpty (reusedIn completed) @>)
 
 [<Fact(Timeout = RunsTestCapMs)>]
 let ``a reused report names its producer in the run directory`` () =
