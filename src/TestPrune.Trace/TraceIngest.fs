@@ -476,8 +476,9 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
 
             let children =
                 m.Children
-                |> List.filter (fun c -> not (tracedChildren.Contains(m.Key, c.Pid)))
-                |> List.map (fun c -> ChildProcessUntraced c.FileName)
+                |> List.filter (fun c ->
+                    not (tracedChildren.Contains(m.Key, c.Pid) || ChildNote.isTrusted req.RepoRoot c))
+                |> List.map (ChildNote.name >> ChildProcessUntraced)
                 |> List.append (unknownInputs m.Inputs)
 
             { Key = m.Key

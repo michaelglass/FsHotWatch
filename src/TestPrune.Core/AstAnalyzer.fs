@@ -1047,10 +1047,25 @@ let private isTestAttribute =
 let private isDllImport =
     hasAttribute (fun name -> name = "DllImportAttribute" || name = "DllImport")
 
-let private extractTestClass (fullName: string) : string * string =
-    match fullName.LastIndexOf('.') with
-    | -1 -> ("", fullName)
-    | idx -> (fullName.Substring(0, idx), fullName.Substring(idx + 1))
+/// A simple name as the CLR writes it inside a type's `FullName`: `,` `+` `&` `*` `[` `]` and
+/// `\` are escaped with a backslash. xUnit names a test class by `Type.FullName`, so a
+/// `--filter-class` or a trace key built from the unescaped F# name matches nothing
+/// (AUTOMATION-1496: `module ``pattern (true, false)`` ` is `pattern (true\, false)`).
+let private clrEscape (name: string) : string =
+    if name.IndexOfAny([| ','; '+'; '&'; '*'; '['; ']'; '\\' |]) < 0 then
+        name
+    else
+        name
+        |> String.collect (fun c ->
+            match c with
+            | ','
+            | '+'
+            | '&'
+            | '*'
+            | '['
+            | ']'
+            | '\\' -> "\\" + string c
+            | _ -> string c)
 
 /// Build the CLR-style class name from an entity chain.
 /// F# compiles types inside modules as CLR nested types (Module+Type).
@@ -1091,6 +1106,7 @@ let private buildClrClassName (budget: SymbolTraversalBudget) (entity: FSharpEnt
                         item.CompiledName
                     with _ ->
                         item.DisplayName))
+            |> List.map clrEscape
             |> String.concat "+"
 
     { Value = className
@@ -1463,6 +1479,17 @@ let private lastNameSegment (n: string) : string =
         match n.LastIndexOf('.') with
         | -1 -> n
         | i -> n.[i + 1 ..]
+
+/// A test's declaring path and its own name, split where `lastNameSegment` says the name
+/// starts: a backticked name may hold dots (AUTOMATION-1496: ``.fshw.json configures`` was
+/// cut to `json configures`` `).
+let private extractTestClass (fullName: string) : string * string =
+    let name = lastNameSegment fullName
+
+    if name.Length >= fullName.Length then
+        ("", fullName)
+    else
+        (fullName.Substring(0, fullName.Length - name.Length - 1), name)
 
 /// A name without its trailing CLR generic arity: ``Lookup`1`` → `Lookup`.
 let private withoutArity (name: string) : string =

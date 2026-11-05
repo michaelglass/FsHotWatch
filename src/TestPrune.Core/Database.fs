@@ -463,6 +463,11 @@ let private openConnectionWaiting (busyTimeout: TimeSpan) (dbPath: string) =
 ///          (a `DllImport`), NULL for a placeholder. The symbol was stored as a bare
 ///          extern row and read back at `ExternSourceFile`, while the in-memory store kept
 ///          its real file, so dead-code analysis saw different inputs per store.
+/// v25    — no schema text change; a REBUILD, because stored test identities changed. A test
+///          name holding a `.` was cut at its last dot (``.fshw.json loads`` was indexed as
+///          `json loads`` `), and a class name holding a CLR-reserved character (`,` `+` `&`
+///          `*` `[` `]` `\`) was stored unescaped, so its `--filter-class` ran no test. A
+///          file not re-indexed would keep those names (AUTOMATION-1496).
 ///
 /// A `SchemaVersion` bump rebuilds the tables core's DDL creates and nothing else
 /// (FsHotWatch ADR-059 §5). Every other table in the file (a plugin's, a host's such as FsHotWatch's)
@@ -480,7 +485,7 @@ let private openConnectionWaiting (busyTimeout: TimeSpan) (dbPath: string) =
 /// the newer open path. A consumer that only needs its own plugin table needs no probe:
 /// `Ports.pluginStoreAt` opens the file without core's version check or DDL.
 [<Literal>]
-let SchemaVersion = 24
+let SchemaVersion = 25
 
 /// The `source_files.path` that owns the edges an extension contributes
 /// (see `Database.ReplaceExtensionEdges`). The leading underscore keeps it out of the

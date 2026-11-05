@@ -508,6 +508,64 @@ module MiddleModule =
             @>
 
     [<Fact>]
+    let ``a test name containing a dot is indexed whole, under its own class`` () =
+        // AUTOMATION-1496: the method was cut at the name's last `.`, so this test was
+        // indexed as `json configures a path`` ` and matched no recorded trace or CTRF row.
+        let result =
+            analyze
+                """
+module OuterModule
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+module Gate =
+    [<Fact>]
+    let ``.fshw.json configures a path`` () = ()
+
+    [<Fact>]
+    let ``plain name`` () = ()
+"""
+
+        let names =
+            result.TestMethods
+            |> List.map (fun t -> TestPrune.AstAnalyzer.canonicalShortName t.TestMethod, t.TestClass)
+            |> List.sort
+
+        test <@ names |> List.map fst = [ ".fshw.json configures a path"; "plain name" ] @>
+
+        test
+            <@
+                names
+                |> List.forall (fun (_, c) -> c.EndsWith("OuterModule+Gate", StringComparison.Ordinal))
+            @>
+
+    [<Fact>]
+    let ``a class name holding a CLR-reserved character is escaped as the runtime names it`` () =
+        // AUTOMATION-1496: xUnit names the class by `Type.FullName`, which escapes `,` (and
+        // `+ & * [ ] \`). Unescaped, `--filter-class` for it ran zero tests, and its tests
+        // matched no recorded trace.
+        let result =
+            analyze
+                """
+module OuterModule
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+module ``pattern (true, false)`` =
+    [<Fact>]
+    let myTest () = ()
+"""
+
+        let testMethod =
+            result.TestMethods |> List.tryFind (fun t -> t.TestMethod = "myTest")
+
+        test <@ testMethod.IsSome @>
+
+        test <@ testMethod.Value.TestClass.EndsWith("OuterModule+pattern (true\\, false)", StringComparison.Ordinal) @>
+
+    [<Fact>]
     let ``many test methods reuse only their exact nested declaring class`` () =
         let methods prefix =
             [ 1..200 ]

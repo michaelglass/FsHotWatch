@@ -353,6 +353,11 @@ The first draft's open questions, as settled in review:
   `shadow-report` prints the median of `child_untraced_tests / trace_class_tests` over impact rows. **If that
   median exceeds 0.05** (tests held by untraced children are more than 5 % of what the trace selection
   launches), the allowlist becomes a task. Below it, R4 stays as it is.
+  **Decided 2026-11-05 (AUTOMATION-1496):** the first impact row measured 11/91 (0.12), over 0.05, so the
+  allowlist exists: `ChildNote.TrustedExecutables` = `sleep`, `chmod`, named bare or from outside the
+  repository. They read no file content and run no repository code. `sh` and `dotnet` stay out: on
+  TestPrune.Tests they run inline shell scripts and `scripts/check-package-floors.fsx`, which a trace
+  cannot see, so those 7 tests stay R4.
 - **Q3: reflection is answered, and closed by Task 11.** A consumer census found no DI or route scanning (every
   registration is explicit), but two reflection shapes that traces as specified would miss:
   1. **Whole-assembly type sweeps.** Meta-tests enumerate every type or method of an assembly (wire-contract

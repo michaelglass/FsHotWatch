@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: an untraced `sleep` or `chmod` child no longer makes a test's trace incomplete (AUTOMATION-1496, plan
+  Q2). They run no code a repository change can reach. The executable must be named bare or by a path outside
+  the repository; `ChildNote.TrustedExecutables` is the list. A shell, `dotnet`, `git` and every other child
+  still make the trace incomplete. Reasons keep naming the executable by its file name.
+
 - feat: mutation samples from real changes, stored (AUTOMATION-975, plan Task 7). `Mutation.changedSpans` reads
   a unified diff's new-side lines, `Mutation.changedTargets` the repository methods they touch, and `Mutation.run`
   takes them (`changed`) to sample only those methods; a touched method no test ran is reported in

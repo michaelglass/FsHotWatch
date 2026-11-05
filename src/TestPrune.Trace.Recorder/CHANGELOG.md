@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: a started child is noted with its executable as the start named it (`/bin/sh`, not `sh`), so ingestion
+  can tell a system binary from a repository file of the same name (AUTOMATION-1496).
+
 - feat: `RuntimeIdentity` (`runtime`, `os`, `arch`): the environment strings a dump records, shared with a
   host's fingerprint prediction (AUTOMATION-975). The dump bytes are unchanged.
 
