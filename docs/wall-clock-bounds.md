@@ -38,6 +38,11 @@ A bound is one of three things.
    teardown waits up to `HangWaitMs` for a writer to drain, so a test that makes any of
    those waits is capped above 30 s. `WaitFloorCapTests` refuses any test that is not,
    following helpers through any number of calls.
+
+   `withTempDir`'s teardown does not join the evaluation queue: it waits only for an
+   in-process evaluation standing in its own tree (`Daemon.whileNoEvaluationRunsUnder`),
+   which is work the test started. A test that merely uses a scratch directory needs no
+   `InProcessEvaluationTestCapMs` (AUTOMATION-1499).
 3. **A lower bound or negative window.** `elapsed >= X`, or "this did not happen within
    N ms". Load only lengthens durations and delays events, so these can fail to detect
    a defect on a slow box, but cannot fail a correct one.

@@ -817,14 +817,16 @@ let private isWithin (dir: string) (path: string) : bool =
 /// Delete a test's scratch tree, the way `withTempDir` does when its body returns. Its
 /// daemon may still be re-evaluating a project change in it, and deleting a directory an
 /// evaluation stands in leaves the whole test host in a directory that no longer exists,
-/// so the deletion waits out any evaluation in flight.
+/// so the deletion waits out an evaluation in this tree (`whileNoEvaluationRunsUnder`). An
+/// evaluation elsewhere is not waited for: it has no bound, and it cannot strand the
+/// process here (AUTOMATION-1499).
 ///
 /// A test that leaves the process standing inside the tree it is deleting fails itself
 /// instead (AUTOMATION-1295): the process is moved out first (`moveProcessToRefuge`), the
 /// tree is deleted, and the deletion raises naming the directory, so every other test
 /// still finds a working directory that exists.
 let deleteTempDir (tmpDir: string) =
-    FsHotWatch.Daemon.whileNoEvaluationRuns (fun () ->
+    FsHotWatch.Daemon.whileNoEvaluationRunsUnder [ tmpDir; realPath tmpDir ] (fun () ->
         let stoodIn =
             processWorkingDirectory ()
             |> Option.filter (fun cwd -> isWithin tmpDir cwd || isWithin (realPath tmpDir) cwd)

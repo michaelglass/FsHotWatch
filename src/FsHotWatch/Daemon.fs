@@ -855,14 +855,89 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
 /// process fails. So evaluations run one at a time, each putting back where it started.
 let private inProcessEvaluation = obj ()
 
-let private evaluateInProcess (load: unit -> 'a) : 'a =
+// The trees in play between evaluations and deletions, and the monitor each side waits
+// on for the other. Only a deletion and an evaluation in the same tree wait for each other.
+let private trees = obj ()
+/// The project directories of the evaluation in flight.
+let mutable private evaluatingIn: string list = []
+/// The directory the evaluation in flight puts the process back in when it finishes.
+let mutable private returningTo: string option = None
+/// The roots being deleted.
+let mutable private deleting: string list = []
+let mutable private waitingOnTrees = 0
+
+let private normalized (path: string) =
+    // Symlinks resolved where the path still exists: the process reports where it stands
+    // as `/private/var/…` on macOS for a directory created as `/var/…`.
+    match RepositoryIdentity.canonicalize path with
+    | Result.Ok canonical -> canonical.Value
+    | Result.Error _ -> Path.TrimEndingDirectorySeparator(Path.GetFullPath path)
+
+/// Whether `path` is `dir` or inside it.
+let private inside (dir: string) (path: string) =
+    let dir = normalized dir
+    let path = normalized path
+
+    path = dir
+    || path.StartsWith(dir + string Path.DirectorySeparatorChar, StringComparison.Ordinal)
+
+/// Whether a tree in `xs` and one in `ys` share directories: one is inside the other.
+let private overlap (xs: string list) (ys: string list) =
+    xs
+    |> List.exists (fun x -> ys |> List.exists (fun y -> inside x y || inside y x))
+
+/// Whether `path` is inside one of `roots`.
+let private underAny (roots: string list) (path: string) =
+    roots |> List.exists (fun root -> inside root path)
+
+/// Wait on `trees`, whose lock the caller holds, until `blocked` is false.
+let private waitOnTrees (blocked: unit -> bool) =
+    while blocked () do
+        waitingOnTrees <- waitingOnTrees + 1
+
+        try
+            Monitor.Wait trees |> ignore
+        finally
+            waitingOnTrees <- waitingOnTrees - 1
+
+/// `xs` without one occurrence of each of `ys`.
+let private withoutEach (ys: string list) (xs: string list) =
+    ys
+    |> List.fold
+        (fun rest y ->
+            match List.tryFindIndex ((=) y) rest with
+            | Some i -> List.removeAt i rest
+            | None -> rest)
+        xs
+
+/// Evaluate the projects in `projectDirs` alone in this process, putting back the
+/// directory the process stood in. An evaluation whose projects, or that directory, are
+/// in a tree being deleted waits for the deletion; a deletion of its projects' trees, or
+/// of the directory it will put the process back in, waits for it.
+let internal evaluateInProcessIn (projectDirs: string list) (load: unit -> 'a) : 'a =
     lock inProcessEvaluation (fun () ->
-        let found = Directory.GetCurrentDirectory()
+        let found =
+            lock trees (fun () ->
+                // Read and published at once: a deletion moves the process out of its
+                // tree only while that tree is registered as deleting.
+                waitOnTrees (fun () ->
+                    overlap projectDirs deleting
+                    || underAny deleting (Directory.GetCurrentDirectory()))
+
+                let found = Directory.GetCurrentDirectory()
+                evaluatingIn <- projectDirs
+                returningTo <- Some found
+                found)
 
         try
             load ()
         finally
-            Directory.SetCurrentDirectory found)
+            Directory.SetCurrentDirectory found
+
+            lock trees (fun () ->
+                evaluatingIn <- []
+                returningTo <- None
+                Monitor.PulseAll trees))
 
 /// Run `action` while no in-process evaluation runs: one in flight finishes first, and
 /// none starts until `action` returns. An evaluation whose project directory is deleted
@@ -870,14 +945,26 @@ let private evaluateInProcess (load: unit -> 'a) : 'a =
 /// exists, so whatever deletes a tree a daemon may still be evaluating in does it here.
 let internal whileNoEvaluationRuns (action: unit -> 'a) : 'a = lock inProcessEvaluation action
 
-/// `evaluateInProcess` for the projects in `projectDirs`.
-let internal evaluateInProcessIn (_projectDirs: string list) (load: unit -> 'a) : 'a = evaluateInProcess load
+/// Run `action`, which deletes the trees at `roots`, while no evaluation stands in them:
+/// an evaluation in one of them, or one that will put the process back in one, finishes
+/// first, and none starts in one until `action` returns. An evaluation elsewhere neither
+/// waits nor is waited for, so deleting a tree no daemon evaluates in is not held behind
+/// other evaluations, which have no bound.
+let internal whileNoEvaluationRunsUnder (roots: string list) (action: unit -> 'a) : 'a =
+    lock trees (fun () ->
+        waitOnTrees (fun () -> overlap roots evaluatingIn || returningTo |> Option.exists (underAny roots))
 
-/// Run `action`, which deletes the trees at `roots`, while no evaluation stands in them.
-let internal whileNoEvaluationRunsUnder (_roots: string list) (action: unit -> 'a) : 'a = whileNoEvaluationRuns action
+        deleting <- roots @ deleting)
+
+    try
+        action ()
+    finally
+        lock trees (fun () ->
+            deleting <- withoutEach roots deleting
+            Monitor.PulseAll trees)
 
 /// How many evaluations and deletions are waiting for each other's trees right now.
-let internal treeWaiters () : int = 0
+let internal treeWaiters () : int = lock trees (fun () -> waitingOnTrees)
 
 /// Discover .fsproj files and register them with the graph and pipeline.
 /// Uses Ionide.ProjInfo for MSBuild design-time evaluation to get real
@@ -954,7 +1041,7 @@ let private discoverAndRegisterProjects
 
         try
             let loaded: Types.ProjectOptions list =
-                evaluateInProcess (fun () ->
+                evaluateInProcessIn (fsprojFiles |> List.map Path.GetDirectoryName) (fun () ->
                     match binlogDir with
                     | Some dir ->
                         Logging.info "discover" $"Binlog capture enabled: %s{dir.FullName}"

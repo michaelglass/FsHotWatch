@@ -354,3 +354,57 @@ let ``an evaluation of a project in a tree being deleted waits for the deletion`
         finally
             release.Set()
             deletion.Wait HangWait |> ignore)
+
+[<Fact(Timeout = 4 * HangWaitMs)>]
+let ``deleting the tree an evaluation will put the process back in waits for that evaluation`` () =
+    withTempDir "tree-returned-to" (fun root ->
+        let stood = Path.Combine(root, "stood")
+        Directory.CreateDirectory stood |> ignore
+        let elsewhere = Path.Combine(root, "elsewhere")
+        let mutable ran = false
+
+        withProcessWorkingDirectory (Some stood) (fun () ->
+            let entered, release, evaluation =
+                held (fun hold -> evaluateInProcessIn [ elsewhere ] hold)
+
+            try
+                test <@ entered.Wait HangWait @>
+
+                let deletion =
+                    Task.Run(fun () -> whileNoEvaluationRunsUnder [ stood ] (fun () -> ran <- true))
+
+                waitUntilOr "the deletion waiting for the evaluation" (fun () -> treeWaiters () = 1) HangWaitMs
+                test <@ not ran @>
+                release.Set()
+                test <@ deletion.Wait HangWait @>
+                test <@ ran @>
+            finally
+                release.Set()
+                evaluation.Wait HangWait |> ignore))
+
+[<Fact(Timeout = 4 * HangWaitMs)>]
+let ``an evaluation that starts standing in a tree being deleted waits for the deletion`` () =
+    withTempDir "tree-stood-in" (fun root ->
+        let stood = Path.Combine(root, "stood")
+        Directory.CreateDirectory stood |> ignore
+        let mutable evaluated = false
+
+        withProcessWorkingDirectory (Some stood) (fun () ->
+            let entered, release, deletion =
+                held (fun hold -> whileNoEvaluationRunsUnder [ stood ] hold)
+
+            try
+                test <@ entered.Wait HangWait @>
+
+                let evaluation =
+                    Task.Run(fun () ->
+                        evaluateInProcessIn [ Path.Combine(root, "elsewhere") ] (fun () -> evaluated <- true))
+
+                waitUntilOr "the evaluation waiting for the deletion" (fun () -> treeWaiters () = 1) HangWaitMs
+                test <@ not evaluated @>
+                release.Set()
+                test <@ evaluation.Wait HangWait @>
+                test <@ evaluated @>
+            finally
+                release.Set()
+                deletion.Wait HangWait |> ignore))
