@@ -1,3 +1,5 @@
+/// The stub test reads the process-wide recorder, so it runs in the non-parallel counters collection.
+[<Xunit.Collection("recorder-counters")>]
 module TestPrune.Trace.Tests.ScaffoldTests
 
 open System.IO

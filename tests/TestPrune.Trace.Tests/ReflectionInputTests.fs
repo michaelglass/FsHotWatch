@@ -1,6 +1,8 @@
 /// Reflection inputs (AUTOMATION-1495, phase-2 plan Task 11): a whole-assembly type sweep is
 /// a `types` input hashed over the assembly's type names, and union reflection over a type is
 /// a `type` input joined to that type's symbol.
+/// These tests swap the process-wide recorder, so they run in the non-parallel counters collection.
+[<Xunit.Collection("recorder-counters")>]
 module TestPrune.Trace.Tests.ReflectionInputTests
 
 open System
