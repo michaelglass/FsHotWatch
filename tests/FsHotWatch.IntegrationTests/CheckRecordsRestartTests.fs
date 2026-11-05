@@ -207,6 +207,29 @@ let ``an edit while the daemon is stopped live-checks exactly the edited file an
 
         assertTally (1, 3) log found |> ignore)
 
+[<Fact(Timeout = 900000)>]
+let ``a body-only edit while the daemon is stopped live-checks exactly the edited file`` () =
+    // AUTOMATION-1507. The scan dispatches every file at once. The files after the edited
+    // one wait for its check, find the API signature their records were keyed by, and
+    // replay: the early cutoff. The API edit above is the positive control.
+    let clock = budget ()
+
+    withTempDir "fshw-check-records-body" (fun root ->
+        let directory = prepare clock root
+
+        let found, log =
+            checkTwice
+                clock
+                root
+                (fun () ->
+                    File.WriteAllText(
+                        Path.Combine(directory, "Middle.fs"),
+                        "module Replay.Middle\nlet doubled () = Replay.Value.answer () * 3\n"
+                    ))
+                false
+
+        assertTally (3, 1) log found |> ignore)
+
 /// A library project of the fixture that compiles `shared/Shared.fs` through a link, as
 /// `tests/Replay` does, and one file of its own. It references nothing, so it shares the
 /// first tier with `tests/Replay`.

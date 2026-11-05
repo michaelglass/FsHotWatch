@@ -279,6 +279,29 @@ type internal PendingRecord =
         Outputs: CheckOutputs
     }
 
+/// A walk of the check records for one project, read for replays.
+[<NoComparison; NoEquality>]
+type internal ReplayWalk =
+    {
+        /// Each file's canonical key and record, in compile order.
+        Records: CheckRecords.FileRecord list
+        ByFile: Map<string, CheckRecords.FileRecord>
+        /// The project's files named by a check of this pipeline not yet filed.
+        FromPending: Set<string>
+        /// The pipeline's count of pending checks when the walk began.
+        Version: int64
+    }
+
+/// What a replay that missed does next (`CheckPipeline`'s early cutoff).
+[<RequireQualifiedAccess; NoComparison; NoEquality>]
+type internal AfterMiss =
+    /// Check the file in FCS.
+    | Check
+    /// Walk the records again: an earlier file's check is pending since the walk.
+    | WalkAgain
+    /// Wait for an earlier file's dispatched check, then walk again.
+    | WaitFor of Tasks.Task
+
 /// Manages project options and performs incremental file checking with the warm FSharpChecker.
 type CheckPipeline
     (
@@ -569,52 +592,197 @@ type CheckPipeline
         && pending.ProjectOutputs
            |> List.forall (fun (output, hash) -> hashFile output = hash)
 
+    /// Bumped each time a check becomes pending: a walk taken before it named that file by
+    /// its content, where a walk taken now names it by the API signature it declared.
+    let mutable pendingVersion = 0L
+
+    /// What the store answered for each key this generation, shared by every replay walk:
+    /// an early cutoff walks a project again for each file that waited (`CheckRecords.Walk`).
+    let storeReads = ConcurrentDictionary<string, CheckOutputs option>()
+
+    /// A walk of `options`' project for replays. A file the store has no record of is named
+    /// by a check of this pipeline that is pending and still holds, exactly as
+    /// `PersistCheckRecords` would file it, so the files after it are keyed by its API
+    /// signature before anything is filed: the early cutoff of ADR-059 §14 (AUTOMATION-1507).
+    let walkForReplay (store: OutcomeStore.Store) (options: FSharpProjectOptions) : ReplayWalk =
+        // Read first: a check that becomes pending during the walk makes it older than now.
+        let version = Volatile.Read &pendingVersion
+        let tables = Collections.Generic.Dictionary<string, _>()
+        let fromPending = Collections.Generic.HashSet<string>()
+
+        let contentTableOf (opts: FSharpProjectOptions) =
+            let memoKey =
+                $"%s{opts.ProjectFileName}|%s{getProjectOptionsHashRelativeTo repoRoot opts}"
+
+            match tables.TryGetValue memoKey with
+            | true, table -> table
+            | false, _ ->
+                let table = CheckCache.upstreamFingerprints hashFile repoRoot opts
+                tables[memoKey] <- table
+                table
+
+        let fromPendingCheck: CheckRecords.Filer =
+            fun opts file _ ->
+                match pendingRecords.TryGetValue(struct (file, opts.ProjectFileName)) with
+                | true, pending when pendingHolds contentTableOf opts file pending ->
+                    if opts.ProjectFileName = options.ProjectFileName then
+                        fromPending.Add file |> ignore
+
+                    Some pending.Outputs
+                | _ -> None
+
+        let records =
+            CheckRecords.Walk(store, checkToolchain, repoRoot, hashFile, fromPendingCheck, storeReads).Project(options)
+
+        { Records = records
+          ByFile = records |> List.map (fun record -> record.File, record) |> Map.ofList
+          FromPending = Set.ofSeq fromPending
+          Version = version }
+
     /// Each project's walk of the store, once per generation (`BeginGeneration`), as the
     /// upstream tables are: a walk is O(files), and a scan asks once per file.
-    let replayWalks =
-        ConcurrentDictionary<string, Lazy<Map<string, CheckRecords.FileRecord>>>()
+    let replayWalks = ConcurrentDictionary<string, Lazy<ReplayWalk>>()
+
+    /// Each project's newest walk taken after a wait (`replayAwaiting`), with the
+    /// `pendingVersion` it was taken at: the files that waited for one check share it.
+    let rewalks = ConcurrentDictionary<string, int64 * Lazy<ReplayWalk>>()
+
+    let walkKeyOf (options: FSharpProjectOptions) =
+        $"%s{options.ProjectFileName}|%s{getProjectOptionsHashRelativeTo repoRoot options}"
+
+    /// The generation's walk of `options`' project.
+    let replayWalkOf (store: OutcomeStore.Store) (options: FSharpProjectOptions) =
+        replayWalks.GetOrAdd(walkKeyOf options, fun _ -> lazy (walkForReplay store options)).Value
+
+    /// A walk of `options`' project at least as new as every check pending now.
+    let rewalkOf (store: OutcomeStore.Store) (options: FSharpProjectOptions) =
+        let version = Volatile.Read &pendingVersion
+
+        let _, walk =
+            rewalks.AddOrUpdate(
+                walkKeyOf options,
+                (fun _ -> version, lazy (walkForReplay store options)),
+                fun _ (taken, walk) ->
+                    if taken >= version then
+                        taken, walk
+                    else
+                        version, lazy (walkForReplay store options)
+            )
+
+        walk.Value
+
+    /// The checks a caller dispatched together (`ExpectChecks`), by (file, project), each
+    /// completed when that file's check returns.
+    let expectedChecks =
+        ConcurrentDictionary<struct (string * string), Tasks.TaskCompletionSource<unit>>()
+
+    /// What a file whose walk missed does before it is checked in FCS. It looks at the
+    /// first file before it in its project with no record, when the file before that one
+    /// was answered from the store:
+    /// - that file's check is pending now, and the walk is older than it: walk again;
+    /// - its check is dispatched (`ExpectChecks`) and has not returned: wait for it, then
+    ///   walk again.
+    /// When that check declared the API signature its record had, the file is keyed as
+    /// before and replays. When it declared another, the next miss has a pending file
+    /// before it, so nothing waits for it: the files after an API change are checked at
+    /// once, as without check records. A miss at a project's first file, or after a file
+    /// that is not in the store, waits for nothing and walks no more, so a cold scan, with
+    /// no record at all, costs what it did.
+    let afterMiss (walk: ReplayWalk) (absPath: string) (options: FSharpProjectOptions) =
+        let before = walk.Records |> List.takeWhile (fun record -> record.File <> absPath)
+
+        if before.Length = walk.Records.Length then
+            AfterMiss.Check
+        else
+            let before = Array.ofList before
+
+            match before |> Array.tryFindIndex (fun record -> record.Outputs.IsNone) with
+            | Some index when index > 0 && not (walk.FromPending.Contains before[index - 1].File) ->
+                let slot = struct (before[index].File, options.ProjectFileName)
+
+                match expectedChecks.TryGetValue slot with
+                | true, expected when not expected.Task.IsCompleted -> AfterMiss.WaitFor expected.Task
+                | _ when pendingRecords.ContainsKey slot && walk.Version < Volatile.Read &pendingVersion ->
+                    AfterMiss.WalkAgain
+                | _ -> AfterMiss.Check
+            | _ -> AfterMiss.Check
 
     /// What a filed `check` record answers for `absPath`, as a `Replayed` result; None
     /// without a store or a record, or when the bytes on disk are not the bytes it keys.
-    let replayFromRecords (absPath: string) (options: FSharpProjectOptions) (contentHash: string) =
+    let replayFrom (walk: ReplayWalk) (absPath: string) (options: FSharpProjectOptions) (contentHash: string) =
+        match Map.tryFind absPath walk.ByFile with
+        | Some { Key = key; Outputs = Some outputs } when key.Inputs |> List.contains ("content", contentHash) ->
+            let openFile = ProjectSnapshots.readOpenFile hashFile absPath
+
+            // The walk keyed these bytes; a file that moved since is a miss, not a replay.
+            if openFile.Version = contentHash then
+                Interlocked.Increment &recordReplays |> ignore
+
+                Some
+                    { File = AbsFilePath.create absPath
+                      Source = openFile.Text
+                      CheckResults = Replayed outputs
+                      ProjectOptions = options
+                      Version = Interlocked.Increment(&nextVersion)
+                      ModelGeneration = None
+                      Frame = None
+                      Placed = Map.empty
+                      Upstream = None }
+            else
+                None
+        | _ -> None
+
+    /// `replayFrom` the generation's walk; on a miss behind a dispatched check of an
+    /// earlier file (`blockingCheck`), wait for that check and look again.
+    let replayAwaiting (absPath: string) (options: FSharpProjectOptions) (contentHash: string) (ct: CancellationToken) =
         match checkRecords with
-        | None -> None
+        | None -> async.Return None
         | Some store ->
-            let walk =
-                replayWalks.GetOrAdd(
-                    $"%s{options.ProjectFileName}|%s{getProjectOptionsHashRelativeTo repoRoot options}",
-                    fun _ ->
-                        lazy
-                            (CheckRecords
-                                .Walk(store, checkToolchain, repoRoot, hashFile, CheckRecords.readOnly)
-                                .Project(options)
-                             |> List.map (fun record -> record.File, record)
-                             |> Map.ofList)
-                )
+            // `walkedAgain`: one walk again per wait, so pending checks that keep arriving
+            // cannot keep a file walking.
+            let rec attempt (walk: ReplayWalk) (walkedAgain: bool) =
+                async {
+                    match replayFrom walk absPath options contentHash with
+                    | Some replayed -> return Some replayed
+                    | None ->
+                        match afterMiss walk absPath options with
+                        | AfterMiss.Check -> return None
+                        | AfterMiss.WalkAgain when walkedAgain -> return None
+                        | AfterMiss.WalkAgain -> return! attempt (rewalkOf store options) true
+                        | AfterMiss.WaitFor earlier ->
+                            do! Async.AwaitTask(earlier.WaitAsync ct)
+                            return! attempt (rewalkOf store options) false
+                }
 
-            match Map.tryFind absPath walk.Value with
-            | Some { Key = key; Outputs = Some outputs } when key.Inputs |> List.contains ("content", contentHash) ->
-                let openFile = ProjectSnapshots.readOpenFile hashFile absPath
+            attempt (replayWalkOf store options) false
 
-                // The walk keyed these bytes; a file that moved since is a miss, not a replay.
-                if openFile.Version = contentHash then
-                    Interlocked.Increment &recordReplays |> ignore
-
-                    Some
-                        { File = AbsFilePath.create absPath
-                          Source = openFile.Text
-                          CheckResults = Replayed outputs
-                          ProjectOptions = options
-                          Version = Interlocked.Increment(&nextVersion)
-                          ModelGeneration = None
-                          Frame = None
-                          Placed = Map.empty
-                          Upstream = None }
-                else
-                    None
-            | _ -> None
+    /// The check of `absPath` in `projectFile` has returned: whatever waits for it looks again.
+    let settleExpected (absPath: string) (projectFile: string) =
+        match expectedChecks.TryGetValue(struct (absPath, projectFile)) with
+        | true, expected -> expected.TrySetResult() |> ignore
+        | _ -> ()
 
     member _.NextVersion() = Interlocked.Increment(&nextVersion)
+
+    /// Declare checks about to be dispatched together, by file and project file. A file
+    /// whose record misses only because an earlier file of its project has none waits for
+    /// that file's check, when it is one of these, and then looks again (AUTOMATION-1507).
+    /// Call `EndExpectedChecks` once the dispatch is over, however it ended.
+    member _.ExpectChecks(slots: (AbsFilePath * string) list) : unit =
+        for file, projectFile in slots do
+            expectedChecks.TryAdd(
+                struct (AbsFilePath.value file, projectFile),
+                Tasks.TaskCompletionSource<unit>(Tasks.TaskCreationOptions.RunContinuationsAsynchronously)
+            )
+            |> ignore
+
+    /// End every expectation `ExpectChecks` declared: a file still waiting for a check
+    /// that never ran looks again and, missing, is checked.
+    member _.EndExpectedChecks() : unit =
+        for KeyValue(_, expected) in expectedChecks do
+            expected.TrySetResult() |> ignore
+
+        expectedChecks.Clear()
 
     /// File every pending check whose inputs still hold as a `check` record, each project
     /// after the projects it references and each file after the files before it, so each
@@ -662,7 +830,9 @@ type CheckPipeline
 
             // New records: the next replay walks the store again.
             if filed > 0 then
+                storeReads.Clear()
                 replayWalks.Clear()
+                rewalks.Clear()
 
             filed
 
@@ -775,7 +945,9 @@ type CheckPipeline
     /// Logged once per distinct warning.
     member _.BeginGeneration() =
         upstreamFingerprints.BeginGeneration()
+        storeReads.Clear()
         replayWalks.Clear()
+        rewalks.Clear()
 
         match cacheBackend with
         | Some(:? IScopedCheckCache as scoped) ->
@@ -822,7 +994,9 @@ type CheckPipeline
         projectOptionsByProject.Clear()
         projectOptionsHashCache.Clear()
 
+        storeReads.Clear()
         replayWalks.Clear()
+        rewalks.Clear()
 
         if clearCheckCache then
             cacheBackend |> Option.iter (fun b -> b.Clear())
@@ -1346,7 +1520,19 @@ type CheckPipeline
     /// Every result, served or checked, records the API signature it declares
     /// (`ApiSignature.ofCheck`), so the files after it can be keyed by it, with or without
     /// a cache.
+    /// `CheckFileCachedCore`, and once it returns, however it ends, whatever waits for this
+    /// file's check (`ExpectChecks`) looks again.
     member private this.CheckFileCached
+        (absPath: string, options: FSharpProjectOptions, ct: CancellationToken, ticket: int64, replay: bool)
+        : Async<FileCheckResult option> =
+        async {
+            try
+                return! this.CheckFileCachedCore(absPath, options, ct, ticket, replay)
+            finally
+                settleExpected absPath options.ProjectFileName
+        }
+
+    member private this.CheckFileCachedCore
         (absPath: string, options: FSharpProjectOptions, ct: CancellationToken, ticket: int64, replay: bool)
         : Async<FileCheckResult option> =
         async {
@@ -1417,10 +1603,10 @@ type CheckPipeline
 
                 // Missed in memory: a filed `check` record for exactly these inputs answers
                 // without FCS (ADR-059 §17), unless the caller demands a live check.
-                let cached =
+                let! cached =
                     match cached with
-                    | None when replay -> replayFromRecords absPath options contentHash
-                    | other -> other
+                    | None when replay -> replayAwaiting absPath options contentHash ct
+                    | other -> async.Return other
 
                 match cached with
                 | Some cached ->
@@ -1475,7 +1661,9 @@ type CheckPipeline
                                           OptionsHash = getProjectOptionsHashRelativeTo repoRoot options
                                           ContentUpstream = contentUpstream
                                           ProjectOutputs = outputs
-                                          Outputs = checkOutputs })
+                                          Outputs = checkOutputs }
+
+                                    Interlocked.Increment &pendingVersion |> ignore)
 
                             match cacheBackend, cacheKey with
                             | Some backend, Some key ->

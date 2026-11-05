@@ -1358,6 +1358,57 @@ records on, then forced:
 
 `replay-gate` said AGREE for both.
 
+## 30. Amendment (AUTOMATION-1507): the early cutoff at a restart
+
+§14 made the API-signature cutoff mandatory, and phase 1 said to "lazily re-check the misses in
+dependency order". §28 measured that a restart did not: after one edit inside a function body, the
+1949 files after the edited one, in its project and downstream, started their FCS checks at the same
+moment as the edited file, and 1948 of them reproduced records already on file.
+
+**Cause.** A scan dispatches every file of a project at once. Each file's record was looked up by a
+walk of the store taken before the edited file had been checked. In that walk the edited file has
+no record, so it is named by its content, and every file after it, and every project referencing
+its project, is keyed differently from its record. Nothing looked again once the edited file's
+check had declared its signature, because records are filed only when the scan ends.
+
+**Decision.**
+
+- A replay walk names a file the store has no record of by a check of this pipeline that is pending
+  and still holds: exactly what `PersistCheckRecords` would file, under the same canonical key. So a
+  file after it is keyed by the signature the edited file just declared. Projects downstream are
+  checked after the projects they reference, so their walks see it at once.
+- A scan declares the checks it dispatches (`ExpectChecks`). A file whose record misses waits for
+  the first file before it in its project that has no record, when that file's check is dispatched,
+  has not returned, and the file before it was answered from the store. Then it walks again.
+- When the edited file declares the signature its record had, the files after it replay. When it
+  declares another, the next miss follows a pending file, so nothing waits for it, and the files
+  after an API change are checked at once, as without records. A miss at a project's first file
+  waits for nothing, so a cold scan, with no record at all, costs what it did.
+
+Waiting cannot deadlock a scan. The scan queues each project's files in compile order and takes
+them first in, first out, so a file a check waits for was taken before it. `EndExpectedChecks`
+releases any wait when the dispatch ends, however it ended.
+
+What it does not change is what a replay may answer. A replayed result is still found only under
+the key of the inputs it was produced from. A file with errors has no API signature, so it is named
+by its content and nothing after it is cut off. `CheckRecordsTests` pins the cutoff in a project and
+downstream, against a forced re-check, and the API edit and the file with errors as the positive
+controls. `CheckRecordsRestartTests` pins it for a real daemon: a body-only edit while the daemon is
+stopped starts 1 FCS check (3 before), while the API edit beside it still starts 3.
+
+**Measured** with `fshw-bench replay` on FsHotWatch: main 0a3ab019, then a commit that edits one
+function body in `StringHelpers.fs` (the API is unchanged). Each step ran records on, then forced;
+one fresh cache home per binary.
+
+| the edit step | main (0a3ab019) | AUTOMATION-1507 |
+|---|---|---|
+| checks replayed / FCS checks started | 229 / 504 | 732 / 1 |
+| FCS scan, build done to all checked | 48 s | 3 s |
+| new check records filed | 1 | 1 |
+| verdict, shadow lookup | green, agree | green, agree |
+
+`replay-gate` said AGREE on both steps for both binaries.
+
 ## 31. Amendment (AUTOMATION-1506): the byte budget holds what one large tree files
 
 §28 traced the 119 files B demanded to TestPrune analysis records missing from the store. A filed

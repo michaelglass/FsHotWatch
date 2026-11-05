@@ -4796,6 +4796,11 @@ let private performScan
                 let thunks =
                     System.Collections.Generic.Dictionary<AbsFilePath, Async<FileCheckResult option>>()
 
+                // Each dispatched file with its project, declared to the pipeline before any
+                // check starts: a file whose record misses only for want of an earlier file's
+                // signature waits for that file's check (`CheckPipeline.ExpectChecks`).
+                let expected = ResizeArray<AbsFilePath * string>()
+
                 // Decided for every project before any check starts, in tier order, so the
                 // first project to claim a file is still the most upstream one.
                 let work =
@@ -4838,7 +4843,9 @@ let private performScan
                                   for absFile in fresh do
                                       thunks[absFile] <-
                                           match projectOptions with
-                                          | Some options -> pipeline.CheckFileWithOptions(absFile, options, ct)
+                                          | Some options ->
+                                              expected.Add((absFile, options.ProjectFileName))
+                                              pipeline.CheckFileWithOptions(absFile, options, ct)
                                           | None -> pipeline.CheckFile(absFile, ct)
 
                                   { Key = proj
@@ -4898,14 +4905,22 @@ let private performScan
                                             scanProgress scanning.ScanState total completed System.DateTime.UtcNow })
                     )
 
+                pipeline.ExpectChecks(List.ofSeq expected)
+
                 let! outcome =
-                    runDependentChecks
-                        scanRetryBudget
-                        ctx.Pipeline.CheckConcurrencyBound
-                        (fun _ f -> thunks[f])
-                        emitChecked
-                        work
-                    |> CheckCaller.withinBulk "scan"
+                    async {
+                        try
+                            return!
+                                runDependentChecks
+                                    scanRetryBudget
+                                    ctx.Pipeline.CheckConcurrencyBound
+                                    (fun _ f -> thunks[f])
+                                    emitChecked
+                                    work
+                                |> CheckCaller.withinBulk "scan"
+                        finally
+                            pipeline.EndExpectedChecks()
+                    }
 
                 match outcome with
                 | ScanCheckOutcome.AllChecked _ -> ()
