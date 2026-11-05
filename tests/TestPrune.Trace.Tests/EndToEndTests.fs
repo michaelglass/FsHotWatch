@@ -546,3 +546,19 @@ let ``adding a nullary case reselects every test that enumerates the union, and 
         @>
 
     test <@ not (s.Selected.ContainsKey(key "a test that never reflects")) @>
+
+[<Fact>]
+let ``ingestion stores the inputs its fingerprint was computed from`` () =
+    // AUTOMATION-1497: so a prediction miss can name the component that differed.
+    let e = run.Value
+    let fp = e.Summary.EnvFingerprint.Value
+    let json = e.Store.FingerprintInputs fp
+
+    test <@ json.IsSome @>
+
+    let hash =
+        Convert
+            .ToHexString(Security.Cryptography.SHA256.HashData(Text.Encoding.UTF8.GetBytes(json.Value: string)))
+            .ToLowerInvariant()
+
+    test <@ hash = fp @>

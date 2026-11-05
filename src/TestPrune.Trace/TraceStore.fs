@@ -411,6 +411,12 @@ let internal migrations: (int * string) list =
           test_project TEXT NOT NULL,
           test_name TEXT NOT NULL,
           PRIMARY KEY (test_project, test_name)) WITHOUT ROWID;
+      """
+      7,
+      """
+      CREATE TABLE fingerprint_inputs (
+          env_fingerprint TEXT PRIMARY KEY,
+          inputs TEXT NOT NULL) WITHOUT ROWID;
       """ ]
 
 /// Versions must start at 1 and increase by exactly one, so "apply every entry above the
@@ -1043,6 +1049,25 @@ type Store private (conn: SqliteConnection) =
             "SELECT run_id, test_key FROM shadow_misses WHERE test_project = @p ORDER BY id"
             [ "@p", box testProject ]
             (fun r -> r.GetString 0, r.GetString 1)
+
+    /// Keep the canonical inputs (`Fingerprint.toJson`) a fingerprint was computed from, under it.
+    /// A fingerprint is the hash of those inputs, so a second record of it is the same row.
+    member _.RecordFingerprintInputs(envFingerprint: string, inputsJson: string) : unit =
+        inTransaction conn (fun tx ->
+            exec
+                conn
+                tx
+                "INSERT OR IGNORE INTO fingerprint_inputs (env_fingerprint, inputs) VALUES (@e, @i)"
+                [ "@e", box envFingerprint; "@i", box inputsJson ])
+
+    /// The canonical inputs a fingerprint was computed from, when they were kept.
+    member _.FingerprintInputs(envFingerprint: string) : string option =
+        readRows
+            conn
+            "SELECT inputs FROM fingerprint_inputs WHERE env_fingerprint = @e"
+            [ "@e", box envFingerprint ]
+            (fun r -> r.GetString 0)
+        |> List.tryHead
 
     /// Replace a project's file gaps with `names` (`FileCensus.gaps`, normalised `Class.Method`
     /// names): the latest census is the answer, so an older one is dropped whole.

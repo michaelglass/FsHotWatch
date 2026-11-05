@@ -3822,6 +3822,21 @@ dotnet tool run test-prune-traces shadow-report --project TestPrune.Tests > "$CL
   beside it. FsHotWatch's shadow reads the gaps from the checkout's trace store
   (`tests.traces.db`), where the census must write them.
 
+### Decision D1h (2026-11-05): fingerprint inputs, as landed (Task 4's `fingerprint_inputs`)
+
+- **Content-addressed, not a `trace_runs` column.** A fingerprint is the SHA-256 of its canonical inputs JSON
+  (`Fingerprint.toJson`), so the inputs are kept once under the fingerprint, in `fingerprint_inputs` (trace
+  schema 7). Each run's inputs are reachable through `trace_runs.env_fingerprint`. A *predicted* fingerprint
+  has no run, and a per-run column could not hold it.
+- **Both sides are kept in the checkout's trace store.** Ingestion keeps what the run recorded, and
+  `TraceShadow.predictFingerprint` keeps what it predicted. A failed write loses only the name, never the
+  prediction.
+- **A miss names its component.** At completion a recorded fingerprint other than the predicted one logs
+  `fingerprint prediction missed (predicted P, recorded R): differs in: <fields>` through
+  `Fingerprint.diffJson`, or `inputs not kept` when a side was not kept. The shadow row still stores the
+  outcome only. A `fingerprint_diff` column is left for when shadow-report needs the components in its
+  table.
+
 ## Task D2: Promote TestPrune to live
 
 Only after D1's report exits 0.

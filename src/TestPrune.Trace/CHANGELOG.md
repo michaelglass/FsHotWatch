@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: a fingerprint's inputs are kept (AUTOMATION-1497, plan Task 4). `Store.RecordFingerprintInputs` and
+  `FingerprintInputs` hold each fingerprint's canonical JSON in `fingerprint_inputs` (trace schema 7), and ingestion
+  keeps the run's. `Fingerprint.diffJson` names the fields two stored inputs differ in.
+
 - feat: file-census gaps feed R7 (AUTOMATION-1497, plan Task 9). `FileCensus.gaps` names the tests that depend on
   the repository and recorded no repository input. `Store.RecordFileGaps` and `FileGaps` keep them in
   `trace_file_gaps` (trace schema 6). R7 selects them whenever a changed file no trace claims is not an indexed

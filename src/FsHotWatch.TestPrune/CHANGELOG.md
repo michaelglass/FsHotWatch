@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: a fingerprint prediction miss names the inputs that differed (`fingerprint prediction missed ... differs in:
+  runtime`): the prediction keeps its inputs in the checkout's trace store beside the run's (AUTOMATION-1497).
+
 - feat: trace shadow's R7 also selects the file census's gap tests (`file-census --db`) when an unclaimed
   non-source file changes (AUTOMATION-1497).
 
