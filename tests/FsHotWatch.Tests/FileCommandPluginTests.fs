@@ -798,8 +798,11 @@ let private anyTestTrigger: CommandTrigger =
 /// probe script at the given path.
 type private ProbeCommand = string -> string * string
 
-/// The command the env probes run: the script itself.
-let private probeCommand: ProbeCommand = fun script -> script, ""
+/// The command the env probes run: `sh` reading the script. The script is written just
+/// before it runs, in a suite that forks children in parallel, so a child forked while it
+/// was open for writing may still hold that handle when the probe fires. `sh` only reads
+/// the script; executing it directly is refused on Linux while any handle can write it.
+let private probeCommand: ProbeCommand = fun script -> "sh", script
 
 /// The env-probe harness, given the command the plugin runs and whether the probe script
 /// is still open for writing when that command fires. Temp-dir lifecycle, status budget
@@ -844,17 +847,31 @@ let private runEnvProbeAs
             else
                 None
 
+        // Any terminal, not only Completed: a fire that ended Failed is the answer, and
+        // waiting for a Completed that cannot come would only report the budget.
+        let terminal = beginAwaitTerminal host pluginName
+
         try
             drive host
 
-            waitUntil
-                (fun () ->
-                    match host.GetStatus(pluginName) with
-                    | Some(Completed _) -> true
-                    | _ -> false)
-                8000
+            if not (terminal.Wait HangWait) then
+                raise (
+                    TimeoutException
+                        $"env probe '%s{pluginName}' reached no terminal status within %d{HangWaitMs} ms (status: %A{host.GetStatus pluginName})"
+                )
         finally
             held |> Option.iter (fun stream -> stream.Dispose())
+
+        match terminal.Result with
+        | Failed(error, _, _) ->
+            let reported =
+                host.GetErrorsByPlugin pluginName
+                |> Map.toList
+                |> List.collect (fun (_, entries) -> entries |> List.map (fun entry -> entry.Message))
+
+            failwith
+                $"env probe '%s{pluginName}' ended Failed: %s{error}; reported: %s{String.Join(Environment.NewLine, reported)}"
+        | _ -> ()
 
         test <@ System.IO.File.Exists(outFile) @>
         System.IO.File.ReadAllText(outFile)
