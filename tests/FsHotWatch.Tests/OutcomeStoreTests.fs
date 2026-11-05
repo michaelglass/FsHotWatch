@@ -275,3 +275,39 @@ let ``an action's record carries no test counts, duration or run, and what it wa
                       RunId = None }
                   RecordedAt = t0 }
         @>
+
+// AUTOMATION-1506: GC's evictions were silent. Both callers discard the evicted keys, so on
+// intelligence a cold daemon's first-tier TestPrune analyses were filed, then evicted for
+// bytes within minutes, and a fresh workspace demanded all 119 of them live with nothing in
+// any log to say why.
+[<Fact>]
+let ``gc says in the store's log what it evicted, why, and by kind`` () =
+    withStore 1L (fun _ logged store ->
+        let a = keyFor "sha256:a"
+        let b = keyFor "sha256:b"
+        store.Record(recordOf a Outcome.Pass t0) |> ignore
+        store.Record(recordOf b Outcome.Pass (t0.AddMinutes 1.0)) |> ignore
+        store.Gc(t0.AddMinutes 2.0, Set.empty) |> ignore
+        let lines = logged () |> List.filter (fun l -> l.Contains "evicted")
+        test <@ lines.Length = 1 @>
+        test <@ lines.Head.Contains "evicted 2 key(s)" @>
+        test <@ lines.Head.Contains "0 past the ttl, 2 over the byte budget" @>
+        test <@ lines.Head.Contains "test 2" @>)
+
+[<Fact>]
+let ``gc that evicts nothing logs nothing`` () =
+    withStore 1_000_000L (fun _ logged store ->
+        store.Record(recordOf (keyFor "sha256:a") Outcome.Pass t0) |> ignore
+        store.Gc(t0.AddMinutes 1.0, Set.empty) |> ignore
+        test <@ logged () |> List.filter (fun l -> l.Contains "evicted") |> List.isEmpty @>)
+
+// AUTOMATION-1506, measured on intelligence (2731 checked files) at fshotwatch.cli
+// 0.14.0-alpha.137: one tree's TestPrune analysis records alone are about 250 MB on disk
+// (about 120 KB a file), so with check, format and options records one tree is about 300 MB,
+// over the 256 MB budget before a single check finished. GC then evicted the oldest keys of
+// the very tree the daemon had just filed. The budget must hold several such trees, because
+// workspaces of the same repository at different trees share the store.
+[<Fact>]
+let ``the default byte budget holds four intelligence-sized trees`` () =
+    let oneTree = 340L * 1024L * 1024L
+    test <@ defaultMaxBytes >= 4L * oneTree @>
