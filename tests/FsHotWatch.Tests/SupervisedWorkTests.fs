@@ -742,3 +742,51 @@ let ``disposing a declaration twice ends it once`` () =
 
     Assert.Equal(1, disarmed.Value)
     Assert.Empty(store.Snapshot.OperationsInFlight)
+
+/// AUTOMATION-1509: `Queue.Close` cancels a live request with `CancelAsync`, which marks the
+/// owner's token at once but runs its callbacks later on the pool. `execute`'s own token is
+/// linked to the owner's through one of those callbacks, so a work that returned before the
+/// pool ran it was refused by nothing: the closed queue's receipt completed Ok, and
+/// DebouncedWorkTests' close test failed under load. Here a callback registered after the
+/// link (callbacks run newest first) holds the pool thread, so the link is deterministically
+/// still pending when the work returns.
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``an owner's cancellation requested before the work returns refuses its success while the link is pending`` () =
+    use owner = new CancellationTokenSource()
+    use gate = new ManualResetEventSlim(false)
+    use holding = new ManualResetEventSlim(false)
+
+    try
+        let outcome =
+            SupervisedWork.execute
+                "owner"
+                (TimeSpan.FromMinutes 1.0)
+                SupervisedWork.defaultScheduler
+                ignore
+                owner.Token
+                (fun token ->
+                    async {
+                        // Never disposed: disposing a registration whose callback is running
+                        // waits for it, and this one waits for the gate.
+                        owner.Token.Register(fun () ->
+                            holding.Set()
+                            gate.Wait(FsHotWatch.Tests.TestHelpers.HangWait) |> ignore)
+                        |> ignore
+
+                        owner.CancelAsync() |> ignore
+                        Assert.True(holding.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
+                        // The precondition this test is about: the owner is cancelled, the link is not.
+                        Assert.True(owner.IsCancellationRequested)
+                        Assert.False(token.IsCancellationRequested)
+                        return 1
+                    })
+                (fun outcome release ->
+                    release ()
+                    outcome)
+            |> Async.RunSynchronously
+
+        match outcome with
+        | Error(:? OperationCanceledException) -> ()
+        | other -> failwith $"an owner cancelled before the work returned must refuse its success, got %A{other}"
+    finally
+        gate.Set()
