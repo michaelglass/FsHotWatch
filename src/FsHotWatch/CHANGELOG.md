@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: the "NO timeout" warning is logged when a child with neither a timeout nor a launch deadline
+  is spawned, and names its command ("spawning `sh` with NO timeout"). It was logged when
+  `ProcessBounds.silent` built the bounds, so a file command logged it at registration, before any
+  child existed, and named none.
+
 ## 0.10.0-alpha.105 - 2026-11-04
 
 - Finish: AUTOMATION-1489 the wedge monitor reads the host's awake stamps, the age fshw status reads
