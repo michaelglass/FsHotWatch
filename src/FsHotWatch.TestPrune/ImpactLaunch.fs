@@ -381,6 +381,18 @@ let internal selectForLaunch
                 (fun project -> symbols.GetTestMethodsInProjects [ project ])
                 (lazy (TestPrune.Trace.TraceIngest.versionHashes symbols))
                 affectedTestsList
+                // R6 walks a seed traces cannot verify with the static selection's own
+                // query; R7 applies the static file rules to changed files no trace claims.
+                { Seeds = Set.toList launchedSymbols
+                  ChangedFiles = inputs.ChangedFiles
+                  StaticWalk = queries.AffectedTests
+                  FileFallback =
+                    fun files ->
+                        match selectTests symbols files Map.empty |> fst with
+                        | RunAll _ -> None
+                        | RunSubset tests -> Some tests
+                  IsIndexed = fun file -> (symbols.GetFileKey file).IsSome
+                  AttributesOf = fun symbol -> symbols.GetAttributesForSymbol symbol |> List.map fst }
                 (Logging.info "test-prune")
         | _ -> []
 
