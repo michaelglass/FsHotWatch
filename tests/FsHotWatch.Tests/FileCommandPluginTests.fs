@@ -1034,15 +1034,21 @@ let ``a command that stays busy fails after a bounded number of tries`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = SyncHangBackstopMs)>]
-let ``a command refused for any other reason is not started again`` () =
+/// A spawn failure that is not a busy refusal: another OS refusal, or a failure that is
+/// not the OS's at all.
+let private otherRefusal (name: string) : unit -> exn =
+    match name with
+    | "not-found" -> fun () -> System.ComponentModel.Win32Exception(2, "No such file or directory") :> exn
+    | _ -> fun () -> InvalidOperationException "the spawn broke" :> exn
+
+[<Theory(Timeout = SyncHangBackstopMs)>]
+[<InlineData("not-found")>]
+[<InlineData("not-an-os-refusal")>]
+let ``a command refused for any other reason is not started again`` (refusal: string) =
     let calls = ref 0
 
-    let notFound () =
-        System.ComponentModel.Win32Exception(2, "No such file or directory") :> exn
-
     let status, pauses =
-        fireWith "not-found" (refusingFirst Int32.MaxValue notFound calls) ignore "true" "/tmp"
+        fireWith refusal (refusingFirst Int32.MaxValue (otherRefusal refusal) calls) ignore "true" "/tmp"
 
     test <@ calls.Value = 1 @>
     test <@ List.isEmpty pauses @>

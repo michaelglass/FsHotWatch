@@ -219,8 +219,42 @@ let internal computeArgsSalt (repoRoot: string) (command: string) (args: string)
 /// How the plugin starts its command: `runProcess`'s shape, so a test can stand in for it.
 type internal Spawn = string -> string -> string -> (string * string) list -> ProcessBounds -> ProcessOutcome
 
-/// Run `spawn`, pausing with `pause` between attempts the OS refused.
-let internal spawnRetryingBusy (_pause: int -> unit) (spawn: unit -> 'T) : 'T = spawn ()
+/// `ETXTBSY`: the OS refused to execute a file that is open for writing. Linux and macOS
+/// both number it 26.
+[<Literal>]
+let private TextFileBusy = 26
+
+/// Whether a spawn failed because the command's file was open for writing.
+let internal isTextFileBusy (failure: exn) =
+    match failure with
+    | :? System.ComponentModel.Win32Exception as refused -> refused.NativeErrorCode = TextFileBusy
+    | _ -> false
+
+/// The pauses, in ms, before each new start of a command refused as busy. A user's script
+/// may be regenerated just before it runs, and a child the daemon forked meanwhile keeps
+/// a copy of the write handle until that child execs, which takes microseconds, or a few
+/// milliseconds on a loaded box. Under a second in all, then the refusal is the answer.
+let internal BusyRetryPauses = [ 25; 50; 100; 200; 400 ]
+
+/// Run `spawn`, starting it again after each of `BusyRetryPauses` while the OS refuses it
+/// as busy. Any other failure, and a refusal after the last pause, is raised as it came.
+let internal spawnRetryingBusy (pause: int -> unit) (spawn: unit -> 'T) : 'T =
+    let rec attempt (pauses: int list) =
+        match pauses with
+        | [] -> spawn ()
+        | next :: rest ->
+            match
+                (try
+                    Result.Ok(spawn ())
+                 with failure when isTextFileBusy failure ->
+                     Result.Error failure)
+            with
+            | Result.Ok outcome -> outcome
+            | Result.Error _ ->
+                pause next
+                attempt rest
+
+    attempt BusyRetryPauses
 
 /// `create`, with the spawn and the pause between refused spawns injected.
 let internal createWith

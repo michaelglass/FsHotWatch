@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a command the OS refuses to start because its file is open for writing (`ETXTBSY`, "Text
+  file busy") is started again after a short pause, up to five times (under a second in all),
+  instead of failing the run. A script regenerated just before it runs hits this when the daemon
+  forks another child meanwhile: that child holds the write handle until it execs. Any other
+  refusal fails at once, as before.
+
 ## 0.7.0-alpha.28 - 2026-11-02
 
 - feat: a file command's `<name>-status` declares its reply schema (`file-command/status-v1`).
