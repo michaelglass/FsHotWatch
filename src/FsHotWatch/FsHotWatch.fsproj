@@ -100,6 +100,7 @@
     <Compile Include="FileTaskCache.fs" />
     <Compile Include="DotnetToolchain.fs" />
     <Compile Include="RepoIdentity.fs" />
+    <Compile Include="NamespaceReclaim.fs" />
     <Compile Include="CacheResidency.fs" />
     <Compile Include="PluginWorkOwner.fs" />
     <Compile Include="RunClaim.fs" />
