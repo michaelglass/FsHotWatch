@@ -535,22 +535,48 @@ let reconcile (plan: Plan) (repoRoot: string) (reused: Map<string, TestEvidenceS
             project,
             $"""reused evidence no longer matches this tree (key moved during the run: %s{String.concat ", " labels}) — not counted; it runs next""") }
 
+/// The run `publish` judges for a project: the result it reported, built by `produce`, unless
+/// it has no result in this run or earned its green on a re-run under starvation, which the
+/// stored evidence could not say.
+let producedRunOf
+    (result: TestResult option)
+    (rerun: bool)
+    (produce: TestResult -> ProducedRun)
+    : Result<ProducedRun, string> =
+    match result with
+    | None -> Error "it has no result in this run"
+    | Some _ when rerun -> Error "its green was earned on a re-run under starvation"
+    | Some result -> Ok(produce result)
+
+/// What `publish` did with each project the run launched: how many greens it filed, and
+/// every launched project it filed nothing for, with the reason.
+type Published =
+    { Written: int
+      Withheld: (string * string) list }
+
 /// Publish every green `runOf` reports that `qualifies`, against the completion keys of
 /// `reconciled`. Runs AFTER the run's own results are final — coverage that failed to
 /// ingest has already made its project non-green — and never for a reused project.
-/// Returns how many were written.
+/// `runOf` is `Error` naming why a project has no run to judge.
 let publish
     (plan: Plan)
     (repoRoot: string)
     (reconciled: Reconciled)
     (reused: Map<string, TestEvidenceStore.Entry>)
-    (runOf: Candidate -> ProducedRun option)
+    (runOf: Candidate -> Result<ProducedRun, string>)
     (producer: TestEvidenceStore.Producer)
-    : int =
-    let launched =
+    : Published =
+    let judged =
         plan.Candidates
         |> List.filter (fun c -> not (reused.ContainsKey c.Project))
-        |> List.choose (fun c -> runOf c |> Option.map (fun run -> c, run))
+        |> List.map (fun c -> c, runOf c)
+
+    let launched =
+        judged
+        |> List.choose (fun (c, run) ->
+            match run with
+            | Ok run -> Some(c, run)
+            | Error _ -> None)
 
     match plan.Wiring.Outcomes with
     | Some outcomes ->
@@ -574,21 +600,36 @@ let publish
         outcomes.Gc(producer.EarnedAt, Set.ofList filed) |> ignore
     | None -> ()
 
-    launched
-    |> List.filter (fun (candidate, run) ->
-        match
-            qualifies
-                (Map.tryFind candidate.Project plan.LaunchKeys)
-                (Map.tryFind candidate.Project reconciled.Keys)
-                run
-        with
-        | Ok key -> plan.Wiring.Store.Write(entryOf repoRoot candidate key producer run)
-        | Error why ->
-            Logging.debug "test-prune" $"%s{candidate.Project}: no test evidence written: %s{why}"
-            false)
-    |> List.length
+    let outcomes =
+        judged
+        |> List.map (fun (candidate, run) ->
+            candidate.Project,
+            run
+            |> Result.bind (fun run ->
+                qualifies
+                    (Map.tryFind candidate.Project plan.LaunchKeys)
+                    (Map.tryFind candidate.Project reconciled.Keys)
+                    run
+                |> Result.bind (fun key ->
+                    if plan.Wiring.Store.Write(entryOf repoRoot candidate key producer run) then
+                        Ok()
+                    else
+                        Error "the evidence store did not file it")))
+
+    { Written = outcomes |> List.filter (snd >> Result.isOk) |> List.length
+      Withheld =
+        outcomes
+        |> List.choose (fun (project, outcome) ->
+            match outcome with
+            | Ok() -> None
+            | Error why -> Some(project, why)) }
+
+/// One log line per project a run filed no evidence for, naming why (AUTOMATION-1511).
+let withheldLines (published: Published) : string list =
+    published.Withheld
+    |> List.map (fun (project, why) -> $"%s{project}: no test evidence written — %s{why}")
 
 /// The tally a run logs: what it reused, what it launched for want of evidence, and what
 /// it published.
-let tally (plan: Plan) (reconciled: Reconciled) (written: int) =
-    $"test evidence: reused %d{Map.count reconciled.Held}, moved %d{reconciled.Withdrawn.Length}, missed %d{Map.count plan.Misses}, written %d{written} (%d{plan.Lookups} lookup(s), %d{plan.BytesHashed} byte(s) hashed at launch)"
+let tally (plan: Plan) (reconciled: Reconciled) (published: Published) =
+    $"test evidence: reused %d{Map.count reconciled.Held}, moved %d{reconciled.Withdrawn.Length}, missed %d{Map.count plan.Misses}, written %d{published.Written}, withheld %d{published.Withheld.Length} (%d{plan.Lookups} lookup(s), %d{plan.BytesHashed} byte(s) hashed at launch)"

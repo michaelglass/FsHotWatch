@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: a test run logs one line for each launched project it filed no test evidence for, naming why (`<project>:
+  no test evidence written — the run was filtered`), and the evidence tally counts them (`withheld N`)
+  (AUTOMATION-1511). The reason was logged at debug only, so a project that never got evidence (an impact-filtered
+  run, a key that moved, a starvation re-run) could not be told from a defect. BREAKING (API):
+  `TestEvidenceRun.publish` takes `runOf` returning `Result` and returns `Published`; `tally` takes `Published`.
+
 - fix: test evidence is keyed once `beforeRun` has run, over the tree the tests run against (AUTOMATION-1510).
   A `beforeRun` that generates a file the tests read (a bundle) moved every key it covered while the run was in
   flight, so a fresh checkout's first run published nothing and the next fresh checkout looked up a key no run

@@ -438,3 +438,153 @@ let ``the canonical config writes every field in full, however long`` () =
     // `weight` decides when a host is admitted, never what it runs: it is no part of the key
     // (AUTOMATION-1299, ADR-053).
     test <@ FsHotWatch.TestPrune.PluginTypes.canonicalTestConfig { config "a" with Weight = 3.0 } = a @>
+
+[<Fact>]
+let ``every launched project that publishes nothing is named once with the reason it was withheld`` () =
+    // AUTOMATION-1511: the reason a green was not published was logged at debug, so a
+    // daemon log at the default level could not say why a project never got evidence.
+    FsHotWatch.Tests.TestHelpers.withTempDir "evwithheld" (fun dir ->
+        let store =
+            TestEvidenceStore.Store(
+                { Root = IO.Path.Combine(dir, "store")
+                  Ttl = TimeSpan.FromHours 72.0
+                  MaxBytes = 64L * 1024L * 1024L
+                  Now = fun () -> DateTimeOffset.UtcNow
+                  Log = ignore }
+            )
+
+        let candidate name : TestEvidenceRun.Candidate =
+            { Project = name
+              ProjectFile = IO.Path.Combine(dir, "tests", name, name + ".fsproj")
+              Closure = []
+              TestConfig = "{}" }
+
+        let candidates =
+            [ "Filtered"; "Green"; "Missing"; "Moved"; "Rerun" ] |> List.map candidate
+
+        let plan: TestEvidenceRun.Plan =
+            { Wiring =
+                { Store = store
+                  Configs = Map.empty
+                  Toolchain = lazy "t"
+                  Loaded = TestEvidenceKey.LoadedEnvironment.empty
+                  ProducerHash = "p"
+                  ExcludePatterns = []
+                  Outcomes = None }
+              OptionsHash = fun _ -> Some "o"
+              Candidates = candidates
+              LaunchKeys = candidates |> List.map (fun c -> c.Project, key "c") |> Map.ofList
+              Reused = Map.empty
+              Misses = Map.empty
+              Lookups = 0
+              BytesHashed = 0L }
+
+        let reconciled: TestEvidenceRun.Reconciled =
+            { Keys =
+                candidates
+                |> List.map (fun c -> c.Project, (if c.Project = "Moved" then key "d" else key "c"))
+                |> Map.ofList
+              Held = Map.empty
+              Withdrawn = [] }
+
+        let runOf (c: TestEvidenceRun.Candidate) : Result<TestEvidenceRun.ProducedRun, string> =
+            match c.Project with
+            | "Missing" -> Error "it has no result in this run"
+            | "Rerun" -> Error "its green was earned on a re-run under starvation"
+            | "Filtered" ->
+                Ok
+                    { green with
+                        Project = c.Project
+                        Result = TestsPassed("", true, TimeSpan.Zero) }
+            | _ -> Ok { green with Project = c.Project }
+
+        let producer: TestEvidenceStore.Producer =
+            { Worktree = dir
+              RunId = "r"
+              TreeHash = "t"
+              ProducerHash = "p"
+              EarnedAt = DateTimeOffset.UtcNow }
+
+        let published = TestEvidenceRun.publish plan dir reconciled Map.empty runOf producer
+
+        test <@ published.Written = 1 @>
+
+        test
+            <@
+                TestEvidenceRun.withheldLines published = [ "Filtered: no test evidence written — the run was filtered"
+                                                            "Missing: no test evidence written — it has no result in this run"
+                                                            "Moved: no test evidence written — the tree moved during the run"
+                                                            "Rerun: no test evidence written — its green was earned on a re-run under starvation" ]
+            @>)
+
+[<Fact>]
+let ``a project with no result, or a green earned on a starvation re-run, has no run to judge`` () =
+    let produce (result: TestResult) = { green with Result = result }
+    let passed = TestsPassed("", false, TimeSpan.Zero)
+
+    test <@ TestEvidenceRun.producedRunOf None false produce = Error "it has no result in this run" @>
+
+    test
+        <@
+            TestEvidenceRun.producedRunOf (Some passed) true produce = Error
+                "its green was earned on a re-run under starvation"
+        @>
+
+    test <@ TestEvidenceRun.producedRunOf (Some passed) false produce = Ok(produce passed) @>
+
+[<Fact>]
+let ``a green the store cannot file is withheld, naming the store`` () =
+    FsHotWatch.Tests.TestHelpers.withTempDir "evunfiled" (fun dir ->
+        // The store's root is a file, so no entry can be written under it.
+        let root = IO.Path.Combine(dir, "store")
+        IO.File.WriteAllText(root, "")
+
+        let store =
+            TestEvidenceStore.Store(
+                { Root = root
+                  Ttl = TimeSpan.FromHours 72.0
+                  MaxBytes = 64L * 1024L * 1024L
+                  Now = fun () -> DateTimeOffset.UtcNow
+                  Log = ignore }
+            )
+
+        let candidate: TestEvidenceRun.Candidate =
+            { Project = "Green"
+              ProjectFile = IO.Path.Combine(dir, "tests", "Green", "Green.fsproj")
+              Closure = []
+              TestConfig = "{}" }
+
+        let plan: TestEvidenceRun.Plan =
+            { Wiring =
+                { Store = store
+                  Configs = Map.empty
+                  Toolchain = lazy "t"
+                  Loaded = TestEvidenceKey.LoadedEnvironment.empty
+                  ProducerHash = "p"
+                  ExcludePatterns = []
+                  Outcomes = None }
+              OptionsHash = fun _ -> Some "o"
+              Candidates = [ candidate ]
+              LaunchKeys = Map.ofList [ "Green", key "c" ]
+              Reused = Map.empty
+              Misses = Map.empty
+              Lookups = 0
+              BytesHashed = 0L }
+
+        let reconciled: TestEvidenceRun.Reconciled =
+            { Keys = Map.ofList [ "Green", key "c" ]
+              Held = Map.empty
+              Withdrawn = [] }
+
+        let producer: TestEvidenceStore.Producer =
+            { Worktree = dir
+              RunId = "r"
+              TreeHash = "t"
+              ProducerHash = "p"
+              EarnedAt = DateTimeOffset.UtcNow }
+
+        let published =
+            TestEvidenceRun.publish plan dir reconciled Map.empty (fun _ -> Ok green) producer
+
+        test <@ published.Written = 0 @>
+        test <@ published.Withheld = [ "Green", "the evidence store did not file it" ] @>)
