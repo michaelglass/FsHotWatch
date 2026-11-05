@@ -207,6 +207,7 @@
     <Compile Include="TestPruneSchemaQuarantineTests.fs" />
     <Compile Include="TestModeSeamTests.fs" />
     <Compile Include="HangCapFloorTests.fs" />
+    <Compile Include="WaitFloorCapTests.fs" />
     <Compile Include="MonotonicDeadlineTests.fs" />
     <Compile Include="ProductDeadlineTests.fs" />
     <Compile Include="StatusAwakeAgeTests.fs" />
