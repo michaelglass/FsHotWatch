@@ -1273,3 +1273,87 @@ Measured with `fshw-bench replay` on 276ae958, second checkout, fresh cache home
 | + AUTOMATION-1482 | 704 of 704 | 0 | none |
 
 The gate said AGREE.
+
+## 28. Amendment (AUTOMATION-1502): a fresh, land-shaped intelligence workspace, measured
+
+§27's second-checkout figures came from this repository's tree. AUTOMATION-1502 measured
+the same sequence on intelligence (25 projects, 2731 checked files), with the fshw it pins
+(0.14.0-alpha.137, which contains 1478, 1479, 1480 and 1482). Every run shared one fresh
+cache home. Workspace A ran a cold `./build.fsx check`, filing records (2731 FCS checks,
+1168 s). Workspace B was then created fresh on the same tree. Workspace C was also fresh,
+with `FSHW_CHECK_RECORDS=0`.
+
+| fresh workspace, same tree | records on (B) | records off (C) |
+|---|---|---|
+| checks replayed / total | 2731 / 2731 | 0 / 2731 |
+| FCS checks started | 119 | 2731 |
+| demanded, by plugin | test-prune 119 | none |
+| FCS scan, build done to all checked | 3 s (+8 s demanded) | 375 s |
+| wall time to verdict | 593 s | 767 s |
+| test projects reused from evidence | first run 0 of 7 (0 lookups), second run 4 of 6 | first run 0 of 7 (0 lookups), second run 6 of 6 |
+| bytes hashed for evidence keys, per test launch | 287 MB | 287 MB |
+
+`replay-gate` on B (records-on run against a forced re-check): AGREE, 1117 diagnostics in
+each, both green.
+
+The 119 are the first check tier's files (8 projects). A analysed them but filed no
+analysis record (AUTOMATION-1506). Most of the wall time is now the first test run: an
+evidence-gap full suite that does not consult the evidence store (AUTOMATION-1508).
+
+**One edit while the daemon is stopped** (a string literal in a function body, compile item
+304 of 655 in the largest project):
+
+| | records on (B) | records off (C) |
+|---|---|---|
+| FCS checks started | 1949 (782 replayed) | 2728 |
+| the CheckRecordsRestartTests bound | 1949 | |
+| new check records filed | 1 | |
+
+The count holds the bound: the edited file, the 351 files after it and the 1597 files of
+its dependents. But 1948 of those checks reproduced records already filed under their
+post-edit keys, because no check waited for the edited file's API signature
+(AUTOMATION-1507).
+
+## 29. Amendment (AUTOMATION-1508): a fresh checkout's first run consults the evidence store
+
+§28 measured where a fresh workspace's time goes once check records replay: its first test run.
+That run is a full suite, because the checkout holds no full-suite baseline (ADR-021), and it made
+no evidence-store lookup. Two rules made it so. A run owed a baseline consulted no evidence, and a
+run that reused anything never earned a baseline. Each existed for the other: a checkout that
+reused but could not earn a baseline would answer "no verdict" for as long as the evidence lasted.
+
+**Decision.** A run owed a baseline looks every project up like any other run, and launches only
+the projects that miss. A full-suite run earns the baseline when every project either ran or held
+its reuse at completion. A held reuse is a K_P hit: a full-project green earned at byte-identical
+inputs (tree, closure, toolchain, options, declared environment), re-keyed when the run completes.
+Every one of its tests ran at exactly these inputs, so the watermark's claim (the tests a later
+filtered run skips were last executed at the baseline) holds. This is §2's rule for every other
+record: a record earned in one checkout speaks for another holding the same bytes.
+
+It does not loosen anything else:
+
+- `confirm`, an explicit full-suite scope and an unreadable verification ledger still make no
+  lookups. Those owe a run of everything, or a full suite that passed here.
+- A reuse whose key moved during the run is withdrawn and reports a deferral. That project is
+  neither passed nor a recorded red, so the run earns no baseline, and the next run looks it up
+  again.
+- A project with an outstanding failure is never looked up.
+
+`TestEvidenceRunTests` pins this. A fresh checkout of an earned tree launches nothing and earns
+its baseline. A non-identical closure, a failing tree and a reuse withdrawn mid-run are the
+guards; the last one earns no baseline. A fresh checkout under `confirm`, or with an unreadable
+ledger, makes no lookup.
+
+**Measured** with `fshw-bench replay` on FsHotWatch 0a3ab019, one fresh cache home per binary.
+Workspace A ran a cold check, filing evidence; a fresh workspace B on the same tree then ran
+records on, then forced:
+
+| B's first check | main (0a3ab019) | AUTOMATION-1508 |
+|---|---|---|
+| evidence lookups | 0 | 3 |
+| projects reused | 0 of 4 | 3 of 4 |
+| test run | 499.5 s | 4.5 s |
+| wall time to verdict | 531 s | 57 s |
+| verdict, shadow lookup | green, agree | green, agree |
+
+`replay-gate` said AGREE for both.
