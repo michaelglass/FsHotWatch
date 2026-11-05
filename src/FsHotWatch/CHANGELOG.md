@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: shared task-cache namespaces nothing uses are reclaimed. Opening a repository's stores (the
+  daemon, `fshw invalidate`) marks its namespace used and removes, at most 64 per pass, the others
+  that are empty after a day or unused for 30 days. Before, nothing removed one, and a harness that
+  made a namespace per run left 40 behind (AUTOMATION-1424).
 - feat: `RefAssemblyFreshness` says whether a project's published reference assembly is the one the
   compiler last wrote, and repairs it (AUTOMATION-1498).
 - fix: the "NO timeout" warning is logged when a child with neither a timeout nor a launch deadline

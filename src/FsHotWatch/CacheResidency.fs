@@ -156,10 +156,26 @@ let openPersistedStores (repoRoot: string) : PersistedTaskStores =
     let local =
         FsHotWatch.FileTaskCache.FileTaskCache(System.IO.Path.Combine(FsHwPaths.root repoRoot, "cache", "tasks"))
 
+    // This repository's namespace is in use, and one bounded pass reclaims the namespaces
+    // nothing uses any more (AUTOMATION-1424): the daemon and `fshw invalidate` both open
+    // their stores here.
+    let sharedDir = sharedStoreDir repoRoot
+    NamespaceReclaim.markUsed sharedDir
+
+    let reclaimed =
+        NamespaceReclaim.reclaimIn
+            (System.IO.Path.GetDirectoryName sharedDir)
+            (System.IO.Path.GetFileName sharedDir)
+            System.DateTime.UtcNow
+
+    if not reclaimed.IsEmpty then
+        Logging.info
+            "cache"
+            $"""reclaimed %d{reclaimed.Length} unused shared cache namespace(s): %s{System.String.Join(", ", reclaimed)}"""
+
     // The shared store is handed the repo root so the paths inside an entry are stored
     // relatively and rebound into whichever checkout reads them back.
-    let shared =
-        FsHotWatch.FileTaskCache.FileTaskCache(sharedStoreDir repoRoot, repoRoot = repoRoot)
+    let shared = FsHotWatch.FileTaskCache.FileTaskCache(sharedDir, repoRoot = repoRoot)
 
     { Local = local
       Shared = shared
