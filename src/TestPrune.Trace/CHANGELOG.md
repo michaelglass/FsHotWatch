@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: file-census gaps feed R7 (AUTOMATION-1497, plan Task 9). `FileCensus.gaps` names the tests that depend on
+  the repository and recorded no repository input. `Store.RecordFileGaps` and `FileGaps` keep them in
+  `trace_file_gaps` (trace schema 6). R7 selects them whenever a changed file no trace claims is not an indexed
+  source. BREAKING (API): `TraceSelect.Fallbacks` has `FileGaps`.
+
 - feat: reflection inputs and union-type mutation samples (AUTOMATION-1495, plan Task 11). Union reflection
   through FSharp.Core (`FSharpType.GetUnionCases` and every `FSharpType`/`FSharpValue` union API that takes a
   `Type` or a `UnionCaseInfo`) is redirected to the recorder's `Reflect` shims. The reflected union joins to its

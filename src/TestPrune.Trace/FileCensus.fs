@@ -92,6 +92,14 @@ let summarize
         else
             float diff.Count / float union.Count }
 
+/// The census's per-test gaps (AUTOMATION-1497, phase-2 plan Task 9): tests that depend on the
+/// repository (they fail outside it or reach it from there) and recorded no repository input,
+/// so they read a file the recorder cannot see. Normalised `Class.Method` names, sorted. R7
+/// selects them whenever a file no trace claims changes.
+let gaps (r: FileCensusReport) : string list =
+    Set.difference (Set.union r.FailOutside r.ReachOutside) r.ReadsRepo
+    |> Set.toList
+
 /// The bar: the two sets differ by at most 5 % of their union.
 let passes (r: FileCensusReport) = r.Ratio <= RatioBar
 

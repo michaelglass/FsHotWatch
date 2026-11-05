@@ -575,3 +575,14 @@ let ``a change to a static-init scope's code selects exactly the tests that inhe
             (fun _ -> Some "fh")
 
     test <@ selection.Selected |> Map.keys |> Set.ofSeq = set [ "P|Ns.C|one"; "P|Ns.C|two" ] @>
+
+[<Fact>]
+let ``a project's file gaps are replaced by the next census, and each project keeps its own`` () =
+    use store = Store.Open(tempPath ())
+    store.RecordFileGaps("P", [ "K.a"; "K.b" ])
+    store.RecordFileGaps("Q", [ "K.q" ])
+    test <@ store.FileGaps "P" = set [ "K.a"; "K.b" ] @>
+    store.RecordFileGaps("P", [ "K.c" ])
+    test <@ store.FileGaps "P" = set [ "K.c" ] @>
+    test <@ store.FileGaps "Q" = set [ "K.q" ] @>
+    test <@ store.FileGaps "none" |> Set.isEmpty @>

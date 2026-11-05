@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: trace shadow's R7 also selects the file census's gap tests (`file-census --db`) when an unclaimed
+  non-source file changes (AUTOMATION-1497).
+
 - feat: trace shadow reads only the traces of the fingerprint the run about to start will record, predicted
   from the project's build output (`TraceShadow.predictFingerprint`), instead of the newest recorded run's. A
   project whose fingerprint cannot be predicted reads no trace and the log says why; every row's

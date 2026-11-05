@@ -342,6 +342,9 @@ What to know before trusting a number:
   needs a suite that completes in that copy and writes its CTRF report. A test that ends
   the process (`Environment.Exit`) or crashes the runner outside the repository makes the
   verb exit 2 with the tail of the run's output.
+  With `--db <trace store> [--project <name>]` it stores its **gaps** there: the tests that
+  depend on the repository and recorded no repository input. Trace selection's R7 selects
+  them whenever a changed file that no trace claims is not an indexed source.
 
 ### Measured on TestPrune's own suite
 

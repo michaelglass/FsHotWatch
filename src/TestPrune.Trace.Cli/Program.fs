@@ -289,7 +289,9 @@ let mutateUsage =
 
 /// The usage of the file-census verb.
 let fileCensusUsage =
-    "usage: test-prune-traces file-census --project-dir <dir> --assembly <name>\n"
+    "usage: test-prune-traces file-census --project-dir <dir> --assembly <name> [--db <trace store>] [--project <test project>]\n"
+    + "  --db stores the tests that depend on the repository and read nothing (the gaps) there under --project\n"
+    + "  (default: the assembly), replacing the earlier ones: R7 selects them when a file no trace claims changes\n"
     + measureTail
 
 type private MeasureArgs =
@@ -614,6 +616,20 @@ let private storeSamples (cwd: string) (db: string option) (project: string) (tr
         with e ->
             Error $"--db %s{db}: %s{e.Message}"
 
+/// Store a census's gaps (`FileCensus.gaps`) under `project` in the trace store at `db`, when
+/// one is given, replacing the project's earlier ones. R7 reads them from there.
+let private storeGaps (cwd: string) (db: string option) (project: string) (report: FileCensus.FileCensusReport) =
+    match db with
+    | None -> Ok report
+    | Some db ->
+        try
+            using (TraceStore.Store.Open(Path.GetFullPath(db, cwd))) (fun store ->
+                store.RecordFileGaps(project, FileCensus.gaps report))
+
+            Ok report
+        with e ->
+            Error $"--db %s{db}: %s{e.Message}"
+
 /// Runs a verb against `cwd` with the given measurements, returning its output rather
 /// than printing it.
 let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
@@ -644,9 +660,11 @@ let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
         measure
             cwd
             fileCensusUsage
-            []
+            [ "--db"; "--project" ]
             rest
-            (fun req a -> m.FileCensus req a.AppArgs (TimeSpan.FromMinutes a.TimeoutMin))
+            (fun req a ->
+                m.FileCensus req a.AppArgs (TimeSpan.FromMinutes a.TimeoutMin)
+                |> Result.bind (storeGaps cwd a.Db (a.Project |> Option.defaultValue req.TestProject)))
             FileCensus.passes
             FileCensus.render
             box

@@ -404,6 +404,13 @@ let internal migrations: (int * string) list =
           symbol TEXT NOT NULL,
           PRIMARY KEY (test_project, env_fingerprint, fact, symbol)) WITHOUT ROWID;
       ALTER TABLE shadow_selections ADD COLUMN fallback_seeds TEXT NOT NULL DEFAULT '{}';
+      """
+      6,
+      """
+      CREATE TABLE trace_file_gaps (
+          test_project TEXT NOT NULL,
+          test_name TEXT NOT NULL,
+          PRIMARY KEY (test_project, test_name)) WITHOUT ROWID;
       """ ]
 
 /// Versions must start at 1 and increase by exactly one, so "apply every entry above the
@@ -1036,6 +1043,28 @@ type Store private (conn: SqliteConnection) =
             "SELECT run_id, test_key FROM shadow_misses WHERE test_project = @p ORDER BY id"
             [ "@p", box testProject ]
             (fun r -> r.GetString 0, r.GetString 1)
+
+    /// Replace a project's file gaps with `names` (`FileCensus.gaps`, normalised `Class.Method`
+    /// names): the latest census is the answer, so an older one is dropped whole.
+    member _.RecordFileGaps(testProject: string, names: string list) : unit =
+        inTransaction conn (fun tx ->
+            exec conn tx "DELETE FROM trace_file_gaps WHERE test_project = @p" [ "@p", box testProject ]
+
+            for name in List.distinct names do
+                exec
+                    conn
+                    tx
+                    "INSERT INTO trace_file_gaps (test_project, test_name) VALUES (@p, @n)"
+                    [ "@p", box testProject; "@n", box name ])
+
+    /// A project's file gaps: the tests the last census found reading a file no trace records.
+    member _.FileGaps(testProject: string) : Set<string> =
+        readRows
+            conn
+            "SELECT test_name FROM trace_file_gaps WHERE test_project = @p"
+            [ "@p", box testProject ]
+            (fun r -> r.GetString 0)
+        |> Set.ofList
 
     /// Store one mutation sample. Every sample is kept: two samples of one symbol at two
     /// trees are two measurements.

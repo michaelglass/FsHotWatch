@@ -717,3 +717,29 @@ let ``mutate takes --union-samples, 0 among them, and refuses a negative count``
         @>
 
     test <@ calls.Count = 2 @>
+
+[<Fact>]
+let ``file-census --db stores the census's gaps under --project`` () =
+    let report =
+        FileCensus.summarize Set.empty (set [ "K.gap"; "K.read" ]) Set.empty (set [ "K.read" ])
+
+    let m, _ = fake (Ok(auditReport [])) (Ok(overheadReport 100.0)) (Ok report)
+    let db = Path.Combine(Path.GetTempPath(), $"tp-gaps-%A{Guid.NewGuid()}.db")
+
+    let o =
+        Program.runWith
+            m
+            cwd
+            [ "file-census"
+              "--project-dir"
+              "P"
+              "--assembly"
+              "P"
+              "--db"
+              db
+              "--project"
+              "Named" ]
+
+    test <@ o.Stderr = "" @>
+    use store = TraceStore.Store.Open db
+    test <@ store.FileGaps "Named" = set [ "K.gap" ] @>

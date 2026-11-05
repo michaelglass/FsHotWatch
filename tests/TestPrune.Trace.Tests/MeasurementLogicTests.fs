@@ -597,3 +597,24 @@ let ``copying a tree keeps relative paths, and a missing source copies nothing``
         test <@ not (IO.Directory.Exists(IO.Path.Combine(root, "dst2"))) @>
     finally
         IO.Directory.Delete(root, true)
+
+// --- file-census gaps (AUTOMATION-1497, phase-2 plan Task 9) --------------------------------
+
+[<Fact>]
+let ``gaps are the tests that depend on the repository and recorded no repository input`` () =
+    // "withInput" fails outside and read the repository; "gap" fails outside and read nothing;
+    // "reaches" reached the repository from outside and read nothing; "fine" only read it.
+    let census =
+        FileCensus.summarize
+            Set.empty
+            (set [ "K.withInput"; "K.gap" ])
+            (set [ "K.reaches" ])
+            (set [ "K.withInput"; "K.fine" ])
+
+    test <@ FileCensus.gaps census = [ "K.gap"; "K.reaches" ] @>
+
+    test
+        <@
+            FileCensus.gaps (FileCensus.summarize Set.empty Set.empty Set.empty Set.empty)
+            |> List.isEmpty
+        @>

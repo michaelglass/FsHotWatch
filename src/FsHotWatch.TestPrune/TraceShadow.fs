@@ -151,7 +151,8 @@ module TraceShadow =
                   IsIndexed = fallbacks.IsIndexed
                   AttributesOf = fallbacks.AttributesOf
                   StaticWalk = fallbacks.StaticWalk >> List.map keyOf
-                  FileFallback = fallbacks.FileFallback >> Option.map (List.map keyOf) }
+                  FileFallback = fallbacks.FileFallback >> Option.map (List.map keyOf)
+                  FileGaps = store.FileGaps project }
 
         let staticKeys =
             staticSelection

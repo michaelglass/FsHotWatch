@@ -3808,6 +3808,20 @@ dotnet tool run test-prune-traces shadow-report --project TestPrune.Tests > "$CL
 - **Union-type samples come from a run without `--diff`.** A union-type target stands for adding a case, which
   no diff shows, so `--diff` does not filter them.
 
+### Decision D1g (2026-11-05): file-census gaps into R7, as landed (Task 9)
+
+- **Gaps** are `FileCensus.gaps`: tests that depend on the repository (they fail outside it, or reach it
+  from there) and whose traces hold no repository input. They are normalised `Class.Method` names, the
+  census's own spelling.
+- **Stored** by `file-census --db <trace store> [--project <name>]`, the same flag shape as `mutate`, not the
+  plan's bare `--store`, because the verb has no store of its own to default to. The gaps go in
+  `trace_file_gaps` (trace schema 6). Each census replaces the project's gaps whole. Gaps are not keyed by
+  fingerprint, because a census answers what a test reads, not how it ran.
+- **R7** selects every universe test named by a gap, with `UntracedInput <first unclaimed file>`, whenever any
+  changed file is neither an indexed source nor claimed by a trace input. The static file rules still apply
+  beside it. FsHotWatch's shadow reads the gaps from the checkout's trace store
+  (`tests.traces.db`), where the census must write them.
+
 ## Task D2: Promote TestPrune to live
 
 Only after D1's report exits 0.
