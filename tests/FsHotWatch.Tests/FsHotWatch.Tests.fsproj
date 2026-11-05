@@ -28,6 +28,7 @@
     <Compile Include="TraceFcsReads.fs" />
     <!-- Registers the xUnit pipeline startup that initialises FSharp.Core's
          quotation statics on one thread before tests run in parallel. See the file. -->
+    <Compile Include="QuotationWarmup.fs" />
     <Compile Include="QuotationStaticInit.fs" />
     <!-- Before TestHelpers: the FSHW-WALL-001 allowlist attribute, used from there on. -->
     <Compile Include="WallClock.fs" />
@@ -206,6 +207,7 @@
     <Compile Include="TestPruneWalkPolicyTests.fs" />
     <Compile Include="TestPruneSchemaQuarantineTests.fs" />
     <Compile Include="TestModeSeamTests.fs" />
+    <Compile Include="NamespaceReclaimTests.fs" />
     <Compile Include="HangCapFloorTests.fs" />
     <Compile Include="WaitFloorCapTests.fs" />
     <Compile Include="MonotonicDeadlineTests.fs" />

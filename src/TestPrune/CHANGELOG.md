@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a project's index key hashes its EVALUATED compile list, so an MSBuild condition that flips
+  with no source edit (a sibling checkout appearing or going) re-indexes the project instead of
+  keeping an index without the item. Each `index` run now evaluates every project before deciding
+  it is unchanged; unchanged files are still replayed from their own keys (AUTOMATION-1427).
+
 ## 15.0.0 - 2026-11-04
 
 - Finish: AUTOMATION-1455 a symbol's location is a union both stores round-trip

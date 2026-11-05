@@ -224,7 +224,17 @@ let indexProject
     let projName = Path.GetFileNameWithoutExtension(fsprojPath)
 
     try
-        let hash = computeProjectHash compileFiles
+        // The project is evaluated before its key is computed, and the key hashes the
+        // EVALUATED compile list. An MSBuild condition can flip with no file changing
+        // (a sibling checkout appearing), and only evaluation sees it; a key over the
+        // static list kept a stale index (AUTOMATION-1427). Evaluation is a design-time
+        // build, small next to the `dotnet build` every index run starts with.
+        let projOptions = getOptions checker fsprojPath
+
+        let filesToAnalyze, excludedFiles =
+            evaluatedCompileFiles compileFiles projOptions.SourceFiles
+
+        let hash = computeProjectHash filesToAnalyze
 
         let depReindexed = projectRefs |> List.exists reindexedSet.Contains
 
@@ -237,11 +247,6 @@ let indexProject
               Outcome = Cached compileFiles.Length
               Events = [ ProjectCacheHitEvent projName ] }
         | _ ->
-            let projOptions = getOptions checker fsprojPath
-
-            let filesToAnalyze, excludedFiles =
-                evaluatedCompileFiles compileFiles projOptions.SourceFiles
-
             if not excludedFiles.IsEmpty then
                 let names =
                     excludedFiles

@@ -126,3 +126,28 @@ let ``a test run does not repeat the build the build plugin ran before it`` () =
         |> List.filter (fun step -> step.Trim() = buildLine.Trim())
 
     test <@ List.isEmpty repeated @>
+
+// AUTOMATION-1025. RepositoryIdentityTests' real-jj case is the only end-to-end proof that
+// a colocated primary, a jj workspace and a git worktree resolve to one repository, and
+// it needs jj on PATH. The build job's runner has none, so on CI it never ran.
+
+/// The single-quoted `pre-build-cmd:` the build job hands the reusable workflow, if any.
+let private preBuildCmd (yml: string) =
+    let m = Regex.Match(yml, @"^\s*pre-build-cmd:\s*'([^']*)'", RegexOptions.Multiline)
+    if m.Success then Some m.Groups[1].Value else None
+
+[<Fact>]
+let ``the CI build job installs jj before it builds and tests`` () =
+    let root = repoRoot ()
+    let installer = Path.Combine(root, "scripts", "install-jj.sh")
+    test <@ File.Exists installer @>
+    test <@ preBuildCmd (ciYml root) = Some "bash scripts/install-jj.sh" @>
+
+[<Fact>]
+let ``the nightly replay installs jj with the same script`` () =
+    let root = repoRoot ()
+
+    let nightly =
+        File.ReadAllText(Path.Combine(root, ".github", "workflows", "nightly-replay.yml"))
+
+    test <@ nightly.Contains "run: bash scripts/install-jj.sh" @>

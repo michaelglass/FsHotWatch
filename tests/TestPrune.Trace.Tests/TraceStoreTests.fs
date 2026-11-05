@@ -11,6 +11,13 @@ open TestPrune.Trace.TraceStore
 let private tempPath () =
     Path.Combine(Directory.CreateTempSubdirectory().FullName, "traces.db")
 
+/// Drop the pooled connections of the database at `path` only; both stores pool under
+/// `Data Source=<path>`. Clearing every pool in the process disposes the handles of
+/// classes opening their own databases in parallel (AUTOMATION-1022).
+let private clearPool (path: string) =
+    use conn = new SqliteConnection($"Data Source=%s{path}")
+    SqliteConnection.ClearPool conn
+
 let private run id : TraceRun =
     { RunId = id
       TestProject = "P"
@@ -324,7 +331,7 @@ let ``a file written by a newer trace schema is refused and left byte-identical`
         cmd.CommandText <- $"PRAGMA user_version = %d{TraceSchemaVersion + 1};"
         cmd.ExecuteNonQuery() |> ignore
 
-    SqliteConnection.ClearAllPools()
+    clearPool path
     let before = File.ReadAllBytes path
 
     let ex =
@@ -398,7 +405,8 @@ let ``a TestPrune.Core schema recreate of the index never touches the trace file
         cmd.CommandText <- "CREATE TABLE junk (x INTEGER); PRAGMA user_version = 1;"
         cmd.ExecuteNonQuery() |> ignore
 
-    SqliteConnection.ClearAllPools()
+    clearPool indexPath
+    clearPool tracePath
     let db = TestPrune.Database.Database.create indexPath
     test <@ db.WasRecreated @>
     use store = Store.Open tracePath

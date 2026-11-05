@@ -237,7 +237,7 @@ module ``One result per source file`` =
             try
                 rejection (fun () -> (Database.create path).RebuildProjects [ merged ])
             finally
-                SqliteConnection.ClearAllPools()
+                clearSqlitePool path
                 cleanupDb path
 
         let fromMemory = rejection (fun () -> fromAnalysisResults [ merged ] |> ignore)
@@ -531,5 +531,5 @@ module ``Schema 13 to 14`` =
             test <@ (occurrence (toSymbolStore db) "Library.fsi" "Library.calculate").Length = 1 @>
             test <@ not (Database.create path).WasRecreated @>
         finally
-            SqliteConnection.ClearAllPools()
+            clearSqlitePool path
             cleanupDb path
