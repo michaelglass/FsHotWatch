@@ -393,3 +393,19 @@ let ``every test a mutated fixture union breaks through reflection is one its tr
         test <@ not (s.Failing |> List.contains "FxTests.ReflectionTests.a test that never reflects") @>
         test <@ report.Samples |> List.forall (fun s -> s.Kind = TraceStore.UnionTypeMutant) @>
         test <@ Mutation.passes report @>)
+
+[<Fact>]
+let ``judged by symbol, every test a mutated fixture method or union breaks is one trace selection selects`` () =
+    // AUTOMATION-1497: the selection a mutant is judged against is TraceSelect's for "this
+    // symbol changed" (R1-R4 and R6), over the baseline's ingested traces.
+    withScratch (fun req ->
+        let index: Mutation.Index =
+            { Symbols = TestPrune.Ports.toSymbolStore FixtureIndex.withTests.Value
+              Root = Fixtures.fixtureRoot }
+
+        let report = Mutation.runWith req [] 1000 10 1 [] None timeout (Some index) |> ok
+        test <@ report.Judging = Mutation.BySymbol @>
+        test <@ report.Measured > 0 && report.Samples.Length = report.Targets @>
+        test <@ report.Samples |> List.exists (fun s -> s.Kind = TraceStore.UnionTypeMutant) @>
+        test <@ report.Samples |> List.collect _.Missed |> List.isEmpty @>
+        test <@ (Mutation.render report).Contains "judged by symbol" @>)

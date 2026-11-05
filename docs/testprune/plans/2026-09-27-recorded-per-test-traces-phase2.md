@@ -3808,6 +3808,62 @@ dotnet tool run test-prune-traces shadow-report --project TestPrune.Tests > "$CL
 - **Union-type samples come from a run without `--diff`.** A union-type target stands for adding a case, which
   no diff shows, so `--diff` does not filter them.
 
+### Decision D1g (2026-11-05): file-census gaps into R7, as landed (Task 9)
+
+- **Gaps** are `FileCensus.gaps`: tests that depend on the repository (they fail outside it, or reach it
+  from there) and whose traces hold no repository input. They are normalised `Class.Method` names, the
+  census's own spelling.
+- **Stored** by `file-census --db <trace store> [--project <name>]`, the same flag shape as `mutate`, not the
+  plan's bare `--store`, because the verb has no store of its own to default to. The gaps go in
+  `trace_file_gaps` (trace schema 6). Each census replaces the project's gaps whole. Gaps are not keyed by
+  fingerprint, because a census answers what a test reads, not how it ran.
+- **R7** selects every universe test named by a gap, with `UntracedInput <first unclaimed file>`, whenever any
+  changed file is neither an indexed source nor claimed by a trace input. The static file rules still apply
+  beside it. FsHotWatch's shadow reads the gaps from the checkout's trace store
+  (`tests.traces.db`), where the census must write them.
+
+### Decision D1h (2026-11-05): fingerprint inputs, as landed (Task 4's `fingerprint_inputs`)
+
+- **Content-addressed, not a `trace_runs` column.** A fingerprint is the SHA-256 of its canonical inputs JSON
+  (`Fingerprint.toJson`), so the inputs are kept once under the fingerprint, in `fingerprint_inputs` (trace
+  schema 7). Each run's inputs are reachable through `trace_runs.env_fingerprint`. A *predicted* fingerprint
+  has no run, and a per-run column could not hold it.
+- **Both sides are kept in the checkout's trace store.** Ingestion keeps what the run recorded, and
+  `TraceShadow.predictFingerprint` keeps what it predicted. A failed write loses only the name, never the
+  prediction.
+- **A miss names its component.** At completion a recorded fingerprint other than the predicted one logs
+  `fingerprint prediction missed (predicted P, recorded R): differs in: <fields>` through
+  `Fingerprint.diffJson`, or `inputs not kept` when a side was not kept. The shadow row still stores the
+  outcome only. A `fingerprint_diff` column is left for when shadow-report needs the components in its
+  table.
+
+### Decision D1i (2026-11-05): symbol-level mutation judging, as landed
+
+- **`mutate --index <test-impact db>`** judges every mutant against `TraceSelect` for "its symbol changed"
+  (`Mutation.symbolSelection`). The baseline run's dumps are ingested into a scratch trace store against the
+  index. R1-R4 run over those traces with each seed's version replaced, then R6 runs with the seeds walked
+  statically through the index (`QueryAffectedTests`). A method target's seeds are the symbols its probe ids
+  join to, and a union target's seed is its type's symbol. A target that joins to nothing indexed, or a
+  baseline that recorded no fingerprint, falls back to the probe-level judgement.
+- **Without `--index` the harness judges by probe, as before.** The report says which it used
+  (`judged by probe` or `judged by symbol`). The index is probed read-only first, so a schema mismatch is a
+  refusal, never a recreated index.
+
+### Decision D1j (2026-11-05): the nightly `mutate --diff` job is proposed, not scheduled from here
+
+The samples belong in the box-wide shadow store, and only the machine that holds it can write them. GitHub CI
+cannot write to it. So the job is a host schedule (launchd or cron on the always-on box), outside this
+repository. The recipe, run from the FsHotWatch checkout after `mise run build`:
+
+```bash
+jj diff --git -r 'main-..main' > "$TMPDIR/change.diff"
+dotnet run --project src/TestPrune.Trace.Cli --no-build -- mutate --project-dir tests/TestPrune.Tests \
+  --assembly TestPrune.Tests --diff "$TMPDIR/change.diff" --index .fshw/test-impact.db \
+  --db "<box shadow store>" --samples 10 --union-samples 5 --seed "$(date +%j)"
+```
+
+`TraceShadow.shadowStorePath` names the box shadow store. A day without a change to `main` is skipped.
+
 ## Task D2: Promote TestPrune to live
 
 Only after D1's report exits 0.

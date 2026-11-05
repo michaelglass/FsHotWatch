@@ -196,6 +196,9 @@ type Fallbacks =
         /// The static file rules over changed files: the test keys they select, or `None`
         /// when they select every test (a project file changed).
         FileFallback: string list -> string list option
+        /// The file census's gaps (`Store.FileGaps`): normalised `Class.Method` names of tests that
+        /// read a file no trace records. R7 adds them with any unclaimed change.
+        FileGaps: Set<string>
     }
 
 /// A changed file is claimed when a trace input names it, or a listing names its directory
@@ -224,7 +227,8 @@ let private claimedBy (claims: (string * string) list) =
 
 /// R6 and R7 over a selection: each changed seed traces cannot verify (`fallReason`) adds
 /// the tests the static walk from it reaches; each changed file that is neither an indexed
-/// source nor claimed by a trace input adds what the static file rules select. Only this
+/// source nor claimed by a trace input adds what the static file rules select, and the
+/// file census's gap tests. Only this
 /// project's universe is ever added to, and nothing selected is removed.
 let withFallbacks (f: Fallbacks) (s: Selection) : Selection =
     let selected = Collections.Generic.Dictionary<string, Rule list>(s.Selected)
@@ -255,6 +259,13 @@ let withFallbacks (f: Fallbacks) (s: Selection) : Selection =
     match unclaimed with
     | [] -> ()
     | first :: _ ->
+        // The census's gaps read some file the recorder cannot see: it may be this one.
+        s.Universe
+        |> Seq.filter (fun key ->
+            // `<project>|<class>|<method>` as the census names it: `Class.Method`.
+            f.FileGaps.Contains(FileCensus.normalise (key.Substring(key.IndexOf '|' + 1).Replace('|', '.'))))
+        |> Seq.iter (add (UntracedInput first))
+
         match f.FileFallback unclaimed with
         | None -> s.Universe |> Seq.iter (add (UntracedInput first))
         | Some keys -> keys |> List.iter (add (UntracedInput first))

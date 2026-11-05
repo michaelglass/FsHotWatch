@@ -546,3 +546,90 @@ let ``adding a nullary case reselects every test that enumerates the union, and 
         @>
 
     test <@ not (s.Selected.ContainsKey(key "a test that never reflects")) @>
+
+[<Fact>]
+let ``ingestion stores the inputs its fingerprint was computed from`` () =
+    // AUTOMATION-1497: so a prediction miss can name the component that differed.
+    let e = run.Value
+    let fp = e.Summary.EnvFingerprint.Value
+    let json = e.Store.FingerprintInputs fp
+
+    test <@ json.IsSome @>
+
+    let hash =
+        Convert
+            .ToHexString(Security.Cryptography.SHA256.HashData(Text.Encoding.UTF8.GetBytes(json.Value: string)))
+            .ToLowerInvariant()
+
+    test <@ hash = fp @>
+
+// --- symbol-level mutation judging (AUTOMATION-1497) ----------------------------------------
+
+[<Fact>]
+let ``a symbol change selects, through TraceSelect, the tests whose traces name the symbol`` () =
+    let e = run.Value
+    let fp = e.Summary.EnvFingerprint.Value
+    let index = TestPrune.Ports.toSymbolStore FixtureIndex.withTests.Value
+    let universe = e.Store.TestKeysOf("FxTests", fp) |> List.ofSeq
+
+    let selectedFor seeds =
+        Mutation.symbolSelection e.Store fp "FxTests" index Fixtures.repoRoot universe seeds
+
+    let area =
+        TraceIngest.testKey "FxTests" "FxTests.AttributionTests+ClassA" "a sync area"
+
+    let byArea = selectedFor [ "FxLib.Logic.area" ]
+    test <@ byArea.Contains area @>
+    test <@ byArea.Count < universe.Length @>
+
+    let colour = selectedFor [ "FxLib.Shapes.Colour" ]
+
+    let reflection meth =
+        TraceIngest.testKey "FxTests" "FxTests.ReflectionTests" meth
+
+    test <@ colour.Contains(reflection "a value's cases are named") @>
+    test <@ not (colour.Contains(reflection "a test that never reflects")) @>
+
+[<Fact>]
+let ``a symbol the probes cannot represent is walked statically (R6), and the fallbacks change no file`` () =
+    let e = run.Value
+    let fp = e.Summary.EnvFingerprint.Value
+    let index = TestPrune.Ports.toSymbolStore FixtureIndex.withTests.Value
+    let universe = e.Store.TestKeysOf("FxTests", fp) |> List.ofSeq
+
+    // A [<Literal>] has no code to probe: only the static walk reaches its users.
+    let byLiteral =
+        Mutation.symbolSelection e.Store fp "FxTests" index Fixtures.repoRoot universe [ "FxLib.Values.LiteralValue" ]
+
+    // Every universe test the literal's static walk reaches is selected.
+    let literalWalk =
+        (Mutation.symbolFallbacks e.Store fp "FxTests" index [ "FxLib.Values.LiteralValue" ]).StaticWalk
+            [ "FxLib.Values.LiteralValue" ]
+
+    test <@ Set.isSubset (set (literalWalk |> List.filter (fun k -> List.contains k universe))) byLiteral @>
+
+    // The walk names what the index's query returns by trace key (the fixture index holds no
+    // cross-project edges, so its own walk is empty: an index answering with one test stands in).
+    let answering =
+        { index with
+            QueryAffectedTests =
+                fun _ ->
+                    [ { SymbolFullName = "FxTests.C.``a test``"
+                        TestProject = "FxTests"
+                        TestClass = "FxTests.C"
+                        TestMethod = "``a test``" } ] }
+
+    let walked =
+        (Mutation.symbolFallbacks e.Store fp "FxTests" answering [ "FxLib.Logic.area" ]).StaticWalk
+            [ "FxLib.Logic.area" ]
+
+    test <@ walked = [ TraceIngest.testKey "FxTests" "FxTests.C" "a test" ] @>
+
+    let f = Mutation.symbolFallbacks e.Store fp "FxTests" index []
+
+    test
+        <@
+            f.IsIndexed "any/file.txt"
+            && f.FileFallback [ "any/file.txt" ] = Some []
+            && f.FileGaps.IsEmpty
+        @>

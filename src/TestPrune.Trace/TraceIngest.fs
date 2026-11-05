@@ -542,16 +542,18 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
         store.RecordRunWithoutTraces(run "" FailedToRecord why "{}")
         summaryOf FailedToRecord why executed counters rejected cpu
     else
-        let fp =
-            Fingerprint.compute (
-                Fingerprint.gather
-                    req.RepoRoot
-                    req.FingerprintFiles
-                    req.FingerprintEnv
-                    mainDump.Value
-                    req.Shadow.OriginalDepsJsonSha256
-                    req.Shadow.WeaveTests
-            )
+        let gathered =
+            Fingerprint.gather
+                req.RepoRoot
+                req.FingerprintFiles
+                req.FingerprintEnv
+                mainDump.Value
+                req.Shadow.OriginalDepsJsonSha256
+                req.Shadow.WeaveTests
+
+        let fp = Fingerprint.compute gathered
+        // What the fingerprint is made of, so a prediction miss can name what differed.
+        store.RecordFingerprintInputs(fp, Fingerprint.toJson gathered)
 
         let versions = versionHashes req.Symbols
         let effects, unmappedId, probed = effectsOf req versions

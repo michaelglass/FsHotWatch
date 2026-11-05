@@ -332,7 +332,8 @@ let private fallbacks (overrides: TraceSelect.Fallbacks -> TraceSelect.Fallbacks
           IsIndexed = fun f -> f.EndsWith ".fs"
           AttributesOf = fun _ -> []
           StaticWalk = fun _ -> []
-          FileFallback = fun _ -> Some [] }
+          FileFallback = fun _ -> Some []
+          FileGaps = Set.empty }
 
 [<Theory>]
 [<InlineData("N.u", "order-unstable")>]
@@ -635,3 +636,22 @@ let ``a top-level changed file is unclaimed, a key the walk reaches twice is sel
             (TraceSelect.compare [] r)
 
     test <@ row.FallbackSeeds = Map [ "N.s", "static-init" ] @>
+
+[<Fact>]
+let ``a changed file no trace claims also selects the census's gap tests (R7, Task 9)`` () =
+    // P|D|x read a file the recorder missed: the file census recorded it as a gap, by its
+    // normalised Class.Method name.
+    let withGaps changed =
+        TraceSelect.withFallbacks
+            (fallbacks (fun f ->
+                { f with
+                    ChangedFiles = changed
+                    FileGaps = set [ "D.x" ]
+                    FileFallback = fun _ -> Some [] }))
+            (TraceSelect.select "P" universe6 (fun _ -> None) (fun _ -> None) (fun _ -> None)
+             |> fun s -> { s with Selected = Map.empty })
+
+    test
+        <@ (withGaps [ "config/app.json" ]).Selected = Map [ "P|D|x", [ TraceSelect.UntracedInput "config/app.json" ] ] @>
+    // A claimed or indexed change is not one the census's gaps could have read.
+    test <@ (withGaps [ "a.txt"; "src/M.fs" ]).Selected |> Map.isEmpty @>

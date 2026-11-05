@@ -612,6 +612,10 @@ let ``a project's fingerprint is predicted from its build output, with its own D
             TraceShadow.predictFingerprint (settings SelectShadow) WeaveTestSites root (Some target) env host
 
         test <@ predict [ "DOTNET_ROOT", dotnet ] (fun () -> None) = Ok(expected ".NET 8.0.1") @>
+        // The prediction's inputs are kept under it in the checkout's trace store (AUTOMATION-1497).
+        using (Store.Open(Path.Combine(root, "traces.db"))) (fun traces ->
+            test <@ (traces.FingerprintInputs(expected ".NET 8.0.1": string)).IsSome @>)
+
 
         test
             <@
@@ -624,6 +628,22 @@ let ``a project's fingerprint is predicted from its build output, with its own D
         test <@ predict [] (fun () -> Some dotnet) = Ok(expected ".NET 8.0.1") @>
         test <@ predict [] (fun () -> None) = Error "no-dotnet-root" @>
 
+        // A trace store that cannot be written loses the kept inputs, never the prediction.
+        let unwritable =
+            { settings SelectShadow with
+                DbPath = "app" }
+
+        test
+            <@
+                TraceShadow.predictFingerprint
+                    unwritable
+                    WeaveTestSites
+                    root
+                    (Some target)
+                    [ "DOTNET_ROOT", dotnet ]
+                    (fun () -> None) = Ok(expected ".NET 8.0.1")
+            @>
+
         test
             <@
                 TraceShadow.predictFingerprint (settings SelectShadow) WeaveTestSites root None [] (fun () ->
@@ -633,3 +653,52 @@ let ``a project's fingerprint is predicted from its build output, with its own D
         test <@ predict [ "DOTNET_ROOT", root ] (fun () -> None) |> Result.isError @>
     finally
         Directory.Delete(root, true)
+
+[<Fact>]
+let ``a fingerprint prediction miss names the inputs that differed`` () =
+    // AUTOMATION-1497: the predicted and the recorded fingerprint's inputs are both in the
+    // checkout's trace store, so the miss names its component through Fingerprint.diff.
+    withStore (fun root ->
+        let lines = ResizeArray<string>()
+        let readings = launchPredicting root (fun _ -> Ok "Z") lines
+        recordRun root "run-z" "E" Recorded
+
+        using (Store.Open(Path.Combine(root, "traces.db"))) (fun traces ->
+            traces.RecordFingerprintInputs("Z", """{"deps":"d","runtime":".NET 8.0.1"}""")
+            traces.RecordFingerprintInputs("E", """{"deps":"d","runtime":".NET 9.0.0"}"""))
+
+        TraceShadow.atCompletion (settings SelectShadow) root readings "run-z" (fun _ -> false) (Some []) lines.Add
+
+        test
+            <@
+                lines
+                |> Seq.exists (fun l -> l.Contains "fingerprint prediction missed" && l.EndsWith "differs in: runtime")
+            @>)
+
+[<Fact>]
+let ``a miss whose inputs were not kept says so, and a hit says nothing`` () =
+    withStore (fun root ->
+        let lines = ResizeArray<string>()
+        let readings = launchPredicting root (fun _ -> Ok "Z") lines
+        recordRun root "run-z" "E" Recorded
+        TraceShadow.atCompletion (settings SelectShadow) root readings "run-z" (fun _ -> false) (Some []) lines.Add
+
+        test
+            <@
+                lines
+                |> Seq.exists (fun l -> l.Contains "fingerprint prediction missed" && l.EndsWith "inputs not kept")
+            @>
+
+        let hitLines = ResizeArray<string>()
+        let hit = launch root SelectShadow hitLines
+        TraceShadow.atCompletion (settings SelectShadow) root hit "run-p" (fun _ -> false) (Some []) hitLines.Add
+        test <@ not (hitLines |> Seq.exists (fun l -> l.Contains "fingerprint prediction missed")) @>)
+
+[<Fact>]
+let ``a run whose fingerprint was never predicted is no prediction miss`` () =
+    withStore (fun root ->
+        let lines = ResizeArray<string>()
+        let readings = launchPredicting root (fun _ -> Error "no build output") lines
+        recordRun root "run-u" "E" Recorded
+        TraceShadow.atCompletion (settings SelectShadow) root readings "run-u" (fun _ -> false) (Some []) lines.Add
+        test <@ not (lines |> Seq.exists (fun l -> l.Contains "fingerprint prediction missed")) @>)
