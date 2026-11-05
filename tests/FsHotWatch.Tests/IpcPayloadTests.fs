@@ -80,7 +80,7 @@ let private failingHandler (name: string) (err: string) =
       CacheKey = None
       Teardown = None }
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``GetStatus payload round-trips completed run with subtasks and activity`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -137,7 +137,7 @@ let private verifiedNothingHandler (name: string) (detail: string) =
       CacheKey = None
       Teardown = None }
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a verified-nothing run reaches the CLI as the VerifiedNothing case, status still Completed`` () =
     // The whole hop under test: plugin verdict → host run record → status
     // payload → CLI parser. The status stays `Completed` (so `check` keeps its exit 3
@@ -170,7 +170,7 @@ let ``a verified-nothing run reaches the CLI as the VerifiedNothing case, status
     test <@ control.LastRun.Value.Outcome = CompletedRun @>
     test <@ not (ParsedPluginStatus.verifiedNothing control) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``GetStatus payload preserves multi-line failure error`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let multiline = "first line of error\nsecond line\nthird line with detail"
@@ -196,7 +196,7 @@ let ``GetStatus payload preserves multi-line failure error`` () =
     | FailedRun err -> test <@ err = multiline @>
     | other -> failwithf "expected FailedRun, got %A" other
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``GetDiagnostics payload exposes structured per-plugin statuses`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -358,7 +358,7 @@ let ``GetDiagnostics payload carries the daemon's project-model observation at r
 // empty array — see ADR-033.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``GetDiagnostics carries the analysis receipt a sealed cohort earned`` () =
     withTempDir "ipc-model-receipts" (fun repoRoot ->
         let host = PluginHost.create nullChecker repoRoot

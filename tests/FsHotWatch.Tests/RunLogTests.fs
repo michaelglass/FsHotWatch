@@ -21,7 +21,7 @@ let private readWhileOpen (path: string) =
     use reader = new StreamReader(fs)
     reader.ReadToEnd()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a run log is on disk BEFORE it is closed`` () =
     // AutoFlush, pinned. Without it the bytes sit in a StreamWriter buffer that only
     // `Close` empties — and the run this artifact exists for is the one where nothing
@@ -41,7 +41,7 @@ let ``a run log is on disk BEFORE it is closed`` () =
             handle.Close()
         | RunLog.Ref.Unavailable reason -> Assert.Fail $"expected an open log in a writable temp dir, got: %s{reason}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a run log lands beside that run's CTRF report, named for the project`` () =
     // Same directory as `<Project>.ctrf.json` so a run's evidence is in one place,
     // and NOT the bare `.log` extension — that names the dead flat layout that
@@ -58,7 +58,7 @@ let ``a run log lands beside that run's CTRF report, named for the project`` () 
             test <@ RunLog.Suffix <> ".log" @>
         | RunLog.Ref.Unavailable reason -> Assert.Fail $"expected an open log, got: %s{reason}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``openFor creates the run directory rather than failing on its absence`` () =
     withTempDir "runlog-mkdir" (fun dir ->
         let runDir = Path.Combine(dir, "not", "yet", "there")
@@ -72,7 +72,7 @@ let ``openFor creates the run directory rather than failing on its absence`` () 
         | RunLog.Ref.Written path -> test <@ File.ReadAllText path = "hello" @>
         | RunLog.Ref.Unavailable reason -> Assert.Fail $"expected the dir to be created, got: %s{reason}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a log that could NOT be opened says so, and names no path`` () =
     // A `Ref.Written` is only ever constructed by the code holding the open handle,
     // so a path in a diagnostic is a path that exists. When the open fails the caller
@@ -132,7 +132,7 @@ let ``note swallows a throwing write — a note ABOUT a run cannot fail the run`
 
     RunLog.note handle "relaunching once"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``note marks fshw's own words so the rest of the file is verbatim child output`` () =
     withTempDir "runlog-note" (fun dir ->
         let handle = RunLog.openFor dir "Proj"
@@ -157,7 +157,7 @@ let ``note marks fshw's own words so the rest of the file is verbatim child outp
             test <@ ours = 1 @>
         | RunLog.Ref.Unavailable reason -> Assert.Fail $"expected an open log, got: %s{reason}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Close is idempotent`` () =
     // It is called from a `finally` on a path that may also have closed already;
     // a second close must not throw out of an exception handler.

@@ -154,7 +154,7 @@ let ``an upstream shape change this file cannot see still hits the lint cache`` 
     let changedUnusedType = option + "type Unused = | Y of string\n"
     assertHits EarlierFile inferring withUnusedType changedUnusedType
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a file whose used signatures cannot be described has no lint key`` () =
     withTempDir "lint-undescribable" (fun root ->
         let file = Path.Combine(root, "A.fs")

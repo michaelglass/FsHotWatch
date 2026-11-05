@@ -129,7 +129,7 @@ let ``disposing a sink restores the one it replaced`` () =
 
     test <@ inner.Count = 1 && outer.Count = 1 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a file sink appends dated lines to its file`` () =
     withTempDir "sink" (fun dir ->
         let path = Path.Combine(dir, "logs", "daemon.log")
@@ -416,7 +416,7 @@ let ``a session without a PATH finds no bare command, rather than falling back t
             |> Option.exists (fun message -> message.Contains "not found on this worktree's PATH")
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a bare command resolves against a PATH, first match wins, rooted commands are left alone`` () =
     withTempDir "resolve-path" (fun dir ->
         let a = Path.Combine(dir, "a")

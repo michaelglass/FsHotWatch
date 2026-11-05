@@ -518,7 +518,7 @@ let ``CheckFile returns None when cancelled before FCS call`` () =
 
 // --- Cancellation during FCS check (fileToken must propagate into CheckFileCore) ---
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``CheckFile honors a pre-cancelled caller token and returns None`` () =
     // A caller token already cancelled when CheckFile is called must produce None
     // without invoking FCS. Deliberately NOT an in-flight cancel: that variant raced
@@ -737,7 +737,7 @@ let ``lookupCachedFullCheck names the outputs whose bytes moved since the entry 
 
     test <@ (lookupCachedFullCheck noneMoved cache (Some key)) |> Result.isOk @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the pipeline tallies each lookup, so a scan can say what its cache did`` () =
     let cache = InMemoryCache()
     let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
@@ -771,7 +771,7 @@ let ``the pipeline tallies each lookup, so a scan can say what its cache did`` (
                     [ FsHotWatch.CheckCacheTally.CacheMiss.label FsHotWatch.CheckCacheTally.CacheMiss.NoEntry, 1L ]
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a pipeline with no cache tallies nothing`` () =
     withTempDir "cache-tally-off" (fun tempDir ->
         let file = Path.Combine(tempDir, "A.fs")
@@ -1000,7 +1000,7 @@ type private ScopedCountingCache(admits: string -> bool) =
         member _.ObserveWorkingSet _ = ()
         member _.FitWarning = None
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a project the cache does not admit is never looked up`` () =
     // An excluded slice must cost nothing: no fingerprint, no lookup, no entry.
     withTempDir "cache-admit" (fun tmpDir ->

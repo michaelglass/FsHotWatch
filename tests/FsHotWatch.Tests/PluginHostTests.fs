@@ -17,7 +17,7 @@ open FsHotWatch.Tests.TestHelpers
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugin receives file change events`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable fileChanges: FileChangeKind list = []
@@ -69,7 +69,7 @@ let ``RunCommand returns None for unknown command`` () =
     let result = host.RunCommand("bogus", [||]) |> Async.RunSynchronously
     test <@ result = None @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugin reports status`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -126,7 +126,7 @@ let ``GetAllStatuses returns all plugin statuses`` () =
     test <@ all |> Map.containsKey "a" @>
     test <@ all |> Map.containsKey "b" @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``EmitBuildCompleted reaches plugins`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable receivedBuild: BuildResult option = None
@@ -154,7 +154,7 @@ let ``EmitBuildCompleted reaches plugins`` () =
     waitUntil (fun () -> receivedBuild.IsSome) 12000
     test <@ receivedBuild = Some BuildSucceeded @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugins observe the model the host publishes whoever installed the graph`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -193,7 +193,7 @@ let ``plugins observe the model the host publishes whoever installed the graph``
 
     test <@ List.ofSeq observed = [ FsHotWatch.ProjectModel.Observation.Unobserved; fixtureModel ] @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``EmitBuildCompleted with failure reaches plugins`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable receivedBuild: BuildResult option = None
@@ -394,7 +394,7 @@ let ``preprocessor status is tracked`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``multiple plugins receive the same event`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable received1 = false
@@ -430,7 +430,7 @@ let ``multiple plugins receive the same event`` () =
     test <@ received2 @>
     test <@ received3 @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugin can report and query errors via host`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -475,7 +475,7 @@ let ``plugin can report and query errors via host`` () =
     let errors = host.GetErrors()
     test <@ errors.ContainsKey "/src/A.fs" @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugin ClearErrors removes errors from ledger`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -553,7 +553,7 @@ let ``GetErrorsByPlugin returns only that plugin's errors`` () =
     test <@ aErrors.Count = 1 @>
     test <@ aErrors.ContainsKey "/src/A.fs" @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``EmitFileChecked dispatches to framework plugin handlers`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -813,7 +813,7 @@ let ``ClearErrors with version passes through to ledger`` () =
     host.ClearErrors("fcs", "/src/A.fs", version = 3L)
     test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``OnStatusChanged event fires when plugin reports status`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable statusEvents: (string * PluginStatus) list = []
@@ -866,7 +866,7 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
                    | _ -> false)
         @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``repeated Running reports do not create owned work`` () =
     // A reported `Running` is a status, not ownership: once both events commit, the host
     // owns nothing, and a settling wait resolves even though the status still says Running.
@@ -1713,7 +1713,7 @@ let private fileChangedRecorder (name: string) =
 
     handler, (fun () -> lock batches (fun () -> List.ofSeq batches))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``RerunPlugin re-fires a FileChanged subscriber over the registered source set`` () =
     // `fshw rerun format-check` used to be refused ("no registered file pattern") — the
     // only supported way to refresh a suspect cached verdict was to stop the daemon.
@@ -1952,7 +1952,7 @@ let ``clearing a vanished file leaves findings for files that still exist`` () =
     test <@ remaining |> Map.tryFind ghost = None @>
     test <@ remaining |> Map.find alive |> List.length = 1 @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``vanished-diagnostic pruning cannot erase a newer report for a recreated path`` () =
     withTempDir "rename-recreate" (fun root ->
         let file = System.IO.Path.Combine(root, "Renamed.fs")
@@ -1968,7 +1968,7 @@ let ``vanished-diagnostic pruning cannot erase a newer report for a recreated pa
         let remaining = host.GetErrors() |> Map.find file
         test <@ remaining |> List.exists (fun (_, entry) -> entry.Message = "new generation") @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``vanished-diagnostic pruning only treats repository paths as files`` () =
     withTempDir "diagnostic-key-semantics" (fun root ->
         let host = PluginHost.create nullChecker root
@@ -1997,7 +1997,7 @@ let ``vanished-diagnostic pruning only treats repository paths as files`` () =
 /// plugin measured for itself: test-prune is `Running` through minutes of symbol
 /// analysis before its own stopwatch starts, and a check waits for all of it.
 [<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a plugin's Running to Completed interval is recorded on the host's phase ledger`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -2171,7 +2171,7 @@ let ``registering a second plugin under a taken name warns`` () =
 
 /// A ledger key that is not a valid path cannot name a repository file, so pruning
 /// keeps it as the opaque plugin identity it is instead of failing the prune.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``vanished-diagnostic pruning keeps a key that is not a valid path`` () =
     withTempDir "diagnostic-key-invalid" (fun root ->
         let host = PluginHost.create nullChecker root

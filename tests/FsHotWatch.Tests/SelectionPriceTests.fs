@@ -98,7 +98,7 @@ let ``a price names the classes no run recorded`` () =
     test <@ (describe priced).Contains "1 class(es) never recorded" @>
     test <@ not ((describe (price book [ "P", Asked.Whole ])).Contains "unpriced") @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a book over a runs directory reads only its newest runs, and none when it is missing`` () =
     FsHotWatch.Tests.TestHelpers.withTempDir "price-runs" (fun root ->
         test <@ (Book.ofRunsDir 5 (IO.Path.Combine(root, "absent"))).Classes = Map.empty @>

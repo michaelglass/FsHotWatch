@@ -81,7 +81,7 @@ let ``selectReader reads a platform reader that throws as no stamp`` () =
     test <@ selectReader true false throwing (stampingAs 2UL) "/f" = ValueNone @>
     test <@ selectReader false true (stampingAs 1UL) throwing "/f" = ValueNone @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``read stamps an existing file with its last status change and none for a missing one`` () =
     withTempDir "filestamp" (fun dir ->
         let path = Path.Combine(dir, "A.fs")

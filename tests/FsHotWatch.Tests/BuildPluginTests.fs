@@ -408,7 +408,7 @@ let private assertUnresolvedCopyFailure (getBuild: unit -> BuildResult option) =
     | Some(BuildFailed [ diagnostic ]) -> test <@ diagnostic.Contains "still unresolved" @>
     | actual -> failwithf "expected unresolved-copy BuildFailed, got %A" actual
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ordinary build handler verifies MSB3026 copies before emitting BuildSucceeded`` () =
     withTempDir "build-copy-warning-ordinary" (fun tmpDir ->
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
@@ -422,7 +422,7 @@ let ``ordinary build handler verifies MSB3026 copies before emitting BuildSuccee
         waitForTerminalStatus host "build" 12000
         assertUnresolvedCopyFailure getBuild)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``template build handler verifies MSB3026 copies before emitting BuildSucceeded`` () =
     withTempDir "build-copy-warning-template" (fun tmpDir ->
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
@@ -470,7 +470,7 @@ let private assertNoBinlogLeft (tmpDir: string) (recorded: string) =
     test <@ not (sideLog.StartsWith state) @>
     test <@ not (System.IO.Directory.Exists sideLog) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a build leaves no binlog under the state directory and removes its side log`` () =
     // Builds inherit SIGINT from this process, and a side log is attached only to a build
     // SIGINT can reach; the CLI restores it at entry, and so does this host.
@@ -488,7 +488,7 @@ let ``a build leaves no binlog under the state directory and removes its side lo
         waitForTerminalStatus host "build" 12000
         assertNoBinlogLeft tmpDir recorded)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a template build leaves no binlog under the state directory and removes its side log`` () =
     FsHotWatch.ProcessHelper.restoreInterruptDefault () |> ignore
 
@@ -508,7 +508,7 @@ let ``a template build leaves no binlog under the state directory and removes it
         waitForTerminalStatus host "build" 12000
         assertNoBinlogLeft tmpDir recorded)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a failed build reports its error line and exit code, not its first output line`` () =
     withTempDir "build-failure-headline" (fun tmpDir ->
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
@@ -547,7 +547,7 @@ let ``a failed build reports its error line and exit code, not its first output 
         test <@ entries |> List.exists (fun e -> (headline e.Message).Contains "error FS0039") @>
         test <@ entries |> List.exists (fun e -> e.Message.Contains "exit code 1") @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build plugin emits BuildCompleted on successful build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -595,7 +595,7 @@ let private registerBuildObserver (host: PluginHost) (handler: PluginHandler<Bui
         host.RunCommand("fixture-build-state", [||]) |> Async.RunSynchronously |> ignore
         observed.Value
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``file changes observed during a test host defer the build until that run completes`` () =
     withTempDir "build-during-test-host" (fun tmpDir ->
         let marker = System.IO.Path.Combine(tmpDir, "build-ran")
@@ -675,7 +675,7 @@ let ``file changes observed during a test host defer the build until that run co
 /// newer than its source, otherwise it snapshots the source, waits on a gate (the first
 /// time only), and writes the snapshot.
 [<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an edit during an in-flight build is rebuilt, not trusted to a newer stale output`` () =
     withTempDir "edit-during-build" (fun tmpDir ->
         let source = System.IO.Path.Combine(tmpDir, "Lib.fs")
@@ -748,7 +748,7 @@ let ``only inputs written since the previous build started are re-stamped`` () =
 /// every started run in `ActiveTestRuns` until its `TestRunCompleted`, and defers every
 /// later build while any is there. A cancelled run that emitted no completion would leave
 /// its RunId behind and defer every build for the rest of the session.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a force-run cancelled after it started still releases the build deferral`` () =
     withTempDir "build-after-cancelled-run" (fun tmpDir ->
         let marker = System.IO.Path.Combine(tmpDir, "build-ran")
@@ -862,11 +862,11 @@ let private overlappingBuildAndTest (buildDelay: string) (testDelay: string) =
 
         test <@ System.IO.File.ReadAllLines(countFile).Length = 2 @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``deferred change survives when the overlapping build completes before the test`` () =
     overlappingBuildAndTest "0.2" "1"
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``deferred change survives when the overlapping test completes before the build`` () =
     overlappingBuildAndTest "1" "0.2"
 
@@ -960,7 +960,7 @@ let private manualTestWaitsForBuild () =
             test <@ System.IO.File.ReadAllLines order = [| "build"; "test" |] @>
             test <@ System.IO.File.Exists testStarted @>))
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``manual test host waits for the active build to release its artifacts`` () = manualTestWaitsForBuild ()
 
 /// A gated fixture whose body fails before releasing: the shape every failing assertion in
@@ -972,7 +972,7 @@ let ``manual test host waits for the active build to release its artifacts`` () 
 /// unbounded wait in a test harness is a defect on the runs that pass, too: the harness only
 /// has to fail once to strand a spinner, and the spinner then starves every later run on the
 /// box into false reds that have nothing to do with the code under test.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a gated wait does not outlive a fixture body that fails before releasing`` () =
     let mutable gate: System.Diagnostics.Process = null
 
@@ -1011,7 +1011,7 @@ let ``a gated wait does not outlive a fixture body that fails before releasing``
         if not (isNull gate) then
             gate.Dispose()
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``failed build rejects queued and later manual hosts until a success drains automatic debt`` () =
     withTempDir "test-rejects-failed-build" (fun tmpDir ->
         let buildStarted = System.IO.Path.Combine(tmpDir, "build-started")
@@ -1096,7 +1096,7 @@ let ``failed build rejects queued and later manual hosts until a success drains 
         host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(tmpDir, "Fourth.fs") ])
         waitUntil (fun () -> System.IO.File.Exists testStarted) 8000)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``queued template build preserves changes for a second project root`` () =
     withTempDir "queued-template-roots" (fun tmpDir ->
         let firstDir = System.IO.Path.Combine(tmpDir, "First")
@@ -1227,7 +1227,7 @@ let ``build-status command returns failed after failed build`` () =
 // ``build plugin honors timeoutSec and records TimedOut outcome`` moved to
 // FsHotWatch.IntegrationTests/PluginTimeoutTests.fs (coverage-deterministic; rationale there).
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build plugin reports Failed status on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1248,7 +1248,7 @@ let ``build plugin reports Failed status on failed build`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build plugin emits BuildFailed on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -1270,7 +1270,7 @@ let ``build plugin emits BuildFailed on failed build`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build plugin reports errors on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1307,7 +1307,7 @@ let ``build plugin handles exception from runProcess`` () =
 
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build plugin ignores SolutionChanged events`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -1326,7 +1326,7 @@ let ``build plugin ignores SolutionChanged events`` () =
 
     test <@ getBuild () = None @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build plugin triggers on ProjectChanged`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -1344,7 +1344,7 @@ let ``build plugin triggers on ProjectChanged`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``test-file-only change runs a real build (re-emits the DLL) — does not trust BatchChecked as freshness`` () =
     // Stale-binary false green: FCS's in-memory BatchChecked proves the .fs type-checks but
     // does NOT emit the runnable DLL for an xUnit v3 standalone-exe project. The old "skip
@@ -1384,7 +1384,7 @@ let ``test-file-only change runs a real build (re-emits the DLL) — does not tr
             | _ -> false
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``test-file-only change builds and succeeds without waiting on BatchChecked`` () =
     // No BatchChecked is emitted, yet BuildSucceeded still fires: the build is no longer
     // parked waiting on the FCS cohort signal, so the on-disk test DLL is re-emitted before
@@ -1412,7 +1412,7 @@ let ``test-file-only change builds and succeeds without waiting on BatchChecked`
     waitUntil (fun () -> (getBuild ()).IsSome) 4000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build uses template for affected project`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -1438,7 +1438,7 @@ let ``build uses template for affected project`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build falls back to original command when no template`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -1462,7 +1462,7 @@ let ``build falls back to original command when no template`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build falls back when file not in graph`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -1482,7 +1482,7 @@ let ``build falls back when file not in graph`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ProjectChanged always uses fallback command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -1504,7 +1504,7 @@ let ``ProjectChanged always uses fallback command`` () =
 
 // --- dependsOn tests ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build with dependsOn buffers FileChanged until dependency satisfied`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -1531,7 +1531,7 @@ let ``build with dependsOn buffers FileChanged until dependency satisfied`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build with dependsOn proceeds immediately when deps already satisfied`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -1553,7 +1553,7 @@ let ``build with dependsOn proceeds immediately when deps already satisfied`` ()
     waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build with dependsOn reports Failed when dependency fails`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1581,7 +1581,7 @@ let ``build with dependsOn reports Failed when dependency fails`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build with empty dependsOn works normally`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -1598,7 +1598,7 @@ let ``build with empty dependsOn works normally`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build with multiple dependsOn waits for all`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -1638,7 +1638,7 @@ let ``BuildPlugin cache key is provided regardless of getCommitId`` () =
     test <@ h1.CacheKey.IsSome @>
     test <@ h2.CacheKey.IsSome @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``regression: BuildPlugin writes a cache entry on terminal Custom BuildDone`` () =
     // `applyBuildOutcome` used to emit from inside the fire-and-forget async, so the
     // framework's per-event cache-write window for FileChanged saw only "Running" and the
@@ -1686,7 +1686,7 @@ let private warmedHandler (command: string) (args: string) (dependsOn: string li
     waitForTerminalStatus host "build" 5000
     handler
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildPlugin cache key matches between FileChanged and Custom BuildDone`` () =
     // The result is stored from the synchronous Custom BuildDone handler and looked up from
     // a later FileChanged, so both must compute identical keys for the cache to hit.
@@ -1754,7 +1754,7 @@ let ``BuildPlugin cache reads are limited to genuine build-trigger events`` () =
     test <@ stored.IsSome @>
 
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cached build lifecycle still defers one source change until the test run completes`` () =
     withTempDir "build-cache-test-lifecycle" (fun tmpDir ->
         let source = System.IO.Path.Combine(tmpDir, "Source.fs")
@@ -1869,7 +1869,7 @@ let private stubGraph (sources: string list) (projects: string list) =
         member _.GetCanonicalDllPath _ = None
         member _.GetMaxSourceMtime _ = None }
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildInputsHasher produces stable hash for unchanged files`` () =
     withTempDir "binhasher-stable" (fun tmpDir ->
         let f1 = System.IO.Path.Combine(tmpDir, "A.fs")
@@ -1882,7 +1882,7 @@ let ``BuildInputsHasher produces stable hash for unchanged files`` () =
         test <@ h.Compute() = h.Compute() @>)
 
 [<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildInputsHasher hash differs when a source file's content changes`` () =
     withTempDir "binhasher-content" (fun tmpDir ->
         let f1 = System.IO.Path.Combine(tmpDir, "A.fs")
@@ -1896,7 +1896,7 @@ let ``BuildInputsHasher hash differs when a source file's content changes`` () =
         System.IO.File.WriteAllText(f1, "let a = 2")
         test <@ before <> h.Compute() @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildInputsHasher hash differs when files are added or removed`` () =
     withTempDir "binhasher-fileset" (fun tmpDir ->
         let f1 = System.IO.Path.Combine(tmpDir, "A.fs")
@@ -1908,7 +1908,7 @@ let ``BuildInputsHasher hash differs when files are added or removed`` () =
         let twoFiles = BuildInputsHasher(stubGraph [ f1; f2 ] []).Compute()
         test <@ oneFile <> twoFiles @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildInputsHasher returns 'missing' sentinel for non-existent file`` () =
     withTempDir "binhasher-missing" (fun tmpDir ->
         let exists = System.IO.Path.Combine(tmpDir, "A.fs")
@@ -1935,7 +1935,7 @@ let ``BuildInputsHasher returns 'missing' sentinel for non-existent file`` () =
 // tests below say WHICH half.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``case 2: a compile item added to a PROJECT FILE moves the build merkle`` () =
     // The half that was already closed. A project file is an input to the merkle, so its
     // content moving moves the key by construction — but "by construction" is a claim
@@ -1962,7 +1962,7 @@ let ``case 2: a compile item added to a PROJECT FILE moves the build merkle`` ()
 
         test <@ hasher.Compute() <> before @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``case 2: a compile item added to Directory.Build.props moves the build merkle`` () =
     // The half that was NOT closed, and it is the same defect through a wider door.
     //
@@ -1997,7 +1997,7 @@ let ``case 2: a compile item added to Directory.Build.props moves the build merk
 
         test <@ hasher.Compute() <> before @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``case 2: Directory.Build.targets and Directory.Packages.props move it too`` () =
     // The other two implicit imports, each on its own so a list that grew only one entry
     // cannot pass. `Directory.Build.targets` is the one that matters most here: it is
@@ -2021,7 +2021,7 @@ let ``case 2: Directory.Build.targets and Directory.Packages.props move it too``
             System.IO.File.WriteAllText(path, "<Project><ItemGroup><Compile Include=\"G.fs\" /></ItemGroup></Project>")
             test <@ hasher.Compute() <> added @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``case 2: an unrelated file beside the implicit imports does NOT move it`` () =
     // THE FLOOR. The three tests above would all pass against a hasher that simply
     // re-read the whole directory tree — and such a hasher would invalidate every build
@@ -2046,7 +2046,7 @@ let ``case 2: an unrelated file beside the implicit imports does NOT move it`` (
         System.IO.File.WriteAllText(System.IO.Path.Combine(root, "Directory.Build.props"), "<Project />")
         test <@ hasher.Compute() <> before @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildInputsHasher distinct missing paths produce distinct merkles`` () =
     // The "missing" sentinel must still be combined with the path, or two different missing
     // files collapse to one merkle entry — the silent under-build the old swallow caused.
@@ -2057,7 +2057,7 @@ let ``BuildInputsHasher distinct missing paths produce distinct merkles`` () =
         let h2 = BuildInputsHasher(stubGraph [ m2 ] []).Compute()
         test <@ h1 <> h2 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildInputsHasher propagates IOException from unreadable file`` () =
     // chmod 000 makes ReadAllText throw UnauthorizedAccessException, which must propagate
     // rather than be swallowed as a "read-error" cache entry that poisons the merkle.
@@ -2100,7 +2100,7 @@ let ``BuildInputsHasher propagates IOException from unreadable file`` () =
                 with _ ->
                     ())
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildInputsHasher merkle is stable across repeat computes when content is unchanged`` () =
     // The trap: this once asserted that mutating content while PRESERVING mtime returns the
     // same merkle, which enshrined the FS1178 phantom below. The invariant is idempotence —
@@ -2135,7 +2135,7 @@ let ``BuildInputsHasher merkle is stable across repeat computes when content is 
 // size + mtime, or a re-hash on size/mtime ambiguity, are all still fooled by a same-size
 // mtime-preserved rewrite.
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildInputsHasher hash differs when content changes but mtime is preserved (rsync -a)`` () =
     withTempDir "binhasher-mtime-preserved" (fun tmpDir ->
         let f = System.IO.Path.Combine(tmpDir, "Vendored.fs")
@@ -2154,7 +2154,7 @@ let ``BuildInputsHasher hash differs when content changes but mtime is preserved
 
         test <@ before <> after @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildInputsHasher mtime cache returns stable hash across repeat calls`` () =
     withTempDir "binhasher-cache" (fun tmpDir ->
         let f = System.IO.Path.Combine(tmpDir, "A.fs")
@@ -2167,7 +2167,7 @@ let ``BuildInputsHasher mtime cache returns stable hash across repeat calls`` ()
         test <@ h1 = h2 @>
         test <@ h2 = h3 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildInputsHasher includes project files in the merkle`` () =
     withTempDir "binhasher-projfiles" (fun tmpDir ->
         let proj = System.IO.Path.Combine(tmpDir, "P.fsproj")
@@ -2253,7 +2253,7 @@ let private runVerifyHarness
 
     result
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildPlugin demotes BuildPassed to BuildFailed when canonical DLL is older than sources`` () =
     // RED direction, on the daemon's own registration path. An authored edit at "now"
     // against a DLL from ten minutes ago is the stale artifact the gate exists for —
@@ -2274,7 +2274,7 @@ let ``BuildPlugin demotes BuildPassed to BuildFailed when canonical DLL is older
             | _ -> false
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildPlugin emits BuildSucceeded when canonical DLL is newer than sources`` () =
     // GREEN direction. Without this the red one above is also satisfied by a gate that
     // condemns every build — which would not be a stale-artifact detector, it would be
@@ -2289,7 +2289,7 @@ let ``BuildPlugin emits BuildSucceeded when canonical DLL is newer than sources`
 
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a discovery-regenerated obj compile item does not redden a fresh build`` () =
     // THE reason the report-only freshness gate could not be promoted, as a test.
     //
@@ -2312,7 +2312,7 @@ let ``a discovery-regenerated obj compile item does not redden a fresh build`` (
 
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an authored edit still reddens even when the generated item is older`` () =
     // The mutation the other way, so the exclusion above cannot have been implemented
     // by ignoring the source list. Same fixture, same generated item — only the
@@ -2332,7 +2332,7 @@ let ``an authored edit still reddens even when the generated item is older`` () 
             | _ -> false
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``production build cannot mint success when its canonical DLL is missing`` () =
     let getBuild =
         runVerifyHarness
@@ -2351,7 +2351,7 @@ let ``production build cannot mint success when its canonical DLL is missing`` (
 
 // --- Template build failure paths (startTemplateBuild's TimedOut/Failed/exception arms) ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``template build with failing command emits BuildFailed and reports Failed status`` () =
     // Drives the Failed-result arm of `startTemplateBuild`.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -2391,7 +2391,7 @@ let ``template build with failing command emits BuildFailed and reports Failed s
             | _ -> false
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``template build honors timeoutSec and surfaces TimedOut`` () =
     // Drives the TimedOut arm of `startTemplateBuild`: `sleep 10` against a 1s timeout.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -2424,7 +2424,7 @@ let ``template build honors timeoutSec and surfaces TimedOut`` () =
 
 // --- test-file changes drive a real build (no skip-and-wait phase) ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ProjectChanged after a test-file change runs a real build`` () =
     // A test-file change used to park the plugin in WaitingForBatchPhase, needing a
     // ProjectChanged to interrupt the wait. Both builds must now reach BuildSucceeded on
@@ -2456,7 +2456,7 @@ let ``ProjectChanged after a test-file change runs a real build`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 8000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a mixed test-and-source change runs a real build`` () =
     // A mixed change was never the skip path, and still isn't.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -2489,7 +2489,7 @@ let ``a mixed test-and-source change runs a real build`` () =
 
 // --- build-status command in failed-state lifecycles ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build-status returns failed JSON after BuildOutputFailed lifecycle`` () =
     // Drives the build-status path that reads `Lifecycle.value` and matches
     // BuildOutputFailed.
@@ -2511,7 +2511,7 @@ let ``build-status returns failed JSON after BuildOutputFailed lifecycle`` () =
     let hasOutput = doc.RootElement.TryGetProperty("output", &outputProp)
     test <@ hasOutput @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build-status returns failed JSON after BuildArtifactsStale demotion`` () =
     // The runVerifyHarness shape (which produces BuildArtifactsStale) plus build-status,
     // to drive that arm of the JSON serializer.
@@ -2580,7 +2580,7 @@ let private forceRebuildState (handler: PluginHandler<BuildState, BuildMsg>) =
     handler.Update Unchecked.defaultof<_> handler.Init (Custom ForceRebuildRequested)
     |> Async.RunSynchronously
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``force-rebuild makes the next FileChanged lookup miss the build cache`` () =
     // The key used to be unconditional, so a warm cache replayed a BuildPassed whose
     // artifacts were long gone and the deadlock above became unexitable.
@@ -2598,7 +2598,7 @@ let ``force-rebuild makes the next FileChanged lookup miss the build cache`` () 
     let after = handler.CacheKey.Value forced fileEvt
     test <@ after.IsNone @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``force-rebuild still lets the fresh build's result be cached`` () =
     // The asymmetry is deliberate: suppressing the STORE too would make every forced build
     // permanently uncacheable, turning a correctness fix into a standing perf regression.
@@ -2612,7 +2612,7 @@ let ``force-rebuild still lets the fresh build's result be cached`` () =
     test <@ lookupKey.IsNone @>
     test <@ storeKey.IsSome @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``force-rebuild is spent by a completed build, not by the lookup alone`` () =
     // Clearing on the LOOKUP would let a dispatch that never reached a build consume the
     // request and leave the artifacts stale — the same deadlock, one run later.
@@ -2814,7 +2814,7 @@ let private stubBuildCtx (claim: string * string -> SharedRunClaim) (isRunning: 
 let private forceRebuildCommand (handler: PluginHandler<BuildState, BuildMsg>) =
     handler.Commands |> List.find (fun (name, _) -> name = "force-rebuild") |> snd
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``build cache decisions honor the supplied active-test snapshot`` () =
     let handler, key = warmedWithKeyFn ()
     let event = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
@@ -2831,7 +2831,7 @@ let ``build cache decisions honor the supplied active-test snapshot`` () =
 
     Assert.True((key event).IsSome, "reading the active state must not change the idle snapshot")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``force rebuild belongs to the returned owner state rather than older snapshots`` () =
     let handler, key = warmedWithKeyFn ()
     let event = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
@@ -2869,7 +2869,7 @@ let ``force rebuild belongs to the returned owner state rather than older snapsh
 
     Assert.True((handler.CacheKey.Value rebuilt event).IsSome, "a completed build spends the request")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``force-rebuild replies only after the owner applies its intent`` () =
     task {
         let handler, _ = warmedWithKeyFn ()
@@ -3053,7 +3053,7 @@ let private completedTestRun (runId: Guid) =
           Results = Map.empty
           Verification = RunVerification.ofResults Map.empty }
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``input owed while a finished build still holds its slot is retained`` () =
     withTempDir "build-owed-retained" (fun tmpDir ->
         let handler, _, secondSource, _ = twoRootTemplate tmpDir
@@ -3078,7 +3078,7 @@ let ``input owed while a finished build still holds its slot is retained`` () =
 
         Assert.Equal<FileChangeKind list>([ second ], afterChange.PendingFiles))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``input retained behind a finished build is built by that build's result fold`` () =
     withTempDir "build-owed-drained" (fun tmpDir ->
         let handler, secondProject, secondSource, buildLog = twoRootTemplate tmpDir
@@ -3262,7 +3262,7 @@ let private terminalSummary (host: PluginHost) =
     | Some(Failed(_, _, v)) -> v.Summary
     | _ -> ""
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a source touched after the build bypasses the cache, though the merkle cannot see it`` () =
     // THE WEDGE, at the key. Before this gate the lookup returned the same key it always
     // had and the stale outputs replayed as a pass.
@@ -3291,7 +3291,7 @@ let ``a source touched after the build bypasses the cache, though the merkle can
         let wedged = cacheKeyFn fileEvt
         test <@ wedged.IsNone @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a checkout with no build output at all bypasses the cache`` () =
     // The first `check` in a brand-new `jj workspace add`: sources byte-identical to the
     // workspace whose entry it therefore hits, and no `bin/` whatsoever. "built 21
@@ -3310,7 +3310,7 @@ let ``a checkout with no build output at all bypasses the cache`` () =
         let withoutDll = cacheKeyFn fileEvt
         test <@ withoutDll.IsNone @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``stale artifacts suppress the cache LOOKUP only, never the STORE`` () =
     // Same asymmetry `force-rebuild` relies on: suppressing the store too would make
     // every recovered build permanently uncacheable — a correctness fix that pays for
@@ -3429,7 +3429,7 @@ let ``a warm cache does not replay a pass over stale outputs — the build recov
 let private legacyProductionPlugin graph =
     BuildPlugin.createWith false "true" "" [] graph [] None [] None
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``legacy production wiring refuses a missing build output`` () =
     // THE PRODUCTION WEDGE. First `check` in a brand-new `jj workspace add`: sources
     // byte-identical to the workspace whose entry it hits, no `bin/` at all.
@@ -3447,7 +3447,7 @@ let ``legacy production wiring refuses a missing build output`` () =
         let withoutDll = cacheKeyFn fileEvt
         test <@ withoutDll.IsNone @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``production wiring refuses an mtime-stale cache replay`` () =
     // Case 1 promotes the corrected detector. The old
     // report-only window served the stored success here, leaving TestPrune waiting on
@@ -3461,7 +3461,7 @@ let ``production wiring refuses an mtime-stale cache replay`` () =
         test <@ production.IsNone @>)
 
 [<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a build that leaves an output missing cannot make cached success replayable`` () =
     // A command that omits a graph project is a configuration failure, not evidence
     // that an absent output is fresh. The old one-build exemption served the stored
@@ -3523,7 +3523,7 @@ let private depSatisfied (name: string) =
         { Name = name
           Outcome = CommandSucceeded "ok" }
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a dependency-gated lookup re-verifies the artifacts too, not just a FileChanged`` () =
     withOneProjectGraph "replay-dep-stale" (fun (graph, srcPath, dllPath) ->
         // `dependsOn` is what moves the build-starting event from `FileChanged` to
@@ -3546,7 +3546,7 @@ let ``a dependency-gated lookup re-verifies the artifacts too, not just a FileCh
         let wedged = cacheKeyFn depEvt
         test <@ wedged.IsNone @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``force-rebuild reaches a dependency-gated lookup`` () =
     // The force-rebuild escape hatch had the same hole: `confirm` sets the flag, and in a
     // `dependsOn` repo the lookup that decides whether a build runs never read it.
@@ -3561,7 +3561,7 @@ let ``force-rebuild reaches a dependency-gated lookup`` () =
         let after = handler.CacheKey.Value (forceRebuildState handler) depEvt
         test <@ after.IsNone @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a dependency-gated build still stores its result`` () =
     // The asymmetry has to survive the wider gate: only READS are suppressed. If the
     // `Custom BuildDone` store were caught by it, a `dependsOn` repo would rebuild from
@@ -3593,13 +3593,13 @@ let private writeTfmlessFsproj (projPath: string) (compiles: string list) =
 
     System.IO.File.WriteAllText(projPath, "<Project>\n  <ItemGroup>\n" + items + "\n  </ItemGroup>\n</Project>")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a fully examined graph has no coverage gap to report`` () =
     // POSITIVE CONTROL for every assertion below: this is the tree the gate is supposed
     // to be silent about, and a floor that reported on it would be noise, not a floor.
     withOneProjectGraph "coverage-clean" (fun (graph, _, _) -> test <@ (artifactCoverageGap graph).IsNone @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a missing DLL is a finding, not a coverage gap`` () =
     // The distinction the floor turns on: a derivable path whose DLL is absent WAS
     // examined — `DllMissing` is the finding. Reporting it as unexamined would drown the
@@ -3608,7 +3608,7 @@ let ``a missing DLL is a finding, not a coverage gap`` () =
         System.IO.File.Delete dllPath
         test <@ (artifactCoverageGap graph).IsNone @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a project with no TargetFramework of its own is named as unverified`` () =
     // Nothing about this project is checked, on either path, and the stale list it
     // contributes to is empty — which is indistinguishable from a clean tree.
@@ -3630,7 +3630,7 @@ let ``a project with no TargetFramework of its own is named as unverified`` () =
         test <@ text.Contains "examined 0 of 1" @>
         test <@ text.Contains "TargetFramework" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an output with no source to compare against is named as half-checked`` () =
     // Its existence was verified; its currency never was. Silently counting it as fresh
     // is how a mtime guard becomes a file-exists guard without anyone deciding to.
@@ -3646,7 +3646,7 @@ let ``an output with no source to compare against is named as half-checked`` () 
         test <@ text.Contains "MyLib" @>
         test <@ text.Contains "only its existence was checked" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a tree the gate cannot examine is reported, not refused`` () =
     // The floor REPORTS. Bypassing the cache on every lookup whose artifacts could not be
     // examined would wedge every repo that centralises its TargetFramework into a
@@ -3675,7 +3675,7 @@ let ``a tree the gate cannot examine is reported, not refused`` () =
 
         test <@ served.IsSome @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a graph the daemon's own registration path produced is reported as unexamined`` () =
     // The registrar, not the repo. `GetCanonicalDllPath` needs a TargetFramework, and the
     // ONLY thing that puts one in the graph is `RegisterFromFsproj`'s XML parse — which no
@@ -3715,7 +3715,7 @@ let ``an empty project graph is reported, not read as a clean tree`` () =
 // BUILD's own cold-vs-cached ledger parity
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a cached build replay leaves an out-of-batch finding standing`` () =
     // The seam regression in PluginFrameworkTests proves the framework replays only
     // what the run captured. It cannot prove what THIS plugin captures, and that is
@@ -3838,7 +3838,7 @@ let private withProducerConsumerGraph
         graph.RegisterProjectOutput(AbsProjectPath.create appProj, appDll)
         body (graph, libSrc, copy))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a dependency copy the build still owes bypasses the cache`` () =
     // THE MERGE-FLIP WEDGE, at the key. The producer's output was refreshed and the
     // consumer's copy of it was not — and because the merkle is over SOURCES, the
@@ -3850,7 +3850,7 @@ let ``a dependency copy the build still owes bypasses the cache`` () =
         let wedged = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
         test <@ wedged.IsNone @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a settled dependency copy still serves the cache`` () =
     // THE NEGATIVE CONTROL for the test above, on the same fixture with the same
     // detector: a gate that suppressed every key would satisfy the absence half while
@@ -3861,14 +3861,14 @@ let ``a settled dependency copy still serves the cache`` () =
         let served = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
         test <@ served.IsSome @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``legacy production wiring refuses a dependency copy the build still owes`` () =
     withProducerConsumerGraph "replay-copy-reportonly" false (fun (graph, srcPath, _copy) ->
         let cacheKeyFn = keyOf (legacyProductionPlugin graph)
         let wedged = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
         test <@ wedged.IsNone @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``legacy production wiring serves a settled dependency copy`` () =
     // The negative control for the production wiring specifically. Without it,
     // the compatibility path could have become rebuild-every-time and every test above would
@@ -3878,7 +3878,7 @@ let ``legacy production wiring serves a settled dependency copy`` () =
         let served = cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))
         test <@ served.IsSome @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a pending dependency copy suppresses the cache LOOKUP only, never the STORE`` () =
     // Same asymmetry `force-rebuild` and the missing-output arm rely on: suppressing
     // the store too would make every recovered build permanently uncacheable.
@@ -3894,7 +3894,7 @@ let ``a pending dependency copy suppresses the cache LOOKUP only, never the STOR
         test <@ storeKey.IsSome @>)
 
 [<WallClock("timestamp granularity: the sleep makes a later write's mtime or clock reading differ from an earlier one, which the test needs; the assertion is on content or ordering, never on a duration")>]
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a build that leaves a dependency copy divergent cannot make cached success replayable`` () =
     // A byte-divergent copy is attributable stale code. A successful subprocess that
     // leaves it divergent does not license replaying the prior success on the next
@@ -3924,7 +3924,7 @@ let ``a build that leaves a dependency copy divergent cannot make cached success
         test <@ not ((terminalSummary host).Contains "(cached)") @>
         test <@ System.IO.File.ReadAllText copy = "Lib-bytes-v1" @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a build that settles the copy restores an ordinary cached replay`` () =
     // The floor's other direction, and what makes the wedge RECOVER rather than merely
     // be reported: when the forced build does re-emit the copy (measured — a plain
@@ -3975,7 +3975,7 @@ let private modelObservingCtx (generation: int64) : PluginCtx<BuildMsg> =
             { ProjectGraphAccessor.none with
                 ObserveModel = fun () -> FsHotWatch.Tests.TestHelpers.fixtureModelOf generation } }
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a failed build mints evidence for the model it failed under; a passing one mints none`` () =
     let handler = warmedHandler "echo" "ok" []
 
@@ -4007,7 +4007,7 @@ let ``a failed build mints evidence for the model it failed under; a passing one
 
     test <@ (unobserved :> ICompletedBuildFailureState).CompletedBuildFailure.IsNone @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a passing build folded over a failed one retires the failure proof`` () =
     let handler = warmedHandler "echo" "ok" []
 
@@ -4109,13 +4109,13 @@ let private buildFailed (host: PluginHost) =
     | Some(Failed _) -> true
     | _ -> false
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a published reference assembly the build left behind bypasses the cache`` () =
     withRefAssemblyGraph "ref-stale-replay" true (fun (graph, srcPath, _, _, _) ->
         let cacheKeyFn = keyOf (BuildPlugin.create "true" "" [] graph [] None [] None)
         test <@ (cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))).IsNone @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a published reference assembly holding the intermediate's bytes serves the cache at any timestamp`` () =
     // The control: after every implementation-only change `refint` is newer than `ref`
     // with the same bytes. Treating that as stale would turn every lookup into a build.
@@ -4123,7 +4123,7 @@ let ``a published reference assembly holding the intermediate's bytes serves the
         let cacheKeyFn = keyOf (BuildPlugin.create "true" "" [] graph [] None [] None)
         test <@ (cacheKeyFn (FileChanged(SourceChanged [ srcPath ]))).IsSome @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a build that leaves the reference assembly behind is repaired and rebuilt before it can pass`` () =
     withRefAssemblyGraph "ref-stale-rebuild" false (fun (graph, srcPath, intermediate, published, tmpDir) ->
         let marker = System.IO.Path.Combine(tmpDir, "compiled")
@@ -4144,7 +4144,7 @@ let ``a build that leaves the reference assembly behind is repaired and rebuilt 
         test <@ runs () = 2 @>
         test <@ not (buildFailed host) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a reference assembly the build keeps leaving behind fails the build`` () =
     withRefAssemblyGraph "ref-stale-persists" false (fun (graph, srcPath, intermediate, _, tmpDir) ->
         let count = System.IO.Path.Combine(tmpDir, "build-count")
@@ -4162,7 +4162,7 @@ let ``a reference assembly the build keeps leaving behind fails the build`` () =
         // Bounded: one repair and one rebuild, never a loop.
         test <@ runs () = 2 @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a stale reference assembly from an earlier build is repaired before the build runs`` () =
     withRefAssemblyGraph "ref-stale-prebuild" true (fun (graph, srcPath, _, published, tmpDir) ->
         let script, runs = countingBuildScript tmpDir ":"

@@ -193,7 +193,7 @@ let private sharedWakeHandlerWithClassifier
 let private sharedWakeHandler name workFor =
     sharedWakeHandlerWithClassifier name workFor (fun _ -> Ready)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``shared start failure posts the typed failure and releases its accounting`` () =
     let statuses = System.Collections.Concurrent.ConcurrentBag<PluginStatus>()
     let releases = System.Collections.Concurrent.ConcurrentBag<SharedResourceState>()
@@ -229,7 +229,7 @@ let ``shared start failure posts the typed failure and releases its accounting``
 /// A run whose executor cannot start says nothing about the shared resource. The next
 /// claimant is handed whatever the resource was before — a usable resource stays usable,
 /// and an unusable one stays unusable until a real owner repairs it.
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(true)>]
 [<InlineData(false)>]
 let ``shared executor start failure leaves the lease as it was handed`` (handedReady: bool) =
@@ -273,7 +273,7 @@ let ``shared executor start failure leaves the lease as it was handed`` (handedR
 
 /// Control: a run that did start and judged the resource unusable still makes that
 /// verdict stick for the next claimant.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``shared run that finds the resource unusable still invalidates the lease`` () =
     let scheduler = SharedRunScheduler()
 
@@ -542,7 +542,7 @@ let ``commands query agent state`` () =
     }
     |> Async.RunSynchronously
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Custom messages work for self-posting`` () =
     async {
         let mutable customReceived = false
@@ -586,7 +586,7 @@ let ``Custom messages work for self-posting`` () =
     }
     |> Async.RunSynchronously
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``handler errors are recovered`` () =
     async {
         let mutable callCount = 0
@@ -960,7 +960,7 @@ let private batchRecordingHandler
             Some(ContentHash.create (if batch = 0L then "fresh" else "batch")))
       Teardown = None }
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``events queued behind a fold share one dispatch batch, and an event admitted after them starts another`` () =
     // AUTOMATION-1437: a key may share work that reads the disk across the events of one
     // batch. Every event of a batch was admitted before the batch began, so the work is no
@@ -996,7 +996,7 @@ let ``events queued behind a fold share one dispatch batch, and an event admitte
     test <@ batchOf["A"] <> batchOf["B"] @>
     test <@ batchOf["E"] <> batchOf["D"] @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a key that reused its batch's work and missed is keyed again outside the batch before the handler runs`` () =
     // The batch's shared work may be older than the disk now. A hit under it is a true
     // answer for the inputs it names; a miss runs the handler, whose result must be stored
@@ -1055,7 +1055,7 @@ let ``a key that reused its batch's work and hit is replayed without being keyed
 /// return value back as `Custom`, which is what proves the framework posts it at all.
 type private RxMsg = RxDone of int
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``RunExclusive does not start a second run while the first holds the slot`` () =
     async {
         let started = ref 0
@@ -1286,7 +1286,7 @@ let ``cache replay synthesizes a matching start for a completion captured after 
     }
     |> Async.RunSynchronously
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``RunExclusive releases slot when work raises and logs without re-posting completion`` () =
     // When work throws, completion stays ValueNone (no Custom message posted) and the slot
     // is released so a subsequent RunExclusive can run.
@@ -1358,7 +1358,7 @@ let ``RunExclusive releases slot when work raises and logs without re-posting co
     }
     |> Async.RunSynchronously
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``RunExclusive forces a terminal Failed status when work raises (no strand)`` () =
     // Regression test for the fresh-workspace daemon wedge. On the fault path the completion message
     // that normally drives the plugin to terminal is never posted, and plugins routinely
@@ -1424,7 +1424,7 @@ type private FaultMsg =
     | WorkFaulted of string
     | RetainedDone
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a faulted exclusive run declared onFailure folds its failure message and the fold can start retained work`` () =
     // A plugin that keeps a trigger refused while the key was held drains it from the
     // fold that holds the key. A faulted run used to deliver no fold at all, so the
@@ -1484,7 +1484,7 @@ let ``a faulted exclusive run declared onFailure folds its failure message and t
     }
     |> Async.RunSynchronously
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a faulted exclusive run whose onFailure builder throws still retires with the work's failure`` () =
     async {
         let statuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
@@ -1541,7 +1541,7 @@ let ``a faulted exclusive run whose onFailure builder throws still retires with 
     }
     |> Async.RunSynchronously
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``SlotHolder reports a live run while work is in flight and free after completion`` () =
     async {
         let gate = new System.Threading.ManualResetEventSlim(false)
@@ -1692,7 +1692,7 @@ let ``plugin not subscribing to BatchChecked does not receive event`` () =
 // --- safeUpdate × exclusive runs ----------------------------
 
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a handler throw while an exclusive run is in flight does not stomp a terminal status over it`` () =
     // The forced-Failed net exists for "threw before any terminal report, and nothing else
     // will ever report one". While an exclusive run is in flight that premise is false — the
@@ -1815,7 +1815,7 @@ let private openAndDrain (gate: Gate) (reg: RegisteredPlugin) =
     gate.Open()
     waitUntil (fun () -> not (reg.IsBusy())) 15000
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``RunExclusive reports Running at the claim — the framework owns the start`` () =
     // The FRAMEWORK reports Running when it claims the slot, so a plugin cannot launch work
     // and forget to announce it — CoveragePlugin shipped exactly that gap, which also
@@ -1877,7 +1877,7 @@ let ``RunExclusive reports Running at the claim — the framework owns the start
 
     openAndDrain gate reg
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``RunExclusive returns SlotBusy when the slot is held — the work is NOT started`` () =
     // `runExclusive` used to return unit and drop the refused work with a debug log, so the
     // caller could not tell: a `run-tests` whose claim was refused replied "busy" and exited
@@ -1933,7 +1933,7 @@ let ``RunExclusive returns SlotBusy when the slot is held — the work is NOT st
     openAndDrain gate reg
 
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a terminal stamped by ANY plugin path while a run is in flight is suppressed at the funnel`` () =
     // The ownership rule lives at the ONE choke point every plugin-originated status passes
     // through, rather than being re-implemented as `if not (ctx.SlotHolder "tests" = SlotHolder.LiveRun)` in each
@@ -2039,7 +2039,7 @@ let ``a terminal stamped by ANY plugin path while a run is in flight is suppress
 // ---------------------------------------------------------------------------
 
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cache path: a terminal stamped while a run is in flight is neither reported NOR cached`` () =
     // The suppressed terminal must not sneak into the task cache either: a cached
     // manufactured ✓ would be REPLAYED on the next matching event, outliving the run that
@@ -2120,7 +2120,7 @@ let ``cache path: a terminal stamped while a run is in flight is neither reporte
 
     openAndDrain gate reg
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cache path: a cached Completed replayed while a run is in flight does not stomp its Running`` () =
     // On a warm scan every `FileChecked` is a task-cache hit. A hit that reported its
     // cached `Completed` over the `Running` of an in-flight run would let
@@ -2222,7 +2222,7 @@ let private unmodelledResult file =
     { fakeFileCheckResult file with
         ModelGeneration = None }
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cache path: a per-file result finished while a run is in flight is withheld but still cached`` () =
     // The whole-run case above must not cache a verdict nobody observed. A per-file entry
     // is different: it stores no summary, only that the file's work finished, and replays
@@ -2304,7 +2304,7 @@ let ``cache path: a per-file result finished while a run is in flight is withhel
     openAndDrain gate reg
 
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cache path: a handler that LAUNCHES a run does not cache the terminal it reported first`` () =
     // TestPrune's queued-rerun shape: report the completed run's verdict, then immediately
     // launch the next run. That terminal is about to be superseded, so caching it would
@@ -2360,7 +2360,7 @@ let ``cache path: a handler that LAUNCHES a run does not cache the terminal it r
 
     openAndDrain gate reg
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cache path: RunExclusive still refuses a second claim and says so`` () =
     let cache = TaskCache.InMemoryTaskCache()
     let claims = System.Collections.Concurrent.ConcurrentQueue<RunClaim>()
@@ -2408,7 +2408,7 @@ let ``cache path: RunExclusive still refuses a second claim and says so`` () =
 
     openAndDrain gate reg
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cache path: a Failed terminal IS cached — with its verdict intact`` () =
     // A failure is a real, replayable result — that is how `check` stays red on an unchanged
     // tree without re-running everything — and because the verdict rides the terminal
@@ -2464,7 +2464,7 @@ let ``cache path: a Failed terminal IS cached — with its verdict intact`` () =
     | other -> failwithf "expected a cached run Failed carrying its verdict, got %A" other
 
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
-[<Fact(Timeout = 25000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cache path: only an EARNED terminal is written — every other shape is skipped`` () =
     // The cache-write gate decides whether a result can be REPLAYED as a verdict later, so
     // it admits exactly one thing: a terminal this cycle actually earned. Nothing reported,
@@ -2747,7 +2747,7 @@ let ``a claim from the MAILBOX cannot enter the guard's window at all`` () =
 // minted in the first place.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a cache hit must NEVER be replayed over a Custom message — its payload is not in the key`` () =
     async {
         let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache

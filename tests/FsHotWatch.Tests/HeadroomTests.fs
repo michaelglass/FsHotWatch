@@ -47,7 +47,7 @@ let private writePid (root: string) (pid: string) =
     File.WriteAllText(path, pid)
     path
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``survey reports the repository and its workspaces, and changes nothing`` () =
     withTempDir "headroom-survey" (fun root ->
         let rootPid = writePid root "100"
@@ -122,7 +122,7 @@ let ``the report says when no daemon is recorded and when available memory is un
     test <@ text.Contains "available memory unknown on this platform; 1.0 GiB physical" @>
     test <@ text.Contains "no daemon recorded" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run against a real stale pidfile reports it and leaves it in place`` () =
     withTempDir "headroom-run" (fun root ->
         // A pid that provably has no process: one that has already exited and been reaped.
@@ -141,7 +141,7 @@ let ``the live probe answers a start time for a running process and none for a r
     exited.WaitForExit()
     test <@ liveProcessStart exited.Id = None || exited.Id = self @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a pidfile that cannot be read is reported unreadable, not skipped`` () =
     if not (OperatingSystem.IsWindows()) && Environment.UserName <> "root" then
         withTempDir "headroom-unreadable" (fun root ->

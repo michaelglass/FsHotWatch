@@ -41,7 +41,7 @@ let private hammerTreeBriefly (dir: string) (burst: TimeSpan) : Thread =
     t
 
 [<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``withTempDir cleanup tolerates a daemon still writing into the dir`` () =
     // Repeat so the cleanup window reliably overlaps a live writer: the bug threw
     // on ~80% of single attempts, so 8 makes a pre-fix regression near-certain.
@@ -88,7 +88,7 @@ let private libFooSymbol: TestPrune.AstAnalyzer.SymbolInfo =
       Kind = TestPrune.AstAnalyzer.SymbolKind.Value
       Location = TestPrune.AstAnalyzer.InSource("src/Lib.fs", 1, 1, "hash-v1") }
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``clearSqlitePool drops the pooled connections of its own database`` () =
     withTempDir "sqlite-pool-clear" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -298,7 +298,7 @@ let ``every test that reads the process working directory runs in the serialized
 // the caller.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``waitUntil throws when its condition never holds`` () =
     // With no floor, so the expiry is reached at the budget given rather than the hang cap.
     let ex =
@@ -306,7 +306,7 @@ let ``waitUntil throws when its condition never holds`` () =
 
     test <@ ex.Message.Contains "100 ms" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``waitUntil returns once its condition holds`` () =
     // PositiveControl: the throw above is the expiry, not a wait that always throws.
     let mutable polls = 0

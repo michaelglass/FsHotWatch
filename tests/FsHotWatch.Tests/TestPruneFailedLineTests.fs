@@ -185,7 +185,7 @@ let ``a red run whose only 'failed' line is prose is a project-level red a full 
 
 // --- the reproducer, through the real handler ---
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a gate's prose beside an unrelated red leaves the ledger clean once the red re-runs green`` () =
     withTempDir "failed-line-prose" (fun repoRoot ->
         let red =
@@ -211,7 +211,7 @@ let ``a gate's prose beside an unrelated red leaves the ledger clean once the re
         test <@ List.isEmpty final.OutstandingFailures @>
         test <@ List.isEmpty ledgerFiles @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a stored red naming a class the project does not have clears on the project's next green run`` () =
     withTempDir "failed-line-phantom" (fun repoRoot ->
         // A workspace that already holds the field entry from an older daemon.
@@ -302,7 +302,7 @@ let ``a timed-out run's report counts no prose line as a failed test`` () =
     test <@ report.Head = $"%s{timeoutSubject}; 0 test(s) printed 'failed' before the kill:" @>
     test <@ report |> List.forall (fun l -> not (l.StartsWith "  failed")) @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a timed-out run with no report leaves the ledger naming the timeout, through the real handler`` () =
     withTempDir "failed-line-timeout" (fun repoRoot ->
         let timedOut = finished repoRoot None timedOutRun (fullSuiteLaunch [ project ])

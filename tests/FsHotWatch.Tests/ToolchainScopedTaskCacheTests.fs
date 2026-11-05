@@ -52,7 +52,7 @@ let ``the same tree under the same resolved SDK is a hit under the requested key
 
     test <@ sameEnv.TryGet buildKey tree = Some(failedBuild tree) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a persisted wrong-SDK failure is not replayed by a later process with the SDK fixed`` () =
     withTempDir "toolchain-scope" (fun dir ->
         let tree = merkleCacheKey [ "inputs", "tree-3" ]
@@ -84,7 +84,7 @@ let ``a persisted wrong-SDK failure is not replayed by a later process with the 
 
         test <@ replaying.TryGet buildKey tree = Some(failedBuild tree) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the resolver asks dotnet once per SDK selection, not once per lookup`` () =
     withTempDir "toolchain-once" (fun dir ->
         let mutable asked = 0
@@ -107,7 +107,7 @@ let ``the resolver asks dotnet once per SDK selection, not once per lookup`` () 
         test <@ asked = 2 @>
         test <@ pinned <> first @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an answer resolved in one session's environment is not served outside it, or in another`` () =
     withTempDir "toolchain-session" (fun dir ->
         let mutable asked = 0
@@ -260,7 +260,7 @@ let ``a successful answer is the version line, whatever else dotnet printed besi
 let ``a successful answer with no version line in it is kept whole`` () =
     test <@ answerOf (fun () -> drained $"  %s{pipeNoise}\n") = pipeNoise @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a host session and this process resolve one identity when only dotnet's diagnostics differ`` () =
     withTempDir "toolchain-noise" (fun dir ->
         // The process's own `dotnet --version` printed the pipe diagnostic; the session's,

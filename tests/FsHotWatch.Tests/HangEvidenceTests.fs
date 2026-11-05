@@ -98,7 +98,7 @@ let ``a capture lists a live child, takes its stacks, and keeps the named logs``
             child.Kill()
             child.WaitForExit())
 
-[<Theory(Timeout = 30000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 // 4242 is the test host's own pid on the Linux CI run that failed (AUTOMATION-1147).
 [<InlineData 4242>]
 [<InlineData 4243>]
@@ -159,7 +159,7 @@ let ``a child that exits between the listing and its stacks is a skip, not an er
 
             test <@ failedSteps = expected @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a capture whose process listing fails still returns, and records why`` () =
     withTempDir "hang-evidence-fails" (fun dir ->
         let failing: HangEvidence.Runner =

@@ -419,7 +419,7 @@ let ``a scope with no counts reports only its kind`` () =
 
 // --- capture: the human output goes to the transcript, not the terminal ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``capture sends stdout and stderr to the transcript and restores the console`` () =
     withTempDir "agent-capture" (fun root ->
         let priorOut = Console.Out
@@ -441,7 +441,7 @@ let ``capture sends stdout and stderr to the transcript and restores the console
 
         test <@ onDisk.Contains "to stderr" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``capture restores the console when the action throws`` () =
     withTempDir "agent-capture-throw" (fun root ->
         let priorErr = Console.Error
@@ -450,7 +450,7 @@ let ``capture restores the console when the action throws`` () =
 
         test <@ obj.ReferenceEquals(Console.Error, priorErr) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a scan progress line goes to the stderr of the moment, so capture receives it`` () =
     withTempDir "agent-capture-heartbeat" (fun root ->
         let priorErr = Console.Error
@@ -550,7 +550,7 @@ let runVerdict (root: string) (agent: bool) : string * string * int =
 
     out.ToString(), err.ToString(), exitCode
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``verdict in agent mode prints only the envelope: one stdout line, empty stderr`` () =
     withTempDir "agent-verdict" (fun root ->
         let stdout, stderr, exitCode = runVerdict root true
@@ -565,7 +565,7 @@ let ``verdict in agent mode prints only the envelope: one stdout line, empty std
         test <@ num e "exit" = 5 @>
         test <@ not (List.isEmpty (strings e "reasons")) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``verdict without agent mode still prints the human block (positive control)`` () =
     withTempDir "human-verdict" (fun root ->
         let stdout, stderr, exitCode = runVerdict root false
@@ -651,7 +651,7 @@ let private runConfirm (root: string) (agent: bool) : string * string * int =
 /// leaves `.fshw/verdict.json` byte-identical. Its envelope was indistinguishable from
 /// one whose run had just executed, so a deploy gate reading it could not tell that
 /// THIS invocation ran nothing. The envelope must say so, naming the run that earned it.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an agent-mode confirm that reuses a stored verdict says so and names the run that earned it`` () =
     withTempDir "agent-confirm-reused" (fun root ->
         let stored = seedReusableGreen root
@@ -667,7 +667,7 @@ let ``an agent-mode confirm that reuses a stored verdict says so and names the r
         test <@ (prop reused "producedAt").GetDateTime().ToUniversalTime() = stored.ProducedAt.ToUniversalTime() @>)
 
 /// The human line says the same thing in words: nothing ran, and how to make it run.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a human-mode confirm that reuses a stored verdict says it ran nothing and names --fresh`` () =
     withTempDir "human-confirm-reused" (fun root ->
         seedReusableGreen root |> ignore

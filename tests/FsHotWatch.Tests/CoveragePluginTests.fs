@@ -154,7 +154,7 @@ let ``gateVerdict: no shortfall is Passed regardless of full-suite flag`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``regression: impact-filtered run with stale baseline does not false-red on un-run file`` () =
     withTempDir "coverage" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
@@ -224,7 +224,7 @@ let ``regression: repeated impact-filtered evaluations of an unchanged commit ar
 
     test <@ verdicts |> List.forall (fun v -> v = Some 3) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugin reports errors when file is below threshold`` () =
     withTempDir "coverage" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
@@ -253,7 +253,7 @@ let ``plugin reports errors when file is below threshold`` () =
         test <@ fileErrors.IsSome @>
         test <@ not fileErrors.Value.IsEmpty @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a checkout under a directory named tests is still measured`` () =
     // The reader's directory rules skip a file under `tests/`. They must see only the
     // directories below the floor file, as the coverageratchet CLI does: judged against
@@ -283,7 +283,7 @@ let ``a checkout under a directory named tests is still measured`` () =
 
         test <@ host.GetErrorsByPlugin("coverage") |> Map.containsKey "MyModule.fs" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a floor file whose reader options cannot be read fails the check`` () =
     // An empty `includedExtensions` list is refused by the reader. The check has then
     // judged nothing, so it must fail rather than pass.
@@ -308,7 +308,7 @@ let ``a floor file whose reader options cannot be read fails the check`` () =
 
         test <@ host.GetErrorsByPlugin("coverage") |> Map.containsKey configPath @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a file below only its branch floor is reported for branches alone`` () =
     withTempDir "coverage-branch-only" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
@@ -346,7 +346,7 @@ let ``a file below only its branch floor is reported for branches alone`` () =
 
         test <@ messages = [ "coverage: branch=50.0% < min 100.0%" ] @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a run that executed NOTHING reaches no coverage verdict — its full-suite claim is vacuous`` () =
     // The gate is `if ranFullSuite then Failed else NotGatedFiltered`, and
     // `RanFullSuite` is vacuously TRUE for an empty result map — so a run that
@@ -386,7 +386,7 @@ let ``a run that executed NOTHING reaches no coverage verdict — its full-suite
         waitUntil isFailed 10000
         test <@ isFailed () @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugin clears errors when all files pass`` () =
     withTempDir "coverage" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
@@ -458,7 +458,7 @@ let ``plugin skips check when no coverage XML found`` () =
         let errors = host.GetErrorsByPlugin("coverage")
         test <@ errors.IsEmpty @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugin ignores aborted test runs`` () =
     withTempDir "coverage" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
@@ -488,7 +488,7 @@ let ``plugin ignores aborted test runs`` () =
                 | _ -> true
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an aborted run is ignored even when it executed and covered the whole suite`` () =
     // The abort is what disqualifies it, NOT the absence of a verification: a run
     // cancelled after some projects reported carries real results and a real
@@ -531,7 +531,7 @@ let ``an aborted run is ignored even when it executed and covered the whole suit
 // the claim, and the run's terminal lands in coverage's activity history.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``coverage records the completed run in its activity history`` () =
     withTempDir "coverage-gen" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
@@ -556,7 +556,7 @@ let ``coverage records the completed run in its activity history`` () =
 
         test <@ host.GetHistory("coverage").Length = 1 @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a coverage failure carries a verdict with an honest elapsed and a UTC timestamp`` () =
     withTempDir "coverage-utc" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
@@ -597,7 +597,7 @@ let ``a coverage failure carries a verdict with an honest elapsed and a UTC time
 // rewrite and the check are serialised.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``coverage-ratchet rewrites the thresholds config through the mailbox`` () =
     withTempDir "coverage-ratchet" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
@@ -633,7 +633,7 @@ let ``coverage-ratchet rewrites the thresholds config through the mailbox`` () =
 
         test <@ host.GetHistory("coverage").Length = 1 @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``coverage-ratchet with an explicit config path argument targets that file`` () =
     withTempDir "coverage-ratchet-arg" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
@@ -654,7 +654,7 @@ let ``coverage-ratchet with an explicit config path argument targets that file``
         test <@ File.ReadAllText(explicitConfig) <> defaultThresholdsJson @>
         test <@ File.ReadAllText(defaultConfig) = defaultThresholdsJson @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``coverage-ratchet with no arguments targets the configured file`` () =
     withTempDir "coverage-ratchet-noargs" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
@@ -670,7 +670,7 @@ let ``coverage-ratchet with no arguments targets the configured file`` () =
         test <@ reply.Value.Contains configPath @>
         test <@ File.ReadAllText(configPath) <> defaultThresholdsJson @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``coverage-ratchet reports honestly when there is no coverage XML to ratchet from`` () =
     withTempDir "coverage-ratchet-noxml" (fun dir ->
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
@@ -684,7 +684,7 @@ let ``coverage-ratchet reports honestly when there is no coverage XML to ratchet
         test <@ reply.Value.Contains "no coverage.cobertura.xml found" @>
         test <@ File.ReadAllText(configPath) = defaultThresholdsJson @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``coverage-ratchet refuses to rewrite a floor file whose reader options cannot be read`` () =
     withTempDir "coverage-ratchet-unreadable" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
@@ -701,7 +701,7 @@ let ``coverage-ratchet refuses to rewrite a floor file whose reader options cann
         test <@ reply.Value.StartsWith "coverage-ratchet failed:" @>
         test <@ File.ReadAllText(configPath) = floors @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``coverage-ratchet that throws replies with the failure instead of hanging the caller`` () =
     withTempDir "coverage-ratchet-throws" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
@@ -731,7 +731,7 @@ let ``an event the plugin does not subscribe to leaves its state alone`` () =
 
     test <@ obj.ReferenceEquals(after, handler.Init) @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``coverage-ratchet REFUSES to race a check that is reading the file it rewrites`` () =
     // With no XML on disk, the check holds the "coverage-check" slot for its
     // full poll window — a deterministic way to have a run in flight. The
@@ -806,7 +806,7 @@ let ``triggers refused while a check is in flight are coalesced into one later c
 // shape this area exists to prevent, one surface over.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``coverage-status distinguishes never-run from OK from FAILED`` () =
     withTempDir "coverage" (fun dir ->
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
@@ -882,7 +882,7 @@ type private CountingTaskCache(inner: FsHotWatch.TaskCache.ITaskCache) =
         member _.ClearFile file = inner.ClearFile file
         member _.ClearPluginFile plugin file = inner.ClearPluginFile plugin file
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the coverage plugin never reads or writes the task cache`` () =
     withTempDir "coverage-noncacheable" (fun dir ->
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
@@ -1016,7 +1016,7 @@ let ``a trigger refused while a finished check's fold holds the key is retained`
 
     test <@ accepted.Owed = None @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the trigger retained behind a finished check is run by that check's result fold`` () =
     withTempDir "coverage-owed-drained" (fun dir ->
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
@@ -1067,7 +1067,7 @@ let ``the trigger retained behind a finished check is run by that check's result
             | other -> Assert.Fail $"expected the retained Partial trigger's verdict, got {other}")
 
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a check whose work throws still folds, and its fold runs the trigger retained behind it`` () =
     // AUTOMATION-1078. A check that FAULTS (here: a report that is not XML) used to fold
     // nothing, so a trigger refused while it held the key waited for an unrelated later
@@ -1188,7 +1188,7 @@ let private pluginVerdict (judgement: Judgement.CoverageJudgement) =
         Some(f.Files |> List.map _.File.FileName, f.Counts |> List.map _.File.FileName)
     | other -> failwith $"expected Passed or Failed, got %A{other}"
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(0, -1)>] // every floor holds
 [<InlineData(100, -1)>] // below the line percentage floor only
 [<InlineData(0, 2)>] // below the covered-lines count floor only
@@ -1251,7 +1251,7 @@ let private countFloorsJson (line: int) (branch: int) (coveredLines: int) (cover
     $"""{{ "overrides": {{ "MyModule.fs": {{ "line": {line}, "branch": {branch} }} }},
           "countFloors": {{ "MyModule.fs": [ {{ "coveredLines": {coveredLines}, "coveredBranches": {coveredBranches}, "reason": "test" }} ] }} }}"""
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(0, 0, 3, 2)>] // every floor holds
 [<InlineData(0, 0, 3, 3)>] // below the covered-branches count floor only
 [<InlineData(0, 60, 4, 2)>] // below the branch percentage floor and the covered-lines count floor
@@ -1295,11 +1295,11 @@ let private detailsUnder (floors: string) =
         | Judgement.Judged(Judgement.Failed failures) -> Judgement.FloorFailures.details failures
         | other -> failwith $"expected Failed, got %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a covered-branches shortfall is named with its covered count`` () =
     test <@ detailsUnder (countFloorsJson 0 0 3 3) = [ "MyModule.fs", "covered branches 2 < 3" ] @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``every floor a file misses is named in one detail, percentage floors first`` () =
     test
         <@
@@ -1341,7 +1341,7 @@ let private judgeMyModuleOnly (scope: RunScope) (floors: string) =
             (DateTime.UtcNow.AddMinutes -1.0)
             [ xmlPath ])
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(true, false, "percentage floor")>]
 [<InlineData(false, true, "count floor")>]
 [<InlineData(true, true, "percentage + count floor")>]
@@ -1357,12 +1357,12 @@ let ``a full-suite report with no row for a floored file fails, naming that file
         test <@ Judgement.FloorFailures.details failures = [ "Gone.fs", $"no row in the coverage report (%s{kind})" ] @>
     | other -> failwith $"expected Failed, got %A{other}"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a full-suite report with a row for every floored file passes`` () =
     // Positive control for the test above: the same floors, with nothing absent.
     test <@ pluginVerdict (judgeMyModuleOnly RunScope.FullSuite (floorsWithAbsentFile false false)) = Some([], []) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an impact-filtered run missing a floored file is a notice, not a gate`` () =
     // A filtered run measures only what it ran, so an absent file is expected there; the
     // next full-suite run is the one that must speak to every floor.
@@ -1381,7 +1381,7 @@ let ``the status line names the first files below threshold and counts the rest`
 
     test <@ Judgement.FloorFailures.summary (List.truncate 1 details) = "1 file(s) below threshold: F1.fs" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an impact-filtered run below only a count floor is a notice naming that one file`` () =
     withTempDir "coverage-partial-counts" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
@@ -1401,7 +1401,7 @@ let ``an impact-filtered run below only a count floor is a notice naming that on
         | Judgement.Judged(Judgement.NotGatedFiltered count) -> test <@ count = 1 @>
         | other -> failwith $"expected NotGatedFiltered, got %A{other}")
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``named reports that exist are the ones read`` () =
     withTempDir "coverage-existing" (fun dir ->
         let present = Path.Combine(dir, "present.cobertura.xml")
@@ -1410,7 +1410,7 @@ let ``named reports that exist are the ones read`` () =
 
         test <@ Judgement.existingReports (Judgement.CoverageReports.Named [ present; missing ]) = [ present ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a searched report is judged with count floors too`` () =
     withTempDir "coverage-search-counts" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
@@ -1428,7 +1428,7 @@ let ``a searched report is judged with count floors too`` () =
 
         test <@ pluginVerdict judged = Some([], [ "MyModule.fs" ]) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a named report older than its full-suite run is unreadable, never a verdict`` () =
     withTempDir "coverage-stale" (fun dir ->
         let xmlPath = Path.Combine(dir, "report.cobertura.xml")
@@ -1449,7 +1449,7 @@ let ``a named report older than its full-suite run is unreadable, never a verdic
         | Judgement.Judged(Judgement.Unreadable reason) -> test <@ reason.Contains xmlPath @>
         | other -> failwith $"expected Unreadable, got %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a missing named report is unreadable in a full-suite run`` () =
     withTempDir "coverage-missing" (fun dir ->
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
@@ -1478,7 +1478,7 @@ let ``an impact-filtered run is not judged by named reports`` () =
     test <@ (Judgement.notJudgedReason reports RunScope.FullSuite).IsNone @>
     test <@ (Judgement.notJudgedReason (Judgement.CoverageReports.SearchUnder "/nowhere") RunScope.Partial).IsNone @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a count-floor shortfall fails the plugin with the covered counts`` () =
     withTempDir "coverage-count-gate" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
@@ -1506,7 +1506,7 @@ let ``a count-floor shortfall fails the plugin with the covered counts`` () =
                     entries |> List.exists (fun e -> e.Message.Contains "covered lines 1 < 2"))
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a full-suite run whose named report predates it fails the plugin`` () =
     withTempDir "coverage-stale-plugin" (fun dir ->
         let xmlPath = Path.Combine(dir, "report.cobertura.xml")

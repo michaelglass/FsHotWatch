@@ -417,7 +417,7 @@ let ``formatErrors excludes files with only info entries from file count`` () =
 
 // --- failIfNoProjects: shared fail-fast helper used by every entry path ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``failIfNoProjects returns Some 2 when no fsproj exists`` () =
     withTempDir "failif-zero-projects" (fun tmpDir ->
         System.IO.Directory.CreateDirectory(System.IO.Path.Combine(tmpDir, "src"))
@@ -426,7 +426,7 @@ let ``failIfNoProjects returns Some 2 when no fsproj exists`` () =
         let result = failIfNoProjects tmpDir []
         test <@ result = Some 2 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``failIfNoProjects returns None when at least one fsproj exists`` () =
     withTempDir "failif-has-project" (fun tmpDir ->
         let srcDir = System.IO.Path.Combine(tmpDir, "src")
@@ -440,7 +440,7 @@ let ``failIfNoProjects returns None when at least one fsproj exists`` () =
         let result = failIfNoProjects tmpDir []
         test <@ result = None @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``failIfNoProjects returns None when fsproj is in tests directory`` () =
     // src/ exists but is empty and the sole fsproj lives under tests/, so both directories
     // must be probed before the helper can declare success.
@@ -458,7 +458,7 @@ let ``failIfNoProjects returns None when fsproj is in tests directory`` () =
         let result = failIfNoProjects tmpDir []
         test <@ result = None @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``failIfNoProjects returns None when some fsprojs excluded but at least one remains`` () =
     // Drives `Array.exists` past its first element — with only one fsproj the "keep
     // iterating" branch is never exercised.
@@ -482,7 +482,7 @@ let ``failIfNoProjects returns None when some fsprojs excluded but at least one 
         let result = failIfNoProjects tmpDir [ "vendor/" ]
         test <@ result = None @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``failIfNoProjects returns Some 2 when every fsproj is excluded`` () =
     // An fsproj exists on disk but the user's exclude pattern matches it. The pre-check
     // resolves excludes with repo-relative gitignore semantics.
@@ -553,7 +553,7 @@ let ``the discovery-failure message names the load failure and the log that carr
 
 // --- runOnceAndReport: zero-projects exit code ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``runOnceAndReport returns 2 when no projects are discovered`` () =
     withTempDir "runonce-zero-projects" (fun tmpDir ->
         System.IO.Directory.CreateDirectory(System.IO.Path.Combine(tmpDir, "src"))

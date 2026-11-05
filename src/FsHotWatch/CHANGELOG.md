@@ -4,6 +4,10 @@
 
 - feat: `RefAssemblyFreshness` says whether a project's published reference assembly is the one the
   compiler last wrote, and repairs it (AUTOMATION-1498).
+- fix: the "NO timeout" warning is logged when a child with neither a timeout nor a launch deadline
+  is spawned, and names its command ("spawning `sh` with NO timeout"). It was logged when
+  `ProcessBounds.silent` built the bounds, so a file command logged it at registration, before any
+  child existed, and named none.
 
 ## 0.10.0-alpha.105 - 2026-11-04
 

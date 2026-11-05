@@ -375,7 +375,7 @@ let ``shared startup failure retains local ownership through resource handoff`` 
         test <@ claim = SharedClaimed @>
         waitUntil (fun () -> not (registration.IsBusy())) 5000
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``shared classification or release failure retires work without folding a success`` releaseFails =
@@ -474,7 +474,7 @@ let ``failed shared launch retains cleanup failure instead of publishing mapped 
     Assert.Same(failure, registration.Fault().Value)
     Assert.False(mapped.Task.IsCompleted, "failed cleanup must not mint a completion message")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``registration with suppressed execution context still owns and completes exclusive work`` () =
     let completed = System.Threading.Tasks.TaskCompletionSource<unit>()
 
@@ -504,7 +504,7 @@ let ``registration with suppressed execution context still owns and completes ex
     Assert.False(registration.IsBusy())
     Assert.True(registration.Fault().IsNone)
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``a terminal before shared admission cannot cache work that is claimed or queued`` queued =
@@ -684,7 +684,7 @@ type private IntentMsg =
     | IntentRunDone
     | IntentApplied
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an exclusive intent waits behind the running key and acknowledges its own commit`` () =
     let release =
         System.Threading.Tasks.TaskCompletionSource<unit>(
@@ -789,7 +789,7 @@ let ``a claim whose Running report throws retires the run with that failure`` ()
     Assert.False(registration.IsBusy())
     Assert.Same(failure, registration.Fault().Value)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a run failure that cannot be reported still retires the run with its own failure`` () =
     let workFailure = System.InvalidOperationException("exclusive work failed")
 
@@ -824,7 +824,7 @@ let ``a run failure that cannot be reported still retires the run with its own f
     Assert.False(registration.IsBusy())
     Assert.Same(workFailure, registration.Fault().Value)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``shared work whose failure mapper throws invalidates the resource and fails the run`` () =
     let workFailure = System.InvalidOperationException("shared work failed")
     let mapperFailure = System.InvalidOperationException("failure mapper failed")

@@ -261,7 +261,7 @@ let private evidenceMintingHost (repoRoot: string) =
 
     host
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a reported terminal status cannot mint evidence after its event drains`` () =
     withTempDir "verdict-wait-unearned" (fun repoRoot ->
         let host = evidenceMintingHost repoRoot
@@ -307,7 +307,7 @@ let ``a reported terminal status cannot mint evidence after its event drains`` (
         Assert.Throws<System.TimeoutException>(fun () -> waiting.GetAwaiter().GetResult())
         |> ignore)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a verdict wait ends on the analysis receipt its cohort seal earned`` () =
     withTempDir "verdict-wait-earned" (fun repoRoot ->
         let host = evidenceMintingHost repoRoot
@@ -352,7 +352,7 @@ type private FailedBuildState =
     interface ICompletedBuildFailureState with
         member this.CompletedBuildFailure = this.Failure
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a verdict wait ends on a completed build failure, which mints no other receipt`` () =
     withTempDir "verdict-wait-red-build" (fun repoRoot ->
         let host = evidenceMintingHost repoRoot
@@ -396,7 +396,7 @@ let private pluginFreeHost (repoRoot: string) =
     host.WorkStore.PublishProjectModelWithFiles(fixtureModel, Set.empty)
     host
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a verdict wait over a host with no plugins registered resolves at once`` () =
     withTempDir "verdict-wait-no-plugins" (fun repoRoot ->
         let host = pluginFreeHost repoRoot
@@ -410,7 +410,7 @@ let ``a verdict wait over a host with no plugins registered resolves at once`` (
         FsHotWatch.Daemon.waitForVerdict host (TimeSpan.FromSeconds 5.0) CancellationToken.None
         |> fun waiting -> waiting.GetAwaiter().GetResult())
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a host with no plugins still waits for the work it owns, and names it`` () =
     withTempDir "verdict-wait-no-plugins-owned" (fun repoRoot ->
         // The control for the test above: an empty registry settles because it owns
@@ -435,7 +435,7 @@ let ``a host with no plugins still waits for the work it owns, and names it`` ()
 // A plugin that can only report a failed build owes no receipt.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a verdict wait over a green build with no receipt-minting plugin resolves at once`` () =
     withTempDir "verdict-wait-green-build-only" (fun repoRoot ->
         // A daemon configured with build and lint but no tests: `BuildPlugin` can hold a
@@ -471,7 +471,7 @@ let ``a verdict wait over a green build with no receipt-minting plugin resolves 
 // A failure is committed, not resting: it neither ends the wait early nor is lost.
 // ---------------------------------------------------------------------------
 
-[<Theory(Timeout = 30000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``a committed failure waits for other owned cleanup and retains its identity at the deadline``
@@ -585,7 +585,7 @@ let ``a committed failure waits for other owned cleanup and retains its identity
         finally
             release.TrySetResult(()) |> ignore)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an in-flight verdict wait IS the client observation that inhibits idle exit`` () =
     withTempDir "verdict-wait-observed" (fun repoRoot ->
         // The counter this replaces lived beside the publication rather than in it: the
@@ -616,7 +616,7 @@ type private AnalysisOnlyState =
     interface IAnalysisEvidenceState with
         member this.AnalysisEvidence = this.Analysis
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a plugin that mints only analysis evidence still offers receipts`` () =
     withTempDir "verdict-analysis-only-offer" (fun repoRoot ->
         // Each of the three evidence interfaces has to be able to answer "this host offers

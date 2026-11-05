@@ -59,7 +59,7 @@ let private withRepo (body: string -> string -> string -> unit) =
         File.WriteAllText(b, "module B\n\nlet y = 2\n")
         body dir a b)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``bytes the formatter left unchanged are not handed to it again`` () =
     withRepo (fun dir a b ->
         let runner, calls = recorder clean ignore
@@ -73,7 +73,7 @@ let ``bytes the formatter left unchanged are not handed to it again`` () =
         test <@ second.Considered = 2 @>
         test <@ List.isEmpty second.Modified @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an edited file is handed to the formatter again, and only that file`` () =
     withRepo (fun dir a b ->
         let runner, calls = recorder clean ignore
@@ -85,7 +85,7 @@ let ``an edited file is handed to the formatter again, and only that file`` () =
 
         test <@ calls () = [ [ a; b ]; [ a ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a changed editorconfig or pin sends every file back to the formatter`` () =
     withRepo (fun dir a b ->
         let runner, calls = recorder clean ignore
@@ -99,7 +99,7 @@ let ``a changed editorconfig or pin sends every file back to the formatter`` () 
 
         test <@ calls () = [ [ a; b ]; [ a; b ]; [ a; b ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a file the formatter rewrote is checked again, since its new bytes are unproven`` () =
     withRepo (fun dir a _ ->
         let rewrite (file: string) = File.AppendAllText(file, "\n")
@@ -112,7 +112,7 @@ let ``a file the formatter rewrote is checked again, since its new bytes are unp
         test <@ first.Modified = [ a ] @>
         test <@ calls () = [ [ a ]; [ a ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``nothing is remembered from a run that timed out or could not format a file`` () =
     withRepo (fun dir a b ->
         let timedOut =
@@ -146,7 +146,7 @@ let ``nothing is remembered from a run that timed out or could not format a file
 
         test <@ calls.Count = 3 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a file that cannot be read is never remembered as formatted`` () =
     // Unix permissions only: Windows ignores the mode bits this relies on.
     if not (OperatingSystem.IsWindows()) then
@@ -163,7 +163,7 @@ let ``a file that cannot be read is never remembered as formatted`` () =
 
             test <@ calls () = [ [ a ]; [ a ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a file the tool could not format is handed back on a later pass whose batch does not hold it`` () =
     withRepo (fun dir a b ->
         let outcomes =
@@ -189,7 +189,7 @@ let ``a file the tool could not format is handed back on a later pass whose batc
         test <@ later.Failures = [ b, "Could not parse file." ] @>
         test <@ calls.Count = 2 && calls[1] = $"\"%s{b}\"" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a remembered failure is dropped once its file is gone`` () =
     withRepo (fun dir a b ->
         let outcomes =
@@ -207,7 +207,7 @@ let ``a remembered failure is dropped once its file is gone`` () =
         test <@ List.isEmpty later.Failures @>
         test <@ later.Considered = 1 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a timed-out pass fails every file it was handed, and hands them back next time`` () =
     withRepo (fun dir a b ->
         let timedOut =

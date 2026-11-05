@@ -101,7 +101,7 @@ let ``a comment-only edit to a test file after a green run is re-verified`` () =
         finally
             host.Teardown())
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``before any run the scope says no run has completed`` () =
     withTempDir "tp-no-run-yet" (fun tmpDir ->
         let config =

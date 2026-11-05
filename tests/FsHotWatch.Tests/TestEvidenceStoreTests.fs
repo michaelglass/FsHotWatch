@@ -556,7 +556,7 @@ let ``a path under a directory that cannot be searched resolves as far as it can
                     UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
                 ))
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a cycle of links resolves to a path rather than looping`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "evstore-cycle" (fun dir ->

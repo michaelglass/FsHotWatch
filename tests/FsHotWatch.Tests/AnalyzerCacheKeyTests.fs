@@ -52,7 +52,7 @@ let private lookupAcross (a: string) (keyA: ContentHash) (b: string) (keyB: Cont
 // fail-on-severity: entries are stored after promotion
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the analyzers key differs when failOnSeverity changes what a finding means`` () =
     withTempDir "severity" (fun root ->
         let result = resultIn root
@@ -71,7 +71,7 @@ let ``the analyzers key differs when failOnSeverity changes what a finding means
                 <> keyFor (Some root) DiagnosticSeverity.Hint result
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unchanged failOnSeverity still hits`` () =
     withTempDir "severity-hit" (fun root ->
         let result = resultIn root
@@ -88,7 +88,7 @@ let ``an unchanged failOnSeverity still hits`` () =
 // analyzer-config: files analyzers discover by walking up
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the analyzers key differs when the editorconfig the analyzers read differs`` () =
     withTempDir "ec" (fun root ->
         let result = resultIn root
@@ -104,7 +104,7 @@ let ``the analyzers key differs when the editorconfig the analyzers read differs
         test <@ before.IsSome @>
         test <@ before <> after @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the analyzers key differs when a nested editorconfig or fsharplint json appears`` () =
     withTempDir "config-nested" (fun root ->
         let result = resultIn root
@@ -118,7 +118,7 @@ let ``the analyzers key differs when a nested editorconfig or fsharplint json ap
         test <@ bare <> withEditorConfig @>
         test <@ withEditorConfig <> withLintConfig @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``identical analyzer config in a second checkout still hits`` () =
     withTempDir "config-hit-a" (fun a ->
         withTempDir "config-hit-b" (fun b ->
@@ -248,7 +248,7 @@ let ``an upstream shape change this file cannot see still hits`` () =
     let changedUnusedType = record + "type Unused = | Y of string\n"
     assertHits EarlierFile inferring withUnusedType changedUnusedType
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a file whose used signatures cannot be described has no analyzers key`` () =
     withTempDir "undescribable" (fun root ->
         // Fault injection: a check result with no state, under no project options, so the

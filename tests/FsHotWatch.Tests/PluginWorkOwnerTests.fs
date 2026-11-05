@@ -967,7 +967,7 @@ let ``a row publishes its projection with its value and a failed change publishe
     Assert.Throws<InvalidOperationException>(fun () -> store.Change(foreign, (fun _ value -> (value, ()))))
     |> ignore
 
-[<Theory(Timeout = 30000)>]
+[<Theory(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 [<WallClock("simulated work: the sleep gives fake work a duration, or widens a race window, so events overlap; every outcome is awaited by an event or a named budget, not by the sleep")>]
 [<InlineData("publish")>]
 [<InlineData("settle")>]

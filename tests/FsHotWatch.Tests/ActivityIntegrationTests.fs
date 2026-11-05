@@ -71,7 +71,7 @@ let private makeFakePlugin (duringRun: PluginCtx<unit> -> PluginHost -> unit) (h
       CacheKey = None
       Teardown = None }
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``running snapshot exposes 3 subtasks and 2 activity lines; final history carries summary`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -106,7 +106,7 @@ let ``running snapshot exposes 3 subtasks and 2 activity lines; final history ca
     test <@ r.ActivityTail |> List.contains "starting batch" @>
     test <@ r.ActivityTail |> List.contains "midway through" @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``verbose renderer over final payload shows completion line with summary`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let handler = makeFakePlugin (fun _ _ -> ()) host
@@ -121,7 +121,7 @@ let ``verbose renderer over final payload shows completion line with summary`` (
     test <@ joined.Contains "fake" @>
     test <@ joined.Contains "did 3 things" @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``renderer during running phase shows 3 subtasks in verbose mode`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 

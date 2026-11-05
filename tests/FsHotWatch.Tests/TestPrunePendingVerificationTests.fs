@@ -77,7 +77,7 @@ module private LedgerHelpers =
             failwith
                 $"expected Unreadable, got Loaded %A{queue} — an unreadable ledger read as an empty queue is itself the bug under test"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``PendingVerification: load on a MISSING file is Loaded empty, never Unreadable`` () =
     withTempDir "pv-missing" (fun tmpDir ->
         // The fresh-clone boundary: nothing was ever queued, so nothing is owed — a
@@ -85,14 +85,14 @@ let ``PendingVerification: load on a MISSING file is Loaded empty, never Unreada
         // permanent full suite.
         test <@ Set.isEmpty (LedgerHelpers.expectLoaded tmpDir) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``PendingVerification: save then load round-trips the queue`` () =
     withTempDir "pv-roundtrip" (fun tmpDir ->
         let original = Set.ofList [ "Lib.foo"; "Lib.bar"; "Mod.baz" ]
         FsHotWatch.TestPrune.PendingVerification.save tmpDir original
         test <@ LedgerHelpers.expectLoaded tmpDir = original @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``PendingVerification: save empty then load is Loaded empty (a provable 'nothing owed')`` () =
     withTempDir "pv-empty" (fun tmpDir ->
         // `save` of an empty queue writes `[]`: well-formed, readable, and provably
@@ -100,7 +100,7 @@ let ``PendingVerification: save empty then load is Loaded empty (a provable 'not
         FsHotWatch.TestPrune.PendingVerification.save tmpDir Set.empty
         test <@ Set.isEmpty (LedgerHelpers.expectLoaded tmpDir) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``PendingVerification: an EMPTY file is Unreadable (a torn write, not an empty queue)`` () =
     withTempDir "pv-whitespace" (fun tmpDir ->
         // `save` writes through an atomic tmp+rename and always emits at least `[]`, so a
@@ -109,7 +109,7 @@ let ``PendingVerification: an EMPTY file is Unreadable (a torn write, not an emp
         LedgerHelpers.writeRawSidecar tmpDir "   \n  "
         LedgerHelpers.expectUnreadable tmpDir |> ignore)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``PendingVerification: corrupt JSON is Unreadable, not empty (and never throws)`` () =
     withTempDir "pv-corrupt" (fun tmpDir ->
         LedgerHelpers.writeRawSidecar tmpDir "{ this is not valid json [[["
@@ -117,14 +117,14 @@ let ``PendingVerification: corrupt JSON is Unreadable, not empty (and never thro
         // a caller would read as "nothing owed".
         LedgerHelpers.expectUnreadable tmpDir |> ignore)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``PendingVerification: a TRUNCATED array is Unreadable, not empty`` () =
     withTempDir "pv-truncated" (fun tmpDir ->
         // The crash-mid-write shape: valid JSON right up to where it stops.
         LedgerHelpers.writeRawSidecar tmpDir "[\"Lib.foo\", \"Lib.ba"
         LedgerHelpers.expectUnreadable tmpDir |> ignore)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``PendingVerification: well-formed JSON that is not an array is Unreadable`` () =
     withTempDir "pv-not-array" (fun tmpDir ->
         // Parses cleanly, but it is not a queue: `AsArray` throws, and catching that to
@@ -132,13 +132,13 @@ let ``PendingVerification: well-formed JSON that is not an array is Unreadable``
         LedgerHelpers.writeRawSidecar tmpDir "{\"pending\": [\"Lib.foo\"]}"
         LedgerHelpers.expectUnreadable tmpDir |> ignore)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``PendingVerification: a bare JSON null is Unreadable`` () =
     withTempDir "pv-null" (fun tmpDir ->
         LedgerHelpers.writeRawSidecar tmpDir "null"
         LedgerHelpers.expectUnreadable tmpDir |> ignore)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``PendingVerification: a NON-STRING entry makes the whole ledger Unreadable`` () =
     withTempDir "pv-bad-entry" (fun tmpDir ->
         // A `Seq.choose` here silently DROPS the entry it cannot read, absorbing that
@@ -147,7 +147,7 @@ let ``PendingVerification: a NON-STRING entry makes the whole ledger Unreadable`
         LedgerHelpers.writeRawSidecar tmpDir "[\"Lib.foo\", 42, \"Lib.bar\"]"
         LedgerHelpers.expectUnreadable tmpDir |> ignore)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``PendingVerification: a null entry makes the whole ledger Unreadable`` () =
     withTempDir "pv-null-entry" (fun tmpDir ->
         LedgerHelpers.writeRawSidecar tmpDir "[\"Lib.foo\", null]"
@@ -251,7 +251,7 @@ let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the
         test <@ startedId.IsSome @>
         test <@ completedId = startedId @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``incident: a beforeRun throw in the run-tests command surfaces as Failed, not a swallowed error`` () =
     // The `run-tests` command ran `executeTests` inside a try/with that, on a `beforeRun`
     // throw, returned a command-level JSON error and posted NOTHING back — leaving the
@@ -300,7 +300,7 @@ let ``incident: a beforeRun throw in the run-tests command surfaces as Failed, n
         | Some(Failed(msg, _, _)) -> test <@ msg.Contains("csrf-gate failed") @>
         | other -> Assert.Fail($"expected Failed with the hook output surfaced, got %A{other}"))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``incident: a test child that never becomes a live process ends the run as verified-nothing, not a wedge or a green``
     ()
     =
@@ -377,7 +377,7 @@ let ``incident: a test child that never becomes a live process ends the run as v
         let errors = host.GetErrorsByPlugin("test-prune") |> sprintf "%A"
         test <@ errors.Contains "no live process" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run-tests command with a passing beforeRun runs normally and reports Completed`` () =
     // The pass-path pair for the failing-beforeRun regression above.
     withTempDir "tp-cmd-beforerun-ok" (fun tmpDir ->
@@ -420,7 +420,7 @@ let ``run-tests command with a passing beforeRun runs normally and reports Compl
         | Some(Completed _) -> ()
         | other -> Assert.Fail($"expected Completed for a passing beforeRun run, got %A{other}"))
 
-[<Fact(Timeout = 25000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``partial failure: symbols whose only covering project passed commit; symbols touching a failed project stay queued``
     ()
     =
@@ -597,7 +597,7 @@ let barTest () = assert (bar 1 = 2)
             | other ->
                 Assert.Fail($"expected Completed after launch-set commit + rerun drained the queue, got %A{other}")))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a rerun queued for debt the active run clears preserves that run's evidence`` () =
     // The production lifecycle this pins is RED test -> production edit -> green retry.
     // While the retry is in flight, BatchChecked sees the same durable debt and queues a
@@ -890,7 +890,7 @@ let ``a source edit after a boot cohort seal cannot borrow the held full run`` r
     Assert.Equal(1, outcome.RunCount)
     test <@ outcome.Queue.Contains "Lib.foo" @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``restart persistence: a non-empty queue survives a daemon restart and is re-flagged`` () =
     // Session 1 queues Lib.foo (covered by P1) but never proves it green. Session 2 — a
     // fresh plugin over the same on-disk sidecar and DB — must load the queue, re-flag
@@ -944,7 +944,7 @@ let ``restart persistence: a non-empty queue survives a daemon restart and is re
         | Some(Completed _) -> ()
         | other -> Assert.Fail($"expected Completed after the re-flagged symbol tested green, got %A{other}"))
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``no-covering-test symbol drops from the queue at flush without wedging it`` () =
     // Retaining it would wedge the queue forever: every run selects zero tests, the queue
     // never empties, and the verdict is permanently non-green.
@@ -1007,7 +1007,7 @@ let ``no-covering-test symbol drops from the queue at flush without wedging it``
 //
 // End to end rather than a unit fold, because the bug was in the WIRING: the fold looked
 // correct in isolation and was wrong about which results it was folding over.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a covering project that matched ZERO tests does not discharge a pending symbol`` () =
     withTempDir "tp-nomatch-commit" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -1513,7 +1513,7 @@ let ``classify: a timeout whose teardown never answered is still terminal, and s
 // Whoever DISCOVERS unverified symbols is responsible for RUNNING them.
 // =============================================================================
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BatchChecked drains a pending queue instead of resting on a stale verdict`` () =
     // BatchChecked is the cohort seal — the first moment the scan's symbols are known —
     // and so the only event left that can drain them.
@@ -1601,7 +1601,7 @@ let private ledgerRunner (project: string) (marker: string) : TestConfig =
       Weight = 1.0
       AlwaysClasses = [] }
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an UNREADABLE ledger widens to the FULL suite rather than greening on nothing`` () =
     // The sidecar EXISTS but is truncated mid-array — a crashed/torn write — and it once
     // held real debt (Lib.debt, covered by P2, never proven green). Catching the parse
@@ -1652,7 +1652,7 @@ let ``an UNREADABLE ledger widens to the FULL suite rather than greening on noth
         // rather than grinding a full suite forever.
         test <@ Set.isEmpty (LedgerHelpers.expectLoaded tmpDir) @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a MISSING ledger (fresh clone) is legitimately empty and does NOT force a full suite`` () =
     // The trade this fix must NOT make: fail-open swapped for a stuck full suite. A fresh
     // clone has no ledger at all, which is a provable "nothing owed" and must stay a fast
@@ -1688,7 +1688,7 @@ let ``a MISSING ledger (fresh clone) is legitimately empty and does NOT force a 
         test <@ not (File.Exists p1Ran) @>
         test <@ not (File.Exists p2Ran) @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a genuinely EMPTY ledger stays a fast no-op (not a widened run)`` () =
     // The other half of the boundary. Misclassify `[]` as unreadable and every idle daemon
     // grinds a full suite forever.
@@ -1718,7 +1718,7 @@ let ``a genuinely EMPTY ledger stays a fast no-op (not a widened run)`` () =
         test <@ not (File.Exists p1Ran) @>
         test <@ not (File.Exists p2Ran) @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a symbol covered only by an unconfigured project stays owed`` () =
     // The symbol DB indexes test methods from EVERY project it analyzed, which is not the
     // set of projects fshw is configured to run. A symbol whose only covering tests live
@@ -1768,7 +1768,7 @@ let ``a symbol covered only by an unconfigured project stays owed`` () =
         | Some(PluginStatus.Failed(msg, _, _)) -> Assert.Contains("P2", msg)
         | other -> Assert.Fail($"unrunnable debt must deny green and name its project: %A{other}"))
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a plugin with a test run in flight reports BUSY, so no verdict can resolve mid-run`` () =
     // The third facet: `check` handed back a verdict WHILE the run that would have
     // produced it was still executing. "Busy" meant only "has events queued in its
@@ -2121,7 +2121,7 @@ let private gatedRunConfig (tmpDir: string) (release: string) (polls: int) =
 
     config, started, doneFile
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run-tests: an in-flight command-driven run is visible to the daemon model`` () =
     withTempDir "tp-cmd-visible" (fun tmpDir ->
         withReleaseGate tmpDir "cmd-visible" (fun release ->
@@ -2159,7 +2159,7 @@ let ``run-tests: an in-flight command-driven run is visible to the daemon model`
             test <@ cmdTask.Result.IsSome @>
             test <@ cmdTask.Result.Value.Contains("projects") @>))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileChecked while a test run is in flight must not report a terminal status`` () =
     withTempDir "tp-midrun-stamp" (fun tmpDir ->
         withReleaseGate tmpDir "midrun-stamp" (fun release ->
@@ -2202,7 +2202,7 @@ let ``FileChecked while a test run is in flight must not report a terminal statu
             cmdTask.Wait(TimeSpan.FromSeconds 20.0) |> ignore
             test <@ cmdTask.IsCompleted @>))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a green run's Completed status carries its verdict`` () =
     // A ✓ with nothing to say is unrepresentable: the status carries what the run did, and
     // the history record holds the SAME summary — one channel, host-routed.
@@ -2335,7 +2335,7 @@ let ``a queued run-tests reply resolves — a refused claim can never strand the
                 test <@ t.IsCompleted @>
                 test <@ t.Result.IsSome @>))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run-tests bounds its wait: a run that outlives the budget reports busy, never a verdict`` () =
     // The last unbounded seam is the reply wait. A 1-second budget against a gated,
     // never-releasing run must return the DISTINCT `busy` status, which the CLI maps to a

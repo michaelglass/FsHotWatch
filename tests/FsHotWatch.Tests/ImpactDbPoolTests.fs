@@ -21,7 +21,7 @@ let private seedThenDelete (dbPath: string) =
 let private symbolsAt (dbPath: string) =
     (TestPrune.Database.Database.create dbPath).GetSymbolsInFile "src/Lib.fs"
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the key is the connection string the library opens with`` () =
     // A key that differs from the library's clears a different, empty pool: every test
     // still passes and the stale connection is still handed out.
@@ -31,7 +31,7 @@ let ``the key is the connection string the library opens with`` () =
         use conn = db.OpenConnection()
         test <@ conn.ConnectionString = ImpactDbPool.connectionString dbPath @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``clearing one database leaves another database's pooled connections alone`` () =
     withTempDir "impact-pool-narrow" (fun tmpDir ->
         let cleared = Path.Combine(tmpDir, "a", "test-impact.db")

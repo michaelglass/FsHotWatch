@@ -32,7 +32,7 @@ let private field (line: string) (name: string) =
     use doc = JsonDocument.Parse line
     doc.RootElement.GetProperty(name).ToString()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``every event is one JSON line naming when, which host, and what happened`` () =
     withTempDir "lifecycle" (fun dir ->
         let path = Path.Combine(dir, "host-events.jsonl")
@@ -105,7 +105,7 @@ let ``the tally counts attaches by disposition, refusals by kind, and ends by ou
                           PreviousUnclean = None }
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a host started after one that recorded its stop finds the previous exit clean`` () =
     withTempDir "lifecycle" (fun dir ->
         let path = Path.Combine(dir, "host-events.jsonl")
@@ -118,7 +118,7 @@ let ``a host started after one that recorded its stop finds the previous exit cl
         test <@ second.Tally.PreviousUnclean = None @>
         test <@ lines path |> List.map (fun l -> field l "event") |> List.last = "hostStarted" @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a host started after one that never recorded its stop records that, naming the previous pid`` () =
     withTempDir "lifecycle" (fun dir ->
         let path = Path.Combine(dir, "host-events.jsonl")
@@ -139,7 +139,7 @@ let ``a host started after one that never recorded its stop records that, naming
         test <@ field unclean "hostPid" = "11" @>
         test <@ field (List.last written) "event" = "hostStarted" @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a torn last line does not hide which host exited uncleanly`` () =
     withTempDir "lifecycle" (fun dir ->
         let path = Path.Combine(dir, "host-events.jsonl")
@@ -148,7 +148,7 @@ let ``a torn last line does not hide which host exited uncleanly`` () =
         log.Start()
         test <@ log.Tally.PreviousUnclean = Some(Some 10) @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a session end recorded after its host's stop leaves the exit clean`` () =
     withTempDir "lifecycle" (fun dir ->
         let path = Path.Combine(dir, "host-events.jsonl")
@@ -161,7 +161,7 @@ let ``a session end recorded after its host's stop leaves the exit clean`` () =
         second.Start()
         test <@ second.Tally.PreviousUnclean = None @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a log with lines but no host mark is an unclean exit of an unknown host`` () =
     withTempDir "lifecycle" (fun dir ->
         let path = Path.Combine(dir, "host-events.jsonl")
@@ -170,14 +170,14 @@ let ``a log with lines but no host mark is an unclean exit of an unknown host`` 
         log.Start()
         test <@ log.Tally.PreviousUnclean = Some None @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the first host of a repository has no previous exit`` () =
     withTempDir "lifecycle" (fun dir ->
         let log = EventLog(Some(Path.Combine(dir, "host-events.jsonl")), 11, (fun () -> at))
         log.Start()
         test <@ log.Tally.PreviousUnclean = None @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a log past its bound is rotated at start, keeping one previous generation`` () =
     withTempDir "lifecycle" (fun dir ->
         let path = Path.Combine(dir, "host-events.jsonl")
@@ -191,7 +191,7 @@ let ``a log past its bound is rotated at start, keeping one previous generation`
         // Read before rotating: the previous host's stop still counts.
         test <@ log.Tally.PreviousUnclean = None @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a log that cannot be written still counts, and never raises`` () =
     withTempDir "lifecycle" (fun dir ->
         // A directory where the file should be: every append fails.
@@ -247,7 +247,7 @@ let ``the event log lives in the repository's control directory`` () =
     let control = repositoryControlPaths "/state" repository
     test <@ eventLogPath control = Path.Combine(control.Directory, "host-events.jsonl") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a log that cannot be read says nothing of the previous host, and the host still starts`` () =
     if OperatingSystem.IsWindows() then
         Assert.Skip "POSIX permissions"
@@ -281,7 +281,7 @@ let private fallback (hostPid: int option) : Fallback =
       Root = "/r"
       HostPid = hostPid }
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a fallback is one JSON line naming the client, the host it could not use, and why`` () =
     withTempDir "lifecycle" (fun dir ->
         // The control directory need not exist yet: a host that never started made none.
@@ -311,14 +311,14 @@ let ``a fallback is one JSON line naming the client, the host it could not use, 
         test <@ field written[1] "reason" = "host-did-not-start" @>
         test <@ not (written[1].Contains "hostPid") @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a fallback that cannot be written says so, and never raises`` () =
     withTempDir "lifecycle" (fun dir ->
         let path = Path.Combine(dir, "host-events.jsonl")
         Directory.CreateDirectory path |> ignore
         test <@ not (recordFallback path at 5 (fallback None)) @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a client's fallback is not a host, and never reads as one that exited uncleanly`` () =
     withTempDir "lifecycle" (fun dir ->
         // A host that never started leaves only its clients' fallbacks.

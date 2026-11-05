@@ -31,7 +31,7 @@ let private writePid (repoRoot: string) (pid: int) =
     Directory.CreateDirectory(Path.Combine(repoRoot, ".fshw")) |> ignore
     File.WriteAllText(Path.Combine(repoRoot, ".fshw", "daemon.pid"), string pid)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a client whose TMPDIR resolves a different socket reaches the daemon at the socket it recorded`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "endpoint-recorded" (fun repoRoot ->
@@ -61,7 +61,7 @@ let ``the recorded socket path is absolute, so it does not depend on the reader'
         // A rooted name is already a socket path; .NET uses it as is.
         test <@ DaemonEndpoint.socketPath "/tmp/x" = "/tmp/x" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a recorded socket is ignored once the daemon that recorded it is gone`` () =
     withTempDir "endpoint-dead" (fun repoRoot ->
         writePid repoRoot Int32.MaxValue
@@ -69,13 +69,13 @@ let ``a recorded socket is ignored once the daemon that recorded it is gone`` ()
 
         test <@ DaemonEndpoint.resolve (fun _ -> false) repoRoot "fshw-computed" = "fshw-computed" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``no recorded socket resolves to the computed pipe name`` () =
     withTempDir "endpoint-none" (fun repoRoot ->
         writePid repoRoot Environment.ProcessId
         test <@ DaemonEndpoint.resolve (fun _ -> true) repoRoot "fshw-computed" = "fshw-computed" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``clear removes the record`` () =
     withTempDir "endpoint-clear" (fun repoRoot ->
         writePid repoRoot Environment.ProcessId
@@ -84,7 +84,7 @@ let ``clear removes the record`` () =
         test <@ not (File.Exists(DaemonEndpoint.path repoRoot)) @>
         test <@ DaemonEndpoint.resolve (fun _ -> true) repoRoot "fshw-computed" = "fshw-computed" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a record that is not an absolute path resolves to the computed pipe name`` () =
     // Windows records the bare pipe name: it is not a socket path, so it is not used.
     withTempDir "endpoint-relative" (fun repoRoot ->
@@ -92,7 +92,7 @@ let ``a record that is not an absolute path resolves to the computed pipe name``
         File.WriteAllText(DaemonEndpoint.path repoRoot, "fshw-bare-name")
         test <@ DaemonEndpoint.resolve (fun _ -> true) repoRoot "fshw-computed" = "fshw-computed" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``record and clear never throw when the state directory cannot hold the record`` () =
     withTempDir "endpoint-unwritable" (fun repoRoot ->
         // `.fshw` is a FILE, so nothing can be written under it.
@@ -100,7 +100,7 @@ let ``record and clear never throw when the state directory cannot hold the reco
         DaemonEndpoint.record repoRoot "fshw-x"
         test <@ not (Directory.Exists(Path.Combine(repoRoot, ".fshw"))) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``clear never throws when the record cannot be deleted`` () =
     withTempDir "endpoint-undeletable" (fun repoRoot ->
         // A directory where the record belongs: File.Delete refuses it.
@@ -108,7 +108,7 @@ let ``clear never throws when the record cannot be deleted`` () =
         DaemonEndpoint.clear repoRoot
         test <@ Directory.Exists(DaemonEndpoint.path repoRoot) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a daemon pid that does not parse leaves the record unused`` () =
     withTempDir "endpoint-bad-pid" (fun repoRoot ->
         Directory.CreateDirectory(Path.Combine(repoRoot, ".fshw")) |> ignore
@@ -176,7 +176,7 @@ let ``every worktree IPC call goes to the resolved socket, and launching is left
     test <@ seen |> Seq.take 16 |> Seq.forall ((=) "resolved:p") @>
     test <@ seen[16] = "launch" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the worktree IPC re-reads the record on every call, so it follows a daemon that replaced the one it first found``
     ()
     =

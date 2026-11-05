@@ -41,7 +41,7 @@ let ``a place under the bound is granted at once, and given back when the produc
     test <@ status.Live = 0 && status.Queued = 0 @>
     test <@ status.Admitted = 1L && status.Peak = 1 @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``past the bound a producer waits, and each place given back admits exactly one`` () =
     let bound = Bound 2
     let commits = [ for _ in 1..3 -> pending () ]
@@ -100,7 +100,7 @@ let ``a publication that throws gives its place back`` () =
     test <@ bound.Status().Live = 0 @>
     test <@ (holdUntil bound Task.CompletedTask CancellationToken.None).IsCompletedSuccessfully @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a place handed over to a commit that fails is given back`` () =
     let bound = Bound 1
     let commit = pending ()
@@ -116,7 +116,7 @@ let ``a place handed over to no commits is given back at once`` () =
     bound.Hold(fun place -> place.ReleaseWhen []) |> Async.RunSynchronously
     test <@ bound.Status().Live = 0 @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``giving a place back twice gives it back once`` () =
     let bound = Bound 2
     let commit = pending ()
@@ -220,7 +220,7 @@ let private publishOn (host: PluginHost) (file: string) : Task =
     |> Async.StartImmediateAsTask
     :> Task
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a result holds its place until every subscriber has committed it`` () =
     let host = PluginHost(nullChecker, "/tmp/live-results", liveResultBound = 1)
     let gate = pending ()
@@ -246,7 +246,7 @@ let ``with no subscriber a result's place is given back at once`` () =
     test <@ published.IsCompletedSuccessfully @>
     test <@ host.LiveResults.Status().Live = 0 @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a subscriber that fails a result gives its place back`` () =
     let host = PluginHost(nullChecker, "/tmp/live-results", liveResultBound = 1)
     host.RegisterHandler(consumer "failing" (fun () -> failwith "this plugin fails every result"))

@@ -86,7 +86,7 @@ let ``a project never starts before its references finish, retry rounds included
     test <@ lastA < firstC @>
     test <@ attempts[file "a2"] = 2 @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``at most maxInFlight checks are started and unfinished, across projects`` () =
     let release = pending ()
     let inFlight = ref 0

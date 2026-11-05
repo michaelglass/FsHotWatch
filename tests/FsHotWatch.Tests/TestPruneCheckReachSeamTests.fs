@@ -65,7 +65,7 @@ let private checkReachReply (host: PluginHost) =
     | Some reply -> JsonDocument.Parse(reply)
     | None -> failwith "the plugin serves no check-reach command"
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``full-suite completion serves the narrower retained impact selection`` () =
     withTempDir "tp-check-reach-full" (fun tmpDir ->
         let host, firstMarker, secondMarker = seamTree tmpDir
@@ -86,7 +86,7 @@ let ``full-suite completion serves the narrower retained impact selection`` () =
         Assert.Equal(2, root.GetProperty("totalProjects").GetInt32())
         Assert.Equal("no-failures-to-reach", root.GetProperty("reach").GetString()))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``impact completion reports absent comparison instead of inventing a selection`` () =
     withTempDir "tp-check-reach-impact" (fun tmpDir ->
         let host, firstMarker, secondMarker = seamTree tmpDir

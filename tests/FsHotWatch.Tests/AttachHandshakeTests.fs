@@ -67,7 +67,7 @@ let private refusalOf (response: AttachResponse) =
 // Attaching
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a fresh attach with no live session mints a new incarnation for the derived worktree`` () =
     withRepository (fun primary _ _ ->
         let host = hostFor primary
@@ -80,7 +80,7 @@ let ``a fresh attach with no live session mints a new incarnation for the derive
 
         test <@ decideFor host noSessions request = Attached(expected, AttachDisposition.NewSession, host) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``two worktrees of one repository attach to one host as two sessions`` () =
     withRepository (fun primary secondary _ ->
         let host = hostFor primary
@@ -104,7 +104,7 @@ let ``two worktrees of one repository attach to one host as two sessions`` () =
         test <@ a.Worktree <> b.Worktree @>
         test <@ a.Incarnation <> b.Incarnation @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a fresh attach joins the worktree's live session, flagging a changed configuration`` () =
     withRepository (fun primary _ _ ->
         let host = hostFor primary
@@ -124,7 +124,7 @@ let ``a fresh attach joins the worktree's live session, flagging a changed confi
         let changed = decideFor host (lookup configB) request
         test <@ changed = Attached(live, AttachDisposition.RejoinedConfigChanged, host) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``resuming the live incarnation rejoins it`` () =
     withRepository (fun primary _ _ ->
         let host = hostFor primary
@@ -138,7 +138,7 @@ let ``resuming the live incarnation rejoins it`` () =
 
         test <@ decideFor host lookup request = Attached(live, AttachDisposition.Rejoined, host) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``resuming a replaced incarnation is refused as stale`` () =
     withRepository (fun primary _ _ ->
         let host = hostFor primary
@@ -153,7 +153,7 @@ let ``resuming a replaced incarnation is refused as stale`` () =
 
         test <@ refusalOf (decideFor host lookup request) = AttachRefusal.StaleIncarnation(old, current) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a worktree deleted and recreated keeps its WorktreeId but its old session is void`` () =
     withRepository (fun _ secondary dir ->
         let host = hostFor secondary
@@ -190,7 +190,7 @@ let ``a worktree deleted and recreated keeps its WorktreeId but its old session 
 // Mixed incompatible clients fail loudly
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a client of another protocol version is refused before anything else is trusted`` () =
     withRepository (fun primary _ _ ->
         let host = hostFor primary
@@ -210,7 +210,7 @@ let ``a client of another protocol version is refused before anything else is tr
                 )
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a client of another binary is refused, and told the host is NOT restarted`` () =
     withRepository (fun primary _ _ ->
         let host = hostFor primary
@@ -227,7 +227,7 @@ let ``a client of another binary is refused, and told the host is NOT restarted`
         test <@ refusal = AttachRefusal.BinaryMismatch(other, binary) @>
         test <@ (AttachRefusal.describe refusal).Contains "NOT be restarted" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a worktree of another repository is refused`` () =
     withRepository (fun primary _ dir ->
         let otherRoot = Path.Combine(dir, "other")
@@ -244,7 +244,7 @@ let ``a worktree of another repository is refused`` () =
                 )
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a client claiming its sibling's WorktreeId is refused`` () =
     withRepository (fun primary secondary _ ->
         let host = hostFor primary
@@ -262,7 +262,7 @@ let ``a client claiming its sibling's WorktreeId is refused`` () =
                 )
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a claimed root that is not canonical is refused`` () =
     withRepository (fun primary _ dir ->
         let link = Path.Combine(dir, "link")
@@ -282,7 +282,7 @@ let ``a claimed root that is not canonical is refused`` () =
                 )
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a repository claim the host's derivation contradicts is refused`` () =
     withRepository (fun primary _ dir ->
         // The client says it is in the host's repository, but its root derives elsewhere.
@@ -304,7 +304,7 @@ let ``a repository claim the host's derivation contradicts is refused`` () =
                 )
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a root the host cannot resolve is refused with the identity error`` () =
     withRepository (fun primary _ dir ->
         let host = hostFor primary
@@ -321,7 +321,7 @@ let ``a root the host cannot resolve is refused with the identity error`` () =
                 )
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``every refusal has a stable kind and a message`` () =
     withRepository (fun primary _ _ ->
         let s = sessionOf primary
@@ -355,7 +355,7 @@ let ``every refusal has a stable kind and a message`` () =
 // Wire format
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``requests round-trip through the wire, fresh and resuming`` () =
     withRepository (fun primary _ _ ->
         let fresh = requestFor protocol primary IncarnationExpectation.Fresh configA
@@ -366,7 +366,7 @@ let ``requests round-trip through the wire, fresh and resuming`` () =
         test <@ decodeRequest (encodeRequest fresh) = Ok fresh @>
         test <@ decodeRequest (encodeRequest resume) = Ok resume @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``responses round-trip through the wire`` () =
     withRepository (fun primary _ _ ->
         let host = hostFor primary
@@ -397,7 +397,7 @@ let private withoutField (json: string) (name: string) =
     node.Remove name |> ignore
     node.ToJsonString()
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``another protocol version is recognised as such and answered with a version refusal`` () =
     withRepository (fun primary _ _ ->
         let host = hostFor primary
@@ -427,7 +427,7 @@ let ``another protocol version is recognised as such and answered with a version
 
         test <@ decodeResponse reply = Error(DecodeError.UnsupportedProtocol(ProtocolVersion + 1)) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``malformed requests are answered with a refusal, never dropped`` () =
     withRepository (fun primary _ _ ->
         let host = hostFor primary
@@ -469,7 +469,7 @@ let ``malformed requests are answered with a refusal, never dropped`` () =
                     | _ -> false
                 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``respond attaches a well-formed request end to end`` () =
     withRepository (fun primary _ _ ->
         let host = hostFor primary
@@ -484,7 +484,7 @@ let ``respond attaches a well-formed request end to end`` () =
             test <@ h = host @>
         | other -> failwith $"%A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a reply with an unknown outcome or disposition is malformed`` () =
     withRepository (fun primary _ _ ->
         let host = hostFor primary
@@ -520,7 +520,7 @@ let ``this process has a protocol identity`` () =
     test <@ current.Version = ProtocolVersion @>
     test <@ current.Binary = DaemonIdentity.currentIdentity () @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the client's environment travels with its request`` () =
     withRepository (fun primary _ _ ->
         let request =
@@ -529,7 +529,7 @@ let ``the client's environment travels with its request`` () =
 
         test <@ decodeRequest (encodeRequest request) = Ok request @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a request without an environment, or with a non-string value in it, is malformed`` () =
     withRepository (fun primary _ _ ->
         let json =

@@ -138,7 +138,7 @@ let private restoreSameLengthPreservingMtime (replace: string -> string -> unit)
     File.SetLastWriteTimeUtc(path, mtime)
     test <@ FileInfo(path).Length = length && File.GetLastWriteTimeUtc path = mtime @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileContentHasher re-reads a file overwritten in place with its mtime restored`` () =
     withTempDir "hasher-inplace" (fun dir ->
         let path = Path.Combine(dir, "Lib.dll")
@@ -151,7 +151,7 @@ let ``FileContentHasher re-reads a file overwritten in place with its mtime rest
         test <@ hasher.Hash path <> before @>
         test <@ hasher.Hash path = FileContentHasher().Hash path @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileContentHasher re-reads a file renamed over with its mtime restored`` () =
     withTempDir "hasher-rename" (fun dir ->
         let path = Path.Combine(dir, "Lib.dll")
@@ -170,7 +170,7 @@ let ``FileContentHasher re-reads a file renamed over with its mtime restored`` (
         test <@ hasher.Hash path <> before @>
         test <@ hasher.Hash path = FileContentHasher().Hash path @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileContentHasher serves an untouched file from its memo`` () =
     withTempDir "hasher-memo" (fun dir ->
         let path = Path.Combine(dir, "Lib.dll")
@@ -184,7 +184,7 @@ let ``FileContentHasher serves an untouched file from its memo`` () =
 
         test <@ hasher.Hash path = before @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileContentHasher does not remember a file changed within the racy window`` () =
     withTempDir "hasher-racy" (fun dir ->
         let path = Path.Combine(dir, "Lib.dll")
@@ -198,7 +198,7 @@ let ``FileContentHasher does not remember a file changed within the racy window`
 
         test <@ hasher.Hash path = "unreadable" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileContentHasher reads an existing file whose stamp cannot be read on every look`` () =
     withTempDir "hasher-nostamp" (fun dir ->
         let path = Path.Combine(dir, "Lib.dll")
@@ -670,7 +670,7 @@ let ``upstreamFingerprints table agrees with the single-file fingerprint`` () =
     for file in twoFileOptions.SourceFiles do
         Assert.Equal(upstreamFingerprint contents None file twoFileOptions, table[file])
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``UpstreamFingerprints without generations sees every edit`` () =
     // A caller that never declares generations must still get correct keys.
     withTempDir "fp-nogen" (fun dir ->
@@ -684,7 +684,7 @@ let ``UpstreamFingerprints without generations sees every edit`` () =
         File.WriteAllText(a, "module A // edited")
         Assert.NotEqual<string>(before, fps.For(b, opts, "h")))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``UpstreamFingerprints holds one snapshot per generation`` () =
     withTempDir "fp-gen" (fun dir ->
         let a = Path.Combine(dir, "A.fs")
@@ -703,7 +703,7 @@ let ``UpstreamFingerprints holds one snapshot per generation`` () =
         fps.BeginGeneration()
         Assert.NotEqual<string>(before, fps.For(b, opts, "h")))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileContentHasher re-hashes a file whose content changed`` () =
     withTempDir "content-hasher" (fun dir ->
         let path = Path.Combine(dir, "A.fs")
@@ -713,7 +713,7 @@ let ``FileContentHasher re-hashes a file whose content changed`` () =
         File.WriteAllText(path, "let x = \"changed\"")
         Assert.NotEqual<string>(first, hasher.Hash path))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileContentHasher hashes a file it cannot read to a fixed marker`` () =
     // An unreadable file is what FCS sees as unreadable too: a fixed marker, never an
     // exception out of the cache key.
@@ -746,7 +746,7 @@ let ``a non-F# project reference is fingerprinted by its output path, not its so
     Assert.Equal(fp "/repo/obj/Cs.dll", fp "/repo/obj/Cs.dll")
     Assert.NotEqual<string>(fp "/repo/obj/Cs.dll", fp "/repo/obj/Other.dll")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a file outside the project gets the whole project's fingerprint from a generation's table`` () =
     // A file not in `SourceFiles` (a script, a file just removed) depends on every
     // source of the project, so any edit moves it.
@@ -978,7 +978,7 @@ let ``InMemoryCheckCache a key moved to another file releases its new slot on re
 
 // --- what the key names beyond the repository: the toolchain, and references outside it ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a different toolchain gives a different cache key for the same file, options and upstream`` () =
     // A result is the checker's answer, not only the code's: a cache shared by two
     // daemons on different fshw or FCS builds must not hand one's answers to the other.
@@ -1004,7 +1004,7 @@ let ``toolchainIdentity names the exact compiler service, FSharp.Core and fshw b
     test <@ toolchainIdentity.Contains(mvid typeof<option<int>>) @>
     test <@ toolchainIdentity.Contains(mvid typeof<CacheKey>) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``makeCacheKey keys under this process's toolchain`` () =
     withTempDir "key-default-toolchain" (fun dir ->
         let file = Path.Combine(dir, "A.fs")
@@ -1073,7 +1073,7 @@ let ``upstreamFingerprint stamps assemblies outside the repository`` () =
     Assert.DoesNotContain("/repo/lib/Vendored.dll", stamped)
     Assert.Contains("/elsewhere/bin/Sibling.dll", stamped)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``fileStampText moves when a rebuild changes a file's last-write time or length`` () =
     // Times are set, not waited for: the stamp must not depend on the clock ticking
     // between two writes.
@@ -1337,7 +1337,7 @@ let ``a non-F# reference reaches the signature chain by its stamp`` () =
     Assert.NotEqual<string>(entry (il day1), entry (il day2))
     Assert.NotEqual<string>(entry (pe day1), entry (pe day2))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``UpstreamFingerprints names an earlier file by the signature recorded for its bytes`` () =
     withTempDir "fp-api" (fun dir ->
         let a = Path.Combine(dir, "A.fs")

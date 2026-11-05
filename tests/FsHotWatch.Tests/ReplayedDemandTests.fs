@@ -100,7 +100,7 @@ let ``a demanded check that does not complete fails the plugin, never skips the 
             |> List.exists (fun m -> m.Contains "its demanded check did not complete")
         @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a host with no checker installed refuses a demand, loudly; the installed one answers it`` () =
     let host =
         FsHotWatch.PluginHost.PluginHost.create TestHelpers.sharedChecker.Value "/tmp/repo"
@@ -400,7 +400,7 @@ let ``a live check's parse is handed out, and a replay's refused`` () =
 
     raises<ReplayedResultException> <@ FileCheckResult.requireParseResults "a test" (replayedResult "/tmp/repo/A.fs") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``the host counts each plugin's demands, so a restart can say who paid for its FCS checks`` () =
     // AUTOMATION-1482: which plugins demand live checks after a fully replayed check.
     let host =

@@ -258,7 +258,7 @@ let ``detailedOutputArgument asks an MTP host for per-test result lines unless t
     =
     test <@ detailedOutputArgument configArgs = (if injected then Some "--output Detailed" else None) @>
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``run-tests gives an xUnit 4 runner its v4 flags and reads the report from that path`` (nameHungTests: bool) =

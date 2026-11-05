@@ -36,7 +36,7 @@ let private readUserVersion (dbPath: string) =
     clearSqlitePool dbPath
     version
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a daemon whose test-impact db has a newer schema quarantines it and starts on a fresh one`` () =
     withTempDir "tp-schema-quarantine" (fun tmpDir ->
         let dbPath = FsHotWatch.Cli.DaemonConfig.testImpactDbPath tmpDir
@@ -90,7 +90,7 @@ let ``a daemon whose test-impact db has a newer schema quarantines it and starts
         finally
             daemon.Host.Teardown())
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``quarantine drops a stale sidecar left by an earlier quarantine of the same schema`` () =
     withTempDir "tp-schema-quarantine-sidecars" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test-impact.db")

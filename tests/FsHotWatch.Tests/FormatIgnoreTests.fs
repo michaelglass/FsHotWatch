@@ -70,7 +70,7 @@ let private runCheck (dir: string) (runner: Runner) (file: string) : string =
 
     (host.RunCommand("unformatted", [||]) |> Async.RunSynchronously).Value
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format check skips files matched by fantomasignore`` () =
     withPinnedTempDir "fmt-fantomasignore" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".fantomasignore"), "vendor/\n")
@@ -84,7 +84,7 @@ let ``format check skips files matched by fantomasignore`` () =
         test <@ (runCheck tmpDir runner file).Contains("\"count\": 0") @>
         test <@ List.isEmpty (offered ()) @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format check skips files matched by gitignore`` () =
     withPinnedTempDir "fmt-gitignore" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.generated.fs\n")
@@ -96,7 +96,7 @@ let ``format check skips files matched by gitignore`` () =
         test <@ (runCheck tmpDir runner file).Contains("\"count\": 0") @>
         test <@ List.isEmpty (offered ()) @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format check still checks files not in any ignore file`` () =
     withPinnedTempDir "fmt-no-ignore" (fun tmpDir ->
         // The ignore file matches something else, so Bad.fs stays in scope.
@@ -109,7 +109,7 @@ let ``format check still checks files not in any ignore file`` () =
         test <@ (runCheck tmpDir runner file).Contains("\"count\": 1") @>
         test <@ offered () = [ file ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FormatPreprocessor skips files matched by fantomasignore`` () =
     withPinnedTempDir "preproc-fantomasignore" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".fantomasignore"), "vendor/\n")
@@ -131,7 +131,7 @@ let ``FormatPreprocessor skips files matched by fantomasignore`` () =
         test <@ List.isEmpty (offered ()) @>
         test <@ File.ReadAllText(file) = "module Bad\nlet   x=1\n" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FormatPreprocessor skips files matched by gitignore`` () =
     withPinnedTempDir "preproc-gitignore" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.generated.fs\n")
@@ -148,7 +148,7 @@ let ``FormatPreprocessor skips files matched by gitignore`` () =
 
         test <@ List.isEmpty (offered ()) @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FormatPreprocessor offers files not in any ignore file`` () =
     withPinnedTempDir "preproc-no-ignore" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.log\n")

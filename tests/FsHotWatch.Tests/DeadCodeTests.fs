@@ -118,7 +118,7 @@ let private seedDb (repoRoot: string) : SymbolStore =
     db.RebuildProjects([ result ])
     toSymbolStore db
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``analyze flags the orphan and not the reachable symbol`` () =
     withTempDir "deadcode-e2e" (fun repoRoot ->
         let store = seedDb repoRoot
@@ -140,7 +140,7 @@ let ``analyze flags the orphan and not the reachable symbol`` () =
         test <@ not (List.contains "App.Lib.used" unreachableNames) @>
         test <@ not (List.contains "App.Program.run" unreachableNames) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run over a seeded DB prints the report and exits 0`` () =
     withTempDir "deadcode-run" (fun repoRoot ->
         seedDb repoRoot |> ignore
@@ -169,7 +169,7 @@ let ``run over a seeded DB prints the report and exits 0`` () =
 
 // --- formatReport shape ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``verbose run annotates each unreachable symbol with a reason`` () =
     withTempDir "deadcode-verbose" (fun repoRoot ->
         let store = seedDb repoRoot
@@ -237,7 +237,7 @@ let ``verbose formatReport truncates a disconnected island's sources after three
             |> List.exists (fun l -> l.EndsWith("— has edges from: App.A.a, App.B.b, App.C.c, ..."))
         @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``runDefault reads the real schema version of a seeded DB and exits 0`` () =
     withTempDir "deadcode-default" (fun repoRoot ->
         seedDb repoRoot |> ignore

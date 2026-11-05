@@ -292,7 +292,7 @@ let ``runActive is false only when nothing is in flight and nobody is waiting`` 
 // ---------------------------------------------------------------------------
 
 [<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the live timer beats to disk while running and stops when idle`` () =
     // End-to-end through a real timer and a real file.
     withTempDir "heartbeat-live" (fun root ->
@@ -413,7 +413,7 @@ let ``overlapping ticks never beat concurrently`` () =
     test <@ lock logs (fun () -> logs.Count) = 0 @>
 
 [<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the live timer never writes for a daemon that is idle from the start`` () =
     withTempDir "heartbeat-idle" (fun root ->
         let deps: HeartbeatDeps =
