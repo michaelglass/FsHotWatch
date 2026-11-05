@@ -36,6 +36,18 @@ module internal Runtime =
 
             if ids.Count = 0 then null else ids
 
+    /// The type names a `Contract.MutateTypesEnv` value names; null when it names none.
+    let mutantTypes (value: string) : HashSet<string> =
+        if String.IsNullOrEmpty value then
+            null
+        else
+            let names = HashSet<string>(StringComparer.Ordinal)
+
+            for part in value.Split(';', StringSplitOptions.RemoveEmptyEntries ||| StringSplitOptions.TrimEntries) do
+                names.Add part |> ignore
+
+            if names.Count = 0 then null else names
+
     /// Build the recorder the environment asks for, registering its exit dump with
     /// `onExit`. Null when `TESTPRUNE_TRACE_OUT` is unset or empty.
     let install (getEnv: string -> string) (onExit: EventHandler -> unit) : RecorderState =
@@ -54,6 +66,7 @@ module internal Runtime =
 
             s.RepoRoot <- getEnv Contract.RepoRootEnv
             s.Mutants <- mutants (getEnv Contract.MutateEnv)
+            s.MutantTypes <- mutantTypes (getEnv Contract.MutateTypesEnv)
 
             let handler = exitDump outDir s Console.Error
             // Compiled now, while the module's IL is readable: a coverage collector that

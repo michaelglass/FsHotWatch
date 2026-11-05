@@ -26,6 +26,8 @@ let private inputKind =
     | "list" -> DirectoryListing
     | "list-deep" -> DeepDirectoryListing
     | "meta" -> MetadataRead
+    | "types" -> TypeSet
+    | "type" -> TypeReflected
     | other -> UnknownInputKind other
 
 let private scopeOf (e: JsonElement) : RecordedScope =

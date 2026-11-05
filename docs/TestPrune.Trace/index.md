@@ -224,7 +224,7 @@ index was built from.
 ### Mutate: does trace selection select every test a change breaks?
 
 ```text
-test-prune-traces mutate --project-dir <dir> --assembly <name> [--samples 20] [--seed 1] [--only <text>]... [--diff <file>] [--db <store>] [--project <name>]
+test-prune-traces mutate --project-dir <dir> --assembly <name> [--samples 20] [--union-samples 5] [--seed 1] [--only <text>]... [--diff <file>] [--db <store>] [--project <name>]
 ```
 
 `mutate` runs the woven project once to record each test's trace, then once per sampled
@@ -243,6 +243,13 @@ It works on probe ids, not joined symbols. A method's closures are their own tar
 the measured recall is a lower bound on symbol-level selection, which joins a closure to the
 method that holds it. Selection is not changed (and nothing is stored without `--db`): this is the evidence
 for whether trace selection can replace the static walk.
+
+`--union-samples` (default 5) adds **union-type** targets: each one is a union of the
+repository that the first run reflected over (`FSharpType.GetUnionCases` and the other
+FSharp.Core union APIs). Every reflective use of the union throws
+(`TESTPRUNE_TRACE_MUTATE_TYPES`), which stands for adding a case to it. These targets are
+judged against the tests whose trace reflected over the union. Their samples are stored
+with kind `union-type`, for shadow-report's union-type bar.
 
 `--diff <file>` samples from a real change instead: only the methods whose lines the unified
 diff's new side touches (a diff that ends at the tree being measured, such as

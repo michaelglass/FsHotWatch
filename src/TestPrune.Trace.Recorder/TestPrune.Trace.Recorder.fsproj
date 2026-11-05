@@ -44,6 +44,7 @@
         <Compile Include="Io.fs" />
         <Compile Include="Scopes.fs" />
         <Compile Include="ProcessShims.fs" />
+        <Compile Include="Reflect.fs" />
         <Compile Include="JitVerify.fs" />
         <!-- Last: the runtime requires the startup hook type in no namespace. -->
         <Compile Include="StartupHook.fs" />

@@ -139,14 +139,15 @@ let ``the launch carries exactly the recorder's environment and a fresh dump dir
 let ``every executed test is traced and nothing is unattributed`` () =
     let s = run.Value.Summary
     test <@ s.Status = TraceStore.Recorded && List.isEmpty s.RejectedDumps @>
-    test <@ s.Executed = 18 && s.Traced = 18 @>
+    test <@ s.Executed = 23 && s.Traced = 23 @>
     test <@ List.isEmpty s.UntracedExecuted @>
     test <@ s.Counters.Ambient = 0L && s.Counters.Overflow = 0L @>
-    // Eighteen CTRF rows are sixteen tests (each theory's two rows share one trace). Only the test
+    // Twenty-three CTRF rows are twenty-one tests (each theory's two rows share one trace; five
+    // are ReflectionTests, AUTOMATION-1495). Only the test
     // that starts an unwoven child (/bin/echo leaves no dump) is incomplete.
     let e = run.Value
-    test <@ (e.Store.TestKeysOf("FxTests", s.EnvFingerprint.Value)).Count = 16 @>
-    test <@ s.Complete = 15 && s.ReasonCounts = Map [ "child-process-untraced", 1 ] @>
+    test <@ (e.Store.TestKeysOf("FxTests", s.EnvFingerprint.Value)).Count = 21 @>
+    test <@ s.Complete = 20 && s.ReasonCounts = Map [ "child-process-untraced", 1 ] @>
     test <@ s.UnmappedIds = 0 @>
 
 [<Fact>]
@@ -456,3 +457,92 @@ let ``a refusal is stored as a refused run with its reason`` () =
                                                                                    "tree",
                                                                                    "")
         @>
+
+// --- reflection inputs (AUTOMATION-1495, phase-2 plan Task 11) ------------------------------
+
+let private reflectionTrace (meth: string) =
+    traceIn run.Value "FxTests.ReflectionTests" meth
+
+[<Literal>]
+let private Colour = "FxLib.Shapes.Colour"
+
+[<Fact>]
+let ``union reflection puts the union type in the enumerating tests' traces, and nowhere else`` () =
+    test <@ names (reflectionTrace "the helper names every colour") |> Set.contains Colour @>
+    test <@ names (reflectionTrace "a value's cases are named") |> Set.contains Colour @>
+    test <@ not (names (reflectionTrace "a test that never reflects") |> Set.contains Colour) @>
+    test <@ (reflectionTrace "a value's cases are named").Complete @>
+
+[<Fact>]
+let ``a type sweep is a types input of the sweeping tests`` () =
+    let typesOf meth =
+        (reflectionTrace meth).Inputs
+        |> Seq.filter (fun (kind, _, _) -> kind = "types")
+        |> Seq.map (fun (_, key, _) -> key)
+        |> Set.ofSeq
+
+    // The FxLib the test host loaded: the copy in the test project's output.
+    let isFxLib (keys: Set<string>) =
+        keys.Count = 1
+        && (Seq.head keys).EndsWith("/FxLib.dll", StringComparison.Ordinal)
+
+    test <@ isFxLib (typesOf "no type in FxLib is forbidden (sweep)") @>
+    test <@ isFxLib (typesOf "the audit finds nothing forbidden") @>
+    test <@ typesOf "a test that never reflects" |> Set.isEmpty @>
+
+[<Fact>]
+let ``adding a nullary case reselects every test that enumerates the union, and not the others`` () =
+    let e = run.Value
+
+    let before =
+        TraceIngest.versionHashes (TestPrune.Ports.toSymbolStore FixtureIndex.withTests.Value)
+
+    let after =
+        FixtureIndex.withTestsEdited (fun name text ->
+            if name = "Shapes.fs" then
+                text.Replace("    | Green\n", "    | Green\n    | Blue\n")
+            else
+                text)
+        |> TestPrune.Ports.toSymbolStore
+        |> TraceIngest.versionHashes
+
+    // The edit changes the union's header hash and no case's.
+    test <@ before.[Colour] <> after.[Colour] @>
+    test <@ before.[Colour + ".Red"] = after.[Colour + ".Red"] @>
+
+    let key meth =
+        TraceIngest.testKey "FxTests" "FxTests.ReflectionTests" meth
+
+    let universe =
+        [ "the helper names every colour"
+          "a value's cases are named"
+          "no type in FxLib is forbidden (sweep)"
+          "the audit finds nothing forbidden"
+          "a test that never reflects" ]
+        |> List.map key
+
+    let s =
+        TraceSelect.select
+            "FxTests"
+            universe
+            (fun k -> e.Store.TryRead(k, e.Summary.EnvFingerprint.Value))
+            // Exactly what the edit did to the union, with every other symbol as recorded.
+            (fun n -> if n = Colour then after.TryFind n else before.TryFind n)
+            (TraceIngest.currentInputHash Fixtures.repoRoot)
+
+    let rulesOf meth =
+        s.Selected.TryFind(key meth) |> Option.defaultValue []
+
+    test
+        <@
+            rulesOf "the helper names every colour"
+            |> List.contains (TraceSelect.SymbolChanged Colour)
+        @>
+
+    test
+        <@
+            rulesOf "a value's cases are named"
+            |> List.contains (TraceSelect.SymbolChanged Colour)
+        @>
+
+    test <@ not (s.Selected.ContainsKey(key "a test that never reflects")) @>

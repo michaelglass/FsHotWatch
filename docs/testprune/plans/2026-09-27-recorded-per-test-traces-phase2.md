@@ -3792,6 +3792,22 @@ dotnet tool run test-prune-traces shadow-report --project TestPrune.Tests > "$CL
 - [ ] **Step 5:** File each unexplained item as a defect in the owning repository's tracker **before** declaring
   the bar met. Commit the results file.
 
+### Decision D1f (2026-11-05): reflection inputs and union-type samples, as landed
+
+- **Landed (AUTOMATION-1495):** Task 11's `types` and `type` inputs, the `Reflect` shims (every FSharp.Core
+  union API taking a `Type` or `UnionCaseInfo`, and the five assembly sweeps), `TraceIngest.typeSetHash`, and
+  Task 7's union-type mutant (`mutate --union-samples`, default 5). A reflected type joins to its symbol only
+  for an assembly of the weave set, so FSharp.Core's `option` in `bin/` never marks a trace incomplete.
+- **Deferred: Task 11 Step 5.4's Type probes** (`ldtoken`, repository generic instantiations). The shims see the
+  runtime type however it was obtained, which covers union enumeration through FSharp.Core. ADR 0009 (testprune)
+  says when to reconsider.
+- **The reproducer** is `EndToEndTests` "adding a nullary case reselects every test that enumerates the union":
+  the fixture is re-indexed with `| Blue` added and selected against the recorded traces. It is not rebuilt,
+  because selection reads the index and the stored traces only. `MeasurementTests` "every test a mutated
+  fixture union breaks through reflection is one its trace selects" is the union-type mutation sample.
+- **Union-type samples come from a run without `--diff`.** A union-type target stands for adding a case, which
+  no diff shows, so `--diff` does not filter them.
+
 ## Task D2: Promote TestPrune to live
 
 Only after D1's report exits 0.

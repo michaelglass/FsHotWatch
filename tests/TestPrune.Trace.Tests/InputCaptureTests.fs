@@ -26,7 +26,8 @@ let private bclType (name: string) =
     [ "System.Private.CoreLib"
       "System.Diagnostics.Process"
       "System.Private.Xml"
-      "System.Private.Xml.Linq" ]
+      "System.Private.Xml.Linq"
+      "FSharp.Core" ]
     |> List.pick (fun a -> Type.GetType(name + ", " + a, false) |> Option.ofObj)
 
 /// The runtime type Cecil spells `name`; a generic instance such as

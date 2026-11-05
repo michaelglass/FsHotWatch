@@ -22,13 +22,21 @@ open System.Text
 open TestPrune.Trace.Model
 open TestPrune.Trace.Recorder
 
-/// One repository method, made to fail by throwing from every one of its probes.
+/// One repository method, made to fail by throwing from every one of its probes; or one
+/// union type, made to fail by throwing from every reflective use of it.
 type Target =
     {
-        /// `<CLR type>::<member>`
+        /// `<CLR type>::<member>`, or a union type's CLR name.
         Name: string
         Ids: int list
+        /// The CLR names of the union types whose reflection throws (`Contract.MutateTypesEnv`):
+        /// empty for a method, the type itself for a union-type target.
+        Types: string list
     }
+
+/// What a test's trace holds: the probe ids it held or inherited, and the union types it
+/// reflected over (`type` inputs).
+type TestTrace = { Ids: Set<int>; Types: Set<string> }
 
 /// What one mutant showed.
 type Outcome =
@@ -43,6 +51,8 @@ type Outcome =
 type Sample =
     {
         Target: string
+        /// A method (symbol) or a union-type mutant.
+        Kind: TraceStore.MutationKind
         Outcome: Outcome
         /// Tests that passed before and failed (or lost their row) with the mutant, sorted.
         Failing: string list
@@ -93,9 +103,39 @@ let targets (testAssembly: string) (hit: Set<int>) (manifest: Manifest) : Target
     |> Seq.groupBy (fun r -> $"%s{r.TypeName}::%s{r.Member}")
     |> Seq.map (fun (name, rows) ->
         { Name = name
-          Ids = rows |> Seq.map _.Id |> Seq.sort |> List.ofSeq })
+          Ids = rows |> Seq.map _.Id |> Seq.sort |> List.ofSeq
+          Types = [] })
     |> Seq.filter (fun t -> t.Ids |> List.exists hit.Contains)
     |> Seq.sortBy _.Name
+    |> List.ofSeq
+
+/// The CLR names of the union types the scopes reflected over (`type` inputs).
+let reflectedTypes (scopes: RecordedScope seq) : Set<string> =
+    scopes
+    |> Seq.collect _.Inputs
+    |> Seq.choose (fun i ->
+        match i.Kind with
+        | TypeReflected ->
+            match i.Path.LastIndexOf '|' with
+            | -1 -> None
+            | cut -> Some(i.Path.Substring(cut + 1))
+        | _ -> None)
+    |> Set.ofSeq
+
+/// The union types outside `testAssembly` (those with union-case rows in the manifest) that
+/// `reflected` names. A union-type mutant throws on reflection over its type, so a union no
+/// test reflected over could fail nothing. Sorted by name.
+let unionTargets (testAssembly: string) (reflected: Set<string>) (manifest: Manifest) : Target list =
+    manifest.Rows
+    |> Seq.filter (fun r -> r.Kind = UnionCase && r.Assembly <> testAssembly)
+    |> Seq.map _.TypeName
+    |> Seq.distinct
+    |> Seq.filter reflected.Contains
+    |> Seq.sort
+    |> Seq.map (fun name ->
+        { Name = name
+          Ids = []
+          Types = [ name ] })
     |> List.ofSeq
 
 /// The lines a unified diff changes, by repo-relative path, on the new side: the lines a
@@ -173,7 +213,7 @@ let tracesOf
     (manifest: Manifest)
     (dumps: ProcessDump list)
     (outcomes: TestOutcome list)
-    : Map<string, Set<int> option> =
+    : Map<string, TestTrace option> =
     let scopes = RunScopes.merged dumps
     let inherited = RunScopes.inheritedBy manifest scopes
 
@@ -198,26 +238,30 @@ let tracesOf
         o.Name,
         own
         |> Option.map (fun keys ->
-            inherited (keys |> List.map snd)
-            |> Seq.collect (fun k -> scopes.[k].Ids)
-            |> Set.ofSeq))
+            let held =
+                inherited (keys |> List.map snd) |> Seq.map (fun k -> scopes.[k]) |> List.ofSeq
+
+            { Ids = held |> Seq.collect _.Ids |> Set.ofSeq
+              Types = reflectedTypes held }))
     |> Map.ofList
 
 /// The tests trace selection selects for a change to `target`: those whose trace names one
-/// of its ids, and those with no trace.
-let selected (traces: Map<string, Set<int> option>) (target: Target) : Set<string> =
+/// of its ids or reflected over one of its union types, and those with no trace.
+let selected (traces: Map<string, TestTrace option>) (target: Target) : Set<string> =
     traces
     |> Map.filter (fun _ trace ->
         match trace with
         | None -> true
-        | Some ids -> target.Ids |> List.exists ids.Contains)
+        | Some t ->
+            target.Ids |> List.exists t.Ids.Contains
+            || target.Types |> List.exists t.Types.Contains)
     |> Map.keys
     |> Set.ofSeq
 
 /// Judge one mutant run against the baseline. A test that passed in the baseline fails
 /// with the mutant when it failed, ended otherwise, or has no row in the mutant's report.
 let judge
-    (traces: Map<string, Set<int> option>)
+    (traces: Map<string, TestTrace option>)
     (baseline: TestOutcome list)
     (target: Target)
     (mutant: Result<TestOutcome list, string>)
@@ -226,6 +270,11 @@ let judge
 
     let sample outcome failing =
         { Target = target.Name
+          Kind =
+            if target.Types.IsEmpty then
+                TraceStore.SymbolMutant
+            else
+                TraceStore.UnionTypeMutant
           Outcome = outcome
           Failing = failing
           Selected = selection.Count
@@ -279,6 +328,7 @@ let outcomeName (o: Outcome) =
 /// beside it (null otherwise).
 type SampleJson =
     { Target: string
+      Kind: string
       Outcome: string
       Reason: string
       Failing: string list
@@ -309,6 +359,7 @@ let toJson (r: MutationReport) : MutationReportJson =
         r.Samples
         |> List.map (fun s ->
             { Target = s.Target
+              Kind = TraceStore.mutationKindCode s.Kind
               Outcome = outcomeName s.Outcome
               Reason =
                 match s.Outcome with
@@ -368,17 +419,41 @@ let private envWith (launch: TraceSession.TraceLaunch) (dumpDir: string) (extra:
      |> List.map (fun (k, v) -> if k = Contract.OutEnv then k, dumpDir else k, v))
     @ extra
 
-/// Prepare the project, run it once traced (the baseline), draw `samples` targets from what
-/// it hit by a `Random(seed)` shuffle (`Audit.choose`; every target when `samples` is at
-/// least their number), and run one mutant per target. `only`, when non-empty, keeps the
-/// targets whose name contains one of its strings before sampling; `changed` (`changedSpans`
-/// of a real change), when given, keeps the methods it touched (`changedTargets`) and reports
-/// the touched methods no test ran as not mutable. `Error` when the
-/// project cannot be prepared or the baseline wrote no test report.
+/// `n` of `pool` by a `Random(seed)` shuffle (`Audit.choose`; all of them when `n` is at least
+/// their number), sorted by name.
+let private draw (n: int) (seed: int) (pool: Target list) : Target list =
+    if pool.IsEmpty || n <= 0 then
+        []
+    else
+        let byName = pool |> List.map (fun t -> t.Name, t) |> Map.ofList
+
+        Audit.choose (min 1.0 (float n / float pool.Length)) seed (pool |> List.map _.Name)
+        |> List.truncate n
+        |> List.sort
+        |> List.map (fun name -> byName.[name])
+
+/// The mutant's environment additions: the target's probe ids throw, and reflection over its
+/// union types throws.
+let private mutantEnv (target: Target) =
+    [ if not target.Ids.IsEmpty then
+          Contract.MutateEnv, target.Ids |> List.map string |> String.concat ","
+      if not target.Types.IsEmpty then
+          Contract.MutateTypesEnv, String.concat ";" target.Types ]
+
+/// Prepare the project, run it once traced (the baseline), draw `samples` method targets from
+/// what it hit and `unionSamples` union-type targets from the unions it reflected over (each by
+/// a `Random(seed)` shuffle, `Audit.choose`; every target when the count is at least their
+/// number), and run one mutant per target. `only`, when non-empty, keeps the targets whose
+/// name contains one of its strings before sampling; `changed` (`changedSpans` of a real
+/// change), when given, keeps the methods it touched (`changedTargets`) and reports the touched
+/// methods no test ran as not mutable. A union-type target stands for adding a case to the
+/// union, which no diff shows, so `changed` does not filter them. `Error` when the project
+/// cannot be prepared or the baseline wrote no test report.
 let run
     (req: TraceSession.PrepareRequest)
     (appArgs: string list)
     (samples: int)
+    (unionSamples: int)
     (seed: int)
     (only: string list)
     (changed: Map<string, (int * int) list> option)
@@ -400,55 +475,49 @@ let run
         |> Result.map (fun baseline ->
             let manifest = launch.Shadow.Manifest
             let dumps, _ = DumpReader.readDirectory baselineDumps
+            let merged = RunScopes.merged dumps
+            let hit = merged |> Map.values |> Seq.collect _.Ids |> Set.ofSeq
 
-            let hit = RunScopes.merged dumps |> Map.values |> Seq.collect _.Ids |> Set.ofSeq
+            let keep (t: Target) =
+                only.IsEmpty || only |> List.exists t.Name.Contains
 
             // With a change, only the methods it touched are candidates.
             let changedNames =
                 changed
                 |> Option.map (fun c -> changedTargets req.RepoRoot req.AssemblyName c manifest)
 
-            let all =
+            let methods =
                 targets req.AssemblyName hit manifest
-                |> List.filter (fun t -> only.IsEmpty || only |> List.exists t.Name.Contains)
+                |> List.filter keep
                 |> List.filter (fun t -> changedNames |> Option.forall (fun names -> Set.contains t.Name names))
 
-            let byName = all |> List.map (fun t -> t.Name, t) |> Map.ofList
+            let unions =
+                unionTargets req.AssemblyName (reflectedTypes (Map.values merged)) manifest
+                |> List.filter keep
 
-            let fraction =
-                if all.IsEmpty then
-                    0.0
-                else
-                    float samples / float all.Length
-
-            let chosen =
-                if all.IsEmpty then
-                    []
-                else
-                    Audit.choose (min 1.0 fraction) seed (all |> List.map _.Name)
-                    |> List.truncate samples
-                    |> List.sort
-                    |> List.map (fun n -> byName.[n])
-
+            let chosen = draw samples seed methods @ draw unionSamples seed unions
             let traces = tracesOf manifest dumps baseline
 
             let judged =
                 chosen
                 |> List.mapi (fun i target ->
                     let at = Path.Combine(dir, string i)
-                    let ids = target.Ids |> List.map string |> String.concat ","
 
                     Ctrf.run
                         $"with %s{target.Name} mutated"
                         launch.Apphost
                         appArgs
-                        (envWith launch (Path.Combine(at, "dumps")) [ Contract.MutateEnv, ids ])
+                        (envWith launch (Path.Combine(at, "dumps")) (mutantEnv target))
                         req.RepoRoot
                         (Path.Combine(at, "results"))
                         timeout
                     |> judge traces baseline target)
 
-            { summarize baseline.Length (notPassed baseline) all.Length judged with
+            { summarize
+                  baseline.Length
+                  (notPassed baseline)
+                  (methods.Length + (if unionSamples > 0 then unions.Length else 0))
+                  judged with
                 NotMutable =
                     match changedNames with
                     | None -> []
@@ -456,13 +525,13 @@ let run
                         Set.difference names (targets req.AssemblyName hit manifest |> List.map _.Name |> Set.ofList)
                         |> Set.toList }))
 
-/// The samples a report stores (`TraceStore.MutationSample`, symbol kind), one per judged
-/// target plus one `NotMutable` per changed method no test ran. `treeHash` names what was
-/// mutated (the tree, or the change it was sampled from).
+/// The samples a report stores (`TraceStore.MutationSample`), one per judged target (of its
+/// kind: symbol or union-type) plus one symbol `NotMutable` per changed method no test ran.
+/// `treeHash` names what was mutated (the tree, or the change it was sampled from).
 let toSamples (testProject: string) (at: DateTimeOffset) (treeHash: string) (r: MutationReport) =
-    let sample symbol outcome failing selected missed : TraceStore.MutationSample =
+    let sample kind symbol outcome failing selected missed : TraceStore.MutationSample =
         { TestProject = testProject
-          Kind = TraceStore.SymbolMutant
+          Kind = kind
           Symbol = symbol
           TreeHash = treeHash
           RecordedAt = at
@@ -479,5 +548,6 @@ let toSamples (testProject: string) (at: DateTimeOffset) (treeHash: string) (r: 
              | NoFailure -> TraceStore.NoFailure
              | RunFailed _ -> TraceStore.RunFailed
 
-         sample s.Target outcome s.Failing.Length s.Selected s.Missed))
-    @ (r.NotMutable |> List.map (fun n -> sample n TraceStore.NotMutable 0 0 []))
+         sample s.Kind s.Target outcome s.Failing.Length s.Selected s.Missed))
+    @ (r.NotMutable
+       |> List.map (fun n -> sample TraceStore.SymbolMutant n TraceStore.NotMutable 0 0 []))

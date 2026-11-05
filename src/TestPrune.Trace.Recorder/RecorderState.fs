@@ -104,6 +104,9 @@ type RecorderState(idCount: int, source: IContextSource option, parentScope: str
     /// The probe ids that throw when hit (`Contract.MutateEnv`); null in a normal run.
     member val Mutants: HashSet<int> = null with get, set
 
+    /// The CLR full names whose reflection throws (`Contract.MutateTypesEnv`); null in a normal run.
+    member val MutantTypes: HashSet<string> = null with get, set
+
     /// Where a file read or a child process is noted: static init, then the current
     /// scope, then ambient. Never null.
     member this.NoteScope() : Scope =

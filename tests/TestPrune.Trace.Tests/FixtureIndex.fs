@@ -62,6 +62,10 @@ let private indexCopy = indexProjects [ fxLib ]
 /// The index of the fixture library as built.
 let build = lazy (indexCopy (fun _ text -> text))
 
+/// The index of the fixture library and its suite after `edit fileName text`: what the
+/// repository index holds once a source changes and before anything is rebuilt.
+let withTestsEdited (edit: string -> string -> string) = indexProjects [ fxLib; fxTests ] edit
+
 /// The index of the fixture library and its xUnit v3 suite as built: what a repository
 /// index holds, where test methods are symbols too.
 let withTests = lazy (indexProjects [ fxLib; fxTests ] (fun _ text -> text))

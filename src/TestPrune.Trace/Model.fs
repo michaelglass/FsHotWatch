@@ -48,6 +48,10 @@ type InputKind =
     | DeepDirectoryListing
     /// A read of a path's metadata (times, attributes, mode, length), not its content.
     | MetadataRead
+    /// An assembly's types were enumerated (a whole-assembly sweep). Path: the assembly file.
+    | TypeSet
+    /// A type was inspected through union reflection. Path: `<assembly file>|<CLR full name>`.
+    | TypeReflected
     /// A kind this reader does not know, written by a newer recorder. Its scope cannot be
     /// trusted to replay, so it is marked incomplete rather than failing the whole dump.
     | UnknownInputKind of kind: string

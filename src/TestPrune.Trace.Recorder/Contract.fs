@@ -15,6 +15,10 @@ let IoType = "TestPrune.Trace.Recorder.Io"
 [<Literal>]
 let ProcessShimsType = "TestPrune.Trace.Recorder.ProcessShims"
 
+/// Full name of the static class holding the reflection shims (union reflection, type sweeps).
+[<Literal>]
+let ReflectType = "TestPrune.Trace.Recorder.Reflect"
+
 /// Records one probe id.
 [<Literal>]
 let Hit = "Hit"
@@ -59,6 +63,12 @@ let ParentScopeEnv = "TESTPRUNE_TRACE_PARENT_SCOPE"
 /// harness's way of making a symbol fail without rebuilding anything. Unset in a normal run.
 [<Literal>]
 let MutateEnv = "TESTPRUNE_TRACE_MUTATE"
+
+/// `;`-separated CLR full names of types whose reflection throws `MutantHitException`: the
+/// mutation harness's union-type mutant (every union-reflection call on the type fails, as
+/// adding a case would make code that enumerates its cases change). Unset in a normal run.
+[<Literal>]
+let MutateTypesEnv = "TESTPRUNE_TRACE_MUTATE_TYPES"
 
 /// Path of the JIT-verification report; set only in verify mode.
 [<Literal>]

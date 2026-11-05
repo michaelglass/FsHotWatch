@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- feat: `mutate --union-samples N` (default 5) adds union-type mutation samples (AUTOMATION-1495).
+
 - feat: `mutate --diff <unified diff>` samples only the methods a real change touched, and `--db <store>`
   (with `--project`, default the assembly) stores every sample for `shadow-report` (AUTOMATION-975).
 

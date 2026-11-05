@@ -301,6 +301,49 @@ let metaHash (path: string) : string =
     else
         "absent"
 
+/// SHA-256 of the sorted type-definition full names (nested with `+`) of an open PE file.
+let private typeNamesHash (pe: System.Reflection.PortableExecutable.PEReader) : string =
+    let md = System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader pe
+
+    let rec fullName (h: System.Reflection.Metadata.TypeDefinitionHandle) =
+        let t = md.GetTypeDefinition h
+        let name = md.GetString t.Name
+        let outer = t.GetDeclaringType()
+
+        if outer.IsNil then
+            match md.GetString t.Namespace with
+            | "" -> name
+            | ns -> ns + "." + name
+        else
+            fullName outer + "+" + name
+
+    md.TypeDefinitions
+    |> Seq.map fullName
+    |> Seq.sort
+    |> String.concat "\n"
+    |> sha256Text
+
+/// SHA-256 of an assembly's type-definition full names (nested with `+`), sorted: what a
+/// whole-assembly type sweep sees. Read from metadata, so the assembly is never loaded;
+/// "absent" when the file is missing or is not an assembly.
+let typeSetHash (path: string) : string =
+    if not (File.Exists path) then
+        "absent"
+    else
+        try
+            // Disposed explicitly: `use` compiles a null check no reader here can take.
+            let pe = new System.Reflection.PortableExecutable.PEReader(File.OpenRead path)
+
+            try
+                typeNamesHash pe
+            finally
+                pe.Dispose()
+        // Not a PE file, a PE file with no metadata, or one that could not be read: no type set,
+        // which differs from any recorded one, so the test is reselected.
+        with _ ->
+            "absent"
+
+
 /// The current hash of a stored input, by its stored kind code and repo-relative key, or
 /// None for a kind this reader does not know. The one definition of an input's current
 /// hash: ingestion (`inputOf`) and selection both compute it here.
@@ -315,6 +358,7 @@ let currentInputHash (root: string) (kind: string, rel: string) : string option 
     // removed at any depth changes the hash.
     | "list-deep" -> Some(listingHash p SearchOption.AllDirectories)
     | "meta" -> Some(metaHash p)
+    | "types" -> Some(typeSetHash p)
     | _ -> None
 
 /// The (kind, key, hash) of a recorded file input as the file is now, or None when it is
@@ -327,6 +371,9 @@ let inputOf (root: string) (i: RecordedInput) =
         | DirectoryListing -> Some "list"
         | DeepDirectoryListing -> Some "list-deep"
         | MetadataRead -> Some "meta"
+        | TypeSet -> Some "types"
+        // Joined to the type's symbol by ingestion (`reflectedSymbols`), not hashed.
+        | TypeReflected -> None
         | UnknownInputKind _ -> None
 
     match code, repoRelative root i.Path with
@@ -341,6 +388,50 @@ let private unknownInputs (inputs: RecordedInput list) =
         match i.Kind with
         | UnknownInputKind kind -> Some(UnknownInput kind)
         | _ -> None)
+
+/// The symbols a scope's union reflection names (`type` inputs), at their current versions:
+/// a type of a repository assembly (one of `repoAssemblies`, the weave set's assembly names)
+/// whose CLR name the index knows (`typeCandidates`). A repository type the index does not
+/// know is `UnmappedCode "reflected-type:<name>"`, which makes the trace incomplete. A type of
+/// any other assembly (FSharp.Core's `option`, a package's union), wherever its file is, is
+/// not the repository's code: no edit here changes it.
+let reflectedSymbols
+    (ix: SymbolIndex)
+    (versions: Map<string, string>)
+    (repoAssemblies: Set<string>)
+    (inputs: RecordedInput list)
+    : (string * string) list * IncompleteReason list =
+    let resolved =
+        inputs
+        |> List.choose (fun i ->
+            match i.Kind with
+            | TypeReflected ->
+                match i.Path.LastIndexOf '|' with
+                | -1 -> None
+                | cut ->
+                    let file = i.Path.Substring(0, cut)
+                    let name = i.Path.Substring(cut + 1)
+
+                    if not (repoAssemblies.Contains(Path.GetFileNameWithoutExtension file)) then
+                        None
+                    else
+                        match typeCandidates name |> List.tryFind ix.Exists with
+                        | Some symbol ->
+                            match versions.TryFind symbol with
+                            | Some h -> Some(Ok(symbol, h))
+                            | None -> Some(Error(UnmappedCode $"reflected-type:%s{name}"))
+                        | None -> Some(Error(UnmappedCode $"reflected-type:%s{name}"))
+            | _ -> None)
+        |> List.distinct
+
+    (resolved
+     |> List.choose (function
+         | Ok s -> Some s
+         | Error _ -> None)),
+    (resolved
+     |> List.choose (function
+         | Error r -> Some r
+         | Ok _ -> None))
 
 /// Symbols that appeared in or vanished from a test's trace although nothing the test ran
 /// or read changed: every symbol of the old trace still has the version it was recorded at,
@@ -471,8 +562,13 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
             |> List.choose (fun d -> d.ParentScope |> Option.map (fun p -> p, d.Pid))
             |> Set.ofList
 
+        let index = ofStore req.Symbols req.RepoRoot
+
+        let repoAssemblies = req.Shadow.Manifest.Rows |> Seq.map _.Assembly |> Set.ofSeq
+
         let contentOf (m: RecordedScope) : ScopeContent * IncompleteReason list =
             let hits = m.Ids |> List.ofArray |> List.collect (fun id -> effects.[id])
+            let reflected, unreflected = reflectedSymbols index versions repoAssemblies m.Inputs
 
             let children =
                 m.Children
@@ -483,10 +579,11 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
 
             { Key = m.Key
               Symbols =
-                hits
-                |> List.choose (function
-                    | Entry(n, h) -> Some(n, h)
-                    | _ -> None)
+                (hits
+                 |> List.choose (function
+                     | Entry(n, h) -> Some(n, h)
+                     | _ -> None))
+                @ reflected
               Inputs =
                 (hits
                  |> List.choose (function
@@ -498,6 +595,7 @@ let ingest (store: Store) (req: IngestRequest) : IngestSummary =
                  | Reason r -> Some r
                  | _ -> None))
             @ children
+            @ unreflected
             |> List.distinct
 
         let contents = merged |> Map.map (fun _ m -> contentOf m)
