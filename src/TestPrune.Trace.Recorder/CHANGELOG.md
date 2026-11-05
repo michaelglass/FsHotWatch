@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `Reflect` shims note union reflection (`type` inputs) and assembly type sweeps (`types` inputs), and
+  `TESTPRUNE_TRACE_MUTATE_TYPES` makes reflection over a listed type throw `MutantHitException` (AUTOMATION-1495).
+
 - feat: a started child is noted with its executable as the start named it (`/bin/sh`, not `sh`), so ingestion
   can tell a system binary from a repository file of the same name (AUTOMATION-1496).
 

@@ -108,7 +108,7 @@ let ``a sample that exits nonzero keeps its output, and the overhead table print
 let ``the isolation audit finds no id attributed in parallel that the test does not run alone`` () =
     withScratch (fun req ->
         let report = Audit.run req [] 1.0 7 timeout |> ok
-        test <@ report.Sampled = 18 @>
+        test <@ report.Sampled = 23 @>
         test <@ report.ExtraTotal = 0 @>
 
         test
@@ -271,7 +271,7 @@ let ``the file census names the reading tests, those that break outside the repo
                   "FxTests.RootedA.rooted a reads its own module value"
                   "FxTests.RootedB.rooted b reads its own module value" ]
 
-        test <@ r.ReadsRepo.Count = 16 && Set.isSubset users r.ReadsRepo @>
+        test <@ r.ReadsRepo.Count = 21 && Set.isSubset users r.ReadsRepo @>
         test <@ r.FailOutside = users @>
 
         let reachers =
@@ -288,7 +288,7 @@ let ``the file census names the reading tests, those that break outside the repo
         test
             <@
                 r.SymmetricDifference = Set.difference r.ReadsRepo (Set.union reachers users)
-                && r.SymmetricDifference.Count = 9
+                && r.SymmetricDifference.Count = 14
             @>)
 
 [<Fact>]
@@ -343,7 +343,7 @@ let ``overhead refuses fewer than one rep before preparing anything`` () =
 [<Fact>]
 let ``every test a mutated fixture method breaks is one its trace selects`` () =
     withScratch (fun req ->
-        let report = Mutation.run req [] 1000 1 [] None timeout |> ok
+        let report = Mutation.run req [] 1000 0 1 [] None timeout |> ok
         test <@ report.Targets > 0 && report.Samples.Length = report.Targets @>
         test <@ report.Measured > 0 @>
         test <@ report.Samples |> List.collect _.Missed |> List.isEmpty @>
@@ -352,7 +352,7 @@ let ``every test a mutated fixture method breaks is one its trace selects`` () =
 [<Fact>]
 let ``a target filter that matches nothing samples nothing and measures nothing`` () =
     withScratch (fun req ->
-        let report = Mutation.run req [] 5 1 [ "no such target" ] None timeout |> ok
+        let report = Mutation.run req [] 5 0 1 [ "no such target" ] None timeout |> ok
         test <@ report.Targets = 0 && report.Samples.IsEmpty && report.Universe > 0 @>
         test <@ not (Mutation.passes report) @>)
 
@@ -361,8 +361,35 @@ let ``a change samples only the fixture methods it touched, and none of them is 
     withScratch (fun req ->
         // A change over every line of Logic.fs: only FxLib.Logic's methods are candidates.
         let changed = Map [ "tests/TraceFixtures/src/FxLib/Logic.fs", [ 1, 100000 ] ]
-        let report = Mutation.run req [] 1000 1 [] (Some changed) timeout |> ok
+        let report = Mutation.run req [] 1000 0 1 [] (Some changed) timeout |> ok
         test <@ report.Targets > 0 && report.Samples.Length = report.Targets @>
         test <@ report.Samples |> List.forall (fun s -> s.Target.StartsWith "FxLib.Logic") @>
         test <@ report.NotMutable |> List.forall (fun n -> n.StartsWith "FxLib.Logic") @>
+        test <@ Mutation.passes report @>)
+
+[<Fact>]
+let ``every test a mutated fixture union breaks through reflection is one its trace selects`` () =
+    // AUTOMATION-1495: the union-type mutant throws on reflection over FxLib.Shapes.Colour,
+    // which stands for adding a case to it; the enumerating tests must be the ones selected.
+    withScratch (fun req ->
+        let report = Mutation.run req [] 0 10 1 [] None timeout |> ok
+
+        let colour =
+            report.Samples |> List.filter (fun s -> s.Target = "FxLib.Shapes+Colour")
+
+        test <@ colour.Length = 1 @>
+        let s = colour.Head
+        test <@ s.Kind = TraceStore.UnionTypeMutant && s.Outcome = Mutation.Measured @>
+
+        test
+            <@
+                Set.isSubset
+                    (set
+                        [ "FxTests.ReflectionTests.the helper names every colour"
+                          "FxTests.ReflectionTests.a value's cases are named" ])
+                    (set s.Failing)
+            @>
+
+        test <@ not (s.Failing |> List.contains "FxTests.ReflectionTests.a test that never reflects") @>
+        test <@ report.Samples |> List.forall (fun s -> s.Kind = TraceStore.UnionTypeMutant) @>
         test <@ Mutation.passes report @>)

@@ -155,7 +155,8 @@ type MutationSample =
       Selected: int
       Missed: string list }
 
-let private mutationKindCode =
+/// A mutation kind as the store and the reports name it: `symbol` or `union-type`.
+let mutationKindCode =
     function
     | SymbolMutant -> "symbol"
     | UnionTypeMutant -> "union-type"

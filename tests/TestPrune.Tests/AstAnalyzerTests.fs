@@ -508,6 +508,21 @@ module MiddleModule =
             @>
 
     [<Fact>]
+    let ``adding a nullary case changes the union's header hash and no existing case's hash`` () =
+        // AUTOMATION-1495: union reflection joins to the union's symbol, so R2 reselects an
+        // enumerating test exactly when this hash moves.
+        let hashes source =
+            (analyze source).Symbols
+            |> List.map (fun s -> s.FullName, s.ContentHash)
+            |> Map.ofList
+
+        let before = hashes "module M\ntype Colour =\n    | Red\n    | Green\n"
+        let after = hashes "module M\ntype Colour =\n    | Red\n    | Green\n    | Blue\n"
+        test <@ before.["M.Colour"] <> after.["M.Colour"] @>
+        test <@ before.["M.Colour.Red"] = after.["M.Colour.Red"] @>
+        test <@ before.["M.Colour.Green"] = after.["M.Colour.Green"] @>
+
+    [<Fact>]
     let ``a test name containing a dot is indexed whole, under its own class`` () =
         // AUTOMATION-1496: the method was cut at the name's last `.`, so this test was
         // indexed as `json configures a path`` ` and matched no recorded trace or CTRF row.

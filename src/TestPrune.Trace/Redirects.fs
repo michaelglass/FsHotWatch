@@ -22,7 +22,7 @@ type Redirect =
         Params: string list
         /// An instance method: the shim takes the instance first.
         IsInstance: bool
-        /// `Contract.IoType` or `Contract.ProcessShimsType`.
+        /// `Contract.IoType`, `Contract.ProcessShimsType` or `Contract.ReflectType`.
         ShimType: string
         /// The shim's method name on `ShimType`.
         Shim: string
@@ -43,6 +43,48 @@ let private ioInstance t name ps shim =
 let private proc ps =
     { io "System.Diagnostics.Process" "Start" ps "Process_Start" with
         ShimType = Contract.ProcessShimsType }
+
+let private reflect t name ps shim =
+    { io t name ps shim with
+        ShimType = Contract.ReflectType }
+
+let private reflectInstance t name shim =
+    { reflect t name [] shim with
+        IsInstance = true }
+
+[<Literal>]
+let private FlagsOpt =
+    "Microsoft.FSharp.Core.FSharpOption`1<System.Reflection.BindingFlags>"
+
+[<Literal>]
+let private FsType = "Microsoft.FSharp.Reflection.FSharpType"
+
+[<Literal>]
+let private FsValue = "Microsoft.FSharp.Reflection.FSharpValue"
+
+[<Literal>]
+let private Ty = "System.Type"
+
+[<Literal>]
+let private Case = "Microsoft.FSharp.Reflection.UnionCaseInfo"
+
+/// Union reflection and whole-assembly type sweeps (AUTOMATION-1495): `Reflect` notes the
+/// union type, or the swept assembly, then calls through.
+let private reflection: Redirect list =
+    [ reflect FsType "GetUnionCases" [ Ty; FlagsOpt ] "GetUnionCases"
+      reflect FsType "IsUnion" [ Ty; FlagsOpt ] "IsUnion"
+      reflect FsValue "GetUnionFields" [ "System.Object"; Ty; FlagsOpt ] "GetUnionFields"
+      reflect FsValue "MakeUnion" [ Case; "System.Object[]"; FlagsOpt ] "MakeUnion"
+      reflect FsValue "PreComputeUnionTagReader" [ Ty; FlagsOpt ] "PreComputeUnionTagReader"
+      reflect FsValue "PreComputeUnionTagMemberInfo" [ Ty; FlagsOpt ] "PreComputeUnionTagMemberInfo"
+      reflect FsValue "PreComputeUnionReader" [ Case; FlagsOpt ] "PreComputeUnionReader"
+      reflect FsValue "PreComputeUnionConstructor" [ Case; FlagsOpt ] "PreComputeUnionConstructor"
+      reflect FsValue "PreComputeUnionConstructorInfo" [ Case; FlagsOpt ] "PreComputeUnionConstructorInfo"
+      reflectInstance "System.Reflection.Assembly" "GetTypes" "Assembly_GetTypes"
+      reflectInstance "System.Reflection.Assembly" "GetExportedTypes" "Assembly_GetExportedTypes"
+      reflectInstance "System.Reflection.Assembly" "get_DefinedTypes" "Assembly_get_DefinedTypes"
+      reflectInstance "System.Reflection.Assembly" "get_ExportedTypes" "Assembly_get_ExportedTypes"
+      reflectInstance "System.Reflection.Module" "GetTypes" "Module_GetTypes" ]
 
 [<Literal>]
 let private S = "System.String"
@@ -229,6 +271,7 @@ let table: Redirect list =
       proc [ S; "System.Collections.Generic.IEnumerable`1<System.String>" ]
       { proc [] with IsInstance = true } ]
     @ directoryInfoListings
+    @ reflection
 
 let private signature (t: string) (name: string) (ps: string seq) =
     t + "::" + name + "(" + String.concat "," ps + ")"

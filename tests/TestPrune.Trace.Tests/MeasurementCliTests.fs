@@ -18,6 +18,7 @@ type Call =
       Seed: int
       Reps: int
       Only: string list
+      UnionSamples: int
       Changed: Map<string, (int * int) list> option
       Timeout: TimeSpan }
 
@@ -61,6 +62,7 @@ let private mutationReport: Result<Mutation.MutationReport, string> =
             []
             1
             [ { Target = "Lib.A::f"
+                Kind = TraceStore.SymbolMutant
                 Outcome = Mutation.Measured
                 Failing = [ "t1"; "t2" ]
                 Selected = 2
@@ -70,9 +72,10 @@ let private mutationReport: Result<Mutation.MutationReport, string> =
 let private fake audit overhead census =
     let calls = ResizeArray<Call>()
 
-    let callChanged req args sample seed reps only changed timeout =
+    let callUnions req args sample seed reps unions only changed timeout =
         calls.Add
             { Request = req
+              UnionSamples = unions
               AppArgs = args
               Sample = sample
               Seed = seed
@@ -80,6 +83,9 @@ let private fake audit overhead census =
               Only = only
               Changed = changed
               Timeout = timeout }
+
+    let callChanged req args sample seed reps only changed timeout =
+        callUnions req args sample seed reps 0 only changed timeout
 
     let callOnly req args sample seed reps only timeout =
         callChanged req args sample seed reps only None timeout
@@ -101,8 +107,8 @@ let private fake audit overhead census =
                 call req args 0.0 0 0 timeout
                 census
           Mutate =
-            fun req args samples seed only changed timeout ->
-                callChanged req args 0.0 seed samples only changed timeout
+            fun req args samples unions seed only changed timeout ->
+                callUnions req args 0.0 seed samples unions only changed timeout
                 mutationReport }
 
     m, calls
@@ -376,7 +382,7 @@ let ``mutate defaults to 20 samples, seed 1, no target filter, and exits 1 on a 
     test <@ o.Exit = 1 @>
     test <@ o.Stdout = Mutation.render (Result.defaultWith failwith mutationReport) @>
     let c = calls |> Seq.exactlyOne
-    test <@ (c.Reps, c.Seed, c.Only) = (20, 1, []) @>
+    test <@ (c.Reps, c.UnionSamples, c.Seed, c.Only) = (20, 5, 1, []) @>
 
 [<Fact>]
 let ``mutate takes --samples and repeated --only`` () =
@@ -690,3 +696,24 @@ let ``mutate with a --db it cannot write exits 2 and names it`` () =
         test <@ o.Exit = 2 && o.Stderr.StartsWith "--db bad.db: " @>
     finally
         Directory.Delete(dir, true)
+
+[<Fact>]
+let ``mutate takes --union-samples, 0 among them, and refuses a negative count`` () =
+    let m, calls = passing ()
+
+    let mutate n =
+        Program.runWith m cwd [ "mutate"; "--project-dir"; "P"; "--assembly"; "P"; "--union-samples"; n ]
+
+    mutate "3" |> ignore
+    mutate "0" |> ignore
+    test <@ calls |> Seq.map _.UnionSamples |> List.ofSeq = [ 3; 0 ] @>
+
+    let refused = mutate "-1"
+
+    test
+        <@
+            refused.Exit = 2
+            && refused.Stderr.Contains "--union-samples needs a whole number of at least 0, got -1"
+        @>
+
+    test <@ calls.Count = 2 @>

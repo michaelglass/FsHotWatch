@@ -236,10 +236,11 @@ let private recall (cwd: string) (args: string list) : Outcome =
             with e ->
                 fail 2 $"recall measured nothing: %s{e.Message}"
 
-/// `Mutation.run`: request, app args, samples, seed, target filter, timeout.
+/// `Mutation.run`: request, app args, samples, union samples, seed, target filter, change, timeout.
 type MutateMeasure =
     TraceSession.PrepareRequest
         -> string list
+        -> int
         -> int
         -> int
         -> string list
@@ -278,11 +279,12 @@ let overheadUsage =
 
 /// The usage of the mutate verb.
 let mutateUsage =
-    "usage: test-prune-traces mutate --project-dir <dir> --assembly <name> [--samples 20] [--seed 1] [--only <text>]...\n"
+    "usage: test-prune-traces mutate --project-dir <dir> --assembly <name> [--samples 20] [--union-samples 5] [--seed 1] [--only <text>]...\n"
     + "  [--diff <unified diff>] [--db <shadow store>] [--project <test project>]\n"
     + "  makes one sampled repository method throw per run and checks every test it breaks is one its trace selects\n"
     + "  --diff samples only the methods a real change touched (its new-side lines, e.g. jj diff --git or git diff -U0);\n"
     + "  --db stores every sample there under --project (default: the assembly), for shadow-report\n"
+    + "  --union-samples draws union-type mutants (reflection over one union throws) from the unions a test reflected over\n"
     + measureTail
 
 /// The usage of the file-census verb.
@@ -299,6 +301,7 @@ type private MeasureArgs =
       Seed: int
       Reps: int
       Samples: int
+      UnionSamples: int
       Only: string list
       Diff: string option
       Db: string option
@@ -327,6 +330,14 @@ let private setters: Map<string, string -> MeasureArgs -> Result<MeasureArgs, st
           "--seed", (fun v a -> whole "--seed" v |> Result.map (fun n -> { a with Seed = n }))
           "--reps", (fun v a -> positiveWhole "--reps" v |> Result.map (fun n -> { a with Reps = n }))
           "--samples", (fun v a -> positiveWhole "--samples" v |> Result.map (fun n -> { a with Samples = n }))
+          "--union-samples",
+          (fun v a ->
+              whole "--union-samples" v
+              |> Result.bind (fun n ->
+                  if n < 0 then
+                      Error $"--union-samples needs a whole number of at least 0, got %s{v}"
+                  else
+                      Ok { a with UnionSamples = n }))
           "--only", (fun v a -> Ok { a with Only = a.Only @ [ v ] })
           "--timeout-min",
           (fun v a ->
@@ -380,6 +391,7 @@ let private measure
           Seed = 1
           Reps = 3
           Samples = 20
+          UnionSamples = 5
           Only = []
           Diff = None
           Db = None
@@ -643,12 +655,26 @@ let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
         measure
             cwd
             mutateUsage
-            [ "--samples"; "--seed"; "--only"; "--diff"; "--db"; "--project" ]
+            [ "--samples"
+              "--union-samples"
+              "--seed"
+              "--only"
+              "--diff"
+              "--db"
+              "--project" ]
             rest
             (fun req a ->
                 changeOf cwd a.Diff
                 |> Result.bind (fun (changed, treeHash) ->
-                    m.Mutate req a.AppArgs a.Samples a.Seed a.Only changed (TimeSpan.FromMinutes a.TimeoutMin)
+                    m.Mutate
+                        req
+                        a.AppArgs
+                        a.Samples
+                        a.UnionSamples
+                        a.Seed
+                        a.Only
+                        changed
+                        (TimeSpan.FromMinutes a.TimeoutMin)
                     |> Result.bind (storeSamples cwd a.Db (a.Project |> Option.defaultValue req.TestProject) treeHash)))
             Mutation.passes
             Mutation.render

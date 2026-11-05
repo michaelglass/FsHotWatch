@@ -62,6 +62,9 @@ let private dump (scopes: RecordedScope list) : ProcessDump =
 
 let private outcome name o : TestOutcome = { Name = name; Outcome = o }
 
+/// A trace holding `xs` and reflecting over no union.
+let private ids (xs: int list) : Mutation.TestTrace = { Ids = set xs; Types = Set.empty }
+
 [<Fact>]
 let ``targets are the hit user methods outside the test assembly, one per member`` () =
     let m =
@@ -76,7 +79,15 @@ let ``targets are the hit user methods outside the test assembly, one per member
 
     let targets = Mutation.targets "Tests" (set [ 1; 3; 5; 6; 7 ]) m
 
-    test <@ targets = [ { Name = "Lib.A::f"; Ids = [ 1; 2 ] }; { Name = "Lib.A::g"; Ids = [ 3 ] } ] @>
+    test
+        <@
+            targets = [ { Name = "Lib.A::f"
+                          Ids = [ 1; 2 ]
+                          Types = [] }
+                        { Name = "Lib.A::g"
+                          Ids = [ 3 ]
+                          Types = [] } ]
+        @>
 
 [<Fact>]
 let ``a test's trace is every id it holds or inherits, and a test with no scope has none`` () =
@@ -99,17 +110,17 @@ let ``a test's trace is every id it holds or inherits, and a test with no scope 
     test
         <@
             traces = Map
-                [ "Ns.C.one", Some(set [ 1; 9 ])
-                  "Ns.C.two(x: 1)", Some(set [ 2 ])
+                [ "Ns.C.one", Some(ids [ 1; 9 ])
+                  "Ns.C.two(x: 1)", Some(ids [ 2 ])
                   "Ns.C.three", None ]
         @>
 
 let private traces =
     Map
-        [ "hits-f", Some(set [ 1 ])
-          "hits-g", Some(set [ 3 ])
+        [ "hits-f", Some(ids [ 1 ])
+          "hits-g", Some(ids [ 3 ])
           "untraced", None
-          "red-before", Some(set [ 1 ]) ]
+          "red-before", Some(ids [ 1 ]) ]
 
 let private baseline =
     [ outcome "hits-f" Passed
@@ -117,7 +128,10 @@ let private baseline =
       outcome "untraced" Passed
       outcome "red-before" Failed ]
 
-let private f: Mutation.Target = { Name = "Lib.A::f"; Ids = [ 1; 2 ] }
+let private f: Mutation.Target =
+    { Name = "Lib.A::f"
+      Ids = [ 1; 2 ]
+      Types = [] }
 
 [<Fact>]
 let ``a change selects the tests whose trace names the target, and every test without a trace`` () =
@@ -304,16 +318,19 @@ let ``a report becomes stored samples: measured, quiet, failed, and changed meth
               []
               3
               [ { Target = "A::f"
+                  Kind = TraceStore.SymbolMutant
                   Outcome = Mutation.Measured
                   Failing = [ "t1"; "t2" ]
                   Selected = 4
                   Missed = [ "t2" ] }
                 { Target = "A::g"
+                  Kind = TraceStore.SymbolMutant
                   Outcome = Mutation.NoFailure
                   Failing = []
                   Selected = 1
                   Missed = [] }
                 { Target = "A::h"
+                  Kind = TraceStore.UnionTypeMutant
                   Outcome = Mutation.RunFailed "no report"
                   Failing = []
                   Selected = 0
@@ -322,6 +339,15 @@ let ``a report becomes stored samples: measured, quiet, failed, and changed meth
 
     let at = System.DateTimeOffset(2026, 11, 5, 0, 0, 0, System.TimeSpan.Zero)
     let samples = Mutation.toSamples "P" at "diff:abc" report
+
+    // Each judged sample keeps its kind; a changed method no test ran is a symbol.
+    test
+        <@
+            samples |> List.map _.Kind = [ TraceStore.SymbolMutant
+                                           TraceStore.SymbolMutant
+                                           TraceStore.UnionTypeMutant
+                                           TraceStore.SymbolMutant ]
+        @>
 
     test
         <@
@@ -351,11 +377,97 @@ let ``a report becomes stored samples: measured, quiet, failed, and changed meth
     test
         <@
             samples
-            |> List.forall (fun s ->
-                s.TestProject = "P"
-                && s.Kind = TraceStore.SymbolMutant
-                && s.TreeHash = "diff:abc"
-                && s.RecordedAt = at)
+            |> List.forall (fun s -> s.TestProject = "P" && s.TreeHash = "diff:abc" && s.RecordedAt = at)
         @>
 
     test <@ (Mutation.render report).Contains "not mutable: 1 changed method(s) no test ran: A::cold" @>
+
+// --- union-type samples (AUTOMATION-1495, phase-2 plan Task 7 with Task 11) ---------------
+
+[<Fact>]
+let ``union targets are the reflected unions outside the test assembly`` () =
+    let m =
+        manifest
+            [ row 1 UnionCase "Lib" "Lib.Shapes+Colour" "Red"
+              row 2 UnionCase "Lib" "Lib.Shapes+Colour" "Green"
+              row 3 UnionCase "Lib" "Lib.Shapes+Unseen" "A"
+              row 4 UnionCase "Tests" "Tests.Local" "X"
+              row 5 UserMethod "Lib" "Lib.Shapes" "f" ]
+
+    let reflected = set [ "Lib.Shapes+Colour"; "Tests.Local"; "System.Object" ]
+
+    test
+        <@
+            Mutation.unionTargets "Tests" reflected m = [ { Name = "Lib.Shapes+Colour"
+                                                            Ids = []
+                                                            Types = [ "Lib.Shapes+Colour" ] } ]
+        @>
+
+[<Fact>]
+let ``a test's trace names the unions it and what it inherits reflected over`` () =
+    let reflect (name: string) : RecordedInput =
+        { Kind = TypeReflected
+          Path = "/repo/bin/Lib.dll|" + name }
+
+    let dumps =
+        [ dump
+              [ { scope "C:Ns.C" None [] [] with
+                    Inputs = [ reflect "Lib.Shapes+Colour" ] }
+                { testScope "Ns.C" "one" [ "C:Ns.C" ] [ 1 ] with
+                    Inputs =
+                        [ reflect "Lib.Shapes+Size"
+                          { Kind = TypeReflected
+                            Path = "no separator" }
+                          { Kind = FileRead
+                            Path = "/repo/a.txt" } ] }
+                testScope "Ns.C" "two" [] [ 2 ] ] ]
+
+    let traces =
+        Mutation.tracesOf (manifest []) dumps [ outcome "Ns.C.one" Passed; outcome "Ns.C.two" Passed ]
+
+    test
+        <@
+            traces = Map
+                [ "Ns.C.one",
+                  Some(
+                      { Ids = set [ 1 ]
+                        Types = set [ "Lib.Shapes+Colour"; "Lib.Shapes+Size" ] }
+                      : Mutation.TestTrace
+                  )
+                  "Ns.C.two", Some(ids [ 2 ]) ]
+        @>
+
+[<Fact>]
+let ``a union-type mutant selects the tests that reflected over the union and those with no trace`` () =
+    let colour: Mutation.Target =
+        { Name = "Lib.Shapes+Colour"
+          Ids = []
+          Types = [ "Lib.Shapes+Colour" ] }
+
+    let traced =
+        Map
+            [ "enumerates",
+              Some(
+                  { Ids = set [ 1 ]
+                    Types = set [ "Lib.Shapes+Colour" ] }
+                  : Mutation.TestTrace
+              )
+              "constructs", Some(ids [ 1 ])
+              "untraced", None ]
+
+    test <@ Mutation.selected traced colour = set [ "enumerates"; "untraced" ] @>
+
+    let s =
+        Mutation.judge
+            traced
+            [ outcome "enumerates" Passed
+              outcome "constructs" Passed
+              outcome "untraced" Passed ]
+            colour
+            (Ok
+                [ outcome "enumerates" Failed
+                  outcome "constructs" Failed
+                  outcome "untraced" Passed ])
+
+    test <@ s.Kind = TraceStore.UnionTypeMutant @>
+    test <@ s.Missed = [ "constructs" ] @>

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: reflection inputs and union-type mutation samples (AUTOMATION-1495, plan Task 11). Union reflection
+  through FSharp.Core (`FSharpType.GetUnionCases` and every `FSharpType`/`FSharpValue` union API that takes a
+  `Type` or a `UnionCaseInfo`) is redirected to the recorder's `Reflect` shims. The reflected union joins to its
+  symbol in the trace, so adding a case reselects the enumerating tests (R2). A whole-assembly type sweep
+  (`Assembly.GetTypes` and friends) is a `types` input hashed by `TraceIngest.typeSetHash` (R3).
+  `Model.InputKind` gains `TypeSet` and `TypeReflected`. `mutate --union-samples N` (default 5) samples
+  union-type mutants and stores them with kind `union-type`. BREAKING (API): `Mutation.run` takes
+  `unionSamples`; `Mutation.Target` has `Types`, `Mutation.Sample` has `Kind`; `Mutation.tracesOf` returns
+  `TestTrace`. ADR 0009 (testprune) records the deferred `ldtoken` and generic-instantiation probes.
+
 - feat: an untraced `sleep` or `chmod` child no longer makes a test's trace incomplete (AUTOMATION-1496, plan
   Q2). They run no code a repository change can reach. The executable must be named bare or by a path outside
   the repository; `ChildNote.TrustedExecutables` is the list. A shell, `dotnet`, `git` and every other child
