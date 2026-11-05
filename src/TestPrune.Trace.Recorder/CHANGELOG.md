@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.8.1 - 2026-11-04
+
+- Finish: AUTOMATION-975 shadow judges theory-row failures and pins that it never changes a launch
+- Finish: AUTOMATION-1490 a run's shared static-init scopes are stored once, as a scope set
+- Finish: AUTOMATION-1484 the trace store compiles each statement once per write
+- Finish: AUTOMATION-1455 a symbol's location is a union both stores round-trip
+- Finish: AUTOMATION-1453 a cached file keeps its attributes through a project rebuild
+- Finish: AUTOMATION-1454 NamedDispatch judges a parse by its error diagnostics
+
+
 ## 0.8.0 - 2026-11-02
 
 - feat: mutation mode (AUTOMATION-975). `TESTPRUNE_TRACE_MUTATE` lists probe ids that throw

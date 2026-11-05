@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 15.0.0 - 2026-11-04
+
 - fix: the SQLite and in-memory symbol stores agree on a `DllImport` symbol (AUTOMATION-1455).
   SQLite stored it as a bare extern row and read it back at `_extern`, and the in-memory
   store kept its real file but lost it to a later placeholder of the same name, so

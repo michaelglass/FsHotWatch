@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.105 - 2026-11-04
+
+- Finish: AUTOMATION-1489 the wedge monitor reads the host's awake stamps, the age fshw status reads
+- Finish: AUTOMATION-1489 fshw status and the verdict judge a wedge on the daemon's awake age
+- Finish: AUTOMATION-1488 product deadlines run on the awake clock
+- Finish: AUTOMATION-1456 one process-alive probe, and each caller's reading of an unknown
+- Finish: AUTOMATION-1486 a hosted session marks its root before its attach is answered
+
+
 ## 0.10.0-alpha.104 - 2026-11-04
 
 - Finish: AUTOMATION-1481 a host connection that fails before its preamble says so

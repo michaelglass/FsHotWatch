@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.138 - 2026-11-04
+
+- Finish: AUTOMATION-975 shadow judges theory-row failures and pins that it never changes a launch
+- Finish: AUTOMATION-1489 the wedge monitor reads the host's awake stamps, the age fshw status reads
+- Finish: AUTOMATION-1490 a run's shared static-init scopes are stored once, as a scope set
+- Merge: AUTOMATION-1434 into the AUTOMATION-1473 landing
+- Merge: main into the AUTOMATION-1473 landing
+- Finish: AUTOMATION-1473 a declared timeout message counts as a timeout under starvation
+- Finish: AUTOMATION-1489 fshw status and the verdict judge a wedge on the daemon's awake age
+- Finish: AUTOMATION-1434 an older-shape ratchet table is rebuilt, and a schema abort names its cause
+- Finish: AUTOMATION-1484 a traced project's traces are stored as soon as its result is final
+- Finish: AUTOMATION-1484 the trace store compiles each statement once per write
+- Finish: AUTOMATION-1488 product deadlines run on the awake clock
+- Finish: AUTOMATION-1456 one process-alive probe, and each caller's reading of an unknown
+- Finish: AUTOMATION-1455 a symbol's location is a union both stores round-trip
+- Finish: AUTOMATION-1453 a cached file keeps its attributes through a project rebuild
+- Finish: AUTOMATION-1454 NamedDispatch judges a parse by its error diagnostics
+- Finish: AUTOMATION-1469 a replayed clean analysis clears a file's could-not-be-analysed state
+- Finish: AUTOMATION-1486 a hosted session marks its root before its attach is answered
+
+
 ## 0.14.0-alpha.137 - 2026-11-04
 
 - chore: rebuild to bundle updated dependencies

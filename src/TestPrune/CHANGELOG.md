@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 15.0.0 - 2026-11-04
+
+- Finish: AUTOMATION-1455 a symbol's location is a union both stores round-trip
+- Finish: AUTOMATION-1453 a cached file keeps its attributes through a project rebuild
+- Finish: AUTOMATION-1454 NamedDispatch judges a parse by its error diagnostics
+
+
 ## 14.0.0 - 2026-11-02
 
 - **BREAKING (API):** a parsed command carries exactly the options it reads.

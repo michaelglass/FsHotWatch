@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.1 - 2026-11-04
+
 - fix: `TraceSelect.verifiedFailureMisses` judges a failed theory row under its test's key. A runner reports a
   theory row's method with its arguments (`m(x: 1)`), which named no universe key, so the miss was dropped
   without a word (AUTOMATION-975). New: `TraceSelect.universeKeyOf` (a key, or the key before a theory

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.105 - 2026-11-04
+
 - fix: trace shadow records a failed theory row as a verified-failure miss under its test, and logs every
   failed test whose key names no traced test instead of dropping it (AUTOMATION-975). A test now pins that
   an impact launch selects the same tests with `tests.traces.select: "shadow"` as without it.
