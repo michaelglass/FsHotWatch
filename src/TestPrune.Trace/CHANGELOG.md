@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: mutation samples from real changes, stored (AUTOMATION-975, plan Task 7). `Mutation.changedSpans` reads
+  a unified diff's new-side lines, `Mutation.changedTargets` the repository methods they touch, and `Mutation.run`
+  takes them (`changed`) to sample only those methods; a touched method no test ran is reported in
+  `MutationReport.NotMutable`. `Mutation.toSamples` turns a report into the `mutation_samples` rows
+  `shadow-report`'s mutation bar reads. BREAKING (API): `Mutation.run` takes `changed`; `MutationReport`
+  has `NotMutable`.
+
 - feat: predict a traced run's environment fingerprint before it starts (AUTOMATION-975, plan D4).
   `RuntimeResolution` resolves the Microsoft.NETCore.App an apphost will load the way the host does (the
   runtimeconfig's `rollForward`, else `DOTNET_ROLL_FORWARD`, else `Minor`, over the runtimes under

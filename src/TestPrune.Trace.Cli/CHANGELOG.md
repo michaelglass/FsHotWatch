@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `mutate --diff <unified diff>` samples only the methods a real change touched, and `--db <store>`
+  (with `--project`, default the assembly) stores every sample for `shadow-report` (AUTOMATION-975).
+
 - feat: `shadow-report` verb (AUTOMATION-975): evaluates the promotion bar over one or more shadow stores
   (`--db`, repeatable; a run stored twice counts once), from `--since` on. Exits 0 when every bar passes, 1
   when one fails, 2 on a usage error or a store it cannot read.

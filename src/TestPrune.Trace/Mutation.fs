@@ -62,6 +62,9 @@ type MutationReport =
         /// Targets the baseline run hit, from which the samples were drawn.
         Targets: int
         Samples: Sample list
+        /// Changed methods (`run`'s `changed`) that no baseline test ran: a mutant of one could
+        /// fail nothing, so each is recorded as not mutable and never sampled.
+        NotMutable: string list
     }
 
     /// Samples whose mutant failed at least one test.
@@ -94,6 +97,73 @@ let targets (testAssembly: string) (hit: Set<int>) (manifest: Manifest) : Target
     |> Seq.filter (fun t -> t.Ids |> List.exists hit.Contains)
     |> Seq.sortBy _.Name
     |> List.ofSeq
+
+/// The lines a unified diff changes, by repo-relative path, on the new side: the lines a
+/// hunk adds or rewrites, or, for a hunk that only deletes, the two lines around the cut. A
+/// deleted file has no new side and is left out. Read with no context (`-U0`) the ranges are
+/// exactly the changed lines; with context they include it, which only widens the sample.
+let changedSpans (diff: string) : Map<string, (int * int) list> =
+    let hunk =
+        Text.RegularExpressions.Regex(
+            @"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@",
+            Text.RegularExpressions.RegexOptions.Compiled
+        )
+
+    let folder (file: string option, acc: Map<string, (int * int) list>) (line: string) =
+        if line.StartsWith("+++ ", StringComparison.Ordinal) then
+            let path = line.Substring 4
+
+            if path = "/dev/null" then
+                None, acc
+            else
+                Some(
+                    if path.StartsWith("b/", StringComparison.Ordinal) then
+                        path.Substring 2
+                    else
+                        path
+                ),
+                acc
+        else
+            match file, hunk.Match line with
+            | Some f, m when m.Success ->
+                let start = int m.Groups.[1].Value
+                let count = if m.Groups.[2].Success then int m.Groups.[2].Value else 1
+
+                let span =
+                    if count = 0 then
+                        start, start + 1
+                    else
+                        start, start + count - 1
+
+                file,
+                acc
+                |> Map.change f (fun spans -> Some((spans |> Option.defaultValue []) @ [ span ]))
+            | _ -> file, acc
+
+    diff.Split '\n' |> Array.fold folder (None, Map.empty) |> snd
+
+/// The repository methods outside `testAssembly` (by `Type::member`, as `targets` names
+/// them) whose source lines a change touches: some manifest row of the method lies in a
+/// changed file and overlaps a changed span. Hit or not: a changed method no test ran is
+/// still a change, and `run` reports it as not mutable.
+let changedTargets
+    (repoRoot: string)
+    (testAssembly: string)
+    (changed: Map<string, (int * int) list>)
+    (manifest: Manifest)
+    : Set<string> =
+    manifest.Rows
+    |> Seq.filter (fun r -> r.Kind = UserMethod && r.Assembly <> testAssembly)
+    |> Seq.filter (fun r ->
+        match r.Document with
+        | None -> false
+        | Some doc ->
+            let rel = Path.GetRelativePath(repoRoot, doc).Replace('\\', '/')
+
+            changed.TryFind rel
+            |> Option.exists (List.exists (fun (a, b) -> r.FirstLine <= b && a <= r.LastLine)))
+    |> Seq.map (fun r -> $"%s{r.TypeName}::%s{r.Member}")
+    |> Set.ofSeq
 
 /// Each baseline test's trace, by its CTRF name: every probe id its own scopes and the
 /// scopes it inherits recorded (`RunScopes.inheritedBy`). A test is matched to its scopes
@@ -192,7 +262,8 @@ let summarize (universe: int) (baselineNotPassed: string list) (targetCount: int
     { Universe = universe
       BaselineNotPassed = baselineNotPassed
       Targets = targetCount
-      Samples = samples }
+      Samples = samples
+      NotMutable = [] }
 
 /// The bar: some mutant failed a test, and trace selection missed none of them.
 let passes (r: MutationReport) = r.Measured > 0 && r.MissedTotal = 0
@@ -266,6 +337,10 @@ let render (r: MutationReport) : string =
     line
         $"mutation  %s{verdict}  recall %s{recall}  samples %d{r.Samples.Length} (measured %d{r.Measured})  targets %d{r.Targets}  tests %d{r.Universe}"
 
+    if not r.NotMutable.IsEmpty then
+        let names = String.concat ", " r.NotMutable
+        line $"  not mutable: %d{r.NotMutable.Length} changed method(s) no test ran: %s{names}"
+
     if not r.BaselineNotPassed.IsEmpty then
         line $"  baseline: %d{r.BaselineNotPassed.Length} test(s) did not pass and are not judged"
 
@@ -296,7 +371,9 @@ let private envWith (launch: TraceSession.TraceLaunch) (dumpDir: string) (extra:
 /// Prepare the project, run it once traced (the baseline), draw `samples` targets from what
 /// it hit by a `Random(seed)` shuffle (`Audit.choose`; every target when `samples` is at
 /// least their number), and run one mutant per target. `only`, when non-empty, keeps the
-/// targets whose name contains one of its strings before sampling. `Error` when the
+/// targets whose name contains one of its strings before sampling; `changed` (`changedSpans`
+/// of a real change), when given, keeps the methods it touched (`changedTargets`) and reports
+/// the touched methods no test ran as not mutable. `Error` when the
 /// project cannot be prepared or the baseline wrote no test report.
 let run
     (req: TraceSession.PrepareRequest)
@@ -304,6 +381,7 @@ let run
     (samples: int)
     (seed: int)
     (only: string list)
+    (changed: Map<string, (int * int) list> option)
     (timeout: TimeSpan)
     : Result<MutationReport, string> =
     TraceSession.prepareProject req
@@ -325,9 +403,15 @@ let run
 
             let hit = RunScopes.merged dumps |> Map.values |> Seq.collect _.Ids |> Set.ofSeq
 
+            // With a change, only the methods it touched are candidates.
+            let changedNames =
+                changed
+                |> Option.map (fun c -> changedTargets req.RepoRoot req.AssemblyName c manifest)
+
             let all =
                 targets req.AssemblyName hit manifest
                 |> List.filter (fun t -> only.IsEmpty || only |> List.exists t.Name.Contains)
+                |> List.filter (fun t -> changedNames |> Option.forall (fun names -> Set.contains t.Name names))
 
             let byName = all |> List.map (fun t -> t.Name, t) |> Map.ofList
 
@@ -364,4 +448,36 @@ let run
                         timeout
                     |> judge traces baseline target)
 
-            summarize baseline.Length (notPassed baseline) all.Length judged))
+            { summarize baseline.Length (notPassed baseline) all.Length judged with
+                NotMutable =
+                    match changedNames with
+                    | None -> []
+                    | Some names ->
+                        Set.difference names (targets req.AssemblyName hit manifest |> List.map _.Name |> Set.ofList)
+                        |> Set.toList }))
+
+/// The samples a report stores (`TraceStore.MutationSample`, symbol kind), one per judged
+/// target plus one `NotMutable` per changed method no test ran. `treeHash` names what was
+/// mutated (the tree, or the change it was sampled from).
+let toSamples (testProject: string) (at: DateTimeOffset) (treeHash: string) (r: MutationReport) =
+    let sample symbol outcome failing selected missed : TraceStore.MutationSample =
+        { TestProject = testProject
+          Kind = TraceStore.SymbolMutant
+          Symbol = symbol
+          TreeHash = treeHash
+          RecordedAt = at
+          Outcome = outcome
+          Failing = failing
+          Selected = selected
+          Missed = missed }
+
+    (r.Samples
+     |> List.map (fun s ->
+         let outcome =
+             match s.Outcome with
+             | Measured -> TraceStore.Measured
+             | NoFailure -> TraceStore.NoFailure
+             | RunFailed _ -> TraceStore.RunFailed
+
+         sample s.Target outcome s.Failing.Length s.Selected s.Missed))
+    @ (r.NotMutable |> List.map (fun n -> sample n TraceStore.NotMutable 0 0 []))

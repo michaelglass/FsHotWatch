@@ -243,6 +243,7 @@ type MutateMeasure =
         -> int
         -> int
         -> string list
+        -> Map<string, (int * int) list> option
         -> TimeSpan
         -> Result<Mutation.MutationReport, string>
 
@@ -278,7 +279,10 @@ let overheadUsage =
 /// The usage of the mutate verb.
 let mutateUsage =
     "usage: test-prune-traces mutate --project-dir <dir> --assembly <name> [--samples 20] [--seed 1] [--only <text>]...\n"
+    + "  [--diff <unified diff>] [--db <shadow store>] [--project <test project>]\n"
     + "  makes one sampled repository method throw per run and checks every test it breaks is one its trace selects\n"
+    + "  --diff samples only the methods a real change touched (its new-side lines, e.g. jj diff --git or git diff -U0);\n"
+    + "  --db stores every sample there under --project (default: the assembly), for shadow-report\n"
     + measureTail
 
 /// The usage of the file-census verb.
@@ -296,6 +300,9 @@ type private MeasureArgs =
       Reps: int
       Samples: int
       Only: string list
+      Diff: string option
+      Db: string option
+      Project: string option
       TimeoutMin: float
       Keep: string option
       Json: bool
@@ -325,7 +332,10 @@ let private setters: Map<string, string -> MeasureArgs -> Result<MeasureArgs, st
           (fun v a ->
               positiveNumber "--timeout-min" v
               |> Result.map (fun n -> { a with TimeoutMin = n }))
-          "--keep", (fun v a -> Ok { a with Keep = Some v }) ]
+          "--keep", (fun v a -> Ok { a with Keep = Some v })
+          "--diff", (fun v a -> Ok { a with Diff = Some v })
+          "--db", (fun v a -> Ok { a with Db = Some v })
+          "--project", (fun v a -> Ok { a with Project = Some v }) ]
 
 let private common =
     [ "--project-dir"
@@ -371,6 +381,9 @@ let private measure
           Reps = 3
           Samples = 20
           Only = []
+          Diff = None
+          Db = None
+          Project = None
           TimeoutMin = 30.0
           Keep = None
           Json = false
@@ -554,6 +567,41 @@ let private shadowReport (cwd: string) (args: string list) : Outcome =
                     ShadowReport.render results rows
               Stderr = "" }
 
+/// `--diff`'s changed spans and a name for what was sampled (`diff:<sha256 prefix>`), or
+/// (`None`, "") without one; `Error` naming the file when it cannot be read.
+let private changeOf (cwd: string) (diff: string option) =
+    match diff with
+    | None -> Ok(None, "")
+    | Some file ->
+        let path = Path.GetFullPath(file, cwd)
+
+        if File.Exists path then
+            let text = File.ReadAllText path
+
+            let hash =
+                Convert
+                    .ToHexString(Security.Cryptography.SHA256.HashData(Text.Encoding.UTF8.GetBytes text))
+                    .Substring(0, 16)
+                    .ToLowerInvariant()
+
+            Ok(Some(Mutation.changedSpans text), "diff:" + hash)
+        else
+            Error $"--diff: no file at %s{path}"
+
+/// Store every sample of `report` under `project` in the store at `db`, when one is given.
+let private storeSamples (cwd: string) (db: string option) (project: string) (treeHash: string) report =
+    match db with
+    | None -> Ok report
+    | Some db ->
+        try
+            using (TraceStore.Store.Open(Path.GetFullPath(db, cwd))) (fun store ->
+                for s in Mutation.toSamples project DateTimeOffset.UtcNow treeHash report do
+                    store.RecordMutationSample s)
+
+            Ok report
+        with e ->
+            Error $"--db %s{db}: %s{e.Message}"
+
 /// Runs a verb against `cwd` with the given measurements, returning its output rather
 /// than printing it.
 let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
@@ -595,9 +643,13 @@ let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
         measure
             cwd
             mutateUsage
-            [ "--samples"; "--seed"; "--only" ]
+            [ "--samples"; "--seed"; "--only"; "--diff"; "--db"; "--project" ]
             rest
-            (fun req a -> m.Mutate req a.AppArgs a.Samples a.Seed a.Only (TimeSpan.FromMinutes a.TimeoutMin))
+            (fun req a ->
+                changeOf cwd a.Diff
+                |> Result.bind (fun (changed, treeHash) ->
+                    m.Mutate req a.AppArgs a.Samples a.Seed a.Only changed (TimeSpan.FromMinutes a.TimeoutMin)
+                    |> Result.bind (storeSamples cwd a.Db (a.Project |> Option.defaultValue req.TestProject) treeHash)))
             Mutation.passes
             Mutation.render
             (Mutation.toJson >> box)
