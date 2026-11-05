@@ -3733,6 +3733,21 @@ Runs in TestPrune once the FsHotWatch release with F3/F4 is out. The FsHotWatch 
 - **The window restarts at this landing.** R6 and R7 change the trace side of every row, so
   `shadow-report --since <landing date>` is the window from here on.
 
+### Decision D1d (2026-11-05): fingerprint prediction as landed
+
+- Shadow reads the traces, symbol facts and claimed inputs of the **predicted** fingerprint only. The
+  newest recorded run's fingerprint is no longer read (D4's rejected option).
+- **A failed prediction reads no trace.** Every test of that project is then R1, its row's fingerprint is
+  empty, and the completion records `safe-miss` (or `untraced`). The log names why. This is the conservative
+  side: a prediction failure can only over-select.
+- The prediction reads `bin/Debug/<tfm>/` through `ShadowBin.buildOutput`, the same directory the shadow bin
+  weaves, so the deps.json hash cannot differ. DOTNET_ROOT and `DOTNET_ROLL_FORWARD` come from the
+  project's own environment first, then fshw's, as the traced launch sees them.
+- **Roll-forward precedence:** the runtimeconfig's `rollForward`, then `DOTNET_ROLL_FORWARD`, then
+  `Minor`. The fingerprint-prediction bar (0 unsafe misses, at most 5 % safe misses) measures whether this
+  matches the host in practice; a miss names the component that differed through `Fingerprint.diff`
+  once the actual inputs are stored (not stored yet: Task 4's `fingerprint_inputs` column is not added).
+
 - [ ] **Step 1:** Bump the pin exactly per the runbook; commit alone.
 - [ ] **Step 2:** Enable shadow; run `dotnet fshw confirm` once to re-record under the new fingerprint (the core
   bump invalidated every trace), then work normally.

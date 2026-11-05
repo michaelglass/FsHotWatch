@@ -128,3 +128,14 @@ let ``gather folds in the dump, versions, core's schema as hash scheme and hashe
         test <@ i.ConfigEnv = [ setVar, abc; unsetVar, "unset" ] @>
     finally
         Environment.SetEnvironmentVariable(setVar, null)
+
+[<Fact>]
+let ``diff names the canonical components that differ`` () =
+    let b =
+        { inputs with
+            Runtime = ".NET 10.0.2"
+            DepsJsonSha256 = "e" }
+
+    test <@ Fingerprint.diff inputs b = [ "deps"; "runtime" ] @>
+    test <@ Fingerprint.diff inputs inputs |> List.isEmpty @>
+    test <@ Fingerprint.compute inputs = Fingerprint.compute inputs @>

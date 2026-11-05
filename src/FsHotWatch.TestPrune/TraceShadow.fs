@@ -18,7 +18,7 @@ open TestPrune.Trace
 /// One project's shadow comparison, computed at launch.
 type ShadowReading =
     {
-        /// The environment fingerprint whose traces were read: the project's newest recorded run's.
+        /// The environment fingerprint whose traces were read: the one predicted for the run.
         Fingerprint: string
         Selection: TraceSelect.Selection
         Comparison: TraceSelect.Comparison
@@ -81,7 +81,49 @@ module TraceShadow =
                 "shadow.db"
             )
 
-    /// One project's reading against the traces of its recorded `run`.
+    /// The fingerprint `target`'s traced run will record (`FingerprintPrediction`), launched
+    /// with the project's own environment: its `DOTNET_ROOT` and `DOTNET_ROLL_FORWARD` when it
+    /// sets them, else this process's (`hostDotnetRoot`, `TracedLaunch.dotnetRootOfThisProcess`).
+    /// `Error` says why it cannot be predicted.
+    let predictFingerprint
+        (settings: TraceSettings)
+        (weave: TraceWeaveTests)
+        (repoRoot: string)
+        (target: ArtifactFreshness.RunnerTarget option)
+        (projectEnv: (string * string) list)
+        (hostDotnetRoot: unit -> string option)
+        : Result<string, string> =
+        let own (name: string) =
+            projectEnv
+            |> List.tryFind (fun (k, _) -> k = name)
+            |> Option.map snd
+            |> Option.orElse (Option.ofObj (Environment.GetEnvironmentVariable name))
+            |> Option.filter (String.IsNullOrEmpty >> not)
+
+        let dotnetRoot =
+            projectEnv
+            |> List.tryFind (fun (k, _) -> k = "DOTNET_ROOT")
+            |> Option.map snd
+            |> Option.orElseWith hostDotnetRoot
+
+        match target, dotnetRoot with
+        | None, _ -> Error "no-derivable-project"
+        | _, None -> Error "no-dotnet-root"
+        | Some t, Some root ->
+            FingerprintPrediction.predict
+                { RepoRoot = repoRoot
+                  ProjectDir = t.ProjectDir
+                  AssemblyName = t.AssemblyName
+                  Files = settings.FingerprintInputs
+                  Env = settings.FingerprintEnv
+                  WeaveTests = TraceRun.weaveMode weave
+                  DotnetRoot = root
+                  RollForwardEnv = own "DOTNET_ROLL_FORWARD" }
+            |> Result.map Fingerprint.compute
+
+    /// One project's reading against the traces recorded under `fingerprint`: the one the
+    /// run about to start is predicted to record. An empty fingerprint (no prediction) reads
+    /// no trace, so every test is selected.
     let private readingOf
         (store: TraceStore.Store)
         (repoRoot: string)
@@ -90,7 +132,7 @@ module TraceShadow =
         (staticSelection: TestMethodInfo list)
         (fallbacks: ShadowFallbacks)
         (project: string)
-        (run: TraceStore.TraceRun)
+        (fingerprint: string)
         : ShadowReading =
         let clock = Stopwatch.StartNew()
 
@@ -98,14 +140,14 @@ module TraceShadow =
             TraceSelect.select
                 project
                 (universe |> List.map keyOf)
-                (fun key -> store.TryRead(key, run.EnvFingerprint))
+                (fun key -> store.TryRead(key, fingerprint))
                 versions.Value.TryFind
                 (TraceIngest.currentInputHash repoRoot)
             |> TraceSelect.withFallbacks
                 { Seeds = fallbacks.Seeds
                   ChangedFiles = fallbacks.ChangedFiles
-                  Facts = store.SymbolFacts(project, run.EnvFingerprint)
-                  ClaimedInputs = store.ClaimedInputs(project, run.EnvFingerprint)
+                  Facts = store.SymbolFacts(project, fingerprint)
+                  ClaimedInputs = store.ClaimedInputs(project, fingerprint)
                   IsIndexed = fallbacks.IsIndexed
                   AttributesOf = fallbacks.AttributesOf
                   StaticWalk = fallbacks.StaticWalk >> List.map keyOf
@@ -116,7 +158,7 @@ module TraceShadow =
             |> List.filter (fun t -> t.TestProject = project)
             |> List.map keyOf
 
-        { Fingerprint = run.EnvFingerprint
+        { Fingerprint = fingerprint
           Selection = selection
           Comparison = TraceSelect.compare staticKeys selection
           SelectMs = clock.ElapsedMilliseconds }
@@ -124,8 +166,11 @@ module TraceShadow =
     /// The trace selection of every project in `projects` that has a recorded run, next to
     /// `staticSelection`. `universeOf` is a project's indexed tests; `versions` the
     /// symbol version hashes of the tree now (`TraceIngest.versionHashes`), forced only
-    /// when some project has traces. Each line goes to `log`. With `select` off, or when
-    /// the store cannot be read, nothing is selected and the run is unaffected.
+    /// when some project has traces; `predict` the fingerprint a project's run will record
+    /// (`FingerprintPrediction`), whose traces are the only ones read. A project whose
+    /// fingerprint cannot be predicted reads none, and the line says why. Each line goes to
+    /// `log`. With `select` off, or when the store cannot be read, nothing is selected and
+    /// the run is unaffected.
     let atLaunch
         (settings: TraceSettings)
         (repoRoot: string)
@@ -134,6 +179,7 @@ module TraceShadow =
         (versions: Lazy<Map<string, string>>)
         (staticSelection: TestMethodInfo list)
         (fallbacks: ShadowFallbacks)
+        (predict: string -> Result<string, string>)
         (log: string -> unit)
         : ShadowReading list =
         match settings.Select with
@@ -142,13 +188,27 @@ module TraceShadow =
             try
                 using (TraceStore.Store.Open(dbPath settings repoRoot)) (fun store ->
                     projects
-                    |> List.choose (fun project ->
-                        store.Runs project
-                        |> List.tryFind (fun r -> r.Status = TraceStore.Recorded)
-                        |> Option.map (
-                            readingOf store repoRoot (universeOf project) versions staticSelection fallbacks project
-                        ))
-                    |> List.map (fun r ->
+                    |> List.filter (fun project ->
+                        store.Runs project |> List.exists (fun r -> r.Status = TraceStore.Recorded))
+                    |> List.map (fun project ->
+                        let fingerprint =
+                            match predict project with
+                            | Ok fingerprint -> fingerprint
+                            | Error why ->
+                                log $"trace-shadow: %s{project} fingerprint not predicted, no trace read: %s{why}"
+                                ""
+
+                        let r =
+                            readingOf
+                                store
+                                repoRoot
+                                (universeOf project)
+                                versions
+                                staticSelection
+                                fallbacks
+                                project
+                                fingerprint
+
                         log (TraceSelect.logLine r.Selection r.Comparison r.SelectMs)
                         r))
             with ex ->

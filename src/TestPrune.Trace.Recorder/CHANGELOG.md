@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `RuntimeIdentity` (`runtime`, `os`, `arch`): the environment strings a dump records, shared with a
+  host's fingerprint prediction (AUTOMATION-975). The dump bytes are unchanged.
+
 ## 0.8.0 - 2026-11-02
 
 - feat: mutation mode (AUTOMATION-975). `TESTPRUNE_TRACE_MUTATE` lists probe ids that throw

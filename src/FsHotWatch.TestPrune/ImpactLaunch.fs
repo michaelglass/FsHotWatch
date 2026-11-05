@@ -393,6 +393,11 @@ let internal selectForLaunch
                         | RunSubset tests -> Some tests
                   IsIndexed = fun file -> (symbols.GetFileKey file).IsSome
                   AttributesOf = fun symbol -> symbols.GetAttributesForSymbol symbol |> List.map fst }
+                // Only the traces of the environment the run is about to record are read.
+                (fun project ->
+                    match configs |> List.tryFind (fun c -> c.Project = project) with
+                    | None -> Error "no-test-config"
+                    | Some config -> wiring.PredictFingerprint project config.Args config.Environment)
                 (Logging.info "test-prune")
         | _ -> []
 

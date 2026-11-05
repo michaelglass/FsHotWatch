@@ -511,7 +511,8 @@ let private shadowWiring: TraceWiring =
           ShadowDbPath = Some ".fshw/shadow.db" }
       OptedOut = Set.empty
       WeaveOverrides = Map.empty
-      Decide = fun _ _ _ _ _ -> Untraced None }
+      Decide = fun _ _ _ _ _ -> Untraced None
+      PredictFingerprint = fun _ _ _ -> Ok "E" }
 
 /// A recorded run of ProjA whose complete trace of `ProjA.FreshTests.covers f` executed
 /// nothing: the trace selection leaves the test out, where the static walk from `Lib.f`

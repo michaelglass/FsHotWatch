@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: trace shadow reads only the traces of the fingerprint the run about to start will record, predicted
+  from the project's build output (`TraceShadow.predictFingerprint`), instead of the newest recorded run's. A
+  project whose fingerprint cannot be predicted reads no trace and the log says why; every row's
+  fingerprint outcome now measures the prediction (AUTOMATION-975). BREAKING (API): `TraceShadow.atLaunch`
+  takes the prediction.
+
 - feat: trace shadow applies R6 and R7 (AUTOMATION-975): a launched seed traces cannot verify adds what the
   static selection's own walk from it reaches, and a changed file no trace input claims adds what the static
   file rules select. This changes the trace side of every shadow row, so the shadow window restarts at this
