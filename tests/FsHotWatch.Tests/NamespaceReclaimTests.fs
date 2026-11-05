@@ -82,11 +82,78 @@ let ``marking a namespace used stamps its last-used marker`` () =
         markUsed dir
         let marker = Path.Combine(dir, LastUsedMarker)
         test <@ File.Exists marker @>
+        // A marker stamped long ago is restamped on the next use.
+        File.SetLastWriteTimeUtc(marker, now - MaxIdle - TimeSpan.FromDays 1.0)
+        markUsed dir
         test <@ DateTime.UtcNow - File.GetLastWriteTimeUtc marker < MaxIdle @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``opening a repository's persisted stores marks its shared namespace used`` () =
     withTempDir "ns-open" (fun repoRoot ->
         FsHotWatch.CacheResidency.openPersistedStores repoRoot |> ignore
-        let marker = Path.Combine(FsHotWatch.CacheResidency.sharedStoreDir repoRoot, LastUsedMarker)
+
+        let marker =
+            Path.Combine(FsHotWatch.CacheResidency.sharedStoreDir repoRoot, LastUsedMarker)
+
         test <@ File.Exists marker @>)
+
+/// `body` with `dir`'s permissions set to `mode`, restored afterwards so the scratch tree
+/// can be deleted.
+let private withMode (dir: string) (mode: UnixFileMode) (body: unit -> unit) =
+    let before = File.GetUnixFileMode dir
+    File.SetUnixFileMode(dir, mode)
+
+    try
+        body ()
+    finally
+        File.SetUnixFileMode(dir, before)
+
+let private readOnly = UnixFileMode.UserRead ||| UnixFileMode.UserExecute
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``reclaiming where no tasks directory exists removes nothing`` () =
+    withTempDir "ns-none" (fun dir -> test <@ reclaimIn (Path.Combine(dir, "absent")) "mine" now |> List.isEmpty @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a namespace that cannot be removed is left for a later pass`` () =
+    withTempDir "ns-stuck" (fun tasksDir ->
+        namespaceAt tasksDir "leaked" (EmptyGrace + TimeSpan.FromDays 1.0) 0 |> ignore
+
+        withMode tasksDir readOnly (fun () -> test <@ reclaimIn tasksDir "mine" now |> List.isEmpty @>)
+
+        test <@ remaining tasksDir = set [ "leaked" ] @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a namespace that cannot be read is not judged unused`` () =
+    withTempDir "ns-unreadable" (fun tasksDir ->
+        let dir = namespaceAt tasksDir "sealed" (MaxIdle + TimeSpan.FromDays 1.0) 1
+        let stamp = Directory.GetLastWriteTimeUtc dir
+
+        withMode dir UnixFileMode.None (fun () -> test <@ reclaimIn tasksDir "mine" now |> List.isEmpty @>)
+
+        Directory.SetLastWriteTimeUtc(dir, stamp)
+        test <@ remaining tasksDir = set [ "sealed" ] @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a namespace that cannot be created is not marked, and nothing is raised`` () =
+    withTempDir "ns-uncreatable" (fun tasksDir ->
+        let dir = Path.Combine(tasksDir, "mine")
+
+        withMode tasksDir readOnly (fun () -> markUsed dir)
+
+        test <@ not (Directory.Exists dir) @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``opening a repository's persisted stores reclaims an unused sibling namespace`` () =
+    withTempDir "ns-open-reclaim" (fun repoRoot ->
+        let tasksDir =
+            Path.GetDirectoryName(FsHotWatch.CacheResidency.sharedStoreDir repoRoot)
+
+        let leaked = $"leaked-{Guid.NewGuid():N}"
+        let dir = Path.Combine(tasksDir, leaked)
+        Directory.CreateDirectory dir |> ignore
+        Directory.SetLastWriteTimeUtc(dir, DateTime.UtcNow - EmptyGrace - TimeSpan.FromDays 1.0)
+
+        FsHotWatch.CacheResidency.openPersistedStores repoRoot |> ignore
+
+        test <@ not (Directory.Exists dir) @>)
