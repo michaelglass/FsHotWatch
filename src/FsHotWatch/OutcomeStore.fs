@@ -101,7 +101,10 @@ type Settings =
 
 let defaultTtl = TimeSpan.FromDays 14.0
 
-let defaultMaxBytes = 256L * 1024L * 1024L
+/// AUTOMATION-1506: 2 GiB. One intelligence tree (2731 files) files about 300 MB, most of
+/// it TestPrune analyses (about 120 KB a file); at 256 MB a cold daemon's own GC evicted its first
+/// analyses minutes after filing them. Workspaces at different trees share the store.
+let defaultMaxBytes = 2048L * 1024L * 1024L
 
 /// The store directory of `repoRoot`'s repository.
 let directoryFor (repoRoot: string) =
@@ -393,7 +396,9 @@ type Store(settings: Settings) =
 
     /// Evict every key whose newest record is older than the TTL at `now`, then the keys
     /// with the oldest newest-record until the store fits `MaxBytes`. Never a key in
-    /// `keep`. Returns the evicted key values, oldest first.
+    /// `keep`. Returns the evicted key values, oldest first, and says in the log what it
+    /// evicted, why and of which kinds (AUTOMATION-1506: an eviction is the one way a filed
+    /// record turns into a miss, and both callers discard the list).
     member _.Gc(now: DateTimeOffset, keep: Set<ActionKey.KeyValue>) : ActionKey.KeyValue list =
         let keys =
             if Directory.Exists recordsDir then
@@ -405,35 +410,52 @@ type Store(settings: Settings) =
                               let size = Directory.GetFiles dir |> Array.sumBy (fun f -> FileInfo(f).Length)
 
                               match readKey keyValue |> List.tryLast with
-                              | Some newest -> yield keyValue, dir, newest.RecordedAt, size
-                              | None -> yield keyValue, dir, DateTimeOffset.MinValue, size ]
-                |> List.sortBy (fun (_, _, newest, _) -> newest)
+                              | Some newest -> yield keyValue, dir, newest.RecordedAt, size, newest.Key.Kind
+                              | None -> yield keyValue, dir, DateTimeOffset.MinValue, size, "unreadable" ]
+                |> List.sortBy (fun (_, _, newest, _, _) -> newest)
             else
                 []
 
-        let evictable = keys |> List.filter (fun (k, _, _, _) -> not (Set.contains k keep))
+        let evictable =
+            keys |> List.filter (fun (k, _, _, _, _) -> not (Set.contains k keep))
 
         let expired, live =
             evictable
-            |> List.partition (fun (_, _, newest, _) -> now - newest > settings.Ttl)
+            |> List.partition (fun (_, _, newest, _, _) -> now - newest > settings.Ttl)
 
-        let sizeOf (entries: (ActionKey.KeyValue * string * DateTimeOffset * int64) list) =
-            entries |> List.sumBy (fun (_, _, _, size) -> size)
+        let sizeOf (entries: (ActionKey.KeyValue * string * DateTimeOffset * int64 * string) list) =
+            entries |> List.sumBy (fun (_, _, _, size, _) -> size)
 
         let mutable total = sizeOf keys - sizeOf expired
 
         let overBudget =
-            [ for (k, dir, newest, size) in live do
+            [ for (k, dir, newest, size, kind) in live do
                   if total > settings.MaxBytes then
                       total <- total - size
-                      yield k, dir, newest, size ]
+                      yield k, dir, newest, size, kind ]
 
-        [ for (k, dir, _, _) in expired @ overBudget do
-              try
-                  Directory.Delete(dir, true)
-                  yield k
-              with ex ->
-                  settings.Log $"outcome store: could not evict %s{k.Text}: %s{ex.Message}" ]
+        let evicted =
+            [ for (k, dir, _, size, kind) in expired @ overBudget do
+                  try
+                      Directory.Delete(dir, true)
+                      yield k, size, kind
+                  with ex ->
+                      settings.Log $"outcome store: could not evict %s{k.Text}: %s{ex.Message}" ]
+
+        if not evicted.IsEmpty then
+            let kinds =
+                evicted
+                |> List.countBy (fun (_, _, kind) -> kind)
+                |> List.sortBy fst
+                |> List.map (fun (kind, n) -> $"%s{kind} %d{n}")
+                |> String.concat ", "
+
+            let bytes = evicted |> List.sumBy (fun (_, size, _) -> size)
+
+            settings.Log
+                $"outcome store: gc evicted %d{evicted.Length} key(s) (%d{expired.Length} past the ttl, %d{overBudget.Length} over the byte budget of %d{settings.MaxBytes}; %s{kinds}), %d{bytes} byte(s); %d{total} byte(s) remain"
+
+        evicted |> List.map (fun (k, _, _) -> k)
 
 /// The store of `repoRoot`'s repository with the default TTL and byte budget.
 let openFor (repoRoot: string) (log: string -> unit) =
