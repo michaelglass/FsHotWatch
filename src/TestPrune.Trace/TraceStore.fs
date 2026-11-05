@@ -110,6 +110,12 @@ exception TraceSchemaNewerThanConsumer of path: string * found: int * supported:
 
 /// Forward-only. Append a new (version, DDL) pair for every change; never edit or remove a
 /// published entry. The file is never deleted by code.
+///
+/// Version 3 (AUTOMATION-1490): a test's static-init scopes are one shared, per-run scope set
+/// (`trace_scope_sets`, by its members), which the test names in `scope_set_id`, instead of a
+/// `trace_test_scopes` row each. Nearly every test inherits nearly the same type
+/// initializers, and those rows were 99% of the links and most of the file. Rows written
+/// before it stay valid: a test's trace is its linked scopes plus its set's members.
 let internal migrations: (int * string) list =
     [ 1,
       """
@@ -192,6 +198,21 @@ let internal migrations: (int * string) list =
           recorded_at TEXT NOT NULL,
           UNIQUE (run_id, test_key, kind));
       CREATE INDEX shadow_misses_by_project ON shadow_misses (test_project);
+      """
+      3,
+      """
+      CREATE TABLE trace_scope_sets (
+          id INTEGER PRIMARY KEY,
+          trace_run_id INTEGER NOT NULL REFERENCES trace_runs(id) ON DELETE CASCADE,
+          members_key TEXT NOT NULL,
+          UNIQUE (trace_run_id, members_key));
+      CREATE TABLE trace_scope_set_members (
+          set_id INTEGER NOT NULL REFERENCES trace_scope_sets(id) ON DELETE CASCADE,
+          scope_id INTEGER NOT NULL REFERENCES trace_scopes(id),
+          PRIMARY KEY (set_id, scope_id)) WITHOUT ROWID;
+      CREATE INDEX trace_scope_set_members_by_scope ON trace_scope_set_members (scope_id);
+      ALTER TABLE trace_tests ADD COLUMN scope_set_id INTEGER REFERENCES trace_scope_sets(id);
+      CREATE INDEX trace_tests_by_scope_set ON trace_tests (scope_set_id);
       """ ]
 
 /// Versions must start at 1 and increase by exactly one, so "apply every entry above the
@@ -337,6 +358,13 @@ let private runPrepared (cmd: SqliteCommand) (values: obj list) =
 let private scalarPrepared (cmd: SqliteCommand) (values: obj list) : int64 =
     bind cmd values
     cmd.ExecuteScalar() :?> int64
+
+/// The scopes test `@t` holds: the ones linked to it, and the members of its static-init
+/// scope set (schema 3).
+let private scopesOfTest =
+    """SELECT scope_id FROM trace_test_scopes WHERE test_id = @t
+       UNION SELECT m.scope_id FROM trace_tests t
+       JOIN trace_scope_set_members m ON m.set_id = t.scope_set_id WHERE t.id = @t"""
 
 /// An open trace database. Not thread-safe: one writer, used serially.
 type Store private (conn: SqliteConnection) =
@@ -498,13 +526,13 @@ type Store private (conn: SqliteConnection) =
                 owned
                 conn
                 tx
-                """INSERT INTO trace_tests (test_key, test_project, env_fingerprint, trace_run_id, status, complete, incomplete_reasons)
-                   VALUES (@k, @p, @e, @r, @s, @c, @why)
+                """INSERT INTO trace_tests (test_key, test_project, env_fingerprint, trace_run_id, status, complete, incomplete_reasons, scope_set_id)
+                   VALUES (@k, @p, @e, @r, @s, @c, @why, @set)
                    ON CONFLICT (test_key, env_fingerprint) DO UPDATE SET
                        test_project = excluded.test_project, trace_run_id = excluded.trace_run_id,
                        status = excluded.status, complete = excluded.complete,
-                       incomplete_reasons = excluded.incomplete_reasons"""
-                [ "@k"; "@p"; "@e"; "@r"; "@s"; "@c"; "@why" ]
+                       incomplete_reasons = excluded.incomplete_reasons, scope_set_id = excluded.scope_set_id"""
+                [ "@k"; "@p"; "@e"; "@r"; "@s"; "@c"; "@why"; "@set" ]
 
         let testSelect =
             prepared
@@ -519,6 +547,30 @@ type Store private (conn: SqliteConnection) =
 
         let linkInsert =
             prepared owned conn tx "INSERT INTO trace_test_scopes (test_id, scope_id) VALUES (@t, @s)" [ "@t"; "@s" ]
+
+        let setInsert =
+            prepared
+                owned
+                conn
+                tx
+                "INSERT OR IGNORE INTO trace_scope_sets (trace_run_id, members_key) VALUES (@r, @m)"
+                [ "@r"; "@m" ]
+
+        let setSelect =
+            prepared
+                owned
+                conn
+                tx
+                "SELECT id FROM trace_scope_sets WHERE trace_run_id = @r AND members_key = @m"
+                [ "@r"; "@m" ]
+
+        let memberInsert =
+            prepared
+                owned
+                conn
+                tx
+                "INSERT OR IGNORE INTO trace_scope_set_members (set_id, scope_id) VALUES (@set, @s)"
+                [ "@set"; "@s" ]
 
         // A version recurs in most scopes of a run: look its id up once.
         let versionIds = Collections.Generic.Dictionary<struct (string * string), int64>()
@@ -548,7 +600,51 @@ type Store private (conn: SqliteConnection) =
 
         let scopeIds = scopes |> List.map scopeId |> Map.ofList
 
+        // A static-init scope set is stored once per run, keyed by its members: most tests of
+        // a run inherit one of a few such sets.
+        let setIds = Collections.Generic.Dictionary<string, int64>()
+
+        let setId (members: (string * int64) list) =
+            let membersKey =
+                members
+                |> List.map fst
+                |> List.sort
+                |> String.concat "\n"
+                |> Text.Encoding.UTF8.GetBytes
+                |> Security.Cryptography.SHA256.HashData
+                |> Convert.ToHexString
+
+            match setIds.TryGetValue membersKey with
+            | true, id -> id
+            | _ ->
+                runPrepared setInsert [ box runId; box membersKey ]
+                let id = scalarPrepared setSelect [ box runId; box membersKey ]
+
+                for _, sid in members do
+                    runPrepared memberInsert [ box id; box sid ]
+
+                setIds.[membersKey] <- id
+                id
+
         for t in tests do
+            let linked =
+                t.ScopeKeys
+                |> List.distinct
+                |> List.map (fun key ->
+                    match scopeIds.TryFind key with
+                    | Some sid -> key, sid
+                    | None ->
+                        invalidArg
+                            (nameof tests)
+                            $"test %s{t.TestKey} links scope %s{key}, which this run does not contain")
+
+            let statics, own = linked |> List.partition (fst >> RunScopes.isStaticInit)
+
+            let scopeSet =
+                match statics with
+                | [] -> box DBNull.Value
+                | _ -> box (setId statics)
+
             runPrepared
                 testUpsert
                 [ box t.TestKey
@@ -557,16 +653,14 @@ type Store private (conn: SqliteConnection) =
                   box runId
                   box (outcomeCode t.Status)
                   box (if List.isEmpty t.Reasons then 1 else 0)
-                  box (JsonSerializer.Serialize(t.Reasons |> List.map reasonCode |> List.toArray)) ]
+                  box (JsonSerializer.Serialize(t.Reasons |> List.map reasonCode |> List.toArray))
+                  scopeSet ]
 
             let tid = scalarPrepared testSelect [ box t.TestKey; box run.EnvFingerprint ]
             runPrepared linksClear [ box tid ]
 
-            for key in List.distinct t.ScopeKeys do
-                match scopeIds.TryFind key with
-                | Some sid -> runPrepared linkInsert [ box tid; box sid ]
-                | None ->
-                    invalidArg (nameof tests) $"test %s{t.TestKey} links scope %s{key}, which this run does not contain"
+            for _, sid in own do
+                runPrepared linkInsert [ box tid; box sid ]
 
     /// The current trace of a test under a fingerprint: the union of its scopes' content.
     member _.TryRead(testKey: string, envFingerprint: string) : StoredTrace option =
@@ -590,14 +684,14 @@ type Store private (conn: SqliteConnection) =
                   Complete = complete
                   Reasons = JsonSerializer.Deserialize<string[]> reasons |> List.ofArray
                   Symbols =
-                    readRows conn """SELECT v.symbol_full_name, v.content_hash FROM trace_test_scopes ts
+                    readRows conn $"""SELECT v.symbol_full_name, v.content_hash FROM (%s{scopesOfTest}) ts
                            JOIN trace_entries e ON e.scope_id = ts.scope_id
-                           JOIN symbol_versions v ON v.id = e.symbol_version_id WHERE ts.test_id = @t""" ps (fun r ->
+                           JOIN symbol_versions v ON v.id = e.symbol_version_id""" ps (fun r ->
                         r.GetString 0, r.GetString 1)
                     |> Set.ofList
                   Inputs =
-                    readRows conn """SELECT i.kind, i.key, i.hash FROM trace_test_scopes ts
-                           JOIN trace_inputs i ON i.scope_id = ts.scope_id WHERE ts.test_id = @t""" ps (fun r ->
+                    readRows conn $"""SELECT i.kind, i.key, i.hash FROM (%s{scopesOfTest}) ts
+                           JOIN trace_inputs i ON i.scope_id = ts.scope_id""" ps (fun r ->
                         r.GetString 0, r.GetString 1, r.GetString 2)
                     |> Set.ofList }
 
@@ -730,8 +824,8 @@ type Store private (conn: SqliteConnection) =
 
     /// A full run passes the tests it saw as `liveTestKeys`: every other trace of the
     /// project under that fingerprint belongs to a test that no longer exists. Then drop
-    /// scopes no test links (except the static-init and ambient scopes of each project's
-    /// latest recorded run), runs no test or scope references (keeping the newest 50 run
+    /// static-init scope sets no test names, scopes no test links or holds through a set (except the static-init and ambient scopes of each project's
+    /// latest recorded run), runs no test, scope or set references (keeping the newest 50 run
     /// rows per project as history), and versions no entry references. The test-key set
     /// travels as one JSON parameter through `json_each` (ADR 0003), never as an `IN` list.
     member _.CollectGarbage(testProject: string, envFingerprint: string, liveTestKeys: Set<string> option) : unit =
@@ -749,12 +843,21 @@ type Store private (conn: SqliteConnection) =
                       "@live", box (JsonSerializer.Serialize(Set.toArray live)) ]
             | None -> ()
 
+            // A static-init scope set no test names any more goes first, its members with it.
+            exec
+                conn
+                tx
+                """DELETE FROM trace_scope_sets
+                     WHERE id NOT IN (SELECT scope_set_id FROM trace_tests WHERE scope_set_id IS NOT NULL)"""
+                []
+
             // Run-level scopes (static init no test inherited, ambient) are linked to no test;
             // the latest recorded run of each project keeps them for the census.
             exec
                 conn
                 tx
                 """DELETE FROM trace_scopes WHERE id NOT IN (SELECT scope_id FROM trace_test_scopes)
+                     AND id NOT IN (SELECT scope_id FROM trace_scope_set_members)
                      AND NOT ((scope_key LIKE 'S:%' OR scope_key = 'A:ambient') AND trace_run_id IN
                          (SELECT MAX(id) FROM trace_runs WHERE status IN ('recorded', 'tree-moved') GROUP BY test_project))"""
                 []
@@ -765,6 +868,7 @@ type Store private (conn: SqliteConnection) =
                 """DELETE FROM trace_runs WHERE test_project = @p
                      AND id NOT IN (SELECT trace_run_id FROM trace_tests)
                      AND id NOT IN (SELECT trace_run_id FROM trace_scopes)
+                     AND id NOT IN (SELECT trace_run_id FROM trace_scope_sets)
                      AND id NOT IN (SELECT id FROM trace_runs WHERE test_project = @p ORDER BY id DESC LIMIT 50)"""
                 [ "@p", box testProject ]
 

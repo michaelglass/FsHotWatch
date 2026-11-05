@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- perf: trace schema migration 3 stores a test's static-init scopes as one shared, per-run scope
+  set (`trace_scope_sets`, `trace_scope_set_members`, `trace_tests.scope_set_id`) instead of a
+  `trace_test_scopes` row each (AUTOMATION-1490). Those rows were 99% of the links. On a recorded
+  1,040-test run, 176,818 link rows become 1,136 links, 161 sets and 29,012 set members; the file
+  goes from 6.2 MB to 3.2 MB and `RecordRun` from 0.59 s to 0.36-0.44 s (ten copies: 56.7 MB to
+  19.7 MB, 4.7 s to 2.2 s). `TryRead` returns the same traces: a read-back digest of every test is
+  identical before and after, and rows written under schema 2 still read as they did.
+  `CollectGarbage` drops sets no test names. A file migrated to 3 cannot be read by an older
+  TestPrune.Trace (`TraceSchemaNewerThanConsumer`).
+
 - perf: `Store.RecordRun` compiles each statement once per call and re-binds it per row, and looks
   each symbol version's id up once per call, instead of creating and compiling a command for every
   row; the store opens with a 64 MB page cache. Replaying a recorded 1,040-test run took 1.1 s

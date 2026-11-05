@@ -428,3 +428,150 @@ let ``recording a run compiles each statement once, however many scopes, symbols
     let small = commandsFor 2
     let large = commandsFor 12
     test <@ large = small @>
+
+// ---------------------------------------------------------------------------------------
+// Shared static-init scope sets (AUTOMATION-1490)
+// ---------------------------------------------------------------------------------------
+
+let private staticScope key sym : ScopeContent =
+    { Key = key
+      Symbols = [ sym, "h-" + sym ]
+      Inputs = [ "read", "cfg/" + key + ".json", "fh" ] }
+
+/// Three tests: two inherit the type initializers S:A and S:B, one inherits only S:A.
+let private sharedStatics () =
+    [ staticScope "S:A" "Lib.A..cctor"
+      staticScope "S:B" "Lib.B..cctor"
+      testScope "T:1" [ "Lib.f", "h1" ]
+      testScope "T:2" [ "Lib.g", "h2" ]
+      testScope "T:3" [ "Lib.k", "h3" ] ],
+    [ passed "P|Ns.C|one" [ "T:1"; "S:A"; "S:B" ]
+      passed "P|Ns.C|two" [ "T:2"; "S:B"; "S:A" ]
+      passed "P|Ns.C|three" [ "T:3"; "S:A" ] ]
+
+[<Fact>]
+let ``tests that inherit the same static-init scopes share one stored set instead of a link each`` () =
+    let path = tempPath ()
+
+    do
+        use store = Store.Open path
+        let scopes, tests = sharedStatics ()
+        store.RecordRun(run "r1", scopes, tests)
+
+    let staticLinks =
+        scalarAt
+            path
+            "SELECT COUNT(*) FROM trace_test_scopes ts JOIN trace_scopes s ON s.id = ts.scope_id WHERE s.scope_key LIKE 'S:%'"
+
+    test <@ staticLinks = 0L @>
+    test <@ scalarAt path "SELECT COUNT(*) FROM trace_scope_sets" = 2L @>
+    test <@ scalarAt path "SELECT COUNT(*) FROM trace_scope_set_members" = 3L @>
+
+[<Fact>]
+let ``each test reads back exactly the static-init scopes it inherited, no more and no fewer`` () =
+    use store = Store.Open(tempPath ())
+    let scopes, tests = sharedStatics ()
+    store.RecordRun(run "r1", scopes, tests)
+
+    let symbolsOf key =
+        (store.TryRead(key, "E1") |> Option.get).Symbols |> Set.map fst
+
+    let inputsOf key =
+        (store.TryRead(key, "E1") |> Option.get).Inputs |> Set.map (fun (_, k, _) -> k)
+
+    test <@ symbolsOf "P|Ns.C|one" = set [ "Lib.f"; "Lib.A..cctor"; "Lib.B..cctor" ] @>
+    test <@ symbolsOf "P|Ns.C|two" = set [ "Lib.g"; "Lib.A..cctor"; "Lib.B..cctor" ] @>
+    test <@ symbolsOf "P|Ns.C|three" = set [ "Lib.k"; "Lib.A..cctor" ] @>
+    test <@ inputsOf "P|Ns.C|three" = set [ "cfg/app.json"; "cfg/S:A.json" ] @>
+
+[<Fact>]
+let ``re-recording a test with other static-init scopes replaces its set, and collection drops the old one`` () =
+    let path = tempPath ()
+    use store = Store.Open path
+    let scopes, tests = sharedStatics ()
+    store.RecordRun(run "r1", scopes, tests)
+
+    store.RecordRun(
+        run "r2",
+        [ staticScope "S:B" "Lib.B..cctor"; testScope "T:1" [ "Lib.f", "h1" ] ],
+        [ passed "P|Ns.C|one" [ "T:1"; "S:B" ] ]
+    )
+
+    store.CollectGarbage("P", "E1", Some(set [ "P|Ns.C|one" ]))
+
+    test
+        <@ (store.TryRead("P|Ns.C|one", "E1") |> Option.get).Symbols |> Set.map fst = set [ "Lib.f"; "Lib.B..cctor" ] @>
+
+    test <@ scalarAt path "SELECT COUNT(*) FROM trace_scope_sets" = 1L @>
+    test <@ scalarAt path "SELECT COUNT(*) FROM trace_scopes WHERE scope_key = 'S:A'" = 0L @>
+
+[<Fact>]
+let ``collection keeps a static-init scope that tests reach only through their set`` () =
+    let path = tempPath ()
+    use store = Store.Open path
+    let scopes, tests = sharedStatics ()
+    store.RecordRun(run "r1", scopes, tests)
+    store.RecordRun(run "r2", [ testScope "T:9" [ "Lib.z", "h9" ] ], [ passed "Q|Ns.D|other" [ "T:9" ] ])
+    store.CollectGarbage("P", "E1", Some(tests |> List.map _.TestKey |> Set.ofList))
+
+    test
+        <@ (store.TryRead("P|Ns.C|three", "E1") |> Option.get).Symbols |> Set.map fst = set [ "Lib.k"; "Lib.A..cctor" ] @>
+
+[<Fact>]
+let ``a trace written before scope sets existed reads back the same after the migration`` () =
+    let path = tempPath ()
+
+    do
+        use _ = Store.OpenWith(migrations |> List.take 2, path)
+        ()
+
+    // The version-2 layout: every link, static-init ones included, a row of its own.
+    do
+        use conn = new SqliteConnection($"Data Source=%s{path};Pooling=False")
+        conn.Open()
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """INSERT INTO trace_runs (id, run_id, test_project, tree_hash, env_fingerprint, recorded_at, kind, status)
+                   VALUES (1, 'r1', 'P', 'tree', 'E1', '2026-09-25T00:00:00Z', 'full', 'recorded');
+               INSERT INTO trace_scopes (id, trace_run_id, scope_key) VALUES (1, 1, 'T:1'), (2, 1, 'S:A');
+               INSERT INTO symbol_versions (id, symbol_full_name, content_hash) VALUES (1, 'Lib.f', 'h1'), (2, 'Lib.A..cctor', 'hA');
+               INSERT INTO trace_entries (symbol_version_id, scope_id) VALUES (1, 1), (2, 2);
+               INSERT INTO trace_inputs (scope_id, kind, key, hash) VALUES (2, 'read', 'cfg/a.json', 'fa');
+               INSERT INTO trace_tests (id, test_key, test_project, env_fingerprint, trace_run_id, status, complete)
+                   VALUES (1, 'P|Ns.C|m', 'P', 'E1', 1, 'passed', 1);
+               INSERT INTO trace_test_scopes (test_id, scope_id) VALUES (1, 1), (1, 2);"""
+
+        cmd.ExecuteNonQuery() |> ignore
+
+    use store = Store.Open path
+    let t = store.TryRead("P|Ns.C|m", "E1") |> Option.get
+    test <@ t.Symbols = set [ "Lib.f", "h1"; "Lib.A..cctor", "hA" ] @>
+    test <@ t.Inputs = set [ "read", "cfg/a.json", "fa" ] @>
+    test <@ scalarAt path "PRAGMA user_version" = int64 (List.length migrations) @>
+
+[<Fact>]
+let ``a change to a static-init scope's code selects exactly the tests that inherited it`` () =
+    // The false-green guard: trace selection reads its traces through the store, so a test
+    // that lost a shared scope on the way in would stop being selected for a change there.
+    use store = Store.Open(tempPath ())
+    let scopes, tests = sharedStatics ()
+    store.RecordRun(run "r1", scopes, tests)
+
+    let versions =
+        Map
+            [ "Lib.f", "h1"
+              "Lib.g", "h2"
+              "Lib.k", "h3"
+              "Lib.A..cctor", "h-Lib.A..cctor"
+              "Lib.B..cctor", "changed" ]
+
+    let selection =
+        TestPrune.Trace.TraceSelect.select
+            "P"
+            (tests |> List.map _.TestKey)
+            (fun key -> store.TryRead(key, "E1"))
+            versions.TryFind
+            (fun _ -> Some "fh")
+
+    test <@ selection.Selected |> Map.keys |> Set.ofSeq = set [ "P|Ns.C|one"; "P|Ns.C|two" ] @>
