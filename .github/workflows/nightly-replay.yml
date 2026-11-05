@@ -24,7 +24,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
-      JJ_VERSION: v0.46.0
       OUT_NAME: replay-out
       # A cache of its own, uploaded with the replay: each record names the labelled inputs of
       # its key, so a replay that missed can be told which input moved.
@@ -38,14 +37,7 @@ jobs:
           # Same band as global.json and ci.yml.
           dotnet-version: '10.0.4xx'
       - name: Install jj
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download "$JJ_VERSION" -R jj-vcs/jj \
-            --pattern "jj-$JJ_VERSION-x86_64-unknown-linux-musl.tar.gz" -D "$RUNNER_TEMP"
-          tar -xzf "$RUNNER_TEMP/jj-$JJ_VERSION-x86_64-unknown-linux-musl.tar.gz" -C "$RUNNER_TEMP"
-          install -m 0755 "$RUNNER_TEMP/jj" /usr/local/bin/jj
-          jj --version
+        run: bash scripts/install-jj.sh
       - name: Make the checkout a jj repository
         run: |
           jj git init --colocate

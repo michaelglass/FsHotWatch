@@ -909,10 +909,13 @@ type private ToolGate =
     | SkipMissing of reason: string
     | FailMissing of reason: string
 
-/// The gate for a test whose `missing` tools are not on PATH, `onCi` or not.
-let private toolGate (_onCi: bool) (missing: string list) : ToolGate =
+/// The gate for a test whose `missing` tools are not on PATH. CI installs them (git on the
+/// runner image, jj by `scripts/install-jj.sh`), so on CI a missing one fails: a skip there
+/// would read as a pass.
+let private toolGate (onCi: bool) (missing: string list) : ToolGate =
     match missing with
     | [] -> Run
+    | _ when onCi -> FailMissing $"""%s{String.Join(", ", missing)} not on PATH on CI, which installs it"""
     | _ -> SkipMissing $"""%s{String.Join(", ", missing)} not on PATH"""
 
 /// Whether this process runs under CI (`CI` or `GITHUB_ACTIONS` set).

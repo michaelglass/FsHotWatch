@@ -26,6 +26,9 @@ jobs:
       # Move both together, and re-measure the floors when you do.
       dotnet-version: '10.0.4xx'
       fantomas-paths: 'src/ tests/ examples/'
+      # jj for RepositoryIdentityTests' real-jj case, which on CI fails rather than skips
+      # when jj is missing (AUTOMATION-1025). Runs before the build, in the job that tests.
+      pre-build-cmd: 'bash scripts/install-jj.sh'
       # No `test-extra-args`: each test project carries its coverage filters in its own
       # testconfig.json (MTP reads it next to the test app), because the projects need
       # DIFFERENT filters — FsHotWatch.Tests excludes the TestPrune assemblies it loads, while
