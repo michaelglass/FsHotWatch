@@ -224,7 +224,7 @@ index was built from.
 ### Mutate: does trace selection select every test a change breaks?
 
 ```text
-test-prune-traces mutate --project-dir <dir> --assembly <name> [--samples 20] [--seed 1] [--only <text>]...
+test-prune-traces mutate --project-dir <dir> --assembly <name> [--samples 20] [--seed 1] [--only <text>]... [--diff <file>] [--db <store>] [--project <name>]
 ```
 
 `mutate` runs the woven project once to record each test's trace, then once per sampled
@@ -241,8 +241,14 @@ sampling.
 
 It works on probe ids, not joined symbols. A method's closures are their own targets, so
 the measured recall is a lower bound on symbol-level selection, which joins a closure to the
-method that holds it. Nothing is stored and selection is not changed: this is the evidence
+method that holds it. Selection is not changed (and nothing is stored without `--db`): this is the evidence
 for whether trace selection can replace the static walk.
+
+`--diff <file>` samples from a real change instead: only the methods whose lines the unified
+diff's new side touches (a diff that ends at the tree being measured, such as
+`jj diff --git -r <revisions>` or `git diff -U0 <base>`). A touched method no test ran cannot
+fail a test; it is reported as not mutable. `--db <store> [--project <name>]` stores every
+sample (measured, no failure, run failed, not mutable) for `shadow-report`'s mutation bar.
 
 ### Shadow report: is trace selection ready to replace the static walk?
 

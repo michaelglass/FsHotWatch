@@ -3748,6 +3748,22 @@ Runs in TestPrune once the FsHotWatch release with F3/F4 is out. The FsHotWatch 
   matches the host in practice; a miss names the component that differed through `Fingerprint.diff`
   once the actual inputs are stored (not stored yet: Task 4's `fingerprint_inputs` column is not added).
 
+### Decision D1e (2026-11-05): mutation samples from real changes, as landed
+
+- **A real change is a unified diff** (`mutate --diff`), not the shadow rows' seeds: the rows do not store
+  seeds, and a diff works the same in a jj or a git repository. Its new-side lines select the repository
+  methods whose manifest rows overlap them; the harness samples among those its baseline run hit. A touched
+  method no test ran is stored `not-mutable` and does not count toward the 50.
+- **Samples stay probe-level** (the landed harness): a target is one method's probe ids, judged against the
+  traces' probe ids, which is a lower bound on symbol-level recall. The plan's symbol-level judging through
+  `TraceSelect` (with R6 for the mutated symbol) is not done.
+- **Stored** with `--db` (the shadow store, so `shadow-report` reads rows and samples together) under
+  `--project`, kind `symbol`, `tree_hash` = `diff:<sha256 prefix>` of the diff. Union-type samples need Task 11
+  and are not produced, so the report's union-type bar cannot pass yet.
+- **Nightly recipe:** `jj diff --git -r '<base>..@' > change.diff`, then
+  `test-prune-traces mutate --project-dir tests/TestPrune.Tests --assembly TestPrune.Tests --diff change.diff
+  --db <shadow store> --samples 10 --seed "$(date +%j)"`.
+
 - [ ] **Step 1:** Bump the pin exactly per the runbook; commit alone.
 - [ ] **Step 2:** Enable shadow; run `dotnet fshw confirm` once to re-record under the new fingerprint (the core
   bump invalidated every trace), then work normally.

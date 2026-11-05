@@ -343,7 +343,7 @@ let ``overhead refuses fewer than one rep before preparing anything`` () =
 [<Fact>]
 let ``every test a mutated fixture method breaks is one its trace selects`` () =
     withScratch (fun req ->
-        let report = Mutation.run req [] 1000 1 [] timeout |> ok
+        let report = Mutation.run req [] 1000 1 [] None timeout |> ok
         test <@ report.Targets > 0 && report.Samples.Length = report.Targets @>
         test <@ report.Measured > 0 @>
         test <@ report.Samples |> List.collect _.Missed |> List.isEmpty @>
@@ -352,6 +352,17 @@ let ``every test a mutated fixture method breaks is one its trace selects`` () =
 [<Fact>]
 let ``a target filter that matches nothing samples nothing and measures nothing`` () =
     withScratch (fun req ->
-        let report = Mutation.run req [] 5 1 [ "no such target" ] timeout |> ok
+        let report = Mutation.run req [] 5 1 [ "no such target" ] None timeout |> ok
         test <@ report.Targets = 0 && report.Samples.IsEmpty && report.Universe > 0 @>
         test <@ not (Mutation.passes report) @>)
+
+[<Fact>]
+let ``a change samples only the fixture methods it touched, and none of them is missed`` () =
+    withScratch (fun req ->
+        // A change over every line of Logic.fs: only FxLib.Logic's methods are candidates.
+        let changed = Map [ "tests/TraceFixtures/src/FxLib/Logic.fs", [ 1, 100000 ] ]
+        let report = Mutation.run req [] 1000 1 [] (Some changed) timeout |> ok
+        test <@ report.Targets > 0 && report.Samples.Length = report.Targets @>
+        test <@ report.Samples |> List.forall (fun s -> s.Target.StartsWith "FxLib.Logic") @>
+        test <@ report.NotMutable |> List.forall (fun n -> n.StartsWith "FxLib.Logic") @>
+        test <@ Mutation.passes report @>)

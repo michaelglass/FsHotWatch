@@ -232,3 +232,130 @@ let ``the JSON report names each outcome as render does, with a failed run's rea
     test <@ named = [ "measured", None; "no-failure", None; "run-failed", Some "no CTRF report" ] @>
 
     test <@ (Mutation.render report).Contains "run-failed: no CTRF report" @>
+
+// --- samples from real commits, stored (AUTOMATION-975, plan Task 7) --------------------
+
+let private diff =
+    """diff --git a/src/Lib/A.fs b/src/Lib/A.fs
+index 1111111..2222222 100644
+--- a/src/Lib/A.fs
++++ b/src/Lib/A.fs
+@@ -3 +3 @@ module A
+-let f () = 1
++let f () = 2
+@@ -10,0 +11,3 @@ let g () =
++    a
++    b
++    c
+@@ -20,2 +23,0 @@ let h () =
+-    gone
+-    gone too
+diff --git a/src/Lib/New.fs b/src/Lib/New.fs
+new file mode 100644
+--- /dev/null
++++ b/src/Lib/New.fs
+@@ -0,0 +1,2 @@
++module New
++let n () = 0
+diff --git a/src/Lib/Old.fs b/src/Lib/Old.fs
+deleted file mode 100644
+--- a/src/Lib/Old.fs
++++ /dev/null
+@@ -1 +0,0 @@
+-module Old
+"""
+
+[<Fact>]
+let ``a unified diff's changed lines are read on the new side, a deletion marking the lines around it`` () =
+    test <@ Mutation.changedSpans diff = Map [ "src/Lib/A.fs", [ 3, 3; 11, 13; 23, 24 ]; "src/Lib/New.fs", [ 1, 2 ] ] @>
+
+    test <@ Mutation.changedSpans "" |> Map.isEmpty @>
+    // A hunk header outside a file, and a context-free one-line hunk without a count.
+    test <@ Mutation.changedSpans "@@ -1 +1 @@\n+++ b/x.fs\n@@ -4 +5 @@\n" = Map [ "x.fs", [ 5, 5 ] ] @>
+    test <@ Mutation.changedSpans "+++ y.fs\n@@ -1,0 +2,0 @@\n" = Map [ "y.fs", [ 2, 3 ] ] @>
+
+[<Fact>]
+let ``the changed targets are the repository methods whose lines a change touches`` () =
+    let root = "/repo"
+
+    let at id typeName memberName doc first last : ManifestRow =
+        { row id UserMethod "Lib" typeName memberName with
+            Document = Some(System.IO.Path.Combine(root, doc))
+            FirstLine = first
+            LastLine = last }
+
+    let m =
+        manifest
+            [ at 0 "A" "f" "src/Lib/A.fs" 3 3
+              at 1 "A" "g" "src/Lib/A.fs" 9 12
+              at 2 "A" "untouched" "src/Lib/A.fs" 30 40
+              at 3 "A" "h" "src/Lib/A.fs" 21 23
+              at 4 "Other" "x" "src/Lib/Other.fs" 1 99
+              { at 5 "T" "test" "src/Lib/A.fs" 3 3 with
+                  Assembly = "Tests" } ]
+
+    test <@ Mutation.changedTargets root "Tests" (Mutation.changedSpans diff) m = set [ "A::f"; "A::g"; "A::h" ] @>
+
+[<Fact>]
+let ``a report becomes stored samples: measured, quiet, failed, and changed methods no test ran`` () =
+    let report =
+        { Mutation.summarize
+              10
+              []
+              3
+              [ { Target = "A::f"
+                  Outcome = Mutation.Measured
+                  Failing = [ "t1"; "t2" ]
+                  Selected = 4
+                  Missed = [ "t2" ] }
+                { Target = "A::g"
+                  Outcome = Mutation.NoFailure
+                  Failing = []
+                  Selected = 1
+                  Missed = [] }
+                { Target = "A::h"
+                  Outcome = Mutation.RunFailed "no report"
+                  Failing = []
+                  Selected = 0
+                  Missed = [] } ] with
+            NotMutable = [ "A::cold" ] }
+
+    let at = System.DateTimeOffset(2026, 11, 5, 0, 0, 0, System.TimeSpan.Zero)
+    let samples = Mutation.toSamples "P" at "diff:abc" report
+
+    test
+        <@
+            samples
+            |> List.map (fun s -> s.Symbol, s.Outcome, s.Failing, s.Selected, s.Missed) = [ "A::f",
+                                                                                            TraceStore.Measured,
+                                                                                            2,
+                                                                                            4,
+                                                                                            [ "t2" ]
+                                                                                            "A::g",
+                                                                                            TraceStore.NoFailure,
+                                                                                            0,
+                                                                                            1,
+                                                                                            []
+                                                                                            "A::h",
+                                                                                            TraceStore.RunFailed,
+                                                                                            0,
+                                                                                            0,
+                                                                                            []
+                                                                                            "A::cold",
+                                                                                            TraceStore.NotMutable,
+                                                                                            0,
+                                                                                            0,
+                                                                                            [] ]
+        @>
+
+    test
+        <@
+            samples
+            |> List.forall (fun s ->
+                s.TestProject = "P"
+                && s.Kind = TraceStore.SymbolMutant
+                && s.TreeHash = "diff:abc"
+                && s.RecordedAt = at)
+        @>
+
+    test <@ (Mutation.render report).Contains "not mutable: 1 changed method(s) no test ran: A::cold" @>

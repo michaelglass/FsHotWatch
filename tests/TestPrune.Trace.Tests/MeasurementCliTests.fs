@@ -18,6 +18,7 @@ type Call =
       Seed: int
       Reps: int
       Only: string list
+      Changed: Map<string, (int * int) list> option
       Timeout: TimeSpan }
 
 let private auditReport extra : Audit.AuditReport =
@@ -69,7 +70,7 @@ let private mutationReport: Result<Mutation.MutationReport, string> =
 let private fake audit overhead census =
     let calls = ResizeArray<Call>()
 
-    let callOnly req args sample seed reps only timeout =
+    let callChanged req args sample seed reps only changed timeout =
         calls.Add
             { Request = req
               AppArgs = args
@@ -77,7 +78,11 @@ let private fake audit overhead census =
               Seed = seed
               Reps = reps
               Only = only
+              Changed = changed
               Timeout = timeout }
+
+    let callOnly req args sample seed reps only timeout =
+        callChanged req args sample seed reps only None timeout
 
     let call req args sample seed reps timeout =
         callOnly req args sample seed reps [] timeout
@@ -96,8 +101,8 @@ let private fake audit overhead census =
                 call req args 0.0 0 0 timeout
                 census
           Mutate =
-            fun req args samples seed only timeout ->
-                callOnly req args 0.0 seed samples only timeout
+            fun req args samples seed only changed timeout ->
+                callChanged req args 0.0 seed samples only changed timeout
                 mutationReport }
 
     m, calls
@@ -586,3 +591,102 @@ let ``shadow-report on a store a newer trace schema wrote exits 2 and names it``
 let ``shadow-report refuses a valued flag at the end of the line`` (flag: string) =
     let o = Program.run cwd [ "shadow-report"; flag ]
     test <@ o.Exit = 2 && o.Stderr.StartsWith(flag + " needs a value\n") @>
+
+// --- mutate over a real change, stored (AUTOMATION-975, plan Task 7) ----------------------
+
+[<Fact>]
+let ``mutate --diff samples the methods a change touched and --db stores every sample`` () =
+    let dir = Directory.CreateTempSubdirectory("tp-mutate-store-").FullName
+
+    try
+        let diffFile = Path.Combine(dir, "change.diff")
+
+        File.WriteAllText(
+            diffFile,
+            "diff --git a/src/A.fs b/src/A.fs\n--- a/src/A.fs\n+++ b/src/A.fs\n@@ -2 +2 @@\n-x\n+y\n"
+        )
+
+        let db = Path.Combine(dir, "shadow.db")
+        let m, calls = passing ()
+
+        let o =
+            Program.runWith
+                m
+                dir
+                [ "mutate"
+                  "--project-dir"
+                  "P"
+                  "--assembly"
+                  "P"
+                  "--diff"
+                  "change.diff"
+                  "--db"
+                  "shadow.db"
+                  "--project"
+                  "P.Tests" ]
+
+        test <@ o.Exit = 1 @>
+        test <@ (calls |> Seq.exactlyOne).Changed = Some(Map [ "src/A.fs", [ 2, 2 ] ]) @>
+
+        use store = TraceStore.Store.Open db
+        let stored = store.MutationSamples "P.Tests"
+
+        test
+            <@
+                stored |> List.map (fun s -> s.Symbol, s.Outcome, s.Missed) = [ "Lib.A::f",
+                                                                                TraceStore.Measured,
+                                                                                [ "t2" ] ]
+            @>
+
+        test <@ stored |> List.forall (fun s -> s.TreeHash.StartsWith "diff:") @>
+    finally
+        Directory.Delete(dir, true)
+
+[<Fact>]
+let ``mutate without --diff samples every hit method and stores under the assembly's name`` () =
+    let dir = Directory.CreateTempSubdirectory("tp-mutate-store2-").FullName
+
+    try
+        let m, calls = passing ()
+
+        let o =
+            Program.runWith m dir [ "mutate"; "--project-dir"; "P"; "--assembly"; "P"; "--db"; "s.db" ]
+
+        test <@ o.Exit = 1 && (calls |> Seq.exactlyOne).Changed = None @>
+        use store = TraceStore.Store.Open(Path.Combine(dir, "s.db"))
+        test <@ (store.MutationSamples "P" |> List.exactlyOne).TreeHash = "" @>
+    finally
+        Directory.Delete(dir, true)
+
+[<Fact>]
+let ``mutate with a --diff it cannot read exits 2 before anything runs`` () =
+    let m, calls = passing ()
+
+    let o =
+        Program.runWith
+            m
+            cwd
+            [ "mutate"
+              "--project-dir"
+              "P"
+              "--assembly"
+              "P"
+              "--diff"
+              "/nowhere/x.diff" ]
+
+    test <@ o.Exit = 2 && o.Stderr.Contains "x.diff" && calls.Count = 0 @>
+
+[<Fact>]
+let ``mutate with a --db it cannot write exits 2 and names it`` () =
+    let dir = Directory.CreateTempSubdirectory("tp-mutate-bad-db-").FullName
+
+    try
+        File.WriteAllText(Path.Combine(dir, "bad.db"), "not a database")
+        let m, _ = passing ()
+
+        let o =
+            Program.runWith m dir [ "mutate"; "--project-dir"; "P"; "--assembly"; "P"; "--db"; "bad.db" ]
+
+        test <@ o.Exit = 2 && o.Stderr.StartsWith "--db bad.db: " @>
+    finally
+        Directory.Delete(dir, true)
