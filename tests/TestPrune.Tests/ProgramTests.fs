@@ -1498,6 +1498,69 @@ module ``runIndexWith`` =
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)
 
+    /// AUTOMATION-1427. A compile item whose MSBuild condition flips with no source edit
+    /// (a sibling checkout appearing) changes what the project compiles. The project's
+    /// cache key hashed the STATIC compile list, so the project counted as unchanged and
+    /// kept an index without the item.
+    [<Fact>]
+    let ``a condition flip with no source edit re-indexes the project`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let projectDir = Path.Combine(tmpDir, "tests", "F")
+        Directory.CreateDirectory(projectDir) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(projectDir, "F.fsproj"),
+            """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><Compile Include="Lib.fs" /><Compile Include="Extra.fs" Condition="Exists('../../../Sibling/Sibling.fsproj')" /><Compile Include="Tests.fs" /></ItemGroup></Project>"""
+        )
+
+        File.WriteAllText(Path.Combine(projectDir, "Lib.fs"), "module Lib\nlet add a b = a + b\n")
+
+        File.WriteAllText(
+            Path.Combine(projectDir, "Extra.fs"),
+            "module Extra\ntype FactAttribute() =\n    inherit System.Attribute()\n[<Fact>]\nlet ``extra`` () = Lib.add 2 3 |> ignore\n"
+        )
+
+        File.WriteAllText(
+            Path.Combine(projectDir, "Tests.fs"),
+            "module Tests\ntype FactAttribute() =\n    inherit System.Attribute()\n[<Fact>]\nlet ``adds`` () = Lib.add 1 2 |> ignore\n"
+        )
+
+        // What MSBuild evaluates: Extra.fs only while the sibling checkout exists.
+        let mutable siblingPresent = false
+
+        let evaluated: ProjectOptionsProvider =
+            fun checker fsprojPath ->
+                let options = scriptOptions checker fsprojPath
+
+                let sources =
+                    [ yield Path.Combine(projectDir, "Lib.fs")
+                      if siblingPresent then
+                          yield Path.Combine(projectDir, "Extra.fs")
+                      yield Path.Combine(projectDir, "Tests.fs") ]
+
+                { options with
+                    SourceFiles = Array.ofList sources }
+
+        let index () =
+            runIndexWith successBuild evaluated tmpDir testChecker 1 (createNoopSink ())
+
+        let oldErr = Console.Error
+        Console.SetError(new StringWriter())
+
+        try
+            test <@ index () = 0 @>
+            let db = Database.create (Path.Combine(tmpDir, ".test-prune.db"))
+            test <@ db.GetTestMethodsInFile "tests/F/Extra.fs" |> List.isEmpty @>
+
+            siblingPresent <- true
+            test <@ index () = 0 @>
+
+            let db = Database.create (Path.Combine(tmpDir, ".test-prune.db"))
+            test <@ db.GetTestMethodsInFile "tests/F/Extra.fs" |> List.map _.TestMethod = [ "extra" ] @>
+        finally
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
     [<Fact>]
     let ``a file that cannot be analyzed fails the index naming the file and the reason`` () =
         let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
