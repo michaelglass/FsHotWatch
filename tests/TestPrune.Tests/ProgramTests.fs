@@ -1903,8 +1903,10 @@ module ``runIndexWith`` =
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)
 
+    /// An unchanged project is still evaluated, because only evaluation sees an MSBuild
+    /// condition flip (AUTOMATION-1427), and then skipped: none of its files is analyzed.
     [<Fact>]
-    let ``skips getOptions for unchanged projects`` () =
+    let ``an unchanged project is evaluated and then skipped`` () =
         let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
         let srcDir = Path.Combine(tmpDir, "src", "Lib")
         Directory.CreateDirectory(srcDir) |> ignore
@@ -1929,7 +1931,8 @@ module ``runIndexWith`` =
             runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ())
             |> ignore
 
-            // Second index with a getOptions that would fail if called
+            // Second index: the project is evaluated, its evaluated compile list is
+            // unchanged, so it is skipped.
             let mutable getOptionsCalled = false
 
             let trackingOptions: ProjectOptionsProvider =
@@ -1937,11 +1940,16 @@ module ``runIndexWith`` =
                     getOptionsCalled <- true
                     scriptOptions checker fsprojPath
 
+            let second = new StringWriter()
+            Console.SetError(second)
+
             let exitCode =
                 runIndexWith successBuild trackingOptions tmpDir testChecker 1 (createNoopSink ())
 
+            Console.SetError(oldErr)
             test <@ exitCode = 0 @>
-            test <@ getOptionsCalled = false @>
+            test <@ getOptionsCalled @>
+            test <@ second.ToString().Contains "Lib: unchanged, skipping" @>
         finally
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)
