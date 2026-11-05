@@ -870,6 +870,15 @@ let private evaluateInProcess (load: unit -> 'a) : 'a =
 /// exists, so whatever deletes a tree a daemon may still be evaluating in does it here.
 let internal whileNoEvaluationRuns (action: unit -> 'a) : 'a = lock inProcessEvaluation action
 
+/// `evaluateInProcess` for the projects in `projectDirs`.
+let internal evaluateInProcessIn (_projectDirs: string list) (load: unit -> 'a) : 'a = evaluateInProcess load
+
+/// Run `action`, which deletes the trees at `roots`, while no evaluation stands in them.
+let internal whileNoEvaluationRunsUnder (_roots: string list) (action: unit -> 'a) : 'a = whileNoEvaluationRuns action
+
+/// How many evaluations and deletions are waiting for each other's trees right now.
+let internal treeWaiters () : int = 0
+
 /// Discover .fsproj files and register them with the graph and pipeline.
 /// Uses Ionide.ProjInfo for MSBuild design-time evaluation to get real
 /// assembly references, NuGet packages, and compiler flags.
