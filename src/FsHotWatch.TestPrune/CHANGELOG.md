@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: a fresh checkout's first test run reuses byte-identical test evidence (AUTOMATION-1508). A run owed a
+  full-suite baseline now looks every project up in the box-wide evidence store and launches only the ones that
+  miss. A full-suite run whose every project either ran or held its reuse at completion earns the baseline,
+  because every test ran at exactly these inputs, here or in another checkout. Before, such a run made no lookups
+  and ran the whole suite once more, and a run that reused anything never earned a baseline. `confirm`, an
+  explicit full-suite scope and an unreadable verification ledger still consult no evidence, and a reuse whose key
+  moved during the run is still withdrawn, so that run earns no baseline.
+
 - feat: a fingerprint prediction miss names the inputs that differed (`fingerprint prediction missed ... differs in:
   runtime`): the prediction keeps its inputs in the checkout's trace store beside the run's (AUTOMATION-1497).
 

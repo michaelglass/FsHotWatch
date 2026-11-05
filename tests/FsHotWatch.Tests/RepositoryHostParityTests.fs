@@ -784,9 +784,14 @@ let ``a legacy daemon, a hosted session, and one sharing its checker observe the
             withEnvValue "FSHW_CACHE_HOME" (Path.Combine(canonical, "cache-hosted")) (fun () ->
                 inFreshWorktree "hosted" runHosted)
 
+        // Without test evidence: the sibling tests the same bytes first, so the observed
+        // session's first run would reuse the sibling's greens instead of running
+        // (AUTOMATION-1508, pinned in TestEvidenceRunTests). What is compared here is the
+        // run a shared checker observes, so both sessions run their own tests.
         let besideASibling =
             withEnvValue "FSHW_CACHE_HOME" (Path.Combine(canonical, "cache-shared")) (fun () ->
-                inFreshWorktree "shared" runHostedBesideASibling)
+                withEnvValue TestEvidenceStore.KillSwitchEnvVar "0" (fun () ->
+                    inFreshWorktree "shared" runHostedBesideASibling))
 
         // One restore for the worktree path, not one per mode.
         test <@ List.ofSeq restored = [ "legacy", true; "hosted", false; "shared", false ] @>

@@ -591,13 +591,14 @@ let internal assembleLaunch
     // launches the selector chose, never add a green it did not. Keyed now,
     // before `beforeRun` touches anything. Every run keys (so its greens can be
     // published); only a run that owes nothing a reuse cannot pay looks
-    // anything up. `confirm` owes a run of everything. A run owed a
-    // full-suite baseline owes one only running can earn: a green is graded
-    // relative to it, so a checkout that reused instead would answer "no
-    // verdict" for as long as the evidence lasted. An unreadable ledger is
-    // owed a full suite that passed.
-    let evidenceLookups =
-        not scopeIsFullSuite && not ledgerUnreadable && Option.isNone baselineInvalid
+    // anything up. `confirm` owes a run of everything. An unreadable ledger is
+    // owed a full suite that passed. A run owed a full-suite baseline looks up
+    // too: a project whose inputs are byte-identical to another checkout's
+    // green had every test run at exactly these inputs, and a run whose every
+    // project ran or held such a reuse earns the baseline (`CompletionStages`).
+    // So a fresh checkout of an already-tested tree launches only what misses
+    // (AUTOMATION-1508).
+    let evidenceLookups = not scopeIsFullSuite && not ledgerUnreadable
 
     let evidencePlan =
         evidencePlanFor
