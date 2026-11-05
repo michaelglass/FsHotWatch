@@ -1386,7 +1386,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                               WeaveTests = weaveTests
                               FingerprintInputs = strs "fingerprintInputs"
                               FingerprintEnv = strs "fingerprintEnv"
-                              VerifyTimeoutSec = verifyTimeoutSec }
+                              VerifyTimeoutSec = verifyTimeoutSec
+                              ShadowDbPath = str "shadowDb" }
 
                         Some settings
                 | _ -> None

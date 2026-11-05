@@ -3659,6 +3659,30 @@ module TraceShadow =
 
 ## Task D1: TestPrune's own shadow window (dogfood)
 
+### Decision D1a (2026-11-05): the window's rows live in one box-wide shadow store
+
+**Measured.** On the maintainer's laptop, 6 days after shadow was turned on in this repository, 74 checkouts had a
+trace database. 17 of them held shadow rows: 55 rows in all, at most 17 in one store, and no store spanned more
+than 2 days between its first and last row. The default checkout's own store held none. Checkouts here are
+short-lived agent workspaces, so a per-checkout store never reaches 100 impact rows over 14 days. Across the box
+the rate was about 11 rows a day, which does reach the counts inside the 14-day minimum.
+
+**Options.**
+
+- A report that reads several trace databases. It works only while the checkouts exist: rows die with the
+  workspace that held them, and the report would have to find every checkout. Rejected as the primary store;
+  `shadow-report` still takes `--db` more than once, so another machine's store can be merged in.
+- One long-lived dogfood checkout. It depends on someone keeping a daemon working in that one checkout for
+  weeks, and every other checkout's runs are thrown away. Rejected.
+- **Chosen: a shared shadow store.** Rows and misses go to `<shared cache>/cache/trace-shadow/<repository
+  namespace>/shadow.db` (`TraceShadow.shadowStorePath`), the same box-wide, per-repository layout as the
+  outcome and evidence stores (FsHotWatch ADR-059 §2, `RepoIdentity.namespaceOf`). `tests.traces.shadowDb`
+  overrides it. Traces stay in each checkout's `db`: a trace is read against that checkout's tree.
+
+The file is a trace database (same migrations) whose trace tables stay empty. Several daemons write it; SQLite in
+WAL mode serialises the writers, and a write that still fails is one `trace-shadow: not stored` line, as before.
+A daemon on an older trace schema refuses a store a newer one migrated, so rows of mixed shapes never mix.
+
 Runs in TestPrune once the FsHotWatch release with F3/F4 is out. The FsHotWatch pin runbook
 (`docs/runbooks/fshotwatch-pin-upgrade.md`) fixes the order: release, then pin, then the full gate.
 

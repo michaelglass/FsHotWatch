@@ -3060,6 +3060,16 @@ let ``parseConfig tests.traces select defaults to off and reads shadow`` () =
     test
         <@ (tracesOf """{"record": "every-run", "select": "Shadow"}""").Value.Select = FsHotWatch.TestPrune.SelectShadow @>
 
+[<Fact(Timeout = 15000)>]
+let ``parseConfig tests.traces shadowDb names the shadow store, and its absence means the box-wide one`` () =
+    test <@ (tracesOf """{"record": "every-run", "select": "shadow"}""").Value.ShadowDbPath = None @>
+
+    test
+        <@
+            (tracesOf """{"record": "every-run", "select": "shadow", "shadowDb": "/shared/shadow.db"}""")
+                .Value.ShadowDbPath = Some "/shared/shadow.db"
+        @>
+
 [<Theory(Timeout = 15000)>]
 [<InlineData("""{"record": "every-run", "select": "live"}""", "'live'")>]
 [<InlineData("""{"record": "every-run", "select": "sometimes"}""", "'sometimes'")>]

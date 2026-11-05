@@ -26,7 +26,8 @@ let private settings select : TraceSettings =
       FingerprintInputs = []
       FingerprintEnv = []
       VerifyTimeoutSec = 60
-      Select = select }
+      Select = select
+      ShadowDbPath = Some "shadow.db" }
 
 /// A repository root holding a trace store with one recorded run of project P: test
 /// `C.a` executed `N.f`, test `C.b` executed `N.g`.
@@ -130,7 +131,7 @@ let ``at completion the rows are stored under the run, and a failed test the tra
 
         TraceShadow.atCompletion (settings SelectShadow) root readings "run-7" [ "P|C|a"; "P|C|b" ] lines.Add
 
-        use store = Store.Open(Path.Combine(root, "traces.db"))
+        use store = Store.Open(Path.Combine(root, "shadow.db"))
         let rows = store.ShadowRows "P"
         test <@ rows |> List.map _.RunId = [ "run-7" ] @>
         test <@ rows.[0].TraceOnly = [ "P|C|b"; "P|C|c" ] @>
@@ -153,7 +154,7 @@ let ``with no reading, completion opens nothing and stores nothing`` () =
     try
         let lines = ResizeArray<string>()
         TraceShadow.atCompletion (settings SelectShadow) root [] "run-1" [ "P|C|a" ] lines.Add
-        test <@ lines.Count = 0 && not (File.Exists(Path.Combine(root, "traces.db"))) @>
+        test <@ lines.Count = 0 && not (File.Exists(Path.Combine(root, "shadow.db"))) @>
     finally
         Directory.Delete(root, true)
 
@@ -164,7 +165,7 @@ let ``a run with no failed test stores its rows and no miss`` () =
         let readings = launch root SelectShadow lines
         TraceShadow.atCompletion (settings SelectShadow) root readings "run-2" [] lines.Add
 
-        use store = Store.Open(Path.Combine(root, "traces.db"))
+        use store = Store.Open(Path.Combine(root, "shadow.db"))
         test <@ store.ShadowRows "P" |> List.map _.RunId = [ "run-2" ] @>
         test <@ List.isEmpty (store.ShadowMisses "P") && lines.Count = 1 @>)
 
@@ -173,8 +174,7 @@ let ``a store that cannot be written at completion is one log line, never an exc
     withStore (fun root ->
         let lines = ResizeArray<string>()
         let readings = launch root SelectShadow lines
-        File.Delete(Path.Combine(root, "traces.db"))
-        File.WriteAllText(Path.Combine(root, "traces.db"), "not a database")
+        File.WriteAllText(Path.Combine(root, "shadow.db"), "not a database")
 
         TraceShadow.atCompletion (settings SelectShadow) root readings "run-3" [ "P|C|a" ] lines.Add
 
@@ -237,3 +237,71 @@ let ``a failed test the traced universe does not know is said out loud, not drop
                 lines
                 |> Seq.exists (fun l -> l.Contains "1 failed test(s) in P that no traced key names: P|Gone|x")
             @>)
+
+// --- the shadow window spans checkouts (AUTOMATION-975) --------------------------------
+// Each checkout has its own trace database, and checkouts are short-lived, so no single
+// trace database ever holds a window's worth of rows. The rows go to one shadow store
+// instead: box-wide per repository by default, like the outcome and evidence stores.
+
+[<Fact>]
+let ``at completion the rows go to the shadow store, never the checkout's trace database`` () =
+    withStore (fun root ->
+        let lines = ResizeArray<string>()
+        let readings = launch root SelectShadow lines
+        TraceShadow.atCompletion (settings SelectShadow) root readings "run-8" [ "P|C|a" ] lines.Add
+
+        do
+            use traces = Store.Open(Path.Combine(root, "traces.db"))
+            test <@ List.isEmpty (traces.ShadowRows "P") && List.isEmpty (traces.ShadowMisses "P") @>
+
+        use shadow = Store.Open(Path.Combine(root, "shadow.db"))
+        test <@ shadow.ShadowRows "P" |> List.map _.RunId = [ "run-8" ] @>
+        test <@ shadow.ShadowMisses "P" = [ "run-8", "P|C|a" ] @>)
+
+[<Fact>]
+let ``two checkouts' runs count in one shadow store`` () =
+    let shared = Directory.CreateTempSubdirectory("fshw-trace-shadow-shared-").FullName
+
+    try
+        let sharedDb = Path.Combine(shared, "box", "shadow.db")
+
+        let settings' =
+            { settings SelectShadow with
+                ShadowDbPath = Some sharedDb }
+
+        for runId in [ "run-a"; "run-b" ] do
+            withStore (fun root ->
+                let lines = ResizeArray<string>()
+                let readings = launch root SelectShadow lines
+                TraceShadow.atCompletion settings' root readings runId [] lines.Add)
+
+        use store = Store.Open sharedDb
+        test <@ store.ShadowRows "P" |> List.map _.RunId = [ "run-a"; "run-b" ] @>
+    finally
+        Directory.Delete(shared, true)
+
+[<Fact>]
+let ``with no shadowDb the shadow store is the repository's box-wide one, outside the checkout`` () =
+    withStore (fun root ->
+        let path =
+            TraceShadow.shadowStorePath
+                { settings SelectShadow with
+                    ShadowDbPath = None }
+                root
+
+        test
+            <@
+                path = Path.Combine(
+                    FsHotWatch.FsHwPaths.sharedCacheHome (),
+                    "cache",
+                    "trace-shadow",
+                    FsHotWatch.RepoIdentity.namespaceOf root,
+                    "shadow.db"
+                )
+            @>
+
+        test <@ not (path.StartsWith(root, StringComparison.Ordinal)) @>)
+
+[<Fact>]
+let ``a relative shadowDb is resolved against the checkout`` () =
+    test <@ TraceShadow.shadowStorePath (settings SelectShadow) "/repo" = Path.Combine("/repo", "shadow.db") @>

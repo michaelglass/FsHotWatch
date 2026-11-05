@@ -21,7 +21,8 @@ let private settings record =
       FingerprintInputs = []
       FingerprintEnv = []
       VerifyTimeoutSec = 120
-      Select = SelectOff }
+      Select = SelectOff
+      ShadowDbPath = None }
 
 let private runtime root record excluded mode =
     { Settings = settings record
