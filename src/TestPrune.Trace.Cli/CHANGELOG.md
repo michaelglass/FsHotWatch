@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `shadow-report` verb (AUTOMATION-975): evaluates the promotion bar over one or more shadow stores
+  (`--db`, repeatable; a run stored twice counts once), from `--since` on. Exits 0 when every bar passes, 1
+  when one fails, 2 on a usage error or a store it cannot read.
+
 ## 0.8.1 - 2026-11-04
 
 - Finish: AUTOMATION-975 shadow judges theory-row failures and pins that it never changes a launch

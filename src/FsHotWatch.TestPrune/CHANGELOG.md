@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: a trace shadow row says what it measured: `full` when the project ran every test in the run
+  (unfiltered and not reused), else `impact`; the trace selection's recall over a full run's failures;
+  eligibility; and whether the run recorded under the fingerprint shadow read (AUTOMATION-975).
+
 - feat: trace shadow stores its rows and verified-failure misses in one shadow store per repository,
   box-wide by default (`<shared cache>/cache/trace-shadow/<repository>/shadow.db`) and shared by every
   checkout, instead of in each checkout's trace database (AUTOMATION-975). Checkouts are short-lived and

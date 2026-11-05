@@ -57,6 +57,7 @@
         <Compile Include="FileCensus.fs" />
         <Compile Include="Mutation.fs" />
         <Compile Include="TraceSelect.fs" />
+        <Compile Include="ShadowReport.fs" />
     </ItemGroup>
 
     <ItemGroup>
