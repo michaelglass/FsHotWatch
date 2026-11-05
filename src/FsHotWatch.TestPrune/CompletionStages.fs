@@ -238,6 +238,33 @@ type internal AssembledRunResults =
       CarriedFailures: OutstandingFailure list
       OutstandingFailures: OutstandingFailure list }
 
+/// What a shadow completion reads of a run. A project ran every test when it launched
+/// unfiltered, ran, and was not answered from the evidence store: only then are all of its
+/// failures in this report. The failed tests' trace keys are `None` without a complete
+/// report, so no miss is judged and no recall measured.
+let internal shadowFacts
+    (selection: Map<string, ProjectSelection>)
+    (ran: Set<string>)
+    (reused: Set<string>)
+    (failedTests: Result<OutstandingFailure list, string>)
+    : (string -> bool) * string list option =
+    let ranInFull (project: string) =
+        selection.TryFind project = Some ProjectInFull
+        && ran.Contains project
+        && not (reused.Contains project)
+
+    let failedKeys =
+        failedTests
+        |> Result.toOption
+        |> Option.map (
+            List.choose (fun f ->
+                match f.Class, f.Method with
+                | Some cls, Some meth -> Some(TraceShadow.failureKey f.Project cls meth)
+                | _ -> None)
+        )
+
+    ranInFull, failedKeys
+
 /// The first stage of a run's completion: its results, coverage and check reach, the
 /// shadow trace comparison, and the failures it found, retired and carried.
 let internal assembleRunResults (facts: CompletionRunFacts) : AssembledRunResults =
@@ -336,21 +363,15 @@ let internal assembleRunResults (facts: CompletionRunFacts) : AssembledRunResult
     // run's failed tests. A run with no complete report judges no miss.
     match traces with
     | Some wiring when not launch.TraceShadow.IsEmpty ->
-        let failedKeys =
-            match failedTests with
-            | Ok failures ->
-                failures
-                |> List.choose (fun f ->
-                    match f.Class, f.Method with
-                    | Some cls, Some meth -> Some(TraceShadow.failureKey f.Project cls meth)
-                    | _ -> None)
-            | Error _ -> []
+        let ranInFull, failedKeys =
+            shadowFacts launch.Selection (Set.ofSeq completed.Results.Keys) (Set.ofSeq launch.Reused.Keys) failedTests
 
         TraceShadow.atCompletion
             wiring.Policy
             repoRoot
             launch.TraceShadow
             (completed.RunId.ToString "N")
+            ranInFull
             failedKeys
             (Logging.info "test-prune")
     | _ -> ()

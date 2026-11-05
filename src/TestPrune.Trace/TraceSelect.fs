@@ -7,8 +7,9 @@
 /// This module only answers and compares; a host records the answer next to its static
 /// selection and still runs the static one. Not yet implemented from the phase-2 plan: R6
 /// (static fallback for code the probes cannot see), R7 (changed files no trace claims),
-/// fingerprint prediction, and eligibility. Until they are, a trace-only miss is expected
-/// where those rules would have fired, which is what the shadow rows are there to measure.
+/// fingerprint prediction. Until they are, a trace-only miss is expected where those rules
+/// would have fired, which is what the shadow rows are there to measure. A project is
+/// eligible when at least `EligibilityThreshold` of its tests have a complete trace.
 module TestPrune.Trace.TraceSelect
 
 open System
@@ -36,7 +37,15 @@ type Selection =
         Selected: Map<string, Rule list>
         /// Share of the universe with a complete trace.
         CompleteShare: float
+        /// At least `EligibilityThreshold` of the universe has a complete trace. Only an
+        /// eligible project could ever be selected by trace; an ineligible one keeps its
+        /// static selection, so its misses do not count against the promotion bar.
+        Eligible: bool
     }
+
+/// The complete-trace share at which a project is eligible (phase 1's census bar).
+[<Literal>]
+let EligibilityThreshold = 0.99
 
 /// The rule's code, `R1`..`R4`.
 let ruleCode =
@@ -90,6 +99,13 @@ let select
 
                 key, t.Complete, List.choose id [ changedSymbol; changedInput; incomplete ])
 
+    let completeShare =
+        if keys.IsEmpty then
+            1.0
+        else
+            float (judged |> List.filter (fun (_, complete, _) -> complete) |> List.length)
+            / float keys.Length
+
     { TestProject = testProject
       Universe = Set.ofList keys
       Selected =
@@ -97,12 +113,8 @@ let select
         |> List.filter (fun (_, _, rules) -> not rules.IsEmpty)
         |> List.map (fun (key, _, rules) -> key, rules)
         |> Map.ofList
-      CompleteShare =
-        if keys.IsEmpty then
-            1.0
-        else
-            float (judged |> List.filter (fun (_, complete, _) -> complete) |> List.length)
-            / float keys.Length }
+      CompleteShare = completeShare
+      Eligible = completeShare >= EligibilityThreshold }
 
 /// Rule code -> how many selected tests that rule selected.
 let ruleCounts (s: Selection) : Map<string, int> =
@@ -120,24 +132,38 @@ let private classOf (key: string) =
 
 /// Static against trace selection, by test key and by class.
 type Comparison =
-    { StaticTests: Set<string>
-      TraceTests: Set<string>
-      StaticOnly: Set<string>
-      TraceOnly: Set<string>
-      StaticClasses: Set<string>
-      TraceClasses: Set<string> }
+    {
+        StaticTests: Set<string>
+        TraceTests: Set<string>
+        StaticOnly: Set<string>
+        TraceOnly: Set<string>
+        StaticClasses: Set<string>
+        TraceClasses: Set<string>
+        /// The universe's tests in the static side's classes: what it launches, since a host
+        /// launches by class.
+        StaticClassTests: int
+        /// The universe's tests in the trace side's classes.
+        TraceClassTests: int
+    }
 
 /// Compare the static selection's test keys with the trace selection.
 let compare (staticSelection: string list) (s: Selection) : Comparison =
     let st = Set.ofList staticSelection
     let tr = s.Selected |> Map.keys |> Set.ofSeq
+    let staticClasses = st |> Set.map classOf
+    let traceClasses = tr |> Set.map classOf
+
+    let launched (classes: Set<string>) =
+        s.Universe |> Seq.filter (classOf >> classes.Contains) |> Seq.length
 
     { StaticTests = st
       TraceTests = tr
       StaticOnly = Set.difference st tr
       TraceOnly = Set.difference tr st
-      StaticClasses = st |> Set.map classOf
-      TraceClasses = tr |> Set.map classOf }
+      StaticClasses = staticClasses
+      TraceClasses = traceClasses
+      StaticClassTests = launched staticClasses
+      TraceClassTests = launched traceClasses }
 
 /// The universe key a failed row's key names: the key itself, or, for a theory row, whose
 /// reported method carries its arguments (`m(x: 1, y: "a")`), the key before that
@@ -175,6 +201,38 @@ let unknownFailures (s: Selection) (failedKeys: string list) : string list =
     |> List.distinct
     |> List.sort
 
+
+/// On a run where every test ran: of the failed tests the universe knows, how many the
+/// trace selection selected, as `r/t`. Recall 1.0 (`t/t`, including `0/0`) is the bar.
+let traceRecall (s: Selection) (failedKeys: string list) : string =
+    let failed = failedKeys |> List.choose (universeKeyOf s.Universe) |> List.distinct
+    let reached = failed |> List.filter s.Selected.ContainsKey
+    $"%d{reached.Length}/%d{failed.Length}"
+
+/// Whether shadow read the right environment's traces. `predicted` is the fingerprint it
+/// read, `actual` the one the run recorded under (`None`: the run recorded no traces), and
+/// `predictedHadTraces` whether anything was stored under `predicted`.
+let fingerprintOutcome (predicted: string) (actual: string option) (predictedHadTraces: bool) : FingerprintOutcome =
+    match actual with
+    | None -> NotTraced
+    | Some a when a = predicted -> PredictionHit
+    | Some _ when predictedHadTraces -> UnsafeMiss
+    | Some _ -> SafeMiss
+
+/// Selected tests whose only rule is an incomplete trace, and whose every incomplete reason
+/// is an untraced child process: what a trusted-executable allowlist would release.
+let childUntracedTests (s: Selection) : int =
+    s.Selected
+    |> Map.filter (fun _ rules ->
+        rules
+        |> List.forall (function
+            | Incomplete reasons ->
+                not reasons.IsEmpty
+                && reasons
+                   |> List.forall (fun r -> r.StartsWith("child-process-untraced:", StringComparison.Ordinal))
+            | _ -> false))
+    |> Map.count
+
 /// One log line per project per run.
 let logLine (s: Selection) (c: Comparison) (selectMs: int64) : string =
     let rules =
@@ -187,14 +245,34 @@ let logLine (s: Selection) (c: Comparison) (selectMs: int64) : string =
 
     $"trace-shadow: %s{s.TestProject} static %d{c.StaticTests.Count}/%d{c.StaticClasses.Count}c, trace %d{c.TraceTests.Count}/%d{c.TraceClasses.Count}c, universe %d{s.Universe.Count}, trace-only %d{c.TraceOnly.Count}, static-only %d{c.StaticOnly.Count}, %s{rules}, complete %.3f{s.CompleteShare}, %d{selectMs} ms"
 
+/// What a host knows about one run, beside the selection and the comparison, when it
+/// stores the row.
+type RowFacts =
+    {
+        RunId: string
+        Mode: ShadowRunMode
+        /// `tests.traces.record` as written: "full-runs" or "every-run".
+        RecordPolicy: string
+        /// The fingerprint whose traces the selection read.
+        Fingerprint: string
+        /// The fingerprint the run recorded the project's traces under, if any.
+        ActualFingerprint: string option
+        /// Whether any trace was stored under `Fingerprint`.
+        PredictedHadTraces: bool
+        RecordedAt: DateTimeOffset
+        SelectMs: int64
+        /// `traceRecall` on a full run, else `n/a: <why>`.
+        TraceRecall: string
+    }
+
 /// The row a host stores for one comparison.
-let row (runId: string) (fingerprint: string) (at: DateTimeOffset) (selectMs: int64) (s: Selection) (c: Comparison) =
+let row (f: RowFacts) (s: Selection) (c: Comparison) : ShadowRow =
     let first200 (xs: Set<string>) = xs |> Set.toList |> List.truncate 200
 
-    { RunId = runId
+    { RunId = f.RunId
       TestProject = s.TestProject
-      EnvFingerprint = fingerprint
-      RecordedAt = at
+      EnvFingerprint = f.Fingerprint
+      RecordedAt = f.RecordedAt
       Universe = s.Universe.Count
       CompleteShare = s.CompleteShare
       StaticTests = c.StaticTests.Count
@@ -204,4 +282,13 @@ let row (runId: string) (fingerprint: string) (at: DateTimeOffset) (selectMs: in
       RuleCounts = ruleCounts s
       StaticOnly = first200 c.StaticOnly
       TraceOnly = first200 c.TraceOnly
-      SelectMs = selectMs }
+      SelectMs = f.SelectMs
+      Mode = f.Mode
+      RecordPolicy = f.RecordPolicy
+      Eligible = Some s.Eligible
+      ActualFingerprint = f.ActualFingerprint
+      FingerprintOutcome = fingerprintOutcome f.Fingerprint f.ActualFingerprint f.PredictedHadTraces
+      TraceRecall = f.TraceRecall
+      StaticClassTests = c.StaticClassTests
+      TraceClassTests = c.TraceClassTests
+      ChildUntracedTests = childUntracedTests s }

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `shadow-report` verb (AUTOMATION-975): evaluates the promotion bar over one or more shadow stores
+  (`--db`, repeatable; a run stored twice counts once), from `--since` on. Exits 0 when every bar passes, 1
+  when one fails, 2 on a usage error or a store it cannot read.
+
 ## 0.8.0 - 2026-11-02
 
 - fix: `mutate --json` prints its report. It threw `NotSupportedException` instead: System.Text.Json

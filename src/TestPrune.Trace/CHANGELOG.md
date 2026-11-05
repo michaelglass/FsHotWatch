@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- feat: a shadow row records what it measured (AUTOMATION-975): the run kind (`impact` or `full`), the
+  recording policy, eligibility (`TraceSelect.EligibilityThreshold`, 0.99 of the universe with a complete
+  trace), the fingerprint the run recorded under and its outcome against the one shadow read (`hit`,
+  `safe-miss`, `unsafe-miss`, `untraced`), the trace selection's recall on a full run (`r/t`), the tests each
+  side launches once classes are expanded, and the tests held only by untraced child processes. Trace schema
+  migration 4 adds the columns and `mutation_samples`; rows written before it read back as not recorded.
+- feat: `ShadowReport`, the phase-2 promotion bar over a project's rows, misses and mutation samples. No bar
+  passes on no data.
+- BREAKING (API): `TraceSelect.Selection.Eligible`, `TraceSelect.Comparison.StaticClassTests` and
+  `TraceClassTests`, `TraceStore.ShadowRow`'s new fields; `TraceSelect.row` takes a `RowFacts`. New:
+  `TraceSelect.traceRecall`, `fingerprintOutcome`, `childUntracedTests`; `Store.RecordMutationSample`,
+  `Store.MutationSamples`.
+
 - fix: `TraceSelect.verifiedFailureMisses` judges a failed theory row under its test's key. A runner reports a
   theory row's method with its arguments (`m(x: 1)`), which named no universe key, so the miss was dropped
   without a word (AUTOMATION-975). New: `TraceSelect.universeKeyOf` (a key, or the key before a theory

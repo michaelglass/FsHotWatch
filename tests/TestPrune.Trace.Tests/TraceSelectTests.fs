@@ -98,7 +98,22 @@ let ``a shadow row round-trips through the store, and so do its misses`` () =
         let s = selectAll [ "P|C|unchanged"; "P|C|symbol" ]
         let c = TraceSelect.compare [ "P|C|unchanged" ] s
         let at = DateTimeOffset(2026, 10, 31, 0, 0, 0, TimeSpan.Zero)
-        let row = TraceSelect.row "run-1" "E" at 5L s c
+
+        let row =
+            TraceSelect.row
+                { RunId = "run-1"
+                  Mode = FullSuiteRun
+                  RecordPolicy = "every-run"
+                  Fingerprint = "E"
+                  ActualFingerprint = Some "F"
+                  PredictedHadTraces = true
+                  RecordedAt = at
+                  SelectMs = 5L
+                  TraceRecall = "1/2" }
+                s
+                c
+
+        test <@ row.FingerprintOutcome = UnsafeMiss && row.Eligible = Some true @>
         store.RecordShadow(row)
         store.RecordShadowMisses("run-1", "P", at, [ "P|C|unchanged" ])
 
@@ -163,3 +178,215 @@ let ``a failed theory row is judged under its test's key, and a key naming no te
     test <@ TraceSelect.verifiedFailureMisses s failed = [ "P|C|unchanged" ] @>
     test <@ TraceSelect.unknownFailures s failed = [ "P|C|gone(x: 3)"; "P|C|plain" ] @>
     test <@ TraceSelect.universeKeyOf s.Universe "P|C|unchanged" = Some "P|C|unchanged" @>
+
+// --- the row's measurement columns (AUTOMATION-975, plan Task 6) ------------------------
+
+[<Fact>]
+let ``a project is eligible when at least 0.99 of its universe has a complete trace`` () =
+    test <@ TraceSelect.EligibilityThreshold = 0.99 @>
+    test <@ not (selectAll [ "P|C|unchanged"; "P|C|incomplete" ]).Eligible @>
+    test <@ (selectAll [ "P|C|unchanged"; "P|C|symbol" ]).Eligible @>
+    // R1 (no trace) counts against eligibility as much as an incomplete trace does.
+    test <@ not (selectAll [ "P|C|unchanged"; "P|C|new" ]).Eligible @>
+
+[<Fact>]
+let ``the comparison counts the tests each side launches once its classes are expanded`` () =
+    let s = selectAll [ "P|C|unchanged"; "P|C|symbol"; "P|D|x"; "P|D|y"; "P|E|z" ]
+    let c = TraceSelect.compare [ "P|D|x"; "P|E|z" ] s
+    // Static launches classes D and E: 3 tests. Trace selected C.symbol and the untraced
+    // D and E tests, so it launches classes C, D and E: all 5, C.unchanged included.
+    test <@ c.StaticClassTests = 3 && c.TraceClassTests = 5 @>
+    test <@ c.TraceTests.Count = 4 @>
+
+[<Fact>]
+let ``trace recall is the failed tests the trace selection selected, out of the failed tests it knows`` () =
+    let s = selectAll [ "P|C|unchanged"; "P|C|symbol"; "P|C|new" ]
+    test <@ TraceSelect.traceRecall s [ "P|C|symbol"; "P|C|unchanged(x: 1)"; "P|X|unknown" ] = "1/2" @>
+    test <@ TraceSelect.traceRecall s [] = "0/0" @>
+    test <@ TraceSelect.traceRecall s [ "P|C|new"; "P|C|new" ] = "1/1" @>
+
+[<Theory>]
+[<InlineData("E", "E", true, "hit")>]
+[<InlineData("E", "F", true, "unsafe-miss")>]
+[<InlineData("E", "F", false, "safe-miss")>]
+[<InlineData("E", null, true, "untraced")>]
+let ``fingerprint outcomes`` (predicted: string, actual: string, hadTraces: bool, expected: string) =
+    test
+        <@
+            TraceStore.fingerprintOutcomeCode (TraceSelect.fingerprintOutcome predicted (Option.ofObj actual) hadTraces) = expected
+        @>
+
+[<Fact>]
+let ``a test held only by an untraced child process is counted, one held by anything else is not`` () =
+    let child =
+        trace "P|C|child" false [ "child-process-untraced:sh" ] [ "N.f", "h1" ] []
+
+    let both =
+        trace "P|C|both" false [ "child-process-untraced:sh" ] [ "N.g", "old" ] []
+
+    let other = trace "P|C|other" false [ "no-outcome" ] [] []
+    let traces = Map [ "P|C|child", child; "P|C|both", both; "P|C|other", other ]
+
+    let s =
+        TraceSelect.select "P" [ "P|C|child"; "P|C|both"; "P|C|other" ] traces.TryFind versions.TryFind inputs.TryFind
+
+    test <@ TraceSelect.childUntracedTests s = 1 @>
+
+[<Fact>]
+let ``a row written before the measurement columns reads back as not recorded`` () =
+    let path =
+        Path.Combine(Path.GetTempPath(), "tp-shadow-old-" + Guid.NewGuid().ToString "N" + ".db")
+
+    try
+        do
+            use old = Store.OpenWith(migrations |> List.take 3, path)
+            ignore old
+
+        do
+            use conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source=%s{path}")
+            conn.Open()
+            use cmd = conn.CreateCommand()
+
+            cmd.CommandText <-
+                """INSERT INTO shadow_selections (run_id, test_project, env_fingerprint, recorded_at, universe,
+                       complete_share, static_tests, trace_tests, static_classes, trace_classes, rule_counts,
+                       static_only, trace_only, select_ms)
+                   VALUES ('old', 'P', 'E', '2026-11-01T00:00:00.0000000+00:00', 3, 1.0, 1, 1, 1, 1, '', '[]', '[]', 9)"""
+
+            cmd.ExecuteNonQuery() |> ignore
+            Microsoft.Data.Sqlite.SqliteConnection.ClearPool conn
+
+        use store = Store.Open path
+        let row = store.ShadowRows "P" |> List.exactlyOne
+
+        test
+            <@
+                (row.Mode, row.Eligible, row.FingerprintOutcome, row.ActualFingerprint) = (ModeNotRecorded,
+                                                                                           None,
+                                                                                           OutcomeNotRecorded,
+                                                                                           None)
+            @>
+
+        test <@ row.TraceRecall.StartsWith "n/a" && row.RecordPolicy = "" @>
+    finally
+        File.Delete path
+
+[<Fact>]
+let ``a mutation sample round-trips through the store`` () =
+    let path =
+        Path.Combine(Path.GetTempPath(), "tp-mutation-" + Guid.NewGuid().ToString "N" + ".db")
+
+    try
+        use store = Store.Open path
+
+        let sample =
+            { TestProject = "P"
+              Kind = UnionTypeMutant
+              Symbol = "N.U"
+              TreeHash = "t"
+              RecordedAt = DateTimeOffset(2026, 11, 5, 0, 0, 0, TimeSpan.Zero)
+              Outcome = Measured
+              Failing = 3
+              Selected = 9
+              Missed = [ "P|C|a" ] }
+
+        store.RecordMutationSample sample
+
+        store.RecordMutationSample
+            { sample with
+                Kind = SymbolMutant
+                Outcome = NoFailure
+                Missed = [] }
+
+        test
+            <@
+                store.MutationSamples "P" = [ sample
+                                              { sample with
+                                                  Kind = SymbolMutant
+                                                  Outcome = NoFailure
+                                                  Missed = [] } ]
+            @>
+
+        test <@ List.isEmpty (store.MutationSamples "Q") @>
+    finally
+        File.Delete path
+
+[<Fact>]
+let ``an incomplete trace with no reason is not held by an untraced child`` () =
+    let none = trace "P|C|none" false [] [ "N.f", "h1" ] []
+    let traces = Map [ "P|C|none", none ]
+
+    let s =
+        TraceSelect.select "P" [ "P|C|none" ] traces.TryFind versions.TryFind inputs.TryFind
+
+    test <@ s.Selected.ContainsKey "P|C|none" && TraceSelect.childUntracedTests s = 0 @>
+
+[<Fact>]
+let ``every row mode and fingerprint outcome, and every sample outcome, round-trips through the store`` () =
+    let path =
+        Path.Combine(Path.GetTempPath(), "tp-shadow-all-" + Guid.NewGuid().ToString "N" + ".db")
+
+    try
+        use store = Store.Open path
+        let s = selectAll [ "P|C|unchanged" ]
+        let c = TraceSelect.compare [] s
+        let at = DateTimeOffset(2026, 11, 5, 0, 0, 0, TimeSpan.Zero)
+
+        let baseRow =
+            TraceSelect.row
+                { RunId = "r"
+                  Mode = ImpactRun
+                  RecordPolicy = "every-run"
+                  Fingerprint = "E"
+                  ActualFingerprint = None
+                  PredictedHadTraces = false
+                  RecordedAt = at
+                  SelectMs = 1L
+                  TraceRecall = "n/a: impact run" }
+                s
+                c
+
+        let rows =
+            [ for i, (mode, outcome) in
+                  List.indexed
+                      [ ImpactRun, PredictionHit
+                        FullSuiteRun, SafeMiss
+                        ModeNotRecorded, UnsafeMiss
+                        ImpactRun, NotTraced
+                        ImpactRun, OutcomeNotRecorded ] ->
+                  { baseRow with
+                      RunId = $"r%d{i}"
+                      Mode = mode
+                      FingerprintOutcome = outcome
+                      Eligible = (if i = 0 then None else Some(i % 2 = 0)) } ]
+
+        for r in rows do
+            store.RecordShadow r
+
+        test <@ store.ShadowRows "P" = rows @>
+
+        test
+            <@
+                [ PredictionHit; SafeMiss; UnsafeMiss; NotTraced; OutcomeNotRecorded ]
+                |> List.map fingerprintOutcomeCode = [ "hit"; "safe-miss"; "unsafe-miss"; "untraced"; "not-recorded" ]
+            @>
+
+        let sample outcome =
+            { TestProject = "P"
+              Kind = SymbolMutant
+              Symbol = "N.f"
+              TreeHash = "t"
+              RecordedAt = at
+              Outcome = outcome
+              Failing = 0
+              Selected = 0
+              Missed = [] }
+
+        let samples = [ Measured; NoFailure; NotMutable; RunFailed ] |> List.map sample
+
+        for x in samples do
+            store.RecordMutationSample x
+
+        test <@ store.MutationSamples "P" = samples @>
+    finally
+        File.Delete path

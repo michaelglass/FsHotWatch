@@ -433,3 +433,156 @@ let ``mutate --json prints the report as JSON, each sample's outcome by name`` (
     let missedTotal = doc.RootElement.GetProperty("MissedTotal").GetInt32()
 
     test <@ (outcome, missed, missedTotal) = ("measured", "t2", 1) @>
+
+// --- shadow-report (AUTOMATION-975, plan Task 8) ----------------------------------------
+
+/// A store holding `rows` and `samples`, deleted after `f`.
+let private withShadowStore (rows: TraceStore.ShadowRow list) (samples: TraceStore.MutationSample list) f =
+    let path =
+        Path.Combine(Path.GetTempPath(), "tp-shadow-report-" + Guid.NewGuid().ToString "N" + ".db")
+
+    try
+        do
+            use store = TraceStore.Store.Open path
+
+            for r in rows do
+                store.RecordShadow r
+
+            for s in samples do
+                store.RecordMutationSample s
+
+        f path
+    finally
+
+        for p in [ path; path + "-wal"; path + "-shm" ] do
+            File.Delete p
+
+[<Fact>]
+let ``shadow-report over a green window exits 0 and prints every bar`` () =
+    withShadowStore ShadowReportTests.greenRows ShadowReportTests.greenSamples (fun db ->
+        let o = Program.run cwd [ "shadow-report"; "--project"; "P"; "--db"; db ]
+        test <@ o.Exit = 0 && o.Stderr = "" @>
+        test <@ o.Stdout.Contains "| window |" && o.Stdout.Contains "| payoff |" @>)
+
+[<Fact>]
+let ``shadow-report exits 1 when a bar fails, and on a project with no rows`` () =
+    withShadowStore ShadowReportTests.greenRows [] (fun db ->
+        let o = Program.run cwd [ "shadow-report"; "--project"; "P"; "--db"; db ]
+        test <@ o.Exit = 1 && o.Stdout.Contains "| mutation |" @>
+        let other = Program.run cwd [ "shadow-report"; "--project"; "Q"; "--db"; db ]
+        test <@ other.Exit = 1 @>)
+
+[<Fact>]
+let ``shadow-report reads every --db and counts a run once`` () =
+    let first, second = ShadowReportTests.greenRows |> List.splitAt 70
+    // Both stores hold i60..i69: the same runs, recorded twice, count once.
+    let overlap = first |> List.skip 60
+
+    withShadowStore first ShadowReportTests.greenSamples (fun a ->
+        withShadowStore (overlap @ second) [] (fun b ->
+            let one = Program.run cwd [ "shadow-report"; "--project"; "P"; "--db"; a ]
+            test <@ one.Exit = 1 @>
+
+            let both =
+                Program.run cwd [ "shadow-report"; "--project"; "P"; "--db"; a; "--db"; b; "--json" ]
+
+            test <@ both.Exit = 0 @>
+            use doc = JsonDocument.Parse both.Stdout
+            test <@ doc.RootElement.GetProperty("rows").GetInt32() = 132 @>
+            test <@ doc.RootElement.GetProperty("passes").GetBoolean() @>))
+
+[<Fact>]
+let ``shadow-report --since leaves out older rows`` () =
+    withShadowStore ShadowReportTests.greenRows ShadowReportTests.greenSamples (fun db ->
+        let o =
+            Program.run
+                cwd
+                [ "shadow-report"
+                  "--project"
+                  "P"
+                  "--db"
+                  db
+                  "--since"
+                  "2026-10-10"
+                  "--json" ]
+
+        use doc = JsonDocument.Parse o.Stdout
+        test <@ o.Exit = 1 && doc.RootElement.GetProperty("rows").GetInt32() < 132 @>)
+
+[<Fact>]
+let ``shadow-report usage errors and an unreadable store exit 2`` () =
+    let noDb = Program.run cwd [ "shadow-report"; "--project"; "P" ]
+    test <@ noDb.Exit = 2 && noDb.Stderr.Contains "usage: test-prune-traces shadow-report" @>
+
+    let noProject = Program.run cwd [ "shadow-report"; "--db"; "x.db" ]
+    test <@ noProject.Exit = 2 @>
+
+    let badSince =
+        Program.run cwd [ "shadow-report"; "--project"; "P"; "--db"; "x.db"; "--since"; "soon" ]
+
+    test <@ badSince.Exit = 2 && badSince.Stderr.StartsWith "--since needs " @>
+
+    let dir = Directory.CreateTempSubdirectory("tp-shadow-bad-").FullName
+
+    try
+        let bad = Path.Combine(dir, "bad.db")
+        File.WriteAllText(bad, "not a database")
+        let o = Program.run cwd [ "shadow-report"; "--project"; "P"; "--db"; bad ]
+        test <@ o.Exit = 2 && o.Stderr.Contains "bad.db" @>
+
+        let missing =
+            Program.run cwd [ "shadow-report"; "--project"; "P"; "--db"; Path.Combine(dir, "none.db") ]
+
+        test <@ missing.Exit = 2 && missing.Stderr.Contains "none.db" @>
+    finally
+        Directory.Delete(dir, true)
+
+[<Fact>]
+let ``shadow-report --since takes a number of days`` () =
+    withShadowStore ShadowReportTests.greenRows ShadowReportTests.greenSamples (fun db ->
+        // Every green row is from October 2026, long before 3 days ago.
+        let o =
+            Program.run cwd [ "shadow-report"; "--project"; "P"; "--db"; db; "--since"; "3d"; "--json" ]
+
+        use doc = JsonDocument.Parse o.Stdout
+        test <@ o.Exit = 1 && doc.RootElement.GetProperty("rows").GetInt32() = 0 @>)
+
+[<Theory>]
+[<InlineData("--since", "xd", "--since needs <n>d or an ISO date, got xd")>]
+[<InlineData("--project", "--json", "--project needs a value")>]
+[<InlineData("--db", "--json", "--db needs a value")>]
+[<InlineData("--bogus", "x", "unknown argument --bogus")>]
+[<InlineData("--since", "--json", "--since needs a value")>]
+let ``shadow-report refuses a flag without its value and an unknown flag``
+    (flag: string, value: string, message: string)
+    =
+    let o = Program.run cwd [ "shadow-report"; flag; value ]
+    test <@ o.Exit = 2 && o.Stderr.StartsWith(message + "\n") @>
+
+[<Fact>]
+let ``shadow-report on a store a newer trace schema wrote exits 2 and names it`` () =
+    let dir = Directory.CreateTempSubdirectory("tp-shadow-newer-").FullName
+
+    try
+        let path = Path.Combine(dir, "newer.db")
+
+        do
+            use conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source=%s{path}")
+            conn.Open()
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "PRAGMA user_version = 999;"
+            cmd.ExecuteNonQuery() |> ignore
+            Microsoft.Data.Sqlite.SqliteConnection.ClearPool conn
+
+        let o = Program.run cwd [ "shadow-report"; "--project"; "P"; "--db"; path ]
+        test <@ o.Exit = 2 && o.Stderr.Contains "newer.db" && o.Stderr.Contains "v999" @>
+    finally
+        Directory.Delete(dir, true)
+
+[<Theory>]
+[<InlineData("--project")>]
+[<InlineData("--db")>]
+[<InlineData("--since")>]
+let ``shadow-report refuses a valued flag at the end of the line`` (flag: string) =
+    let o = Program.run cwd [ "shadow-report"; flag ]
+    test <@ o.Exit = 2 && o.Stderr.StartsWith(flag + " needs a value\n") @>
