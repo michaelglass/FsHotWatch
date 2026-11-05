@@ -89,3 +89,35 @@ Unit tests, against an injected clock except (d):
 - RED: 5 failed against a stub that kept the charge unweighted. These were every test of
   the charge (a), (b) and (d). The config, evidence-key and validation tests were written
   with the stub's types, so they passed against it.
+
+## Addendum (2026-11-05): no in-run exclusivity, by measurement
+
+AUTOMATION-1299 asked again for a project that runs with no other heavy test work beside
+it. A weight does not give that within one run: a session's groups still launch together,
+and the weight is charged between sessions. Before adding an in-run `exclusive`, the
+question was whether the incident it answers still happens, and what serialising would
+cost.
+
+The data is one consumer's retained run profiles: 426 `<Project>.profile.jsonl` files
+across its workspaces, 2026-10-16 to 11-04. Its heavy project, the subprocess-bound
+build-tools suite, appears in 70 of them, with a 600 s budget in every one.
+
+- **Budget.** 70 of 70 runs finished inside it, with a maximum of 326 s. The one run that
+  did not pass matched no tests; none timed out. The retained CTRF reports (3,279) hold no
+  xUnit timeout in that project at all.
+- **What concurrency costs it.** Run mostly alone (less than half its wall overlapped by
+  other projects of the same run): median 133 s, p90 151 s, load 4.6 per core (n=15). Beside
+  about two other projects: median 193 s, p90 269 s, load 14.1 per core (n=52). The box's
+  load explains the stretch at least as well as the overlap does. Under 2 per core it took
+  105 s, under 5 per core 144 s, and at 5 or more per core 196 s.
+- **What exclusivity would cost.** For the 59 runs with at least three projects, I took the
+  rest of the run's wall as measured and added the project's lone median of 133 s. The mean
+  run wall would go from 447 s to 580 s, about 30% longer, and every one of the 59 runs would
+  be longer.
+
+So the overrun this was raised for (AUTOMATION-1298) no longer happens under the current
+budgets, weights and starvation re-run (ADR-040). An in-run `exclusive` would lengthen
+every run by about 30% to protect a budget no run came near. It is not added.
+
+Reopen when a project overruns its budget and the starvation re-run does not explain it:
+that is, the timeout was not under measured starvation, or the re-run alone also timed out.
