@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `mutate --index <test-impact db>` judges mutants by symbol through trace selection; the report says
+  `judged by symbol` (AUTOMATION-1497).
+
 - feat: `file-census --db <trace store> [--project <name>]` stores the census's gaps for R7 (AUTOMATION-1497).
 
 - feat: `mutate --union-samples N` (default 5) adds union-type mutation samples (AUTOMATION-1495).

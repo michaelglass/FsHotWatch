@@ -224,7 +224,7 @@ index was built from.
 ### Mutate: does trace selection select every test a change breaks?
 
 ```text
-test-prune-traces mutate --project-dir <dir> --assembly <name> [--samples 20] [--union-samples 5] [--seed 1] [--only <text>]... [--diff <file>] [--db <store>] [--project <name>]
+test-prune-traces mutate --project-dir <dir> --assembly <name> [--samples 20] [--union-samples 5] [--index <db>] [--seed 1] [--only <text>]... [--diff <file>] [--db <store>] [--project <name>]
 ```
 
 `mutate` runs the woven project once to record each test's trace, then once per sampled
@@ -243,6 +243,10 @@ It works on probe ids, not joined symbols. A method's closures are their own tar
 the measured recall is a lower bound on symbol-level selection, which joins a closure to the
 method that holds it. Selection is not changed (and nothing is stored without `--db`): this is the evidence
 for whether trace selection can replace the static walk.
+
+`--index <test-impact db>` judges each mutant against trace selection itself, for "the
+target's symbol changed" (R1-R4, then R6), over the first run's ingested traces. Without it the
+probe-level judgement above stands. The report ends with `judged by probe` or `judged by symbol`.
 
 `--union-samples` (default 5) adds **union-type** targets: each one is a union of the
 repository that the first run reflected over (`FSharpType.GetUnionCases` and the other

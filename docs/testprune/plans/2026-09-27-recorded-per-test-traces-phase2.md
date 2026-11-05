@@ -3837,6 +3837,33 @@ dotnet tool run test-prune-traces shadow-report --project TestPrune.Tests > "$CL
   outcome only. A `fingerprint_diff` column is left for when shadow-report needs the components in its
   table.
 
+### Decision D1i (2026-11-05): symbol-level mutation judging, as landed
+
+- **`mutate --index <test-impact db>`** judges every mutant against `TraceSelect` for "its symbol changed"
+  (`Mutation.symbolSelection`). The baseline run's dumps are ingested into a scratch trace store against the
+  index. R1-R4 run over those traces with each seed's version replaced, then R6 runs with the seeds walked
+  statically through the index (`QueryAffectedTests`). A method target's seeds are the symbols its probe ids
+  join to, and a union target's seed is its type's symbol. A target that joins to nothing indexed, or a
+  baseline that recorded no fingerprint, falls back to the probe-level judgement.
+- **Without `--index` the harness judges by probe, as before.** The report says which it used
+  (`judged by probe` or `judged by symbol`). The index is probed read-only first, so a schema mismatch is a
+  refusal, never a recreated index.
+
+### Decision D1j (2026-11-05): the nightly `mutate --diff` job is proposed, not scheduled from here
+
+The samples belong in the box-wide shadow store, and only the machine that holds it can write them. GitHub CI
+cannot write to it. So the job is a host schedule (launchd or cron on the always-on box), outside this
+repository. The recipe, run from the FsHotWatch checkout after `mise run build`:
+
+```bash
+jj diff --git -r 'main-..main' > "$TMPDIR/change.diff"
+dotnet run --project src/TestPrune.Trace.Cli --no-build -- mutate --project-dir tests/TestPrune.Tests \
+  --assembly TestPrune.Tests --diff "$TMPDIR/change.diff" --index .fshw/test-impact.db \
+  --db "<box shadow store>" --samples 10 --union-samples 5 --seed "$(date +%j)"
+```
+
+`TraceShadow.shadowStorePath` names the box shadow store. A day without a change to `main` is skipped.
+
 ## Task D2: Promote TestPrune to live
 
 Only after D1's report exits 0.

@@ -471,3 +471,32 @@ let ``a union-type mutant selects the tests that reflected over the union and th
 
     test <@ s.Kind = TraceStore.UnionTypeMutant @>
     test <@ s.Missed = [ "constructs" ] @>
+
+// --- symbol-level judging (AUTOMATION-1497) ------------------------------------------------
+
+[<Fact>]
+let ``a target's symbols are the indexed ones its probes and union types name`` () =
+    let ix: Joiner.SymbolIndex =
+        { InFile = fun _ -> []
+          Exists = fun n -> n = "Lib.Shapes.Colour"
+          IsIndexedFile = fun _ -> true
+          RepoRoot = "/repo" }
+
+    let joined =
+        [| Joiner.ToSymbol "Lib.A.f"
+           Joiner.ToFile "src/A.fs"
+           Joiner.Dropped
+           Joiner.ToSymbol "Lib.A.f" |]
+
+    let target: Mutation.Target =
+        { Name = "t"
+          Ids = [ 0; 1; 2; 3 ]
+          Types = [ "Lib.Shapes+Colour"; "Lib.Unknown" ] }
+
+    test <@ Mutation.targetSymbols ix joined target = [ "Lib.A.f"; "Lib.Shapes.Colour" ] @>
+
+[<Fact>]
+let ``a target with no indexed symbol is judged by probe`` () =
+    let byProbe = set [ "probe" ]
+    test <@ Mutation.bySymbolOr byProbe [] (fun _ -> set [ "symbol" ]) = byProbe @>
+    test <@ Mutation.bySymbolOr byProbe [ "S" ] Set.ofList = set [ "S" ] @>

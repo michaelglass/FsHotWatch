@@ -246,6 +246,7 @@ type MutateMeasure =
         -> string list
         -> Map<string, (int * int) list> option
         -> TimeSpan
+        -> Mutation.Index option
         -> Result<Mutation.MutationReport, string>
 
 /// The process-driving measurements the verbs run (substituted in tests).
@@ -260,7 +261,7 @@ let measures =
     { Audit = Audit.run
       Overhead = Overhead.run
       FileCensus = FileCensus.run
-      Mutate = Mutation.run }
+      Mutate = Mutation.runWith }
 
 let private measureTail =
     "  [--repo <root>] [--weave-tests sites|full] [--timeout-min 30] [--keep <dir>] [--json] [-- <app args>]\n"
@@ -279,11 +280,12 @@ let overheadUsage =
 
 /// The usage of the mutate verb.
 let mutateUsage =
-    "usage: test-prune-traces mutate --project-dir <dir> --assembly <name> [--samples 20] [--union-samples 5] [--seed 1] [--only <text>]...\n"
+    "usage: test-prune-traces mutate --project-dir <dir> --assembly <name> [--samples 20] [--union-samples 5] [--seed 1] [--only <text>]... [--index <db>]\n"
     + "  [--diff <unified diff>] [--db <shadow store>] [--project <test project>]\n"
     + "  makes one sampled repository method throw per run and checks every test it breaks is one its trace selects\n"
     + "  --diff samples only the methods a real change touched (its new-side lines, e.g. jj diff --git or git diff -U0);\n"
     + "  --db stores every sample there under --project (default: the assembly), for shadow-report\n"
+    + "  --index <test-impact db> judges each mutant against trace selection for \"its symbol changed\" (R1-R4, R6)\n"
     + "  --union-samples draws union-type mutants (reflection over one union throws) from the unions a test reflected over\n"
     + measureTail
 
@@ -308,6 +310,7 @@ type private MeasureArgs =
       Diff: string option
       Db: string option
       Project: string option
+      IndexPath: string option
       TimeoutMin: float
       Keep: string option
       Json: bool
@@ -348,7 +351,8 @@ let private setters: Map<string, string -> MeasureArgs -> Result<MeasureArgs, st
           "--keep", (fun v a -> Ok { a with Keep = Some v })
           "--diff", (fun v a -> Ok { a with Diff = Some v })
           "--db", (fun v a -> Ok { a with Db = Some v })
-          "--project", (fun v a -> Ok { a with Project = Some v }) ]
+          "--project", (fun v a -> Ok { a with Project = Some v })
+          "--index", (fun v a -> Ok { a with IndexPath = Some v }) ]
 
 let private common =
     [ "--project-dir"
@@ -398,6 +402,7 @@ let private measure
           Diff = None
           Db = None
           Project = None
+          IndexPath = None
           TimeoutMin = 30.0
           Keep = None
           Json = false
@@ -616,6 +621,26 @@ let private storeSamples (cwd: string) (db: string option) (project: string) (tr
         with e ->
             Error $"--db %s{db}: %s{e.Message}"
 
+/// The index `--index` names, checked read-only first (`unreadableIndex`): `None` without the
+/// flag, which judges mutants by probe.
+let private indexOf (cwd: string) (repoRoot: string) (path: string option) =
+    match path with
+    | None -> Ok None
+    | Some p ->
+        let full = Path.GetFullPath(p, cwd)
+
+        match unreadableIndex full with
+        | Some why -> Error $"--index: %s{why}"
+        | None ->
+            Ok(
+                Some
+                    { Mutation.Index.Symbols =
+                        TestPrune.Ports.toSymbolStore (
+                            TestPrune.Database.Database.create (full, TestPrune.Domain.WalkPolicy.FollowAll)
+                        )
+                      Mutation.Index.Root = repoRoot }
+            )
+
 /// Store a census's gaps (`FileCensus.gaps`) under `project` in the trace store at `db`, when
 /// one is given, replacing the project's earlier ones. R7 reads them from there.
 let private storeGaps (cwd: string) (db: string option) (project: string) (report: FileCensus.FileCensusReport) =
@@ -679,21 +704,27 @@ let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
               "--only"
               "--diff"
               "--db"
-              "--project" ]
+              "--project"
+              "--index" ]
             rest
             (fun req a ->
-                changeOf cwd a.Diff
-                |> Result.bind (fun (changed, treeHash) ->
-                    m.Mutate
-                        req
-                        a.AppArgs
-                        a.Samples
-                        a.UnionSamples
-                        a.Seed
-                        a.Only
-                        changed
-                        (TimeSpan.FromMinutes a.TimeoutMin)
-                    |> Result.bind (storeSamples cwd a.Db (a.Project |> Option.defaultValue req.TestProject) treeHash)))
+                indexOf cwd req.RepoRoot a.IndexPath
+                |> Result.bind (fun index ->
+                    changeOf cwd a.Diff
+                    |> Result.bind (fun (changed, treeHash) ->
+                        m.Mutate
+                            req
+                            a.AppArgs
+                            a.Samples
+                            a.UnionSamples
+                            a.Seed
+                            a.Only
+                            changed
+                            (TimeSpan.FromMinutes a.TimeoutMin)
+                            index
+                        |> Result.bind (
+                            storeSamples cwd a.Db (a.Project |> Option.defaultValue req.TestProject) treeHash
+                        ))))
             Mutation.passes
             Mutation.render
             (Mutation.toJson >> box)

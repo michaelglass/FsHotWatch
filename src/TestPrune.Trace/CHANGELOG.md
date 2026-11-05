@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: symbol-level mutation judging (AUTOMATION-1497). `Mutation.runWith ... (Some index)` ingests the baseline and
+  judges each mutant against `TraceSelect` for "its symbol changed" (R1-R4, R6) through `Mutation.symbolSelection`.
+  `run` still judges by probe. `MutationReport.Judging` says which was used. BREAKING (API): `MutationReport` has
+  `Judging`, and `Mutation.fs` now compiles after `TraceSelect.fs`.
+
 - feat: a fingerprint's inputs are kept (AUTOMATION-1497, plan Task 4). `Store.RecordFingerprintInputs` and
   `FingerprintInputs` hold each fingerprint's canonical JSON in `fingerprint_inputs` (trace schema 7), and ingestion
   keeps the run's. `Fingerprint.diffJson` names the fields two stored inputs differ in.
