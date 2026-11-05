@@ -954,6 +954,138 @@ let ``an env probe still reports what its command saw while the script is open f
 
     test <@ contents = "true" @>
 
+// --- A command refused as busy (ETXTBSY) is started again (AUTOMATION-1499) ---
+// A user's afterTests script may be regenerated just before it runs. In a daemon that
+// forks children concurrently, a child forked while the script was open for writing
+// holds that write handle until it execs, and Linux refuses to exec a file open for
+// writing. The refusal lasts only until that child execs, so the plugin starts the
+// command again after a short pause instead of failing the run.
+
+/// `ETXTBSY`, which Linux and macOS both number 26.
+let private textFileBusy () =
+    System.ComponentModel.Win32Exception(26, "Text file busy") :> exn
+
+/// A plugin over `spawn` that records each pause, fired by one completed test run.
+/// Returns the terminal status and the pauses taken.
+let private fireWith (name: string) (spawn: Spawn) (pause: int -> unit) (command: string) (repoRoot: string) =
+    let host = PluginHost.create (Unchecked.defaultof<_>) repoRoot
+    let pauses = System.Collections.Concurrent.ConcurrentQueue<int>()
+
+    let handler =
+        createWith
+            spawn
+            (fun ms ->
+                pauses.Enqueue ms
+                pause ms)
+            (FsHotWatch.PluginFramework.PluginName.create name)
+            anyTestTrigger
+            command
+            ""
+            repoRoot
+            None
+
+    host.RegisterHandler(handler)
+    let terminal = beginAwaitTerminal host name
+    emitRunCompletedFor host [ "P", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero) ]
+    test <@ terminal.Wait HangWait @>
+    terminal.Result, List.ofSeq pauses
+
+/// A spawn that raises `refusal` on its first `refusals` calls, then runs the command.
+let private refusingFirst (refusals: int) (refusal: unit -> exn) (calls: int ref) : Spawn =
+    fun command args dir env bounds ->
+        calls.Value <- calls.Value + 1
+
+        if calls.Value <= refusals then
+            raise (refusal ())
+        else
+            FsHotWatch.ProcessHelper.runProcess command args dir env bounds
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a command refused as busy is started again once the refusal passes`` () =
+    let calls = ref 0
+
+    let status, pauses =
+        fireWith "busy-twice" (refusingFirst 2 textFileBusy calls) ignore "true" "/tmp"
+
+    test <@ calls.Value = 3 @>
+    test <@ pauses.Length = 2 @>
+
+    test
+        <@
+            match status with
+            | Completed _ -> true
+            | _ -> false
+        @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a command that stays busy fails after a bounded number of tries`` () =
+    let calls = ref 0
+
+    let status, pauses =
+        fireWith "busy-always" (refusingFirst Int32.MaxValue textFileBusy calls) ignore "true" "/tmp"
+
+    test <@ pauses.Length >= 1 @>
+    test <@ calls.Value = pauses.Length + 1 @>
+
+    test
+        <@
+            match status with
+            | Failed(error, _, _) -> error.Contains "Text file busy"
+            | _ -> false
+        @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a command refused for any other reason is not started again`` () =
+    let calls = ref 0
+
+    let notFound () =
+        System.ComponentModel.Win32Exception(2, "No such file or directory") :> exn
+
+    let status, pauses =
+        fireWith "not-found" (refusingFirst Int32.MaxValue notFound calls) ignore "true" "/tmp"
+
+    test <@ calls.Value = 1 @>
+    test <@ List.isEmpty pauses @>
+
+    test
+        <@
+            match status with
+            | Failed _ -> true
+            | _ -> false
+        @>
+
+// The real ordering: the script is still open for writing when the command fires, and the
+// handle goes away during the plugin's first pause, as a forked child's copy does when the
+// child execs. Linux refuses the first exec (ETXTBSY); elsewhere the first exec runs.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a script still open for writing when its command fires runs once the handle is gone`` () =
+    withTempDir "busy-script" (fun dir ->
+        let outFile = System.IO.Path.Combine(dir, "out")
+        let script = writeEnvProbeScript dir outFile
+
+        let held =
+            new System.IO.FileStream(
+                script,
+                System.IO.FileMode.Append,
+                System.IO.FileAccess.Write,
+                System.IO.FileShare.ReadWrite
+            )
+
+        try
+            let status, _ =
+                fireWith "busy-script" FsHotWatch.ProcessHelper.runProcess (fun _ -> held.Dispose()) script dir
+
+            test
+                <@
+                    match status with
+                    | Completed _ -> true
+                    | _ -> false
+                @>
+
+            test <@ System.IO.File.ReadAllText outFile = "true" @>
+        finally
+            held.Dispose())
+
 // A run that EXECUTED NOTHING must never tell a hook the full suite ran. Both degenerate
 // lifecycles TestPrune builds — the aborted preflight and the "0 affected classes"
 // impact-skip — carry `Results = Map.empty` with a vacuous full-suite claim. They are

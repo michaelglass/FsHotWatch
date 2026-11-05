@@ -216,8 +216,16 @@ let internal computeArgsSaltWith
 let internal computeArgsSalt (repoRoot: string) (command: string) (args: string) : string =
     computeArgsSaltWith tryHashFile repoRoot command args
 
-/// Creates a framework plugin handler that runs a command in response to the configured trigger(s).
-let create
+/// How the plugin starts its command: `runProcess`'s shape, so a test can stand in for it.
+type internal Spawn = string -> string -> string -> (string * string) list -> ProcessBounds -> ProcessOutcome
+
+/// Run `spawn`, pausing with `pause` between attempts the OS refused.
+let internal spawnRetryingBusy (_pause: int -> unit) (spawn: unit -> 'T) : 'T = spawn ()
+
+/// `create`, with the spawn and the pause between refused spawns injected.
+let internal createWith
+    (spawn: Spawn)
+    (pause: int -> unit)
     (name: PluginName)
     (trigger: CommandTrigger)
     (command: string)
@@ -257,7 +265,8 @@ let create
                     $"running {nameStr}"
                     (async {
                         try
-                            let processResult = runProcess command args ctx.RepoRoot extraEnv cmdBounds
+                            let processResult =
+                                spawnRetryingBusy pause (fun () -> spawn command args ctx.RepoRoot extraEnv cmdBounds)
 
                             let output = outputOf processResult
 
@@ -446,3 +455,14 @@ let create
 
         Some(fun _state event -> cacheKey event)
       Teardown = None }
+
+/// Creates a framework plugin handler that runs a command in response to the configured trigger(s).
+let create
+    (name: PluginName)
+    (trigger: CommandTrigger)
+    (command: string)
+    (args: string)
+    (repoRoot: string)
+    (timeoutSec: int option)
+    : PluginHandler<FileCommandState, unit> =
+    createWith runProcess Thread.Sleep name trigger command args repoRoot timeoutSec
