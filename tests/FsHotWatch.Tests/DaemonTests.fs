@@ -6879,6 +6879,53 @@ let ``a waiter bound to a request answered without a new generation resolves whe
 
     test <@ waiter.Wait(HangWait) @>
 
+// A cancelled scan receipt carries no exception of its own. Reading one as a failure
+// crashed the scan-signal agent with a NullReferenceException, and every later
+// `WaitForScan` hung: a loaded gate cancelled DaemonTests "check forces a from-disk
+// scan…" at its 60 s cap after the agent stopped (AUTOMATION-1499).
+
+/// A scan receipt that settles by cancellation, and the signal that observes it.
+let private cancelledScan () =
+    let signal = FsHotWatch.Daemon.ScanSignal()
+    let crashed = Collections.Concurrent.ConcurrentQueue<exn>()
+    signal.AgentCrashed.Add crashed.Enqueue
+
+    let receipt =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    signal, crashed, receipt
+
+/// Whether `waiter` settled within `HangWait`, faulted.
+let private settledFaulted (waiter: Task<unit>) =
+    try
+        waiter.Wait(HangWait) |> ignore
+        false
+    with :? AggregateException ->
+        waiter.IsFaulted
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a waiter that arrives after its scan request was cancelled is answered with the cancellation`` () =
+    let signal, crashed, receipt = cancelledScan ()
+    receipt.SetCanceled()
+    signal.ObserveScan(receipt.Task, (fun () -> 0L))
+    let waiter = signal.WaitForGeneration(5L, 0L)
+
+    test <@ settledFaulted waiter @>
+    test <@ crashed.IsEmpty @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a waiter bound to a scan request that is then cancelled is answered with the cancellation`` () =
+    let signal, crashed, receipt = cancelledScan ()
+    signal.ObserveScan(receipt.Task, (fun () -> 0L))
+    let waiter = signal.WaitForGeneration(5L, 0L)
+    test <@ signal.Drained().Wait(HangWait) @>
+    test <@ not waiter.IsCompleted @>
+
+    receipt.SetCanceled()
+
+    test <@ settledFaulted waiter @>
+    test <@ crashed.IsEmpty @>
+
 /// A project with no `obj/project.assets.json` is restored before it is checked. The
 /// daemon restores through `DaemonOptions.Restore`, so a test daemon never runs a real
 /// `dotnet restore`.
