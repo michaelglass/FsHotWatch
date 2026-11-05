@@ -78,22 +78,24 @@ let toJson (i: Inputs) : string =
 let compute (i: Inputs) : string =
     toJson i |> Encoding.UTF8.GetBytes |> sha256Hex
 
-/// The canonical field names whose values differ between two fingerprints' inputs, sorted:
-/// what a prediction miss names.
-let diff (a: Inputs) (b: Inputs) : string list =
-    let fields (i: Inputs) =
-        using (JsonDocument.Parse(toJson i)) (fun doc ->
+/// The field names whose values differ between two fingerprints' canonical JSON (`toJson`),
+/// sorted, a field only one side has among them: what a prediction miss names. The stored form
+/// (`Store.FingerprintInputs`) is that JSON.
+let diffJson (a: string) (b: string) : string list =
+    let fields (json: string) =
+        using (JsonDocument.Parse json) (fun doc ->
             doc.RootElement.EnumerateObject()
             |> Seq.map (fun p -> p.Name, p.Value.GetRawText())
             |> Map.ofSeq)
 
     let fa, fb = fields a, fields b
 
-    fa
-    |> Map.toList
-    |> List.filter (fun (k, v) -> fb.[k] <> v)
-    |> List.map fst
-    |> List.sort
+    Set.union (fa.Keys |> Set.ofSeq) (fb.Keys |> Set.ofSeq)
+    |> Set.filter (fun k -> fa.TryFind k <> fb.TryFind k)
+    |> Set.toList
+
+/// The canonical field names whose values differ between two fingerprints' inputs, sorted.
+let diff (a: Inputs) (b: Inputs) : string list = diffJson (toJson a) (toJson b)
 
 /// SHA-256 hex of a repo-relative file's bytes, or "missing" when it does not exist.
 let hashFile (repoRoot: string) (relPath: string) : string =

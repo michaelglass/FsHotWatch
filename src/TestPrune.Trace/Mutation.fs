@@ -62,6 +62,20 @@ type Sample =
         Missed: string list
     }
 
+/// What a mutant's failing tests are judged against.
+type Judging =
+    /// The tests whose recorded probe ids or reflected unions include the target's: a lower
+    /// bound on what symbol-level selection selects.
+    | ByProbe
+    /// The trace selection (`TraceSelect`, R1-R4 and R6) for "the target's symbol changed",
+    /// over the baseline's ingested traces and the repository index.
+    | BySymbol
+
+/// The repository index a symbol-level judgement reads, and the root its paths are relative to.
+type Index =
+    { Symbols: TestPrune.Ports.SymbolStore
+      Root: string }
+
 /// The harness's report over one project.
 type MutationReport =
     {
@@ -75,6 +89,8 @@ type MutationReport =
         /// Changed methods (`run`'s `changed`) that no baseline test ran: a mutant of one could
         /// fail nothing, so each is recorded as not mutable and never sampled.
         NotMutable: string list
+        /// What each mutant was judged against.
+        Judging: Judging
     }
 
     /// Samples whose mutant failed at least one test.
@@ -260,13 +276,14 @@ let selected (traces: Map<string, TestTrace option>) (target: Target) : Set<stri
 
 /// Judge one mutant run against the baseline. A test that passed in the baseline fails
 /// with the mutant when it failed, ended otherwise, or has no row in the mutant's report.
-let judge
-    (traces: Map<string, TestTrace option>)
+/// Judge one mutant run against the baseline and the CTRF names `selection` says a change to
+/// the target selects.
+let judgeWith
+    (selection: Set<string>)
     (baseline: TestOutcome list)
     (target: Target)
     (mutant: Result<TestOutcome list, string>)
     : Sample =
-    let selection = selected traces target
 
     let sample outcome failing =
         { Target = target.Name
@@ -299,6 +316,107 @@ let judge
 
         sample (if failing.IsEmpty then NoFailure else Measured) failing
 
+/// `judgeWith` the probe-level selection (`selected`).
+let judge
+    (traces: Map<string, TestTrace option>)
+    (baseline: TestOutcome list)
+    (target: Target)
+    (mutant: Result<TestOutcome list, string>)
+    : Sample =
+    judgeWith (selected traces target) baseline target mutant
+
+/// The trace key of each baseline test, by its CTRF name: the key ingestion stores its trace
+/// under (`TraceIngest.testKey` of its scope's class and method), matched as `tracesOf` matches.
+/// A test with no scope has no key.
+let keysOf (testProject: string) (dumps: ProcessDump list) (outcomes: TestOutcome list) : Map<string, string> =
+    let tests = RunScopes.merged dumps |> Map.values |> Seq.choose _.Test |> List.ofSeq
+
+    let byDisplay = tests |> List.map (fun t -> t.Display, t) |> Map.ofList
+
+    let byName =
+        tests
+        |> List.map (fun t -> FileCensus.normalise (t.Class + "." + t.Method), t)
+        |> Map.ofList
+
+    outcomes
+    |> List.choose (fun o ->
+        byDisplay.TryFind o.Name
+        |> Option.orElse (byName.TryFind(FileCensus.normalise o.Name))
+        |> Option.map (fun t -> o.Name, TraceIngest.testKey testProject t.Class t.Method))
+    |> Map.ofList
+
+/// The fallbacks of a symbol-level judgement: R6 over `seeds` (the index's static walk and
+/// attributes, the facts stored under `fingerprint`); no file changed, so R7 adds nothing.
+let symbolFallbacks
+    (store: TraceStore.Store)
+    (fingerprint: string)
+    (testProject: string)
+    (index: TestPrune.Ports.SymbolStore)
+    (seeds: string list)
+    : TraceSelect.Fallbacks =
+    let keyOf (t: TestPrune.AstAnalyzer.TestMethodInfo) =
+        TraceIngest.testKey t.TestProject t.TestClass (TestPrune.AstAnalyzer.canonicalShortName t.TestMethod)
+
+    { Seeds = seeds
+      ChangedFiles = []
+      Facts = store.SymbolFacts(testProject, fingerprint)
+      ClaimedInputs = []
+      IsIndexed = fun _ -> true
+      AttributesOf = index.GetAttributesForSymbol >> List.map fst
+      StaticWalk = index.QueryAffectedTests >> List.map keyOf
+      FileFallback = fun _ -> Some []
+      FileGaps = Set.empty }
+
+/// The universe keys trace selection selects when `seeds` changed and nothing else did: R1-R4
+/// over the traces stored under `fingerprint` (each seed's version replaced), then R6 for a
+/// seed the probes cannot represent, walking the index statically. Inputs are hashed against
+/// `inputRoot`, the root the run's inputs are relative to.
+let symbolSelection
+    (store: TraceStore.Store)
+    (fingerprint: string)
+    (testProject: string)
+    (index: TestPrune.Ports.SymbolStore)
+    (inputRoot: string)
+    (universe: string list)
+    (seeds: string list)
+    : Set<string> =
+    let changed = Set.ofList seeds
+    let versions = TraceIngest.versionHashes index
+
+    let selection =
+        TraceSelect.select
+            testProject
+            universe
+            (fun key -> store.TryRead(key, fingerprint))
+            (fun symbol ->
+                if changed.Contains symbol then
+                    Some "mutant"
+                else
+                    versions.TryFind symbol)
+            (TraceIngest.currentInputHash inputRoot)
+        |> TraceSelect.withFallbacks (symbolFallbacks store fingerprint testProject index seeds)
+
+    selection.Selected |> Map.keys |> Set.ofSeq
+
+/// A target's selection: `bySymbol` its seeds, or `byProbe` when it has none (nothing it names is
+/// indexed).
+let bySymbolOr (byProbe: Set<string>) (seeds: string list) (bySymbol: string list -> Set<string>) =
+    match seeds with
+    | [] -> byProbe
+    | _ -> bySymbol seeds
+
+/// The indexed symbols a target stands for: the symbols its probe ids join to, and its union
+/// types' symbols. Empty when nothing it names is indexed.
+let targetSymbols (ix: Joiner.SymbolIndex) (joined: Joiner.JoinTarget[]) (target: Target) : string list =
+    (target.Ids
+     |> List.choose (fun id ->
+         match joined.[id] with
+         | Joiner.ToSymbol name -> Some name
+         | _ -> None))
+    @ (target.Types
+       |> List.choose (fun t -> Joiner.typeCandidates t |> List.tryFind ix.Exists))
+    |> List.distinct
+
 /// The tests of a run that did not pass, sorted: a mutant cannot show their failure.
 let notPassed (outcomes: TestOutcome list) : string list =
     outcomes
@@ -312,7 +430,8 @@ let summarize (universe: int) (baselineNotPassed: string list) (targetCount: int
       BaselineNotPassed = baselineNotPassed
       Targets = targetCount
       Samples = samples
-      NotMutable = [] }
+      NotMutable = []
+      Judging = ByProbe }
 
 /// The bar: some mutant failed a test, and trace selection missed none of them.
 let passes (r: MutationReport) = r.Measured > 0 && r.MissedTotal = 0
@@ -385,8 +504,13 @@ let render (r: MutationReport) : string =
         | Some v -> $"%d{r.FailingTotal - r.MissedTotal}/%d{r.FailingTotal} = %.4f{v}"
         | None -> "n/a"
 
+    let judgedBy =
+        match r.Judging with
+        | ByProbe -> "probe"
+        | BySymbol -> "symbol"
+
     line
-        $"mutation  %s{verdict}  recall %s{recall}  samples %d{r.Samples.Length} (measured %d{r.Measured})  targets %d{r.Targets}  tests %d{r.Universe}"
+        $"mutation  %s{verdict}  recall %s{recall}  samples %d{r.Samples.Length} (measured %d{r.Measured})  targets %d{r.Targets}  tests %d{r.Universe}  judged by %s{judgedBy}"
 
     if not r.NotMutable.IsEmpty then
         let names = String.concat ", " r.NotMutable
@@ -449,7 +573,7 @@ let private mutantEnv (target: Target) =
 /// methods no test ran as not mutable. A union-type target stands for adding a case to the
 /// union, which no diff shows, so `changed` does not filter them. `Error` when the project
 /// cannot be prepared or the baseline wrote no test report.
-let run
+let runWith
     (req: TraceSession.PrepareRequest)
     (appArgs: string list)
     (samples: int)
@@ -458,6 +582,7 @@ let run
     (only: string list)
     (changed: Map<string, (int * int) list> option)
     (timeout: TimeSpan)
+    (index: Index option)
     : Result<MutationReport, string> =
     TraceSession.prepareProject req
     |> Result.bind (fun launch ->
@@ -498,6 +623,64 @@ let run
             let chosen = draw samples seed methods @ draw unionSamples seed unions
             let traces = tracesOf manifest dumps baseline
 
+            // With an index, each mutant is judged against the trace selection for "its symbol
+            // changed", over the baseline's traces ingested into a scratch store.
+            let bySymbol =
+                index
+                |> Option.bind (fun ix ->
+                    let store = TraceStore.Store.Open(Path.Combine(dir, "baseline", "traces.db"))
+
+                    let summary =
+                        TraceIngest.ingest
+                            store
+                            { RunId = "baseline"
+                              TestProject = req.TestProject
+                              RepoRoot = ix.Root
+                              InputRoot = launch.InputRoot
+                              Kind = TraceStore.FullRun
+                              LaunchTreeHash = ""
+                              CurrentTreeHash = ""
+                              DumpDir = baselineDumps
+                              Shadow = launch.Shadow
+                              Outcomes = baseline
+                              Symbols = ix.Symbols
+                              FingerprintFiles = []
+                              FingerprintEnv = []
+                              RecordedAt = DateTimeOffset.UtcNow }
+
+                    summary.EnvFingerprint
+                    |> Option.map (fun fingerprint ->
+                        let symbolIndex = Joiner.ofStore ix.Symbols ix.Root
+                        let joined = Joiner.joinManifest symbolIndex manifest
+                        let keys = keysOf req.TestProject dumps baseline
+                        let universe = keys |> Map.values |> Seq.distinct |> List.ofSeq
+
+                        fun (target: Target) ->
+                            bySymbolOr
+                                (selected traces target)
+                                (targetSymbols symbolIndex joined target)
+                                (fun seeds ->
+                                    let chosen =
+                                        symbolSelection
+                                            store
+                                            fingerprint
+                                            req.TestProject
+                                            ix.Symbols
+                                            launch.InputRoot
+                                            universe
+                                            seeds
+
+                                    // A test with no key has no trace: R1 selects it.
+                                    baseline
+                                    |> List.map _.Name
+                                    |> List.filter (fun name -> keys.TryFind name |> Option.forall chosen.Contains)
+                                    |> Set.ofList)))
+
+            let selectionOf (target: Target) =
+                match bySymbol with
+                | Some select -> select target
+                | None -> selected traces target
+
             let judged =
                 chosen
                 |> List.mapi (fun i target ->
@@ -511,7 +694,7 @@ let run
                         req.RepoRoot
                         (Path.Combine(at, "results"))
                         timeout
-                    |> judge traces baseline target)
+                    |> judgeWith (selectionOf target) baseline target)
 
             { summarize
                   baseline.Length
@@ -523,7 +706,12 @@ let run
                     | None -> []
                     | Some names ->
                         Set.difference names (targets req.AssemblyName hit manifest |> List.map _.Name |> Set.ofList)
-                        |> Set.toList }))
+                        |> Set.toList
+                Judging = if bySymbol.IsSome then BySymbol else ByProbe }))
+
+/// `runWith` judging by probe: no index.
+let run req appArgs samples unionSamples seed only changed timeout =
+    runWith req appArgs samples unionSamples seed only changed timeout None
 
 /// The samples a report stores (`TraceStore.MutationSample`), one per judged target (of its
 /// kind: symbol or union-type) plus one symbol `NotMutable` per changed method no test ran.

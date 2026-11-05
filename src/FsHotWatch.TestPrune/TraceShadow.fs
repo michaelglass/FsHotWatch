@@ -81,6 +81,16 @@ module TraceShadow =
                 "shadow.db"
             )
 
+    /// Keep `inputs` under `fingerprint` in the checkout's trace store, beside the ones ingestion
+    /// keeps for what the run recorded, so a miss can name what differed (AUTOMATION-1497). A
+    /// store that cannot be written loses only that name: the prediction stands.
+    let private keepInputs (settings: TraceSettings) (repoRoot: string) (fingerprint: string) inputs =
+        try
+            using (TraceStore.Store.Open(dbPath settings repoRoot)) (fun store ->
+                store.RecordFingerprintInputs(fingerprint, Fingerprint.toJson inputs))
+        with _ ->
+            ()
+
     /// The fingerprint `target`'s traced run will record (`FingerprintPrediction`), launched
     /// with the project's own environment: its `DOTNET_ROOT` and `DOTNET_ROLL_FORWARD` when it
     /// sets them, else this process's (`hostDotnetRoot`, `TracedLaunch.dotnetRootOfThisProcess`).
@@ -119,7 +129,10 @@ module TraceShadow =
                   WeaveTests = TraceRun.weaveMode weave
                   DotnetRoot = root
                   RollForwardEnv = own "DOTNET_ROLL_FORWARD" }
-            |> Result.map Fingerprint.compute
+            |> Result.map (fun inputs ->
+                let fingerprint = Fingerprint.compute inputs
+                keepInputs settings repoRoot fingerprint inputs
+                fingerprint)
 
     /// One project's reading against the traces recorded under `fingerprint`: the one the
     /// run about to start is predicted to record. An empty fingerprint (no prediction) reads
@@ -151,7 +164,8 @@ module TraceShadow =
                   IsIndexed = fallbacks.IsIndexed
                   AttributesOf = fallbacks.AttributesOf
                   StaticWalk = fallbacks.StaticWalk >> List.map keyOf
-                  FileFallback = fallbacks.FileFallback >> Option.map (List.map keyOf) }
+                  FileFallback = fallbacks.FileFallback >> Option.map (List.map keyOf)
+                  FileGaps = store.FileGaps project }
 
         let staticKeys =
             staticSelection
@@ -230,9 +244,20 @@ module TraceShadow =
                     |> List.tryFind (fun run -> run.RunId = runId && run.Status = TraceStore.Recorded)
                     |> Option.map _.EnvFingerprint
 
-                actual, not (traces.TestKeysOf(project, r.Fingerprint)).IsEmpty)
+                // A miss names the inputs that differed, from what was kept under each side.
+                let missed =
+                    actual
+                    |> Option.filter (fun a -> r.Fingerprint <> "" && a <> r.Fingerprint)
+                    |> Option.map (fun a ->
+                        a,
+                        match traces.FingerprintInputs r.Fingerprint, traces.FingerprintInputs a with
+                        | Some predicted, Some recorded ->
+                            "differs in: " + String.concat ", " (Fingerprint.diffJson predicted recorded)
+                        | _ -> "inputs not kept")
+
+                actual, not (traces.TestKeysOf(project, r.Fingerprint)).IsEmpty, missed)
         else
-            None, false
+            None, false, None
 
     /// Store each reading under `runId`, with the tests of `failedKeys` its selection left
     /// out as verified-failure misses (each also logged). `ranInFull` says whether a project
@@ -264,8 +289,13 @@ module TraceShadow =
                     let failed = failedKeys |> Option.defaultValue []
 
                     List.zip readings fingerprints
-                    |> List.iter (fun (r, (actual, predictedHadTraces)) ->
+                    |> List.iter (fun (r, (actual, predictedHadTraces, missed)) ->
                         let full = ranInFull r.Selection.TestProject
+
+                        missed
+                        |> Option.iter (fun (recorded, what) ->
+                            log
+                                $"trace-shadow: %s{r.Selection.TestProject} fingerprint prediction missed (predicted %s{r.Fingerprint}, recorded %s{recorded}): %s{what}")
 
                         let recall =
                             match full, failedKeys with

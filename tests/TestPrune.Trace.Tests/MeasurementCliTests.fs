@@ -107,7 +107,7 @@ let private fake audit overhead census =
                 call req args 0.0 0 0 timeout
                 census
           Mutate =
-            fun req args samples unions seed only changed timeout ->
+            fun req args samples unions seed only changed timeout _ ->
                 callUnions req args 0.0 seed samples unions only changed timeout
                 mutationReport }
 
@@ -717,3 +717,70 @@ let ``mutate takes --union-samples, 0 among them, and refuses a negative count``
         @>
 
     test <@ calls.Count = 2 @>
+
+[<Fact>]
+let ``file-census --db stores the census's gaps under --project`` () =
+    let report =
+        FileCensus.summarize Set.empty (set [ "K.gap"; "K.read" ]) Set.empty (set [ "K.read" ])
+
+    let m, _ = fake (Ok(auditReport [])) (Ok(overheadReport 100.0)) (Ok report)
+    let db = Path.Combine(Path.GetTempPath(), $"tp-gaps-%A{Guid.NewGuid()}.db")
+
+    let o =
+        Program.runWith
+            m
+            cwd
+            [ "file-census"
+              "--project-dir"
+              "P"
+              "--assembly"
+              "P"
+              "--db"
+              db
+              "--project"
+              "Named" ]
+
+    test <@ o.Stderr = "" @>
+    use store = TraceStore.Store.Open db
+    test <@ store.FileGaps "Named" = set [ "K.gap" ] @>
+
+[<Fact>]
+let ``mutate --index refuses an index it cannot read before running anything`` () =
+    let m, calls = passing ()
+    let missing = Path.Combine(Path.GetTempPath(), $"tp-no-index-%A{Guid.NewGuid()}.db")
+
+    let o =
+        Program.runWith m cwd [ "mutate"; "--project-dir"; "P"; "--assembly"; "P"; "--index"; missing ]
+
+    test <@ o.Exit = 2 && o.Stderr.Contains $"--index: no index at %s{missing}" @>
+    test <@ calls.Count = 0 @>
+
+[<Fact>]
+let ``mutate --index opens a readable index and passes it on, rooted at the repository`` () =
+    let path = Path.Combine(Path.GetTempPath(), $"tp-index-%A{Guid.NewGuid()}.db")
+    TestPrune.Database.Database.create path |> ignore
+    let mutable passed: Mutation.Index option = None
+    let m, _ = passing ()
+
+    let m =
+        { m with
+            Mutate =
+                fun _ _ _ _ _ _ _ _ index ->
+                    passed <- index
+                    mutationReport }
+
+    Program.runWith m cwd [ "mutate"; "--project-dir"; "P"; "--assembly"; "P"; "--index"; path ]
+    |> ignore
+
+    test <@ passed |> Option.map _.Root = Some cwd @>
+
+[<Fact>]
+let ``file-census --db that cannot be opened is a usage error naming it`` () =
+    let report = FileCensus.summarize Set.empty Set.empty Set.empty Set.empty
+    let m, _ = fake (Ok(auditReport [])) (Ok(overheadReport 100.0)) (Ok report)
+    let dir = Directory.CreateTempSubdirectory("tp-gaps-dir-").FullName
+
+    let o =
+        Program.runWith m cwd [ "file-census"; "--project-dir"; "P"; "--assembly"; "P"; "--db"; dir ]
+
+    test <@ o.Exit = 2 && o.Stderr.Contains $"--db %s{dir}" @>

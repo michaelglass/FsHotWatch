@@ -139,3 +139,12 @@ let ``diff names the canonical components that differ`` () =
     test <@ Fingerprint.diff inputs b = [ "deps"; "runtime" ] @>
     test <@ Fingerprint.diff inputs inputs |> List.isEmpty @>
     test <@ Fingerprint.compute inputs = Fingerprint.compute inputs @>
+
+[<Fact>]
+let ``two fingerprints' canonical JSON name the fields that differ`` () =
+    let a = """{"arch":"Arm64","deps":"d1","runtime":".NET 8.0.1","os":"OSX"}"""
+    let b = """{"arch":"Arm64","deps":"d2","runtime":".NET 9.0.0","os":"OSX"}"""
+    test <@ Fingerprint.diffJson a b = [ "deps"; "runtime" ] @>
+    test <@ Fingerprint.diffJson a a |> List.isEmpty @>
+    // A field only one side has differs too.
+    test <@ Fingerprint.diffJson """{"x":"1"}""" """{"x":"1","y":"2"}""" = [ "y" ] @>
