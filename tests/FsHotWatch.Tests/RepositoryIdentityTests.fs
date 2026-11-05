@@ -903,11 +903,58 @@ let private run (cwd: string) (exe: string) (args: string list) =
     if p.ExitCode <> 0 then
         failwith $"%s{exe} %A{args} exited %d{p.ExitCode}: %s{stdout.Result}%s{stderr.Result}"
 
+/// What a test needing real tools does when some are missing from PATH.
+type private ToolGate =
+    | Run
+    | SkipMissing of reason: string
+    | FailMissing of reason: string
+
+/// The gate for a test whose `missing` tools are not on PATH, `onCi` or not.
+let private toolGate (_onCi: bool) (missing: string list) : ToolGate =
+    match missing with
+    | [] -> Run
+    | _ -> SkipMissing $"""%s{String.Join(", ", missing)} not on PATH"""
+
+/// Whether this process runs under CI (`CI` or `GITHUB_ACTIONS` set).
+let private onCi () =
+    [ "CI"; "GITHUB_ACTIONS" ]
+    |> List.exists (fun name -> not (String.IsNullOrEmpty(Environment.GetEnvironmentVariable name)))
+
+/// Run only if every one of `tools` is on PATH, skipping or failing as `toolGate` says.
+let private requireTools (tools: string list) =
+    match toolGate (onCi ()) (tools |> List.filter (onPath >> not)) with
+    | Run -> ()
+    | SkipMissing reason -> Assert.Skip reason
+    | FailMissing reason -> Assert.Fail reason
+
+// AUTOMATION-1025. CI installs jj so the real-jj case runs there; a tool missing on CI is
+// a broken runner, and a skip would read as a pass.
+[<Fact>]
+let ``on CI a missing tool fails the test instead of skipping it`` () =
+    test
+        <@
+            match toolGate true [ "jj" ] with
+            | FailMissing reason -> reason.Contains "jj"
+            | _ -> false
+        @>
+
+[<Fact>]
+let ``off CI a missing tool skips the test`` () =
+    test
+        <@
+            match toolGate false [ "jj" ] with
+            | SkipMissing reason -> reason.Contains "jj"
+            | _ -> false
+        @>
+
+[<Fact>]
+let ``with every tool present the test runs, on CI or not`` () =
+    test <@ toolGate true [] = Run && toolGate false [] = Run @>
+
 // Three real commands.
 [<Fact(Timeout = 4 * RealCommandMs)>]
 let ``real git: a main checkout and a git worktree share a repository`` () =
-    if not (onPath "git") then
-        Assert.Skip "git is not on PATH"
+    requireTools [ "git" ]
 
     withTempDir "rid-real-git" (fun dir ->
         let main = mkdir (Path.Combine(dir, "main"))
@@ -939,8 +986,7 @@ let ``real git: a main checkout and a git worktree share a repository`` () =
 // Five real commands.
 [<Fact(Timeout = 6 * RealCommandMs)>]
 let ``real jj: colocated primary, jj workspace and git worktree are one repository`` () =
-    if not (onPath "jj" && onPath "git") then
-        Assert.Skip "jj and git are not both on PATH"
+    requireTools [ "jj"; "git" ]
 
     withTempDir "rid-real-jj" (fun dir ->
         let primary = Path.Combine(dir, "repo")
