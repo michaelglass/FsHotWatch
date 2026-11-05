@@ -2139,3 +2139,45 @@ let ``a teardown under installed patience gives each OS wait at least that long,
     Swensen.Unquote.Assertions.test <@ stop = (patience + (patience - DeepestFirstStep), patience) @>
     // Gone once disposed.
     Swensen.Unquote.Assertions.test <@ TeardownPatience.atLeast TeardownBudget = TeardownBudget @>
+
+// --- The "NO timeout" warning is about a spawn, and says which (AUTOMATION-1499) ---
+// It was logged when the bounds were BUILT: a FileCommand builds them when its handler is
+// created, so the line appeared at registration, named no command, and was followed by no
+// spawn. Read in a log, it looked like a child that never started.
+
+/// The lines logged while `body` runs, at every level.
+let private loggedDuring (body: unit -> unit) : string list =
+    let lines = Collections.Concurrent.ConcurrentQueue<string>()
+
+    use _ =
+        FsHotWatch.Logging.installSink
+            { Write = lines.Enqueue
+              Level = FsHotWatch.Logging.LogLevel.Debug
+              File = None }
+
+    body ()
+    List.ofSeq lines
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``building unbounded silent bounds logs nothing`` () =
+    let lines =
+        loggedDuring (fun () -> ProcessBounds.silent Threading.Timeout.InfiniteTimeSpan |> ignore)
+
+    Swensen.Unquote.Assertions.test <@ lines |> List.forall (fun line -> not (line.Contains "NO timeout")) @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``spawning a child with no timeout warns once, naming the command`` () =
+    let lines =
+        loggedDuring (fun () ->
+            runProcessBounded "true" "" (ProcessBounds.silent Threading.Timeout.InfiniteTimeSpan)
+            |> ignore)
+
+    let warnings = lines |> List.filter (fun line -> line.Contains "NO timeout")
+    Swensen.Unquote.Assertions.test <@ warnings.Length = 1 @>
+    Swensen.Unquote.Assertions.test <@ warnings.Head.Contains "`true`" @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``spawning a child with a timeout does not warn`` () =
+    let lines = loggedDuring (fun () -> runProcessBounded "true" "" quick |> ignore)
+
+    Swensen.Unquote.Assertions.test <@ lines |> List.forall (fun line -> not (line.Contains "NO timeout")) @>
