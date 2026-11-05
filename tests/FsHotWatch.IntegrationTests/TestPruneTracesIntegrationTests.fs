@@ -169,7 +169,8 @@ let ``a traced run records its test's trace and reaches the untraced run's verdi
                       FingerprintInputs = []
                       FingerprintEnv = []
                       VerifyTimeoutSec = 300
-                      Select = SelectOff })
+                      Select = SelectOff
+                      ShadowDbPath = None })
 
         test <@ untraced = "passed" @>
         test <@ traced = untraced @>

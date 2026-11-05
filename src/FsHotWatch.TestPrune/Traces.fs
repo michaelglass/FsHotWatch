@@ -45,6 +45,11 @@ type TraceSettings =
         VerifyTimeoutSec: int
         /// Whether trace selection runs in shadow.
         Select: TraceSelectPolicy
+        /// Where shadow selection stores its rows and misses (`tests.traces.shadowDb`): absolute,
+        /// or relative to the repository root. `None` is the repository's box-wide shadow store,
+        /// shared by every checkout, so a measurement window outlives the short-lived checkouts
+        /// that produce it (`TraceShadow.shadowStorePath`).
+        ShadowDbPath: string option
     }
 
 /// Defaults and value parsing for `TraceSettings`.

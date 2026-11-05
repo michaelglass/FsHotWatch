@@ -32,7 +32,8 @@ let private settings record : TraceSettings =
       FingerprintInputs = []
       FingerprintEnv = []
       VerifyTimeoutSec = 60
-      Select = SelectOff }
+      Select = SelectOff
+      ShadowDbPath = None }
 
 let private oneRowManifest: Manifest =
     { Rows =

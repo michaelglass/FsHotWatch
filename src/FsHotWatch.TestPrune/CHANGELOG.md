@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: trace shadow stores its rows and verified-failure misses in one shadow store per repository,
+  box-wide by default (`<shared cache>/cache/trace-shadow/<repository>/shadow.db`) and shared by every
+  checkout, instead of in each checkout's trace database (AUTOMATION-975). Checkouts are short-lived and
+  each held a few rows, so no store could ever reach the shadow window's counts. `tests.traces.shadowDb`
+  names another file. Traces stay per checkout.
+- BREAKING (API): `TraceSettings` has a `ShadowDbPath` field.
+
 - fix: trace shadow records a failed theory row as a verified-failure miss under its test, and logs every
   failed test whose key names no traced test instead of dropping it (AUTOMATION-975). A test now pins that
   an impact launch selects the same tests with `tests.traces.select: "shadow"` as without it.

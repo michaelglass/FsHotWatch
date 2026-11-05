@@ -30,7 +30,8 @@ let private settings record : TraceSettings =
       FingerprintInputs = []
       FingerprintEnv = []
       VerifyTimeoutSec = 300
-      Select = SelectOff }
+      Select = SelectOff
+      ShadowDbPath = None }
 
 [<Fact>]
 let ``a graded run that recorded a project owes nothing`` () =

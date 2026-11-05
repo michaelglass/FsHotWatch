@@ -2,7 +2,8 @@
 /// compute which tests each traced project's recorded traces say must run, compare that
 /// with the static selection the run actually launches, and log one line per project; at
 /// completion, store the comparison and every failed test the trace selection left out
-/// (a verified-failure miss) in the trace database.
+/// (a verified-failure miss) in the shadow store (`shadowStorePath`), which every
+/// checkout of the repository shares.
 ///
 /// Shadow never changes a run: nothing here feeds the selection, the verdict, the
 /// evidence or any cache, and every failure is one log line and a missing row.
@@ -34,6 +35,23 @@ module TraceShadow =
     let failureKey (project: string) (cls: string) (meth: string) = TraceIngest.testKey project cls meth
 
     let private dbPath (settings: TraceSettings) (repoRoot: string) = Path.Combine(repoRoot, settings.DbPath)
+
+    /// Where shadow rows and misses are stored: `tests.traces.shadowDb` resolved against the
+    /// repository root, else the repository's box-wide shadow store
+    /// (`<shared cache>/cache/trace-shadow/<repository namespace>/shadow.db`). The traces
+    /// stay in each checkout's own database; the measurement is shared, because a window
+    /// needs more runs over more days than any one short-lived checkout sees.
+    let shadowStorePath (settings: TraceSettings) (repoRoot: string) =
+        match settings.ShadowDbPath with
+        | Some path -> Path.Combine(repoRoot, path)
+        | None ->
+            Path.Combine(
+                FsHotWatch.FsHwPaths.sharedCacheHome (),
+                "cache",
+                "trace-shadow",
+                FsHotWatch.RepoIdentity.namespaceOf repoRoot,
+                "shadow.db"
+            )
 
     /// One project's reading against the traces of its recorded `run`.
     let private readingOf
@@ -108,7 +126,7 @@ module TraceShadow =
         : unit =
         if not readings.IsEmpty then
             try
-                using (TraceStore.Store.Open(dbPath settings repoRoot)) (fun store ->
+                using (TraceStore.Store.Open(shadowStorePath settings repoRoot)) (fun store ->
                     let at = DateTimeOffset.UtcNow
 
                     readings
