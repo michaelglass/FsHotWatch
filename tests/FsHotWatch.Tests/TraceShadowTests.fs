@@ -12,6 +12,7 @@ open TestPrune.Trace
 open TestPrune.Trace.Model
 open TestPrune.Trace.TraceStore
 open FsHotWatch.TestPrune
+open FsHotWatch.TestPrune.PluginTypes
 
 let private test' cls meth : TestMethodInfo =
     { SymbolFullName = $"%s{cls}.%s{meth}"
@@ -129,7 +130,14 @@ let ``at completion the rows are stored under the run, and a failed test the tra
         let lines = ResizeArray<string>()
         let readings = launch root SelectShadow lines
 
-        TraceShadow.atCompletion (settings SelectShadow) root readings "run-7" [ "P|C|a"; "P|C|b" ] lines.Add
+        TraceShadow.atCompletion
+            (settings SelectShadow)
+            root
+            readings
+            "run-7"
+            (fun _ -> false)
+            (Some [ "P|C|a"; "P|C|b" ])
+            lines.Add
 
         use store = Store.Open(Path.Combine(root, "shadow.db"))
         let rows = store.ShadowRows "P"
@@ -153,7 +161,7 @@ let ``with no reading, completion opens nothing and stores nothing`` () =
 
     try
         let lines = ResizeArray<string>()
-        TraceShadow.atCompletion (settings SelectShadow) root [] "run-1" [ "P|C|a" ] lines.Add
+        TraceShadow.atCompletion (settings SelectShadow) root [] "run-1" (fun _ -> false) (Some [ "P|C|a" ]) lines.Add
         test <@ lines.Count = 0 && not (File.Exists(Path.Combine(root, "shadow.db"))) @>
     finally
         Directory.Delete(root, true)
@@ -163,7 +171,7 @@ let ``a run with no failed test stores its rows and no miss`` () =
     withStore (fun root ->
         let lines = ResizeArray<string>()
         let readings = launch root SelectShadow lines
-        TraceShadow.atCompletion (settings SelectShadow) root readings "run-2" [] lines.Add
+        TraceShadow.atCompletion (settings SelectShadow) root readings "run-2" (fun _ -> false) (Some []) lines.Add
 
         use store = Store.Open(Path.Combine(root, "shadow.db"))
         test <@ store.ShadowRows "P" |> List.map _.RunId = [ "run-2" ] @>
@@ -176,7 +184,14 @@ let ``a store that cannot be written at completion is one log line, never an exc
         let readings = launch root SelectShadow lines
         File.WriteAllText(Path.Combine(root, "shadow.db"), "not a database")
 
-        TraceShadow.atCompletion (settings SelectShadow) root readings "run-3" [ "P|C|a" ] lines.Add
+        TraceShadow.atCompletion
+            (settings SelectShadow)
+            root
+            readings
+            "run-3"
+            (fun _ -> false)
+            (Some [ "P|C|a" ])
+            lines.Add
 
         test <@ lines |> Seq.last |> (fun l -> l.StartsWith "trace-shadow: not stored") @>)
 
@@ -230,7 +245,15 @@ let ``a failed test the traced universe does not know is said out loud, not drop
     withStore (fun root ->
         let lines = ResizeArray<string>()
         let readings = launch root SelectShadow lines
-        TraceShadow.atCompletion (settings SelectShadow) root readings "run-4" [ "P|Gone|x" ] lines.Add
+
+        TraceShadow.atCompletion
+            (settings SelectShadow)
+            root
+            readings
+            "run-4"
+            (fun _ -> false)
+            (Some [ "P|Gone|x" ])
+            lines.Add
 
         test
             <@
@@ -248,7 +271,15 @@ let ``at completion the rows go to the shadow store, never the checkout's trace 
     withStore (fun root ->
         let lines = ResizeArray<string>()
         let readings = launch root SelectShadow lines
-        TraceShadow.atCompletion (settings SelectShadow) root readings "run-8" [ "P|C|a" ] lines.Add
+
+        TraceShadow.atCompletion
+            (settings SelectShadow)
+            root
+            readings
+            "run-8"
+            (fun _ -> false)
+            (Some [ "P|C|a" ])
+            lines.Add
 
         do
             use traces = Store.Open(Path.Combine(root, "traces.db"))
@@ -273,7 +304,7 @@ let ``two checkouts' runs count in one shadow store`` () =
             withStore (fun root ->
                 let lines = ResizeArray<string>()
                 let readings = launch root SelectShadow lines
-                TraceShadow.atCompletion settings' root readings runId [] lines.Add)
+                TraceShadow.atCompletion settings' root readings runId (fun _ -> false) (Some []) lines.Add)
 
         use store = Store.Open sharedDb
         test <@ store.ShadowRows "P" |> List.map _.RunId = [ "run-a"; "run-b" ] @>
@@ -305,3 +336,125 @@ let ``with no shadowDb the shadow store is the repository's box-wide one, outsid
 [<Fact>]
 let ``a relative shadowDb is resolved against the checkout`` () =
     test <@ TraceShadow.shadowStorePath (settings SelectShadow) "/repo" = Path.Combine("/repo", "shadow.db") @>
+
+// --- the row's measurement columns (AUTOMATION-975, plan Task 6) ------------------------
+
+/// Record a trace run of P under `runId` and fingerprint `fp` in the checkout's trace store.
+let private recordRun (root: string) (runId: string) (fp: string) (status: RunStatus) =
+    use store = Store.Open(Path.Combine(root, "traces.db"))
+
+    store.RecordRunWithoutTraces
+        { RunId = runId
+          TestProject = "P"
+          TreeHash = "tree"
+          EnvFingerprint = fp
+          RecordedAt = DateTimeOffset.UtcNow
+          Kind = PartialRun
+          Status = status
+          Reason = ""
+          StatsJson = "{}" }
+
+/// Launch, run `during` (what the run itself records), then complete; the stored row.
+let private completedRowWith root runId ranInFull failed (during: unit -> unit) =
+    let lines = ResizeArray<string>()
+    let readings = launch root SelectShadow lines
+    during ()
+    TraceShadow.atCompletion (settings SelectShadow) root readings runId ranInFull failed lines.Add
+    use store = Store.Open(Path.Combine(root, "shadow.db"))
+    store.ShadowRows "P" |> List.exactlyOne
+
+let private completedRow root runId ranInFull failed =
+    completedRowWith root runId ranInFull failed ignore
+
+[<Fact>]
+let ``a project that ran in full stores a full-run row with the trace selection's recall`` () =
+    withStore (fun root ->
+        // The trace selection holds C.b and C.c; of the two failed tests it selected C.b.
+        let row = completedRow root "run-f" (fun p -> p = "P") (Some [ "P|C|a"; "P|C|b" ])
+        test <@ row.Mode = FullSuiteRun && row.TraceRecall = "1/2" @>
+        test <@ row.RecordPolicy = "every-run" @>
+        // Two of three tests have a complete trace: under 0.99, so not eligible.
+        test <@ row.Eligible = Some false @>
+        test <@ (row.StaticClassTests, row.TraceClassTests) = (3, 3) @>)
+
+[<Fact>]
+let ``an impact row does not measure recall, and a full run without a complete report cannot`` () =
+    withStore (fun root ->
+        let impact = completedRow root "run-i" (fun _ -> false) (Some [ "P|C|a" ])
+        test <@ impact.Mode = ImpactRun && impact.TraceRecall = "n/a: impact run" @>)
+
+    withStore (fun root ->
+        let full = completedRow root "run-n" (fun _ -> true) None
+        test <@ full.Mode = FullSuiteRun && full.TraceRecall = "n/a: no complete report" @>)
+
+[<Fact>]
+let ``the fingerprint outcome compares the traces shadow read with what the run recorded`` () =
+    withStore (fun root ->
+        let row =
+            completedRowWith root "run-h" (fun _ -> false) (Some []) (fun () -> recordRun root "run-h" "E" Recorded)
+
+        test <@ row.FingerprintOutcome = PredictionHit @>)
+
+    withStore (fun root ->
+        let row =
+            completedRowWith root "run-u" (fun _ -> false) (Some []) (fun () -> recordRun root "run-u" "F" Recorded)
+
+        // Shadow read E's traces while the run recorded under F: it trusted another environment.
+        test <@ row.FingerprintOutcome = UnsafeMiss && row.ActualFingerprint = Some "F" @>)
+
+    withStore (fun root ->
+        let row =
+            completedRowWith root "run-r" (fun _ -> false) (Some []) (fun () -> recordRun root "run-r" "F" Refused)
+
+        test <@ row.FingerprintOutcome = NotTraced @>)
+
+    withStore (fun root ->
+        test <@ (completedRow root "run-none" (fun _ -> false) (Some [])).FingerprintOutcome = NotTraced @>)
+
+[<Fact>]
+let ``a completion reads ran-in-full projects and failed keys from the run, and nothing from an incomplete report`` () =
+    let failure cls meth : OutstandingFailure =
+        { Project = "P"
+          Class = cls
+          Method = meth
+          File = "t.fs"
+          Entry = FsHotWatch.ErrorLedger.ErrorEntry.error "boom" }
+
+    let selection =
+        Map
+            [ "Full", ProjectInFull
+              "Reused", ProjectInFull
+              "Filtered", ProjectClasses(set [ "C" ])
+              "NotRun", ProjectInFull ]
+
+    let ranInFull, failedKeys =
+        CompletionStages.shadowFacts
+            selection
+            (set [ "Full"; "Reused"; "Filtered" ])
+            (set [ "Reused" ])
+            (Ok [ failure (Some "C") (Some "a"); failure None None ])
+
+    test <@ [ "Full"; "Reused"; "Filtered"; "NotRun"; "Absent" ] |> List.filter ranInFull = [ "Full" ] @>
+    // A project-level red names no test, so it has no key.
+    test <@ failedKeys = Some [ "P|C|a" ] @>
+
+    let _, none =
+        CompletionStages.shadowFacts selection Set.empty Set.empty (Error "a project timed out")
+
+    test <@ none = None @>
+
+[<Fact>]
+let ``a row records the run's recording policy, and a checkout with no trace database is untraced`` () =
+    withStore (fun root ->
+        let lines = ResizeArray<string>()
+        let readings = launch root SelectShadow lines
+        File.Delete(Path.Combine(root, "traces.db"))
+
+        let fullRuns =
+            { settings SelectShadow with
+                Record = RecordFullRuns }
+
+        TraceShadow.atCompletion fullRuns root readings "run-p" (fun _ -> false) (Some []) lines.Add
+        use store = Store.Open(Path.Combine(root, "shadow.db"))
+        let row = store.ShadowRows "P" |> List.exactlyOne
+        test <@ row.RecordPolicy = "full-runs" && row.FingerprintOutcome = NotTraced @>)

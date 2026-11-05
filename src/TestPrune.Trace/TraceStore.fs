@@ -72,6 +72,108 @@ type StoredTrace =
       Symbols: Set<string * string>
       Inputs: Set<string * string * string> }
 
+/// What kind of run a shadow row measured.
+type ShadowRunMode =
+    /// The project ran a selection (`check`): the static side is what it launched.
+    | ImpactRun
+    /// The project ran in full (a `confirm`, a nightly, or a widened `check`): every test ran,
+    /// so the trace selection's recall over this run's failures can be measured.
+    | FullSuiteRun
+    /// A row written before the run kind was stored (trace schema 3). It counts toward no bar.
+    | ModeNotRecorded
+
+/// Whether the fingerprint whose traces shadow read is the one the run itself recorded.
+type FingerprintOutcome =
+    /// Shadow read the traces of the environment the run recorded.
+    | PredictionHit
+    /// They differ, and nothing was stored under the fingerprint shadow read.
+    | SafeMiss
+    /// They differ, and shadow selected from traces of another environment.
+    | UnsafeMiss
+    /// The run recorded no traces for the project, so there is nothing to compare.
+    | NotTraced
+    /// A row written before the outcome was stored (trace schema 3).
+    | OutcomeNotRecorded
+
+/// The stored code of a fingerprint outcome.
+let fingerprintOutcomeCode =
+    function
+    | PredictionHit -> "hit"
+    | SafeMiss -> "safe-miss"
+    | UnsafeMiss -> "unsafe-miss"
+    | NotTraced -> "untraced"
+    | OutcomeNotRecorded -> "not-recorded"
+
+let private fingerprintOutcomeOf =
+    function
+    | "hit" -> PredictionHit
+    | "safe-miss" -> SafeMiss
+    | "unsafe-miss" -> UnsafeMiss
+    | "untraced" -> NotTraced
+    | _ -> OutcomeNotRecorded
+
+let private modeCode =
+    function
+    | ImpactRun -> "impact"
+    | FullSuiteRun -> "full"
+    | ModeNotRecorded -> "not-recorded"
+
+let private modeOf =
+    function
+    | "impact" -> ImpactRun
+    | "full" -> FullSuiteRun
+    | _ -> ModeNotRecorded
+
+/// What a mutation sample makes throw.
+type MutationKind =
+    /// The probes of one symbol.
+    | SymbolMutant
+    /// Every probe and reflective use of one union type.
+    | UnionTypeMutant
+
+/// What became of one mutation sample.
+type MutationOutcome =
+    /// The mutant made at least one test fail: the sample measured something.
+    | Measured
+    /// No test failed.
+    | NoFailure
+    /// No probe id maps to the symbol.
+    | NotMutable
+    /// The mutated run produced no report.
+    | RunFailed
+
+/// One stored mutation sample: the tests the mutant broke that trace selection, for "this
+/// symbol changed", would not have selected are its `Missed` tests.
+type MutationSample =
+    { TestProject: string
+      Kind: MutationKind
+      Symbol: string
+      TreeHash: string
+      RecordedAt: DateTimeOffset
+      Outcome: MutationOutcome
+      Failing: int
+      Selected: int
+      Missed: string list }
+
+let private mutationKindCode =
+    function
+    | SymbolMutant -> "symbol"
+    | UnionTypeMutant -> "union-type"
+
+let private mutationOutcomeCode =
+    function
+    | Measured -> "measured"
+    | NoFailure -> "no-failure"
+    | NotMutable -> "not-mutable"
+    | RunFailed -> "run-failed"
+
+let private mutationOutcomeOf =
+    function
+    | "measured" -> Measured
+    | "no-failure" -> NoFailure
+    | "not-mutable" -> NotMutable
+    | _ -> RunFailed
+
 /// One shadow comparison: what trace selection would have run for a test project at one
 /// run's launch, next to what the static selection did run. Shadow rows never change a run.
 type ShadowRow =
@@ -96,6 +198,25 @@ type ShadowRow =
         /// Selected by trace, not by static: a static-graph miss (at most 200, sorted).
         TraceOnly: string list
         SelectMs: int64
+        /// Whether the project ran a selection or in full.
+        Mode: ShadowRunMode
+        /// The `tests.traces.record` policy the run recorded under; empty before schema 4.
+        RecordPolicy: string
+        /// At least 0.99 of the universe had a complete trace. `None` before schema 4.
+        Eligible: bool option
+        /// The fingerprint the run recorded the project's traces under, if it recorded any.
+        ActualFingerprint: string option
+        FingerprintOutcome: FingerprintOutcome
+        /// On a full run, `r/t`: of the `t` failed tests the universe knows, `r` were in the
+        /// trace selection. Otherwise `n/a: <why>`.
+        TraceRecall: string
+        /// The tests the static selection launches once its classes are expanded.
+        StaticClassTests: int
+        /// The tests the trace selection would launch once its classes are expanded.
+        TraceClassTests: int
+        /// Selected tests whose only reason is an incomplete trace caused by an untraced
+        /// child process.
+        ChildUntracedTests: int
     }
 
 // Public API: consumers catch `TraceSchemaNewerThanConsumer` by name, so a rename breaks them.
@@ -116,6 +237,11 @@ exception TraceSchemaNewerThanConsumer of path: string * found: int * supported:
 /// `trace_test_scopes` row each. Nearly every test inherits nearly the same type
 /// initializers, and those rows were 99% of the links and most of the file. Rows written
 /// before it stay valid: a test's trace is its linked scopes plus its set's members.
+///
+/// Version 4 (AUTOMATION-975): a shadow row records what it measured (run kind, recording
+/// policy, eligibility, the fingerprint outcome, trace recall, launched tests after class
+/// expansion, tests held by untraced children), and `mutation_samples` holds the mutation
+/// harness's samples. Rows written before it read back as not recorded.
 let internal migrations: (int * string) list =
     [ 1,
       """
@@ -213,6 +339,30 @@ let internal migrations: (int * string) list =
       CREATE INDEX trace_scope_set_members_by_scope ON trace_scope_set_members (scope_id);
       ALTER TABLE trace_tests ADD COLUMN scope_set_id INTEGER REFERENCES trace_scope_sets(id);
       CREATE INDEX trace_tests_by_scope_set ON trace_tests (scope_set_id);
+      """
+      4,
+      """
+      ALTER TABLE shadow_selections ADD COLUMN mode TEXT NOT NULL DEFAULT 'not-recorded';
+      ALTER TABLE shadow_selections ADD COLUMN record_policy TEXT NOT NULL DEFAULT '';
+      ALTER TABLE shadow_selections ADD COLUMN eligible INTEGER;
+      ALTER TABLE shadow_selections ADD COLUMN actual_fingerprint TEXT;
+      ALTER TABLE shadow_selections ADD COLUMN fingerprint_outcome TEXT NOT NULL DEFAULT 'not-recorded';
+      ALTER TABLE shadow_selections ADD COLUMN trace_recall TEXT NOT NULL DEFAULT 'n/a: not recorded';
+      ALTER TABLE shadow_selections ADD COLUMN static_class_tests INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE shadow_selections ADD COLUMN trace_class_tests INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE shadow_selections ADD COLUMN child_untraced_tests INTEGER NOT NULL DEFAULT 0;
+      CREATE TABLE mutation_samples (
+          id INTEGER PRIMARY KEY,
+          test_project TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          tree_hash TEXT NOT NULL,
+          recorded_at TEXT NOT NULL,
+          outcome TEXT NOT NULL,
+          failing INTEGER NOT NULL,
+          selected INTEGER NOT NULL,
+          missed TEXT NOT NULL);
+      CREATE INDEX mutation_samples_by_project ON mutation_samples (test_project);
       """ ]
 
 /// Versions must start at 1 and increase by exactly one, so "apply every entry above the
@@ -731,15 +881,22 @@ type Store private (conn: SqliteConnection) =
                 tx
                 """INSERT INTO shadow_selections (run_id, test_project, env_fingerprint, recorded_at, universe,
                        complete_share, static_tests, trace_tests, static_classes, trace_classes, rule_counts,
-                       static_only, trace_only, select_ms)
-                   VALUES (@r, @p, @e, @at, @u, @cs, @st, @tt, @sc, @tc, @rules, @so, @to, @ms)
+                       static_only, trace_only, select_ms, mode, record_policy, eligible, actual_fingerprint,
+                       fingerprint_outcome, trace_recall, static_class_tests, trace_class_tests, child_untraced_tests)
+                   VALUES (@r, @p, @e, @at, @u, @cs, @st, @tt, @sc, @tc, @rules, @so, @to, @ms, @mode, @rp, @el, @af,
+                       @fo, @rec, @sct, @tct, @cut)
                    ON CONFLICT (run_id, test_project) DO UPDATE SET
                        env_fingerprint = excluded.env_fingerprint, recorded_at = excluded.recorded_at,
                        universe = excluded.universe, complete_share = excluded.complete_share,
                        static_tests = excluded.static_tests, trace_tests = excluded.trace_tests,
                        static_classes = excluded.static_classes, trace_classes = excluded.trace_classes,
                        rule_counts = excluded.rule_counts, static_only = excluded.static_only,
-                       trace_only = excluded.trace_only, select_ms = excluded.select_ms"""
+                       trace_only = excluded.trace_only, select_ms = excluded.select_ms, mode = excluded.mode,
+                       record_policy = excluded.record_policy, eligible = excluded.eligible,
+                       actual_fingerprint = excluded.actual_fingerprint,
+                       fingerprint_outcome = excluded.fingerprint_outcome, trace_recall = excluded.trace_recall,
+                       static_class_tests = excluded.static_class_tests, trace_class_tests = excluded.trace_class_tests,
+                       child_untraced_tests = excluded.child_untraced_tests"""
                 [ "@r", box row.RunId
                   "@p", box row.TestProject
                   "@e", box row.EnvFingerprint
@@ -753,7 +910,22 @@ type Store private (conn: SqliteConnection) =
                   "@rules", box rules
                   "@so", box (JsonSerializer.Serialize(Array.ofList row.StaticOnly))
                   "@to", box (JsonSerializer.Serialize(Array.ofList row.TraceOnly))
-                  "@ms", box row.SelectMs ])
+                  "@ms", box row.SelectMs
+                  "@mode", box (modeCode row.Mode)
+                  "@rp", box row.RecordPolicy
+                  "@el",
+                  (match row.Eligible with
+                   | Some e -> box (if e then 1 else 0)
+                   | None -> box DBNull.Value)
+                  "@af",
+                  (match row.ActualFingerprint with
+                   | Some fp -> box fp
+                   | None -> box DBNull.Value)
+                  "@fo", box (fingerprintOutcomeCode row.FingerprintOutcome)
+                  "@rec", box row.TraceRecall
+                  "@sct", box row.StaticClassTests
+                  "@tct", box row.TraceClassTests
+                  "@cut", box row.ChildUntracedTests ])
 
     /// A project's shadow rows, oldest first.
     member _.ShadowRows(testProject: string) : ShadowRow list =
@@ -768,7 +940,9 @@ type Store private (conn: SqliteConnection) =
             JsonSerializer.Deserialize<string[]> json |> List.ofArray
 
         readRows conn """SELECT run_id, env_fingerprint, recorded_at, universe, complete_share, static_tests, trace_tests,
-                      static_classes, trace_classes, rule_counts, static_only, trace_only, select_ms
+                      static_classes, trace_classes, rule_counts, static_only, trace_only, select_ms, mode, record_policy,
+                      eligible, actual_fingerprint, fingerprint_outcome, trace_recall, static_class_tests,
+                      trace_class_tests, child_untraced_tests
                FROM shadow_selections WHERE test_project = @p ORDER BY id""" [ "@p", box testProject ] (fun r ->
             { RunId = r.GetString 0
               TestProject = testProject
@@ -783,7 +957,16 @@ type Store private (conn: SqliteConnection) =
               RuleCounts = rulesOf (r.GetString 9)
               StaticOnly = listOf (r.GetString 10)
               TraceOnly = listOf (r.GetString 11)
-              SelectMs = r.GetInt64 12 })
+              SelectMs = r.GetInt64 12
+              Mode = modeOf (r.GetString 13)
+              RecordPolicy = r.GetString 14
+              Eligible = (if r.IsDBNull 15 then None else Some(r.GetInt64 15 <> 0L))
+              ActualFingerprint = (if r.IsDBNull 16 then None else Some(r.GetString 16))
+              FingerprintOutcome = fingerprintOutcomeOf (r.GetString 17)
+              TraceRecall = r.GetString 18
+              StaticClassTests = r.GetInt32 19
+              TraceClassTests = r.GetInt32 20
+              ChildUntracedTests = r.GetInt32 21 })
 
     /// Store tests that failed in a run while trace selection, computed at that run's
     /// launch, did not select them: verified-failure misses. A repeat is ignored.
@@ -807,6 +990,44 @@ type Store private (conn: SqliteConnection) =
             "SELECT run_id, test_key FROM shadow_misses WHERE test_project = @p ORDER BY id"
             [ "@p", box testProject ]
             (fun r -> r.GetString 0, r.GetString 1)
+
+    /// Store one mutation sample. Every sample is kept: two samples of one symbol at two
+    /// trees are two measurements.
+    member _.RecordMutationSample(sample: MutationSample) : unit =
+        inTransaction conn (fun tx ->
+            exec
+                conn
+                tx
+                """INSERT INTO mutation_samples (test_project, kind, symbol, tree_hash, recorded_at, outcome, failing,
+                       selected, missed)
+                   VALUES (@p, @k, @s, @t, @at, @o, @f, @sel, @m)"""
+                [ "@p", box sample.TestProject
+                  "@k", box (mutationKindCode sample.Kind)
+                  "@s", box sample.Symbol
+                  "@t", box sample.TreeHash
+                  "@at", box (sample.RecordedAt.ToString "O")
+                  "@o", box (mutationOutcomeCode sample.Outcome)
+                  "@f", box sample.Failing
+                  "@sel", box sample.Selected
+                  "@m", box (JsonSerializer.Serialize(Array.ofList sample.Missed)) ])
+
+    /// A project's mutation samples, oldest first.
+    member _.MutationSamples(testProject: string) : MutationSample list =
+        readRows conn """SELECT kind, symbol, tree_hash, recorded_at, outcome, failing, selected, missed
+               FROM mutation_samples WHERE test_project = @p ORDER BY id""" [ "@p", box testProject ] (fun r ->
+            { TestProject = testProject
+              Kind =
+                (if r.GetString 0 = "union-type" then
+                     UnionTypeMutant
+                 else
+                     SymbolMutant)
+              Symbol = r.GetString 1
+              TreeHash = r.GetString 2
+              RecordedAt = DateTimeOffset.Parse(r.GetString 3, Globalization.CultureInfo.InvariantCulture)
+              Outcome = mutationOutcomeOf (r.GetString 4)
+              Failing = r.GetInt32 5
+              Selected = r.GetInt32 6
+              Missed = JsonSerializer.Deserialize<string[]>(r.GetString 7) |> List.ofArray })
 
     /// A project's runs, newest first.
     member _.Runs(testProject: string) : TraceRun list =

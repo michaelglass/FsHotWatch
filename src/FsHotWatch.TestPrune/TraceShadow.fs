@@ -114,25 +114,81 @@ module TraceShadow =
                 log $"trace-shadow: skipped — %s{ex.GetType().Name}: %s{ex.Message}"
                 []
 
+    /// The fingerprint the run recorded `project`'s traces under, read from the checkout's
+    /// trace database (ingestion has finished by completion), and whether anything was ever
+    /// stored under `predicted`. `None` when the run recorded no traces for the project.
+    let private recordedFingerprint (settings: TraceSettings) (repoRoot: string) (runId: string) (r: ShadowReading) =
+        let path = dbPath settings repoRoot
+
+        if File.Exists path then
+            using (TraceStore.Store.Open path) (fun traces ->
+                let project = r.Selection.TestProject
+
+                let actual =
+                    traces.Runs project
+                    |> List.tryFind (fun run -> run.RunId = runId && run.Status = TraceStore.Recorded)
+                    |> Option.map _.EnvFingerprint
+
+                actual, not (traces.TestKeysOf(project, r.Fingerprint)).IsEmpty)
+        else
+            None, false
+
     /// Store each reading under `runId`, with the tests of `failedKeys` its selection left
-    /// out as verified-failure misses (each also logged). Never throws.
+    /// out as verified-failure misses (each also logged). `ranInFull` says whether a project
+    /// ran every test in this run: its row is a full-run row and records the trace
+    /// selection's recall over the run's failures. `failedKeys` is `None` when the run left
+    /// no complete report: nothing is judged, and a full row's recall is not measurable.
+    /// Never throws.
     let atCompletion
         (settings: TraceSettings)
         (repoRoot: string)
         (readings: ShadowReading list)
         (runId: string)
-        (failedKeys: string list)
+        (ranInFull: string -> bool)
+        (failedKeys: string list option)
         (log: string -> unit)
         : unit =
         if not readings.IsEmpty then
             try
+                let recordPolicy =
+                    match settings.Record with
+                    | RecordFullRuns -> "full-runs"
+                    | RecordEveryRun -> "every-run"
+
+                let fingerprints =
+                    readings |> List.map (recordedFingerprint settings repoRoot runId)
+
                 using (TraceStore.Store.Open(shadowStorePath settings repoRoot)) (fun store ->
                     let at = DateTimeOffset.UtcNow
+                    let failed = failedKeys |> Option.defaultValue []
 
-                    readings
-                    |> List.iter (fun r ->
-                        store.RecordShadow(TraceSelect.row runId r.Fingerprint at r.SelectMs r.Selection r.Comparison)
-                        let unknown = TraceSelect.unknownFailures r.Selection failedKeys
+                    List.zip readings fingerprints
+                    |> List.iter (fun (r, (actual, predictedHadTraces)) ->
+                        let full = ranInFull r.Selection.TestProject
+
+                        let recall =
+                            match full, failedKeys with
+                            | false, _ -> "n/a: impact run"
+                            | true, None -> "n/a: no complete report"
+                            | true, Some keys -> TraceSelect.traceRecall r.Selection keys
+
+                        let facts: TraceSelect.RowFacts =
+                            { RunId = runId
+                              Mode =
+                                (if full then
+                                     TraceStore.FullSuiteRun
+                                 else
+                                     TraceStore.ImpactRun)
+                              RecordPolicy = recordPolicy
+                              Fingerprint = r.Fingerprint
+                              ActualFingerprint = actual
+                              PredictedHadTraces = predictedHadTraces
+                              RecordedAt = at
+                              SelectMs = r.SelectMs
+                              TraceRecall = recall }
+
+                        store.RecordShadow(TraceSelect.row facts r.Selection r.Comparison)
+                        let unknown = TraceSelect.unknownFailures r.Selection failed
 
                         if not unknown.IsEmpty then
                             let names = String.concat ", " unknown
@@ -140,7 +196,7 @@ module TraceShadow =
                             log
                                 $"trace-shadow: %d{unknown.Length} failed test(s) in %s{r.Selection.TestProject} that no traced key names: %s{names} — not judged as misses"
 
-                        let misses = TraceSelect.verifiedFailureMisses r.Selection failedKeys
+                        let misses = TraceSelect.verifiedFailureMisses r.Selection failed
 
                         if not misses.IsEmpty then
                             let names = String.concat ", " misses

@@ -244,6 +244,41 @@ the measured recall is a lower bound on symbol-level selection, which joins a cl
 method that holds it. Nothing is stored and selection is not changed: this is the evidence
 for whether trace selection can replace the static walk.
 
+### Shadow report: is trace selection ready to replace the static walk?
+
+```text
+test-prune-traces shadow-report --project <test project> --db <shadow store> [--db <shadow store>]... [--since <n>d|<ISO date>] [--json]
+```
+
+A host running trace selection in shadow (fshw's `tests.traces.select: "shadow"`) stores one
+row per run and test project: what the trace selection would have run next to what the static
+selection did run, whether the project ran a selection (`impact`) or in full (`full`), the
+recording policy, whether the project was eligible (at least 0.99 of its tests had a complete
+trace), whether the fingerprint whose traces it read is the one the run recorded under, and on
+a full run the trace selection's recall over the run's failures. Each failed test the trace
+selection left out is a verified-failure miss. fshw keeps these in one shadow store per
+repository, `<shared cache>/cache/trace-shadow/<repository>/shadow.db`, so the rows of every
+checkout count together.
+
+`shadow-report` evaluates the promotion bar over a project's rows, misses and mutation
+samples, and prints one line per bar:
+
+| Bar | Threshold |
+|---|---|
+| window | at least 100 impact rows and 10 full rows over at least 14 days, every impact row recorded under `every-run` |
+| verified-failure misses | none on an eligible row (those on ineligible rows are listed) |
+| trace recall on full runs | every measured value `r/r`, at least one measured |
+| mutation | at least 50 measured symbol samples and 5 measured union-type samples, no missed test |
+| eligibility | at least 0.95 of rows eligible |
+| fingerprint prediction | no unsafe miss, safe misses at most 0.05 of traced rows |
+| latency | p95 selection time at most 1000 ms |
+| payoff | median of trace-launched over static-launched tests, on impact rows, at most 0.5 |
+
+No bar passes on no data. Every `--db` is read, and a run stored twice counts once. `--since`
+starts the window later (`14d`, or a date). The verb exits **0** when every bar passes, **1**
+when one fails, **2** on a usage error or a store it cannot read (a missing file is refused, not
+created).
+
 The four process-driving verbs (`audit`, `overhead`, `file-census`, `mutate`) take the same
 options:
 

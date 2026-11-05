@@ -11,7 +11,7 @@ open TestPrune.Trace
 
 /// The usage line printed for an unknown or missing verb.
 let usage =
-    "usage: test-prune-traces census|audit|overhead|file-census|mutate|recall [options]"
+    "usage: test-prune-traces census|audit|overhead|file-census|mutate|recall|shadow-report [options]"
 
 /// The usage of the census verb.
 let censusUsage =
@@ -426,6 +426,134 @@ let private measure
             if a.Keep.IsNone then
                 Directory.Delete(runDir, true)
 
+/// The usage of the shadow-report verb.
+let shadowReportUsage =
+    "usage: test-prune-traces shadow-report --project <test project> --db <shadow store> [--db <shadow store> ...]\n"
+    + "  [--since <n>d | <ISO date>] [--json]\n"
+    + "  evaluates the phase-2 promotion bar over the project's shadow rows, misses and mutation samples.\n"
+    + "  fshw keeps one shadow store per repository, <shared cache>/cache/trace-shadow/<repository>/shadow.db\n"
+    + "  (tests.traces.shadowDb overrides it); every --db is read and a run recorded twice counts once.\n"
+    + "  exit 0 when every bar passes, 1 when one fails, 2 on a usage error or an unreadable store"
+
+type private ShadowReportArgs =
+    { Project: string option
+      Dbs: string list
+      Since: DateTimeOffset option
+      Json: bool }
+
+/// `<n>d` (that many days before `now`) or an ISO date, or why `v` is neither.
+let private sinceOf (now: DateTimeOffset) (v: string) : Result<DateTimeOffset, string> =
+    let days =
+        if v.EndsWith "d" then
+            match Int32.TryParse(v.TrimEnd 'd', NumberStyles.None, CultureInfo.InvariantCulture) with
+            | true, n -> Some n
+            | _ -> None
+        else
+            None
+
+    match days with
+    | Some n -> Ok(now.AddDays(float -n))
+    | None ->
+        match
+            DateTimeOffset.TryParse(
+                v,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal ||| DateTimeStyles.AdjustToUniversal
+            )
+        with
+        | true, t -> Ok t
+        | _ -> Error $"--since needs <n>d or an ISO date, got %s{v}"
+
+let rec private parseShadowReport (now: DateTimeOffset) (acc: ShadowReportArgs) (args: string list) =
+    match args with
+    | [] -> Ok acc
+    | "--project" :: v :: rest when not (v.StartsWith "--") -> parseShadowReport now { acc with Project = Some v } rest
+    | "--db" :: v :: rest when not (v.StartsWith "--") -> parseShadowReport now { acc with Dbs = acc.Dbs @ [ v ] } rest
+    | "--since" :: v :: rest when not (v.StartsWith "--") ->
+        sinceOf now v
+        |> Result.bind (fun t -> parseShadowReport now { acc with Since = Some t } rest)
+    | "--json" :: rest -> parseShadowReport now { acc with Json = true } rest
+    | ("--project" | "--db" | "--since") as flag :: _ -> Error $"%s{flag} needs a value"
+    | other :: _ -> Error $"unknown argument %s{other}"
+
+/// The report as plain data for `JsonSerializer`.
+type ShadowReportJson =
+    { Project: string
+      Rows: int
+      Passes: bool
+      Bars: ShadowReport.BarResult list }
+
+/// One store's rows, misses and samples for `project`, or why the store cannot be read,
+/// naming it. A missing file is refused rather than created empty: an empty store would
+/// read as a report with nothing in it.
+let private readShadowStore (project: string) (path: string) =
+    if not (File.Exists path) then
+        Error $"%s{path}: no shadow store there"
+    else
+        try
+            using (TraceStore.Store.Open path) (fun store ->
+                Ok(store.ShadowRows project, store.ShadowMisses project, store.MutationSamples project))
+        with e ->
+            // Not a trace database, or one a newer schema wrote: either way, unreadable here.
+            Error $"%s{path}: %s{e.Message}"
+
+let private shadowReport (cwd: string) (args: string list) : Outcome =
+    let empty =
+        { Project = None
+          Dbs = []
+          Since = None
+          Json = false }
+
+    match parseShadowReport DateTimeOffset.UtcNow empty args with
+    | Error why -> fail 2 $"%s{why}\n%s{shadowReportUsage}"
+    | Ok { Project = None } -> fail 2 $"--project is required\n%s{shadowReportUsage}"
+    | Ok { Dbs = [] } -> fail 2 $"at least one --db is required\n%s{shadowReportUsage}"
+    | Ok({ Project = Some project } as a) ->
+        let read =
+            a.Dbs |> List.map (fun db -> readShadowStore project (Path.Combine(cwd, db)))
+
+        match
+            read
+            |> List.tryPick (function
+                | Error why -> Some why
+                | Ok _ -> None)
+        with
+        | Some why -> fail 2 why
+        | None ->
+            let read = read |> List.choose Result.toOption
+
+            let rows =
+                read
+                |> List.collect (fun (rows, _, _) -> rows)
+                |> List.distinctBy _.RunId
+                |> List.sortBy _.RecordedAt
+                |> ShadowReport.since a.Since
+
+            let misses = read |> List.collect (fun (_, misses, _) -> misses) |> List.distinct
+
+            let samples =
+                read
+                |> List.collect (fun (_, _, samples) -> samples)
+                |> List.distinct
+                |> List.filter (fun s -> a.Since |> Option.forall (fun t -> s.RecordedAt >= t))
+
+            let results = ShadowReport.evaluate ShadowReport.defaults rows misses samples
+
+            { Exit = if ShadowReport.passes results then 0 else 1
+              Stdout =
+                if a.Json then
+                    JsonSerializer.Serialize(
+                        { Project = project
+                          Rows = rows.Length
+                          Passes = ShadowReport.passes results
+                          Bars = results },
+                        JsonSerializerOptions(PropertyNamingPolicy = JsonNamingPolicy.CamelCase)
+                    )
+                    + "\n"
+                else
+                    ShadowReport.render results rows
+              Stderr = "" }
+
 /// Runs a verb against `cwd` with the given measurements, returning its output rather
 /// than printing it.
 let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
@@ -462,6 +590,7 @@ let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
             FileCensus.passes
             FileCensus.render
             box
+    | "shadow-report" :: rest -> shadowReport cwd rest
     | "mutate" :: rest ->
         measure
             cwd

@@ -3693,6 +3693,24 @@ Runs in TestPrune once the FsHotWatch release with F3/F4 is out. The FsHotWatch 
   `tests.traces.select` → `"shadow"`
 - Create: `docs/plans/<date>-recorded-per-test-traces-phase2-results.md`
 
+### Decision D1b (2026-11-05): what the landed row and report differ from Tasks 6 and 8 in
+
+- **Run kind is per project, from what ran.** A row is `full` when that project launched unfiltered, ran,
+  and was not answered from the evidence store; every other row is `impact`. A `check` that widened a
+  project to the whole suite is a full row: all its failures are in the report, so its trace recall is
+  measurable, and its static side was not the symbol selection whose payoff the impact rows measure.
+- **Trace recall is test-level, before obligations.** `r/t` counts the failed tests the trace selection
+  itself selected. Obligations and class expansion only add tests, so this is the stricter reading.
+- **Every verified-failure miss is `unexplained`.** FsHotWatch's flakiness score counts transitions, and
+  a test that just started failing has one, so it cannot tell a regression from a flake. Each miss on an
+  eligible row fails the report until someone explains it; there is no `flaky` exemption.
+- **The fingerprint outcome measures what shadow read today** (the newest recorded run's fingerprint)
+  against what the run recorded. Prediction (Task 3) replaces the read side, not the column.
+- **The report needs `--db`** (repeatable; a run stored in two stores counts once). The tool does not know
+  fshw's box-wide path, so the usage names it. `--prune-before` and `--index` are not implemented:
+  `--since` starts a window, and the union-type bar uses its default of 5 until Task 11 can count
+  candidates.
+
 - [ ] **Step 1:** Bump the pin exactly per the runbook; commit alone.
 - [ ] **Step 2:** Enable shadow; run `dotnet fshw confirm` once to re-record under the new fingerprint (the core
   bump invalidated every trace), then work normally.
