@@ -282,6 +282,37 @@ let ``a test with no outcome, unmapped code, or an untraced child is incomplete 
     test <@ s.UnmappedIds = 2 && s.Complete = 0 @>
 
 [<Fact>]
+let ``a child that acts only on its arguments leaves the trace complete, unless the repository supplies it`` () =
+    // AUTOMATION-1496: `sleep` and `chmod` run no code a change to the repository can reach,
+    // so an untraced one is not a gap in the test's trace. A start that names a repository
+    // file is not that binary, and a shell runs whatever it is given: both stay incomplete.
+    let w = World()
+    let inRepo = Path.Combine(w.Root, "tools", "sleep")
+
+    w.Process(
+        10,
+        null,
+        fun st ->
+            asTest st "T:1" "N.Tests" "a" "N.Tests.a"
+            st.CurrentScope().Children.Enqueue(struct (4301, "sleep", true))
+            st.CurrentScope().Children.Enqueue(struct (4302, "/bin/chmod", true))
+            asTest st "T:2" "N.Tests" "b" "N.Tests.b"
+            st.CurrentScope().Children.Enqueue(struct (4303, inRepo, true))
+            st.CurrentScope().Children.Enqueue(struct (4305, Path.Combine("tools", "sleep"), true))
+            asTest st "T:3" "N.Tests" "c" "N.Tests.c"
+            st.CurrentScope().Children.Enqueue(struct (4304, "/bin/sh", true))
+    )
+
+    use store = TraceStore.Store.Open w.TraceDb
+
+    let s =
+        ingest store (w.Request [ passed "N.Tests.a"; passed "N.Tests.b"; passed "N.Tests.c" ])
+
+    test <@ (read store s "N.Tests" "a").Complete @>
+    test <@ (read store s "N.Tests" "b").Reasons = [ "child-process-untraced:sleep" ] @>
+    test <@ (read store s "N.Tests" "c").Reasons = [ "child-process-untraced:sh" ] @>
+
+[<Fact>]
 let ``a traced child's hits, static init and children merge into the parent test`` () =
     let w = World()
 

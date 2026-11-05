@@ -604,7 +604,7 @@ let ``file shims are inert with no recorder`` () =
     withRecorder null (fun () -> test <@ Io.File_Exists file @>)
 
 [<Fact>]
-let ``a started child inherits the parent scope and is noted with its pid`` () =
+let ``a started child inherits the parent scope and is noted with its pid and the executable as started`` () =
     let state = recorderWithRoot Fixtures.repoRoot
     state.EnterScope "T:parent"
 
@@ -617,7 +617,9 @@ let ``a started child inherits the parent scope and is noted with its pid`` () =
     ProcessShims.RecordWith(state, p, injected)
     p.WaitForExit()
     let struct (pid, file, env) = state.CurrentScope().Children |> Seq.exactlyOne
-    test <@ pid = p.Id && file = "echo" && env @>
+    // The executable as the start named it, so ingestion can tell a system binary from a
+    // repository file of the same name (AUTOMATION-1496).
+    test <@ pid = p.Id && file = "/bin/echo" && env @>
 
 [<Fact>]
 let ``a child sent to another dump directory starts its own trace, outside the parent's scope`` () =
@@ -684,7 +686,14 @@ let ``every Process.Start shim starts the child in the current scope`` () =
         |> Seq.map (fun (struct (_, file, env)) -> file, env)
         |> List.ofSeq
 
-    test <@ children = [ "echo", true; "true", true; "true", true; "true", true; "true", true ] @>
+    test
+        <@
+            children = [ "/bin/echo", true
+                         "/usr/bin/true", true
+                         "/usr/bin/true", true
+                         "/usr/bin/true", true
+                         "/usr/bin/true", true ]
+        @>
 
 /// A throwaway module with one method whose body calls every shape the pass must handle.
 let private syntheticModule () =

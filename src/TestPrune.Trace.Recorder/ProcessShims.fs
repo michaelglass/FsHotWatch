@@ -45,7 +45,7 @@ type ProcessShims =
     /// Notes a started child on the note scope.
     static member internal RecordWith(state: RecorderState, p: Process, injected: bool) : unit =
         if not (isNull state) && not (isNull p) then
-            state.NoteScope().Children.Enqueue(struct (p.Id, Path.GetFileName p.StartInfo.FileName, injected))
+            state.NoteScope().Children.Enqueue(struct (p.Id, p.StartInfo.FileName, injected))
 
     /// Prepares `p`, starts it with `start`, and notes it when it started.
     static member internal StartWith(state: RecorderState, p: Process, start: Process -> bool) : bool =

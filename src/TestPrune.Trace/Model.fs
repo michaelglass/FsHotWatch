@@ -57,9 +57,39 @@ type RecordedInput = { Kind: InputKind; Path: string }
 
 /// A child process a scope started.
 type ChildNote =
-    { Pid: int
-      FileName: string
-      EnvInjected: bool }
+    {
+        Pid: int
+        /// The executable as the start named it: a bare name, or a path. Dumps written before
+        /// AUTOMATION-1496 hold only its file name.
+        FileName: string
+        EnvInjected: bool
+    }
+
+/// Untraced children that cannot leave a gap in a test's trace.
+[<RequireQualifiedAccess>]
+module ChildNote =
+    /// Executables whose run depends only on their arguments and reads no file's content, so
+    /// no change to the repository can change what they do: what they are told comes from the
+    /// test's own (traced) code. A shell, an interpreter, `dotnet` or `git` runs or reads what
+    /// it is given and is never on this list (AUTOMATION-1496).
+    let TrustedExecutables = set [ "sleep"; "chmod" ]
+
+    /// The executable's file name, as an incomplete reason names it.
+    let name (c: ChildNote) = System.IO.Path.GetFileName c.FileName
+
+    /// A trusted executable named bare (found on the PATH) or by a rooted path outside
+    /// `repoRoot`. A path inside the repository is a repository file, whatever it is called.
+    let isTrusted (repoRoot: string) (c: ChildNote) : bool =
+        let outsideRepo () =
+            let root =
+                System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath repoRoot)
+                + string System.IO.Path.DirectorySeparatorChar
+
+            not (System.IO.Path.GetFullPath(c.FileName).StartsWith(root, System.StringComparison.Ordinal))
+
+        TrustedExecutables.Contains(name c)
+        && (System.IO.Path.GetFileName c.FileName = c.FileName
+            || System.IO.Path.IsPathRooted c.FileName && outsideRepo ())
 
 /// The xUnit identity of a test scope.
 type TestIdentity =

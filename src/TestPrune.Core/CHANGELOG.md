@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a test name holding a `.` is indexed whole, and a test class name holding a CLR-reserved
+  character (`,` `+` `&` `*` `[` `]` `\`) is escaped as `Type.FullName` writes it (AUTOMATION-1496).
+  ``.fshw.json loads`` was indexed as `json loads`` `, and `module ``pattern (true, false)`` ` as
+  `pattern (true, false)`, so their tests matched no recorded trace or CTRF row, and a
+  `--filter-class` for the second class ran zero tests. Index schema 25 (`SchemaVersion` 24 -> 25): a
+  REBUILD, so the first run after upgrading re-indexes the repository.
+
 ## 15.0.0 - 2026-11-04
 
 - fix: the SQLite and in-memory symbol stores agree on a `DllImport` symbol (AUTOMATION-1455).

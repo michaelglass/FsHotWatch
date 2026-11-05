@@ -190,7 +190,7 @@ let incomplete (dumps: ProcessDump list) (rejected: (string * string) list) : Ma
         |> Option.map (fun _ ->
             (s.Children
              |> List.filter (fun c -> not (traced.Contains(key, c.Pid)))
-             |> List.map (fun c -> ChildProcessUntraced c.FileName))
+             |> List.map (ChildNote.name >> ChildProcessUntraced))
             @ processWide
             |> List.map TraceStore.reasonCode
             |> List.distinct))
