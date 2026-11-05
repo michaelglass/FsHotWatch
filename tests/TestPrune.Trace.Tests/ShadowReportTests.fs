@@ -33,7 +33,8 @@ let private baseRow: ShadowRow =
       TraceRecall = "n/a: impact run"
       StaticClassTests = 50
       TraceClassTests = 10
-      ChildUntracedTests = 0 }
+      ChildUntracedTests = 0
+      FallbackSeeds = Map.empty }
 
 /// 15 days, 120 impact rows, 12 full rows with measured recall 2/2, all green.
 let greenRows =

@@ -3711,6 +3711,28 @@ Runs in TestPrune once the FsHotWatch release with F3/F4 is out. The FsHotWatch 
   `--since` starts a window, and the union-type bar uses its default of 5 until Task 11 can count
   candidates.
 
+### Decision D1c (2026-11-05): R6 and R7 as landed, and the window restart
+
+- **R6 and R7 are applied on top of R1–R4** (`TraceSelect.withFallbacks`), not inside one set-based `select`.
+  They only add tests, so the guard that matters is pinned directly: for every seed with a fall reason, the
+  static walk's tests of the project are a subset of the trace selection.
+- **Symbol facts** (`trace_symbol_facts`, per project and fingerprint): `probed` is every symbol a manifest
+  row of the latest weave joins to, replaced by each ingestion; `static-init` is the narrow fact of the
+  2026-09-27 note (a symbol in a static-init scope no test of the run inherited), accumulated; `unstable`
+  is Task 4's detector, accumulated. A fingerprint change starts the facts afresh, like the traces.
+- **Fall reasons, in order:** order-unstable, static-init, literal (`LiteralAttribute`), inline
+  (`TestPrune.Inline`), not probed. The walk is the static selection's own query (`AffectedTests`), so R6
+  never reaches a test static would not.
+- **R7 claims** a changed file when a trace input names it, a `list` input names its directory, or a
+  `list-deep` input names any directory above it. Indexed sources are symbols, not R7. The fallback is
+  `ImpactAnalysis.selectTests` (the `DependsOnFile`/`DependsOnGlob` declarations and the project-file rule);
+  "run all" selects every test. In FsHotWatch the changed files are the launch's `ChangedFiles`, which today
+  hold analysed sources, so R7 rarely fires in the daemon: non-source changes reach a run through the
+  runtime-coverage and `dependsOn` obligations, which apply after either selection (R9). Task 9's census
+  gaps are not wired in.
+- **The window restarts at this landing.** R6 and R7 change the trace side of every row, so
+  `shadow-report --since <landing date>` is the window from here on.
+
 - [ ] **Step 1:** Bump the pin exactly per the runbook; commit alone.
 - [ ] **Step 2:** Enable shadow; run `dotnet fshw confirm` once to re-record under the new fingerprint (the core
   bump invalidated every trace), then work normally.

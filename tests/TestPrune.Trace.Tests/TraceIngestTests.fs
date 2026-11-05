@@ -949,3 +949,140 @@ let ``version hashes use the content hash of a single occurrence and a digest of
 
     test <@ versionHashes swapped = v @>
     test <@ versionHashes store = Map.ofList [ "N.M.f", "hf"; "N.M.g", "hg" ] @>
+
+// --- selection facts (AUTOMATION-975, plan Task 4) --------------------------------------
+
+[<Fact>]
+let ``ingestion records the symbols the weave probes`` () =
+    let w = World()
+
+    w.Process(
+        10,
+        null,
+        fun st ->
+            asTest st "T:1" "N.Tests" "t" "N.Tests.t"
+            st.Hit 0
+    )
+
+    use store = TraceStore.Store.Open w.TraceDb
+    let s = ingest store (w.Request [ passed "N.Tests.t" ])
+    // Row 2 is unmapped, row 3 dropped, row 4 a file-level entry: only 0 and 1 are symbols.
+    test <@ (store.SymbolFacts("P", s.EnvFingerprint.Value)).Probed = set [ "N.M.f"; "N.M.g" ] @>
+
+[<Fact>]
+let ``a symbol only a type initializer no test inherits ran is a static-init fact`` () =
+    let w = World()
+
+    w.Manifest <-
+        { w.Manifest with
+            Rows = Array.append w.Manifest.Rows [| row 5 StaticCtor "<StartupCode$A>.$N.M" ".cctor" (Some w.Src) 1 |]
+            IdCount = 6 }
+
+    w.Process(
+        10,
+        null,
+        fun st ->
+            // N.M's initializer runs f while the only test runs code of another file: nothing
+            // links the initializer's scope, so no trace names f.
+            asTest st "T:3" "N.Tests" "elsewhere" "N.Tests.elsewhere"
+            st.EnterStatic "<StartupCode$A>.$N.M"
+            st.Hit 0
+            st.ExitStatic()
+            st.Hit 4
+    )
+
+    use store = TraceStore.Store.Open w.TraceDb
+    let s = ingest store (w.Request [ passed "N.Tests.elsewhere" ])
+    test <@ (store.SymbolFacts("P", s.EnvFingerprint.Value)).StaticInit = set [ "N.M.f" ] @>
+
+[<Fact>]
+let ``a symbol a test's initializer ran is in that test's trace, not a static-init fact`` () =
+    let w = World()
+
+    w.Manifest <-
+        { w.Manifest with
+            Rows = Array.append w.Manifest.Rows [| row 5 StaticCtor "<StartupCode$A>.$N.M" ".cctor" (Some w.Src) 1 |]
+            IdCount = 6 }
+
+    w.Process(
+        10,
+        null,
+        fun st ->
+            asTest st "T:1" "N.Tests" "first" "N.Tests.first"
+            st.EnterStatic "<StartupCode$A>.$N.M"
+            st.Hit 0
+            st.ExitStatic()
+            st.Hit 1
+    )
+
+    use store = TraceStore.Store.Open w.TraceDb
+    let s = ingest store (w.Request [ passed "N.Tests.first" ])
+    test <@ (store.SymbolFacts("P", s.EnvFingerprint.Value)).StaticInit |> Set.isEmpty @>
+
+[<Fact>]
+let ``a trace that changes while nothing it ran or read changed flags the differing symbols`` () =
+    let w = World()
+
+    let once (runId: string) (ids: int list) =
+        if Directory.Exists w.DumpDir then
+            Directory.Delete(w.DumpDir, true)
+
+        w.Process(
+            10,
+            null,
+            fun st ->
+                asTest st "T:1" "N.Tests" "t" "N.Tests.t"
+
+                for id in ids do
+                    st.Hit id
+        )
+
+        use store = TraceStore.Store.Open w.TraceDb
+
+        ingest
+            store
+            { w.Request [ passed "N.Tests.t" ] with
+                RunId = runId }
+
+    let first = once "run1" [ 0 ]
+    test <@ first.UnstableSymbols = 0 @>
+    let second = once "run2" [ 0; 1 ]
+    test <@ second.UnstableSymbols = 1 @>
+    use store = TraceStore.Store.Open w.TraceDb
+    test <@ (store.SymbolFacts("P", second.EnvFingerprint.Value)).Unstable = set [ "N.M.g" ] @>
+
+[<Fact>]
+let ``detectUnstable flags a difference only when nothing explains it`` () =
+    let old: TraceStore.StoredTrace =
+        { TestKey = "P|K|a"
+          EnvFingerprint = "E"
+          RunId = "r"
+          Complete = true
+          Reasons = []
+          Symbols = set [ "a", "1"; "b", "1" ]
+          Inputs = Set.empty }
+
+    let current = Map.ofList [ "a", "1"; "b", "1"; "c", "1" ]
+    test <@ detectUnstable current old (set [ "a", "1"; "c", "1" ]) Set.empty true = set [ "b"; "c" ] @>
+    // An incomplete side proves nothing.
+    test <@ detectUnstable current old (set [ "a", "1" ]) Set.empty false |> Set.isEmpty @>
+
+    test
+        <@
+            detectUnstable current { old with Complete = false } (set [ "a", "1" ]) Set.empty true
+            |> Set.isEmpty
+        @>
+    // A changed input explains the difference.
+    test
+        <@
+            detectUnstable current old (set [ "a", "1" ]) (set [ "read", "x", "h" ]) true
+            |> Set.isEmpty
+        @>
+    // A changed version explains the difference.
+    test
+        <@
+            detectUnstable (current.Add("b", "2")) old (set [ "a", "1" ]) Set.empty true
+            |> Set.isEmpty
+        @>
+    // The same trace is no difference.
+    test <@ detectUnstable current old old.Symbols Set.empty true |> Set.isEmpty @>

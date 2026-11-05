@@ -311,6 +311,212 @@ let ``a mutation sample round-trips through the store`` () =
     finally
         File.Delete path
 
+// --- R6 static fallback and R7 untraced inputs (AUTOMATION-975, plan Task 5) ------------
+
+let private facts probed staticInit unstable : SymbolFacts =
+    { Probed = set probed
+      StaticInit = set staticInit
+      Unstable = set unstable }
+
+let private universe6 =
+    [ "P|C|unchanged"; "P|C|symbol"; "P|C|input"; "P|D|x"; "P|D|y" ]
+
+/// Fallback inputs where `N.f` and `N.g` are probed, `N.s` ran only in an unlinked
+/// initializer, `N.u` is order-unstable; `a.txt` is read and `fixtures` listed by a trace.
+let private fallbacks (overrides: TraceSelect.Fallbacks -> TraceSelect.Fallbacks) : TraceSelect.Fallbacks =
+    overrides
+        { Seeds = []
+          ChangedFiles = []
+          Facts = facts [ "N.f"; "N.g"; "N.u" ] [ "N.s" ] [ "N.u" ]
+          ClaimedInputs = [ "read", "a.txt"; "list", "fixtures"; "list-deep", "data" ]
+          IsIndexed = fun f -> f.EndsWith ".fs"
+          AttributesOf = fun _ -> []
+          StaticWalk = fun _ -> []
+          FileFallback = fun _ -> Some [] }
+
+[<Theory>]
+[<InlineData("N.u", "order-unstable")>]
+[<InlineData("N.s", "static-init")>]
+[<InlineData("N.lit", "literal")>]
+[<InlineData("N.inl", "inline")>]
+[<InlineData("N.unprobed", "not-probed")>]
+[<InlineData("N.f", "")>]
+let ``why a changed symbol cannot be verified by traces`` (symbol: string, expected: string) =
+    let attrs =
+        function
+        | "N.lit" -> [ "LiteralAttribute" ]
+        | "N.inl" -> [ TestPrune.AstAnalyzer.InlineAttributeName ]
+        | _ -> []
+
+    let reason =
+        TraceSelect.fallReason (facts [ "N.f"; "N.u"; "N.lit"; "N.inl" ] [ "N.s" ] [ "N.u" ]) attrs symbol
+
+    test <@ (reason |> Option.map TraceSelect.fallCode |> Option.defaultValue "") = expected @>
+
+[<Fact>]
+let ``a seed the probes cannot represent selects what the static walk from it reaches (R6)`` () =
+    let walked = ResizeArray<string list>()
+    let s = selectAll universe6
+
+    let r =
+        TraceSelect.withFallbacks
+            (fallbacks (fun f ->
+                { f with
+                    Seeds = [ "N.s"; "N.f"; "N.unprobed" ]
+                    StaticWalk =
+                        fun seeds ->
+                            walked.Add seeds
+
+                            match seeds with
+                            | [ "N.s" ] -> [ "P|D|x"; "Q|K|other" ]
+                            | [ "N.unprobed" ] -> [ "P|C|unchanged" ]
+                            | _ -> [] }))
+            s
+
+    // Each fallback reason walks its own seeds; the probed seed N.f is never walked.
+    test <@ walked |> Seq.concat |> Set.ofSeq = set [ "N.s"; "N.unprobed" ] @>
+
+    test
+        <@
+            r.Selected.["P|D|x"]
+            |> List.contains (TraceSelect.StaticFallback TraceSelect.StaticInitOnly)
+        @>
+
+    test <@ r.Selected.["P|C|unchanged"] = [ TraceSelect.StaticFallback TraceSelect.NotProbed ] @>
+    // Another project's tests are never selected.
+    test <@ not (r.Selected.ContainsKey "Q|K|other") @>
+    test <@ r.FallbackSeeds = Map [ "N.s", TraceSelect.StaticInitOnly; "N.unprobed", TraceSelect.NotProbed ] @>
+    // What R1-R4 selected stays selected, with its rules first.
+    test <@ r.Selected.["P|C|symbol"] = s.Selected.["P|C|symbol"] @>
+    test <@ TraceSelect.ruleCounts r |> Map.find "R6" = 2 @>
+
+[<Fact>]
+let ``a changed file no trace claims selects what the static file rules select (R7)`` () =
+    let asked = ResizeArray<string list>()
+
+    let r =
+        TraceSelect.withFallbacks
+            (fallbacks (fun f ->
+                { f with
+                    ChangedFiles =
+                        [ "config/app.json"
+                          "a.txt"
+                          "src/M.fs"
+                          "fixtures/new.json"
+                          "data/deep/x.json" ]
+                    FileFallback =
+                        fun files ->
+                            asked.Add files
+                            Some [ "P|D|y" ] }))
+            (selectAll universe6)
+
+    // Read, indexed, listed and deep-listed files are claimed: only config/app.json is asked.
+    test <@ List.ofSeq asked = [ [ "config/app.json" ] ] @>
+    test <@ r.Selected.["P|D|y"] = [ TraceSelect.NoTrace; TraceSelect.UntracedInput "config/app.json" ] @>
+    test <@ TraceSelect.ruleCode (TraceSelect.UntracedInput "x") = "R7" @>
+
+[<Fact>]
+let ``a changed file the static rules answer with everything selects every test (R7)`` () =
+    let r =
+        TraceSelect.withFallbacks
+            (fallbacks (fun f ->
+                { f with
+                    ChangedFiles = [ "src/P.fsproj" ]
+                    FileFallback = fun _ -> None }))
+            (selectAll universe6)
+
+    test <@ r.Selected |> Map.keys |> Set.ofSeq = set universe6 @>
+
+[<Fact>]
+let ``with no seed and no changed file, fallbacks change nothing`` () =
+    let s = selectAll universe6
+    let r = TraceSelect.withFallbacks (fallbacks id) s
+    test <@ r.Selected = s.Selected && r.FallbackSeeds.IsEmpty @>
+
+[<Fact>]
+let ``fallbacks never leave out a test the static walk reaches from a seed traces cannot verify`` () =
+    // The false-green guard: for every seed with a fall reason, the static walk's tests of
+    // this project are a subset of the selection, whatever the traces say.
+    let walk (seeds: string list) =
+        seeds
+        |> List.collect (fun seed -> universe6 |> List.filter (fun k -> (hash (seed + k)) % 2 = 0))
+
+    for seeds in [ [ "N.s" ]; [ "N.u"; "N.f" ]; [ "N.unprobed"; "N.s"; "N.g" ] ] do
+        let r =
+            TraceSelect.withFallbacks
+                (fallbacks (fun f ->
+                    { f with
+                        Seeds = seeds
+                        StaticWalk = walk }))
+                (selectAll universe6)
+
+        let unverifiable = seeds |> List.filter r.FallbackSeeds.ContainsKey
+        let reached = walk unverifiable |> Set.ofList
+        test <@ Set.isSubset reached (r.Selected |> Map.keys |> Set.ofSeq) @>
+
+[<Fact>]
+let ``symbol facts: probed is replaced by each ingestion, static-init and unstable accumulate`` () =
+    let path =
+        Path.Combine(Path.GetTempPath(), "tp-facts-" + Guid.NewGuid().ToString "N" + ".db")
+
+    try
+        use store = Store.Open path
+        store.RecordSymbolFacts("P", "E", ProbedFact, [ "a"; "b" ])
+        store.RecordSymbolFacts("P", "E", ProbedFact, [ "b"; "c" ])
+        store.RecordSymbolFacts("P", "E", StaticInitFact, [ "s1" ])
+        store.RecordSymbolFacts("P", "E", StaticInitFact, [ "s2" ])
+        store.RecordSymbolFacts("P", "E", UnstableFact, [ "u" ])
+        store.RecordSymbolFacts("P", "F", ProbedFact, [ "z" ])
+        test <@ store.SymbolFacts("P", "E") = facts [ "b"; "c" ] [ "s1"; "s2" ] [ "u" ] @>
+        test <@ store.SymbolFacts("Q", "E") = facts [] [] [] @>
+    finally
+        File.Delete path
+
+[<Fact>]
+let ``the inputs a project's traces claim, under one fingerprint`` () =
+    let path =
+        Path.Combine(Path.GetTempPath(), "tp-claims-" + Guid.NewGuid().ToString "N" + ".db")
+
+    try
+        use store = Store.Open path
+
+        let run fp : TraceRun =
+            { RunId = "r-" + fp
+              TestProject = "P"
+              TreeHash = "t"
+              EnvFingerprint = fp
+              RecordedAt = DateTimeOffset.UnixEpoch
+              Kind = FullRun
+              Status = Recorded
+              Reason = ""
+              StatsJson = "{}" }
+
+        store.RecordRun(
+            run "E",
+            [ { Key = "T:a"
+                Symbols = []
+                Inputs = [ "read", "a.txt", "h"; "list", "fixtures", "h" ] } ],
+            [ { TestKey = "P|C|a"
+                Status = Some Model.Passed
+                Reasons = []
+                ScopeKeys = [ "T:a" ] } ]
+        )
+
+        store.RecordRun(
+            run "F",
+            [ { Key = "T:a"
+                Symbols = []
+                Inputs = [ "read", "other.txt", "h" ] } ],
+            [ { TestKey = "P|C|a"
+                Status = Some Model.Passed
+                Reasons = []
+                ScopeKeys = [ "T:a" ] } ]
+        )
+
+        test <@ store.ClaimedInputs("P", "E") = [ "list", "fixtures"; "read", "a.txt" ] @>
+    finally
+        File.Delete path
+
 [<Fact>]
 let ``an incomplete trace with no reason is not held by an untraced child`` () =
     let none = trace "P|C|none" false [] [ "N.f", "h1" ] []
@@ -390,3 +596,42 @@ let ``every row mode and fingerprint outcome, and every sample outcome, round-tr
         test <@ store.MutationSamples "P" = samples @>
     finally
         File.Delete path
+
+[<Fact>]
+let ``a top-level changed file is unclaimed, a key the walk reaches twice is selected once, and the row names the fallback seeds``
+    ()
+    =
+    let asked = ResizeArray<string list>()
+
+    let r =
+        TraceSelect.withFallbacks
+            (fallbacks (fun f ->
+                { f with
+                    Seeds = [ "N.s" ]
+                    StaticWalk = fun _ -> [ "P|D|x"; "P|D|x" ]
+                    ChangedFiles = [ "settings.json" ]
+                    FileFallback =
+                        fun files ->
+                            asked.Add files
+                            Some [] }))
+            (selectAll universe6)
+
+    test <@ List.ofSeq asked = [ [ "settings.json" ] ] @>
+
+    test <@ r.Selected.["P|D|x"] = [ TraceSelect.NoTrace; TraceSelect.StaticFallback TraceSelect.StaticInitOnly ] @>
+
+    let row =
+        TraceSelect.row
+            { RunId = "r"
+              Mode = ImpactRun
+              RecordPolicy = "every-run"
+              Fingerprint = "E"
+              ActualFingerprint = Some "E"
+              PredictedHadTraces = true
+              RecordedAt = DateTimeOffset.UnixEpoch
+              SelectMs = 1L
+              TraceRecall = "n/a: impact run" }
+            r
+            (TraceSelect.compare [] r)
+
+    test <@ row.FallbackSeeds = Map [ "N.s", "static-init" ] @>

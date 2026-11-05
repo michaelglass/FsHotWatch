@@ -4,16 +4,31 @@
 /// differently now (R3), or when its trace is incomplete (R4). A test with a trace only
 /// under another environment fingerprint has no trace under this one, so it is R1.
 ///
+/// `withFallbacks` then adds R6 (a changed seed the probes cannot represent: the static walk
+/// from it) and R7 (a changed file no trace input claims: the static file rules). Both only
+/// add tests.
+///
 /// This module only answers and compares; a host records the answer next to its static
-/// selection and still runs the static one. Not yet implemented from the phase-2 plan: R6
-/// (static fallback for code the probes cannot see), R7 (changed files no trace claims),
-/// fingerprint prediction. Until they are, a trace-only miss is expected where those rules
-/// would have fired, which is what the shadow rows are there to measure. A project is
-/// eligible when at least `EligibilityThreshold` of its tests have a complete trace.
+/// selection and still runs the static one. A project is eligible when at least
+/// `EligibilityThreshold` of its tests have a complete trace.
 module TestPrune.Trace.TraceSelect
 
 open System
 open TestPrune.Trace.TraceStore
+
+/// Why a changed symbol cannot be verified by traces, so R6 walks it statically.
+type FallReason =
+    /// No probe of the latest weave joins to it: test-assembly code woven at call sites only,
+    /// abstract members, record fields, code added since the weave.
+    | NotProbed
+    /// Marked `inline`: its probe never fires where it was inlined.
+    | Inline
+    /// A `[<Literal>]`: it has no code at all.
+    | Literal
+    /// It ran only in a type initializer no test inherited, so no trace names it.
+    | StaticInitOnly
+    /// It appeared in or vanished from a trace while nothing the test ran or read changed.
+    | OrderUnstable
 
 /// Why trace selection selects a test.
 type Rule =
@@ -25,6 +40,11 @@ type Rule =
     | InputChanged of kind: string * key: string
     /// R4: the trace is incomplete, with its reason codes.
     | Incomplete of reasons: string list
+    /// R6: the static walk from a changed symbol traces cannot verify reaches the test.
+    | StaticFallback of reason: FallReason
+    /// R7: a changed file no trace input claims, which the static file rules select the
+    /// test for (the first such file is named).
+    | UntracedInput of file: string
 
 /// One project's trace selection.
 type Selection =
@@ -41,19 +61,32 @@ type Selection =
         /// eligible project could ever be selected by trace; an ineligible one keeps its
         /// static selection, so its misses do not count against the promotion bar.
         Eligible: bool
+        /// The seeds R6 walked statically, and why each could not be verified.
+        FallbackSeeds: Map<string, FallReason>
     }
 
 /// The complete-trace share at which a project is eligible (phase 1's census bar).
 [<Literal>]
 let EligibilityThreshold = 0.99
 
-/// The rule's code, `R1`..`R4`.
+/// The rule's code, `R1`..`R7` (R5, a trace only under another fingerprint, is read as R1).
 let ruleCode =
     function
     | NoTrace -> "R1"
     | SymbolChanged _ -> "R2"
     | InputChanged _ -> "R3"
     | Incomplete _ -> "R4"
+    | StaticFallback _ -> "R6"
+    | UntracedInput _ -> "R7"
+
+/// A fall reason's code.
+let fallCode =
+    function
+    | NotProbed -> "not-probed"
+    | Inline -> "inline"
+    | Literal -> "literal"
+    | StaticInitOnly -> "static-init"
+    | OrderUnstable -> "order-unstable"
 
 /// Select from traces. `traceOf` reads a test's trace under the fingerprint in use;
 /// `currentVersion` is a symbol's content hash in the tree now (`None` when it is gone);
@@ -114,7 +147,8 @@ let select
         |> List.map (fun (key, _, rules) -> key, rules)
         |> Map.ofList
       CompleteShare = completeShare
-      Eligible = completeShare >= EligibilityThreshold }
+      Eligible = completeShare >= EligibilityThreshold
+      FallbackSeeds = Map.empty }
 
 /// Rule code -> how many selected tests that rule selected.
 let ruleCounts (s: Selection) : Map<string, int> =
@@ -123,6 +157,111 @@ let ruleCounts (s: Selection) : Map<string, int> =
     |> List.collect (fun (_, rules) -> rules |> List.map ruleCode |> List.distinct)
     |> List.countBy id
     |> Map.ofList
+
+/// Why a changed symbol cannot be verified by traces, if it cannot. A measured fact about
+/// the symbol first, then what the index says, then the absence of a probe.
+let fallReason (facts: SymbolFacts) (attributesOf: string -> string list) (symbol: string) : FallReason option =
+    let attrs = attributesOf symbol
+
+    if facts.Unstable.Contains symbol then
+        Some OrderUnstable
+    elif facts.StaticInit.Contains symbol then
+        Some StaticInitOnly
+    elif attrs |> List.exists (fun a -> a = "LiteralAttribute" || a = "Literal") then
+        Some Literal
+    elif attrs |> List.contains TestPrune.AstAnalyzer.InlineAttributeName then
+        Some Inline
+    elif not (facts.Probed.Contains symbol) then
+        Some NotProbed
+    else
+        None
+
+/// What R6 and R7 read beside the traces: the run's seeds and changed files, the project's
+/// symbol facts and claimed inputs, and the static rules they fall back to.
+type Fallbacks =
+    {
+        /// The changed symbols the static selection walked from.
+        Seeds: string list
+        /// Repo-relative, '/'-separated files changed since the last run.
+        ChangedFiles: string list
+        Facts: SymbolFacts
+        /// (kind, key) of every input the project's traces hold (`Store.ClaimedInputs`).
+        ClaimedInputs: (string * string) list
+        /// Whether a file is an indexed source, whose changes are symbols.
+        IsIndexed: string -> bool
+        /// A symbol's attribute names in the index.
+        AttributesOf: string -> string list
+        /// The static walk from seeds: the test keys it reaches, in any project.
+        StaticWalk: string list -> string list
+        /// The static file rules over changed files: the test keys they select, or `None`
+        /// when they select every test (a project file changed).
+        FileFallback: string list -> string list option
+    }
+
+/// A changed file is claimed when a trace input names it, or a listing names its directory
+/// (`list`) or any directory above it (`list-deep`).
+let private claimedBy (claims: (string * string) list) =
+    let keys = claims |> List.map snd |> Set.ofList
+
+    let listed kind =
+        claims
+        |> List.choose (fun (k, key) -> if k = kind then Some key else None)
+        |> Set.ofList
+
+    let shallow, deep = listed "list", listed "list-deep"
+
+    // Every directory above `file`, outermost first.
+    let parents (file: string) =
+        let parts = file.Split '/'
+        [ for i in 1 .. parts.Length - 1 -> String.Join("/", parts, 0, i) ]
+
+    fun (file: string) ->
+        let ps = parents file
+
+        keys.Contains file
+        || (not ps.IsEmpty && shallow.Contains(List.last ps))
+        || ps |> List.exists deep.Contains
+
+/// R6 and R7 over a selection: each changed seed traces cannot verify (`fallReason`) adds
+/// the tests the static walk from it reaches; each changed file that is neither an indexed
+/// source nor claimed by a trace input adds what the static file rules select. Only this
+/// project's universe is ever added to, and nothing selected is removed.
+let withFallbacks (f: Fallbacks) (s: Selection) : Selection =
+    let selected = Collections.Generic.Dictionary<string, Rule list>(s.Selected)
+
+    let add (rule: Rule) (key: string) =
+        if s.Universe.Contains key then
+            selected.[key] <-
+                match selected.TryGetValue key with
+                | true, rules when List.contains rule rules -> rules
+                | true, rules -> rules @ [ rule ]
+                | _ -> [ rule ]
+
+    let fallbacks =
+        f.Seeds
+        |> List.distinct
+        |> List.choose (fun seed -> fallReason f.Facts f.AttributesOf seed |> Option.map (fun r -> seed, r))
+
+    for reason, group in fallbacks |> List.groupBy snd do
+        f.StaticWalk(List.map fst group) |> List.iter (add (StaticFallback reason))
+
+    let claimed = claimedBy f.ClaimedInputs
+
+    let unclaimed =
+        f.ChangedFiles
+        |> List.distinct
+        |> List.filter (fun file -> not (f.IsIndexed file || claimed file))
+
+    match unclaimed with
+    | [] -> ()
+    | first :: _ ->
+        match f.FileFallback unclaimed with
+        | None -> s.Universe |> Seq.iter (add (UntracedInput first))
+        | Some keys -> keys |> List.iter (add (UntracedInput first))
+
+    { s with
+        Selected = selected |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+        FallbackSeeds = Map.ofList fallbacks }
 
 /// The class part of a test key (`<project>|<class>`).
 let private classOf (key: string) =
@@ -291,4 +430,5 @@ let row (f: RowFacts) (s: Selection) (c: Comparison) : ShadowRow =
       TraceRecall = f.TraceRecall
       StaticClassTests = c.StaticClassTests
       TraceClassTests = c.TraceClassTests
-      ChildUntracedTests = childUntracedTests s }
+      ChildUntracedTests = childUntracedTests s
+      FallbackSeeds = s.FallbackSeeds |> Map.map (fun _ r -> fallCode r) }
