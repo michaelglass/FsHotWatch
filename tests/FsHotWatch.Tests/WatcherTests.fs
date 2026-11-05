@@ -203,7 +203,7 @@ let ``hasContentChanged returns true on IOException`` () =
 // The polling backend exists specifically for the macOS failure path, but its
 // contract is deterministic and does not depend on an OS event stream.  If it
 // regresses to metadata stamps, the same-length rewrite below is missed.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``polling fallback baselines silently then detects create content change and delete`` () =
     withTempDir "watcher-poll-diff" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src")
@@ -237,7 +237,7 @@ let ``polling fallback baselines silently then detects create content change and
         watcher.Poll()
         test <@ changes |> Seq.contains (SourceChanged [ existing ]) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``polling fallback covers top-level solutions and extra patterns across repo`` () =
     withTempDir "watcher-poll-scope" (fun tmpDir ->
         let nested = Path.Combine(tmpDir, "config", "nested")
@@ -256,7 +256,7 @@ let ``polling fallback covers top-level solutions and extra patterns across repo
         test <@ changes |> Seq.contains SolutionChanged @>
         test <@ changes |> Seq.contains (SourceChanged [ extra ]) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``polling fallback includes assets but excludes generated and out-of-root source`` () =
     withTempDir "watcher-poll-builtins" (fun tmpDir ->
         let src = Path.Combine(tmpDir, "src")
@@ -531,7 +531,7 @@ let ``automatic polling disposal waits for active callback then prevents later c
     callback ()
     test <@ snapshots = 2 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``macOS native start refused with no retry budget fails closed at once`` () =
     // `NativeStartRetry.none` is a budget of one attempt, so one refusal is a refusal past
     // the budget: no FileSystemWatcher is created, no polling watcher is chosen.
@@ -600,7 +600,7 @@ let private countingPolling () =
 
     factory, (fun () -> created)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``macOS native start refused once then accepted keeps the native watcher`` () =
     withTempDir "watcher-native-transient" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -619,7 +619,7 @@ let ``macOS native start refused once then accepted keeps the native watcher`` (
         test <@ pollingCreated () = 0 @>
         test <@ watcher.Mode = WatcherMode.NativeEvents @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``macOS native create refusal spends the same retry budget as a start refusal`` () =
     withTempDir "watcher-native-create" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -638,7 +638,7 @@ let ``macOS native create refusal spends the same retry budget as a start refusa
         test <@ pollingCreated () = 0 @>
         test <@ watcher.Mode = WatcherMode.NativeEvents @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``macOS native start refused past the retry budget fails closed and names the refusal`` () =
     // Case 2: a PERSISTENT refusal is not a reason to poll. The
     // budget is spent in full, then construction raises a typed failure with no watcher
@@ -673,7 +673,7 @@ let ``macOS native start refused past the retry budget fails closed and names th
         test <@ refused.Message.Contains("1300 ms") @>
         test <@ refused.Message.Contains("FSEventStreamStart") @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``macOS native start accepted after a refusal past the budget starts the native watcher cleanly`` () =
     // The refusal left nothing behind, so the very next construction in the same
     // repository is an ordinary healthy start: native, no polling, no delay.
@@ -702,7 +702,7 @@ let ``macOS native start accepted after a refusal past the budget starts the nat
         test <@ pollingCreated () = 0 @>
         test <@ watcher.Mode = WatcherMode.NativeEvents @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``macOS non-refusal native fault falls back at once without spending the budget`` () =
     withTempDir "watcher-native-fault" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -735,7 +735,7 @@ let ``default native start retry budget outlasts the observed 50 to 71 s refusal
     // Exponential, never shrinking: each wait at least the one before it.
     test <@ waits |> List.pairwise |> List.forall (fun (a, b) -> b >= a) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``macOS native refusal that clears after 60 s of fake time starts natively on a retry and logs every attempt`` () =
     withTempDir "watcher-native-60s" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -782,7 +782,7 @@ let ``macOS native refusal that clears after 60 s of fake time starts natively o
                 |> Seq.exists (fun l -> l.Contains $"native FSEvents stream started on attempt %d{attempts}")
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``macOS healthy native start pays no retry delay`` () =
     withTempDir "watcher-native-healthy" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -866,7 +866,7 @@ let private withNativeNotifications (tmpDir: string) (body: (string -> unit) -> 
     | Some handle -> body handle changes
     | None -> failwith "the macOS watcher never installed a per-file native callback"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a repeated native notification for unchanged bytes emits nothing`` () =
     withTempDir "watcher-content-unchanged" (fun tmpDir ->
         let file = Path.Combine(tmpDir, "src", "Lib.fs")
@@ -881,7 +881,7 @@ let ``a repeated native notification for unchanged bytes emits nothing`` () =
             handle file
             test <@ changes |> Seq.toList |> List.isEmpty @>))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a native notification after a real edit emits`` () =
     withTempDir "watcher-content-edited" (fun tmpDir ->
         let file = Path.Combine(tmpDir, "src", "Lib.fs")
@@ -895,7 +895,7 @@ let ``a native notification after a real edit emits`` () =
             handle file
             test <@ changes |> Seq.toList = [ SourceChanged [ file ] ] @>))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a native notification for a newly created file emits`` () =
     // Absent-then-present is a real change and must not need a hash to compare against.
     withTempDir "watcher-content-created" (fun tmpDir ->
@@ -911,7 +911,7 @@ let ``a native notification for a newly created file emits`` () =
             handle created
             test <@ changes |> Seq.toList = [ SourceChanged [ created ] ] @>))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a native notification for a deleted file emits`` () =
     // Present-then-absent is a real change, and there is nothing left to hash.
     withTempDir "watcher-content-deleted" (fun tmpDir ->
@@ -926,7 +926,7 @@ let ``a native notification for a deleted file emits`` () =
             handle file
             test <@ changes |> Seq.toList = [ SourceChanged [ file ] ] @>))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a native notification for a file the watcher does not track emits nothing`` () =
     // FSEvents reports every file under a watched root, not only F# sources. The
     // relevance filter must drop the rest before the ledger ever hashes them, or an
@@ -939,7 +939,7 @@ let ``a native notification for a file the watcher does not track emits nothing`
             handle note
             test <@ changes |> Seq.toList |> List.isEmpty @>))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a native notification for a file that is still gone emits nothing`` () =
     // A removal is a change exactly once; a later batch naming the same removed
     // path describes nothing new.
@@ -956,7 +956,7 @@ let ``a native notification for a file that is still gone emits nothing`` () =
             handle file
             test <@ changes |> Seq.toList |> List.isEmpty @>))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a native notification for an unreadable file always emits`` () =
     // Fail closed, as `ContentHash` requires: a file nobody could read is never
     // evidence that nothing happened, so its sentinel must not match itself.
@@ -1084,7 +1084,7 @@ type private FakeSystemWatchers() =
             if not disposed.Value && covers spec && FileWatcher.specAccepts spec path then
                 handle path
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``portable watcher routes every built-in recursive filter through one root watcher`` () =
     withTempDir "watcher-portable-filters" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src")
@@ -1128,7 +1128,7 @@ let ``portable watcher routes every built-in recursive filter through one root w
         system.Write(Path.Combine(srcDir, "AfterDispose.fsproj"))
         test <@ received.Count = 0 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileWatcher.create with isMacOS=false when neither src nor tests exist`` () =
     withTempDir "watcher-nosrc" (fun tmpDir ->
         let mutable changes: FileChangeKind list = []
@@ -1210,7 +1210,7 @@ let ``isRelevantFileOrExtra rejects extra-matching files in obj directory`` () =
 
 // === Integration tests: extra-pattern watcher fires for non-source patterns ===
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``portable watcher with wildcard pattern fires SourceChanged for matching file anywhere under the root`` () =
     withTempDir "watcher-extra-wild" (fun tmpDir ->
         let received = ResizeArray<FileChangeKind>()
@@ -1228,7 +1228,7 @@ let ``portable watcher with wildcard pattern fires SourceChanged for matching fi
 
         test <@ received |> Seq.toList = [ SourceChanged [ topLevel ]; SourceChanged [ nested ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``portable watcher with literal filename pattern fires only for matching file`` () =
     withTempDir "watcher-extra-literal" (fun tmpDir ->
         let received = ResizeArray<FileChangeKind>()
@@ -1397,7 +1397,7 @@ let private canonical (path: string) =
     | Ok p -> p.Value
     | Error e -> failwith $"%A{e}"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the macOS layout is one native stream over the worktree root with tooling dirs excluded in the kernel`` () =
     // Each FSEvents stream is its own fseventsd client, queued per file. The solution
     // and FileCommand-pattern watchers used to be .NET FileSystemWatchers: each one a
@@ -1445,7 +1445,7 @@ let ``kernel exclusions fit FSEvents and prune only what the polling walk prunes
     test <@ names |> List.forall (fun n -> n <> "src" && n <> "tests") @>
     test <@ kernelExclusions "/r" |> List.contains "/r/.workspaces" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a worktree with no discovery root still watches its solutions and patterns`` () =
     withTempDir "watcher-native-no-src" (fun tmpDir ->
         let native, streams = recordingNative ()
@@ -1463,7 +1463,7 @@ let ``a worktree with no discovery root still watches its solutions and patterns
         test <@ watcher.Mode = WatcherMode.NativeEvents @>
         test <@ streams |> Seq.map fst |> Seq.toList = [ [ canonical tmpDir ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the root stream passes discovery inputs, top-level solutions and patterns, and nothing else`` () =
     withTempDir "watcher-native-routing" (fun tmpDir ->
         let changes = ResizeArray<FileChangeKind>()
@@ -1511,7 +1511,7 @@ let ``the root stream passes discovery inputs, top-level solutions and patterns,
                                           SourceChanged [ ratchet ] ]
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a coalesced native event rescans its subtree and emits only relevant files whose bytes changed`` () =
     withTempDir "watcher-native-coalesced" (fun tmpDir ->
         let src = Path.Combine(tmpDir, "src")
@@ -1549,7 +1549,7 @@ let ``a coalesced native event rescans its subtree and emits only relevant files
         rescan (Path.Combine(tmpDir, "removed"))
         test <@ changes |> Seq.toList |> List.isEmpty @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a coalesced native event on the repository root rescans every discovery root and nothing outside them`` () =
     withTempDir "watcher-native-coalesced-root" (fun tmpDir ->
         let src = Path.Combine(tmpDir, "src")
@@ -1627,7 +1627,7 @@ let private withNativeCallbacks
     | Some(onFile, onCoalesced) -> body onFile onCoalesced changes
     | None -> failwith "the macOS watcher never installed its native callbacks"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a coalesced rescan right after start does not report files last written before the stream started`` () =
     // Production: a build right after a cold scan wrote thousands of obj/bin files,
     // FSEvents coalesced them into a must-scan of the root, and the empty ledger
@@ -1648,7 +1648,7 @@ let ``a coalesced rescan right after start does not report files last written be
 
             test <@ changes |> Seq.toList |> List.sort = List.sort [ SourceChanged [ a ]; SourceChanged [ b ] ] @>))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a per-file event for a file last written before the stream started still reports it`` () =
     // Only a coalesced rescan names files nobody wrote; a per-file event names one
     // the kernel saw written, so its first sighting stays a change.
@@ -1659,7 +1659,7 @@ let ``a per-file event for a file last written before the stream started still r
             handle a
             test <@ changes |> Seq.toList = [ SourceChanged [ a ] ] @>))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a coalesced rescan reports a pre-stream file once it has been edited`` () =
     // Recorded silently is still recorded: the next rescan compares against it.
     withTempDir "watcher-coalesced-pre-stream-edited" (fun tmpDir ->
@@ -1672,7 +1672,7 @@ let ``a coalesced rescan reports a pre-stream file once it has been edited`` () 
             rescan tmpDir
             test <@ changes |> Seq.toList = [ SourceChanged [ a ] ] @>))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a coalesced rescan still reports an unreadable pre-stream file`` () =
     // Fail closed: a file nobody could read is never evidence that nothing happened.
     withTempDir "watcher-coalesced-pre-stream-unreadable" (fun tmpDir ->
@@ -1704,7 +1704,7 @@ let ``predatesStream needs a recorded start and a write before it, less the marg
     test <@ not (predatesStream (Some started) secondBefore) @>
     test <@ not (predatesStream (Some started) secondAfter) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a native start fault falls back to the built-in content-polling watcher`` () =
     withTempDir "watcher-native-fault" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -1717,7 +1717,7 @@ let ``a native start fault falls back to the built-in content-polling watcher`` 
 
         test <@ watcher.Mode = WatcherMode.ContentPolling "no event stream" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``forcing the macOS layout where FSEvents cannot load degrades to content polling`` () =
     if RuntimeInformation.IsOSPlatform(OSPlatform.OSX) then
         Assert.Skip("FSEvents loads on macOS; this is the host without it")
@@ -1733,7 +1733,7 @@ let ``forcing the macOS layout where FSEvents cannot load degrades to content po
                     | _ -> false
                 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a repository root the poller cannot list asks for a full refresh`` () =
     if OperatingSystem.IsWindows() then
         Assert.Skip("Unix file modes")

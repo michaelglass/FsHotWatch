@@ -171,7 +171,7 @@ let ``unformatted declares its reply schema`` () =
 
     test <@ declared = Some(ReplySchema.Typed FsHotWatch.Fantomas.FormatReplies.UnformattedSchema) @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format check handles non-source change events without crashing`` () =
     // No manifest under /tmp — and none is needed: an event with nothing to check
     // completes as `no files to check` without consulting a formatter.
@@ -235,7 +235,7 @@ let ``format-check folds an event other than FileChanged to the same state, sile
     test <@ List.isEmpty (List.ofSeq told) @>
     test <@ List.isEmpty (calls ()) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format check handles non-existent source file gracefully`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     host.RegisterHandler(createFormatCheck "/tmp" None)
@@ -250,7 +250,7 @@ let ``format check handles non-existent source file gracefully`` () =
 // the plugin runs the PINNED Fantomas, says so, or refuses
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format-check hands the manifest's version to the runner and names it in the summary`` () =
     withFakePin "fmt-agree" "9.9.9-agreement" (fun dir ->
         let file = Path.Combine(dir, "A.fs")
@@ -273,7 +273,7 @@ let ``format-check hands the manifest's version to the runner and names it in th
         let evidence = evidenceFor dir "9.9.9-agreement"
         test <@ summaryOf host = $"format OK (1 checked) — %s{evidence}" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format-check refuses with a typed reason when the repository pins no fantomas`` () =
     withTempDir "fmt-nopin" (fun dir ->
         let file = Path.Combine(dir, "A.fs")
@@ -299,7 +299,7 @@ let ``format-check refuses with a typed reason when the repository pins no fanto
         test <@ host.GetErrors() |> Map.tryFind file = None @>
         test <@ (unformattedCount host).Contains("\"count\": 0") @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format-check fails, naming dotnet tool restore, when the pinned version is not restored`` () =
     withFakePin "fmt-unrestored" "1.2.3-nowhere" (fun dir ->
         let file = Path.Combine(dir, "A.fs")
@@ -324,7 +324,7 @@ let ``format-check fails, naming dotnet tool restore, when the pinned version is
             test <@ reason.Contains "dotnet tool restore" @>
         | other -> failwith $"expected a failure, got %A{other}")
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format-check records TimedOut when the tool is killed at its budget`` () =
     withFakePin "fmt-to" "7.0.5" (fun dir ->
         let file = Path.Combine(dir, "Slow.fs")
@@ -351,7 +351,7 @@ let ``format-check records TimedOut when the tool is killed at its budget`` () =
             | other -> Assert.Fail($"Expected TimedOut, got {other}")
         | None -> Assert.Fail "Expected LastRun record")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FormatPreprocessor hands the manifest's version to the runner and reports it as evidence`` () =
     withFakePin "pre-agree" "9.9.9-agreement" (fun dir ->
         let file = Path.Combine(dir, "A.fs")
@@ -376,7 +376,7 @@ let ``FormatPreprocessor hands the manifest's version to the runner and reports 
                                                                                           TimeSpan.FromSeconds 9.0 ]
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FormatPreprocessor refuses, naming dotnet tool restore, when the pinned version is not restored`` () =
     withFakePin "pre-unrestored" "1.2.3-nowhere" (fun dir ->
         let file = Path.Combine(dir, "A.fs")
@@ -399,7 +399,7 @@ let ``FormatPreprocessor refuses, naming dotnet tool restore, when the pinned ve
             test <@ reason.Contains "dotnet tool restore" @>
         | Ok r -> failwith $"expected a refusal, got %A{r}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FormatPreprocessor refuses when the repository pins no fantomas`` () =
     withTempDir "pre-nopin" (fun dir ->
         let file = Path.Combine(dir, "A.fs")
@@ -418,7 +418,7 @@ let ``FormatPreprocessor refuses when the repository pins no fantomas`` () =
         test <@ List.isEmpty (calls ()) @>
         test <@ File.ReadAllText file = original @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FormatPreprocessor leaves a file alone when the tool exceeds its timeout`` () =
     // A timed-out format must never write a half-formatted document — and must not
     // stop the batch: the daemon's change-batch worker runs inside this call.
@@ -447,7 +447,7 @@ let ``FormatPreprocessor leaves a file alone when the tool exceeds its timeout``
 
         test <@ File.ReadAllText(file) = original @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FormatPreprocessor skips non-fs files without consulting the tool`` () =
     withFakePin "pre-nonfs" "7.0.5" (fun dir ->
         let file = Path.Combine(dir, "readme.txt")
@@ -464,7 +464,7 @@ let ``FormatPreprocessor skips non-fs files without consulting the tool`` () =
 
         test <@ List.isEmpty (calls ()) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FormatPreprocessor handles a non-existent file as nothing to consider`` () =
     withFakePin "pre-missing" "7.0.5" (fun dir ->
         let runner, calls = recorder (Succeeded(ProcessOutput.Drained ""))
@@ -816,7 +816,7 @@ let private cacheKeyOf (dir: string) =
     |> Option.defaultWith (fun () -> failwith "expected CacheKey")
     |> fun key -> key handler.Init
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format-check cacheKey returns None when any input file is unreadable (F2)`` () =
     // F2 — the cacheKey lambda used to substitute "" for an unreadable file, which
     // collided with a real empty file and across distinct read-failure causes,
@@ -825,7 +825,7 @@ let ``format-check cacheKey returns None when any input file is unreadable (F2)`
         let nonExistentFile = Path.Combine(dir, "missing.fs")
         test <@ cacheKeyOf dir (FileChanged(SourceChanged [ nonExistentFile ])) = None @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format-check cacheKey returns None when one of multiple files is unreadable (F2 short-circuit)`` () =
     withFakePin "f2-mixed" "7.0.5" (fun dir ->
         let goodFile = Path.Combine(dir, "Good.fs")
@@ -840,14 +840,14 @@ let ``format-check cacheKey returns None when one of multiple files is unreadabl
         test <@ cacheKeyOf dir (FileChanged(SourceChanged [ goodFile; missingFile ])) = None @>
         test <@ cacheKeyOf dir (FileChanged(SourceChanged [ sortedFirstMissing; sortedSecondGood ])) = None @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format-check cacheKey returns Some for readable files under a pinned repository`` () =
     withFakePin "f2-ok" "7.0.5" (fun dir ->
         let file = Path.Combine(dir, "F2Ok.fs")
         File.WriteAllText(file, "module F2Ok\n")
         test <@ (cacheKeyOf dir (FileChanged(SourceChanged [ file ]))).IsSome @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format-check cacheKey is None when the repository pins no fantomas`` () =
     // A refusal is re-earned on every event; it must never be replayed as a verdict.
     withTempDir "key-nopin" (fun dir ->
@@ -855,7 +855,7 @@ let ``format-check cacheKey is None when the repository pins no fantomas`` () =
         File.WriteAllText(file, "module A\n")
         test <@ cacheKeyOf dir (FileChanged(SourceChanged [ file ])) = None @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``format-check cacheKey changes with the pinned version and with the editorconfig`` () =
     // Same bytes, different formatter or different settings = a different answer, so
     // a replayed `format OK` across either edit would be the local-vs-CI formatter

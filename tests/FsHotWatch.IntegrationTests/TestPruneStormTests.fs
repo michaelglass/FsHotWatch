@@ -24,7 +24,7 @@ open FsHotWatch.Tests.TestHelpers
 // sleep instead.
 
 [<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``rerun storm: plugin reaches terminal state after BuildCompleted hammering subsides`` () =
     withTempDir "tp-rerun-storm" (fun tmpDir ->
         // Reproduces the reported "stuck Running": if any path leaves a rerun owed

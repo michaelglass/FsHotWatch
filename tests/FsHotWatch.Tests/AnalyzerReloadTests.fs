@@ -304,7 +304,7 @@ let ``fsharplint.json is read by the FSharpLint shim alone, .editorconfig by eve
     test <@ not (AnalyzersPlugin.readsConfig "editorconfig" empty) @>
     test <@ not (AnalyzersPlugin.readsConfig "unknown" mga) @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a path loads into collectible contexts that unload`` () =
     withTempDir "az-load-unload" (fun root ->
         let dir = analyzerDir root "UnloadConfigAnalyzer.dll"
@@ -332,7 +332,7 @@ let ``a path loads into collectible contexts that unload`` () =
         AnalyzerLoad.unload loaded
         test <@ liveContexts "UnloadConfigAnalyzer" 0 = 0 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an excluded analyzer is not registered, and a missing path loads nothing`` () =
     withTempDir "az-load-exclude" (fun root ->
         let dir = analyzerDir root "ExcludedConfigAnalyzer.dll"
@@ -343,7 +343,7 @@ let ``an excluded analyzer is not registered, and a missing path loads nothing``
         test <@ excluded.Count = 0 && excluded.Loaders.IsEmpty @>
         test <@ missing.Count = 0 && missing.Loaders.IsEmpty @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the loader opens what the SDK opens: *Analyzer*.dll, recursively, minus the SDK and test-named files`` () =
     withTempDir "az-load-glob" (fun root ->
         let nested = Path.Combine(root, "nested")

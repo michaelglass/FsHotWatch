@@ -79,7 +79,7 @@ let ``buildIdentity sanitizes spaces out of the version so the record stays pars
 let ``buildIdentity falls back to unknown-version when none is available`` () =
     test <@ (buildIdentity None "/nonexistent" None).Version = "unknown-version" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``buildIdentity hashes the entry assembly dll when it exists`` () =
     withTempDir "identity-hash" (fun tmpDir ->
         let dll = Path.Combine(tmpDir, "fake.dll")
@@ -93,7 +93,7 @@ let ``buildIdentity hashes the entry assembly dll when it exists`` () =
         let id2 = buildIdentity (Some "1.0.0") "/nonexistent" (Some dll)
         test <@ id2.ContentHash <> id.ContentHash @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``buildIdentity falls back to the process path when no entry dll resolves`` () =
     withTempDir "identity-exe" (fun tmpDir ->
         let exe = Path.Combine(tmpDir, "fake-exe")
@@ -115,18 +115,18 @@ let ``buildIdentity uses the DETERMINISTIC unhashable sentinel when nothing is r
 // record / read / verdict — the on-disk handshake
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``recordCurrent then verdictFor is Match for the same process`` () =
     withTempDir "identity-roundtrip" (fun tmpDir ->
         recordCurrent tmpDir
         test <@ verdictFor tmpDir = IdentityVerdict.Match @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``verdictFor with no recorded identity is Stale NotRecorded`` () =
     withTempDir "identity-absent" (fun tmpDir ->
         test <@ verdictFor tmpDir = IdentityVerdict.Stale StaleReason.NotRecorded @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``verdictFor with a different recorded identity is Stale DifferentBinary`` () =
     withTempDir "identity-differs" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, ".fshw")) |> ignore
@@ -150,7 +150,7 @@ let ``readRecordedWith returns None for an unparseable record — fail closed`` 
 // fallbacks when it cannot be read.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``identitySourceFile prefers the entry dll when it resolves to a real file`` () =
     withTempDir "identity-source-dll" (fun tmpDir ->
         let dll = Path.Combine(tmpDir, "app.dll")
@@ -160,7 +160,7 @@ let ``identitySourceFile prefers the entry dll when it resolves to a real file``
 
         test <@ identitySourceFile exe (Some dll) = Some dll @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``identitySourceFile falls back to the process path when the dll is absent, blank, or missing`` () =
     withTempDir "identity-source-exe" (fun tmpDir ->
         let exe = Path.Combine(tmpDir, "app-exe")
@@ -184,7 +184,7 @@ let ``hashFile returns None for an unreadable path rather than throwing`` () =
     // throw here would take the daemon down over a diagnostic.
     test <@ hashFile "/nonexistent/nothing-here" = None @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``hashFile is deterministic for identical content and differs for different content`` () =
     withTempDir "identity-hashfile" (fun tmpDir ->
         let a = Path.Combine(tmpDir, "a.bin")
@@ -242,7 +242,7 @@ let ``identityOf with a real entry assembly hashes that assembly's file`` () =
     test <@ id.ContentHash <> UnhashableContent @>
     test <@ Some id.ContentHash = hashFile asm.Location @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``identityOf with NO entry assembly falls back to the process path`` () =
     // The single-file / shim host, where GetEntryAssembly() is null: it must still
     // produce a usable, DETERMINISTIC identity — not throw, and not a random value

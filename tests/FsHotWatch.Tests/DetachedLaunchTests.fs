@@ -173,7 +173,7 @@ let ``helper stderr is described whether it held text, held nothing, or never cl
 
     Assert.Equal("Helper stderr: still open when the wait for it ended.", DetachedLaunch.describeHelperStderr None)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detached launch reports original failed command`` () =
     withTempDir "detached-launch-exit" (fun root ->
         let error =
@@ -218,7 +218,7 @@ let ``detached launch bounds and reaps a stuck helper`` () =
 
 // Positive control for the abort diagnostics: a real helper that writes to stderr and
 // then dies of SIGABRT, through the real pipe and the real exit status.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``detached launch failure names the signal and carries the helper's stderr`` () =
     withTempDir "detached-launch-abort" (fun root ->
         let error =
@@ -229,7 +229,7 @@ let ``detached launch failure names the signal and carries the helper's stderr``
         Assert.Contains("launching: echo 'about to abort' >&2; kill -ABRT $$", error.Message)
         Assert.Contains("Helper stderr:\nabout to abort", error.Message))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a successful helper hands its stderr to the caller's report, and a silent one hands nothing`` () =
     withTempDir "detached-launch-report" (fun root ->
         let messages = ResizeArray<string>()

@@ -195,7 +195,7 @@ let ``cache key includes parse-only suffix for ParseOnly results`` () =
     test <@ fullCheckKey.IsSome @>
     test <@ parseOnlyKey <> fullCheckKey @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
@@ -236,7 +236,7 @@ let ``empty analyzer paths still creates working handler`` () =
     test <@ handler.Init.DiagnosticsByFile = Map.empty @>
     test <@ handler.Subscriptions.Contains(FsHotWatch.PluginFramework.SubscribeFileChecked) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``AnalysisFailed custom message sets status to Completed`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
@@ -388,7 +388,7 @@ let ``analyzer set snapshot does not throw on a missing path`` () =
     test <@ id1 = id2 @>
     test <@ Result.isOk id1 @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a refused analyzer identity means no cache key, no cache entry, and the analyzers still run`` () =
     // The house-rules DLL copied WITHOUT its PDB: its CodeView entry places the PDB
     // under this repository, so the receipt is expected and missing (`MissingPdb`).
@@ -554,7 +554,7 @@ let ``the analyzer set is read once per dispatch batch, and again by the next on
         with _ ->
             ()
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a refusal that changes cause is re-noticed; the key stays absent throughout`` () =
     withTempDir "az-refusal-change" (fun dir ->
         let repoRoot = AnalyzerFixtures.repoRoot
@@ -601,7 +601,7 @@ let ``cache key for non-FileChecked event returns None`` () =
     let buildKey = cacheKeyFn (BuildCompleted BuildSucceeded)
     test <@ buildKey.IsNone @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``regression: FileChecked replays from cache on second emission with same content`` () =
     // Pins the Async.Start regression: fire-and-forget execution meant the first run
     // never wrote to cache, so every subsequent identical event re-ran the analyzer.
@@ -634,7 +634,7 @@ let ``regression: FileChecked replays from cache on second emission with same co
     let computedKey2 = cacheKeyFn event2
     test <@ computedKey = computedKey2 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``regression: cache replay must not resurrect a stale global findings summary`` () =
     // The mechanism: a per-FileChecked cache entry used to store a
     // terminal status whose summary snapshotted GLOBAL state (all of DiagnosticsByFile +
@@ -709,7 +709,7 @@ let ``regression: cache replay must not resurrect a stale global findings summar
         $"cache replay re-asserted a stale findings count: summary=\"%s{summary}\" claims %d{claimedFindings} findings, but the currently-valid diagnostics set has %d{liveFindings}"
     )
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``per-file replay WITH findings derives EXACTLY those findings, not a hardcoded zero`` () =
     // The inverse of the clean-file case, and the reason it is needed: a summary
     // hardcoded to "0 findings" passes that regression and lies here. Demanding the
@@ -769,7 +769,7 @@ let ``per-file replay WITH findings derives EXACTLY those findings, not a hardco
         $"derived summary must report the live findings exactly: summary=\"%s{summary}\" claims %d{claimedFindings}, live diagnostics has %d{liveFindings}"
     )
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``regression: FileChecked with TaskCache writes a cache entry on terminal status`` () =
     // Pins the Async.Start regression: dispatching the work fire-and-forget returned
     // `state` while the analysis still ran, so the framework's cache-write window only
@@ -801,7 +801,7 @@ let ``regression: FileChecked with TaskCache writes a cache entry on terminal st
     let result = cacheIface.TryGet key computedKey.Value
     test <@ result.IsSome @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
 
@@ -841,7 +841,7 @@ let ``teardown cancels CTS and disposes resources`` () =
 // ---------------------------------------------------------------------------
 
 [<WallClock("product timeout under test: the work deliberately outlasts the product's own bound, and the assertion is the typed timeout outcome the product reports")>]
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``analyzers handler times out when work exceeds TimeoutSec`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
     // Sleeps well past the 1s timeout, forcing a TimedOut outcome.
@@ -863,7 +863,7 @@ let ``analyzers handler times out when work exceeds TimeoutSec`` () =
     | None -> Assert.Fail "Expected LastRun record"
 
 [<WallClock("product timeout under test: the work deliberately outlasts the product's own bound, and the assertion is the typed timeout outcome the product reports")>]
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``timed-out synchronous analyzer cannot overlap the next file`` () =
     // Production change that makes this pass: retain the analyzer concurrency
     // permit until non-cooperative timed-out work has actually exited. Merely
@@ -931,7 +931,7 @@ let ``timed-out synchronous analyzer cannot overlap the next file`` () =
         waitUntil (fun () -> System.Threading.Volatile.Read(&active) = 0) 5000
         host.Teardown()
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``analyzers skip compile items outside the repo`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
     // The hook fires at the START of analysis, so it counts files actually analyzed.
@@ -1473,7 +1473,7 @@ let ``the configured analyzer set walks a typed tree from this FCS and fires eve
 // analyzers mailbox is folded after that clear, and nothing checks a dropped path
 // again: the finding it re-reports is about a file outside the build and stands until
 // the daemon restarts. So the fold must refuse what the current model did not stamp.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``analyzers refuse a FileChecked captured against a superseded model`` () =
     let repoRoot = "/my/repo"
     let removed = "/my/repo/src/Removed.fs"
@@ -1550,7 +1550,7 @@ let ``analyzers refuse a FileChecked captured against a superseded model`` () =
 // and its inputs, not the model. So a superseded result for a file the new model
 // dropped must not be served from the cache either — otherwise the replay re-adds the
 // finding the rediscovery just cleared.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``analyzers do not replay a cached finding for a superseded model's result`` () =
     let repoRoot = "/my/repo"
     let removed = "/my/repo/src/Removed.fs"
@@ -1619,7 +1619,7 @@ let ``analyzers do not replay a cached finding for a superseded model's result``
 
 // A result captured while no model was observable describes no model, so it cannot
 // describe the one in force either.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``analyzers refuse a FileChecked captured against no model`` () =
     let repoRoot = "/my/repo"
     let unmodelled = "/my/repo/src/Unmodelled.fs"
@@ -1701,7 +1701,7 @@ let ``a summary counts the files replayed from cache between the files it analyz
 
     test <@ summaries |> Seq.last = expected @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a replay-only run says it examined nothing; one that analyzed says how many`` () =
     // The ticket's shape: every file served from cache. The summary must not read like a
     // stage that examined the tree.
@@ -1752,7 +1752,7 @@ let ``a replay-only run says it examined nothing; one that analyzed says how man
 
     test <@ (summary ()).EndsWith("; 1 files examined, 3 replayed from cache (cached)") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a run's summary counts only that run's files, not every file since start`` () =
     // A run is the cohort of `FileChecked` events a `BatchChecked` closes. A rescan that
     // replays both files examined nothing, whatever earlier runs examined.
@@ -1939,7 +1939,7 @@ let private summaryOf (host: PluginHost) =
     | Some(Completed(_, v)) -> v.Summary
     | other -> failwith $"expected a completed analyzers status, got %A{other}"
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a raising analyzer reddens the verdict and is named in it`` () =
     let file = "/my/repo/src/Crashed.fs"
 
@@ -2002,7 +2002,7 @@ let ``a raising analyzer reddens the verdict and is named in it`` () =
                 && (FsHotWatch.Cli.Verdict.RedCauseMessage.value c.Message).Contains "analyzer TypedRule crashed")
         @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a non-raising analyzer set reports no crash`` () =
     let file = "/my/repo/src/Fine.fs"
 
@@ -2015,7 +2015,7 @@ let ``a non-raising analyzer set reports no crash`` () =
     test <@ entries |> List.map _.Message = [ "a real finding" ] @>
     test <@ (summaryOf host).Contains "0 analyzer crashes" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an analyzer that crashes on every file is named once, with the count`` () =
     let files = [ "/my/repo/src/A.fs"; "/my/repo/src/B.fs"; "/my/repo/src/C.fs" ]
 
@@ -2079,7 +2079,7 @@ let ``an analyzer that raises only on a typed tree reddens the verdict on every 
 
     test <@ (summaryOf host).Contains "2 analyzer crashes (TypedRule on 2 files: MissingMethodException" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a file that stops crashing drops out of the crash tally`` () =
     let file = "/my/repo/src/Flaky.fs"
     let crash = ref true
@@ -2118,7 +2118,7 @@ let ``a file that stops crashing drops out of the crash tally`` () =
 // findings, but the `diagnostics` command and the next fresh summary counted only what
 // this session analyzed itself. A replay is the same analysis of the same inputs, so the
 // state it leaves must be the state a fresh analysis leaves.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a result replayed from a sibling's cache fills the analyzers state like a fresh analysis`` () =
     let crashed = "/my/repo/src/Crashed.fs"
     let found = "/my/repo/src/Found.fs"
@@ -2198,7 +2198,7 @@ let ``crashOfFinding recovers exactly the crash crashFinding recorded, and nothi
 // When the whole analyzer pass raises, the ledger holds one crash entry for the file, and
 // the state records the same entry: the `diagnostics` command and a later summary count
 // what the ledger gates on, and a replay of the result leaves the same state.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a whole-pass crash is recorded in the state the ledger holds`` () =
     let file = "/my/repo/src/Raised.fs"
     let host = createModelHost (Unchecked.defaultof<_>) "/my/repo"

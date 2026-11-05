@@ -249,7 +249,7 @@ let ``a build whose work throws gives its slot back`` () =
     test <@ outcomeOf run = "faulted: msbuild crashed" @>
     test <@ processes.Running = 0 && processes.Queued = 0 @>
 
-[<Theory(Timeout = 30000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("false")>]
 [<InlineData("this-command-does-not-exist-xyz")>]
 let ``a failed or crashed build in a session gives its slot back`` (command: string) =
@@ -277,7 +277,7 @@ let ``with no repository host a build's work is run exactly as given`` () =
     let work = async { return 42 }
     test <@ obj.ReferenceEquals(BuildPlugin.admitted None work, work) @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a template build holds one slot for all its roots`` () =
     withTempDir "build-admission-template" (fun root ->
         let log = Path.Combine(root, "builds.log")

@@ -77,7 +77,7 @@ let ``text that is not JSON is left to FSharpLint's loader`` () =
 let ``a root that is not an object has no keys to drop`` () =
     test <@ List.isEmpty (unboundKeys "[]") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``check names each unbound key and the file`` () =
     withTempDir "lint-config-shape" (fun dir ->
         let path = Path.Combine(dir, "fsharplint.json")
@@ -89,14 +89,14 @@ let ``check names each unbound key and the file`` () =
             test <@ message.Contains "binding, typography.enabled" @>
         | None -> Assert.Fail "expected the unbound keys to be reported")
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``check passes a config every key of which binds`` () =
     withTempDir "lint-config-shape" (fun dir ->
         let path = Path.Combine(dir, "fsharplint.json")
         File.WriteAllText(path, """{ "noTabCharacters": { "enabled": true } }""")
         test <@ check path = None @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``check leaves a missing file to FSharpLint's loader`` () =
     withTempDir "lint-config-shape" (fun dir -> test <@ check (Path.Combine(dir, "absent.json")) = None @>)
 

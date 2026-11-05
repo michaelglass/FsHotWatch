@@ -91,13 +91,13 @@ let private withProjectRepo (prefix: string) (body: string -> unit) =
 
 // --- the classifier ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an absent directory classifies as Missing`` () =
     withTempDir "missing" (fun root ->
         test
             <@ classify (Path.Combine(root, "analyzers", "bin", "Release", "net10.0")) = AnalyzerPathProblem.Missing @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an absent Release directory whose Debug twin exists classifies as built in the other configuration`` () =
     withTempDir "twin" (fun root ->
         let debug = Path.Combine(root, "rules", "bin", "Debug", "net10.0")
@@ -106,7 +106,7 @@ let ``an absent Release directory whose Debug twin exists classifies as built in
 
         test <@ classify release = AnalyzerPathProblem.BuiltInOtherConfiguration debug @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a present directory with no dlls classifies as Empty`` () =
     withTempDir "empty" (fun root ->
         let dir = Path.Combine(root, "bin")
@@ -116,7 +116,7 @@ let ``a present directory with no dlls classifies as Empty`` () =
 
         test <@ classify dir = AnalyzerPathProblem.Empty @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a directory whose dlls are not analyzers classifies as NoAnalyzersInDlls with the count`` () =
     withTempDir "junk" (fun root ->
         let dir = Path.Combine(root, "bin")
@@ -163,7 +163,7 @@ let ``the message names every unresolved path with its classification and carrie
     test <@ not (message.Contains("to build it")) @>
     assertNoStackTrace message
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``registerPlugins classifies each zero-loading path from disk and keeps the healthy guard`` () =
     withTempDir "register" (fun root ->
         Directory.CreateDirectory(Path.Combine(root, "src")) |> ignore
@@ -187,7 +187,7 @@ let ``registerPlugins classifies each zero-loading path from disk and keeps the 
 
 // --- bootstrapHints ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a configured bootstrap hint is echoed verbatim for its path and absent adds nothing`` () =
     withTempDir "hint" (fun root ->
         Directory.CreateDirectory(Path.Combine(root, "src")) |> ignore
@@ -245,7 +245,7 @@ let ``parseConfig refuses a bootstrap hint for an unconfigured path or a non-str
 
 // --- the startup path ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``daemon start with unbuilt analyzers exits 2 with the message and no unhandled exception`` () =
     withProjectRepo "start" (fun root ->
         let config = analyzersConfig [ "analyzers/bin/Release/net10.0" ] []
@@ -266,7 +266,7 @@ let ``daemon start with unbuilt analyzers exits 2 with the message and no unhand
         test <@ (DaemonStartupFailure.tryRead root |> Option.defaultValue "").Contains("MISSING") @>
         test <@ not (File.Exists(Path.Combine(root, ".fshw", "daemon.pid"))) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``check whose daemon refused to start prints the reason, not only a log pointer, and exits 2 promptly`` () =
     withProjectRepo "check" (fun root ->
         let refusal =
@@ -317,7 +317,7 @@ let ``check whose daemon refused to start prints the reason, not only a log poin
         // launch, where a wait that ignored the refusal polls the pipe until its timeout.
         test <@ probesAfterLaunch.Value = 1 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a launch clears a refusal recorded by an earlier launch`` () =
     withTempDir "stale" (fun root ->
         DaemonStartupFailure.record root "an old refusal"
@@ -336,7 +336,7 @@ let ``a launch clears a refusal recorded by an earlier launch`` () =
 
 // --- the startup-failure record's own I/O arms ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a record that was never written reads as none, with or without a state directory`` () =
     withTempDir "absent" (fun root ->
         // No `.fshw/` at all: the read fails on the directory.
@@ -348,7 +348,7 @@ let ``a record that was never written reads as none, with or without a state dir
         DaemonStartupFailure.clear root
         test <@ DaemonStartupFailure.tryRead root = None @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a blank record reads as none and falls back to the log pointer`` () =
     withTempDir "blank" (fun root ->
         DaemonStartupFailure.record root "  \n\t "
@@ -360,7 +360,7 @@ let ``a blank record reads as none and falls back to the log pointer`` () =
         test
             <@ (DaemonStartupFailure.describeLaunchFailure "the-daemon-log" recorded).EndsWith("See the-daemon-log.") @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a recorded refusal round-trips trimmed and is printed in full`` () =
     withTempDir "roundtrip" (fun root ->
         DaemonStartupFailure.record root "\nfirst line\nsecond line\n"
@@ -378,7 +378,7 @@ let ``a recorded refusal round-trips trimmed and is printed in full`` () =
         DaemonStartupFailure.clear root
         test <@ DaemonStartupFailure.tryRead root = None @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a record that cannot be written, cleared or read never throws`` () =
     withTempDir "unwritable" (fun root ->
         // `.fshw` is a FILE, so the record's directory cannot be created.

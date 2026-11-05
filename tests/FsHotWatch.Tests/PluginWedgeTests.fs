@@ -271,7 +271,7 @@ let ``runTick never throws out of a tick — failures are logged`` () =
 // Breadcrumb — "say what it did" surviving the restart.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``writeBreadcrumb then consumeBreadcrumb returns the message once`` () =
     withTempDir "wedge-breadcrumb" (fun tmpDir ->
         writeBreadcrumb tmpDir "daemon was wedged on 'analyzers' — restarted it"
@@ -280,7 +280,7 @@ let ``writeBreadcrumb then consumeBreadcrumb returns the message once`` () =
         test <@ consumeBreadcrumb tmpDir = None @>
         test <@ not (File.Exists(breadcrumbPath tmpDir)) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``consumeBreadcrumb is None when absent or empty`` () =
     withTempDir "wedge-breadcrumb-empty" (fun tmpDir ->
         test <@ consumeBreadcrumb tmpDir = None @>

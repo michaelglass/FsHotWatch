@@ -622,7 +622,7 @@ let ``a record naming a dead host is stale`` () =
                 |> Option.isSome
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unreadable or absent record reads as no record`` () =
     withRepository (fun fx ->
         test
@@ -998,7 +998,7 @@ let ``a daemon lock with an unreadable pid is still its own daemon's`` () =
         test <@ refusalKind reply = "worktree-owned-by-daemon" @>
         test <@ not ((refusalMessage reply).Contains "pid") @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a record nobody can read reads as no record`` () =
     if not (OperatingSystem.IsWindows()) then
         withRepository (fun fx ->

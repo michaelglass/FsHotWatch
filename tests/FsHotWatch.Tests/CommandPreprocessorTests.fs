@@ -28,7 +28,7 @@ let private run (spec: Spec) (batch: string list) =
     finally
         preprocessor.Dispose()
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a declared file the command rewrites is Modified, and its new bytes are on disk`` () =
     withTempDir "cmdpre-write" (fun dir ->
         let target = Path.Combine(dir, "Gen.fs")
@@ -45,7 +45,7 @@ let ``a declared file the command rewrites is Modified, and its new bytes are on
             test <@ File.ReadAllText(target).Contains "fresh" @>
         | Error reason -> failwith $"expected Ok, got Error %s{reason}")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a declared file the command leaves as it was is not Modified`` () =
     // The attribution is by CONTENT, so a no-op run suppresses nothing: a later real edit
     // to the declared file must not be swallowed as the command's own echo.
@@ -60,7 +60,7 @@ let ``a declared file the command leaves as it was is not Modified`` () =
             test <@ result.Considered = 1 @>
         | Error reason -> failwith $"expected Ok, got Error %s{reason}")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a declared file the command creates is Modified`` () =
     withTempDir "cmdpre-create" (fun dir ->
         let target = Path.Combine(dir, "Gen.fs")
@@ -70,7 +70,7 @@ let ``a declared file the command creates is Modified`` () =
         | Ok result -> test <@ result.Modified = [ target ] @>
         | Error reason -> failwith $"expected Ok, got Error %s{reason}")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a file the command rewrites without declaring it is not attributed`` () =
     withTempDir "cmdpre-undeclared" (fun dir ->
         let spec = shellSpec dir "gen" "printf 'module Other\\n' > Other.fs" [ "Gen.fs" ]
@@ -81,7 +81,7 @@ let ``a file the command rewrites without declaring it is not attributed`` () =
             test <@ File.Exists(Path.Combine(dir, "Other.fs")) @>
         | Error reason -> failwith $"expected Ok, got Error %s{reason}")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a trigger that matches nothing in the batch does not run the command`` () =
     withTempDir "cmdpre-untriggered" (fun dir ->
         let spec =
@@ -96,7 +96,7 @@ let ``a trigger that matches nothing in the batch does not run the command`` () 
             test <@ not (File.Exists(Path.Combine(dir, "Gen.fs"))) @>
         | Error reason -> failwith $"expected Ok, got Error %s{reason}")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a trigger that matches a changed file runs the command`` () =
     withTempDir "cmdpre-triggered" (fun dir ->
         let spec =
@@ -112,7 +112,7 @@ let ``a trigger that matches a changed file runs the command`` () =
         | Ok result -> test <@ result.Modified = [ Path.Combine(dir, "Gen.fs") ] @>
         | Error reason -> failwith $"expected Ok, got Error %s{reason}")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an empty batch never runs the command, even when the trigger is Always`` () =
     withTempDir "cmdpre-empty" (fun dir ->
         let spec = shellSpec dir "gen" "printf 'module Gen\\n' > Gen.fs" [ "Gen.fs" ]
@@ -123,7 +123,7 @@ let ``an empty batch never runs the command, even when the trigger is Always`` (
             test <@ not (File.Exists(Path.Combine(dir, "Gen.fs"))) @>
         | Error reason -> failwith $"expected Ok, got Error %s{reason}")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a non-zero exit is a refusal naming the exit code and the output`` () =
     withTempDir "cmdpre-exit" (fun dir ->
         let spec = shellSpec dir "gen" "echo regeneration-broke >&2; exit 3" [ "Gen.fs" ]
@@ -134,7 +134,7 @@ let ``a non-zero exit is a refusal naming the exit code and the output`` () =
             test <@ reason.Contains "exited 3" @>
             test <@ reason.Contains "regeneration-broke" @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a command that overruns its timeout is a refusal`` () =
     withTempDir "cmdpre-timeout" (fun dir ->
         let spec =
@@ -145,7 +145,7 @@ let ``a command that overruns its timeout is a refusal`` () =
         | Ok _ -> failwith "an overrunning command must be a refusal"
         | Error reason -> test <@ reason.Contains "timed out" @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a command that cannot be started is a refusal`` () =
     withTempDir "cmdpre-nospawn" (fun dir ->
         let spec =
@@ -170,7 +170,7 @@ let private withLinkedDir (dir: string) (body: string -> 'a) : 'a =
     finally
         Directory.Delete(link)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``realPathOf follows a symbolic link among the ancestors`` () =
     withTempDir "cmdpre-real" (fun dir ->
         let real = realPathOf dir
@@ -179,7 +179,7 @@ let ``realPathOf follows a symbolic link among the ancestors`` () =
         withLinkedDir dir (fun link ->
             test <@ realPathOf (Path.Combine(link, "src", "Gen.fs")) = Path.Combine(real, "src", "Gen.fs") @>))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a write is reported under the real root when the batch arrived under it`` () =
     // A native watcher reports real paths; a repository configured through a link
     // would otherwise report its write in a form the watcher never uses, so the write's
@@ -202,7 +202,7 @@ let ``a write is reported under the real root when the batch arrived under it`` 
             | Ok result -> test <@ result.Modified = [ Path.Combine(link, "Gen.fs") ] @>
             | Error reason -> failwith $"expected Ok, got Error %s{reason}"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a write outside the repository root keeps its own path whatever form the batch arrived in`` () =
     // Only paths under the configured root have a twin under the real root; a declared
     // write elsewhere (an absolute path into another tree) is reported as written.
@@ -224,7 +224,7 @@ let ``a write outside the repository root keeps its own path whatever form the b
                 | Ok result -> test <@ result.Modified = [ Path.Combine(real, "Gen.fs"); outside ] @>
                 | Error reason -> failwith $"expected Ok, got Error %s{reason}")))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a repository root that is its own real path reports writes as written`` () =
     // No link anywhere in the root: there is no second form for the batch to arrive
     // in, and a write is reported exactly as declared.
@@ -236,7 +236,7 @@ let ``a repository root that is its own real path reports writes as written`` ()
         | Ok result -> test <@ result.Modified = [ Path.Combine(real, "Gen.fs") ] @>
         | Error reason -> failwith $"expected Ok, got Error %s{reason}")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a refusal carries the last lines of a long output, not the first`` () =
     withTempDir "cmdpre-tail" (fun dir ->
         let spec =

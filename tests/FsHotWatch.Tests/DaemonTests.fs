@@ -288,7 +288,7 @@ let private waitForDaemonReady (srcDir: string) (changeCount: unit -> int) =
             stable <- 0
 
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``daemon starts and stops without error`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -319,7 +319,7 @@ let private countingWatcherFactory (calls: int ref) : Daemon.WatcherFactory =
 
         inert
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a Watching daemon constructs its watcher exactly once`` () =
     // Positive control for the OneShot test below: the same construction path, the
     // default `RunMode`, and the factory IS reached — once, at construction.
@@ -332,7 +332,7 @@ let ``a Watching daemon constructs its watcher exactly once`` () =
 
         test <@ calls.Value = 1 @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a OneShot daemon never touches the watcher factory`` () =
     // The factory THROWS: had construction reached it, `createWithWatcherFactory`
     // would raise and the test would fail on that exception, not on an assertion.
@@ -353,7 +353,7 @@ let ``a OneShot daemon never touches the watcher factory`` () =
         // The host is a fully usable daemon in every other respect.
         test <@ daemon.GetScanState() = ScanIdle @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``daemon Dispose kills tracked child processes`` () =
     // Regression: `dotnet fshw stop` used to leak in-flight test runners.
     withTrackedSleep 60 (fun proc ->
@@ -367,7 +367,7 @@ let ``daemon Dispose kills tracked child processes`` () =
         proc.WaitForExit(5000) |> ignore
         test <@ proc.HasExited @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``daemon suppresses watcher events for preprocessor-modified files`` () =
     withTempDir "daemon" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src")
@@ -738,7 +738,7 @@ let ``daemon handles SolutionChanged events`` () =
 
         test <@ solutionChanges @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``daemon Run completes when cancellation is immediate`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -754,7 +754,7 @@ let ``daemon Run completes when cancellation is immediate`` () =
 
         test <@ task.IsCompleted @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Daemon.create creates a working daemon with real checker`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -772,7 +772,7 @@ let ``Daemon.create creates a working daemon with real checker`` () =
         test <@ task.IsCompleted @>
         test <@ daemon.RepoRoot = tmpDir @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Daemon.create hands the configured cache size factor to the checker`` () =
     withTempDir "daemon-cache-sizes" (fun tmpDir ->
         let mutable captured = None
@@ -793,7 +793,7 @@ let ``Daemon.create hands the configured cache size factor to the checker`` () =
 
         test <@ captured <> Some(Daemon.checkerCacheSizes 100) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Daemon.create logs the effective cache size factor as one key=value config line`` () =
     // The bench harness scrapes this exact line from daemon.log to prove which factor
     // a record ran at, so its wording is an interface: `checker:` then `key=value` pairs.
@@ -842,7 +842,7 @@ let ``DaemonOptions default cache size factor is the FCS default`` () =
             FSharp.Compiler.CodeAnalysis.TransparentCompiler.CacheSizes.Create Daemon.DefaultCheckerCacheSizeFactor = fcsDefault
         @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``daemon RunWithIpc starts and stops cleanly`` () =
     withTempDir "daemon-ipc" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -860,7 +860,7 @@ let ``daemon RunWithIpc starts and stops cleanly`` () =
 
         test <@ task.IsCompleted @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``daemon RunWithIpc with idle-exit threshold arms the timer and stops cleanly`` () =
     // Exercises the RunWithIpc idle-exit timer construction path (IdleExitMin
     // Some) and confirms the daemon still starts/stops cleanly with the timer
@@ -890,7 +890,7 @@ let ``daemon RunWithIpc with idle-exit threshold arms the timer and stops cleanl
 
         test <@ task.IsCompleted @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``daemon RunWithIpc idle-exit with pressure floor disabled arms the timer and stops cleanly`` () =
     // PressureIdleFloorMin None → pressure-shortening off, full window only. The
     // idle-exit timer still arms (IdleExitMin Some) and the daemon stops cleanly.
@@ -919,7 +919,7 @@ let ``daemon RunWithIpc idle-exit with pressure floor disabled arms the timer an
 
         test <@ task.IsCompleted @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``daemon RunWithIpc without idle-exit threshold creates no timer and stops cleanly`` () =
     // IdleExitMin None → no timer is constructed (the no-op disposable branch);
     // the daemon starts and stops cleanly as before.
@@ -946,7 +946,7 @@ let ``daemon RunWithIpc without idle-exit threshold creates no timer and stops c
 
         test <@ task.IsCompleted @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``daemon RunWithIpc with idle-exit disabled by FSHW_IDLE_EXIT_MIN creates no timer and stops cleanly`` () =
     // IdleExitMin None from an Environment source → no timer, and the disabled line
     // (`IdleExit.disabledLine`, unit-tested in IdleExitTests) is logged instead.
@@ -974,7 +974,7 @@ let ``daemon RunWithIpc with idle-exit disabled by FSHW_IDLE_EXIT_MIN creates no
 
         test <@ task.IsCompleted @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``daemon RunWithIpc responds to IPC queries`` () =
     withTempDir "daemon-ipc" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -1171,7 +1171,7 @@ let ``an edit no watcher reported reaches the build subscribers before check set
             with :? AggregateException ->
                 ())
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``daemon RegisterProject stores options in pipeline`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -1213,7 +1213,7 @@ let ``daemon RegisterProject stores options in pipeline`` () =
 
 // --- FormatScanStatus tests ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FormatScanStatus returns idle for ScanIdle`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -1221,7 +1221,7 @@ let ``FormatScanStatus returns idle for ScanIdle`` () =
         daemon.SetScanState(ScanIdle)
         test <@ daemon.FormatScanStatus() = "idle" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FormatScanStatus returns progress for Scanning`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -1277,7 +1277,7 @@ let private scanStatusAnswered (state: ScanState) : string * string list =
 
 // A cold scan is the longest wait a client sits through, and `daemon.log` said nothing
 // while it ran: the progress a client was told existed only in the client's terminal.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ScanStatus logs the progress it answers mid-scan at info`` () =
     let answer, logged = scanStatusAnswered (Scanning(10, 5, DateTime.UtcNow))
 
@@ -1291,7 +1291,7 @@ let ``ScanStatus logs the progress it answers mid-scan at info`` () =
 
 // A waiting client polls it repeatedly, so an idle or finished scan is not logged:
 // only a scan in progress has something to say.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ScanStatus logs nothing when no scan is running`` () =
     let answer, logged = scanStatusAnswered ScanIdle
 
@@ -1644,7 +1644,7 @@ let ``watcher change remains owned through debounce and blocked rediscovery`` (w
                 "the controlled batch must drain before the fixture is disposed"
             ))
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``disposed daemon rejects scan admission instead of abandoning its receipt`` () =
     withTempDir "daemon-scan-after-dispose" (fun tmpDir ->
         use daemon =
@@ -2194,7 +2194,7 @@ let ``scan waits for discovery and re-scans when its captured model is invalidat
 
             scan |> Option.iter (fun running -> running.GetAwaiter().GetResult()))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``observing project content answers the next echo of the same bytes as unchanged`` () =
     withTempDir "content-observe-projects" (fun root ->
         let directory = Path.Combine(root, "src")
@@ -2385,7 +2385,7 @@ let ``a scan re-evaluates a project whose restore changed its package graph afte
         test <@ loader.Loads = expectedLoads @>
         test <@ (seals.ToArray() |> Array.last).ModelGeneration = Some(int64 expectedLoads) @>)
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a project input a re-discovery already loaded is not re-evaluated again`` () =
     // A cohort admits a project change once and keeps that answer across its retries and,
     // owed, across a later request. A re-discovery that ran in between has applied it.
@@ -2607,7 +2607,7 @@ let ``a cold scan replaces no model for an outside-the-roots project whose resto
 
         test <@ scans |> List.map (fun s -> s.FilesChecked, s.CheckStarts) = [ 2, 2L ] @>)
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``after a discovery only assets written before it began are taken as read by it`` () =
     withTempDir "daemon-observe-unread-assets" (fun root ->
         let restored name =
@@ -2654,7 +2654,7 @@ let ``a cold scan still replaces the model when an outside-the-roots restore lan
 
         test <@ workspace.Loader.Loads = 2 @>)
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``restore output is stale under a model when it appeared, changed or vanished since discovery read it`` () =
     withTempDir "daemon-restored-since-discovery" (fun root ->
         let directory = Path.Combine(root, "src", "App")
@@ -4357,7 +4357,7 @@ let ``a scan's answers read before a save's cohort, landing after it, are refuse
 // settles, the scan state is observable as ScanComplete (not stale ScanIdle) and the
 // generation has advanced. The supervisor publishes the completed state before the
 // request retires and before its receipt settles, so any later read observes it.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``GetScanState returns ScanComplete and generation advances after ScanAll`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -4377,7 +4377,7 @@ let ``GetScanState returns ScanComplete and generation advances after ScanAll`` 
         let gen2 = daemon.GetScanGeneration()
         test <@ gen2 = gen1 + 1L @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``RunOnce completes and returns plugin statuses`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -4398,7 +4398,7 @@ let ``RunOnce completes and returns plugin statuses`` () =
         let statuses = Async.RunSynchronously(daemon.RunOnce(), timeout = 30000)
         test <@ statuses.ContainsKey("runonce-test") @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``DiscoverAndRegisterProjects warns when no projects are discovered`` () =
     withTempDir "daemon-zero-projects" (fun tmpDir ->
         // Empty src/ directory — no .fsproj files anywhere.
@@ -4782,7 +4782,7 @@ let ``verdict admission restarts when discovery begins after the host wait start
             with _ ->
                 ())
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a loaded project that maps or registers as zero is not a loader failure`` () =
     withTempDir "daemon-mapping-distinct" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src")
@@ -4903,7 +4903,7 @@ let ``countReferences returns 0 when no references`` () =
 // dumpProjectOptions tests
 // ============================================================================
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dumpProjectOptions writes options file`` () =
     withTempDir "dump-opts" (fun tmp ->
         let opts =
@@ -4919,7 +4919,7 @@ let ``dumpProjectOptions writes options file`` () =
         test <@ written.Contains "-r:/nuget/A.dll" @>
         test <@ written.Contains "--nowarn:42" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dumpProjectOptions handles empty options`` () =
     withTempDir "dump-opts" (fun tmp ->
         let opts = makeProjectOptions "/tmp/Empty.fsproj" [] []
@@ -5135,7 +5135,7 @@ let ``resolveAffectedProjects dedups .fsproj and its assets.json to one project`
 // invisible to both — the fingerprint is stable across scans and performScan's
 // `currentFingerprint <> state.LastFingerprint` guard correctly skips
 // re-evaluation. This test pins that stability.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``fsproj fingerprint is stable across scans when projects exist outside discovery roots`` () =
     withTempDir "fingerprint-stability" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src", "A")
@@ -5163,7 +5163,7 @@ let ``fsproj fingerprint is stable across scans when projects exist outside disc
 // therefore fingerprinted, so editing it churned the fingerprint and triggered
 // a spurious full MSBuild re-discovery of a project that discovery would never
 // register. The fingerprint now shares discovery's exclude semantics.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``fsproj fingerprint applies user exclude patterns like discovery does`` () =
     withTempDir "fingerprint-excludes" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src", "A")
@@ -5189,7 +5189,7 @@ let ``fsproj fingerprint applies user exclude patterns like discovery does`` () 
 // A tool that rewrites a project file with the bytes it already held — a checkout, a
 // restore, a formatter — changes nothing MSBuild evaluates. Read as a change, it
 // re-discovered the workspace and replaced the model under a running scan.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``fsproj fingerprint ignores a rewrite of the same bytes and sees a content change`` () =
     withTempDir "fingerprint-content" (fun tmpDir ->
         let project = Path.Combine(tmpDir, "src", "A", "A.fsproj")
@@ -6589,7 +6589,7 @@ let ``projectChangeLine names the write, and says when it was a restore`` () =
 let ``projectChangeLine says nothing when no project input changed`` () =
     test <@ Daemon.projectChangeLine "/repo" [] = None @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a scan re-discovery names each project file whose fingerprint moved`` () =
     withTempDir "fingerprint-change-line" (fun root ->
         let project name =
@@ -6882,7 +6882,7 @@ let ``a waiter bound to a request answered without a new generation resolves whe
 /// A project with no `obj/project.assets.json` is restored before it is checked. The
 /// daemon restores through `DaemonOptions.Restore`, so a test daemon never runs a real
 /// `dotnet restore`.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a daemon restores a project without assets through the injected restore`` () =
     withTempDir "injected-restore" (fun tmpDir ->
         let sourceDir = Path.Combine(tmpDir, "src")

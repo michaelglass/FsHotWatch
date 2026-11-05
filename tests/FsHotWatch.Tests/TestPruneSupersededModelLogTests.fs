@@ -17,7 +17,7 @@ open FsHotWatch.Tests.TestHelpers
 // the analysis it skips is retried against the current model. The refusal is logged at
 // Info, so a run that seems to ignore an edit is explained in the daemon log without
 // turning on Debug.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``test-prune logs its refusal of a superseded model's results at info`` () =
     withTempDir "superseded-model-log" (fun repoRoot ->
         let stale = Path.Combine(repoRoot, "src", "Stale.fs")

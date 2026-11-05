@@ -86,7 +86,7 @@ let ``the structure list covers every MSBuild implicit import, not just Director
     for name in StructureFiles.implicitImportNames do
         test <@ StructureFiles.allPatterns |> List.contains name @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``implicitImportsFor finds the NEAREST ancestor, MSBuild's own rule`` () =
     withTempDir "structure-nearest" (fun root ->
         let projDir = Path.Combine(root, "src", "Thing")
@@ -111,7 +111,7 @@ let ``implicitImportsFor finds the NEAREST ancestor, MSBuild's own rule`` () =
         test <@ shadowed |> List.contains nearer @>
         test <@ not (shadowed |> List.contains atRoot) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``implicitImportsFor ignores a props file in a SIBLING directory`` () =
     // THE POSITIVE CONTROL for the assertion above. "Does not contain" passes trivially
     // against a function that finds nothing at all, so the same call must be shown

@@ -94,7 +94,7 @@ let private withTwoProjects (label: string) (settled: bool) (body: TwoProjects -
 // `dependencyCopies` — is the gate looking at anything at all?
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependencyCopies finds the producer's assembly inside the consumer's output dir`` () =
     // The reachability question, asked of the daemon's own registration path. The two
     // gates that preceded this one in BuildPlugin examined NOTHING in every live daemon
@@ -106,7 +106,7 @@ let ``dependencyCopies finds the producer's assembly inside the consumer's outpu
         test <@ pairs |> List.map (fun p -> p.PrimaryOrigin) = [ t.Origin ] @>
         test <@ pairs |> List.map (fun p -> p.Producer, p.Consumer) = [ "Lib", "App" ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependencyCopies ignores a same-named file outside the reference closure`` () =
     // A NuGet package whose assembly name collides with a project's would otherwise be
     // condemned for bytes no project of ours produced. Scoped to the closure the graph
@@ -130,7 +130,7 @@ let ``dependencyCopies ignores a same-named file outside the reference closure``
         test <@ List.isEmpty (unlinked.GetDependents appProj) @>
         test <@ List.isEmpty (OutputCopyFreshness.dependencyCopies unlinked) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependencyCopies skips a producer that has never been built`` () =
     // An absent producer output is `BuildPlugin`'s `DllMissing` finding, which has its
     // own gate. Two gates reporting one file is how a diagnostic stops being read.
@@ -147,7 +147,7 @@ let ``dependencyCopies skips a producer that has never been built`` () =
 // `isPending` — MSBuild's own `SkipUnchangedFiles` predicate.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a copy left behind by a refreshed producer is pending`` () =
     // THE WEDGE'S SHAPE, measured live: a merge refreshes `src/**` outputs, the test
     // projects' copies of them are not refreshed, and the build then REPLAYS
@@ -156,7 +156,7 @@ let ``a copy left behind by a refreshed producer is pending`` () =
         let pairs = OutputCopyFreshness.dependencyCopies t.Graph
         test <@ pairs |> List.filter OutputCopyFreshness.isPending |> List.map (fun p -> p.Copy) = [ t.Copy ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a copy a build has settled is not pending`` () =
     // THE NEGATIVE CONTROL, and the one that matters most: this predicate gates a build
     // cache, so a version of it that fired on a healthy tree would not be a stale-copy
@@ -166,7 +166,7 @@ let ``a copy a build has settled is not pending`` () =
         test <@ pairs.Length = 1 @>
         test <@ pairs |> List.filter OutputCopyFreshness.isPending |> List.isEmpty @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a copy matching on timestamp but not on size is pending`` () =
     // `SkipUnchangedFiles` needs BOTH. Pinning size on its own, because a predicate
     // written as "mtime differs" would pass every other test in this file.
@@ -191,7 +191,7 @@ let ``a copy matching on timestamp but not on size is pending`` () =
                 |> List.length = 1
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a byte-divergent copy at the same size and timestamp is NOT pending`` () =
     // The class this predicate deliberately does not claim, pinned so nobody "fixes" it
     // into the gate. MEASURED: with size and mtime equal, MSBuild's incremental copy
@@ -263,7 +263,7 @@ let ``verdict refuses to call an unreadable copy anything at all`` () =
 // is ever enumerated".
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a copy that is not on disk is not pending`` () =
     // A copy that is absent is the presence probe's business — a build in flight may
     // still land it — and `BuildPlugin`'s `DllMissing` owns the producer's own output.
@@ -278,7 +278,7 @@ let ``a copy that is not on disk is not pending`` () =
         File.Delete pair.Copy
         test <@ not (OutputCopyFreshness.isPending pair) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependencyCopies skips a consumer whose output the graph cannot name`` () =
     // No recorded `TargetPath` and no parseable `<TargetFramework>` means we do not know
     // where that project's output dir IS. `artifactCoverageGap` is what reports that
@@ -300,7 +300,7 @@ let ``dependencyCopies skips a consumer whose output the graph cannot name`` () 
 
         test <@ List.isEmpty (OutputCopyFreshness.dependencyCopies partial) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependencyCopies skips a producer whose recorded output directory does not exist`` () =
     // An evaluation that reported a `TargetPath` under a tree that was never created.
     // There is nothing to compare against, so there is nothing to say — and saying
@@ -328,7 +328,7 @@ let ``dependencyCopies skips a producer whose recorded output directory does not
 
         test <@ List.isEmpty (OutputCopyFreshness.dependencyCopies graph) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependencyCopies does not treat a shared output directory as a copy`` () =
     // Two projects writing to one output dir means the consumer holds the ORIGIN, not a
     // copy of it. Comparing a file against itself is always "settled", but enumerating
@@ -361,7 +361,7 @@ let ``dependencyCopies does not treat a shared output directory as a copy`` () =
 
         test <@ List.isEmpty (OutputCopyFreshness.dependencyCopies graph) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependencyCopies offers every target framework the producer built`` () =
     // Which framework MSBuild copied from is not knowable from the graph, so a copy is
     // judged against ALL of the producer's per-TFM outputs. Naming the one built for the
@@ -387,7 +387,7 @@ let ``dependencyCopies offers every target framework the producer built`` () =
                 OutputCopyFreshness.verdict ContentHash.ofFile pair.Copy pair.PrimaryOrigin pair.OtherOrigins = OutputCopyFreshness.MatchesAnOrigin
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependencyCopies names an origin even when none was built for the consumer's framework`` () =
     // A net10.0 consumer takes a netstandard2.0 dependency's netstandard2.0 output quite
     // happily, so "nothing matches my TFM" is a normal tree, not a gap. The pair must
@@ -404,7 +404,7 @@ let ``dependencyCopies names an origin even when none was built for the consumer
         test <@ pair.PrimaryOrigin = otherDll @>
         test <@ List.isEmpty pair.OtherOrigins @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an origin that has vanished cannot settle a copy`` () =
     // `dependencyCopies` only offers origins that exist, but a pair outlives the walk
     // that produced it and the file can go between the two. Answering "settled" for an
@@ -419,7 +419,7 @@ let ``an origin that has vanished cannot settle a copy`` () =
         File.Delete pair.PrimaryOrigin
         test <@ OutputCopyFreshness.isPending pair @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a diamond in the dependent graph yields each consumer once`` () =
     // `Lib ← Mid ← App` AND `Lib ← App`: the walk reaches App by two routes. Emitting it
     // twice would double every diagnostic and repair-count for a shape that is entirely

@@ -2075,15 +2075,9 @@ module ProcessBounds =
     /// deadline would false-kill a healthy slow build. The finite `timeout` is
     /// therefore the bound, and passing `InfiniteTimeSpan` is the one way left to
     /// ask for an unbounded wait — so it must be a DELIBERATE act (an explicit
-    /// `"timeoutSec": false` in `.fshw.json`), never an omission. It is logged.
+    /// `"timeoutSec": false` in `.fshw.json`), never an omission. A child spawned under
+    /// such bounds is named in a warning when it is spawned (`runProcessCore`).
     let silent (timeout: TimeSpan) : ProcessBounds =
-        if timeout = Threading.Timeout.InfiniteTimeSpan then
-            Logging.warn
-                "process"
-                "spawning a silent child with NO timeout: output cannot prove liveness and no clock \
-                 can end the wait, so a hung child will hold this operation until the daemon is \
-                 restarted. Set `timeoutSec` in .fshw.json to bound it."
-
         { Timeout = timeout
           LaunchDeadline = Threading.Timeout.InfiniteTimeSpan
           TimeoutArmed = armedAtSpawn }
@@ -2263,6 +2257,18 @@ let internal runProcessCore
     : ProcessOutcome * TreeTeardown option =
     let timeout = bounds.Timeout
     let launchDeadline = bounds.LaunchDeadline
+
+    // Said at the spawn, naming the child: said when the bounds were built, it named no
+    // command and appeared at a plugin's registration, before any child existed.
+    if
+        timeout = Threading.Timeout.InfiniteTimeSpan
+        && launchDeadline = Threading.Timeout.InfiniteTimeSpan
+    then
+        Logging.warn
+            "process"
+            $"spawning `%s{IO.Path.GetFileName command}` with NO timeout: no clock can end the wait, so \
+              a hung child holds this operation until the daemon is restarted. Set `timeoutSec` in \
+              .fshw.json to bound it."
 
     // A process scope that has shut down refuses the launch BEFORE the target can have
     // any side effect. Admission re-checks after the spawn, for a shutdown in between.

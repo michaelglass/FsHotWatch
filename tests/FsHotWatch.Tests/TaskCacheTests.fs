@@ -265,7 +265,7 @@ let ``LintPlugin cache key is None for non-FileChecked events`` () =
         let result = keyFn (FileChanged(SourceChanged [ "/src/Foo.fs" ]))
         test <@ result = None @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``LintPlugin cache key reflects config file content`` () =
     withTempDir "lint-config" (fun tmpDir ->
         let configPath = System.IO.Path.Combine(tmpDir, "fsharplint.json")
@@ -380,7 +380,7 @@ let private dummyFileCheckResult file =
     { fakeFileCheckResult file with
         Source = "" }
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugin skips Update on cache hit and replays errors`` () =
     let cache = InMemoryTaskCache()
 
@@ -438,7 +438,7 @@ let ``plugin skips Update on cache hit and replays errors`` () =
         @>
 
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugin stores result on cache miss then hits on second event`` () =
     let cache = InMemoryTaskCache()
     let mutable updateCallCount = 0
@@ -477,7 +477,7 @@ let ``plugin stores result on cache miss then hits on second event`` () =
 // The key names the file and its inputs, not the model, so a hit for a result
 // stamped by a model the host no longer publishes would stand in for a fold the
 // handler may refuse. Such a result always reaches `Update` and is never stored.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a FileChecked from a superseded model is neither replayed nor cached`` () =
     let cache = InMemoryTaskCache()
     let compKey = ck "stale-plugin" (compositeFileKey "/tmp/test" "/src/C.fs")
@@ -521,7 +521,7 @@ let ``a FileChecked from a superseded model is neither replayed nor cached`` () 
     // The run's own (empty) result did not overwrite the entry.
     test <@ (cache.TryGet(compKey, hash "commit-stale") |> Option.map _.Errors.IsEmpty) = Some false @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugin runs Update when cache key changes`` () =
     let cache = InMemoryTaskCache()
     let mutable updateCallCount = 0
@@ -570,7 +570,7 @@ let ``plugin runs Update when cache key changes`` () =
 //
 // RED-BEFORE-GREEN: remove the `pruneSiblingsOf` call from `set` and the file count is 3.
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache keeps only the newest entry per plugin+file`` () =
     withTempDir "ftc-prune" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir) :> ITaskCache
@@ -595,7 +595,7 @@ let ``FileTaskCache keeps only the newest entry per plugin+file`` () =
         test <@ (cache.TryGet key (hash "v1")).IsNone @>
         test <@ (cache.TryGet key (hash "v2")).IsNone @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache pruning never touches a DIFFERENT plugin or file`` () =
     withTempDir "ftc-prune-scope" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir) :> ITaskCache
@@ -621,7 +621,7 @@ let ``FileTaskCache pruning never touches a DIFFERENT plugin or file`` () =
         test <@ (cache.TryGet (ckPlugin "build") (hash "k")).IsSome @>
         test <@ System.IO.Directory.GetFiles(tmpDir, "*.json").Length = 4 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache prune failure never propagates (cache hygiene must not fail a task)`` () =
     // The prune runs immediately AFTER a successful write, so a failure here would throw
     // away a result the task had already earned. It cannot be staged through `Set` — a
@@ -652,7 +652,7 @@ let ``FileTaskCache prune failure never propagates (cache hygiene must not fail 
             // rather than merely that nothing was there to delete.
             test <@ System.IO.File.Exists sibling @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache prune keeps collecting after one delete fails`` () =
     // Each delete is independently guarded, so one undeletable sibling cannot shield the
     // rest — the old shape wrapped the whole loop in a single `try`, and the first throw
@@ -686,7 +686,7 @@ let ``FileTaskCache prune keeps collecting after one delete fails`` () =
 // RED-BEFORE-GREEN: restore the `EnumerateFiles(cacheDir, prefix + "*.json")` prune and this
 // reads 200, not 0.
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache write path never scans the directory (prune cost is independent of cache size)`` () =
     withTempDir "ftc-prune-cost" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -713,7 +713,7 @@ let ``FileTaskCache write path never scans the directory (prune cost is independ
         test <@ (itc.TryGet (ck "lint" "/src/F7.fs") (hash "v4")).IsSome @>
         test <@ (itc.TryGet (ck "lint" "/src/F7.fs") (hash "v1")).IsNone @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache collects siblings left behind by a PREVIOUS process`` () =
     // The write path knows only the paths IT wrote, so "only the newest hash per key
     // survives" would end at the process boundary and a directory carried over from an
@@ -746,7 +746,7 @@ let ``FileTaskCache collects siblings left behind by a PREVIOUS process`` () =
         test <@ System.IO.File.Exists priorB @>
         test <@ (cache.TryGet (ck "lint" "/src/A.fs") (hash "v-new")).IsSome @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache ignores a stray .json that is not one of its entries`` () =
     // The construction sweep works out which key each `*.json` belongs to from the `@{hash}`
     // suffix. A file WITHOUT that suffix belongs to no key: unreachable through `TryGet`, so
@@ -784,7 +784,7 @@ let ``FileTaskCache ignores a stray .json that is not one of its entries`` () =
         // The key's own predecessor WAS collected: 2 strays + 1 live entry.
         test <@ System.IO.Directory.GetFiles(tmpDir, "*.json").Length = 3 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache persists and retrieves across instances`` () =
     withTempDir "ftc-persist" (fun tmpDir ->
         let cache1 = FileTaskCache(tmpDir)
@@ -802,7 +802,7 @@ let ``FileTaskCache persists and retrieves across instances`` () =
         test <@ retrieved.IsSome @>
         test <@ retrieved.Value.Errors.Length = 1 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache clear removes all files`` () =
     withTempDir "ftc-clear" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -817,7 +817,7 @@ let ``FileTaskCache clear removes all files`` () =
         (cache :> ITaskCache).Clear()
         test <@ (cache :> ITaskCache).TryGet (ckPlugin "build") (hash "abc") |> Option.isNone @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache roundtrips all CachedStatus variants`` () =
     withTempDir "ftc-status" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -847,7 +847,7 @@ let ``FileTaskCache roundtrips all CachedStatus variants`` () =
         for i, status in statuses |> List.indexed do
             test <@ (c2.TryGet (ck "plugin" $"%d{i}") (hash "k")).Value.Status = status @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a replayed verified-nothing verdict is still a verified-nothing verdict`` () =
     // The cache stores the VERDICT, and a replay rebuilds a `Completed` from it. If the
     // fact did not survive the round trip as a value, the replayed run would be recorded
@@ -883,7 +883,7 @@ let ``a replayed verified-nothing verdict is still a verified-nothing verdict`` 
         test <@ control.NothingVerified = None @>
         test <@ RunOutcome.ofCompletedVerdict control = CompletedRun @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache roundtrips cached events`` () =
     withTempDir "ftc-events" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -913,7 +913,7 @@ let ``FileTaskCache roundtrips cached events`` () =
         test <@ r.IsSome @>
         test <@ r.Value.EmittedEvents.Length = 3 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache roundtrips wasFiltered=true and a PARTIAL verification`` () =
     withTempDir "ftc-filtered" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -983,7 +983,7 @@ let private rewriteVerification (dir: string) (token: string option) =
 
 /// A cached run whose verification this build cannot read is a MISS, never a default: no
 /// verification is an honest reading of "unknown", so the run is redone.
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("missing")>]
 [<InlineData("garbled")>]
 let ``FileTaskCache reads a missing or garbled verification token as a miss, never a default`` (damage: string) =
@@ -1017,7 +1017,7 @@ let ``FileTaskCache reads a missing or garbled verification token as a miss, nev
                 test <@ reason.Contains "uninterpretable verification token" @>
         | other -> Assert.Fail $"a %s{damage} verification token must be an unreadable entry, got %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache roundtrips the TestsNoMatch case`` () =
     // The case must survive serialization AS ITSELF. Coming back as a plain
     // `TestsPassed`, a replayed entry would claim a project's tests passed when the filter
@@ -1059,7 +1059,7 @@ let ``FileTaskCache roundtrips the TestsNoMatch case`` () =
         // The wall-clock the runner really spent discovering is preserved.
         test <@ TestResult.elapsed evt.Value.Results.["p1"] = TimeSpan.FromSeconds 2.0 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache reads a LEGACY zero-match entry back as TestsNoMatch, not a pass`` () =
     // Entries already on disk encode a zero match as `"passed"` with a magic marker in the
     // output, so reading one back as a plain pass replays a run that executed no test as a
@@ -1107,7 +1107,7 @@ let ``FileTaskCache reads a LEGACY zero-match entry back as TestsNoMatch, not a 
         // ...and the marker stripped, so surfaced output matches a fresh run's.
         test <@ TestResult.output p1 = "Zero tests ran" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache roundtrips the TestsDeferred case (never-ran, non-green)`` () =
     // TestsDeferred must stay NON-passing on the way back, or a cached deferred result
     // replays as a silent false green.
@@ -1145,7 +1145,7 @@ let ``FileTaskCache roundtrips the TestsDeferred case (never-ran, non-green)`` (
         test <@ not (TestResult.verifiedGreen p1) @>
         test <@ (TestResult.output p1).Contains("apphost not produced") @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache roundtrips the TestsErrored case (aborted, non-green)`` () =
     // In practice an errored result is never written — it is non-passing, so the cacheKey
     // gate skips the write — but the serializer must still handle it exhaustively.
@@ -1184,7 +1184,7 @@ let ``FileTaskCache roundtrips the TestsErrored case (aborted, non-green)`` () =
         test <@ not (TestResult.verifiedGreen p1) @>
         test <@ (TestResult.output p1).Contains("no parseable report") @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache roundtrips error entries with detail`` () =
     withTempDir "ftc-detail" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -1218,7 +1218,7 @@ let ``FileTaskCache roundtrips error entries with detail`` () =
 
 /// A replayed analyzer finding must still name its rule: `fshw findings` reports each
 /// finding with its code, and a warm daemon answers mostly from replays.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache roundtrips an error entry's rule code`` () =
     withTempDir "ftc-code" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -1245,7 +1245,7 @@ let ``FileTaskCache roundtrips an error entry's rule code`` () =
         test <@ r.IsSome @>
         test <@ (r.Value.Errors.[0] |> snd |> List.head).Code = Some "FL0065" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache ClearPlugin removes only matching files`` () =
     withTempDir "ftc-clearplugin" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -1256,7 +1256,7 @@ let ``FileTaskCache ClearPlugin removes only matching files`` () =
         test <@ c.TryGet (ck "build" "Foo.fs") (hash "h1") |> Option.isNone @>
         test <@ c.TryGet (ck "lint" "Foo.fs") (hash "h2") |> Option.isSome @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache ClearFile removes entries matching the file`` () =
     withTempDir "ftc-clearfile" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -1269,7 +1269,7 @@ let ``FileTaskCache ClearFile removes entries matching the file`` () =
         test <@ c.TryGet (ck "lint" "Foo.fs") (hash "h2") |> Option.isNone @>
         test <@ c.TryGet (ck "build" "Bar.fs") (hash "h3") |> Option.isSome @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache ClearPluginFile removes specific entry`` () =
     withTempDir "ftc-clearpf" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -1282,7 +1282,7 @@ let ``FileTaskCache ClearPluginFile removes specific entry`` () =
 
 // --- atomic write tests ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache.Set leaves no .tmp files behind`` () =
     withTempDir "ftc-atomic-clean" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -1290,7 +1290,7 @@ let ``FileTaskCache.Set leaves no .tmp files behind`` () =
         let tmps = System.IO.Directory.EnumerateFiles(tmpDir, "*.tmp") |> Seq.toList
         test <@ List.isEmpty tmps @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache constructor sweeps orphan .tmp files`` () =
     withTempDir "ftc-atomic-sweep" (fun tmpDir ->
         // A prior crash mid-write leaves an orphan .tmp behind.
@@ -1299,7 +1299,7 @@ let ``FileTaskCache constructor sweeps orphan .tmp files`` () =
         let _cache = FileTaskCache(tmpDir)
         test <@ not (System.IO.File.Exists orphan) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache.Stats reports entry count and total bytes`` () =
     withTempDir "ftc-stats" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -1312,7 +1312,7 @@ let ``FileTaskCache.Stats reports entry count and total bytes`` () =
         test <@ entryCount = 2 @>
         test <@ sizeBytes > 0L @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache.Stats on empty dir reports zero`` () =
     withTempDir "ftc-stats-empty" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -1321,7 +1321,7 @@ let ``FileTaskCache.Stats on empty dir reports zero`` () =
         test <@ entryCount = 0 @>
         test <@ sizeBytes = 0L @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache.ParseFailureCount increments on malformed cache file`` () =
     withTempDir "ftc-parse-counter" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -1346,7 +1346,7 @@ let ``FileTaskCache.ParseFailureCount increments on malformed cache file`` () =
 // whose old default made a filtered run look like a full one. Tolerate absent evidence,
 // never invent it.
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache rejects an explicit null wasFiltered rather than defaulting it to unfiltered`` () =
     // The old behaviour was not a lenient default but a REVERSAL: the entry is WRITTEN with
     // `wasFiltered = true` and read back `false`, and `TestResult.ranFullSuite` reads exactly
@@ -1388,7 +1388,7 @@ let ``FileTaskCache rejects an explicit null wasFiltered rather than defaulting 
         test <@ c.TryGet key cacheKey = None @>
         test <@ cache.ParseFailureCount = before + 1 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache tolerates explicit null elapsedSeconds (old cache back-compat)`` () =
     // A duration is not a claim about what ran, so an entry that never recorded one still
     // has everything a replay needs.
@@ -1440,7 +1440,7 @@ let ``FileTaskCache tolerates explicit null elapsedSeconds (old cache back-compa
         test <@ TestResult.elapsed p1 = TimeSpan.Zero @>
         test <@ TestResult.wasFiltered p1 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache roundtrips TestsTimedOut variant`` () =
     withTempDir "ftc-timed-out" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -1487,7 +1487,7 @@ let ``FileTaskCache roundtrips TestsTimedOut variant`` () =
             test <@ elapsed = TimeSpan.FromSeconds(30.0) @>
         | _ -> failwith "expected TestsTimedOut")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache roundtrips CachedTestProgress and CachedCommandCompleted`` () =
     withTempDir "ftc-progress-cmd" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -1576,7 +1576,7 @@ let ``FileTaskCache roundtrips CachedTestProgress and CachedCommandCompleted`` (
                     | _ -> false)
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache TryGet on missing file returns None`` () =
     withTempDir "ftc-miss" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -1600,7 +1600,7 @@ let ``FileTaskCache TryGet on missing file returns None`` () =
 // RED-BEFORE-GREEN: drop the `anyRunSlotBusy ()` guard in PluginFramework's replay path and
 // the status is Completed while the run is still in flight.
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cache replay does not stomp a Running status while an exclusive run is in flight`` () =
     let cache = InMemoryTaskCache()
 
@@ -1715,7 +1715,7 @@ let ``cache replay does not stomp a Running status while an exclusive run is in 
 // so it must be a cache MISS; and a replayed verdict must identify itself as
 // served from cache rather than passing as a fresh run.
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache rejects a pre-verdict completed entry as a cache miss`` () =
     withTempDir "ftc-preverdict" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -1741,7 +1741,7 @@ let ``FileTaskCache rejects a pre-verdict completed entry as a cache miss`` () =
         test <@ result = None @>
         test <@ cache.ParseFailureCount = before + 1 @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cache replay of a whole-run entry reports the original verdict marked as cached`` () =
     // A `File = None` entry is keyed on the run's FULL input, so its stored verdict is a
     // pure function of the key and replays VERBATIM plus the cached marker — never laundered
@@ -1787,7 +1787,7 @@ let ``cache replay of a whole-run entry reports the original verdict marked as c
         test <@ v.Elapsed = TimeSpan.FromSeconds 12.5 @>
     | other -> failwith $"expected Completed with verdict, got %A{other}"
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cache replay does not stack the cached marker on an already-marked verdict`` () =
     // A verdict whose summary already carries " (cached)" replays unchanged, never
     // "(cached) (cached)".
@@ -1828,7 +1828,7 @@ let ``cache replay does not stack the cached marker on an already-marked verdict
     | Some(Completed(_, v)) -> test <@ v.Summary = "ok (cached)" @>
     | other -> failwith $"expected Completed, got %A{other}"
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache reads an old-format entry as a miss, counted as a parse failure`` () =
     // Format-1 entries (no "format" field) stored a status summary a
     // per-file key cannot back. They must deterministically read as a MISS — invalidating
@@ -1866,7 +1866,7 @@ let ``FileTaskCache reads an old-format entry as a miss, counted as a parse fail
 // ABSENT field is not a field holding the convenient value. These two pin the scope fields —
 // the ones deciding whether a replayed run counts as "the whole suite ran".
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache rejects a testRunCompleted entry with no verification, rather than replaying it as a full suite``
     ()
     =
@@ -1918,7 +1918,7 @@ let ``FileTaskCache rejects a testRunCompleted entry with no verification, rathe
         test <@ c.TryGet key cacheKey = None @>
         test <@ cache.ParseFailureCount = before + 1 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache rejects a passed test result with no wasFiltered, rather than replaying it as unfiltered`` () =
     // The same lie through the other door: FileCommandPlugin does not read the event's
     // `RanFullSuite` on the progress path, it DERIVES the scope from the accumulated results
@@ -1960,7 +1960,7 @@ let ``FileTaskCache rejects a passed test result with no wasFiltered, rather tha
         test <@ c.TryGet key cacheKey = None @>
         test <@ cache.ParseFailureCount = before + 1 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache still reads result shapes that never carry wasFiltered`` () =
     // The guard above must key off the shapes whose WRITER emits the flag. `TestsNoMatch` /
     // `TestsDeferred` / `TestsErrored` hold no `wasFiltered` in the DU, so its absence there
@@ -2011,7 +2011,7 @@ let ``FileTaskCache still reads result shapes that never carry wasFiltered`` () 
 // command under `<name>`. Their entries must read back, or the plugin never replays and
 // every warm check pays for the work again.
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileTaskCache without a repo root replays findings keyed by a plugin identity`` () =
     withTempDir "ftc-identity-keys" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir) :> ITaskCache

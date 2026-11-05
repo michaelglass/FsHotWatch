@@ -268,3 +268,143 @@ let ``the test assembly guards the process working directory after every test`` 
         |> Array.filter (fun a -> a :? ProcessWorkingDirectoryGuard.ProcessWorkingDirectoryGuardAttribute)
 
     test <@ guards.Length = 1 @>
+
+// --- A deletion waits only for an evaluation in its own tree (AUTOMATION-1499) ---
+// `withTempDir` deletes its tree under the evaluation lock, so every test's teardown
+// queued behind every other test's in-process MSBuild evaluation, which has no product
+// bound: a 15 s cap over a test that never evaluates anything could still be reached.
+// The deletion needs to exclude only an evaluation standing in the tree it deletes.
+
+/// `work` on its own thread, with a gate that holds it until released.
+let private held (work: (unit -> unit) -> unit) =
+    let entered = new ManualResetEventSlim(false)
+    let release = new ManualResetEventSlim(false)
+
+    let task =
+        Task.Run(fun () ->
+            work (fun () ->
+                entered.Set()
+                release.Wait()))
+
+    entered, release, task
+
+[<Fact(Timeout = 4 * HangWaitMs)>]
+let ``deleting a tree no evaluation stands in does not wait for an evaluation elsewhere`` () =
+    withTempDir "tree-elsewhere" (fun root ->
+        let evaluated = Path.Combine(root, "evaluated")
+        let deleted = Path.Combine(root, "deleted")
+
+        let entered, release, evaluation =
+            held (fun hold -> evaluateInProcessIn [ evaluated ] hold)
+
+        try
+            test <@ entered.Wait HangWait @>
+            let deletion = Task.Run(fun () -> whileNoEvaluationRunsUnder [ deleted ] ignore)
+            test <@ deletion.Wait HangWait @>
+        finally
+            release.Set()
+            evaluation.Wait HangWait |> ignore)
+
+[<Fact(Timeout = 4 * HangWaitMs)>]
+let ``deleting a tree an evaluation stands in waits for that evaluation`` () =
+    withTempDir "tree-under-evaluation" (fun root ->
+        let project = Path.Combine(root, "repo", "src")
+
+        let entered, release, evaluation =
+            held (fun hold -> evaluateInProcessIn [ project ] hold)
+
+        let mutable ran = false
+
+        try
+            test <@ entered.Wait HangWait @>
+
+            let deletion =
+                Task.Run(fun () -> whileNoEvaluationRunsUnder [ Path.Combine(root, "repo") ] (fun () -> ran <- true))
+
+            waitUntilOr "the deletion waiting for the evaluation" (fun () -> treeWaiters () = 1) HangWaitMs
+            test <@ not ran @>
+            release.Set()
+            test <@ deletion.Wait HangWait @>
+            test <@ ran @>
+        finally
+            release.Set()
+            evaluation.Wait HangWait |> ignore)
+
+[<Fact(Timeout = 4 * HangWaitMs)>]
+let ``an evaluation of a project in a tree being deleted waits for the deletion`` () =
+    withTempDir "tree-being-deleted" (fun root ->
+        let tree = Path.Combine(root, "repo")
+
+        let entered, release, deletion =
+            held (fun hold -> whileNoEvaluationRunsUnder [ tree ] hold)
+
+        let mutable evaluated = false
+
+        try
+            test <@ entered.Wait HangWait @>
+
+            let evaluation =
+                Task.Run(fun () -> evaluateInProcessIn [ Path.Combine(tree, "src") ] (fun () -> evaluated <- true))
+
+            waitUntilOr "the evaluation waiting for the deletion" (fun () -> treeWaiters () = 1) HangWaitMs
+            test <@ not evaluated @>
+            release.Set()
+            test <@ evaluation.Wait HangWait @>
+            test <@ evaluated @>
+        finally
+            release.Set()
+            deletion.Wait HangWait |> ignore)
+
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
+let ``deleting the tree an evaluation will put the process back in waits for that evaluation`` () =
+    withTempDir "tree-returned-to" (fun root ->
+        let stood = Path.Combine(root, "stood")
+        Directory.CreateDirectory stood |> ignore
+        let elsewhere = Path.Combine(root, "elsewhere")
+        let mutable ran = false
+
+        withProcessWorkingDirectory (Some stood) (fun () ->
+            let entered, release, evaluation =
+                held (fun hold -> evaluateInProcessIn [ elsewhere ] hold)
+
+            try
+                test <@ entered.Wait HangWait @>
+
+                let deletion =
+                    Task.Run(fun () -> whileNoEvaluationRunsUnder [ stood ] (fun () -> ran <- true))
+
+                waitUntilOr "the deletion waiting for the evaluation" (fun () -> treeWaiters () = 1) HangWaitMs
+                test <@ not ran @>
+                release.Set()
+                test <@ deletion.Wait HangWait @>
+                test <@ ran @>
+            finally
+                release.Set()
+                evaluation.Wait HangWait |> ignore))
+
+[<Fact(Timeout = InProcessEvaluationTestCapMs)>]
+let ``an evaluation that starts standing in a tree being deleted waits for the deletion`` () =
+    withTempDir "tree-stood-in" (fun root ->
+        let stood = Path.Combine(root, "stood")
+        Directory.CreateDirectory stood |> ignore
+        let mutable evaluated = false
+
+        withProcessWorkingDirectory (Some stood) (fun () ->
+            let entered, release, deletion =
+                held (fun hold -> whileNoEvaluationRunsUnder [ stood ] hold)
+
+            try
+                test <@ entered.Wait HangWait @>
+
+                let evaluation =
+                    Task.Run(fun () ->
+                        evaluateInProcessIn [ Path.Combine(root, "elsewhere") ] (fun () -> evaluated <- true))
+
+                waitUntilOr "the evaluation waiting for the deletion" (fun () -> treeWaiters () = 1) HangWaitMs
+                test <@ not evaluated @>
+                release.Set()
+                test <@ evaluation.Wait HangWait @>
+                test <@ evaluated @>
+            finally
+                release.Set()
+                deletion.Wait HangWait |> ignore))

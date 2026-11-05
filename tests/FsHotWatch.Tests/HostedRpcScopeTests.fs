@@ -132,7 +132,7 @@ let private spawnThenStop
         with _ ->
             ()
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a spawn its scope refuses at launch reports the refusal to the test instead of raising it on its thread`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "rpc-scope-refused" (fun dir ->

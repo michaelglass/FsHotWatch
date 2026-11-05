@@ -142,7 +142,7 @@ let ``a full-suite run launched by a build while the model is being discovered w
 /// The guard on the wait: `Unobserved` is also a host that never discovers anything
 /// (analysis-only, or a fixture), so a launch there must not wait for a model that will
 /// never come.
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a host that has observed no discovery launches at once`` () =
     withRepo (fun repoRoot ->
         let release = Path.Combine(repoRoot, "released")
@@ -285,7 +285,7 @@ let private writtenLaunch (dir: string) =
     File.WriteAllText(raw, "<coverage/>")
     launch
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a run's coverage that cannot be kept is a warning, not a failure`` () =
     withTempDir "keep-coverage" (fun dir ->
         let launch = writtenLaunch dir
@@ -306,7 +306,7 @@ let ``a run's coverage that cannot be kept is a warning, not a failure`` () =
                 UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
             ))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a copy failure other than IO or access is not swallowed`` () =
     withTempDir "keep-coverage-other" (fun dir ->
         let launch = writtenLaunch dir

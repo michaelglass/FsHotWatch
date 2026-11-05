@@ -35,7 +35,7 @@ let ``a root that goes missing shuts the daemon down exactly once`` () =
     test <@ count () = 1 @>
     test <@ logged |> Seq.exists (fun l -> l.Contains "is gone") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a marked root is present until it is deleted, even when something recreates it`` () =
     withTempDir "vanished" (fun dir ->
         let root = Path.Combine(dir, "r")
@@ -55,7 +55,7 @@ let ``a marked root is present until it is deleted, even when something recreate
         VanishedRoot.mark root ignore |> ignore
         test <@ not (present ()) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a root that cannot be marked is logged, and always reads as present`` () =
     withTempDir "vanished" (fun dir ->
         let logged = Collections.Concurrent.ConcurrentQueue<string>()

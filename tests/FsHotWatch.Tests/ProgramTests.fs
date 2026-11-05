@@ -328,7 +328,7 @@ let ``restart flow is triggered when stored config hash differs`` () =
 
     test <@ action = RestartConfigChanged @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``restart flow handles shutdown failure gracefully`` () =
     // The shutdown exception itself is caught by ensureDaemon, not here.
     let action =
@@ -351,7 +351,7 @@ let ``restart flow handles shutdown failure gracefully`` () =
 
 // --- killStaleDaemon ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``killStaleDaemonWith cleans up stale PID file`` () =
     withTempDir "prog-kill-stale" (fun tmpDir ->
         let stateDir = Path.Combine(tmpDir, ".fshw")
@@ -362,7 +362,7 @@ let ``killStaleDaemonWith cleans up stale PID file`` () =
 
         test <@ not (File.Exists(Path.Combine(stateDir, "daemon.pid"))) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``killStaleDaemonWith handles missing PID file gracefully`` () =
     withTempDir "prog-no-pid" (fun tmpDir ->
         // Should not throw when PID file doesn't exist
@@ -391,7 +391,7 @@ let private recordingKills () =
 
     killed, processOps
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ensureDaemonWith waits for a daemon that holds the lock and is not listening yet, and never kills it`` () =
     withTempDir "prog-ensure-starting" (fun tmpDir ->
         use _lock = startingDaemonState tmpDir
@@ -416,7 +416,7 @@ let ``ensureDaemonWith waits for a daemon that holds the lock and is not listeni
         test <@ outcome = EnsureOutcome.Reused @>
         test <@ File.Exists(Path.Combine(tmpDir, ".fshw", "daemon.pid")) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ensureDaemonWith replaces a lock holder whose pipe never comes up within the startup timeout`` () =
     withTempDir "prog-ensure-wedged" (fun tmpDir ->
         use _lock = startingDaemonState tmpDir
@@ -435,7 +435,7 @@ let ``ensureDaemonWith replaces a lock holder whose pipe never comes up within t
         test <@ launched @>
         test <@ outcome = EnsureOutcome.Failed @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ensureDaemonWith kills a stale pidfile's process at once when no daemon holds the lock`` () =
     withTempDir "prog-ensure-stale" (fun tmpDir ->
         (startingDaemonState tmpDir).Dispose()
@@ -517,7 +517,7 @@ let ``a client that launched a daemon waits out its FSEvents retry budget for th
 
 // --- startFreshDaemonWith ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``startFreshDaemonWith reports a failed launch without waiting for a daemon`` () =
     withTempDir "prog-launch-fails" (fun tmpDir ->
         let mutable probes = 0
@@ -539,7 +539,7 @@ let ``startFreshDaemonWith reports a failed launch without waiting for a daemon`
         test <@ probes = 1 @>
         test <@ stderr.Contains "Could not launch the daemon: helper exited 7 launching: start" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``startFreshDaemonWith leaves loaded config identity to the daemon`` () =
     withTempDir "prog-hash-write" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), "{}")
@@ -555,7 +555,7 @@ let ``startFreshDaemonWith leaves loaded config identity to the daemon`` () =
         let hashPath = Path.Combine(tmpDir, ".fshw", "config.hash")
         test <@ not (File.Exists hashPath) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``startFreshDaemonWith creates log directory from logDirName param`` () =
     withTempDir "prog-log-dir" (fun tmpDir ->
         let ipc =
@@ -570,7 +570,7 @@ let ``startFreshDaemonWith creates log directory from logDirName param`` () =
         test <@ not (Directory.Exists(Path.Combine(tmpDir, "log"))) @>
         test <@ not (Directory.Exists(Path.Combine(tmpDir, "logs"))) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``startFreshDaemonWith accepts absolute logDirName`` () =
     withTempDir "prog-log-abs" (fun tmpDir ->
         let absLogDir = Path.Combine(tmpDir, "nested", "absolute-logs")
@@ -584,7 +584,7 @@ let ``startFreshDaemonWith accepts absolute logDirName`` () =
 
         test <@ Directory.Exists absLogDir @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``startFreshDaemonWith passes extra args to launch`` () =
     withTempDir "prog-extra-args" (fun tmpDir ->
         let mutable receivedArgs = ""
@@ -611,7 +611,7 @@ let ``startFreshDaemonWith passes extra args to launch`` () =
 // this runtime — overriding `HOME` makes it return `""` (measured, .NET 10 / macOS), which
 // would have turned the absolute clobber into a relative write into the working directory.
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Completions returns 0 and writes only under XDG_CONFIG_HOME`` () =
     withTempDir "prog-completions" (fun configHome ->
         // The negative control. The real file is the developer's live config and may
@@ -687,7 +687,7 @@ let private holdDaemonLock (tmpDir: string) (pid: int) : IDisposable =
 
     new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None) :> IDisposable
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Start refuses to spawn a duplicate when lock is held`` () =
     withTempDir "prog-start-dup" (fun tmpDir ->
         // Stage a discoverable .fsproj so the failIfNoProjects pre-check
@@ -722,7 +722,7 @@ let ``executeCommand Start refuses to spawn a duplicate when lock is held`` () =
         test <@ result = 0 @>
         test <@ not createDaemonCalled @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Start — second concurrent invocation cannot claim the lock`` () =
     // Regression: two back-to-back Start calls must not both proceed to
     // createDaemon. The file lock is OS-enforced, so concurrent holders are
@@ -758,7 +758,7 @@ let ``executeCommand Start — second concurrent invocation cannot claim the loc
         test <@ result = 0 @>
         test <@ createDaemonCalls = 0 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Stop iterates Shutdown until pipe goes quiet`` () =
     // Regression: if multiple daemons share a pipe, a single Shutdown only
     // stops one. Stop must loop until no daemon responds.
@@ -797,7 +797,7 @@ let ``executeCommand Stop iterates Shutdown until pipe goes quiet`` () =
         test <@ shutdownCalls = 3 @>
         test <@ remainingDaemons = 0 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Stop reports when no daemon is running`` () =
     withTempDir "prog-stop-none" (fun tmpDir ->
         let mutable shutdownCalls = 0
@@ -839,7 +839,7 @@ let ``parse completions returns Completions`` () =
 
 // --- Init command ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Init creates config in empty dir`` () =
     withTempDir "prog-init" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
@@ -859,7 +859,7 @@ let ``executeCommand Init creates config in empty dir`` () =
         test <@ result = 0 @>
         test <@ File.Exists(Path.Combine(tmpDir, ".fshw.json")) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Init returns 1 when config already exists`` () =
     withTempDir "prog-init-dup" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
@@ -905,7 +905,7 @@ let ``decideRunningDaemonAction restarts when stored hash is empty but running``
 
 // --- config hash determinism ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``config hash is deterministic across multiple calls`` () =
     withTempDir "prog-hash-det" (fun tmpDir ->
         let fileOps =
@@ -916,7 +916,7 @@ let ``config hash is deterministic across multiple calls`` () =
         let hash2 = computeConfigHashWith fileOps tmpDir
         test <@ hash1 = hash2 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``config hash changes when config file is added`` () =
     withTempDir "prog-hash-change" (fun tmpDir ->
         let hash1 = computeConfigHashWith defaultFileOps tmpDir
@@ -928,7 +928,7 @@ let ``config hash changes when config file is added`` () =
 
 // --- Reuse path ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``reuse path does not launch daemon when hash matches`` () =
     withTempDir "prog-reuse" (fun tmpDir ->
         // Reuse also requires the identity handshake to match: record THIS
@@ -993,17 +993,17 @@ let private assertFailsWhenDaemonDown (cmd: Command) =
 
         test <@ result = 1 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Format returns 1 when daemon startup fails`` () = assertFailsWhenDaemonDown (Format [])
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Rerun returns 1 when daemon startup fails`` () =
     assertFailsWhenDaemonDown (Rerun "coverage-ratchet")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Scan returns 1 when daemon startup fails`` () = assertFailsWhenDaemonDown Scan
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Scan with no daemon up starts one, then scans it`` () =
     // AUTOMATION-1333: the scan went straight to a pipe nothing listened on.
     withTempDir "prog-scan-start" (fun tmpDir ->
@@ -1467,7 +1467,7 @@ let ``a check that ended without a verdict and without a shutdown keeps the plai
 
 // --- stopDaemonWith ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a daemon that exits cleanly is reported stopped`` () =
     withTempDir "stop-clean-exit" (fun root ->
         writePid root 4242
@@ -1494,7 +1494,7 @@ let ``a daemon that exits cleanly is reported stopped`` () =
         test <@ outcome = StopOutcome.Stopped 1 @>
         test <@ elapsed () < TimeSpan.FromSeconds 1.0 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a hard-killed daemon is reported stopped and its leftover pidfile removed`` () =
     // A SIGTERM or `kill -9` never reaches the daemon's own cleanup, so the pidfile
     // outlives the process and the next liveness read consults a dead pid.
@@ -1506,7 +1506,7 @@ let ``a hard-killed daemon is reported stopped and its leftover pidfile removed`
         test <@ outcome = StopOutcome.Stopped 1 @>
         test <@ not (File.Exists(pidPathOf root)) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a daemon that acknowledges shutdown and keeps running is NOT reported stopped`` () =
     // The observed defect, in one test: the pipe goes quiet, the process does not.
     withTempDir "stop-still-alive" (fun root ->
@@ -1519,7 +1519,7 @@ let ``a daemon that acknowledges shutdown and keeps running is NOT reported stop
         test <@ elapsed () < TimeSpan.FromSeconds(StopPipeQuietSeconds + StopProcessExitSeconds + 1.0) @>
         test <@ elapsed () >= TimeSpan.FromSeconds StopProcessExitSeconds @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a live daemon's pidfile is never deleted by stop`` () =
     // Deleting it would strand the process beyond the reach of the next `stop`.
     withTempDir "stop-keeps-live-pidfile" (fun root ->
@@ -1530,7 +1530,7 @@ let ``a live daemon's pidfile is never deleted by stop`` () =
         test <@ File.Exists(pidPathOf root) @>
         test <@ File.ReadAllText(pidPathOf root).Trim() = "4242" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``stop with no daemon running is a quiet no-op`` () =
     withTempDir "stop-nothing" (fun root ->
         let ipc =
@@ -1543,7 +1543,7 @@ let ``stop with no daemon running is a quiet no-op`` () =
         test <@ outcome = StopOutcome.NothingRunning @>
         test <@ elapsed () < TimeSpan.FromSeconds 1.0 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a stale pidfile with no daemon running is cleaned up, still quietly`` () =
     withTempDir "stop-stale-pid" (fun root ->
         writePid root 4242
@@ -1558,7 +1558,7 @@ let ``a stale pidfile with no daemon running is cleaned up, still quietly`` () =
         test <@ outcome = StopOutcome.NothingRunning @>
         test <@ not (File.Exists(pidPathOf root)) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a quiet pipe with no pidfile to watch is reported unverified, not stopped`` () =
     withTempDir "stop-no-pidfile" (fun root ->
         let ops, _ = fakeStopOps (fun _ -> failwith "no pid to probe")
@@ -1566,7 +1566,7 @@ let ``a quiet pipe with no pidfile to watch is reported unverified, not stopped`
 
         test <@ outcome = StopOutcome.Unverified 1 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a daemon whose pipe never answered is still reported alive when its pid is`` () =
     // The wedge shape: the listener is unreachable, the process is right there.
     withTempDir "stop-wedged-pipe" (fun root ->
@@ -1582,7 +1582,7 @@ let ``a daemon whose pipe never answered is still reported alive when its pid is
         test <@ outcome = StopOutcome.StillAlive(4242, 0) @>
         test <@ File.Exists(pidPathOf root) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unparseable pidfile is left alone rather than deleted or believed`` () =
     withTempDir "stop-garbage-pid" (fun root ->
         Directory.CreateDirectory(Path.Combine(root, ".fshw")) |> ignore
@@ -1914,7 +1914,7 @@ let private runAgainst daemon command = runAgainstWhile ignore daemon command
 let private anotherCheckAttaches (repoRoot: string) =
     FsHotWatch.RunClaim.acquire repoRoot "check" "another-client" |> ignore
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``confirm stops the daemon it started`` () =
     let daemon = FakeDaemon(false)
     runAgainst daemon (Confirm [])
@@ -1923,7 +1923,7 @@ let ``confirm stops the daemon it started`` () =
     test <@ daemon.Shutdowns = 1 @>
     test <@ not daemon.Running @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``confirm leaves a daemon it found running`` () =
     let daemon = FakeDaemon(true)
     runAgainst daemon (Confirm [])
@@ -1931,7 +1931,7 @@ let ``confirm leaves a daemon it found running`` () =
     test <@ daemon.Launches = 0 @>
     test <@ daemon.Shutdowns = 0 @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``check leaves the daemon it started`` () =
     let daemon = FakeDaemon(false)
     runAgainst daemon (Command.Check [])
@@ -1942,7 +1942,7 @@ let ``check leaves the daemon it started`` () =
 
 /// No test project configured: `test-rerun` takes the daemon route, and still stops what
 /// it started.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``test-rerun stops the daemon it started`` () =
     let daemon = FakeDaemon(false)
     runAgainst daemon (TestRerun [])
@@ -1951,7 +1951,7 @@ let ``test-rerun stops the daemon it started`` () =
     test <@ daemon.Shutdowns = 1 @>
     test <@ not daemon.Running @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``test-rerun leaves a daemon it found running`` () =
     let daemon = FakeDaemon(true)
     runAgainst daemon (TestRerun [])
@@ -1961,7 +1961,7 @@ let ``test-rerun leaves a daemon it found running`` () =
 
 /// The daemon `confirm` started is now another run's daemon too: stopping it would end that
 /// run's daemon under it.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``confirm leaves the daemon it started when another client attached to it`` () =
     let daemon = FakeDaemon(false)
     runAgainstWhile anotherCheckAttaches daemon (Confirm [])
@@ -1970,7 +1970,7 @@ let ``confirm leaves the daemon it started when another client attached to it`` 
     test <@ daemon.Shutdowns = 0 @>
     test <@ daemon.Running @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``test-rerun leaves the daemon it started when another client attached to it`` () =
     let daemon = FakeDaemon(false)
     runAgainstWhile anotherCheckAttaches daemon (TestRerun [])
@@ -1979,7 +1979,7 @@ let ``test-rerun leaves the daemon it started when another client attached to it
     test <@ daemon.Shutdowns = 0 @>
     test <@ daemon.Running @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``confirm --keep-daemon leaves the daemon it started`` () =
     let daemon = FakeDaemon(false)
     runAgainst daemon (Confirm [ ConfirmFlag.KeepDaemon ])

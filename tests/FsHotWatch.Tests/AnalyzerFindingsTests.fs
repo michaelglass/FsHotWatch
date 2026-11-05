@@ -105,7 +105,7 @@ let private writeSource (repoRoot: string) (relative: string) (text: string) =
     File.WriteAllText(path, text)
     path
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an analyzer finding reaches the ledger with its rule code`` () =
     withTempDir "findings-code-ledger" (fun repoRoot ->
         let file = writeSource repoRoot "src/A.fs" "module A\nlet x = []\n"
@@ -118,7 +118,7 @@ let ``an analyzer finding reaches the ledger with its rule code`` () =
 
         test <@ entries |> List.map _.Code = [ Some "FL0065" ] @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the findings command serves each finding with its code and the source it was analyzed from`` () =
     withTempDir "findings-command" (fun repoRoot ->
         let text = "module A\nlet x = []\n"
@@ -181,7 +181,7 @@ let ``a file the daemon analyzed from a parse-only check is not a complete answe
 
         test <@ judge (diskView (Some repoRoot)) (replyOf host) = Incomplete [ parseOnly ] @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an expected file the analyzers never saw makes the answer incomplete`` () =
     withTempDir "findings-unseen" (fun repoRoot ->
         let seen = writeSource repoRoot "src/A.fs" "module A\n"
@@ -201,7 +201,7 @@ let ``an expected file the analyzers never saw makes the answer incomplete`` () 
         test <@ reply.Expected = List.sort [ seen; unseen ] @>
         test <@ reply.Files |> List.map _.File = [ seen ] @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``with no available project model the reply names no generation and no expected files`` () =
     withTempDir "findings-no-model" (fun repoRoot ->
         let host = PluginHost.create (Unchecked.defaultof<_>) repoRoot

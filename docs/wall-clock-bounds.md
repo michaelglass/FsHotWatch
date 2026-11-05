@@ -32,6 +32,17 @@ A bound is one of three things.
 
    A hang cap that breaks these rules is a timing assertion in disguise and is treated
    as rule 1.
+
+   Whatever the work, a cap must exceed every wait the test makes. `waitUntil` and the
+   helpers built on it never give up before `HangWaitMs` (30 s), and `withTempDir`'s
+   teardown waits up to `HangWaitMs` for a writer to drain, so a test that makes any of
+   those waits is capped above 30 s. `WaitFloorCapTests` refuses any test that is not,
+   following helpers through any number of calls.
+
+   `withTempDir`'s teardown does not join the evaluation queue: it waits only for an
+   in-process evaluation standing in its own tree (`Daemon.whileNoEvaluationRunsUnder`),
+   which is work the test started. A test that merely uses a scratch directory needs no
+   `InProcessEvaluationTestCapMs` (AUTOMATION-1499).
 3. **A lower bound or negative window.** `elapsed >= X`, or "this did not happen within
    N ms". Load only lengthens durations and delays events, so these can fail to detect
    a defect on a slow box, but cannot fail a correct one.
@@ -127,6 +138,7 @@ own named waits decided.
 | `TestPruneRatchetTransactionTests` (both cases), `FileErrorReporterTests` (8 facts), `IpcParsingTests` (57), `IpcTests` (62) | 10–30 s caps over in-process work: SQLite, temp files, reply parsing, an in-process IPC server. Each `IpcClient` call has its own 5 s connect bound, and the cache-clear fact makes four calls under 15 s | CAN-FLAKE (cancelled at 10, 15, 10 and 23 s in loaded full runs 10-18) | `SyncHangBackstopMs`. The asserted positive waits in `IpcTests` (5–10 s) are `HangWaitMs` |
 | `DepsFreshnessTests` (45), `ProcessHelperTests` (69), `FileFreshnessTests` (34), `FlakinessTests` (26), `OperationWatchdogTests` (25), `KillEscalationTests` (20), `TestPruneRunnerFamilyTests` (25), `TestPrunePendingVerificationTests` (18) | 5 s caps over in-process work: temp files, pure functions, fake runners, a fake OS, injected clocks, and kills that block on a gate the test releases. None waits on a child | CAN-FLAKE (five `DepsFreshnessTests` facts cancelled at 5 s in a loaded confirm 10-28; the same bytes passed in the same run's direct pass) | `SyncHangBackstopMs`. The short product budgets under them (`callKillWithin`'s 250 ms, the 10 min budget that makes a sat-out call a hang) are unchanged |
 | `FileCommandPluginTests` (47 facts) | 15, 20 and 30 s caps over in-process work and one trivial child (`echo`, `sh probe.sh`), while their `waitUntil`, `waitForHandled` and `waitForQuiescent` calls wait `HangWaitMs` (30 s) and three terminal waits were 12–15 s | CAN-FLAKE (the mid-run env probe was cancelled at 20 s in CI run 41978369724, before its own wait could say what it was waiting for) | caps `SyncHangBackstopMs`, terminal waits `HangWait`. The env-probe harness waits for any terminal, so a fire that ended `Failed` fails at once with its reason |
+| 1299 facts in 108 files across `FsHotWatch.Tests` and `FsHotWatch.IntegrationTests` (CliTests 86, WatcherTests 71, DaemonConfigTests 69, TestPruneFreshnessGateTests 66, …), found by `WaitFloorCapTests` | 5–30 s caps over `waitUntil`, `waitForQuiescent`, `waitForHandled`, `waitForTerminalStatus`, `withTempDir` and helpers built on them, all of which wait up to `HangWaitMs` (30 s) | CAN-FLAKE (a loaded full run 11-05 cancelled four: `TestPrunePendingVerificationTests` "a test child that never becomes a live process…", two `IpcOutputTests`, `TestPruneRunScopeTests` "a trigger raised during an unfiltered run…") | `SyncHangBackstopMs`; the six `IntegrationTests` facts over a real analyzer or FCS check take `RealCheckTestCapMs` |
 
 ## Product bounds that decided the claim
 

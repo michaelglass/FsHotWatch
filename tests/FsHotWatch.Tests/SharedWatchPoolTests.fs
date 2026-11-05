@@ -97,7 +97,7 @@ let private ownExclusions (root: string) =
       ".workspaces" ]
     |> List.map (fun d -> Path.Combine(root, d))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``each session watches its own root with its own tooling dirs and nested checkouts excluded`` () =
     withTwoSessions (fun native pool anchor b _ _ ->
         // A nested session's node_modules, .fshw and .jj are dropped by the kernel on
@@ -108,7 +108,7 @@ let ``each session watches its own root with its own tooling dirs and nested che
         test <@ pool.Stats.NativeStreams = 2 @>
         test <@ pool.Stats.Subscribers = 2 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an event in B's source tree reaches B and only B`` () =
     withTwoSessions (fun native _ _ b recA recB ->
         let file = write (Path.Combine(b, "src", "Lib", "A.fs")) "module A"
@@ -116,7 +116,7 @@ let ``an event in B's source tree reaches B and only B`` () =
         test <@ recB.Seen = [ SourceChanged [ file ] ] @>
         test <@ recA.Seen.IsEmpty @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an event in the primary's source tree reaches the primary only`` () =
     withTwoSessions (fun native _ anchor _ recA recB ->
         let file = write (Path.Combine(anchor, "tests", "T", "T.fs")) "module T"
@@ -124,7 +124,7 @@ let ``an event in the primary's source tree reaches the primary only`` () =
         test <@ recA.Seen = [ SourceChanged [ file ] ] @>
         test <@ recB.Seen.IsEmpty @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an event inside an unattached nested worktree reaches no session and is counted as unowned`` () =
     withTwoSessions (fun native pool anchor _ recA recB ->
         let other = Path.Combine(anchor, ".workspaces", "x")
@@ -134,7 +134,7 @@ let ``an event inside an unattached nested worktree reaches no session and is co
         test <@ recA.Seen.IsEmpty && recB.Seen.IsEmpty @>
         test <@ pool.Stats.EventsUnowned = 1L @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an event another attached session owns is left to that session's own stream`` () =
     withTempDir "pool-nested" (fun dir ->
         let anchor = Path.Combine(dir, "r")
@@ -155,7 +155,7 @@ let ``an event another attached session owns is left to that session's own strea
         test <@ recB.Seen = [ SourceChanged [ file ] ] @>
         test <@ recA.Seen.IsEmpty @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a nested worktree created after the probe cached its directory is learned from its metadata event`` () =
     withTempDir "pool-learn" (fun anchor ->
         let native = FakeNative()
@@ -176,7 +176,7 @@ let ``a nested worktree created after the probe cached its directory is learned 
         native.Streams.Head.OnFile late
         test <@ recA.Seen = [ SourceChanged [ early ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``each session keeps the legacy watch rules`` () =
     withTempDir "pool-rules" (fun anchor ->
         let native = FakeNative()
@@ -208,7 +208,7 @@ let ``each session keeps the legacy watch rules`` () =
                               ProjectChanged [ fsproj ] ]
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an event whose content did not change is not a change`` () =
     withTwoSessions (fun native _ _ b _ recB ->
         let file = write (Path.Combine(b, "src", "A.fs")) "module A"
@@ -216,7 +216,7 @@ let ``an event whose content did not change is not a change`` () =
         (native.Over b).OnFile file
         test <@ recB.Seen = [ SourceChanged [ file ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``delivery runs under the subscribing session's ExecutionContext, not the stream thread's`` () =
     withTempDir "pool-ctx" (fun dir ->
         let anchor = Path.Combine(dir, "r")
@@ -264,7 +264,7 @@ let ``delivery runs under the subscribing session's ExecutionContext, not the st
         fireFrom fileB
         test <@ List.ofSeq observed = [ "A", "A"; "B", "B" ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a session whose handler throws does not stop delivery to the others`` () =
     withTempDir "pool-throw" (fun dir ->
         let anchor = Path.Combine(dir, "r")
@@ -285,7 +285,7 @@ let ``a session whose handler throws does not stop delivery to the others`` () =
         test <@ recB.Seen = [ SourceChanged [ fileB ] ] @>
         test <@ pool.Stats.DeliveryFailures = 1L @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a session's stream closes with its subscription`` () =
     withTempDir "pool-life" (fun dir ->
         let anchor = Path.Combine(dir, "r")
@@ -305,7 +305,7 @@ let ``a session's stream closes with its subscription`` () =
         use _again = subscribe pool anchor anchor [] (Recorder())
         test <@ native.Live.Length = 1 && native.Streams.Length = 3 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``disposing a subscription twice detaches it once`` () =
     withTwoSessions (fun native pool anchor _ _ _ ->
         let extra = subscribe pool anchor (Path.Combine(anchor, "sub")) [] (Recorder())
@@ -314,7 +314,7 @@ let ``disposing a subscription twice detaches it once`` () =
         test <@ pool.Stats.Subscribers = 2 @>
         test <@ native.Live.Length = 2 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a session outside the anchor gets its own stream from the same pool`` () =
     withTempDir "pool-far" (fun dir ->
         let anchor = Path.Combine(dir, "r")
@@ -327,7 +327,7 @@ let ``a session outside the anchor gets its own stream from the same pool`` () =
         use _f = subscribe pool far far [] (Recorder())
         test <@ native.Streams |> List.map (fun s -> s.Dirs) |> List.sort = List.sort [ [ anchor ]; [ far ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a must-scan rescans only the session whose stream reported it`` () =
     withTwoSessions (fun native _ anchor b recA recB ->
         let fileA = write (Path.Combine(anchor, "src", "A.fs")) "a"
@@ -339,7 +339,7 @@ let ``a must-scan rescans only the session whose stream reported it`` () =
         (native.Over b).OnCoalesced b
         test <@ recB.Seen = [ SourceChanged [ fileB ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a must-scan does not report a file last written before the session's stream started`` () =
     withTempDir "pool-pre-stream" (fun anchor ->
         let aged = write (Path.Combine(anchor, "src", "Old.fs")) "a"
@@ -356,7 +356,7 @@ let ``a must-scan does not report a file last written before the session's strea
         (native.Over anchor).OnCoalesced anchor
         test <@ recA.Seen = [ SourceChanged [ fresh ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a must-scan inside one discovery root rescans only that directory`` () =
     withTwoSessions (fun native _ anchor _ recA recB ->
         let inside = write (Path.Combine(anchor, "src", "Lib", "In.fs")) "a"
@@ -365,14 +365,14 @@ let ``a must-scan inside one discovery root rescans only that directory`` () =
         test <@ recA.Seen = [ SourceChanged [ inside ] ] @>
         test <@ recB.Seen.IsEmpty @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a must-scan outside every discovery root rescans nothing`` () =
     withTwoSessions (fun native _ anchor _ recA _ ->
         write (Path.Combine(anchor, "docs", "D.fs")) "d" |> ignore
         (native.Over anchor).OnCoalesced(Path.Combine(anchor, "docs"))
         test <@ recA.Seen.IsEmpty @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a native stream that fails to start leaves that session on its own fallback watcher`` () =
     withTempDir "pool-fail" (fun anchor ->
         let fellBack = ref 0
@@ -392,7 +392,7 @@ let ``a native stream that fails to start leaves that session on its own fallbac
         test <@ watcher.Mode = WatcherMode.ContentPolling "test" @>
         test <@ pool.Stats.NativeStreams = 0 && pool.Stats.Subscribers = 0 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the Daemon-shaped factory subscribes on macOS and disposing its watcher detaches`` () =
     withTwoSessions (fun native pool anchor _ _ _ ->
         let watcher =
@@ -403,7 +403,7 @@ let ``the Daemon-shaped factory subscribes on macOS and disposing its watcher de
         (watcher :> IDisposable).Dispose()
         test <@ pool.Stats.Subscribers = 2 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``off macOS the Daemon-shaped factory is the per-session fallback`` () =
     withTempDir "pool-linux" (fun anchor ->
         let fellBack = ref 0
@@ -420,7 +420,7 @@ let ``off macOS the Daemon-shaped factory is the per-session fallback`` () =
         pool.WatcherFactoryFor (anchor, false) anchor ignore None [] 0.25 |> ignore
         test <@ fellBack.Value = 1 && native.Streams.IsEmpty @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``stats count what the stream received and where it went`` () =
     withTwoSessions (fun native pool anchor b _ _ ->
         let fileB = write (Path.Combine(b, "src", "B.fs")) "b"
@@ -433,7 +433,7 @@ let ``stats count what the stream received and where it went`` () =
         test <@ s.EventsUnowned = 1L @>
         test <@ s.MetadataEvents = 1L @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a session subscribing with flow suppressed still receives its changes`` () =
     withTempDir "pool-noflow" (fun anchor ->
         let native = FakeNative()
@@ -449,7 +449,7 @@ let ``a session subscribing with flow suppressed still receives its changes`` ()
         test <@ recA.Seen = [ SourceChanged [ file ] ] @>
         test <@ native.Streams.Head.FlowSuppressedAtCreation @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``events that arrive after the stream closed reach no one`` () =
     withTempDir "pool-late" (fun anchor ->
         let native = FakeNative()
@@ -464,7 +464,7 @@ let ``events that arrive after the stream closed reach no one`` () =
         test <@ recA.Seen.IsEmpty @>
         test <@ pool.Stats.EventsUnowned = 1L @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the default fallback is the per-worktree watcher`` () =
     withTempDir "pool-default" (fun root ->
         Directory.CreateDirectory(Path.Combine(root, "src")) |> ignore
@@ -480,7 +480,7 @@ let private resolved (root: string) =
     | Ok r -> r
     | Error e -> failwith (IdentityError.describe e)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a jj secondary workspace under its primary is anchored at the primary`` () =
     withTempDir "anchor-jj" (fun dir ->
         let primary = Path.Combine(dir, "repo")
@@ -493,7 +493,7 @@ let ``a jj secondary workspace under its primary is anchored at the primary`` ()
         test <@ anchorOf w = p.Root.Value @>
         test <@ anchorOf p = p.Root.Value @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a jj workspace outside its primary is its own anchor`` () =
     withTempDir "anchor-far" (fun dir ->
         let primary = Path.Combine(dir, "repo")
@@ -504,7 +504,7 @@ let ``a jj workspace outside its primary is its own anchor`` () =
         let w = resolved ws
         test <@ anchorOf w = w.Root.Value @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a git worktree under its main checkout is anchored at the main checkout`` () =
     withTempDir "anchor-git" (fun dir ->
         let main = Path.Combine(dir, "main")
@@ -520,7 +520,7 @@ let ``a git worktree under its main checkout is anchored at the main checkout`` 
         let m = resolved main
         test <@ anchorOf (resolved wt) = m.Root.Value @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a standalone directory is its own anchor`` () =
     withTempDir "anchor-alone" (fun dir ->
         let r = resolved dir

@@ -47,7 +47,7 @@ let private countingCheckers () =
 
     factory, calls
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a hosted session watches through the host's factory, never its own`` () =
     withTempDir "hosted-watcher" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -116,7 +116,7 @@ let ``a hosted session checks through the host's partition`` () =
     seams.Checker own sizes |> ignore
     test <@ ownCalls.Value = 0 && sharedCalls.Value = 1 @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a hosted daemon is built on its partition's checker, a standalone one on its own`` () =
     withTempDir "hosted-checker" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -136,7 +136,7 @@ let ``a hosted daemon is built on its partition's checker, a standalone one on i
         using (Daemon.createUsing own tmpDir oneShotDaemonOptions) ignore
         test <@ ownCalls.Value = 1 && sharedCalls.Value = 1 @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a host's sessions check through its one scheduler, a standalone daemon through its own`` () =
     withTempDir "hosted-checks" (fun tmpDir ->
         let rootOf name =
@@ -166,7 +166,7 @@ let ``a host's sessions check through its one scheduler, a standalone daemon thr
         test <@ not (obj.ReferenceEquals(own.Pipeline.Admission.Scheduler, checks)) @>
         test <@ own.Pipeline.Admission.Scheduler.Capacity = Environment.ProcessorCount @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a host's sessions launch test hosts through its one process scheduler, a standalone daemon through none`` () =
     withTempDir "hosted-processes" (fun tmpDir ->
         let rootOf name =
@@ -418,7 +418,7 @@ let ``a standalone daemon reads every reference where it is, a hosted session wh
                 "/r/lib/X.dll" = None
         @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a hosted daemon's checks place references where its host does`` () =
     withTempDir "hosted-imports" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore

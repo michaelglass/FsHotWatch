@@ -516,7 +516,7 @@ let ``completed analysis distinguishes compiler warnings from missing or failed 
         // A warning is not a refusal: the file was analysed.
         Assert.Empty proof.FailureReasons)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``available empty model earns no-suite analysis only after its actual batch seal`` () =
     withTempDir "analysis-empty-model" (fun root ->
         let host = FsHotWatch.PluginHost.PluginHost.create sharedChecker.Value root

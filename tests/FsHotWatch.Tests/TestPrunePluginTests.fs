@@ -64,7 +64,7 @@ let ``isolated roots share one parent instead of filling the temp directory`` ()
     test <@ Path.GetDirectoryName a = Path.GetDirectoryName b @>
     test <@ Path.GetDirectoryName(Path.GetDirectoryName a) = temp @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``pruning removes isolated roots older than the cutoff and keeps fresh ones`` () =
     withTempDir "tp-prune" (fun parent ->
         let stale = Path.Combine(parent, "tp-stale")
@@ -163,7 +163,7 @@ let ``test-prune error path sets Failed status on null check results`` () =
     | Running _ -> ()
     | other -> Assert.Fail($"Expected Failed or Running, got: %A{other}")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``changed-files tracks files after emit with valid relative path`` () =
     withTempDir "tp-test" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
@@ -189,7 +189,7 @@ let ``changed-files tracks files after emit with valid relative path`` () =
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a clean FileChecked with zero symbols still records runtime file debt`` () =
     withTempDir "tp-runtime-zero-symbol" (fun tmpDir ->
         let host = createModelHost sharedChecker.Value tmpDir
@@ -228,7 +228,7 @@ let ``a clean FileChecked with zero symbols still records runtime file debt`` ()
         let changed = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
         test <@ changed = Some "[\"src/RuntimeOnly.fs\"]" @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a zero-symbol FileChecked forces its runtime-covered project in full`` () =
     withTempDir "tp-runtime-zero-symbol-run" (fun tmpDir ->
         let sentinel = Path.Combine(tmpDir, "runtime-project-ran")
@@ -305,7 +305,7 @@ let ``a zero-symbol FileChecked forces its runtime-covered project in full`` () 
         emitBuildAndWaitTerminal host
         test <@ File.Exists sentinel @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``duplicate file checks do not duplicate in changed-files list`` () =
     withTempDir "tp-dup" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
@@ -372,7 +372,7 @@ let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
     test <@ status.Value = Idle @>
 
 [<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``extension is invoked via AnalyzeEdges during test run`` () =
     withTempDir "tp-ext" (fun tmpDir ->
         let mutable extensionCalled = false
@@ -417,7 +417,7 @@ let ``extension is invoked via AnalyzeEdges during test run`` () =
 
         test <@ extensionCalled @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``extension error is caught and reported to the ledger, not swallowed`` () =
     withTempDir "tp-ext-err" (fun tmpDir ->
         let failingExtension =
@@ -472,7 +472,7 @@ let ``extension error is caught and reported to the ledger, not swallowed`` () =
                     && e.Message.Contains "extension broke")
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``database read-before-write preserves previous symbols for diffing`` () =
     withTempDir "tp-db" (fun tmpDir ->
         let db = Database.create (Path.Combine(tmpDir, "test.db"))
@@ -526,7 +526,7 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
         let noChangedNames = changedSymbolNames noChanges
         test <@ noChangedNames.IsEmpty @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileChecked never transitions plugin to Running status`` () =
     withTempDir "tp-no-running" (fun tmpDir ->
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -560,7 +560,7 @@ let ``FileChecked never transitions plugin to Running status`` () =
         // tests were running one-by-one.
         test <@ not observedRunning.Value @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileChecked does not set Running status`` () =
     withTempDir "tp-no-complete" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
@@ -608,7 +608,7 @@ let ``FileChecked does not set Running status`` () =
         | Running _ -> Assert.Fail("FileChecked must not set Running — causes status cycling in the UI")
         | _ -> ())
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileChecked exception while tests running surfaces in the ledger without stomping the run's status (F10)`` () =
     // A FileChecked throw mid-test-run must never be silent, and must never be surfaced
     // by stomping a terminal status over the live run — that manufactured a terminal
@@ -679,7 +679,7 @@ let ``FileChecked exception while tests running surfaces in the ledger without s
                 | _ -> false
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileChecked sets Failed status on analysis error`` () =
     withTempDir "tp-complete-no-configs" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
@@ -712,7 +712,7 @@ let ``FileChecked sets Failed status on analysis error`` () =
         | other -> Assert.Fail($"Expected Failed on analysis error, got: %A{other}"))
 
 [<WallClock("polling primitive: the interval between polls of a condition the caller then asserts on; never the claim, and the caller's budget reports a condition that never holds")>]
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``FileChecked replaces test-run Completed status with error state`` () =
     withTempDir "tp-reset" (fun tmpDir ->
         let configs =
@@ -771,7 +771,7 @@ let ``FileChecked replaces test-run Completed status with error state`` () =
             Assert.Fail("Expected status to change after FileChecked analysis error, not remain as test-run Completed")
         | _ -> ())
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run-tests command runs all projects and returns results`` () =
     withTempDir "tp-run" (fun tmpDir ->
         let configs =
@@ -804,7 +804,7 @@ let ``run-tests command runs all projects and returns results`` () =
         Assert.Equal("passed", projects.[0].GetProperty("status").GetString())
         Assert.True(doc.RootElement.TryGetProperty("elapsed") |> fst))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run-tests with project filter runs only named project`` () =
     withTempDir "tp-run-proj" (fun tmpDir ->
         let configs =
@@ -851,7 +851,7 @@ let ``run-tests with project filter runs only named project`` () =
         test <@ result.Value.Contains("Alpha") @>
         test <@ not (result.Value.Contains("Beta")) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run-tests with filter passes raw filter args through to the test command`` () =
     withTempDir "tp-run-filter" (fun tmpDir ->
         let configs =
@@ -889,7 +889,7 @@ let ``run-tests with filter passes raw filter args through to the test command``
         test <@ result.Value.Contains("--filter-class FooTests") @>
         test <@ result.Value.Contains("--filter-trait Category=Browser") @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run-tests with only-failed reruns failed projects`` () =
     withTempDir "tp-run-failed" (fun tmpDir ->
         let configs =
@@ -968,7 +968,7 @@ let private trivialCoberturaXml =
   </packages>
 </coverage>"""
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run-tests emits TestRunCompleted so other plugins see the run`` () =
     withTempDir "tp-run-trc" (fun dir ->
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
@@ -1043,7 +1043,7 @@ let ``parseFailedTests handles output with no failures`` () =
 
     test <@ parsed.Length = 0 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``test failures are reported to error ledger`` () =
     withTempDir "tp-ledger" (fun tmpDir ->
         let configs =
@@ -1125,7 +1125,7 @@ let ``test errors are cleared when all tests pass`` () =
         | Some(Completed _) -> ()
         | other -> Assert.Fail($"an unfiltered re-run with every test passing must be green, got %A{other}"))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``RerunQueued path records previous run outcome to history before starting rerun`` () =
     withTempDir "tp-rerun-queued-history" (fun tmpDir ->
         // Run 1 sleeps ~1s and fails; the second BuildSucceeded arrives mid-run, putting
@@ -1311,7 +1311,7 @@ let ``FileChecked reports Completed when no testConfigs (success path)`` () =
         | Completed _ -> ()
         | other -> Assert.Fail($"Expected Completed in analysis-only mode, got: %A{other}"))
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``after scan and build, test methods are in the sqlite database`` () =
     withTempDir "tp-tm-db" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -2230,7 +2230,7 @@ let ``seed ages count consecutive appearances only`` () =
     let afterThird = bumpSeedAges afterSecond [ "A"; "B" ]
     test <@ afterThird = Map.ofList [ "A", 3; "B", 1 ] @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ParseOnly FileChecked fails closed and reports the file as unanalysable`` () =
     // ParseOnly has no trustworthy symbol graph. It must be a loud failure, not the old
     // silent "no changes" result. The resulting UnanalyzableFiles state drives the
@@ -2434,7 +2434,7 @@ let compute (x: int) = x + 2
 
         test <@ affectedTests.Contains("lazyComputeTest") @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``BuildCompleted queries affected tests after flush`` () =
     withTempDir "tp-query-after-flush" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
@@ -2469,7 +2469,7 @@ let ``BuildCompleted queries affected tests after flush`` () =
         let result = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
         test <@ result.IsSome @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``skip tests when 0 affected classes and not cold start`` () =
     withTempDir "tp-skip" (fun tmpDir ->
         let mutable runCount = 0
@@ -2534,7 +2534,7 @@ let private fanoutGraph (testProjFsproj: string) (opsFsproj: string) (opsDllPath
                 else []
         GetCanonicalDllPath = fun p -> if p = opsFsproj then Some opsDllPath else None }
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependency-fingerprint change force-runs the dependent test project`` () =
     withTempDir "tp-fanout" (fun tmpDir ->
         let mutable runCount = 0
@@ -2591,7 +2591,7 @@ let ``dependency-fingerprint change force-runs the dependent test project`` () =
         emitBuildAndSettle host
         test <@ runCount = 2 @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a rebuild of a referenced project whose package graph did not move does not force-run`` () =
     // A comment edit in Ops rebuilds Ops.dll, and the rebuilt bytes differ (the embedded
     // PDB id moves with the source). That is the symbol diff's to judge: hashing the DLL
@@ -2642,7 +2642,7 @@ let ``a rebuild of a referenced project whose package graph did not move does no
         emitBuildAndSettle host
         test <@ runCount = 1 @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``no dependency change and no symbol change still skips (no regression)`` () =
     // Same harness as the fanout test, with the referenced DLL held constant.
     withTempDir "tp-fanout-noregress" (fun tmpDir ->
@@ -2688,7 +2688,7 @@ let ``no dependency change and no symbol change still skips (no regression)`` ()
         emitBuildAndSettle host
         test <@ runCount = 1 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``comment-only change does not add file to ChangedFiles but AST change does`` () =
     // `newChangedFiles` used to be computed before `changedNames`, so any emit — even a
     // comment-only one — added the file to ChangedFiles and triggered extension-based
@@ -3234,7 +3234,7 @@ let ``formatFailureReport: a completed run says the CTRF report names the tests 
     test <@ unnamed.Contains "no CTRF report row names a failing test either" @>
     test <@ not (unnamed.Contains "CTRF report beside the output log names") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a project killed at its timeout is logged TIMED OUT (infrastructure), never FAILED or ran to completion`` () =
     withTempDir "tp-timeout-after-summary" (fun tmpDir ->
         let lines = System.Collections.Concurrent.ConcurrentQueue<string>()
@@ -3384,7 +3384,7 @@ let ``isNoMatch / allZeroMatch detect the zero-match case`` () =
     test <@ not (allZeroMatch mixed) @>
     test <@ not (allZeroMatch emptyRun) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run-tests with a filter that matches nothing reports no-tests-matched distinctly, not a generic pass`` () =
     withTempDir "tp-run-nomatch" (fun tmpDir ->
         // `exit 8` is Microsoft Testing Platform's zero-tests exit for a filtered project
@@ -3425,7 +3425,7 @@ let ``run-tests with a filter that matches nothing reports no-tests-matched dist
 // formatter: a consumer test asserting fields the producer never writes vouches for a
 // payload that does not occur. (This suite had exactly that — a `verifiedNothing` boolean
 // asserted in four IpcOutput fixtures and emitted by nobody.)
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run-tests puts the ACTIVE FILTER and the per-project TEST COUNTS on the wire`` () =
     withTempDir "tp-run-wire" (fun tmpDir ->
         // The runner is handed `--results-directory <runDir>` among its extra args; the
@@ -3504,7 +3504,7 @@ let ``run-tests puts the ACTIVE FILTER and the per-project TEST COUNTS on the wi
         test <@ args |> Array.contains "--report-ctrf-filename" @>
         test <@ not (args |> Array.contains "--report-xunit-ctrf") @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run-tests emits a NULL counts field for a project that wrote no report`` () =
     withTempDir "tp-run-nocounts" (fun tmpDir ->
         // The control for the test above, and the honest half of the contract: no report
@@ -3544,7 +3544,7 @@ let ``run-tests emits a NULL counts field for a project that wrote no report`` (
         let countsKind = project.GetProperty("counts").ValueKind
         Assert.Equal(JsonValueKind.Null, countsKind))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run-tests with a filter that matches tests executes and reports a real pass (not no-tests-matched)`` () =
     withTempDir "tp-run-match" (fun tmpDir ->
         // `echo` exits 0 → a real (filtered) pass, NOT a zero-match.
@@ -3578,7 +3578,7 @@ let ``run-tests with a filter that matches tests executes and reports a real pas
         let projects = doc.RootElement.GetProperty("projects")
         Assert.Equal("passed", projects.[0].GetProperty("status").GetString()))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run-tests force-executes after an in-flight run finishes instead of instantly bailing`` () =
     // An explicit force-rerun always runs: it waits for the `tests` slot rather than
     // bailing instantly with {error="tests already running"}.
@@ -3915,7 +3915,7 @@ let ``tryRepairSchemaDrift is a no-op when the DB file is already gone`` () =
 // still running. Without it, downstream TestCompleted subscribers (afterTests triggers and
 // the like) are blocked by the slowest test project.
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeTests emits a TestProgress per group as groups finish`` () =
     withTempDir "tp-progressive" (fun tmpDir ->
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -4006,7 +4006,7 @@ let ``executeTests emits a TestProgress per group as groups finish`` () =
                 |> List.forall (fun p -> not (p.NewResults |> Map.containsKey "ProjSlow"))
             @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``full run (no filter) produces TestResult with WasFiltered = false`` () =
     withTempDir "tp-wasfiltered-full" (fun tmpDir ->
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -4812,7 +4812,7 @@ let ``first project-attributed ingest invalidates a legacy projectless ratchet``
 
         test <@ not (File.Exists sharedOut) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``project-filtered run keeps unrelated configured ratchet projects eligible`` () =
     withTempDir "cov-ratchet-filtered-wiring" (fun dir ->
         let repoRoot = dir
@@ -5310,7 +5310,7 @@ let ``clearFcsCheckCache is a no-op when there is no cache dir`` () =
 // `TestResult.ranFullSuite`'s unit tests live in EventTests.fs beside the core type they
 // cover. Duplicating them here meant editing both files in lockstep for every change.
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``full run (no filter) emits TestRunCompleted verified as Ran FullSuite`` () =
     withTempDir "tp-ranfullsuite-full" (fun tmpDir ->
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir
@@ -5344,7 +5344,7 @@ let ``full run (no filter) emits TestRunCompleted verified as Ran FullSuite`` ()
         let last = getCompleted () |> List.last
         test <@ last.Verification = Ran RunScope.FullSuite @>)
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``regression: TestPrune writes a cache entry with TestRunCompleted on terminal status`` () =
     // Lifecycle events must emit from the SYNCHRONOUS Custom(TestsFinished) handler, not
     // from the fire-and-forget async: the framework's per-event capture window only sees
@@ -5517,7 +5517,7 @@ let ``an unfiltered project subset receives partial verification`` () =
                 RunScope.FullSuite
         @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a project-scoped rerun cannot satisfy the next whole-suite check`` () =
     withTempDir "tp-partial-cache" (fun tmpDir ->
         let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
@@ -5632,7 +5632,7 @@ let ``a run where every project matched zero tests is not cacheable as a green``
 // byte-identical to the pre-feature key, so existing caches keep hitting.
 // =============================================================================
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependsOn: changing a matched file changes the BuildCompleted cache key`` () =
     withTempDir "tp-dependson-key" (fun tmpDir ->
         let migrationsDir = Path.Combine(tmpDir, "migrations")
@@ -5651,7 +5651,7 @@ let ``dependsOn: changing a matched file changes the BuildCompleted cache key`` 
 
         test <@ keyBefore <> keyAfter @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependsOn: adding a newly-matched file changes the BuildCompleted cache key`` () =
     withTempDir "tp-dependson-add" (fun tmpDir ->
         let migrationsDir = Path.Combine(tmpDir, "migrations")
@@ -5667,7 +5667,7 @@ let ``dependsOn: adding a newly-matched file changes the BuildCompleted cache ke
 
         test <@ keyBefore <> keyAfter @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependsOn: absent config leaves the BuildCompleted key byte-identical to the no-salt key`` () =
     withTempDir "tp-dependson-absent" (fun tmpDir ->
         // Files on disk that WOULD match a glob, to prove the absent config is what
@@ -5689,7 +5689,7 @@ let ``dependsOn: absent config leaves the BuildCompleted key byte-identical to t
         // "" means no merkle entry was added at all, not an entry with an empty value.
         test <@ externalDependencyHash tmpDir [] = "" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependsOn: a glob matching nothing contributes no salt (key equals empty-dependsOn key)`` () =
     withTempDir "tp-dependson-nomatch" (fun tmpDir ->
         let handlerEmpty = create ":memory:" tmpDir None None None None None []
@@ -5706,7 +5706,7 @@ let ``dependsOn: a glob matching nothing contributes no salt (key equals empty-d
         test <@ kEmpty = kNoMatch @>
         test <@ externalDependencyHash tmpDir [ "does-not-exist/**" ] = "" @>)
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``externalDependencyHash: deterministic and content-sensitive; missing files skipped`` () =
     withTempDir "tp-dependson-hash" (fun tmpDir ->
         let dir = Path.Combine(tmpDir, "ext")
@@ -5916,7 +5916,7 @@ let ``dependsOnGlobToRegex: ** crosses dirs, * does not, literals match exactly`
     // case-insensitive (matches the IgnoreCase option).
     test <@ m "SRC/**" "src/x.sql" @>
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a failed test run is not cached, so a later run on the same key is a miss and reports green`` () =
     // The same rule as the unit test above, end to end against the real task cache. The
     // replay happens at the framework level BEFORE Update runs, keyed by the
@@ -6008,7 +6008,7 @@ let ``a failed test run is not cached, so a later run on the same key is a miss 
 // FsHotWatch.IntegrationTests: it spawns two real sh subprocesses with a 1-second sleep
 // dependency, and its terminal-wait window starves under heavy parallel test load.
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``run summary omits slowest when only 1 project ran`` () =
     withTempDir "tp-no-slowest" (fun tmpDir ->
         let host, _ = withSingleProjectHarness tmpDir "OnlyProj"
@@ -6023,7 +6023,7 @@ let ``run summary omits slowest when only 1 project ran`` () =
         | Some s -> test <@ not (s.Contains("slowest")) @>
         | None -> failwith "expected summary on completed run")
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``test-results JSON exposes per-project elapsedMs after a successful run`` () =
     withTempDir "tp-elapsed-capture" (fun tmpDir ->
         let configs =
@@ -6064,7 +6064,7 @@ let ``test-results JSON exposes per-project elapsedMs after a successful run`` (
         let elapsedMs = proj.GetProperty("elapsedMs").GetDouble()
         test <@ elapsedMs >= 100.0 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeTests runs project on BuildSucceeded`` () =
     // BuildSucceeded means artifacts are guaranteed fresh — BuildPlugin owns that
     // verification (`verifyArtifactsFresh`). TestPrune does not second-guess the signal,
@@ -6106,7 +6106,7 @@ let ``a launch names the first widening that applies as its full-suite cause``
 
     test <@ FsHotWatch.TestPrune.FullSuiteCause.token cause = expected @>
 
-[<Fact(Timeout = 25000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a full suite run for want of a baseline says so in test-scope and in the verdict scope`` () =
     // The checkout has never earned a full-suite baseline, so the first run takes the whole
     // suite. WHY it did used to be one daemon.log line ("Scope: FULL SUITE (no valid
@@ -6135,7 +6135,7 @@ let ``a full suite run for want of a baseline says so in test-scope and in the v
         test <@ scope.["kind"].GetValue<string>() = "full" @>
         test <@ scope.["cause"].GetValue<string>() = "no-full-suite-baseline" @>)
 
-[<Fact(Timeout = 25000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a run-tests force run says so in test-scope and in the verdict scope`` () =
     // The force-run launch names its own cause; nothing read it back, so a force run
     // reported under another cause (or none) would have passed every test.
@@ -6169,7 +6169,7 @@ let ``a run-tests force run says so in test-scope and in the verdict scope`` () 
         test <@ scope.["kind"].GetValue<string>() = "full" @>
         test <@ scope.["cause"].GetValue<string>() = "force-run" @>)
 
-[<Fact(Timeout = 25000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a cold-start BuildCompleted must NOT replay a test result from the task cache`` () =
     // Asserting the opposite here — that session 2 must NOT re-create the sentinel because
     // the cached entry replays — is asserting the bug, and it passed for its whole life. A

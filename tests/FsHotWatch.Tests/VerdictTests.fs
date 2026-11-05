@@ -406,7 +406,7 @@ let ``hook augmentation refuses a verdict from another invocation`` () =
         test <@ scope = "run.afterRun" @>
         test <@ observed = 20L @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``concurrent invocations attach hooks only to the winning verdict in both orders`` () =
     let drive firstId secondId =
         withTempDir "verdict-hook-concurrency" (fun root ->
@@ -6723,7 +6723,7 @@ let ``RedCauseMessage: a known message is kept, a blank one becomes the pointer 
     test <@ (Verdict.RedCauseMessage.value pointer).Contains("no cause captured") @>
     test <@ (Verdict.RedCauseMessage.value pointer).Contains("src/Lib/Thing.fs") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``reddenedBy never serializes an empty message, and never reads one back as empty`` () =
     withTempDir "verdict-red-cause-no-empty-message" (fun root ->
         makeRepo root
@@ -6781,7 +6781,7 @@ let ``reddenedBy never serializes an empty message, and never reads one back as 
 // the message contained "no cause captured": the sentence was checked, the PATH in it was
 // not. So this test sets a log directory nothing would guess and asks for it by name.
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the pointer sentence names the repo's CONFIGURED log directory`` () =
     withTempDir "verdict-red-cause-log-dir" (fun root ->
         makeRepo root
@@ -6822,7 +6822,7 @@ let ``the pointer sentence names the repo's CONFIGURED log directory`` () =
             test <@ not (message.Contains(".fshw/logs")) @>
         | other -> failwithf "expected a readable verdict, got %A" other)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the pointer sentence names the DEFAULT log directory when the repo configures none`` () =
     // The positive control for the test above: a repo that says nothing about `logDir`
     // gets `logs/daemon.log`, which is where the daemon writes. Without this, "names the

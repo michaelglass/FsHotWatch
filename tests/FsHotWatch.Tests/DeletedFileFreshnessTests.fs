@@ -78,7 +78,7 @@ let private analysisWarningsFor (host: PluginHost) (file: string) : string list 
 
 // ─── the sidecar load ───────────────────────────────────────────────────────────
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a freshness entry for a file that does not exist loads as gone — dropped, not kept`` () =
     withTempDir "load-gone" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -260,7 +260,7 @@ let ``PositiveControl: a file one project dropped stays registered for the proje
 
     test <@ pipeline.GetAllRegisteredFiles() |> List.contains (AbsFilePath.create shared) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a sidecar that is blank, null, or holds malformed entries loads as far as it can`` () =
     // The sidecar is derivative: whatever cannot be read is treated as never checked
     // clean, and the next clean check rewrites it. Nothing here may throw.

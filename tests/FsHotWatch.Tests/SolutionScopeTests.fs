@@ -285,7 +285,7 @@ let ``FLOOR: a scan that recognised nothing at all cannot report a clean bill`` 
 // reconcile — on disk
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``reconcile: a dummy test project in the solution and out of the config is refused`` () =
     withTempDir "solscope-undeclared" (fun root ->
         stageRepo
@@ -299,7 +299,7 @@ let ``reconcile: a dummy test project in the solution and out of the config is r
 
         test <@ findings = [ UndeclaredTestProject "tests/App.Dummy.Tests" ] @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``reconcile: the same repo with a reasoned exclusion is clean`` () =
     withTempDir "solscope-declared" (fun root ->
         stageRepo
@@ -314,13 +314,13 @@ let ``reconcile: the same repo with a reasoned exclusion is clean`` () =
 
         test <@ List.isEmpty findings @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``reconcile: no solution file means there is no universe to be complete against`` () =
     withTempDir "solscope-nosln" (fun root ->
         let findings = reconcile root None [ gated "App.Tests" "" ] []
         test <@ List.isEmpty findings @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``reconcile: two solutions at the root and no tests.solution is ambiguous, not a guess`` () =
     withTempDir "solscope-ambiguous" (fun root ->
         stageRepo root "Repo.slnx" [ "tests/App.Tests", testProjectXml ]
@@ -330,7 +330,7 @@ let ``reconcile: two solutions at the root and no tests.solution is ambiguous, n
 
         test <@ findings = [ AmbiguousSolution [ "Other.sln"; "Repo.slnx" ] ] @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``reconcile: an explicit tests.solution picks the authority out of the ambiguity`` () =
     withTempDir "solscope-explicit" (fun root ->
         stageRepo root "Repo.slnx" [ "tests/App.Tests", testProjectXml ]
@@ -340,7 +340,7 @@ let ``reconcile: an explicit tests.solution picks the authority out of the ambig
 
         test <@ List.isEmpty findings @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``reconcile: a tests.solution that is not there is a contradiction, not an absence`` () =
     withTempDir "solscope-missing-sln" (fun root ->
         let findings = reconcile root (Some "Nope.slnx") [ gated "App.Tests" "" ] []
@@ -361,7 +361,7 @@ let ``parseExclusions: an entry with no reason survives with an empty one`` () =
 
     test <@ parseExclusions json = Some [ { Project = "tests/X"; Reason = "" } ] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``readExclusions: no .fshw.json is "does not say", not "excludes nothing"`` () =
     withTempDir "solscope-noconfig" (fun root -> test <@ readExclusions root = None @>)
 
@@ -452,7 +452,7 @@ let ``identitiesOfGated: the label and the args path are both offered, deduplica
 
     test <@ List.isEmpty (identitiesOfGated { Project = ""; Args = "" }) @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``reconcile: a test project at the REPO ROOT is seen, not lost with its directory`` () =
     // Regression. `solutionProjects` used to reduce every entry to its directory,
     // which for `App.Tests.fsproj` at the root is the file's own name minus the
@@ -478,7 +478,7 @@ let ``reconcile: a test project at the REPO ROOT is seen, not lost with its dire
         // ...and it is gateable under the name a config would spell.
         test <@ List.isEmpty (reconcile root None [ gated "App.Tests" "" ] []) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``reconcile: a solution naming a project that is not on disk classifies as not-a-test`` () =
     // The solution's problem, not this check's. Reporting it here would bury the
     // one thing this check can speak to.
@@ -503,7 +503,7 @@ let ``parseExclusions ignores shapes that are not declarations`` () =
     test <@ parseExclusions """{"tests":{"excluded":[{"reason":"orphan"},42]}}""" = Some [] @>
     test <@ parseExclusions """{"tests":{}}""" = Some [] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``readExclusions reads what is on disk`` () =
     withTempDir "solscope-readexcl" (fun root ->
         File.WriteAllText(
@@ -513,7 +513,7 @@ let ``readExclusions reads what is on disk`` () =
 
         test <@ readExclusions root = Some [ { Project = "tests/X"; Reason = "why" } ] @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``solutionNameFor names the authority, or says there is none to name`` () =
     withTempDir "solscope-name" (fun root ->
         test <@ solutionNameFor root None = "the solution" @>
@@ -537,7 +537,7 @@ let ``solution project parsing preserves path roots and parent traversal`` (decl
     let xml = $"<Solution><Project Path=\"{declared}\" /></Solution>"
     Assert.Equal<string list>([ expected ], solutionProjects xml)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``nested solution reconciliation refuses omitted real test projects`` () =
     // The solution lives below the repo root and names its projects relative to itself.
     // Read as repo-relative, those paths name files that do not exist, a missing project
@@ -614,7 +614,7 @@ let ``an indexed namesake without the actual excluded project is not identity ev
     | Error reason -> Assert.Contains("ambiguous indexed identity", reason)
     | Ok _ -> Assert.Fail "The inventory must contain the declared project itself."
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``exclusion authority refuses a newly discovered name collision`` () =
     withTempDir "scope-identity-inventory" (fun root ->
         let project = "tests/Fixture/RealRulesTests.fsproj"
@@ -691,7 +691,7 @@ let ``no declared exclusions need neither solution nor discovered inventory`` ()
 
     test <@ Map.isEmpty (resolver ()) @>
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``nonempty exclusions refuse an absent or ambiguous solution authority`` ambiguous =
@@ -707,7 +707,7 @@ let ``nonempty exclusions refuse an absent or ambiguous solution authority`` amb
 
         Assert.Contains("one unambiguous authoritative solution", error.Message))
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``explicit solution authority resolves paths relative to its own directory`` () =
     withTempDir "scope-exclusion-override" (fun root ->
         let solutionDirectory = Directory.CreateDirectory(Path.Combine(root, "solutions"))

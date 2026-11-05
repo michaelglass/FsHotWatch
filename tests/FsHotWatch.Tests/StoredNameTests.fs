@@ -65,7 +65,7 @@ let ``by listing, the listing decides`` () =
     test <@ lookupWith Source.Listing listing nothingExists "/d" "repo" = Some "Listed" @>
     test <@ asked.Value = 1 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the listing names every entry of a directory`` () =
     withTempDir "stored-listing" (fun dir ->
         File.WriteAllText(Path.Combine(dir, "File.fs"), "")
@@ -89,7 +89,7 @@ let ``macOS asks the entry, Linux takes the name as given, and anything else lis
 
     test <@ actual = expected @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``macOS getattrlist names the stored spelling, reports a missing entry, and gives up on an unsearchable parent``
     ()
     =

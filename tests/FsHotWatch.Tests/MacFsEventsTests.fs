@@ -283,7 +283,7 @@ type MacFsEventsTests() =
 
             test <@ ex.Message.Contains("At least one directory") @>
 
-    [<Fact(Timeout = 15000)>]
+    [<Fact(Timeout = SyncHangBackstopMs)>]
     member _.``FsEventStream rejects more exclusion paths than FSEvents accepts``() =
         if not isMacOS then
             Assert.Skip("macOS only")
@@ -330,7 +330,7 @@ type MacFsEventsTests() =
                 test <@ seen |> Seq.exists (fun p -> p.Contains("/kept/")) @>
                 test <@ seen |> Seq.forall (fun p -> not (p.Contains("/excluded/"))) @>)
 
-    [<Fact(Timeout = 15000)>]
+    [<Fact(Timeout = SyncHangBackstopMs)>]
     member _.``FsEventStream create and dispose without crash``() =
         if not isMacOS then
             Assert.Skip("macOS only")

@@ -131,7 +131,7 @@ let private steadyResources: ResourceReading =
       Gen2 = 20
       Threads = 42 }
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Watchdog heartbeat carries the GC pause accrued since the previous heartbeat`` () =
     let logged = System.Collections.Concurrent.ConcurrentQueue<string>()
     let clock = ref t0
@@ -169,7 +169,7 @@ let ``Watchdog heartbeat carries the GC pause accrued since the previous heartbe
                               "heartbeat: idle; gc-pause 1.00% (600ms of 60s)" + steady ]
         @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Watchdog heartbeat carries load, heap and the collections since the previous heartbeat`` () =
     let logged = System.Collections.Concurrent.ConcurrentQueue<string>()
     let clock = ref t0
@@ -290,7 +290,7 @@ let ``Watchdog WedgeReport fires once the injected clock crosses threshold`` () 
 // --- Live Watchdog: injected stuck op makes the timer emit the overrun record ---
 
 [<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Watchdog timer emits the structured overrun record exactly once for a stuck op`` () =
     let logged = System.Collections.Concurrent.ConcurrentBag<string>()
     // The op's StartedAt is captured from this clock at Begin.
@@ -322,7 +322,7 @@ let ``Watchdog timer emits the structured overrun record exactly once for a stuc
     test <@ overruns.Length = 1 @>
     test <@ overruns.Head.Contains("wedged-rpc") @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Watchdog re-arms the overrun record for a new op after End`` () =
     let logged = System.Collections.Concurrent.ConcurrentBag<string>()
     // StartedAt is captured from this clock at Begin, and we then jump it well past
@@ -524,7 +524,7 @@ let ``the valve log line says when a firing reclaimed little and what the next o
     let productive = heapValveLogLine valvePolicy { firing with HeapAfter = gib 1.5 }
     test <@ not (productive.Contains "reclaimed under 10%") @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Watchdog does not refire the heap valve on a live set its collection cannot shrink`` () =
     let logged = System.Collections.Concurrent.ConcurrentQueue<string>()
     let clock = ref t0
@@ -568,7 +568,7 @@ let ``Watchdog does not refire the heap valve on a live set its collection canno
 
     test <@ collections.Value = 1 @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Watchdog fires the heap valve once, logs it loudly and reports it for status`` () =
     let logged = System.Collections.Concurrent.ConcurrentQueue<string>()
     let clock = ref t0
@@ -649,7 +649,7 @@ let ``compactingCollect runs a full blocking collection`` () =
 // --- Host suspension: the wall clock runs through a sleep, the awake clock does not ---
 
 [<WallClock("real host: a real timer, process, signal, clock or filesystem event is the subject, so it runs on real time; it asserts outcomes, not durations")>]
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Watchdog logs a host suspension once, when the wall clock outruns the awake clock`` () =
     let logged = System.Collections.Concurrent.ConcurrentQueue<string>()
 

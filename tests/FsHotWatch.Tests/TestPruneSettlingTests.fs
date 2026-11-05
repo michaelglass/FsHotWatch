@@ -85,7 +85,7 @@ let private runIds (json: string) =
     |> Seq.map (fun id -> id.GetString())
     |> Seq.toList
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``test-results and test-scope report settling while a finished run's fold has not committed`` () =
     withTempDir "tp-settling" (fun tmpDir ->
         let host = createModelHost (Unchecked.defaultof<_>) tmpDir

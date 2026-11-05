@@ -79,7 +79,7 @@ let private settle (store: OutcomeStore.Store) (files: string list) (dir: string
     let runner, _ = recorder clean ignore
     run (daemonWith store runner) files dir |> ignore
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a restart over an unchanged tree hands the formatter no file`` () =
     withRepo (fun store dir a b ->
         settle store [ a; b ] dir
@@ -92,7 +92,7 @@ let ``a restart over an unchanged tree hands the formatter no file`` () =
         test <@ restarted.Considered = 2 @>
         test <@ List.isEmpty restarted.Modified && List.isEmpty restarted.Failures @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``after a restart an edited file is handed to the formatter, and formatted`` () =
     withRepo (fun store dir a b ->
         settle store [ a; b ] dir
@@ -106,7 +106,7 @@ let ``after a restart an edited file is handed to the formatter, and formatted``
         test <@ calls () = [ [ a ] ] @>
         test <@ restarted.Modified = [ a ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a changed editorconfig invalidates every record`` () =
     withRepo (fun store dir a b ->
         settle store [ a; b ] dir
@@ -120,7 +120,7 @@ let ``a changed editorconfig invalidates every record`` () =
         test <@ List.isEmpty (unchangedCalls ()) @>
         test <@ calls () = [ [ a; b ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an editorconfig in a nested directory invalidates the records of the files beneath it`` () =
     withRepo (fun store dir a _ ->
         let sub = Path.Combine(dir, "sub")
@@ -135,7 +135,7 @@ let ``an editorconfig in a nested directory invalidates the records of the files
 
         test <@ calls () = [ [ c ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a changed fantomas pin invalidates every record`` () =
     withRepo (fun store dir a b ->
         settle store [ a; b ] dir
@@ -153,7 +153,7 @@ let ``a changed fantomas pin invalidates every record`` () =
 // were ever filed for bytes the tool rewrote, a later daemon handed those unformatted
 // bytes again (a revert, a checkout) would skip them, and the gate would pass a file that
 // needs formatting.
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``bytes the formatter rewrote are never filed as formatted`` () =
     withRepo (fun store dir a b ->
         let unformatted = File.ReadAllBytes a
@@ -173,7 +173,7 @@ let ``bytes the formatter rewrote are never filed as formatted`` () =
         test <@ firstRun.Modified = [ a ] @>
         test <@ calls () = [ [ a ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an editorconfig saved while the formatter ran files nothing`` () =
     // The tool left every byte as it was, but under which configuration is unknown: the
     // key before the run no longer names what is on disk after it.
@@ -191,7 +191,7 @@ let ``an editorconfig saved while the formatter ran files nothing`` () =
 
         test <@ calls () = [ [ a; b ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a file deleted while the formatter ran is not filed`` () =
     withRepo (fun store dir a b ->
         let original = File.ReadAllBytes a
@@ -209,7 +209,7 @@ let ``a file deleted while the formatter ran is not filed`` () =
 
         test <@ calls () = [ [ a ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a file the formatter could not format is not filed, and a timed-out pass files nothing`` () =
     withRepo (fun store dir a b ->
         let parseError, _ =
@@ -238,7 +238,7 @@ let ``a file the formatter could not format is not filed, and a timed-out pass f
         test <@ afterErrorCalls () = [ [ b ] ] @>
         test <@ afterTimeoutCalls () = [ [ c ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a record speaks for one path, not for the same bytes at another`` () =
     // An `.editorconfig` section can match a file by NAME, so identical bytes under
     // another name are not proven formatted.
@@ -254,7 +254,7 @@ let ``a record speaks for one path, not for the same bytes at another`` () =
 
         test <@ calls () = [ [ copy; signature ] ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``another checkout of the same bytes reads the records`` () =
     withRepo (fun store dir a b ->
         settle store [ a; b ] dir
@@ -271,7 +271,7 @@ let ``another checkout of the same bytes reads the records`` () =
 
         test <@ List.isEmpty (calls ()) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a preprocessor with no store remembers nothing across a restart`` () =
     withRepo (fun _ dir a b ->
         let first, _ = recorder clean ignore

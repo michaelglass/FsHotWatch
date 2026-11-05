@@ -45,7 +45,7 @@ let ``fsc records a checksum for every source document in the portable PDB`` () 
 // The cross-workspace property
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the same rules built at two roots have one FirstParty identity, equal to the in-place one`` () =
     withTempDir "az-id-a" (fun rootA ->
         withTempDir "az-id-b" (fun rootB ->
@@ -74,7 +74,7 @@ let ``the same rules built at two roots have one FirstParty identity, equal to t
             | Ok(AnalyzerAssemblyIdentity.FirstParty _) -> ()
             | other -> failwith $"expected FirstParty, got %A{other}"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a source byte changed after the build is DocumentDrift naming the file`` () =
     withTempDir "az-id-drift" (fun root ->
         let dll = relocate root
@@ -93,7 +93,7 @@ let ``a source byte changed after the build is DocumentDrift naming the file`` (
             test <@ actual = sha256Lower bytes @>
         | other -> failwith $"expected DocumentDrift, got %A{other}")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a project file newer than its output is OutputOlderThanProject`` () =
     withTempDir "az-id-stale" (fun root ->
         let dll = relocate root
@@ -105,7 +105,7 @@ let ``a project file newer than its output is OutputOlderThanProject`` () =
 
         test <@ identityOf (Some root) dll = Error(Refusal.OutputOlderThanProject(dll, project)) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a receipt naming this repository's sources with no project above the DLL is ProducerNotFound`` () =
     withTempDir "az-id-noproj" (fun dir ->
         // In place: the recorded documents ARE under the repository root, so the
@@ -116,7 +116,7 @@ let ``a receipt naming this repository's sources with no project above the DLL i
 
         test <@ identityOf (Some repoRoot) dll = Error(Refusal.ProducerNotFound dll) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a relocated receipt with no project to anchor it is a package, not a refusal`` () =
     withTempDir "az-id-noanchor" (fun root ->
         // Relocated: the recorded paths point at another checkout, and the producer
@@ -132,7 +132,7 @@ let ``a relocated receipt with no project to anchor it is a package, not a refus
                 )
             @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a first-party DLL whose PDB is gone is MissingPdb, not a byte digest`` () =
     withTempDir "az-id-nopdb" (fun dir ->
         // The DLL's CodeView entry places its PDB under THIS repository's root, so
@@ -142,7 +142,7 @@ let ``a first-party DLL whose PDB is gone is MissingPdb, not a byte digest`` () 
 
         test <@ identityOf (Some repoRoot) dll = Error(Refusal.MissingPdb dll) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a sidecar PDB that is not the one the build wrote is PdbMismatch`` () =
     withTempDir "az-id-wrongpdb" (fun root ->
         let dll = relocate root
@@ -155,7 +155,7 @@ let ``a sidecar PDB that is not the one the build wrote is PdbMismatch`` () =
 
         test <@ identityOf (Some root) dll = Error(Refusal.PdbMismatch(dll, Path.ChangeExtension(dll, ".pdb"))) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a document the receipt names but the tree lacks is DocumentMissing`` () =
     withTempDir "az-id-missing" (fun root ->
         let dll = relocate root
@@ -164,7 +164,7 @@ let ``a document the receipt names but the tree lacks is DocumentMissing`` () =
 
         test <@ identityOf (Some root) dll = Error(Refusal.DocumentMissing source) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``two project files in the producer directory anchor nothing: a relocated receipt is a package`` () =
     withTempDir "az-id-twoproj" (fun root ->
         let dll = relocate root
@@ -178,7 +178,7 @@ let ``two project files in the producer directory anchor nothing: a relocated re
                 )
             @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a checksum algorithm this module cannot recompute is UnverifiableChecksum`` () =
     withTempDir "az-id-alg" (fun root ->
         let dll = relocate root
@@ -189,7 +189,7 @@ let ``a checksum algorithm this module cannot recompute is UnverifiableChecksum`
         | Error(Refusal.UnverifiableChecksum(_, algorithm)) -> test <@ algorithm = unknown @>
         | other -> failwith $"expected UnverifiableChecksum, got %A{other}")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a SHA-1 receipt is recomputed as SHA-1, so a SHA-256 blob under it reads as drift`` () =
     withTempDir "az-id-sha1" (fun root ->
         let dll = relocate root
@@ -205,7 +205,7 @@ let ``a SHA-1 receipt is recomputed as SHA-1, so a SHA-256 blob under it reads a
 // Package bytes
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``bytes with no receipt are PackageBytes equal to their raw SHA-256`` () =
     withTempDir "az-id-pkg" (fun dir ->
         let bytes = [| 1uy; 2uy; 3uy |]
@@ -213,7 +213,7 @@ let ``bytes with no receipt are PackageBytes equal to their raw SHA-256`` () =
 
         test <@ identityOf (Some dir) dll = Ok(AnalyzerAssemblyIdentity.PackageBytes(sha256Lower bytes)) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``with no repository root every DLL is PackageBytes`` () =
     withTempDir "az-id-noroot" (fun dir ->
         let throwaway = throwawayDll dir "MyAnalyzer" [| 9uy; 8uy |]
@@ -248,7 +248,7 @@ type private MetadataFreeImage() =
         section.WriteBytes(0uy, 16)
         section
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a PE image with no metadata is PackageBytes, like any bytes with no receipt`` () =
     withTempDir "az-id-native" (fun dir ->
         let image = BlobBuilder()
@@ -260,7 +260,7 @@ let ``a PE image with no metadata is PackageBytes, like any bytes with no receip
         test <@ not pe.HasMetadata @>
         test <@ identityOf (Some dir) dll = Ok(AnalyzerAssemblyIdentity.PackageBytes(sha256Lower bytes)) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an assembly with no debug directory names no PDB, so its bytes identify it`` () =
     withTempDir "az-id-nodebug" (fun dir ->
         let dll = Path.Combine(dir, "NoDebug.dll")
@@ -281,7 +281,7 @@ let ``an assembly with no debug directory names no PDB, so its bytes identify it
                 )
             @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a DLL in a directory shallower than the repository root is outside it, so its receipt is a package's`` () =
     withTempDir "az-id-shallow" (fun dir ->
         // The root is nested far deeper than the DLL's directory and than any path the
@@ -305,7 +305,7 @@ let ``a DLL in a directory shallower than the repository root is outside it, so 
 // The set
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ofPaths reports every refusal in the set and never throws`` () =
     withTempDir "az-id-set" (fun root ->
         let drifted = relocate root
@@ -337,7 +337,7 @@ let ``ofPaths reports every refusal in the set and never throws`` () =
                 @>
         | Ok _ -> failwith "expected refusals")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``ofPaths semantic is checkout-independent while materialization follows the bytes`` () =
     withTempDir "az-id-set-a" (fun rootA ->
         withTempDir "az-id-set-b" (fun rootB ->

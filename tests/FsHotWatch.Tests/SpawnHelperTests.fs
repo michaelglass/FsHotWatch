@@ -115,7 +115,7 @@ let private tenSeconds = ProcessBounds.silent (TimeSpan.FromSeconds 10.0)
 // Real children through the real protocol
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a hook step through the helper is owned while it runs and reports its output and exit`` () =
     withTempDir "spawn-helper-owned" (fun directory ->
         let gate = mkfifo directory "gate"
@@ -156,7 +156,7 @@ let ``a hook step through the helper is owned while it runs and reports its outp
         Assert.Empty(registry.LivePids())
         Assert.Empty(registry.Leaks))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``output reaches the sink while the helper's child is still running`` () =
     withTempDir "spawn-helper-streaming" (fun directory ->
         let gate = mkfifo directory "gate"
@@ -193,7 +193,7 @@ let ``output reaches the sink while the helper's child is still running`` () =
         | Succeeded(ProcessOutput.Drained text) -> Assert.Equal("ready\ndone", text)
         | other -> failwith $"expected success, got %A{other}")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a helper child that overruns its timeout is killed through the helper`` () =
     withTempDir "spawn-helper-timeout" (fun directory ->
         use helper = new InProcessHelper()
@@ -247,7 +247,7 @@ let ``shutting down the scope kills a running helper child`` () =
         Assert.True(isGone pid, "the scope's shutdown must have killed the child")
         Assert.Empty(registry.Leaks))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a closed scope refuses a hook step before the helper starts anything`` () =
     withTempDir "spawn-helper-refused" (fun directory ->
         use helper = new InProcessHelper()
@@ -263,7 +263,7 @@ let ``a closed scope refuses a hook step before the helper starts anything`` () 
 
         Assert.False(File.Exists(Path.Combine(directory, "executed")), "the refused target must never have run"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a command the helper cannot start raises what Process.Start would`` () =
     withTempDir "spawn-helper-missing" (fun directory ->
         use helper = new InProcessHelper()
@@ -296,7 +296,7 @@ let ``a helper child is observable through its exit and a released child cannot 
         // that already exited would be.
         Assert.Throws<InvalidOperationException>(fun () -> child.KillTree()) |> ignore)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``closing the request pipe makes the helper kill what it still holds`` () =
     withTempDir "spawn-helper-orphans" (fun directory ->
         let helper = new InProcessHelper()
@@ -630,7 +630,7 @@ let ``a tracked child that has exited is not listed as live`` () =
     Assert.Empty(registry.Snapshot())
     registry.Untrack exited
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``once the helper is lost, a hook step starts directly`` () =
     withTempDir "spawn-helper-lost-direct" (fun directory ->
         let gate = mkfifo directory "gate"

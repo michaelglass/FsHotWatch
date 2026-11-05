@@ -558,7 +558,7 @@ let ``applyGlobalFlags NoWarnFail does not add to daemon extra args`` () =
 
 // --- findRepoRoot tests ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``findRepoRoot finds git repo`` () =
     withTempDir "cli-git" (fun tmpDir ->
         let nested = Path.Combine(tmpDir, "a", "b")
@@ -568,7 +568,7 @@ let ``findRepoRoot finds git repo`` () =
         let result = findRepoRoot nested
         test <@ result = Some tmpDir @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``findRepoRoot finds linked git worktree metadata whose dotgit is a file`` () =
     // A Git linked worktree stores `.git` as a pointer file, not a directory.
     // `findRepoRoot` only needs Git's documented on-disk contract (a `gitdir:`
@@ -589,7 +589,7 @@ let ``findRepoRoot finds linked git worktree metadata whose dotgit is a file`` (
         test <@ not (Directory.Exists(Path.Combine(linked, ".git"))) @>
         test <@ findRepoRoot nested = Some linked @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``findRepoRoot does not mistake an unrelated dotgit file for a repository`` () =
     withTempDir "cli-non-git-dotgit-file" (fun tmpDir ->
         let nested = Path.Combine(tmpDir, "src")
@@ -598,7 +598,7 @@ let ``findRepoRoot does not mistake an unrelated dotgit file for a repository`` 
 
         test <@ findRepoRoot nested = None @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``findRepoRoot does not mistake an arbitrary dotgit directory for a repository`` () =
     withTempDir "cli-non-git-dotgit-directory" (fun tmpDir ->
         let nested = Path.Combine(tmpDir, "src")
@@ -607,7 +607,7 @@ let ``findRepoRoot does not mistake an arbitrary dotgit directory for a reposito
 
         test <@ findRepoRoot nested = None @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``findRepoRoot does not accept a dangling linked-worktree gitdir pointer`` () =
     withTempDir "cli-dangling-gitdir-pointer" (fun tmpDir ->
         let nested = Path.Combine(tmpDir, "src")
@@ -616,7 +616,7 @@ let ``findRepoRoot does not accept a dangling linked-worktree gitdir pointer`` (
 
         test <@ findRepoRoot nested = None @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``findRepoRoot preserves spaces at the end of a valid gitdir path`` () =
     if not (OperatingSystem.IsWindows()) then
         // Win32 normalizes trailing spaces in path components, so that platform
@@ -638,7 +638,7 @@ let ``findRepoRoot preserves spaces at the end of a valid gitdir path`` () =
 /// split a reader that resolves the pointer lexically from one that asks the filesystem: a
 /// trailing space (part of the path to git), and `..` after a symlinked directory (the
 /// parent of the link's TARGET to the OS and to git, the checkout itself to `GetFullPath`).
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``findRepoRoot and resolveWorktree agree on every gitdir pointer shape`` () =
     if not (OperatingSystem.IsWindows()) then
         withTempDir "cli-root-identity-parity" (fun tmpDir ->
@@ -682,7 +682,7 @@ let ``findRepoRoot and resolveWorktree agree on every gitdir pointer shape`` () 
 
                 test <@ (name, rootFound) = (name, identified) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``findRepoRoot from a directory that does not exist yet finds the enclosing checkout`` () =
     // A level that cannot be canonicalized (it is not there) is not a checkout root, and
     // the walk carries on to its parent rather than giving up.
@@ -694,7 +694,7 @@ let ``findRepoRoot from a directory that does not exist yet finds the enclosing 
         test <@ not (FsHotWatch.RepositoryIdentity.isCheckoutRoot missing) @>
         test <@ findRepoRoot missing = Some tmpDir @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``findRepoRoot finds jj repo`` () =
     withTempDir "cli-jj" (fun tmpDir ->
         let nested = Path.Combine(tmpDir, "src")
@@ -799,7 +799,7 @@ let ``CLI status query works against running daemon`` () =
         // The daemon may still be writing its `.fshw/` when the wait above gives up.
         deleteWhileWritten tmpDir 10000 |> ignore
 
-[<Fact(Timeout = 20000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``CLI plugin status query works against running daemon`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"cli-inttest-{Guid.NewGuid():N}")
     Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -1025,7 +1025,7 @@ let private exec (ipc: IpcOps) (command: Command) : int =
             fakeConfig
             30.0)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Stop calls shutdown and reports the daemon gone`` () =
     // Its own temp dir, NOT the shared `/tmp` the `exec` helper uses: `stop` now reads
     // `.fshw/daemon.pid` to decide what it may claim, so a pidfile some other run left
@@ -1073,7 +1073,7 @@ let ``executeCommand Stop calls shutdown and reports the daemon gone`` () =
         // recreating or resurrecting anything.
         test <@ not (File.Exists pidPath) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Config Check prints OK and returns 0`` () =
     let result = exec (fakeIpc ()) (Config ConfigCommand.Check)
 
@@ -1083,13 +1083,13 @@ let ``executeCommand Config Check prints OK and returns 0`` () =
 let ``parse config check returns Config ConfigCommand.Check`` () =
     test <@ CommandTree.parse tree [| "config"; "check" |] = Ok(Config ConfigCommand.Check) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Status returns 0`` () =
     let result = exec (fakeIpc ()) (Status(None, []))
 
     test <@ result = 0 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Status prints the daemon's scan progress while a scan runs`` () =
     let mutable asked = 0
 
@@ -1112,7 +1112,7 @@ let ``executeCommand Status prints the daemon's scan progress while a scan runs`
     test <@ asked = 1 @>
     test <@ stderr.Contains("scanning: 3/10 files (30%)") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Status prints no scan line when no scan is running`` () =
     for progress in
         [ FsHotWatch.ScanProgress.Progress.Idle
@@ -1262,7 +1262,7 @@ let ``forwardRootUnknownCommand returns 1 when the daemon is unavailable`` () =
 
     test <@ result = 1 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Scan calls scan IPC`` () =
     let mutable called = false
 
@@ -1280,7 +1280,7 @@ let ``executeCommand Scan calls scan IPC`` () =
     test <@ result = 0 @>
     test <@ called @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Status with plugin name queries GetDiagnostics for that plugin`` () =
     let mutable calledWith = ""
 
@@ -1300,7 +1300,7 @@ let ``executeCommand Status with plugin name queries GetDiagnostics for that plu
     test <@ result = 0 @>
     test <@ calledWith = "lint" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Start exits 2 when no projects are discovered`` () =
     // Exit 2 lands BEFORE creating the daemon, acquiring the lockfile or writing the pidfile,
     // so a project-less directory never spins up a daemon that would idle forever.
@@ -1324,7 +1324,7 @@ let ``executeCommand Start exits 2 when no projects are discovered`` () =
         test <@ not createDaemonCalled @>
         test <@ not (Directory.Exists(Path.Combine(tmpDir, ".fshw"))) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Check exits 2 when no projects are discovered`` () =
     // The same fail-fast as Start. Without it, the daemon launches, exits 2 itself, and the
     // whole thing surfaces as "Failed to start daemon" with exit 1.
@@ -1353,7 +1353,7 @@ let ``executeCommand Check exits 2 when no projects are discovered`` () =
         test <@ exitCode = 2 @>
         test <@ not launched @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Start with fake daemon throws on null daemon`` () =
     // A unique temp dir, so the test process PID is not written to /tmp/.fshw/daemon.pid
     // where another test's killStaleDaemon would read it and kill this process.
@@ -1427,7 +1427,7 @@ let private daemonLockIsFree (tmpDir: string) =
     with :? IOException ->
         false
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Start fails closed when the native FSEvents stream is refused past the retry budget`` () =
     // The reviewer's HOW-TO-VERIFY, literally: a native-stream factory that always
     // throws `NativeStreamRefusedException`, past the retry budget. The daemon start
@@ -1533,7 +1533,7 @@ let ``executeCommand Start fails closed when the native FSEvents stream is refus
         test <@ not (File.Exists pidFile) @>
         test <@ daemonLockIsFree tmpDir @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Start records the socket it listens on and removes the record on the way out`` () =
     // A client under a different TMPDIR resolves a different socket for the same pipe
     // name; the record is what lets it reach this daemon anyway.
@@ -1580,7 +1580,7 @@ let ``executeCommand Start records the socket it listens on and removes the reco
 
         test <@ not (File.Exists endpointFile) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand returns 1 when IPC fails`` () =
     let ipc =
         { fakeIpc () with
@@ -1810,7 +1810,7 @@ let ``daemonProcessAliveWith reports a live pid as alive`` () =
 
     test <@ daemonProcessAliveWith fileOps "/tmp/whatever" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Check retries a startup connect race then succeeds`` () =
     withTempDir "cli-check-startup-race" (fun tmpDir ->
         // Force the Reuse path (daemon already listening) so the readiness gate, not a fresh
@@ -1864,7 +1864,7 @@ let ``executeCommand Check retries a startup connect race then succeeds`` () =
 
 // --- exit code paths via executeCommand ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Check returns exit code 2 when daemon dies during poll`` () =
     // If the daemon dies mid-poll the RPC throws, and no verdict was ever produced, so the
     // check is UN-COMPLETABLE. That is exit 2, never exit 1 — which an autonomous loop reads
@@ -1880,7 +1880,7 @@ let ``executeCommand Check returns exit code 2 when daemon dies during poll`` ()
 
 // --- executeCommand for TestRerun, Format, Check ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand TestRerun with no flags sends default waitSec and no filter`` () =
     let mutable capturedArgs = ""
 
@@ -1902,7 +1902,7 @@ let ``executeCommand TestRerun with no flags sends default waitSec and no filter
     test <@ capturedArgs = $"""{{"waitSec":{DefaultTestRerunWaitSec}}}""" @>
     test <@ not (capturedArgs.Contains("filter")) @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand TestRerun exits 3 when the daemon has no test-prune plugin (unknown-command sentinel)`` () =
     // AUTOMATION-1337: a worktree whose `.fshw.json` has no `tests` config registers no
     // test-prune plugin, so the daemon answers `run-tests` with the unknown-command
@@ -1915,7 +1915,7 @@ let ``executeCommand TestRerun exits 3 when the daemon has no test-prune plugin 
 
     test <@ result = 3 @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand TestRerun --filter-class forwards filter to run-tests IPC`` () =
     let mutable capturedArgs = ""
 
@@ -1934,7 +1934,7 @@ let ``executeCommand TestRerun --filter-class forwards filter to run-tests IPC``
     test <@ capturedArgs.Contains("--filter-class") @>
     test <@ capturedArgs.Contains("*CryptoTests*") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand TestRerun --filter-trait forwards filter to run-tests IPC`` () =
     let mutable capturedArgs = ""
 
@@ -2040,7 +2040,7 @@ let ``RerunFilter.waitSec returns the flag value`` () =
 let ``RerunFilter.waitSec falls back to the default when absent`` () =
     test <@ RerunFilter.waitSec [ FilterClass "*Foo*" ] = DefaultTestRerunWaitSec @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand TestRerun --wait-sec forwards waitSec to run-tests IPC`` () =
     let mutable capturedArgs = ""
 
@@ -2058,7 +2058,7 @@ let ``executeCommand TestRerun --wait-sec forwards waitSec to run-tests IPC`` ()
     test <@ result = 0 @>
     test <@ capturedArgs.Contains("\"waitSec\":300") @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand TestRerun forwards both filter and waitSec`` () =
     let mutable capturedArgs = ""
 
@@ -2385,7 +2385,7 @@ let ``unfiltered test-rerun with no baseline proceeds — it asked for every pro
     test <@ o.DaemonCalls = [ "launch"; "run-tests"; "shutdown" ] @>
     test <@ not o.DaemonLeftRunning @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Format calls formatAll`` () =
     let mutable called = false
 
@@ -2403,7 +2403,7 @@ let ``executeCommand Format calls formatAll`` () =
     test <@ result = 0 @>
     test <@ called @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Check waits for scan and returns errors`` () =
     let mutable waitForScanCalled = false
     let mutable getStatusCalled = false
@@ -2441,7 +2441,7 @@ let ``executeCommand Check waits for scan and returns errors`` () =
 
 // --- executeCommand for Rerun ---
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Rerun calls rerunPlugin with plugin name`` () =
     let mutable calledWithName = ""
 
@@ -2459,7 +2459,7 @@ let ``executeCommand Rerun calls rerunPlugin with plugin name`` () =
     test <@ result = 0 @>
     test <@ calledWithName = "coverage-ratchet" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Invalidate clears the live workspace cache without shutdown`` () =
     let mutable invalidated = false
     let mutable shutdown = false
@@ -2483,7 +2483,7 @@ let ``executeCommand Invalidate clears the live workspace cache without shutdown
     test <@ invalidated @>
     test <@ not shutdown @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Invalidate with no daemon running clears both persisted stores and starts no daemon`` () =
     // A cold start is not needed to clear files, and it can be refused: a repository
     // whose clean just deleted the analyzer outputs `analyzers.paths` names cannot start
@@ -2576,7 +2576,7 @@ let private withStartupFailure command =
             fakeConfig
             0.0)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``executeCommand Check returns 2 when daemon startup fails`` () =
     // A daemon that never comes up means the check could not run at all — un-completable, so
     // exit 2, never exit 1 (which reads as "failures found").
@@ -2715,7 +2715,7 @@ let private stageStateDir (tmpDir: string) =
 
     File.WriteAllText(Path.Combine(tmpDir, ".fshw", "config.hash"), computeConfigHashWith defaultFileOps tmpDir)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``check against a daemon with NO recorded identity replaces it and runs on the NEW daemon`` () =
     // The running daemon is an OLD build that never wrote an identity. The new CLI must
     // detect that UNILATERALLY — the old daemon reports nothing and is asked for nothing —
@@ -2750,7 +2750,7 @@ let ``check against a daemon with NO recorded identity replaces it and runs on t
         test <@ d.Served.Count > 0 @>
         test <@ d.Served |> Seq.forall (fun g -> g = 2) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``check against a daemon built from a DIFFERENT binary replaces it and runs on the NEW daemon`` () =
     // Same-version, different-content is a local repack: the version label
     // matches and the daemon is still the wrong code, so only the content hash catches it.
@@ -2789,7 +2789,7 @@ let ``check against a daemon built from a DIFFERENT binary replaces it and runs 
         // It SAYS what it found — no silent swap.
         test <@ stderr.Contains "different fshw binary" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``check against a HEALTHY daemon never restarts it — the warm cache survives`` () =
     // The guard against over-correction: discarding a warm FCS cache costs a ~30s cold
     // rebuild, so a matching identity plus matching config must always REUSE.
@@ -2818,7 +2818,7 @@ let ``check against a HEALTHY daemon never restarts it — the warm cache surviv
         // Served by the ORIGINAL warm daemon.
         test <@ d.Served |> Seq.forall (fun g -> g = 1) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``status names a stale-binary daemon instead of presenting its output as current`` () =
     // `status` is a read-only observer and does not restart — a fresh daemon would have
     // nothing to report — so it must SAY that what it shows came from a different build.
@@ -2843,7 +2843,7 @@ let ``status names a stale-binary daemon instead of presenting its output as cur
         test <@ stderr.Contains "no recorded binary identity" @>
         test <@ d.Shutdowns = 0 && d.Launches = 0 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a corrupted IPC reply restarts the daemon and retries the command automatically`` () =
     // Corrupt frame-length arithmetic surfaces as OverflowException, and used to hand the
     // operator a `fshw stop` + `fshw start` ritual. The tool performs it now.
@@ -2893,7 +2893,7 @@ let ``a corrupted IPC reply restarts the daemon and retries the command automati
         test <@ stderr.Contains "corrupted" @>
         test <@ stderr.Contains "restarting the daemon and retrying" @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a client OOM names the client and leaves the workspace daemon owned and reusable`` () =
     // A failure allocating in this CLI says nothing about the daemon's health. Replacing
     // the daemon would turn a workspace-owned warm process into needless churn; abandoning
@@ -2955,7 +2955,7 @@ let ``a client OOM names the client and leaves the workspace daemon owned and re
         test <@ nextResult = 0 @>
         test <@ d.Served |> Seq.toList = [ 1 ] @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a stale daemon-pid file is cleaned up on the next command`` () =
     withTempDir "cli-stale-pid" (fun tmpDir ->
         stageStateDir tmpDir
@@ -2981,7 +2981,7 @@ let ``a stale daemon-pid file is cleaned up on the next command`` () =
 
         test <@ not (File.Exists pidPath) @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a LIVE daemon-pid file is never eaten by the hygiene pass`` () =
     // Unknowns lean ALIVE: deleting a live daemon's pidfile strands the process beyond the
     // reach of `fshw stop` — the same mess, recreated by an over-eager cleaner.
@@ -2993,7 +2993,7 @@ let ``a LIVE daemon-pid file is never eaten by the hygiene pass`` () =
         test <@ not (cleanStalePidfileWith defaultFileOps tmpDir) @>
         test <@ File.Exists pidPath @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unparseable daemon-pid file is left alone rather than assumed dead`` () =
     withTempDir "cli-garbage-pid" (fun tmpDir ->
         stageStateDir tmpDir
@@ -3003,7 +3003,7 @@ let ``an unparseable daemon-pid file is left alone rather than assumed dead`` ()
         test <@ not (cleanStalePidfileWith defaultFileOps tmpDir) @>
         test <@ File.Exists pidPath @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the next command reports that the daemon restarted ITSELF over a wedge`` () =
     // The daemon has no terminal to print to, so the breadcrumb is how the report of what it
     // did survives the restart — printed once, then consumed.
@@ -3373,7 +3373,7 @@ let ``an unknown-command reply is ScopeUnknown — `confirm` never goes green on
 
     test <@ (readTestRun ipc "pipe").Scope = IpcParsing.ScopeUnknown @>
 
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData(false)>]
 [<InlineData(true)>]
 let ``missing test-scope warnings refuse evidence without prescribing merge policy`` inProcess =
@@ -3422,7 +3422,7 @@ type ScopeAnswer =
 /// refusal was worded differently depending on how the CLI reached the plugin. This pins
 /// the BEHAVIOUR, not the wording: whatever the sentences are, both transports produce
 /// the same ones, and the same reading.
-[<Theory(Timeout = 15000)>]
+[<Theory(Timeout = SyncHangBackstopMs)>]
 [<InlineData("absent")>]
 [<InlineData("throws")>]
 [<InlineData("replies")>]
