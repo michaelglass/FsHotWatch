@@ -312,6 +312,12 @@ let private withRepo (body: TestEvidenceStore.Store -> (string -> string) -> uni
 let private edit (root: string) (lib: string) (line: string) =
     File.AppendAllText(Path.Combine(root, "src", lib, "Lib.fs"), line + "\n")
 
+/// The run a checkout's full-suite baseline names, when it has one.
+let private baselineRunOf (root: string) =
+    match FullSuiteBaseline.load root with
+    | FullSuiteBaseline.LoadedBaseline.Loaded(Some baseline) -> Some baseline.RunId
+    | _ -> None
+
 // ---------------------------------------------------------------------------
 // Producer and consumer
 // ---------------------------------------------------------------------------
@@ -330,42 +336,113 @@ let ``a fresh checkout of an earned tree launches nothing and reports every proj
         test <@ reusedIn completedB = testProjects @>
         test <@ allGreen completedB @>
         test <@ completedB.Verification = Ran FullSuite @>
-        // Its greens stand, but only running the suite earns a full-suite baseline: a
-        // fully reused run leaves the one it had in place.
-        let runIdOf (root: string) =
-            match FullSuiteBaseline.load root with
-            | FullSuiteBaseline.LoadedBaseline.Loaded(Some baseline) -> Some baseline.RunId
-            | _ -> None
-
-        test <@ runIdOf a.Root = Some completedA.RunId @>
-        test <@ runIdOf b.Root <> Some completedB.RunId @>
-        test <@ Option.isSome (runIdOf b.Root) @>)
+        // Every project's tests ran at exactly these inputs, here or in A, so the run is a
+        // full-suite watermark like A's (AUTOMATION-1508).
+        test <@ baselineRunOf a.Root = Some completedA.RunId @>
+        test <@ baselineRunOf b.Root = Some completedB.RunId @>)
 
 [<Fact(Timeout = RunsTestCapMs)>]
-let ``a checkout owed a full-suite baseline consults no evidence and runs every project`` () =
-    // A green is graded relative to a full-suite baseline, and only running earns one. A
-    // checkout owed one that reused instead would answer "no verdict" on every check for
-    // as long as the evidence lasted, and never earn it.
+let ``a checkout owed a full-suite baseline reuses byte-identical evidence and earns the baseline from it`` () =
+    // AUTOMATION-1508. A fresh checkout's first run is a full suite, because it holds no
+    // baseline. It looks every project up, launches none whose inputs are byte-identical
+    // to a green another checkout earned, and the run earns the baseline: every project's
+    // tests ran at these inputs. Before, a fresh checkout of an already-tested tree ran
+    // its whole suite again before it reused anything.
     withRepo (fun store rootNamed ->
         run (checkout (rootNamed "a") (Some(wiringFor store)) false) |> ignore
         let lookupsBefore = store.Lookups
         let fresh = checkoutWith false (rootNamed "b") (Some(wiringFor store)) false
         let launched, completed = run fresh
-        test <@ launched = testProjects @>
-        test <@ List.isEmpty (reusedIn completed) @>
-        test <@ store.Lookups = lookupsBefore @>
+        test <@ List.isEmpty launched @>
+        test <@ reusedIn completed = testProjects @>
+        test <@ store.Lookups = lookupsBefore + List.length testProjects @>
+        test <@ allGreen completed @>
+        test <@ completed.Verification = Ran FullSuite @>
+        test <@ baselineRunOf fresh.Root = Some completed.RunId @>
 
-        match FullSuiteBaseline.load fresh.Root with
-        | FullSuiteBaseline.LoadedBaseline.Loaded(Some baseline) -> test <@ baseline.RunId = completed.RunId @>
-        | other -> failwith $"expected the run to earn a baseline, got %A{other}"
-
-        // Once it has earned one, an edit is selected as usual and the store is consulted
-        // for what the selection launches.
+        // Earned: an edit is selected as usual, and the store is consulted for what the
+        // selection launches.
         let lookupsEarned = store.Lookups
         edit fresh.Root "Z" "let z = 3"
         let launchedNext, _ = run fresh
         test <@ launchedNext = [ "TZ" ] @>
         test <@ store.Lookups > lookupsEarned @>)
+
+[<Fact(Timeout = RunsTestCapMs)>]
+let ``a fresh checkout launches every project whose closure differs, and reuses only the identical ones`` () =
+    withRepo (fun store rootNamed ->
+        run (checkout (rootNamed "a") (Some(wiringFor store)) false) |> ignore
+        let b = rootNamed "b"
+        // A file APPEARING in TX's closure: TX's key moves, TY's and TZ's do not.
+        write b "src/X/Extra.fs" "module Extra\n"
+        let launched, completed = run (checkoutWith false b (Some(wiringFor store)) false)
+        test <@ launched = [ "TX" ] @>
+        test <@ reusedIn completed = [ "TY"; "TZ" ] @>
+        test <@ not (isReused completed.Results["TX"]) @>
+        test <@ TestResult.verifiedGreen completed.Results["TX"] @>
+        test <@ baselineRunOf b = Some completed.RunId @>)
+
+[<Fact(Timeout = RunsTestCapMs)>]
+let ``a fresh checkout of a failing tree never reuses the green of the passing one`` () =
+    withRepo (fun store rootNamed ->
+        run (checkout (rootNamed "a") (Some(wiringFor store)) false) |> ignore
+        let b = rootNamed "b"
+        write b "src/X/fail" ""
+        let launched, completed = run (checkoutWith false b (Some(wiringFor store)) false)
+        test <@ launched = [ "TX" ] @>
+
+        test
+            <@
+                match completed.Results["TX"] with
+                | TestsFailed _ -> true
+                | _ -> false
+            @>
+
+        test <@ not (allGreen completed) @>)
+
+[<Fact(Timeout = RunsTestCapMs)>]
+let ``a fresh checkout whose reuse is withdrawn mid-run earns no baseline from that run`` () =
+    withRepo (fun store rootNamed ->
+        run (checkout (rootNamed "a") (Some(wiringFor store)) false) |> ignore
+        let b = rootNamed "b"
+        // TZ must launch (its closure differs), and while it runs it edits X: the closure
+        // of TX, which this run reused.
+        edit b "Z" "let z = 2"
+        write b "edit-during-TZ" "X"
+        let c = checkoutWith false b (Some(wiringFor store)) false
+        let launched1, completed1 = run c
+        test <@ launched1 = [ "TZ" ] @>
+
+        test
+            <@
+                match completed1.Results["TX"] with
+                | TestsDeferred _ -> true
+                | _ -> false
+            @>
+
+        test <@ not (allGreen completed1) @>
+        test <@ baselineRunOf b <> Some completed1.RunId @>
+
+        // Still owed a baseline: the next run looks TX up again, misses (X moved), runs it,
+        // and only then earns one.
+        File.Delete(Path.Combine(b, "edit-during-TZ"))
+        let launched2, completed2 = run c
+        test <@ List.contains "TX" launched2 @>
+        test <@ TestResult.verifiedGreen completed2.Results["TX"] @>
+        test <@ baselineRunOf b = Some completed2.RunId @>)
+
+[<Fact(Timeout = RunsTestCapMs)>]
+let ``a fresh checkout whose verification ledger cannot be read consults no evidence`` () =
+    // What is owed is unknown, and only a full suite that RAN and passed discharges it.
+    withRepo (fun store rootNamed ->
+        run (checkout (rootNamed "a") (Some(wiringFor store)) false) |> ignore
+        let b = rootNamed "b"
+        write b ".fshw/test-prune/pending-verification.json" "{ not json"
+        let lookupsBefore = store.Lookups
+        let launched, completed = run (checkoutWith false b (Some(wiringFor store)) false)
+        test <@ launched = testProjects @>
+        test <@ List.isEmpty (reusedIn completed) @>
+        test <@ store.Lookups = lookupsBefore @>)
 
 [<Fact(Timeout = RunsTestCapMs)>]
 let ``a merge launches exactly the projects whose closure differs from both parents`` () =
@@ -484,6 +561,14 @@ let ``confirm performs zero lookups and launches every project`` () =
 
         test <@ launched = testProjects @>
         test <@ List.isEmpty (reusedIn completed) @>
+        test <@ store.Lookups = lookupsBefore @>
+
+        // A fresh checkout, owed a baseline, is no exception: confirm owes a run of everything.
+        let launchedFresh, completedFresh =
+            run (checkoutWith false (rootNamed "c") (Some(wiringFor store)) true)
+
+        test <@ launchedFresh = testProjects @>
+        test <@ List.isEmpty (reusedIn completedFresh) @>
         test <@ store.Lookups = lookupsBefore @>)
 
 [<Fact(Timeout = RunsTestCapMs)>]

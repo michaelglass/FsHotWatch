@@ -880,17 +880,19 @@ The rules only ever widen what runs:
 - Evidence is consulted after impact selection, only for projects about to launch, and
   never for one with an outstanding failure.
 - A checkout that has not earned a full-suite baseline (a brand-new workspace, or one
-  whose `tests.projects` grew) runs its suite for real first: a green is graded relative
-  to that baseline, and only running earns one. The common landing — a long-lived default
-  checkout moving to a gated tree — already has one.
+  whose `tests.projects` grew) runs a full suite first, and looks each project up like any
+  other run: only the projects that miss are launched. That run earns the baseline when
+  every project either ran or held its reuse at completion, because every test then ran
+  at exactly these inputs, here or in the checkout that earned the evidence. A fresh
+  workspace of an already-tested tree therefore launches nothing.
 - Each key is computed before the run builds anything and again when it completes. A
   reused project whose key moved in between is withdrawn: it reports a deferral, the run
   cannot go green on it, and the next run launches it.
 - A green is published only when the whole project ran unfiltered, every test passed on
   its first attempt, its CTRF report (and, when coverage is graded, its coverage report)
   exists, and the key held still for the whole run. Failures are never stored.
-- `confirm` publishes but never looks anything up. A run that reused anything never
-  earns a full-suite baseline.
+- `confirm` publishes but never looks anything up, and neither does a run owed a full suite
+  by a verification ledger that cannot be read.
 - `FSHW_TEST_EVIDENCE=0` turns reuse and publishing off entirely.
 
 A reused project's stored CTRF report is filed in the reusing run's directory, so

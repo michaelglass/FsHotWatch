@@ -857,12 +857,13 @@ let internal settleDebt (facts: DebtSettlementFacts) : DebtSettlement =
         projectPassed proj
         || outstandingFailures |> List.exists (fun f -> f.Project = proj)
 
-    // A run that reused evidence ran less than the suite here; its greens
-    // stand, but a full-suite baseline is only ever earned by running.
-    let earnsBaseline =
-        executedFullSuite
-        && Map.isEmpty launch.Reused
-        && runnableProjects |> Set.forall accountedFor
+    // A project this run reused passed here only if its reuse held at
+    // completion: its key was re-computed over the tree as it is now and
+    // still matched a full-project green earned at exactly those inputs
+    // (AUTOMATION-1508). Every test of it ran at these inputs, so it counts
+    // as executed. A reuse whose key moved reports a deferral, which is
+    // neither passed nor a recorded red, so that run earns nothing.
+    let earnsBaseline = executedFullSuite && runnableProjects |> Set.forall accountedFor
 
     let debt =
         if earnsBaseline then
