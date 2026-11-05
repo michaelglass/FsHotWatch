@@ -4126,21 +4126,12 @@ type Daemon
                 // blocked on WaitForComplete gets its own more specific
                 // TimeoutException first and a healthy long run is never restarted.
                 // Every age the monitor judges is awake time (AUTOMATION-1488): its clock is
-                // `HostClock.awakeUtc`, the clock `LastActivityAt` is stamped on, and the start
-                // stamps statuses take on the wall clock are anchored onto it, so a box that
-                // slept through a run is not restarted as wedged when it wakes.
-                let runningAnchors =
-                    PluginWedge.AwakeAnchors(
-                        HostClock.system,
-                        HostClock.awakeUtc,
-                        fun () ->
-                            host.GetAllStatuses()
-                            |> Map.toList
-                            |> List.choose (fun (name, s) ->
-                                match s with
-                                | Running since -> Some(name, since)
-                                | _ -> None)
-                    )
+                // `HostClock.awakeUtc`, the clock `LastActivityAt` and the host's Running stamps
+                // are taken on, so a box that slept through a run is not restarted as wedged
+                // when it wakes. Running ages are the host's own stamps, the ones `fshw status`
+                // reads, so the two agree on a wedge (AUTOMATION-1489); queued results are still
+                // anchored from their wall-clock stamps.
+                let runningPlugins = PluginWedge.monitoredRunning host
 
                 let queuedAnchors =
                     PluginWedge.AwakeAnchors(
@@ -4164,7 +4155,7 @@ type Daemon
                           ResultQueuedBound = PluginWedge.DefaultResultQueuedBound
                           EscalateEvery = PluginWedge.DefaultEscalateEvery
                           Now = HostClock.awakeUtc
-                          RunningPlugins = runningAnchors.Read
+                          RunningPlugins = runningPlugins
                           QueuedResults = queuedAnchors.Read
                           Awaiting =
                             fun name ->
