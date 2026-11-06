@@ -184,19 +184,21 @@ let internal ingestRunCoverage
 
         // A project re-run under starvation is not published: its green was earned on a
         // second attempt, which the stored evidence could not say.
-        let runOf (candidate: TestEvidenceRun.Candidate) : TestEvidenceRun.ProducedRun option =
-            Map.tryFind candidate.Project finalNow
-            |> Option.filter (fun _ -> not (rerunProjects.Contains candidate.Project))
-            |> Option.map (fun result ->
-                let coveragePath = runCoveragePath runDir candidate.Project
+        let runOf (candidate: TestEvidenceRun.Candidate) =
+            TestEvidenceRun.producedRunOf
+                (Map.tryFind candidate.Project finalNow)
+                (rerunProjects.Contains candidate.Project)
+                (fun result ->
+                    let coveragePath = runCoveragePath runDir candidate.Project
 
-                { Project = candidate.Project
-                  Result = result
-                  Report = TestEvidenceRun.readIfPresent (Path.Combine(runDir, candidate.Project + Ctrf.ReportSuffix))
-                  CoverageRequired = coveragePathsByProject.ContainsKey candidate.Project
-                  Coverage =
-                    TestEvidenceRun.readIfPresent coveragePath
-                    |> Option.map (fun text -> coveragePath, text) })
+                    { Project = candidate.Project
+                      Result = result
+                      Report =
+                        TestEvidenceRun.readIfPresent (Path.Combine(runDir, candidate.Project + Ctrf.ReportSuffix))
+                      CoverageRequired = coveragePathsByProject.ContainsKey candidate.Project
+                      Coverage =
+                        TestEvidenceRun.readIfPresent coveragePath
+                        |> Option.map (fun text -> coveragePath, text) })
 
         let producer: TestEvidenceStore.Producer =
             { Worktree = Path.GetFullPath repoRoot
@@ -205,8 +207,14 @@ let internal ingestRunCoverage
               ProducerHash = plan.Wiring.ProducerHash
               EarnedAt = DateTimeOffset.UtcNow }
 
-        let written = TestEvidenceRun.publish plan repoRoot r reusedNow runOf producer
-        let tally = TestEvidenceRun.tally plan r written
+        let published = TestEvidenceRun.publish plan repoRoot r reusedNow runOf producer
+
+        // Why each launched project filed nothing, one line apiece, at the default level: a
+        // project that never gets evidence is otherwise indistinguishable from a defect.
+        for line in TestEvidenceRun.withheldLines published do
+            Logging.info "test-prune" line
+
+        let tally = TestEvidenceRun.tally plan r published
         Logging.info "test-prune" tally
         logToCtx tally)
 
