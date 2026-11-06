@@ -35,7 +35,8 @@ let private target (root: string) project : FsHotWatch.TestPrune.ArtifactFreshne
     { ProjectFile = None
       ProjectDir = Path.Combine(root, "tests", project)
       AssemblyName = project
-      BinDir = Path.Combine(root, "tests", project, "bin", "Debug") }
+      BinDir = Path.Combine(root, "tests", project, "bin", "Debug")
+      Unlisted = None }
 
 let private project (root: string) name : TraceProject =
     { Project = name

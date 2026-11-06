@@ -1991,6 +1991,11 @@ let private validateVerdictInputs (repoRoot: string) (json: string) : unit =
             "config"
             $"verdictInputs.hashed declares '%s{path}' but nothing on disk matches it — it is hashed as ABSENT (the tree hash moves when it appears), and until then this repo is NOT gating on that file"
 
+    for path in resolved.Unreadable do
+        Logging.warn
+            "config"
+            $"verdictInputs.hashed reaches '%s{path}', which could not be read — it is hashed as a HOLE, and no verdict covers what is in it"
+
     if not (List.isEmpty declaration.Hashed) then
         Logging.info
             "config"

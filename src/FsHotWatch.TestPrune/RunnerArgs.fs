@@ -73,37 +73,41 @@ let internal deriveProjectBin (args: string) (repoRoot: string) : ArtifactFreshn
             else
                 Path.Combine(repoRoot, proj)
 
-        let projectFile, projDir, assemblyName =
+        let projectFile, projDir, assemblyName, unlisted =
             if
                 File.Exists abs
                 && (abs.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase)
                     || abs.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
             then
-                Some abs, Path.GetDirectoryName(abs), Path.GetFileNameWithoutExtension(abs)
+                Some abs, Path.GetDirectoryName(abs), Path.GetFileNameWithoutExtension(abs), None
             else
                 // Treat as a directory. The assembly name conventionally matches
                 // the directory leaf; if a single project file lives there, prefer
-                // that file's base name.
+                // that file's base name. A directory that could not be listed is
+                // named in `Unlisted`, never read as holding no project (AUTOMATION-865).
                 let dir = abs.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
 
-                let projFile =
-                    if Directory.Exists dir then
-                        Directory.GetFiles(dir, "*.fsproj")
-                        |> Array.append (Directory.GetFiles(dir, "*.csproj"))
-                        |> Array.tryHead
-                    else
-                        None
+                let listed =
+                    SafeWalk.filesIn dir "*.csproj"
+                    |> Result.bind (fun csprojs ->
+                        SafeWalk.filesIn dir "*.fsproj" |> Result.map (Array.append csprojs))
+
+                let projFile = listed |> Result.toOption |> Option.bind Array.tryHead
 
                 projFile,
                 dir,
                 (projFile
                  |> Option.map Path.GetFileNameWithoutExtension
-                 |> Option.defaultValue (Path.GetFileName dir))
+                 |> Option.defaultValue (Path.GetFileName dir)),
+                (match listed with
+                 | Error hole -> Some hole
+                 | Ok _ -> None)
 
         { ArtifactFreshness.ProjectFile = projectFile
           ArtifactFreshness.ProjectDir = projDir
           ArtifactFreshness.AssemblyName = assemblyName
-          ArtifactFreshness.BinDir = Path.Combine(projDir, "bin", "Debug") })
+          ArtifactFreshness.BinDir = Path.Combine(projDir, "bin", "Debug")
+          ArtifactFreshness.Unlisted = unlisted })
 
 /// STRUCTURAL apphost-missing detection. On a cold daemon a `dotnet run --project
 /// <proj> --no-build` can be launched before the build plugin produced that project's

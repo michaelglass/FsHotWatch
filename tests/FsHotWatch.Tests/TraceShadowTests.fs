@@ -594,7 +594,8 @@ let ``a project's fingerprint is predicted from its build output, with its own D
             { ProjectFile = None
               ProjectDir = projectDir
               AssemblyName = "App"
-              BinDir = Path.Combine(projectDir, "bin", "Debug") }
+              BinDir = Path.Combine(projectDir, "bin", "Debug")
+              Unlisted = None }
 
         let expected runtime =
             TestPrune.Trace.Fingerprint.ofEnvironment
