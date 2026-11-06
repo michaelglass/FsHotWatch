@@ -595,3 +595,45 @@ let ``steps whose replay answered nothing from records agree vacuously, so the g
     // One step that replayed is enough evidence for the agreement.
     let warm = compared "b" "green" (Some(run "forced" 0 "green" [])) noDiff
     test <@ Summary.gate (Summary.summarize [ step; warm ]) = Gate.Agree 2 @>
+
+[<Fact>]
+let ``a run's step directory keeps every CTRF receipt its verdict names, after the workspace prunes them`` () =
+    // AUTOMATION-1475: a flipped test is classified from its assertion text, which lives only in
+    // the per-project CTRF receipts; the workspace prunes `.fshw/test-runs` as later runs land.
+    let root = Directory.CreateTempSubdirectory "replay-ctrf"
+
+    try
+        let workspace = Path.Combine(root.FullName, "ws")
+        let dir = Path.Combine(root.FullName, "step", "replay")
+        let runs = Path.Combine(workspace, ".fshw", "test-runs")
+
+        let write (path: string) (text: string) =
+            Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+            File.WriteAllText(path, text)
+
+        write (Path.Combine(runs, "r1", "A.Tests.ctrf.json")) "a"
+        write (Path.Combine(runs, "r1", "B.Tests.ctrf.json")) "b"
+        write (Path.Combine(runs, "r1", "A.Tests.log")) "not a receipt"
+        write (Path.Combine(runs, "r2", "C.Tests.ctrf.json")) "c"
+        write (Path.Combine(runs, "unnamed", "D.Tests.ctrf.json")) "d"
+
+        let verdict =
+            """{"runs":[{"runId":"r1"},{"runId":"r2"},{"runId":"pruned-already"}]}"""
+
+        FsHotWatch.Bench.ReplayRun.keepTestRuns workspace verdict dir
+        Directory.Delete(runs, true)
+
+        let kept =
+            Directory.EnumerateFiles(Path.Combine(dir, "test-runs"), "*", SearchOption.AllDirectories)
+            |> Seq.map (fun f -> Path.GetRelativePath(dir, f).Replace('\\', '/'), File.ReadAllText f)
+            |> Seq.sort
+            |> Seq.toList
+
+        test
+            <@
+                kept = [ "test-runs/r1/A.Tests.ctrf.json", "a"
+                         "test-runs/r1/B.Tests.ctrf.json", "b"
+                         "test-runs/r2/C.Tests.ctrf.json", "c" ]
+            @>
+    finally
+        root.Delete true
