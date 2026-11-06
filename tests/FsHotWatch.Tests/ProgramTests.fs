@@ -1871,14 +1871,20 @@ type private FakeDaemon(initiallyRunning: bool) =
                         return "shutting down"
                     } }
 
-/// Run `command` in a temp repo with one project, against `daemon`. `whileRunning` is
-/// called with the repo root once the command has its daemon, as another client would act
-/// while the command runs.
-let private runAgainstWhile (whileRunning: string -> unit) (daemon: FakeDaemon) (command: Command) =
+/// Run `command` in a temp repo with one project, against `daemon`. `prepare` is called
+/// with the repo root before the command runs; `whileRunning` is called with it once the
+/// command has its daemon, as another client would act while the command runs.
+let private runAgainstPrepared
+    (prepare: string -> unit)
+    (whileRunning: string -> unit)
+    (daemon: FakeDaemon)
+    (command: Command)
+    =
     withTempDir "prog-gate-daemon" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src")
         Directory.CreateDirectory(srcDir) |> ignore
         File.WriteAllText(Path.Combine(srcDir, "Stub.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        prepare tmpDir
 
         // A running daemon is reused only when it loaded this configuration and is this
         // binary; record both, or the CLI restarts it instead.
@@ -1906,6 +1912,9 @@ let private runAgainstWhile (whileRunning: string -> unit) (daemon: FakeDaemon) 
             fakeConfig
             5.0
         |> ignore)
+
+let private runAgainstWhile whileRunning daemon command =
+    runAgainstPrepared ignore whileRunning daemon command
 
 let private runAgainst daemon command = runAgainstWhile ignore daemon command
 
@@ -1988,10 +1997,103 @@ let ``confirm --keep-daemon leaves the daemon it started`` () =
     test <@ daemon.Shutdowns = 0 @>
     test <@ daemon.Running @>
 
-/// The whole policy: only the one-shot verbs `confirm` and `test-rerun`, only a daemon they
-/// started, and not when `confirm` is told to keep it.
+// --- `format`, `rerun <plugin>` and `invalidate` do not leave a daemon behind ---
+//
+// Each answers one request and returns, so a daemon it had to start for that request has
+// no one to serve afterwards: left running, it keeps watching the tree and rebuilds and
+// re-tests on later edits (AUTOMATION-1198).
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``format stops the daemon it started`` () =
+    let daemon = FakeDaemon(false)
+    runAgainst daemon (Format [])
+
+    test <@ daemon.Launches = 1 @>
+    test <@ daemon.Shutdowns = 1 @>
+    test <@ not daemon.Running @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``format leaves a daemon it found running`` () =
+    let daemon = FakeDaemon(true)
+    runAgainst daemon (Format [])
+
+    test <@ daemon.Launches = 0 @>
+    test <@ daemon.Shutdowns = 0 @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``format leaves the daemon it started when another client attached to it`` () =
+    let daemon = FakeDaemon(false)
+    runAgainstWhile anotherCheckAttaches daemon (Format [])
+
+    test <@ daemon.Launches = 1 @>
+    test <@ daemon.Shutdowns = 0 @>
+    test <@ daemon.Running @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``rerun of a plugin stops the daemon it started`` () =
+    let daemon = FakeDaemon(false)
+    runAgainst daemon (Rerun "lint")
+
+    test <@ daemon.Launches = 1 @>
+    test <@ daemon.Shutdowns = 1 @>
+    test <@ not daemon.Running @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``rerun of a plugin leaves a daemon it found running`` () =
+    let daemon = FakeDaemon(true)
+    runAgainst daemon (Rerun "lint")
+
+    test <@ daemon.Launches = 0 @>
+    test <@ daemon.Shutdowns = 0 @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``rerun of a plugin leaves the daemon it started when another client attached to it`` () =
+    let daemon = FakeDaemon(false)
+    runAgainstWhile anotherCheckAttaches daemon (Rerun "lint")
+
+    test <@ daemon.Launches = 1 @>
+    test <@ daemon.Shutdowns = 0 @>
+    test <@ daemon.Running @>
+
+/// With no daemon, `invalidate` clears the persisted stores in-process and starts none.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``invalidate with no daemon starts none`` () =
+    let daemon = FakeDaemon(false)
+    runAgainst daemon Invalidate
+
+    test <@ daemon.Launches = 0 @>
+    test <@ daemon.Shutdowns = 0 @>
+    test <@ not daemon.Running @>
+
+/// A live repository host's record names this worktree, so `invalidate` does not clear
+/// the stores in-process and has to bring a daemon up to invalidate through. A daemon it
+/// started that way is stopped again.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``invalidate stops the daemon it had to start`` () =
+    let hostedByALiveHost (repoRoot: string) =
+        let part (c: char) =
+            String(c, FsHotWatch.RepositoryIdentity.IdLength)
+
+        let session = $"%s{part 'a'}.%s{part 'b'}.%s{part 'c'}"
+        Directory.CreateDirectory(FsHotWatch.FsHwPaths.root repoRoot) |> ignore
+
+        File.WriteAllText(
+            FsHotWatch.RepositoryHost.HostSessionRecord.path repoRoot,
+            $"""{{"hostPid": %d{Environment.ProcessId}, "endpoint": "unused", "session": "%s{session}"}}"""
+        )
+
+    let daemon = FakeDaemon(false)
+    runAgainstPrepared hostedByALiveHost ignore daemon Invalidate
+
+    test <@ daemon.Launches = 1 @>
+    test <@ daemon.Shutdowns = 1 @>
+    test <@ not daemon.Running @>
+
+/// The whole policy: the one-shot verbs `confirm`, `test-rerun`, `format`, `rerun <plugin>`
+/// and `invalidate` release only a daemon they started, and `confirm` not when told to keep
+/// it. `check` is the warm inner loop and `start`/`scan` exist to bring a daemon up.
 [<Fact>]
-let ``only confirm and test-rerun release, and only a daemon they started`` () =
+let ``only one-shot verbs release, and only a daemon they started`` () =
     let outcomes = [ EnsureOutcome.Reused; EnsureOutcome.Started; EnsureOutcome.Failed ]
 
     let releasing command =
@@ -2001,7 +2103,11 @@ let ``only confirm and test-rerun release, and only a daemon they started`` () =
     test <@ releasing (Confirm [ ConfirmFlag.Fresh ]) = [ EnsureOutcome.Started ] @>
     test <@ List.isEmpty (releasing (Confirm [ ConfirmFlag.KeepDaemon ])) @>
     test <@ List.isEmpty (releasing (Command.Check [])) @>
-    test <@ List.isEmpty (releasing (Format [])) @>
+    test <@ List.isEmpty (releasing Start) @>
+    test <@ List.isEmpty (releasing Scan) @>
+    test <@ releasing (Format []) = [ EnsureOutcome.Started ] @>
+    test <@ releasing (Rerun "lint") = [ EnsureOutcome.Started ] @>
+    test <@ releasing Invalidate = [ EnsureOutcome.Started ] @>
     test <@ releasing (TestRerun []) = [ EnsureOutcome.Started ] @>
     test <@ releasing (TestRerun [ AllowFullSuite ]) = [ EnsureOutcome.Started ] @>
 

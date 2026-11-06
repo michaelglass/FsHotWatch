@@ -960,15 +960,33 @@ let ``a session the host cannot build is a stop, not a fallback`` () =
             cts.Cancel()
             run.Wait(TimeSpan.FromSeconds 60.0) |> ignore)
 
+/// Write an executable `dotnet` into `bin` that runs `body`, from a child shell, so this
+/// process never holds a write handle on it. A test host forks children concurrently, and
+/// a child forked while the file is open for writing here keeps a copy of that handle
+/// until it execs; Linux refuses to exec a file open for writing (ETXTBSY, "Text file
+/// busy"), which made the probe report "could not run" instead of what the test asks.
+let private writeFakeDotnet (bin: string) (body: string) =
+    Directory.CreateDirectory bin |> ignore
+    let fake = Path.Combine(bin, "dotnet")
+    let start = ProcessStartInfo("/bin/sh", UseShellExecute = false)
+
+    for arg in
+        [ "-c"
+          "printf '%s' \"$1\" > \"$2\" && chmod 700 \"$2\""
+          "sh"
+          $"#!/bin/sh\n%s{body}\n"
+          fake ] do
+        start.ArgumentList.Add arg
+
+    use writer = Process.Start start
+    test <@ writer.WaitForExit 30000 && writer.ExitCode = 0 @>
+
 [<Fact(Timeout = 60000)>]
 let ``an SDK probe whose dotnet fails says how`` () =
     if not (OperatingSystem.IsWindows()) then
         withRepository (fun root _ ->
             let bin = Path.Combine(root, "fake-bin")
-            Directory.CreateDirectory bin |> ignore
-            let fake = Path.Combine(bin, "dotnet")
-            File.WriteAllText(fake, "#!/bin/sh\nexit 3\n")
-            File.SetUnixFileMode(fake, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute)
+            writeFakeDotnet bin "exit 3"
 
             let env =
                 SessionScope.SessionEnvironment.create root (Map.ofList [ "PATH", $"%s{bin}:/usr/bin:/bin" ])
@@ -980,10 +998,7 @@ let ``an SDK probe that does not finish within its bound says so`` () =
     if not (OperatingSystem.IsWindows()) then
         withRepository (fun root _ ->
             let bin = Path.Combine(root, "slow-bin")
-            Directory.CreateDirectory bin |> ignore
-            let fake = Path.Combine(bin, "dotnet")
-            File.WriteAllText(fake, "#!/bin/sh\nsleep 30\n")
-            File.SetUnixFileMode(fake, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute)
+            writeFakeDotnet bin "sleep 30"
 
             let env =
                 SessionScope.SessionEnvironment.create root (Map.ofList [ "PATH", $"%s{bin}:/usr/bin:/bin" ])
