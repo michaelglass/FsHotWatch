@@ -938,8 +938,9 @@ module IpcServer =
         |> ignore
 
     /// Wait for one client on `pipeServer`, then hand the connection to `handle` and
-    /// return at once, so the accept loop replaces this acceptor while the connection
-    /// is still being served.
+    /// return at once, so the accept loop can replace this acceptor while the connection
+    /// is still being served. It can also run only after the connection has closed: what
+    /// keeps the name listening meanwhile is `holdListener`.
     let private acceptOne
         (pipeServer: NamedPipeServerStream)
         (opener: ConnectionOpener)
@@ -960,12 +961,38 @@ module IpcServer =
                 Logging.warn "ipc" $"IPC connection handler failed: %s{ex.ToString()}"
         }
 
+    /// A server instance of a pipe name that never accepts, held for as long as a server
+    /// serves that name.
+    ///
+    /// Every server instance of a name shares ONE listening socket on Unix, which the
+    /// runtime closes, unlinking its path, the moment the last instance is disposed: a
+    /// client still in its backlog is reset (Linux), and one that arrives before a new
+    /// instance binds the path again finds nothing to connect to. The acceptors and the
+    /// connections they accepted do not cover every moment: the accept loop replaces an
+    /// acceptor only once the thread pool runs it, which can be after every accepted
+    /// connection has been answered and closed (AUTOMATION-1481). This instance spans
+    /// those gaps. Not on Windows, where every instance is a pipe of its own, a client
+    /// could connect to this one and never be served, and no listener is shared. `None`
+    /// when it cannot be created; the acceptors then fail alike, and the loop logs them.
+    let private holdListener (create: unit -> NamedPipeServerStream) : NamedPipeServerStream option =
+        if OperatingSystem.IsWindows() then
+            None
+        else
+            try
+                Some(create ())
+            with ex ->
+                Logging.warn "ipc" $"IPC listener could not be held open: %s{ex.Message}"
+                None
+
     /// Serve `pipeName` until `cts` is cancelled, handing every connection to
     /// `opener`. Keeps multiple accept tasks running concurrently so clients don't
     /// have to wait for the accept loop to cycle. On shutdown, connections still open
     /// after `drainBound` are closed, and this returns once the name no longer accepts
-    /// connections (or `ReleaseBound` has passed, logged).
-    let internal serveConnections
+    /// connections (or `ReleaseBound` has passed, logged). The accept loop awaits
+    /// `beforeReplacing` each time an acceptor finishes, before it replaces that acceptor:
+    /// a test holds it there to stand for a loop the thread pool runs late.
+    let internal serveConnectionsPaced
+        (beforeReplacing: unit -> Async<unit>)
         (drainBound: TimeSpan)
         (pipeName: string)
         (opener: ConnectionOpener)
@@ -978,23 +1005,23 @@ module IpcServer =
             // Keep 3 accept tasks running at all times so clients can connect immediately
             let mutable acceptTasks: Task list = []
 
-            // Every server instance of a name shares one listening socket on Unix, and
-            // it closes when the last instance is disposed, dropping any client still in
-            // its backlog. So each acceptor's instance exists before the acceptor runs,
-            // and an acceptor is replaced as soon as it accepts, never after its
-            // connection is served.
+            let instance () =
+                new NamedPipeServerStream(
+                    pipeName,
+                    PipeDirection.InOut,
+                    NamedPipeServerStream.MaxAllowedServerInstances,
+                    PipeTransmissionMode.Byte,
+                    PipeOptions.Asynchronous
+                )
+
+            // Before any acceptor, and released only once serving is over (see
+            // `holdListener`): the shared listening socket outlives every acceptor's and
+            // connection's instance, however late the loop below replaces an acceptor.
+            let held = holdListener instance
+
             let startAccept () =
                 try
-                    let pipeServer =
-                        new NamedPipeServerStream(
-                            pipeName,
-                            PipeDirection.InOut,
-                            NamedPipeServerStream.MaxAllowedServerInstances,
-                            PipeTransmissionMode.Byte,
-                            PipeOptions.Asynchronous
-                        )
-
-                    Async.StartAsTask(acceptOne pipeServer opener connections cts.Token) :> Task
+                    Async.StartAsTask(acceptOne (instance ()) opener connections cts.Token) :> Task
                 with ex ->
                     Task.FromException ex
 
@@ -1013,6 +1040,8 @@ module IpcServer =
                     if completed.IsFaulted then
                         Logging.error "ipc" $"IPC accept task faulted: %s{completed.Exception.ToString()}"
                         do! Task.Delay(1000, cts.Token) |> Async.AwaitTask
+
+                    do! beforeReplacing ()
 
                     // Never replace an acceptor once shutdown has begun: a replacement
                     // would only open a new pipe server for shutdown to wait out.
@@ -1058,6 +1087,8 @@ module IpcServer =
                 for connection in open' do
                     connection.Key.Dispose()
 
+            held |> Option.iter (fun listener -> listener.Dispose())
+
             // Disposal is not yet release: a cancelled accept still holds the listening
             // socket, and the runtime closes it moments later (measured: about 1 ms, in
             // roughly half of shutdowns). Only a refused connection proves it is gone.
@@ -1068,6 +1099,16 @@ module IpcServer =
                     "ipc"
                     $"IPC pipe %s{pipeName} still accepts connections %g{ReleaseBound.TotalSeconds}s after shutdown — another server may own it"
         }
+
+    /// Serve `pipeName` until `cts` is cancelled; see `serveConnectionsPaced`, whose accept
+    /// loop here replaces an acceptor as soon as it runs.
+    let internal serveConnections
+        (drainBound: TimeSpan)
+        (pipeName: string)
+        (opener: ConnectionOpener)
+        (cts: CancellationTokenSource)
+        : Async<unit> =
+        serveConnectionsPaced (fun () -> async.Return()) drainBound pipeName opener cts
 
     /// Start the IPC server. Keeps multiple accept tasks running concurrently
     /// so clients don't have to wait for the accept loop to cycle. On shutdown,
