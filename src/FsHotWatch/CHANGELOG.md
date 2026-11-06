@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a file compiled into two projects (a linked `Compile Include`) is checked under each project
+  without one check cancelling the other. `CheckPipeline` kept its running checks by file alone, so
+  a change batch's check of the file under its second project found the first project's check
+  running, read the other project as a changed snapshot ("snapshot key changed") and cancelled it,
+  or gave way to it and returned nothing: one project's answer for the file was dropped on every
+  batch that reached both. Running checks are now kept per file and project; joining, superseding
+  and giving way are decided between checks of the same file under the same project
+  (AUTOMATION-1030).
 - fix: the box-wide outcome store's default byte budget is 2 GiB (was 256 MB), and GC logs what
   it evicted, why and by kind. On a large repository one tree's TestPrune analysis records alone
   exceeded 256 MB (about 120 KB a file over 2731 files), so a cold daemon's own GC evicted the

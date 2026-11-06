@@ -109,12 +109,12 @@ let internal checkedLine
 
     $"checked %s{fileName} in %d{ms total}ms (snapshot %d{ms snapshot}ms, fcs %d{ms fcs}ms; %s{originText project origin})"
 
-/// When `file` has a check in flight that other in-flight checks share — the same
-/// project, generation and snapshot, so the same project type-check — its project,
-/// origin and how many others share it.
-let internal sharedInFlight
-    (inFlight: seq<Collections.Generic.KeyValuePair<AbsFilePath, string * CheckOrigin>>)
-    (file: AbsFilePath)
+/// When `file` (a file, or a file under one project: a `CheckSlot`) has a check in flight
+/// that other in-flight checks share — the same project, generation and snapshot, so the
+/// same project type-check — its project, origin and how many others share it.
+let internal sharedInFlight<'key when 'key: equality>
+    (inFlight: seq<Collections.Generic.KeyValuePair<'key, string * CheckOrigin>>)
+    (file: 'key)
     : (string * CheckOrigin * int) option =
     inFlight
     |> Seq.tryFind (fun kv -> kv.Key = file)
@@ -178,6 +178,17 @@ module CheckCaller =
         match ambient.Value with
         | Some caller -> caller.Job
         | None -> WorkScheduler.JobSpec.interactive
+
+/// One file checked under one project: the key of the pipeline's running-check registry.
+///
+/// A file compiled into two projects (a linked `Compile Include`) is checked under each
+/// project's options, and the two checks ask FCS different questions. Keyed by the file
+/// alone, the second project's check found the first's running, read its other project as
+/// a changed snapshot and cancelled it, so one project's answer for the file was dropped
+/// on every change batch that reached both (AUTOMATION-1030). Joining, superseding and
+/// giving way are decided between checks of the same slot only.
+[<Struct>]
+type internal CheckSlot = { File: AbsFilePath; Project: string }
 
 /// A check that is running: what it asked FCS, who started it and its answer.
 ///
@@ -401,14 +412,15 @@ type CheckPipeline
 
     let projectOptionsByProject = ConcurrentDictionary<string, FSharpProjectOptions>()
     let projectOptionsHashCache = ConcurrentDictionary<string, string>()
-    /// The check of each file that is running now, joined by an identical request and
-    /// superseded by a newer different one. See `CheckFileCore`.
-    let running = ConcurrentDictionary<AbsFilePath, RunningCheck>()
+    /// The check of each file under each project (`CheckSlot`) that is running now, joined
+    /// by an identical request and superseded by a newer different one. See `CheckFileCore`.
+    let running = ConcurrentDictionary<CheckSlot, RunningCheck>()
     /// Tokens handed out by `CancelPreviousCheck`, cancelled by the next one for the
     /// same file and by `PrepareForRediscovery`.
     let fileTokens = ConcurrentDictionary<AbsFilePath, CancellationTokenSource>()
-    /// The ticket of the newest check started for each file; an older call gives way.
-    let lastStarted = ConcurrentDictionary<AbsFilePath, int64>()
+    /// The ticket of the newest check started for each file under each project; an older
+    /// call for the same slot gives way.
+    let lastStarted = ConcurrentDictionary<CheckSlot, int64>()
     /// Every call takes a ticket on entry, so "newer" means entered later.
     let mutable nextTicket = 0L
     /// A call that entered before the last rediscovery gives way: its options are gone.
@@ -419,7 +431,7 @@ type CheckPipeline
     /// The checks between building their snapshot and returning, with where each one's
     /// answer is coming from. Read only to say, when a check is cancelled, how many
     /// others share its project type-check.
-    let inFlight = ConcurrentDictionary<AbsFilePath, string * CheckOrigin>()
+    let inFlight = ConcurrentDictionary<CheckSlot, string * CheckOrigin>()
     let upstreamFingerprints = UpstreamFingerprints(repoRoot)
 
     /// Content hashes shared by the upstream fingerprints and the snapshot versions,
@@ -451,11 +463,11 @@ type CheckPipeline
     /// answer (and the typed tree it holds) lives only as long as a caller holding it,
     /// and say so when no caller is left to take it. `cts` names the check: a newer
     /// check of the file may already have replaced it in the registry.
-    let retireCheck (checkedFile: AbsFilePath) (cts: CancellationTokenSource) (leases: int ref) (unwanted: string) =
+    let retireCheck (slot: CheckSlot) (cts: CancellationTokenSource) (leases: int ref) (unwanted: string) =
         let nobodyWaiting =
             lock gate (fun () ->
-                match running.TryGetValue checkedFile with
-                | true, current when obj.ReferenceEquals(current.Cts, cts) -> running.TryRemove checkedFile |> ignore
+                match running.TryGetValue slot with
+                | true, current when obj.ReferenceEquals(current.Cts, cts) -> running.TryRemove slot |> ignore
                 | _ -> ()
 
                 leases.Value = 0 && not cts.IsCancellationRequested)
@@ -1106,7 +1118,7 @@ type CheckPipeline
     /// Get all registered source files across all projects.
     member _.GetAllRegisteredFiles() : AbsFilePath list = projectOptionsByFile.Keys |> Seq.toList
 
-    /// Supersede whatever check of `filePath` is running and return a new
+    /// Supersede whatever check of `filePath` is running, under any project, and return a new
     /// CancellationTokenSource, linked to `ct` when one is given.
     ///
     /// A newer check of a file wins: the running one is cancelled and any older call that
@@ -1125,12 +1137,25 @@ type CheckPipeline
 
         let ticket = Interlocked.Increment(&nextTicket)
 
-        lock gate (fun () ->
-            lastStarted[filePath] <- ticket
+        // Every slot of the file: each project it is registered under, and any running.
+        let registered =
+            match projectOptionsByFile.TryGetValue filePath with
+            | true, options -> options |> List.map (fun o -> o.ProjectFileName)
+            | false, _ -> []
 
-            match running.TryGetValue filePath with
-            | true, previous -> previous.Cts.Cancel()
-            | false, _ -> ())
+        lock gate (fun () ->
+            let runningSlots =
+                running.Keys |> Seq.filter (fun slot -> slot.File = filePath) |> List.ofSeq
+
+            for project in registered do
+                lastStarted[({ File = filePath; Project = project }: CheckSlot)] <- ticket
+
+            for slot in runningSlots do
+                lastStarted[slot] <- ticket
+
+                match running.TryGetValue slot with
+                | true, previous -> previous.Cts.Cancel()
+                | false, _ -> ())
 
         fileTokens.AddOrUpdate(
             filePath,
@@ -1165,19 +1190,23 @@ type CheckPipeline
             let checkedFile = AbsFilePath.create absPath
             let fileName = Path.GetFileName absPath
             let project = options.ProjectFileName
+
+            let slot: CheckSlot =
+                { File = checkedFile
+                  Project = project }
+
             let projectName = Path.GetFileName project
 
             // Only this check's own entry: a newer check of the file may have replaced it.
             let forget entry =
-                inFlight.TryRemove(Collections.Generic.KeyValuePair(checkedFile, entry))
-                |> ignore
+                inFlight.TryRemove(Collections.Generic.KeyValuePair(slot, entry)) |> ignore
 
             let started = ref None
 
             try
                 activity.Log(checkStartLine fileName projectName startOrigin)
                 Interlocked.Increment &checkStarts |> ignore
-                inFlight[checkedFile] <- (project, startOrigin)
+                inFlight[slot] <- (project, startOrigin)
                 started.Value <- Some(project, startOrigin)
 
                 // What FCS may type against beyond the snapshot's versions, read before it does.
@@ -1216,7 +1245,7 @@ type CheckPipeline
                     async {
                         let framed, origin = framedNow ()
                         answeredFrom.Value <- origin
-                        inFlight[checkedFile] <- (project, origin)
+                        inFlight[slot] <- (project, origin)
                         started.Value <- Some(project, origin)
                         return! ProjectSnapshots.parseAndCheck checker checkedPath framed.Snapshot
                     }
@@ -1303,6 +1332,11 @@ type CheckPipeline
                 let checkedFile = AbsFilePath.create absPath
                 let fileName = Path.GetFileName absPath
                 let project = options.ProjectFileName
+
+                let slot: CheckSlot =
+                    { File = checkedFile
+                      Project = project }
+
                 let projectName = Path.GetFileName project
                 let caller = CheckCaller.current ()
                 let sw = Diagnostics.Stopwatch.StartNew()
@@ -1371,14 +1405,14 @@ type CheckPipeline
 
                                     lock gate (fun () ->
                                         let alive =
-                                            match running.TryGetValue checkedFile with
+                                            match running.TryGetValue slot with
                                             | true, r when not r.Cts.IsCancellationRequested && not r.Task.IsCompleted ->
                                                 Some r
                                             | _ -> None
 
                                         let newerStarted =
                                             ticket < rediscoveredAt
-                                            || (match lastStarted.TryGetValue checkedFile with
+                                            || (match lastStarted.TryGetValue slot with
                                                 | true, latest -> latest > ticket
                                                 | false, _ -> false)
 
@@ -1413,7 +1447,7 @@ type CheckPipeline
                                                                 )
                                                         finally
                                                             try
-                                                                retireCheck checkedFile cts leases unwanted
+                                                                retireCheck slot cts leases unwanted
                                                             finally
                                                                 leaveSlot ()
                                                     }
@@ -1430,8 +1464,8 @@ type CheckPipeline
                                                   Leases = leases
                                                   Task = task }
 
-                                            lastStarted[checkedFile] <- ticket
-                                            running[checkedFile] <- started
+                                            lastStarted[slot] <- ticket
+                                            running[slot] <- started
                                             Ok(origin, Start(started, alive)))
                             finally
                                 if not handedOff.Value then
@@ -1454,7 +1488,7 @@ type CheckPipeline
                             match superseded with
                             | Some previous ->
                                 let sharers =
-                                    match sharedInFlight inFlight checkedFile with
+                                    match sharedInFlight inFlight slot with
                                     | Some(_, _, sharers) -> sharers
                                     | None -> 0
 
