@@ -2172,6 +2172,76 @@ let ``a client is served while every acceptor is busy with an earlier one`` () =
         cts.Cancel()
         server.Wait(TimeSpan.FromSeconds 10.0) |> ignore
 
+/// AUTOMATION-1481. An acceptor is replaced by the accept loop, which the thread pool can
+/// run after every acceptor's connection has been answered and closed. Nothing may close
+/// the shared listening socket in that gap: a client arriving then is queued and served
+/// once the loop catches up, not reset (Linux) or left with no listener to connect to.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a client is served when every acceptor's connection closed before the loop replaced them`` () =
+    let suffix = Guid.NewGuid().ToString("N").Substring(0, 8)
+    let pipeName = $"fshw-gap-%s{suffix}"
+    let resume = TaskCompletionSource()
+    let paused = ref 0
+
+    // The loop is held at its first replacement, as a starved thread pool would hold it.
+    let beforeReplacing () =
+        async {
+            if Interlocked.Increment &paused.contents = 1 then
+                do! resume.Task |> Async.AwaitTask
+        }
+
+    let opener: IpcServer.ConnectionOpener =
+        fun pipe _ ->
+            async {
+                pipe.WriteByte 42uy
+                pipe.Flush()
+                return None
+            }
+
+    use cts = new CancellationTokenSource()
+
+    let server =
+        Async.StartImmediateAsTask(
+            IpcServer.serveConnectionsPaced beforeReplacing (TimeSpan.FromSeconds 5.0) pipeName opener cts
+        )
+
+    let answered (client: NamedPipeClientStream) =
+        let answer = Array.zeroCreate<byte> 1
+        let read = client.ReadAsync(answer, 0, 1)
+        read.Wait(HangWaitMs) && read.Result = 1 && answer[0] = 42uy
+
+    // The end of the stream after the answer: the server has disposed that connection.
+    let closed (client: NamedPipeClientStream) =
+        let read = client.ReadAsync(Array.zeroCreate<byte> 1, 0, 1)
+        read.Wait(HangWaitMs) && read.Result = 0
+
+    try
+        // As many connections as the server starts acceptors, each answered and closed
+        // while the loop has replaced none of them.
+        for _ in 1..3 do
+            use client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut)
+            client.Connect 5000
+            test <@ answered client && closed client @>
+
+        let loopHeld = Volatile.Read &paused.contents >= 1
+        test <@ loopHeld @>
+
+        use later = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut)
+
+        let connected =
+            try
+                later.Connect 2000
+                true
+            with :? TimeoutException ->
+                false
+
+        resume.TrySetResult() |> ignore
+        test <@ connected && answered later @>
+    finally
+        resume.TrySetResult() |> ignore
+        cts.Cancel()
+        server.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
 /// The gate's own RPCs answer while the status writer cannot make progress. A status
 /// read that times out reaches the client as a TimeoutException, which the CLI prints
 /// as "Could not connect to daemon" for a daemon that is alive and working. The RPCs
