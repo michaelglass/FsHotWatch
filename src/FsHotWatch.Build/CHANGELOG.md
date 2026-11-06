@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a warm `fshw check` no longer runs a second, no-op `dotnet build` after every edit
+  (AUTOMATION-1512). The check's scan re-announces every registered source while the watcher's
+  build of the same edit is still running; the plugin buffered that announcement and built again
+  once the first build finished, which cost about 4 s per warm check here and left the build span
+  reading "39 projects up to date" for a build that had recompiled a project. A change buffered
+  behind a build that passed is now dropped when every file it names was written before that build
+  started. A write during the build, a project or solution change, a missing file, a whole-second
+  mtime and a pending `force-rebuild` still build.
 - fix: a stale published reference assembly (`obj/<cfg>/<tfm>/ref/`) is repaired and the build runs
   again (AUTOMATION-1498). The F# compiler can leave the reference-assembly MVID unchanged across a
   real API change, so MSBuild skips the copy and dependents compile against the old API: FS0003 on

@@ -587,6 +587,27 @@ let internal restampEditedSince (since: DateTime option) (owed: FileChangeKind l
 
         restamped
 
+/// Whether a build that started at `started` already compiled `change`: every file it
+/// names exists and was last written strictly before that start, so the build read the
+/// bytes it has now. A change buffered behind an in-flight build is usually exactly that:
+/// `fshw check`'s scan re-announces every registered source while the watcher's build of
+/// the same edit is still running (AUTOMATION-1512).
+///
+/// Everything it cannot prove is kept, and costs one more build at most: a project or
+/// solution change (evaluation, not just compilation, may differ), a file that is gone, a
+/// write at or after the start, and a whole-second mtime, which may be a coarse
+/// filesystem's truncation of a write made after the start.
+let internal coveredByBuild (started: DateTime) (change: FileChangeKind) : bool =
+    let readBeforeStart (path: string) =
+        File.Exists path
+        && (let written = File.GetLastWriteTimeUtc path
+            written < started && written.Ticks % TimeSpan.TicksPerSecond <> 0L)
+
+    match change with
+    | SourceChanged files -> not files.IsEmpty && files |> List.forall readBeforeStart
+    | ProjectChanged _
+    | SolutionChanged -> false
+
 /// The stale findings out of a classified walk.
 let internal staleArtifactsOf (examinations: ArtifactExamination list) : StaleArtifact list =
     examinations
@@ -2213,6 +2234,30 @@ let internal createArmedWith
                             // request folded never saw it, so it cannot answer it.
                             ForceRebuild = ForceRebuildStamp.completed state.ForceRebuild
                             BuildFailure = buildFailure }
+
+                    // A PASSED build answers every change buffered behind it that it had
+                    // already read (`coveredByBuild`); building those again rebuilds nothing.
+                    // Anything it cannot prove covered, or a build that failed or still owes
+                    // a `force-rebuild`, keeps every change owed.
+                    let completedState =
+                        match outcome, completedState.LastBuildStartedAt with
+                        | BuildPassed _, Some started when not completedState.ForceRebuild.Pending ->
+                            let covered, owed =
+                                completedState.PendingFiles |> List.partition (coveredByBuild started)
+
+                            if not covered.IsEmpty then
+                                info
+                                    "build"
+                                    $"%d{covered.Length} change(s) buffered behind this build predate its start, so it already built them; not building again"
+
+                            { completedState with
+                                PendingFiles = owed
+                                SatisfiedDeps =
+                                    if owed.IsEmpty then
+                                        Set.empty
+                                    else
+                                        completedState.SatisfiedDeps }
+                        | _ -> completedState
 
                     return launchPending ctx completedState
 
