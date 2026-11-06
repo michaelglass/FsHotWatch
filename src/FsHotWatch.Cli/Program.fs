@@ -576,14 +576,18 @@ module EnsureOutcome =
         if up then EnsureOutcome.Started else EnsureOutcome.Failed
 
 /// Whether `command` ends the daemon it came by as `outcome`. The one-shot verbs
-/// `confirm` and `test-rerun` do, and only a daemon they started: left running, that
-/// daemon keeps watching the tree and rebuilds and re-tests the workspace whenever files
-/// change after the command returned. A daemon that was already running is someone's warm
-/// daemon, and `check` is the warm inner loop.
+/// (`confirm`, `test-rerun`, `format`, `rerun <plugin>`, `invalidate`) do, and only a
+/// daemon they started: left running, that daemon keeps watching the tree and rebuilds and
+/// re-tests the workspace whenever files change after the command returned
+/// (AUTOMATION-1198). A daemon that was already running is someone's warm daemon, `check`
+/// is the warm inner loop, and `start`/`scan` exist to bring one up.
 let internal releasesDaemon (command: Command) (outcome: EnsureOutcome) : bool =
     match command, outcome with
     | Confirm flags, EnsureOutcome.Started -> not (List.contains ConfirmFlag.KeepDaemon flags)
-    | TestRerun _, EnsureOutcome.Started -> true
+    | TestRerun _, EnsureOutcome.Started
+    | Format _, EnsureOutcome.Started
+    | Rerun _, EnsureOutcome.Started
+    | Invalidate, EnsureOutcome.Started -> true
     | _ -> false
 
 /// End the daemon a one-shot verb started, unless another run is in flight on this repo.
@@ -3853,6 +3857,15 @@ let private executeCommandRendered
 
         let withDaemonAndIpc (action: unit -> int) : int = withDaemon (fun () -> withIpc action)
 
+        /// `withDaemon` for a verb that answers one request and returns: a daemon it had
+        /// to start is stopped once the reply is in (`releasesDaemon`).
+        let withDaemonReleased (withD: (unit -> int) -> int) (action: unit -> int) : int =
+            try
+                withD action
+            finally
+                if releasesDaemon command cameBy.Value then
+                    releaseUnlessShared repoRoot link.Release
+
         match command with
         | Start ->
             link.Start(fun () ->
@@ -4061,9 +4074,14 @@ let private executeCommandRendered
                 // With a daemon, invalidation is daemon-owned: clearing it through IPC
                 // updates the live cache instance as well as its persisted files, while
                 // keeping the expensive compiler service warm for the next check.
-                withDaemonAndIpc (fun () ->
+                withDaemonReleased withDaemonAndIpc (fun () ->
                     let result = ipc.Invalidate pipeName |> Async.RunSynchronously
-                    UI.success $"Cache %s{result}; daemon preserved"
+                    // A daemon this command had to start is stopped on the way out.
+                    if cameBy.Value = EnsureOutcome.Started then
+                        UI.success $"Cache %s{result}"
+                    else
+                        UI.success $"Cache %s{result}; daemon preserved"
+
                     0)
         | Findings flags ->
             // A reader: no `link.Ensure`, no self-heal restart, no scan. A daemon that is
@@ -4289,9 +4307,7 @@ let private executeCommandRendered
                 formatConfig
                 (Some "format")
         | Format _ ->
-
-
-            withDaemon (fun () ->
+            withDaemonReleased withDaemon (fun () ->
                 let result =
                     if UI.isInteractive then
                         UI.withSpinner "Formatting" (fun () -> ipc.FormatAll pipeName |> Async.RunSynchronously)
@@ -4301,7 +4317,7 @@ let private executeCommandRendered
 
                 IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
         | Rerun pluginName ->
-            withDaemonAndIpc (fun () ->
+            withDaemonReleased withDaemonAndIpc (fun () ->
                 let result =
                     if UI.isInteractive then
                         UI.withSpinner $"Running %s{pluginName}" (fun () ->
