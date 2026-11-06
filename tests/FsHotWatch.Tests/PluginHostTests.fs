@@ -2041,6 +2041,40 @@ let ``a plugin's Running to Completed interval is recorded on the host's phase l
         test <@ record.Elapsed >= TimeSpan.FromMilliseconds 50.0 @>
     | other -> failwith $"expected one ledger record for the plugin run, got %A{other}"
 
+// AUTOMATION-821: the format preprocessor's fixed cost must stay visible. Its pass is a timed
+// `plugin.<name>` phase on the host's ledger, which a verdict's `timingSpans` carry, so a pass
+// that pays for every file again shows up as a span named for the preprocessor.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a preprocessor pass is recorded on the host's phase ledger under the preprocessor's name`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let preprocessor =
+        { new IFsHotWatchPreprocessor with
+            member _.Name = "format"
+
+            member _.Process (changedFiles: string list) (_repoRoot: string) =
+                Threading.Thread.Sleep 60
+
+                Ok
+                    { Modified = []
+                      Considered = changedFiles.Length
+                      Failures = []
+                      Evidence = "stub formatter" }
+
+            member _.Dispose() = () }
+
+    host.RegisterPreprocessor(preprocessor)
+    host.RunPreprocessors([ "src/Lib.fs" ]) |> ignore
+
+    match
+        host.Phases.Snapshot(DateTime.UtcNow)
+        |> List.filter (fun r -> r.Scope = "plugin.format")
+    with
+    | [ record ] ->
+        test <@ record.Detail = Some "format: rewrote 0 of 1 file(s) — stub formatter" @>
+        test <@ record.Elapsed >= TimeSpan.FromMilliseconds 50.0 @>
+    | other -> failwith $"expected one ledger record for the preprocessor pass, got %A{other}"
+
 // ---------------------------------------------------------------------------
 // Preprocessor ordering: registration order is run order, and each pass sees what
 // the passes before it rewrote.
