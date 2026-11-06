@@ -58,7 +58,8 @@ let private synth (root: string) : Synth =
         { ProjectFile = Some(Path.Combine(testsDir, "Tests.fsproj"))
           ProjectDir = testsDir
           AssemblyName = "Tests"
-          BinDir = Path.Combine(testsDir, "bin", "Debug") }
+          BinDir = Path.Combine(testsDir, "bin", "Debug")
+          Unlisted = None }
       CommonDll = Path.Combine(commonOut, "Common.dll")
       CommonCopy = Path.Combine(testsOut, "Common.dll")
       TestsSrc = Path.Combine(testsDir, "Tests.fs")
@@ -803,7 +804,8 @@ let private synthManyInverted (root: string) (count: int) =
         { ProjectFile = Some(Path.Combine(testsDir, "Tests.fsproj"))
           ProjectDir = testsDir
           AssemblyName = "Tests"
-          BinDir = Path.Combine(testsDir, "bin", "Debug") }
+          BinDir = Path.Combine(testsDir, "bin", "Debug")
+          Unlisted = None }
 
     target, pairs
 

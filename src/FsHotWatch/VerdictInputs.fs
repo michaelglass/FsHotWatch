@@ -137,6 +137,10 @@ type Resolution =
         /// hash — never a silent zero, which is exactly how a typo would restore the
         /// defect this closes.
         Absent: string list
+        /// Repo-relative paths a declared input reaches but could not be read: a directory
+        /// that could not be listed, or a declared path that could not be looked up. Each is
+        /// a hole in the hash (`TreeHash.files` carries it), never an absence. Sorted.
+        Unreadable: string list
     }
 
 /// Run a filesystem read, answering `fallback` for the two ways of not being allowed
@@ -338,20 +342,37 @@ let resolve (repoRoot: string) (declaration: Declaration) : Resolution =
     let root = Path.GetFullPath repoRoot
     let ignores = PathFilter.GitIgnores root
 
-    // Every file a walk from `dir` sweeps into that the repository does not ignore. A
-    // walk handed an ignored directory takes it whole, as one handed `bin/` does.
-    let walkTracked (dir: string) : string list =
+    // Every file a walk from `dir` sweeps into that the repository does not ignore, and
+    // every directory under it the walk could not read (AUTOMATION-865): a declared input
+    // whose contents could not be seen is a hole, never fewer files. A walk handed an
+    // ignored directory takes it whole, as one handed `bin/` does.
+    let walkTracked (dir: string) : string list * string list =
+        let split (entries: seq<SafeWalk.WalkEntry>) =
+            let entries = List.ofSeq entries
+
+            entries
+            |> List.choose (function
+                | SafeWalk.Found f -> Some f.FullName
+                | SafeWalk.Skipped _ -> None),
+            entries
+            |> List.choose (function
+                | SafeWalk.Skipped s -> Some s.Path
+                | SafeWalk.Found _ -> None)
+
         if ignores.IsUnderIgnored dir then
-            SafeWalk.bestEffortFilePaths SafeWalk.SourceExcludedDirs "*" dir |> List.ofSeq
+            split (SafeWalk.enumerateEntries SafeWalk.SourceExcludedDirs "*" dir)
         else
-            SafeWalk.bestEffortFilePathsPruning
-                (fun d ->
-                    SafeWalk.SourceExcludedDirs.Contains d.Name
-                    || ignores.IsIgnored(d.FullName, true))
-                "*"
-                dir
-            |> Seq.filter (fun f -> not (ignores.IsIgnored(f, false)))
-            |> List.ofSeq
+            let files, holes =
+                split (
+                    SafeWalk.enumerateEntriesPruning
+                        (fun d ->
+                            SafeWalk.SourceExcludedDirs.Contains d.Name
+                            || ignores.IsIgnored(d.FullName, true))
+                        "*"
+                        dir
+                )
+
+            files |> List.filter (fun f -> not (ignores.IsIgnored(f, false))), holes
 
     let relativeTo (abs: string) =
         normalizeSlashes (Path.GetRelativePath(root, abs))
@@ -362,14 +383,17 @@ let resolve (repoRoot: string) (declaration: Declaration) : Resolution =
         |> List.partition (isGlob >> not)
 
     // --- literal paths: a file, or a directory taken whole -------------------
+    // Anything else is walked too: a path that is not there walks to nothing, and one
+    // that could not be looked up walks to a hole.
     let literalMatches =
         literals
         |> List.map (fun rel ->
             let abs = Path.GetFullPath(Path.Combine(root, rel))
 
-            if File.Exists abs then rel, [ abs ]
-            elif Directory.Exists abs then rel, walkTracked abs
-            else rel, [])
+            if File.Exists abs then
+                rel, ([ abs ], [])
+            else
+                rel, walkTracked abs)
 
     // --- globs: ONE walk per distinct prefix, ONE combined matcher -----------
     // Matching every pattern against every file would be O(patterns x files) with
@@ -391,25 +415,41 @@ let resolve (repoRoot: string) (declaration: Declaration) : Resolution =
 
             let combined = (Ignore(), globs) ||> List.fold (fun (ig: Ignore) pat -> ig.Add pat)
 
+            let walks = walkRoots |> List.map walkTracked
+
             let candidates =
-                walkRoots
-                |> List.collect walkTracked
+                walks
+                |> List.collect fst
                 |> List.distinct
                 |> List.filter (fun abs -> combined.IsIgnored(relativeTo abs))
+
+            // A hole in any walk may hold what any glob would match.
+            let holes = walks |> List.collect snd |> List.distinct
 
             globs
             |> List.map (fun pat ->
                 let one = Ignore().Add pat
-                pat, candidates |> List.filter (fun abs -> one.IsIgnored(relativeTo abs)))
+                pat, (candidates |> List.filter (fun abs -> one.IsIgnored(relativeTo abs)), holes))
 
     let all = literalMatches @ globMatches
 
-    { Files = all |> List.collect snd |> List.distinct |> List.sort
+    { Files = all |> List.collect (snd >> fst) |> List.distinct |> List.sort
       // A declaration that resolved to zero files is ABSENT whichever way it got
       // there — a missing file, an empty directory, a glob that matches nothing.
       // One rule, because all three are the same failure: a declaration that
-      // contributes nothing while looking like it contributes something.
-      Absent = all |> List.filter (snd >> List.isEmpty) |> List.map fst |> List.sort }
+      // contributes nothing while looking like it contributes something. One whose
+      // walk could not see everything is not absent: it is unreadable.
+      Absent =
+        all
+        |> List.filter (fun (_, (files, holes)) -> List.isEmpty files && List.isEmpty holes)
+        |> List.map fst
+        |> List.sort
+      Unreadable =
+        all
+        |> List.collect (snd >> snd)
+        |> List.map relativeTo
+        |> List.distinct
+        |> List.sort }
 
 /// The files fshw itself knows decide a check's answer for ANY repo: its own
 /// config, and the root-level toolchain/dependency files. Absolute paths, sorted.

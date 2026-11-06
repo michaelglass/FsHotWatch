@@ -117,8 +117,11 @@ let files (repoRoot: string) (excludePatterns: string list) : Walked =
     let sorted paths =
         paths |> List.sortWith (fun a b -> String.CompareOrdinal(fst a, fst b))
 
+    // EVERY root, not only those `Directory.Exists` admits: a root that cannot be looked
+    // up (a link into a directory that cannot be traversed) reads as absent there, and is
+    // a hole here. `SafeWalk.walk` tells the two apart; a missing root walks to nothing.
     let walked =
-        Discovery.existingDiscoveryRoots repoRoot
+        Discovery.discoveryRoots repoRoot
         |> List.map (fun root -> SafeWalk.walk SafeWalk.SourceExcludedDirs "*" root)
 
     let filePaths =
@@ -155,6 +158,10 @@ let files (repoRoot: string) (excludePatterns: string list) : Walked =
         |> List.collect (fun w -> w.Skipped |> List.map (fun s -> s.Path))
         |> List.filter (isExcludedDir >> not)
         |> List.map relativeTo
+        // A declared input that could not be read is a hole too, whatever `exclude` says:
+        // a declaration outranks it (see above).
+        |> List.append resolved.Unreadable
+        |> List.distinct
         |> List.sortWith (fun a b -> String.CompareOrdinal(a, b)) }
 
 /// The content address of `entries` — the pure half, so the recipe is testable

@@ -54,6 +54,9 @@ type RunnerTarget =
         AssemblyName: string
         /// `<projectDir>/bin/Debug`; the per-TFM output dirs live under it.
         BinDir: string
+        /// The `--project` directory, when it could not be listed for its project file:
+        /// `ProjectFile` is then unknown rather than absent, and freshness cannot be judged.
+        Unlisted: SafeWalk.SkippedDir option
     }
 
 /// Why a test project's build output cannot be trusted for a `--no-build` run.
@@ -622,11 +625,14 @@ let private closureAndOutputs (cache: Cache) (target: RunnerTarget) =
     // would itself fail on such a path. That directory's own files are the inputs,
     // and they are fully knowable.
     let closure =
-        match target.ProjectFile with
-        | Some projectFile ->
+        match target.Unlisted, target.ProjectFile with
+        // FAIL CLOSED: the directory could not be listed, so whether it holds a project
+        // file, and so what the closure is, is unknown.
+        | Some hole, _ -> Error(SafeWalk.describeSkip hole)
+        | None, Some projectFile ->
             cache.Closure projectFile
             |> Result.map (List.map (fun p -> Path.GetDirectoryName p, Path.GetFileNameWithoutExtension p))
-        | None -> Ok [ target.ProjectDir, target.AssemblyName ]
+        | None, None -> Ok [ target.ProjectDir, target.AssemblyName ]
 
     // Order: the test project first (its own staleness is the likeliest and most
     // legible finding), then its dependencies by path — so the reported reason is

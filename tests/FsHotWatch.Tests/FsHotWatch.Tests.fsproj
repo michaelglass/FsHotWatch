@@ -240,6 +240,7 @@
     <Compile Include="CommandPreprocessorTests.fs" />
     <Compile Include="PathFilterTests.fs" />
     <Compile Include="IgnoredInputsTests.fs" />
+    <Compile Include="UnreadableWalkTests.fs" />
     <Compile Include="SafeWalkTests.fs" />
     <Compile Include="ProjectGraphTests.fs" />
     <Compile Include="OutputCopyFreshnessTests.fs" />

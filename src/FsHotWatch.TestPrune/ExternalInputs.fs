@@ -93,57 +93,95 @@ let internal dependsOnGlobToRegex (glob: string) : System.Text.RegularExpression
         ||| System.Text.RegularExpressions.RegexOptions.CultureInvariant
     )
 
+/// What the `dependsOn` globs resolve to on disk.
+type internal DependsOnResolution =
+    {
+        /// Sorted, distinct absolute paths of the matching files.
+        Files: string list
+        /// Repo-relative directories (or literal paths) the resolution reaches but could not
+        /// read: their contents are unknown, so each salts the key as a hole. Sorted.
+        Unreadable: string list
+    }
+
 /// Resolve the on-disk files under `repoRoot` whose repo-relative path matches
-/// any of the `dependsOn` globs. Deterministic: returns sorted, distinct
-/// absolute paths. Globs that match nothing contribute nothing; a glob that is
-/// a plain existing file path resolves to that one file. Directory enumeration
-/// errors are swallowed (best-effort) so a transient IO hiccup can't crash the
-/// cache-key computation.
-let internal resolveDependsOnFiles (repoRoot: string) (dependsOn: string list) : string list =
-    if dependsOn.IsEmpty then
-        []
-    else
-        let rootFull = Path.GetFullPath(repoRoot)
+/// any of the `dependsOn` globs, and the directories that could hold a match but
+/// could not be read. Deterministic: sorted, distinct. Globs that match nothing
+/// contribute nothing; a glob that is a plain existing file path resolves to that
+/// one file. A directory the walk could not see is never read as empty
+/// (AUTOMATION-865): it is reported, and `externalDependencyHash` keys it as a hole.
+let internal resolveDependsOnFiles (repoRoot: string) (dependsOn: string list) : DependsOnResolution =
+    let rootFull = Path.GetFullPath(repoRoot)
 
-        let toRel (abs: string) =
-            Path.GetRelativePath(rootFull, abs).Replace('\\', '/')
+    let toRel (abs: string) =
+        Path.GetRelativePath(rootFull, abs).Replace('\\', '/')
 
-        // A plain glob with no wildcard meta is a direct file reference — resolve
-        // it without walking the whole tree (cheap + handles files outside any
-        // enumerable subdir uniformly).
-        let isLiteral (g: string) =
-            not (g.Contains('*') || g.Contains('?'))
+    let normalize (g: string) = g.Replace('\\', '/').TrimStart('/')
 
-        let literalHits =
-            dependsOn
-            |> List.filter isLiteral
-            |> List.choose (fun g ->
-                let abs =
-                    Path.GetFullPath(Path.Combine(rootFull, g.Replace('\\', '/').TrimStart('/')))
+    // A plain glob with no wildcard meta is a direct file reference — resolve
+    // it without walking the whole tree (cheap + handles files outside any
+    // enumerable subdir uniformly).
+    let isLiteral (g: string) =
+        not (g.Contains('*') || g.Contains('?'))
 
-                if File.Exists abs then Some abs else None)
+    let literals, globs = dependsOn |> List.partition isLiteral
 
-        let globPatterns =
-            dependsOn |> List.filter (isLiteral >> not) |> List.map dependsOnGlobToRegex
+    let literalPaths =
+        literals
+        |> List.map (fun g -> Path.GetFullPath(Path.Combine(rootFull, normalize g)))
 
-        let globHits =
-            if globPatterns.IsEmpty then
-                []
-            elif not (Directory.Exists rootFull) then
-                []
-            else
-                // Repo-root-rooted walk of EVERY file. `SearchOption.AllDirectories`
-                // here would follow `.devenv/profile` into the /nix/store symlink
-                // cycle, so SafeWalk owns the recursion (no symlinked-dir descent,
-                // depth-capped), and its per-subtree IO errors are already swallowed
-                // internally.
-                SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs "*" rootFull
-                |> Seq.filter (fun abs ->
-                    let rel = toRel abs
-                    globPatterns |> List.exists (fun rx -> rx.IsMatch(rel)))
-                |> Seq.toList
+    let literalHits = literalPaths |> List.filter File.Exists
 
-        (literalHits @ globHits) |> List.distinct |> List.sort
+    // One that is not a file may be one that could not be looked up.
+    let literalHoles =
+        literalPaths
+        |> List.filter (File.Exists >> not)
+        |> List.choose SafeWalk.unreachable
+
+    let globPatterns = globs |> List.map dependsOnGlobToRegex
+
+    // Repo-root-rooted walk of EVERY file. `SearchOption.AllDirectories` here would
+    // follow `.devenv/profile` into the /nix/store symlink cycle, so SafeWalk owns the
+    // recursion (no symlinked-dir descent, depth-capped).
+    let entries =
+        if globPatterns.IsEmpty then
+            []
+        else
+            SafeWalk.enumerateEntries SafeWalk.ToolingExcludedDirs "*" rootFull
+            |> List.ofSeq
+
+    let globHits =
+        entries
+        |> List.choose (function
+            | SafeWalk.Found f -> Some f.FullName
+            | SafeWalk.Skipped _ -> None)
+        |> List.filter (fun abs ->
+            let rel = toRel abs
+            globPatterns |> List.exists (fun rx -> rx.IsMatch(rel)))
+
+    // A hole matters to a glob when it could hold a match: it lies under the glob's
+    // literal leading directories, or contains them. Compared as the globs are matched,
+    // ignoring case.
+    let prefixes =
+        globs
+        |> List.map (fun g -> (normalize g).Split('/') |> Array.takeWhile isLiteral |> String.concat "/")
+
+    let under (path: string) (dir: string) =
+        dir = ""
+        || String.Equals(path, dir, StringComparison.OrdinalIgnoreCase)
+        || path.StartsWith(dir + "/", StringComparison.OrdinalIgnoreCase)
+
+    let globHoles =
+        entries
+        |> List.choose (function
+            | SafeWalk.Skipped s -> Some(toRel s.Path)
+            | SafeWalk.Found _ -> None)
+        |> List.filter (fun hole -> prefixes |> List.exists (fun p -> under hole p || under p hole))
+
+    { Files = literalHits @ globHits |> List.distinct |> List.sort
+      Unreadable =
+        (literalHoles |> List.map (fun h -> toRel h.Path)) @ globHoles
+        |> List.distinct
+        |> List.sort }
 
 /// Deterministic content hash of the files matched by the `dependsOn` globs.
 /// Editing, adding, or deleting a matched file changes this hash, which salts
@@ -151,16 +189,22 @@ let internal resolveDependsOnFiles (repoRoot: string) (dependsOn: string list) :
 /// a schema) that test-prune's symbol diff can't see still invalidates a stale
 /// cached test verdict. Empty `dependsOn` → empty string (NO salt: the key is
 /// byte-identical to the pre-feature key, so existing caches keep hitting).
-/// Missing files are skipped; a glob matching nothing contributes nothing.
+/// Missing files are skipped; a glob matching nothing contributes nothing. A
+/// directory that could not be read is an entry of its own, under a key no file can
+/// have (a trailing `/`), so the salt moves when one appears or goes.
 let internal externalDependencyHash (repoRoot: string) (dependsOn: string list) : string =
-    let files = resolveDependsOnFiles repoRoot dependsOn
+    let resolved = resolveDependsOnFiles repoRoot dependsOn
 
-    if files.IsEmpty then
+    if resolved.Files.IsEmpty && resolved.Unreadable.IsEmpty then
         ""
     else
         let sb = System.Text.StringBuilder()
 
-        for path in files do
+        let entry (rel: string) (h: string) =
+            sb.Append(rel.Length).Append(':').Append(rel).Append('@').Append(h).Append('\n')
+            |> ignore
+
+        for path in resolved.Files do
             let rel = Path.GetRelativePath(Path.GetFullPath(repoRoot), path).Replace('\\', '/')
 
             let h =
@@ -170,12 +214,11 @@ let internal externalDependencyHash (repoRoot: string) (dependsOn: string list) 
                 | :? IOException
                 | :? UnauthorizedAccessException -> "unreadable"
 
-            sb.Append(rel.Length) |> ignore
-            sb.Append(':') |> ignore
-            sb.Append(rel) |> ignore
-            sb.Append('@') |> ignore
-            sb.Append(h) |> ignore
-            sb.Append('\n') |> ignore
+            entry rel h
+
+        for hole in resolved.Unreadable do
+            entry (hole + "/") "unreadable-directory"
+
 
         FsHotWatch.CheckCache.sha256Hex (sb.ToString())
 

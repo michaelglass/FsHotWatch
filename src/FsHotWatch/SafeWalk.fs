@@ -153,9 +153,21 @@ let private attemptRead (read: unit -> 'a[]) : Result<'a[], string> =
 /// lookup's own error tells the two apart: not-found (`FileNotFoundException` for a
 /// missing leaf, `DirectoryNotFoundException` for a missing or non-directory parent) is
 /// absence, a permission refusal is a hole.
-let private unreachable (path: string) : SkippedDir option =
+///
+/// A LINK it can look up proves nothing about its target: the runtime falls back to the
+/// link's own attributes when the target cannot be reached, so a link into a directory
+/// that cannot be traversed reads like a dangling one (AUTOMATION-865). So a link's final
+/// target is looked up too, and that lookup says which it is: a target that is not
+/// there, or one it may not look at.
+let unreachable (path: string) : SkippedDir option =
     try
-        File.GetAttributes path |> ignore
+        let attributes = File.GetAttributes path
+
+        if attributes.HasFlag FileAttributes.ReparsePoint then
+            FileInfo(path).ResolveLinkTarget true
+            |> Option.ofObj
+            |> Option.iter (fun target -> File.GetAttributes target.FullName |> ignore)
+
         // It is there, and it is not a directory: nothing to walk, and nothing unseen.
         None
     with
@@ -180,6 +192,20 @@ let private unreachable (path: string) : SkippedDir option =
 let subdirectories (dir: string) : Result<string[], SkippedDir> =
     if Directory.Exists dir then
         attemptRead (fun () -> Directory.GetDirectories dir)
+        |> Result.mapError (fun message ->
+            { Path = dir
+              Reason = Unreadable message })
+    else
+        match unreachable dir with
+        | Some hole -> Error hole
+        | None -> Ok [||]
+
+/// The files directly in `dir` matching `searchPattern` — ONE level — with the same
+/// three answers as `subdirectories`: `Ok`, EMPTY when `dir` does not exist, or `Error`
+/// when it exists but could not be listed, or could not be looked up at all.
+let filesIn (dir: string) (searchPattern: string) : Result<string[], SkippedDir> =
+    if Directory.Exists dir then
+        attemptRead (fun () -> Directory.GetFiles(dir, searchPattern))
         |> Result.mapError (fun message ->
             { Path = dir
               Reason = Unreadable message })
