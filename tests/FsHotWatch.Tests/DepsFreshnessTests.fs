@@ -1260,6 +1260,61 @@ let ``a new daemon restores when a referenced project's package graph changed un
         test <@ gateOf root runs fsproj = RecoveredOk @>
         test <@ runs.Value = 1 @>)
 
+/// Write `relative` under `root` with an mtime older than any restore output, so only the
+/// content signature can see it changed.
+let private writeOld (root: string) (relative: string) (content: string) =
+    let path = Path.Combine(root, relative)
+    Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+    File.WriteAllText(path, content)
+    File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddMinutes -10.0)
+
+// AUTOMATION-734: a referenced project GAINING A REFERENCE of its own changes the
+// referencing project's restore, though none of the referencing project's own inputs
+// moved. Before the signature spanned the closure, only an unrelated source edit that
+// happened to trigger a restore repaired it (the truncated-closure "not defined" error).
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a project restores when a project it references gains a project reference`` () =
+    withTempDir "deps-closure-gains-reference" (fun root ->
+        let _, fsproj, _ = restoredWorkspace root
+        writeOld root "Core/Core.fsproj" """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup /></Project>"""
+        let runs = ref 0
+        let gate = gateOf root runs
+        test <@ gate fsproj = Proceed @>
+
+        writeOld
+            root
+            "Lib/Lib.fsproj"
+            """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="A" Version="1.0.0" /><ProjectReference Include="..\Core\Core.fsproj" /></ItemGroup></Project>"""
+
+        test <@ detectProjectFreshness root fsproj = Fresh @>
+        test <@ gate fsproj = RecoveredOk @>
+        test <@ runs.Value = 1 @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a project restores when a project two references away gains a package`` () =
+    withTempDir "deps-closure-transitive" (fun root ->
+        let _, fsproj, _ = restoredWorkspace root
+
+        writeOld
+            root
+            "Lib/Lib.fsproj"
+            """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="..\Core\Core.fsproj" /></ItemGroup></Project>"""
+
+        writeOld root "Core/Core.fsproj" """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup /></Project>"""
+        let runs = ref 0
+        let gate = gateOf root runs
+        test <@ gate fsproj = Proceed @>
+
+        writeOld
+            root
+            "Core/Core.fsproj"
+            """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="B" Version="1.0.0" /></ItemGroup></Project>"""
+
+        test <@ detectProjectFreshness root fsproj = Fresh @>
+        test <@ gate fsproj = RecoveredOk @>
+        test <@ runs.Value = 1 @>)
+
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a new daemon does not restore a project restored since its baseline moved`` () =
     // Same drift, but the assets changed too: something restored the project after the
