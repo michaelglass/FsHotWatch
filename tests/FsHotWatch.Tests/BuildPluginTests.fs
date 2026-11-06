@@ -720,6 +720,97 @@ let ``an edit during an in-flight build is rebuilt, not trusted to a newer stale
             Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 15000, "the host must come to rest")
             test <@ System.IO.File.ReadAllText output = "let v = 2\n" @>))
 
+/// A change buffered behind an in-flight build whose sources were all written BEFORE that
+/// build started is one the build already compiled. `fshw check` re-announces every
+/// registered source through its scan while the watcher's build is still running, so on
+/// every warm edit the buffered copy of the same edit queued a second, no-op `dotnet build`
+/// behind the real one — about 4 s of a warm check spent rebuilding nothing
+/// (AUTOMATION-1512). Once the build passes, such a change is answered; one written after
+/// the build started is still built (`an edit during an in-flight build is rebuilt, ...`).
+[<WallClock("simulated work: the gate holds the first build open so the second announcement is buffered behind it; the assertion is on a run count, never on a duration")>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a change buffered behind a build that already compiled it does not build again`` () =
+    withTempDir "covered-buffer" (fun tmpDir ->
+        let source = System.IO.Path.Combine(tmpDir, "Lib.fs")
+        let runs = System.IO.Path.Combine(tmpDir, "runs")
+        let script = System.IO.Path.Combine(tmpDir, "build.sh")
+        System.IO.File.WriteAllText(source, "let v = 1\n")
+        // Written well before the build starts, with a sub-second part (see `coveredByBuild`).
+        System.IO.File.SetLastWriteTimeUtc(source, DateTime.UtcNow.AddSeconds(-5.0).AddMilliseconds 123.0)
+
+        withReleaseGate tmpDir "build" (fun release ->
+            System.IO.File.WriteAllText(
+                script,
+                $"echo run >> '{runs}'\n"
+                + $"if [ $(wc -l < '{runs}') -eq 1 ]; then {gatedWait tmpDir release 750}; fi\n"
+            )
+
+            let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+            let build = BuildPlugin.create "sh" script [] (ProjectGraph()) [] None [] None
+            let committed = registerBuildObserver host build
+
+            let runCount () =
+                if System.IO.File.Exists runs then
+                    System.IO.File.ReadAllLines runs |> Array.length
+                else
+                    0
+
+            let change = SourceChanged [ source ]
+            host.EmitFileChanged change
+            Assert.True(waitUntilTrue (fun () -> runCount () = 1) 10000, "the first build must start")
+
+            // The same, unchanged source announced again while the build runs.
+            host.EmitFileChanged change
+
+            Assert.True(
+                waitUntilTrue (fun () -> (committed ()).PendingFiles = [ change ]) 10000,
+                "the announcement must be buffered behind the in-flight build"
+            )
+
+            System.IO.File.WriteAllText(release, "")
+            Assert.True(waitUntilTrue (fun () -> not (host.AnyPluginBusy())) 15000, "the host must come to rest")
+            test <@ runCount () = 1 @>
+            test <@ (committed ()).PendingFiles.IsEmpty @>))
+
+[<Fact>]
+let ``coveredByBuild keeps every change it cannot prove the build already read`` () =
+    withTempDir "covered-by-build" (fun tmpDir ->
+        let started = DateTime.UtcNow
+
+        let file name (mtime: DateTime) =
+            let path = System.IO.Path.Combine(tmpDir, name)
+            System.IO.File.WriteAllText(path, "")
+            System.IO.File.SetLastWriteTimeUtc(path, mtime)
+            path
+
+        let before = file "Before.fs" (started.AddSeconds(-3.0).AddMilliseconds 250.0)
+        let after = file "After.fs" (started.AddMilliseconds 250.0)
+        // A whole-second mtime may be a coarse filesystem's truncation of a later write.
+        let wholeSecond =
+            file
+                "Whole.fs"
+                (DateTime(
+                    started.Year,
+                    started.Month,
+                    started.Day,
+                    started.Hour,
+                    started.Minute,
+                    started.Second,
+                    DateTimeKind.Utc
+                )
+                    .AddSeconds
+                    -3.0)
+
+        let gone = System.IO.Path.Combine(tmpDir, "Gone.fs")
+        let project = file "Lib.fsproj" (started.AddSeconds(-3.0).AddMilliseconds 250.0)
+
+        test <@ coveredByBuild started (SourceChanged [ before ]) @>
+        test <@ not (coveredByBuild started (SourceChanged [ before; after ])) @>
+        test <@ not (coveredByBuild started (SourceChanged [ wholeSecond ])) @>
+        test <@ not (coveredByBuild started (SourceChanged [ gone ])) @>
+        test <@ not (coveredByBuild started (ProjectChanged [ project ])) @>
+        test <@ not (coveredByBuild started SolutionChanged) @>)
+
 [<Fact>]
 let ``only inputs written since the previous build started are re-stamped`` () =
     withTempDir "restamp-since" (fun tmpDir ->
