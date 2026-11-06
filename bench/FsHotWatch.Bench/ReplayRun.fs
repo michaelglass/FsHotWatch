@@ -218,6 +218,20 @@ let private diagnosticsJson (ds: Diagnostic list) : string =
 
     arr.ToJsonString(JsonSerializerOptions(WriteIndented = true))
 
+/// Copy the CTRF receipts of every test run `verdictJson` names from the workspace's
+/// `.fshw/test-runs/<runId>/` into `dir/test-runs/<runId>/`. The workspace prunes them as
+/// later runs land, and a flipped test's assertion text lives only there.
+let internal keepTestRuns (workspace: string) (verdictJson: string) (dir: string) =
+    for runId in Diagnostics.verdictRunIds verdictJson do
+        let source = Path.Combine(workspace, ".fshw", "test-runs", runId)
+
+        if Directory.Exists source then
+            let target = Path.Combine(dir, "test-runs", runId)
+            Directory.CreateDirectory target |> ignore
+
+            for f in Directory.EnumerateFiles(source, "*.ctrf.json") do
+                File.Copy(f, Path.Combine(target, Path.GetFileName f), true)
+
 let private stopDaemon (opts: Options) (logFile: string) =
     shell opts.Workspace [] (opts.Fshw + " stop") logFile (TimeSpan.FromMinutes 5.0)
     |> ignore
@@ -264,19 +278,8 @@ let private runCheck (opts: Options) (stepDir: string) (mode: string) : RunResul
     |> Option.iter (fun _ ->
         File.Copy(Path.Combine(opts.Workspace, ".fshw", "verdict.json"), Path.Combine(dir, "verdict.json"), true))
 
-    // The CTRF reports the verdict names: the workspace prunes them as later runs land, and
-    // they are what a disagreement is traced through.
     verdict
-    |> Option.iter (fun _ ->
-        for runId in Diagnostics.verdictRunIds (File.ReadAllText(Path.Combine(dir, "verdict.json"))) do
-            let source = Path.Combine(opts.Workspace, ".fshw", "test-runs", runId)
-
-            if Directory.Exists source then
-                let target = Path.Combine(dir, "test-runs", runId)
-                Directory.CreateDirectory target |> ignore
-
-                for f in Directory.EnumerateFiles(source, "*.ctrf.json") do
-                    File.Copy(f, Path.Combine(target, Path.GetFileName f), true))
+    |> Option.iter (fun _ -> keepTestRuns opts.Workspace (File.ReadAllText(Path.Combine(dir, "verdict.json"))) dir)
 
     let newShadow =
         if File.Exists shadowPath then
