@@ -492,3 +492,85 @@ let ``a check every caller left finishes, says nobody was waiting, and leaves th
         test <@ runningWhileHeld = 1 @>
         test <@ finished @>
         test <@ pipeline.RunningChecks = 0 @>)
+
+/// Check one file under two projects' options (the same script options, two project names), the second
+/// call starting while the first is in FCS. Returns how many checks started, both answers and
+/// the captured log lines.
+let private checkUnderTwoProjects (tmpDir: string) =
+    let starts = ref 0
+    let bothStarted = new ManualResetEventSlim(false)
+    let mutable other: Threading.Tasks.Task<FileCheckResult option> option = None
+
+    let mutable startOther: unit -> Threading.Tasks.Task<FileCheckResult option> =
+        fun () -> null
+
+    let sink =
+        { new PluginActivity.IActivitySink with
+            member _.StartSubtask(_, _) = ()
+            member _.UpdateSubtask(_, _) = ()
+            member _.EndSubtask _ = ()
+
+            member _.Log message =
+                if message.StartsWith "check start" then
+                    match Interlocked.Increment starts with
+                    | 1 ->
+                        other <- Some(startOther ())
+                        bothStarted.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+                    | _ -> bothStarted.Set()
+
+            member _.SetSummary _ = () }
+
+    let checker =
+        FSharpChecker.Create(projectCacheSize = 2, keepAssemblyContents = true)
+
+    let pipeline = CheckPipeline(checker, activity = sink, maxConcurrentChecks = 4)
+    let sourceFile = Path.GetFullPath(Path.Combine(tmpDir, "Shared.fs"))
+    File.WriteAllLines(sourceFile, [| "module Shared"; "let x = 1" |])
+
+    let options, _ =
+        checker.GetProjectOptionsFromScript(sourceFile, SourceText.ofString (File.ReadAllText sourceFile))
+        |> Async.RunSynchronously
+
+    let first =
+        { options with
+            ProjectFileName = Path.Combine(tmpDir, "First.fsproj") }
+
+    let second =
+        { options with
+            ProjectFileName = Path.Combine(tmpDir, "Second.fsproj") }
+
+    let file = AbsFilePath.create sourceFile
+
+    startOther <- fun () -> Async.StartAsTask(pipeline.CheckFileWithOptions(file, second))
+
+    let firstAnswer, lines =
+        capturingLogs (fun () ->
+            pipeline.CheckFileWithOptions(file, first)
+            |> CheckCaller.within "change batch"
+            |> Async.RunSynchronously)
+
+    let otherAnswer =
+        other.Value.WaitAsync(TimeSpan.FromSeconds 30.0).GetAwaiter().GetResult()
+
+    starts.Value, firstAnswer, otherAnswer, lines
+
+// AUTOMATION-1030: a file compiled into two projects (a linked `Compile Include`) is checked
+// under each project's options in one change batch. The running-check registry was keyed by
+// file alone, so the second project's check found the first's running, saw a different
+// snapshot key and cancelled it: the first project's answer for the file was thrown away,
+// and the log blamed a "snapshot key changed" between two projects that never changed.
+[<Fact(Timeout = 60000)>]
+let ``a file compiled into two projects is checked under each, and neither check cancels the other`` () =
+    withTempDir "shared-two-projects" (fun tmpDir ->
+        let starts, firstAnswer, otherAnswer, lines = checkUnderTwoProjects tmpDir
+
+        test <@ starts = 2 @>
+        test <@ firstAnswer.IsSome && otherAnswer.IsSome @>
+        test <@ List.isEmpty (cancellationLines lines) @>
+
+        test
+            <@
+                lines
+                |> List.exists (fun l -> l.Contains "cancelling the in-flight check")
+                |> not
+            @>)
