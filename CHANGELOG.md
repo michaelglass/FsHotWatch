@@ -89,6 +89,11 @@ retries (10s)`) was filed as a failing test no run could select. When a run wrot
 report whose rows reconcile to its summary, that report now names the reds; stdout names
 them only when there is no such report.
 
+### core: the watchdog heartbeat reports the thread pool's queue
+
+The heartbeat line now ends `; threads N; pool queue M`, so a log can tell a pool that is
+starved (threads climbing, queue growing) from a daemon with a backlog of real work.
+
 ### build: TestPrune's code is linted by FSharpLint again
 
 - Importing TestPrune (AUTOMATION-1367) scoped the FSharpLint shim off TestPrune's paths in

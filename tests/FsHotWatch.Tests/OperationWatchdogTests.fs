@@ -129,7 +129,8 @@ let private steadyResources: ResourceReading =
       Gen0 = 100
       Gen1 = 50
       Gen2 = 20
-      Threads = 42 }
+      Threads = 42
+      PendingWorkItems = 0L }
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``Watchdog heartbeat carries the GC pause accrued since the previous heartbeat`` () =
@@ -192,7 +193,8 @@ let ``Watchdog heartbeat carries load, heap and the collections since the previo
           Gen0 = 112
           Gen1 = 53
           Gen2 = 22
-          Threads = 313 }
+          Threads = 313
+          PendingWorkItems = 7L }
 
     clock.Value <- t0.AddSeconds 30.0
 
@@ -202,7 +204,7 @@ let ``Watchdog heartbeat carries load, heap and the collections since the previo
 
     test
         <@
-            line = "heartbeat: idle; gc-pause 0.00% (0ms of 30s); load 7.50; heap 8.00 GB; collections gen0 +12, gen1 +3, gen2 +2; threads 313"
+            line = "heartbeat: idle; gc-pause 0.00% (0ms of 30s); load 7.50; heap 8.00 GB; collections gen0 +12, gen1 +3, gen2 +2; threads 313; pool queue 7"
         @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
@@ -212,7 +214,7 @@ let ``resourceSuffix says when the platform has no load average`` () =
             resourceSuffix
                 steadyResources
                 { steadyResources with
-                    LoadAverage = None } = "; load n/a; heap 1.00 GB; collections gen0 +0, gen1 +0, gen2 +0; threads 42"
+                    LoadAverage = None } = "; load n/a; heap 1.00 GB; collections gen0 +0, gen1 +0, gen2 +0; threads 42; pool queue 0"
         @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
