@@ -82,6 +82,13 @@ signalled nothing and booked the whole tree as leaked. It now reads the table in
 daemon (`proc_listallpids`/`proc_pidinfo` on macOS, `/proc` on Linux), and starts `ps` only
 on a platform with neither.
 
+### test-prune: a complete CTRF report, not stdout, says which tests failed
+
+Prose in a test project's output that merely looked like a result line (`failed after 3
+retries (10s)`) was filed as a failing test no run could select. When a run wrote a CTRF
+report whose rows reconcile to its summary, that report now names the reds; stdout names
+them only when there is no such report.
+
 ### build: TestPrune's code is linted by FSharpLint again
 
 - Importing TestPrune (AUTOMATION-1367) scoped the FSharpLint shim off TestPrune's paths in
