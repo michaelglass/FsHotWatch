@@ -270,3 +270,28 @@ let ``identityOf with neither an assembly nor a readable exe is the deterministi
     // every command.
     test <@ a = b @>
     test <@ compareIdentity (Some a) b = IdentityVerdict.Match @>
+
+// ---------------------------------------------------------------------------
+// self-hosting: the daemon's own build must not change the binary it runs from
+// ---------------------------------------------------------------------------
+
+/// A check of this repository from the in-tree CLI runs a daemon out of the CLI's own
+/// bin directory, and that daemon's `dotnet build` writes to that directory. CommandTree
+/// stamps the jj parent commit into the informational version, plus `.dirty` when
+/// `jj diff` is non-empty. The first edit of a clean working copy therefore recompiled
+/// the CLI with a new version, so the next check found a different binary and restarted
+/// the daemon, and the restart rebuilt everything (553 s measured).
+///
+/// The parent commit alone cannot change under an edit. A real CLI change still gives
+/// different bytes, and `compareIdentity` compares those.
+[<Fact(Timeout = 15000)>]
+let ``this repository's builds do not stamp the jj dirty marker into the version`` () =
+    let props =
+        System.Xml.Linq.XDocument.Load(Path.Combine(FsHotWatch.Tests.RepoTasks.repoRoot (), "Directory.Build.props"))
+
+    let stampDirty =
+        props.Descendants(System.Xml.Linq.XName.Get "CommandTreeStampDirty")
+        |> Seq.map (fun element -> element.Value.Trim())
+        |> Seq.toList
+
+    test <@ stampDirty = [ "false" ] @>

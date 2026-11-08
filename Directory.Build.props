@@ -4,6 +4,14 @@
     <EnableSourceLink Condition="!Exists('$(MSBuildThisFileDirectory).git')">false</EnableSourceLink>
     <EnableSourceControlManagerQueries Condition="!Exists('$(MSBuildThisFileDirectory).git')">false</EnableSourceControlManagerQueries>
 
+    <!-- CommandTree stamps the jj parent commit into the informational version, and adds
+         `.dirty` when `jj diff` is non-empty. A daemon started from the in-tree CLI builds
+         into that CLI's own bin directory, so the first edit of a clean working copy
+         rewrote the binary the daemon runs from, and the next check restarted the daemon
+         and rebuilt everything. The parent commit does not move under an edit. A real CLI
+         change still produces different bytes, which the daemon identity compares. -->
+    <CommandTreeStampDirty>false</CommandTreeStampDirty>
+
     <!-- NU1608: FSharp.Analyzers.SDK pins exact FCS/FSharp.Core versions that differ from the exact pins here (FCS 43.12.402, FSharp.Core 10.1.402 in Directory.Packages.props; ToolchainPinTests). -->
     <NoWarn>$(NoWarn);NU1608</NoWarn>
   </PropertyGroup>
