@@ -30,10 +30,16 @@ those differ, because an implementation-only change rewrites `refint` with the s
 
 - Before a build, a stale copy is repaired: `refint` is copied over it, which is the copy
   that `CopyRefAssembly` skipped.
-- After a build, if the build left a copy stale, it is repaired and the build runs once more.
-  The repaired copy is newer than every dependent's output, so the dependents recompile. If
-  that second build still leaves a copy stale, the build is demoted to `BuildArtifactsStale`.
-- A stale copy blocks a cache replay.
+- After a build, if the build left a copy stale, it is repaired and the build runs again.
+  The repaired copy is newer than every dependent's output, so the dependents recompile, and a
+  recompile can rewrite the dependent's own reference assembly under the same MVID, so the
+  staleness climbs the graph one tier per build. Measured on this repository, a version bump over an
+  incremental tree left 10, then 7, then 1, then 0 copies stale. Rebuilds are bounded by the
+  graph's project count, the longest chain a repair can climb. A copy still stale when the
+  bound is spent demotes the build to `BuildArtifactsStale`, and the diagnostic says so.
+- A stale copy blocks a cache replay, and a stale-artifact red is never stored: it describes the
+  outputs, which the merkle over inputs cannot see, so a stored one would replay after its
+  cause is gone.
 
 ## Rejected
 

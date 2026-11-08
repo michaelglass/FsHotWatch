@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: a stale published reference assembly no longer gives up after one rebuild (AUTOMATION-1518). A
+  repair recompiles the project's dependents, which can leave their own reference assemblies behind, so
+  a version bump over an incremental tree went 10, 7, 1 stale and failed `1 stale artifacts`. The build
+  now repeats until the copies settle, bounded by the graph's project count, and says so when they do
+  not.
+- fix: a stale-artifact red is no longer stored in the task cache (AUTOMATION-1518). It describes the
+  outputs, which the input merkle cannot see, so after `bin/` and `obj/` were deleted it replayed as
+  `1 stale artifacts (cached)` until the cache was removed.
+
 ## 0.7.0-alpha.54 - 2026-11-08
 
 - fix: a warm `fshw check` no longer runs a second, no-op `dotnet build` after every edit

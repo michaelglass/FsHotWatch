@@ -392,7 +392,8 @@ let internal computeBuildCacheKey
     (inputsHash: string)
     : ContentHash =
     FsHotWatch.TaskCache.merkleCacheKey
-        [ "plugin-version", "build-merkle-v1"
+        // v2: a v1 store can hold a stale-artifact red this version no longer writes.
+        [ "plugin-version", "build-merkle-v2"
           "command", buildCommand
           "args", buildArgs
           "depends-on", String.concat "," (List.sort dependsOn)
@@ -1456,30 +1457,42 @@ let internal createArmedWith
 
             repaired
 
+    /// The most rebuilds a repair may ask for: one per project in the graph.
+    let maxRefRepairRebuilds () = graph.GetAllProjects() |> List.length
+
     /// One build spawn with the published reference assemblies settled around it.
     ///
     /// Before: a stale one left by an earlier build (fshw's or anyone's) is repaired, so
     /// this build already compiles dependents against the current API. After: a build that
     /// itself left one stale compiled its dependents against the old API (or skipped
     /// them, their inputs unchanged), so whatever it said is not the answer. The repair
-    /// makes those dependents out of date, and the build runs ONCE more; what that run
+    /// makes those dependents out of date, and the build runs again; what the last run
     /// leaves stale `verifyAndDemote` refuses. An overrun is reported as it is.
+    ///
+    /// Again and not once: a repair recompiles the repaired project's dependents, and a
+    /// recompile can rewrite THEIR reference assembly under an unchanged MVID, so the
+    /// staleness climbs the dependency graph one tier per build (AUTOMATION-1518: a version
+    /// bump over an incremental tree left 10, then 7, then 1). Each rebuild can reach only
+    /// one tier further, so the graph's project count bounds what a converging repair needs.
     let runSettled (repoRoot: string) command args : ProcessOutcome * TreeTeardown option * SideLogReading =
         settleRefAssemblies () |> ignore
-        let first = runWithSideLog repoRoot command args
 
-        match first with
-        | TimedOut _, _, _ -> first
-        | _ ->
-            match settleRefAssemblies () with
-            | [] -> first
-            | repaired ->
-                info
-                    "build"
-                    $"the build left %d{List.length repaired} reference assembly copies stale; building again \
-                      against the repaired ones."
+        let rec settle rebuildsLeft (latest: ProcessOutcome * TreeTeardown option * SideLogReading) =
+            match latest with
+            | TimedOut _, _, _ -> latest
+            | _ when rebuildsLeft = 0 -> latest
+            | _ ->
+                match settleRefAssemblies () with
+                | [] -> latest
+                | repaired ->
+                    info
+                        "build"
+                        $"the build left %d{List.length repaired} reference assembly copies stale; building again \
+                          against the repaired ones."
 
-                runWithSideLog repoRoot command args
+                    settle (rebuildsLeft - 1) (runWithSideLog repoRoot command args)
+
+        settle (maxRefRepairRebuilds ()) (runWithSideLog repoRoot command args)
 
     /// Post-build contract enforcement, over a walk the caller already took. For every
     /// project the graph knows about, compare the canonical DLL's mtime against the max
@@ -1591,10 +1604,25 @@ let internal createArmedWith
     /// Wrap a stale-artifact list in a "MSBuild lied" diagnostic suitable for
     /// the error ledger / BuildFailed payload.
     let staleDiagnostic (stale: StaleArtifact list) : string =
+        let whyNotRepaired =
+            if
+                stale
+                |> List.exists (fun s ->
+                    match s.Reason with
+                    | RefAssemblyStale _ -> true
+                    | _ -> false)
+            then
+                $"\n\nfshw repaired the reference assemblies above and rebuilt up to %d{maxRefRepairRebuilds ()} time(s), \
+                  the longest chain a repair can climb through this graph, and they are still not what the compiler \
+                  wrote: a build keeps rewriting them, or the repair could not write them (see the log)."
+            else
+                ""
+
         "Build subprocess reported success but post-build verification\n"
         + "found stale artifacts (MSBuild incremental cache likely lied).\n"
         + "Re-run with `dotnet build --no-incremental` (or delete bin/ and obj/).\n\n"
         + (stale |> List.map formatStaleArtifact |> String.concat "\n")
+        + whyNotRepaired
 
     /// The one-line human verdict for each outcome. Pure, shared by the async
     /// worker's live log line and the synchronous BuildDone handler's terminal
@@ -2335,6 +2363,13 @@ let internal createArmedWith
             // lookup hits. Both gates below therefore skip it: suppressing the write
             // would leave every recovered build permanently uncacheable, turning two
             // correctness fixes into a standing inner-loop regression.
+            //
+            // Except a stale-artifact red, which is a fact about the OUTPUTS and not about
+            // the inputs this key names. Stored under the merkle it outlives its cause:
+            // delete `bin/`, rebuild outside fshw, and the next lookup finds nothing stale
+            // and replays the red (AUTOMATION-1518). Unstored, the red is simply re-earned
+            // by the next build for as long as it stays true.
+            | Custom(BuildDone(BuildArtifactsStale _, _, _)) -> None
             | Custom _ -> merkleKey ()
 
             // Only events that can actually launch a build are reads, and both gates

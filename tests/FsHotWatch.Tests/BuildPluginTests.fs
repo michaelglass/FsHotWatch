@@ -4265,3 +4265,143 @@ let ``a stale reference assembly from an earlier build is repaired before the bu
         test <@ System.IO.File.ReadAllText published = "MyLib-ref-v2" @>
         test <@ runs () = 1 @>
         test <@ not (buildFailed host) @>)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-1518 — a repair that recompiles a dependent can leave THAT project's
+// reference assembly behind, so one repair-and-rebuild is not enough; and a red that
+// describes the outputs may not outlive them in the task cache.
+// ---------------------------------------------------------------------------
+
+/// A chain Lib <- Mid <- App, each with an output newer than its sources and a settled
+/// `refint`/`ref` pair. The body gets the graph, a source file and each project's
+/// (intermediate, published) pair in dependency order.
+let private withRefAssemblyChain (label: string) (body: ProjectGraph * string * (string * string) list * string -> 'a) =
+    withTempDir label (fun tmpDir ->
+        let graph = ProjectGraph()
+        let now = DateTime.UtcNow
+
+        let register (name: string) (deps: AbsProjectPath list) =
+            let dir = System.IO.Path.Combine(tmpDir, name)
+            let projPath = System.IO.Path.Combine(dir, name + ".fsproj")
+            let srcPath = System.IO.Path.Combine(dir, "Lib.fs")
+            let dllPath = System.IO.Path.Combine(dir, "bin", "Debug", "net10.0", name + ".dll")
+            let objDir = System.IO.Path.Combine(dir, "obj", "Debug", "net10.0")
+            let intermediate = System.IO.Path.Combine(objDir, "refint", name + ".dll")
+            let published = System.IO.Path.Combine(objDir, "ref", name + ".dll")
+
+            for path in [ dllPath; intermediate; published ] do
+                System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName path)
+                |> ignore
+
+            writeMinimalFsproj projPath "net10.0" [ "Lib.fs" ]
+            System.IO.File.WriteAllText(srcPath, $"module %s{name}")
+            System.IO.File.WriteAllText(dllPath, "fake-dll")
+            System.IO.File.WriteAllText(intermediate, "ref-v1")
+            System.IO.File.WriteAllText(published, "ref-v1")
+            System.IO.File.SetLastWriteTimeUtc(srcPath, now - TimeSpan.FromMinutes 10.0)
+            System.IO.File.SetLastWriteTimeUtc(intermediate, now - TimeSpan.FromMinutes 5.0)
+            System.IO.File.SetLastWriteTimeUtc(published, now - TimeSpan.FromMinutes 5.0)
+            System.IO.File.SetLastWriteTimeUtc(dllPath, now)
+
+            let project = AbsProjectPath.create projPath
+            graph.RegisterProject(project, [ AbsFilePath.create srcPath ], deps)
+            graph.RegisterProjectOutput(project, dllPath)
+            project, srcPath, (intermediate, published)
+
+        let lib, libSrc, libPair = register "Lib" []
+        let mid, _, midPair = register "Mid" [ lib ]
+        let _, _, appPair = register "App" [ mid ]
+        body (graph, libSrc, [ libPair; midPair; appPair ], tmpDir))
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a repair whose rebuild leaves the next project behind converges up the dependency chain`` () =
+    withRefAssemblyChain "ref-chain-converges" (fun (graph, srcPath, pairs, tmpDir) ->
+        let count = System.IO.Path.Combine(tmpDir, "build-count")
+
+        // Each build rewrites the next project's `refint` only: what a repaired reference
+        // assembly does to the dependent it makes out of date.
+        let writes =
+            pairs
+            |> List.mapi (fun i (intermediate, _) ->
+                $"[ \"$(wc -l < '%s{count}')\" -eq %d{i + 1} ] && printf 'ref-v2' > '%s{intermediate}'")
+            |> String.concat "\n"
+
+        let script, runs = countingBuildScript tmpDir $"%s{writes}\n:"
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        host.RegisterHandler(BuildPlugin.create "sh" script [] graph [] None [] None)
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+        waitForTerminalStatus host "build" 20000
+
+        test <@ not (buildFailed host) @>
+        // One build per tier of the chain, plus the one that finds nothing left to repair.
+        test <@ runs () = 4 @>
+
+        for intermediate, published in pairs do
+            test <@ System.IO.File.ReadAllBytes intermediate = System.IO.File.ReadAllBytes published @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a reference assembly that never settles fails naming why the repair stopped`` () =
+    withRefAssemblyGraph "ref-never-settles" false (fun (graph, srcPath, intermediate, _, tmpDir) ->
+        let count = System.IO.Path.Combine(tmpDir, "build-count")
+
+        let script, _ =
+            countingBuildScript tmpDir $"printf 'MyLib-ref-%%03d' $(wc -l < '%s{count}') > '%s{intermediate}'"
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        host.RegisterHandler(BuildPlugin.create "sh" script [] graph [] None [] None)
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+        waitForTerminalStatus host "build" 20000
+
+        let messages =
+            host.GetErrorsByPlugin("build")
+            |> Map.toList
+            |> List.collect snd
+            |> List.map (fun e -> e.Message)
+
+        test
+            <@
+                messages
+                |> List.exists (fun m -> m.Contains "repaired" && m.Contains "1 time(s)")
+            @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a stale-artifact red is not replayed from the task cache once its cause is gone`` () =
+    withRefAssemblyGraph "ref-stale-red-no-replay" false (fun (graph, srcPath, intermediate, _, tmpDir) ->
+        let count = System.IO.Path.Combine(tmpDir, "build-count")
+        let objDir = System.IO.Path.Combine(tmpDir, "MyLib", "obj")
+        let settled = System.IO.Path.Combine(tmpDir, "settled")
+
+        // Every build leaves the reference assembly behind until the tree is settled.
+        let script, runs =
+            countingBuildScript
+                tmpDir
+                $"[ -e '%s{settled}' ] || printf 'MyLib-ref-%%03d' $(wc -l < '%s{count}') > '%s{intermediate}'"
+
+        let cache =
+            FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
+
+        let host = PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = cache)
+        host.RegisterHandler(BuildPlugin.create "sh" script [] graph [] None [] None)
+
+        let red = beginAwaitBuildVerdict host (fun s -> s.Contains "stale")
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+        test <@ red.Wait HangWaitMs @>
+        let runsWhileRed = runs ()
+
+        // The cause is gone: `obj/` deleted, as the diagnostic recommends, and the sources
+        // untouched, so the merkle the red was stored under has not moved.
+        System.IO.File.WriteAllText(settled, "")
+        System.IO.Directory.Delete(objDir, true)
+
+        let next = beginAwaitBuildVerdict host (fun _ -> true)
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+        test <@ next.Wait HangWaitMs @>
+
+        test
+            <@
+                terminalSummaryOf next.Result
+                |> Option.exists (fun s -> not (s.Contains "(cached)"))
+            @>
+
+        test <@ runs () > runsWhileRed @>
+        test <@ not (buildFailed host) @>)
