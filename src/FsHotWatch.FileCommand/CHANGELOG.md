@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.29 - 2026-11-08
+
 - fix: a command the OS refuses to start because its file is open for writing (`ETXTBSY`, "Text
   file busy") is started again after a short pause, up to five times (under a second in all),
   instead of failing the run. A script regenerated just before it runs hits this when the daemon

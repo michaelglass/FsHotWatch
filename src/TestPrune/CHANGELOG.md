@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 15.0.1 - 2026-11-08
+
 - fix: a project's index key hashes its EVALUATED compile list, so an MSBuild condition that flips
   with no source edit (a sibling checkout appearing or going) re-indexes the project instead of
   keeping an index without the item. Each `index` run now evaluates every project before deciding

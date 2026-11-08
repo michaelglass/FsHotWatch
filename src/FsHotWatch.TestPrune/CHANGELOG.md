@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.106 - 2026-11-08
+
 - fix: a timed-out test run that named some tests says it timed out on each of those entries in `verdict.json`
   (AUTOMATION-1115). They read as ordinary `failed <test>` lines, so a reader saw test failures from a project whose
   host was killed.

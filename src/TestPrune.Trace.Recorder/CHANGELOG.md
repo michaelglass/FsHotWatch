@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.0 - 2026-11-08
+
 - feat: `Reflect` shims note union reflection (`type` inputs) and assembly type sweeps (`types` inputs), and
   `TESTPRUNE_TRACE_MUTATE_TYPES` makes reflection over a listed type throw `MutantHitException` (AUTOMATION-1495).
 

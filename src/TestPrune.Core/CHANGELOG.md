@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 15.0.1 - 2026-11-08
+
 - fix: a test name holding a `.` is indexed whole, and a test class name holding a CLR-reserved
   character (`,` `+` `&` `*` `[` `]` `\`) is escaped as `Type.FullName` writes it (AUTOMATION-1496).
   ``.fshw.json loads`` was indexed as `json loads`` `, and `module ``pattern (true, false)`` ` as
