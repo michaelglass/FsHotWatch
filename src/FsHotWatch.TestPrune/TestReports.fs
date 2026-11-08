@@ -314,15 +314,24 @@ let internal failedRowsOfReport (json: string) : string list =
 /// console or the report named it, so it is filed under the class the report's passing
 /// rows later vindicate.
 type internal ReportedFailures =
-    { Names: string list
-      Classes: Set<string> }
+    {
+        Names: string list
+        /// The rows reconcile to the summary: every failed test is named, so the report,
+        /// not the console, says which tests failed.
+        Complete: bool
+        Classes: Set<string>
+    }
 
 module internal ReportedFailures =
     /// No report: the console is all a red can be named from.
-    let none = { Names = []; Classes = Set.empty }
+    let none =
+        { Names = []
+          Complete = false
+          Classes = Set.empty }
 
     let ofReport (json: string) =
         { Names = failedRowsOfReport json
+          Complete = (failedTestsOfReport json).IsSome
           Classes = Flakiness.parseCtrfDeclaredClasses json }
 
 let internal sharedInfrastructureFailureOfReport (json: string) : string option =
@@ -496,9 +505,9 @@ let internal failuresOf
             // A timeout is never attributable to one class (see above).
             let isTimeout = TestResult.isTimedOut result
 
-            // The console names the reds; when it names none, the CTRF report the
-            // runner wrote beside the output log names them instead. The report row is
-            // the same fully-qualified name the console prints, so a red filed from it
+            // A complete CTRF report names the reds. Without one the console does, and
+            // when the console names none the report's failed rows still do. The report
+            // row is the same fully-qualified name the console prints, so a red filed from it
             // is retired by the same passing row. Either way the name splits against the
             // classes the report declares and the index stores.
             let report = reportOf project
@@ -506,16 +515,33 @@ let internal failuresOf
             let classes = classFiles |> Map.keys |> Set.ofSeq |> Set.union report.Classes
 
             let parsed =
-                match parseFailedTestsAgainst classes output with
-                | [] ->
-                    report.Names
-                    |> List.map (fun name ->
-                        let className, methodName = splitTestName classes name
+                let fromConsole = parseFailedTestsAgainst classes output
 
-                        className,
-                        methodName,
-                        $"failed %s{name} — named by the run's CTRF report; the console printed no line the parser recognised")
-                | fromConsole -> fromConsole
+                let ofReportRow (name: string) =
+                    let className, methodName = splitTestName classes name
+
+                    let line =
+                        fromConsole
+                        |> List.tryPick (fun (c, m, consoleLine) ->
+                            if c = className && m = methodName then
+                                Some consoleLine
+                            else
+                                None)
+                        |> Option.defaultValue
+                            $"failed %s{name} — named by the run's CTRF report; the console printed no line the parser recognised"
+
+                    className, methodName, line
+
+                // A complete report is the runner's own record of what failed, so the
+                // console cannot add a name to it: anything else there that merely looks
+                // like a result line is prose. A timeout's report is not complete by
+                // construction of the run, and its reds stay the console's.
+                if report.Complete && not isTimeout then
+                    report.Names |> List.map ofReportRow
+                else
+                    match fromConsole with
+                    | [] -> report.Names |> List.map ofReportRow
+                    | named -> named
 
             if parsed.IsEmpty then
                 // ONE entry for the project, so the whole captured output is carried

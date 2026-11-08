@@ -74,6 +74,13 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### test-prune: a complete CTRF report, not stdout, says which tests failed
+
+Prose in a test project's output that merely looked like a result line (`failed after 3
+retries (10s)`) was filed as a failing test no run could select. When a run wrote a CTRF
+report whose rows reconcile to its summary, that report now names the reds; stdout names
+them only when there is no such report.
+
 ### build: TestPrune's code is linted by FSharpLint again
 
 - Importing TestPrune (AUTOMATION-1367) scoped the FSharpLint shim off TestPrune's paths in
