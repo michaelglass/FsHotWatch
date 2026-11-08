@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: a diagnostic-only red in a file the change did not touch is re-checked once before a verdict is graded, whatever
+  raised it (AUTOMATION-1124). `SuspectRecheck` covered only the `fcs-internal` class. A failing ERROR-severity entry from
+  `fcs`, `analyzers` or `lint` now qualifies when no other kind of red is on the ledger and this daemon saw no edit to the
+  file, so a real compile error (which fails the build) costs no second pass. Warnings are left out: a standing one would
+  pay for a re-check on every tree. Each re-check files a `SuspectRecheck.Receipt` in the outcome store, keyed by tree, so
+  it survives a daemon restart.
+
 ## 0.10.0-alpha.106 - 2026-11-08
 
 - fix: a file compiled into two projects (a linked `Compile Include`) is checked under each project

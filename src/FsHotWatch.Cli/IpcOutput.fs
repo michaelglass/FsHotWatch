@@ -1799,6 +1799,14 @@ let private publishVerdictWithReason
             |> Verdict.withAttribution attribution
             // Each timeout red points at its project's insights (AUTOMATION-1300).
             |> Verdict.withTimedOut (Verdict.timedOutInsights repoRoot runs)
+            // What a re-check did for this tree, from the outcome store (a receipt outlives
+            // the daemon that ran it).
+            |> fun v ->
+                Verdict.withSuspectRecheck
+                    (FsHotWatch.SuspectRecheck.Receipt.read
+                        (FsHotWatch.OutcomeStore.openFor repoRoot (FsHotWatch.Logging.debug "verdict"))
+                        v.TreeHash)
+                    v
 
         // Capture what is on disk BEFORE overwriting it. When this run executed no
         // tests, the prior verdict is the only thing that can answer the reader's

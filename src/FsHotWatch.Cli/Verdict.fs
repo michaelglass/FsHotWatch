@@ -1545,6 +1545,8 @@ type Verdict =
             /// redden nor green a verdict. Empty when nothing timed out, and when read from
             /// a verdict written before the field existed.
             timedOut: FsHotWatch.TestPrune.Insights.ProjectInsight list
+            /// The receipt of the re-check run for this tree, if one ran: `null` when none did.
+            suspectRecheck: FsHotWatch.SuspectRecheck.Receipt option
         }
 
     member this.ProducedAt = this.producedAt
@@ -1638,6 +1640,8 @@ type Verdict =
 
     /// The insights of every project that timed out — see `timedOut`.
     member this.TimedOut = this.timedOut
+    /// The receipt of the re-check run for this tree — see `suspectRecheck`.
+    member this.SuspectRecheck = this.suspectRecheck
 
     /// The change that selected this run's tests (truncated; see `TriggerCount`).
     member this.Trigger = this.trigger
@@ -1886,7 +1890,8 @@ let create
           triggerCount = runReport.SeedCount
           attribution = Attribution.none
           projectModel = projectModel
-          timedOut = [] }
+          timedOut = []
+          suspectRecheck = None }
 
     match validate candidate with
     | Ok v -> v
@@ -1902,6 +1907,11 @@ let withAttribution (attribution: Attribution) (v: Verdict) : Verdict = { v with
 /// to the outcome.
 let withTimedOut (insights: FsHotWatch.TestPrune.Insights.ProjectInsight list) (v: Verdict) : Verdict =
     { v with timedOut = insights }
+
+/// This verdict, citing the re-check receipt filed for its tree. Read from the outcome
+/// store, so it does not depend on the daemon that ran the re-check still being alive.
+let withSuspectRecheck (receipt: FsHotWatch.SuspectRecheck.Receipt option) (v: Verdict) : Verdict =
+    { v with suspectRecheck = receipt }
 
 /// The insights of every project that timed out in any of `runs` (`Insights.summarize`
 /// of the run directory, the same record `fshw insights --json --run <id>` prints).
@@ -2360,6 +2370,10 @@ let serialize (v: Verdict) : string =
            // whether the run was contended, and the command that says more. Always present:
            // an empty array says nothing timed out.
            timedOut = [ for i in v.TimedOut -> timedOutJson i ]
+           suspectRecheck =
+            v.SuspectRecheck
+            |> Option.map FsHotWatch.SuspectRecheck.Receipt.toJson
+            |> Option.toObj
            // What reddened this verdict, when the answer is not in
            // `plugins[]`. Always present — an empty array on a green is a statement, and
            // a reader that has to distinguish "no causes" from "this build did not
@@ -3495,7 +3509,13 @@ let read (repoRoot: string) : Reading =
                                     System.Text.Json.Nodes.JsonNode.Parse(e.GetRawText())
                                     |> FsHotWatch.TestPrune.Insights.tryReadInsight)
                                 |> Seq.toList
-                            | _ -> [] }
+                            | _ -> []
+                          suspectRecheck =
+                            match tryProp root "suspectRecheck" with
+                            | Some el when el.ValueKind = JsonValueKind.Object ->
+                                System.Text.Json.Nodes.JsonNode.Parse(el.GetRawText())
+                                |> FsHotWatch.SuspectRecheck.Receipt.tryOfJson
+                            | _ -> None }
 
                     // Old and malformed files can carry a bare red with
                     // no structural evidence. It is still a usable, fail-closed reading,
