@@ -1468,9 +1468,32 @@ let internal EscalationPause = TimeSpan.FromMilliseconds 200.0
 /// escalation runs after that budget is already spent.
 let internal EscalationTableBudget = TimeSpan.FromSeconds 2.0
 
+/// The kernel's process table as escalation's rows.
+let private inProcessEscalationTable () : Result<ProcessRow list, string> =
+    InProcessProcessTable.read ()
+    |> Result.map (
+        List.map (fun row ->
+            { Pid = row.Pid
+              ParentPid = row.ParentPid
+              Zombie = row.Zombie
+              Command = row.Command })
+    )
+
+/// The table escalation reads: in process first, because a kill that hangs is exactly
+/// when the box is too loaded for a `ps` we start to answer, and a table nobody can read
+/// leaves the whole tree LEAKED. `ps` remains for a platform with no in-process reader.
+let internal readEscalationTable
+    (inProcess: unit -> Result<ProcessRow list, string>)
+    (ps: unit -> Result<ProcessRow list, string>)
+    : Result<ProcessRow list, string> =
+    match inProcess () with
+    | Ok rows -> Ok rows
+    | Error _ -> ps ()
+
 /// The real OS behind `escalateWith`.
 let internal liveEscalationOps: EscalationOps =
-    { ReadTable = fun () -> readProcessTableWithin EscalationTableBudget
+    { ReadTable =
+        fun () -> readEscalationTable inProcessEscalationTable (fun () -> readProcessTableWithin EscalationTableBudget)
       StartTimeOf = processStartTime
       Signal = signalPid
       Pause = fun () -> Thread.Sleep EscalationPause

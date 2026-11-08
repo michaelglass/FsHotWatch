@@ -74,6 +74,14 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core: a hung process tree is reaped even when `ps` will not answer
+
+Escalating a kill that did not return read the process table by starting `ps`. A kill hangs
+on an overloaded box, which is exactly when `ps` misses its budget: the escalation then
+signalled nothing and booked the whole tree as leaked. It now reads the table inside the
+daemon (`proc_listallpids`/`proc_pidinfo` on macOS, `/proc` on Linux), and starts `ps` only
+on a platform with neither.
+
 ### build: TestPrune's code is linted by FSharpLint again
 
 - Importing TestPrune (AUTOMATION-1367) scoped the FSharpLint shim off TestPrune's paths in

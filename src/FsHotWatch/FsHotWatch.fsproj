@@ -70,6 +70,7 @@
     <Compile Include="ProcessRegistry.fs" />
     <Compile Include="DeadlineWorkers.fs" />
     <Compile Include="SpawnHelper.fs" />
+    <Compile Include="InProcessProcessTable.fs" />
     <Compile Include="ProcessHelper.fs" />
     <Compile Include="FsHwPaths.fs" />
     <Compile Include="PidFile.fs" />
