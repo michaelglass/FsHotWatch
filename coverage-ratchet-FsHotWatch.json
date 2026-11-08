@@ -1,5 +1,19 @@
 {
   "overrides": {
+    "InProcessProcessTable.fs": [
+      {
+        "line": 82,
+        "branch": 76,
+        "reason": "new file (AUTOMATION-1153: escalation reads the kernel's process table in process). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down, on macOS by the unit suite 2026-11-08: line 82.5%, branch 76.9% (20/26). Uncovered: the Linux reader (`readLinux`, `procEntry`), unreachable on macOS; its parser `parseProcStat` is covered on every platform.",
+        "platform": "macos"
+      },
+      {
+        "line": 70,
+        "branch": 60,
+        "reason": "new file (AUTOMATION-1153). Provisional, not yet measured on Linux: the macOS reader (`readDarwin`) is unreachable there, and its pure decoder is covered on every platform. Refresh from the first CI run.",
+        "platform": "linux"
+      }
+    ],
     "Findings.fs": [
       {
         "line": 99,
