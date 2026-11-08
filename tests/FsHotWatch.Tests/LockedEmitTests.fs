@@ -184,3 +184,7 @@ let ``a synchronous change publishes an asynchronous one queued ahead of it firs
     Assert.True(posted.Wait(TimeSpan.FromSeconds 60.0), "the asynchronous caller never resumed")
     Assert.Equal<string list>([ "sync"; "async" ], store.Read row)
     Assert.Equal(0, store.PendingChanges)
+
+// SPIKE ONLY (never landed): a red verdict so the warm re-run re-dispatches outstanding tests.
+[<Xunit.Fact>]
+let ``spike 1215 keeps the verdict red`` () = Xunit.Assert.Fail "spike-1215: deliberately red"
