@@ -3853,14 +3853,22 @@ dotnet tool run test-prune-traces shadow-report --project TestPrune.Tests > "$CL
 
 The samples belong in the box-wide shadow store, and only the machine that holds it can write them. GitHub CI
 cannot write to it. So the job is a host schedule (launchd or cron on the always-on box), outside this
-repository. The recipe, run from the FsHotWatch checkout after `mise run build`:
+repository. The recipe, run from a FsHotWatch checkout at main after `mise run build` and
+`dotnet build src/TestPrune.Trace.Cli` (`mise run build` does not build that project, and `--no-build` needs it):
 
 ```bash
-jj diff --git -r 'main-..main' > "$TMPDIR/change.diff"
+# <from> is the last commit sampled, or first_parent(main@origin) on the first night.
+# main's tip is usually a merge commit, so `-r 'main-..main'` diffs nothing.
+jj diff --git --from '<from>' --to main@origin > "$TMPDIR/change.diff"
 dotnet run --project src/TestPrune.Trace.Cli --no-build -- mutate --project-dir tests/TestPrune.Tests \
-  --assembly TestPrune.Tests --diff "$TMPDIR/change.diff" --index .fshw/test-impact.db \
+  --assembly TestPrune.Tests --diff "$TMPDIR/change.diff" --index "<index db>" \
   --db "<box shadow store>" --samples 10 --union-samples 5 --seed "$(date +%j)"
 ```
+
+`<index db>` is `.fshw/test-impact.db` where a daemon has run. A checkout kept only for this job has none, so
+build one with `test-prune index` and pass its `.test-prune.db`.
+
+The job runs on the always-on box from intelligence's AUTOMATION-1500 (nightly, 04:30).
 
 `TraceShadow.shadowStorePath` names the box shadow store. A day without a change to `main` is skipped.
 
