@@ -623,7 +623,8 @@ let ``status replies carry the heap valve's report once it has fired, and not be
               FsHotWatch.OperationWatchdog.Gen0 = 0
               FsHotWatch.OperationWatchdog.Gen1 = 0
               FsHotWatch.OperationWatchdog.Gen2 = 0
-              FsHotWatch.OperationWatchdog.Threads = 1 }
+              FsHotWatch.OperationWatchdog.Threads = 1
+              FsHotWatch.OperationWatchdog.PendingWorkItems = 0L }
 
     use watchdog =
         new FsHotWatch.OperationWatchdog.Watchdog(
