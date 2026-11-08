@@ -983,6 +983,52 @@ let ``a fanout reading this build cannot read fails closed to an unreadable scop
     let report = parseTestRunReport (fullReply extra)
     test <@ TestScope.isUnreadable report.Scope @>
 
+// --- test-scope: what the graded selection was priced at -----------------------
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a selection's price reaches the verdict scope from the test-scope reply`` () =
+    let report =
+        parseTestRunReport (
+            fullReply
+                ""","price":{"estimateMs":1189.5,"pricedClasses":258,"unpricedClasses":2,"unpricedProjects":["New.Tests"]}"""
+        )
+
+    test <@ TestScope.isFullSuite report.Scope @>
+
+    test
+        <@
+            report.Price = Some
+                { FsHotWatch.TestPrune.SelectionPrice.Reading.EstimateMs = 1189.5
+                  FsHotWatch.TestPrune.SelectionPrice.Reading.PricedClasses = 258
+                  FsHotWatch.TestPrune.SelectionPrice.Reading.UnpricedClasses = 2
+                  FsHotWatch.TestPrune.SelectionPrice.Reading.UnpricedProjects = [ "New.Tests" ] }
+        @>
+
+    let scope = VerdictFixtures.scopeOnTheWire report
+    test <@ scope.["price"].["estimateMs"].GetValue<float>() = 1189.5 @>
+    test <@ scope.["price"].["unpricedProjects"].[0].GetValue<string>() = "New.Tests" @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``an absent or null price says nothing`` () =
+    let read extra =
+        (parseTestRunReport (fullReply extra)).Price
+
+    test <@ read "" = None @>
+    test <@ read ""","price":null""" = None @>
+    test <@ isNull (VerdictFixtures.scopeOnTheWire (parseTestRunReport (fullReply ""))).["price"] @>
+
+[<Theory(Timeout = SyncHangBackstopMs)>]
+[<InlineData(""","price":"cheap" """)>]
+[<InlineData(""","price":{"pricedClasses":1,"unpricedClasses":0,"unpricedProjects":[]}""")>]
+[<InlineData(""","price":{"estimateMs":"1","pricedClasses":1,"unpricedClasses":0,"unpricedProjects":[]}""")>]
+[<InlineData(""","price":{"estimateMs":1.0,"pricedClasses":1.5,"unpricedClasses":0,"unpricedProjects":[]}""")>]
+[<InlineData(""","price":{"estimateMs":1.0,"pricedClasses":1,"unpricedProjects":[]}""")>]
+[<InlineData(""","price":{"estimateMs":1.0,"pricedClasses":1,"unpricedClasses":0}""")>]
+[<InlineData(""","price":{"estimateMs":1.0,"pricedClasses":1,"unpricedClasses":0,"unpricedProjects":[3]}""")>]
+let ``a price this build cannot read fails closed to an unreadable scope`` (extra: string) =
+    let report = parseTestRunReport (fullReply extra)
+    test <@ TestScope.isUnreadable report.Scope @>
+
 // --- test-scope: the evidence for the graded run, from the same reply ----------
 
 [<Fact(Timeout = SyncHangBackstopMs)>]

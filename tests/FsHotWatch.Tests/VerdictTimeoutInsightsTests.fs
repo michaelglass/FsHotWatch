@@ -107,6 +107,7 @@ let private redVerdict (root: string) (runId: Guid) : Verdict.Verdict =
           NotSelected = Some []
           SelectedBy = None
           SeedFanout = None
+          Price = None
           GradedEvidence = IpcParsing.GradedEvidenceReading.NotReported
           OutcomeKeys = None }
         { Hash = "sha256:t"

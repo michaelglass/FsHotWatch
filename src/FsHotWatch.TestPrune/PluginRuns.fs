@@ -92,7 +92,7 @@ let internal commandForceRunWith
     let compileInputsOf = env.Launch.CompileInputsOf
     let coverageIngestFailed = env.Launch.CoverageIngestFailed
     let logLaunch = env.Launch.LogLaunch
-    let logSelectedBy = env.Launch.LogSelectedBy
+    let priceSelection = env.Launch.PriceSelection
     let observeModelGeneration = env.Launch.ObserveModelGeneration
     let observeTestInputs = env.Launch.ObserveTestInputs
     let tracesFor = env.Launch.TracesFor
@@ -130,6 +130,7 @@ let internal commandForceRunWith
           ZeroSelection = ZeroSelection.NotAZero
           FullSuiteCause = FullSuiteCause.ForceRun
           SeedFanout = SeedFanoutReading.NoSelection
+          Price = None
           TraceShadow = []
           SelectedBy =
             configs
@@ -149,7 +150,7 @@ let internal commandForceRunWith
                 ProjectInputs = observeTestInputs ctx }
 
         logLaunch "forced" mode commandLaunch
-        logSelectedBy commandLaunch
+        let commandLaunch = priceSelection commandLaunch
 
         let mutable progress = RequestedRunProgress.NotStarted
 

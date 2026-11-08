@@ -153,6 +153,37 @@ let describe (p: Price) : string =
 
     $"~%.1f{p.EstimateMs / 1000.0}s of test time over %d{p.PricedClasses} recorded class(es)%s{suffix}"
 
+/// A price as a verdict records it: the estimate and the counts behind it. The classes no
+/// run recorded are counted, not listed, because a new test project can name hundreds;
+/// the projects no run holds are named, because there are few and each is a gap.
+type Reading =
+    {
+        /// The summed recorded cost of every priced class, in milliseconds.
+        EstimateMs: float
+        /// How many classes carried a price.
+        PricedClasses: int
+        /// How many classes the selection names that no recorded run holds.
+        UnpricedClasses: int
+        /// Projects the selection takes that no recorded run holds at all.
+        UnpricedProjects: string list
+    }
+
+module Reading =
+    /// The reading of a price.
+    let ofPrice (p: Price) : Reading =
+        { EstimateMs = p.EstimateMs
+          PricedClasses = p.PricedClasses
+          UnpricedClasses = List.length p.Unpriced
+          UnpricedProjects = p.UnpricedProjects }
+
+    /// The JSON shape a reading has in the `test-scope` reply, the verdict and `explain`.
+    let wire (r: Reading) : obj =
+        {| estimateMs = r.EstimateMs
+           pricedClasses = r.PricedClasses
+           unpricedClasses = r.UnpricedClasses
+           unpricedProjects = Array.ofList r.UnpricedProjects |}
+        :> obj
+
 /// One run priced before the fact.
 type Backtest =
     {

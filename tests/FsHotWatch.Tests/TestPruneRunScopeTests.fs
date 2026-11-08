@@ -4785,7 +4785,8 @@ let ``the completion line names both generations, the graded run and the evidenc
           ZeroSelection = ZeroSelection.NotAZero
           FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject
           SelectedBy = []
-          SeedFanout = SeedFanoutReading.NoSelection }
+          SeedFanout = SeedFanoutReading.NoSelection
+          Price = None }
 
     let completion =
         { RunId = receiptRun
@@ -4913,7 +4914,8 @@ let ``a receipt speaks for a later model only while every project it covered is 
           ZeroSelection = ZeroSelection.NotAZero
           FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject
           SelectedBy = []
-          SeedFanout = SeedFanoutReading.NoSelection }
+          SeedFanout = SeedFanoutReading.NoSelection
+          Price = None }
 
     test <@ receiptSpeaksFor (Some 1L) None receipt @>
     // ProjB is not covered, so its move does not matter; ProjA's does.
@@ -5353,7 +5355,8 @@ let ``a completion warns when its receipt and its evidence name different runs``
           ZeroSelection = ZeroSelection.NotAZero
           FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject
           SelectedBy = []
-          SeedFanout = SeedFanoutReading.NoSelection }
+          SeedFanout = SeedFanoutReading.NoSelection
+          Price = None }
 
     test <@ receiptEvidenceMismatch (Some 7L) None None = None @>
     // No model: no run can hold evidence, so a receipt without any is not a mismatch.

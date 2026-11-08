@@ -130,11 +130,7 @@ let toJson (e: Explanation) : string =
                seedFanout = SeedFanoutReading.wire s.Fanout
                price =
                 e.Price
-                |> Option.map (fun p ->
-                    {| estimateMs = p.EstimateMs
-                       pricedClasses = p.PricedClasses
-                       unpricedClasses = List.length p.Unpriced
-                       unpricedProjects = Array.ofList p.UnpricedProjects |})
+                |> Option.map (SelectionPrice.Reading.ofPrice >> SelectionPrice.Reading.wire)
                 |> Option.toObj |}
 
 /// The answer as the lines a person reads.
