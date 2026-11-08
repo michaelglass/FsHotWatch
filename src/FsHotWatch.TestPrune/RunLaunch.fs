@@ -108,6 +108,10 @@ type TestRunLaunch =
         /// The seeds that alone selected the most tests (`SeedFanoutReading.ofSelection`),
         /// captured with `Seeds`; `NoSelection` for a launch no impact selection made.
         SeedFanout: SeedFanoutReading
+        /// What this selection was priced at before it ran, from the class durations the
+        /// newest runs recorded. `None` where it was not priced: a launch that executes
+        /// nothing, or a book that could not be read.
+        Price: SelectionPrice.Reading option
         /// The changed files this run launched against. Its completion clears only
         /// these; a file that changed during the run still selects the next one.
         ChangedFiles: string list

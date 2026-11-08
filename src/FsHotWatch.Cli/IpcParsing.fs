@@ -511,6 +511,57 @@ let tryReadSeedFanout (field: JsonElement option) : Result<SeedFanoutReading opt
         | _ -> unreadable value
     | Some value -> unreadable value
 
+/// Read a scope object's `price` field: what the graded selection was priced at before
+/// it ran. ONE reader for the `test-scope` reply and the verdict file.
+///
+/// `Ok None` where the field is absent or `null`. `Error` for a shape this build cannot
+/// read, which each caller turns into an unreadable scope.
+let tryReadSelectionPrice
+    (field: JsonElement option)
+    : Result<FsHotWatch.TestPrune.SelectionPrice.Reading option, string> =
+    let unreadable (value: JsonElement) =
+        Result.Error $"a `price` this build cannot read (%s{value.GetRawText()})"
+
+    let intOf (el: JsonElement) (name: string) =
+        match el.TryGetProperty name with
+        | true, n when n.ValueKind = JsonValueKind.Number ->
+            match n.TryGetInt32() with
+            | true, i -> Some i
+            | _ -> None
+        | _ -> None
+
+    let estimateOf (el: JsonElement) =
+        match el.TryGetProperty "estimateMs" with
+        | true, n when n.ValueKind = JsonValueKind.Number -> Some(n.GetDouble())
+        | _ -> None
+
+    let projectsOf (el: JsonElement) =
+        match el.TryGetProperty "unpricedProjects" with
+        | true, projects when projects.ValueKind = JsonValueKind.Array ->
+            let entries = projects.EnumerateArray() |> List.ofSeq
+
+            if entries |> List.forall (fun p -> p.ValueKind = JsonValueKind.String) then
+                Some(entries |> List.map _.GetString())
+            else
+                None
+        | _ -> None
+
+    match field with
+    | None -> Result.Ok None
+    | Some value when value.ValueKind = JsonValueKind.Null -> Result.Ok None
+    | Some value when value.ValueKind = JsonValueKind.Object ->
+        match estimateOf value, intOf value "pricedClasses", intOf value "unpricedClasses", projectsOf value with
+        | Some estimate, Some priced, Some unpriced, Some projects ->
+            Result.Ok(
+                Some
+                    { EstimateMs = estimate
+                      PricedClasses = priced
+                      UnpricedClasses = unpriced
+                      UnpricedProjects = projects }
+            )
+        | _ -> unreadable value
+    | Some value -> unreadable value
+
 /// The test-prune plugin commands `confirm` speaks.
 ///
 /// `RunCommand` dispatches on the COMMAND name — a plugin's own name is not a command
@@ -992,6 +1043,9 @@ type TestRunReport =
         /// The seeds that alone selected the most tests, or why they were not ranked.
         /// `None` where the daemon did not say.
         SeedFanout: SeedFanoutReading option
+        /// What the graded selection was priced at before it ran. `None` where the daemon
+        /// did not say.
+        Price: FsHotWatch.TestPrune.SelectionPrice.Reading option
         /// The evidence the daemon holds for `RunId`, from the same reply.
         GradedEvidence: GradedEvidenceReading
         /// Each project's full-run outcome-store key over the tree as it is now, as the
@@ -1020,6 +1074,7 @@ module TestRunReport =
           NotSelected = None
           SelectedBy = None
           SeedFanout = None
+          Price = None
           GradedEvidence = GradedEvidenceReading.NotReported
           OutcomeKeys = None }
 
@@ -1206,6 +1261,12 @@ let parseTestRunReport (json: string) : TestRunReport =
             | Result.Ok seedFanout -> scope, seedFanout
             | Result.Error reason -> ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply has %s{reason}", None
 
+        // And for a `price`.
+        let scope, price =
+            match tryReadSelectionPrice (Json.tryProp root "price") with
+            | Result.Ok price -> scope, price
+            | Result.Error reason -> ScopeUnreadable $"the daemon's `%s{TestScopeCommand}` reply has %s{reason}", None
+
         { Scope = scope
           RunId = runId
           SessionRuns = sessionRuns
@@ -1219,6 +1280,7 @@ let parseTestRunReport (json: string) : TestRunReport =
           NotSelected = notSelected
           SelectedBy = selectedBy
           SeedFanout = seedFanout
+          Price = price
           GradedEvidence = tryReadGradedEvidence (Json.tryProp root "evidence")
           OutcomeKeys = tryReadOutcomeKeys (Json.tryProp root "outcomeKeys") }
     with ex ->

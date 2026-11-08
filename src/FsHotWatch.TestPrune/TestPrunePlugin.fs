@@ -346,7 +346,7 @@ let internal createWithEvidenceAndQueries
 
 
 
-    let logSelectedBy = logSelectedByIn repoRoot
+    let priceSelection = pricedSelectionIn repoRoot
 
     /// Returns the `TestsFinished` message the framework's RunExclusive posts back to the
     /// agent; the synchronous `Custom(TestsFinished)` handler emits `TestRunCompleted`
@@ -379,7 +379,7 @@ let internal createWithEvidenceAndQueries
               CoverageIngestFailed = coverageIngestFailed
               EvidencePlanFor = evidencePlanFor
               LogLaunch = logLaunch
-              LogSelectedBy = logSelectedBy
+              PriceSelection = priceSelection
               ObserveModelGeneration = observeModelGeneration
               ObserveTestInputs = observeTestInputs
               TracesFor = tracesFor }

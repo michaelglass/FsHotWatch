@@ -1498,6 +1498,9 @@ type Verdict =
             /// The seeds that alone selected the most tests — the reading's
             /// `TestRunReport.SeedFanout`. `None` is "this verdict does not say".
             seedFanout: SeedFanoutReading option
+            /// What the graded selection was priced at before it ran — the reading's
+            /// `TestRunReport.Price`. `None` is "this verdict does not say".
+            price: SelectionPrice.Reading option
             outcome: Outcome
             exitCode: int
             plugins: PluginVerdict list
@@ -1587,6 +1590,8 @@ type Verdict =
 
     /// The seeds that alone selected the most tests — see the `seedFanout` field.
     member this.SeedFanout = this.seedFanout
+    /// What the graded selection was priced at — see the `price` field.
+    member this.Price = this.price
 
     /// Never `Green` while any plugin below is failing. Guaranteed by `create`.
     member this.Outcome = this.outcome
@@ -1869,6 +1874,7 @@ let create
           notSelected = runReport.NotSelected
           selectedBy = runReport.SelectedBy
           seedFanout = runReport.SeedFanout
+          price = runReport.Price
           outcome = outcome
           exitCode = exitCode
           plugins = plugins
@@ -2003,6 +2009,7 @@ let private scopeJson
     (notSelected: NotSelectedFile list option)
     (selectedBy: ProjectAttribution list option)
     (seedFanout: SeedFanoutReading option)
+    (price: SelectionPrice.Reading option)
     (graded: SuiteVerdict list option)
     (scope: TestScope)
     : obj =
@@ -2018,6 +2025,10 @@ let private scopeJson
     // The seeds that alone selected the most tests, beside `selectedBy`. `null` where the
     // reading did not say.
     let fanout = seedFanout |> Option.map SeedFanoutReading.wire |> Option.toObj
+
+    // What the graded selection was priced at before it ran, beside `selectedBy`. `null`
+    // where the reading did not say.
+    let priced = price |> Option.map SelectionPrice.Reading.wire |> Option.toObj
 
     // How many tests each cause selected, beside `selectedBy`. `null` where the reading
     // did not say why projects ran, or the verdict names no graded run to count.
@@ -2048,6 +2059,7 @@ let private scopeJson
            selectedBy = attributed
            testsByCause = testsByCause
            seedFanout = fanout
+           price = priced
            excluded = gaps |}
         :> obj
     | ImpactFiltered(ran, total) ->
@@ -2058,6 +2070,7 @@ let private scopeJson
            selectedBy = attributed
            testsByCause = testsByCause
            seedFanout = fanout
+           price = priced
            excluded = gaps |}
         :> obj
     | NoTestsRun reason ->
@@ -2103,6 +2116,7 @@ let private scopeJson
            selectedBy = attributed
            testsByCause = testsByCause
            seedFanout = fanout
+           price = priced
            excluded = gaps |}
         :> obj
     | ScopeUnknown ->
@@ -2111,6 +2125,7 @@ let private scopeJson
            selectedBy = attributed
            testsByCause = testsByCause
            seedFanout = fanout
+           price = priced
            excluded = gaps |}
         :> obj
     // A DISTINCT kind, not folded into "unknown": "the daemon reported no scope" is an
@@ -2123,6 +2138,7 @@ let private scopeJson
            selectedBy = attributed
            testsByCause = testsByCause
            seedFanout = fanout
+           price = priced
            excluded = gaps |}
         :> obj
 
@@ -2226,7 +2242,7 @@ let private checkComparisonJson (excluded: SolutionScope.Exclusion list option) 
              box
                  // The pre-escalation reading's scope. It records no not-selected files:
                  // those are on the verdict's own scope, from the reading it was graded on.
-                 {| scope = scopeJson excluded None None None None r.Scope
+                 {| scope = scopeJson excluded None None None None None r.Scope
                     outcome = outcomeJson r.Outcome
                     failingSuites = r.FailingSuites
                     basis = SampleBasis.token r.Basis
@@ -2304,6 +2320,7 @@ let serialize (v: Verdict) : string =
                 v.NotSelected
                 v.SelectedBy
                 v.SeedFanout
+                v.Price
                 (v.RunId
                  |> Option.bind (fun id -> v.Runs |> List.tryFind (fun r -> r.RunId = Some id))
                  |> Option.map _.Suites)
@@ -3334,6 +3351,12 @@ let read (repoRoot: string) : Reading =
                     | Ok seedFanout -> scope, seedFanout
                     | Error reason -> ScopeUnreadable $"the recorded scope has %s{reason}", None
 
+                // And for a `price`.
+                let scope, price =
+                    match scopeEl |> Option.bind (fun el -> tryProp el "price") |> tryReadSelectionPrice with
+                    | Ok price -> scope, price
+                    | Error reason -> ScopeUnreadable $"the recorded scope has %s{reason}", None
+
                 let excluded = scopeEl |> Option.bind parseExcluded
 
                 let gradedRunId =
@@ -3400,6 +3423,7 @@ let read (repoRoot: string) : Reading =
                           notSelected = notSelected
                           selectedBy = selectedBy
                           seedFanout = seedFanout
+                          price = price
                           outcome = outcome
                           exitCode = tryInt root "exitCode" |> Option.defaultValue 2
                           plugins = plugins

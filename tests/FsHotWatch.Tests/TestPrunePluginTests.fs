@@ -6162,6 +6162,8 @@ let ``a run-tests force run says so in test-scope and in the verdict scope`` () 
         let selectedBy = document.RootElement.GetProperty("selectedBy").GetRawText()
         test <@ selectedBy.Contains "\"force-run\"" @>
 
+        test <@ document.RootElement.GetProperty("price").ValueKind = JsonValueKind.Object @>
+
         let scope =
             FsHotWatch.Cli.IpcParsing.parseTestRunReport reply
             |> VerdictFixtures.scopeOnTheWire

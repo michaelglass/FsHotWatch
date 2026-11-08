@@ -489,6 +489,13 @@ let internal testScopeCommand (env: CommandEnv) (allConfigs: TestConfig list) =
                     |> Option.map (fun receipt -> SeedFanoutReading.wire receipt.SeedFanout)
                     |> Option.toObj
 
+                // What the graded run was priced at before it ran. Null where it was not priced.
+                let price =
+                    receipt
+                    |> Option.bind (fun receipt -> receipt.Price)
+                    |> Option.map SelectionPrice.Reading.wire
+                    |> Option.toObj
+
                 match scopeOf projects evidenceCoverage with
                 | ScopeFull n ->
                     // Why this run took every project. Always present here: a
@@ -505,6 +512,7 @@ let internal testScopeCommand (env: CommandEnv) (allConfigs: TestConfig list) =
                                cause = cause
                                selectedBy = selectedBy
                                seedFanout = seedFanout
+                               price = price
                                notSelected = notSelected
                                runIds = runIds
                                baseline = baseline
@@ -523,6 +531,7 @@ let internal testScopeCommand (env: CommandEnv) (allConfigs: TestConfig list) =
                             {| kind = "filtered"
                                selectedBy = selectedBy
                                seedFanout = seedFanout
+                               price = price
                                notSelected = notSelected
                                runIds = runIds
                                baseline = baseline

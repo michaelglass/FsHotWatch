@@ -127,7 +127,8 @@ let private receipt tree =
       ZeroSelection = ZeroSelection.NotAZero
       FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject
       SelectedBy = []
-      SeedFanout = SeedFanoutReading.NoSelection }
+      SeedFanout = SeedFanoutReading.NoSelection
+      Price = None }
 
 [<Fact(Timeout = 10000)>]
 let ``every reading with no evidence for the tree names why`` () =
