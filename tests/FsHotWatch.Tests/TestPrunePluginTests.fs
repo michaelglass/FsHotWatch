@@ -3199,6 +3199,53 @@ let ``formatFailureReport: a host killed at its timeout after a Passed! summary 
     test <@ report.Contains "| Discovering..." @>
 
 [<Fact(Timeout = 15000)>]
+let ``failuresOf: a killed host that printed failing test names says it timed out on every named entry`` () =
+    let output = "failed Some.Suite.first (1ms)\n  failed Some.Suite.second (2ms)"
+
+    let killed: TestResults =
+        { Results = Map.ofList [ "P", TestsTimedOut(output, killedAt600s, false, killedAt600s) ]
+          Elapsed = killedAt600s }
+
+    let reds = failuresOf (fun _ -> savedLog) noReport Map.empty killed
+
+    test <@ reds.Length = 2 @>
+    // The verdict records only `Message`, so a cause that lives anywhere else never
+    // reaches a `verdict.json` reader, who then sees test failures and no timeout.
+    test <@ reds |> List.forall (fun r -> r.Entry.Message.Contains "timed out after 600s") @>
+    // The names the run printed are still there, and still project-level.
+    test <@ reds[0].Entry.Message.Contains "failed Some.Suite.first (1ms)" @>
+    test <@ reds[1].Entry.Message.Contains "failed Some.Suite.second (2ms)" @>
+    test <@ reds |> List.forall (fun r -> r.Class = None && r.Method = None) @>
+
+[<Fact(Timeout = 15000)>]
+let ``failuresOf: a killed host named only by its CTRF report says it timed out too`` () =
+    let report =
+        { ReportedFailures.none with
+            Names = [ "Some.Suite.first" ] }
+
+    let killed: TestResults =
+        { Results = Map.ofList [ "P", TestsTimedOut("no failing line here", killedAt600s, false, killedAt600s) ]
+          Elapsed = killedAt600s }
+
+    let red =
+        failuresOf (fun _ -> savedLog) (fun _ -> report) Map.empty killed
+        |> List.exactlyOne
+
+    test <@ red.Entry.Message.Contains "timed out after 600s" @>
+    test <@ red.Entry.Message.Contains "failed Some.Suite.first" @>
+
+[<Fact(Timeout = 15000)>]
+let ``failuresOf: a named failure from a run that exited says nothing about a timeout`` () =
+    let failed: TestResults =
+        { Results = Map.ofList [ "P", TestsFailed("failed Some.Suite.first (1ms)", false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let red =
+        failuresOf (fun _ -> savedLog) noReport Map.empty failed |> List.exactlyOne
+
+    test <@ red.Entry.Message = "failed Some.Suite.first (1ms)" @>
+
+[<Fact(Timeout = 15000)>]
 let ``FailureCause.ofOutput: a timed-out run with no summary quotes its head under the timeout`` () =
     let cause =
         FailureCause.ofOutput (RedRunEnding.TimedOut killedAt600s) "P" savedLog "Waiting for the test DB lock..."
