@@ -74,6 +74,11 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core: the watchdog heartbeat reports the thread pool's queue
+
+The heartbeat line now ends `; threads N; pool queue M`, so a log can tell a pool that is
+starved (threads climbing, queue growing) from a daemon with a backlog of real work.
+
 ### build: TestPrune's code is linted by FSharpLint again
 
 - Importing TestPrune (AUTOMATION-1367) scoped the FSharpLint shim off TestPrune's paths in

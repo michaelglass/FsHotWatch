@@ -29,7 +29,7 @@ type WatchdogState =
         /// server keeps three acceptors live so a `status` poll can be served
         /// while another op is stuck.
         InFlight: InFlightOp list
-        /// Wall-clock threshold past which an in-flight op is treated as wedged.
+        /// Awake-time threshold past which an in-flight op is treated as wedged.
         Threshold: TimeSpan
     }
 
@@ -124,6 +124,9 @@ type ResourceReading =
         Gen2: int
         /// The process's thread count: a pool grown by starvation shows here first.
         Threads: int
+        /// Work items queued for the thread pool: with `Threads`, what tells pool starvation
+        /// from a backlog of real work.
+        PendingWorkItems: int64
     }
 
 module private Native =
@@ -166,7 +169,8 @@ let readResources () : ResourceReading =
       Gen0 = GC.CollectionCount 0
       Gen1 = GC.CollectionCount 1
       Gen2 = GC.CollectionCount 2
-      Threads = threadCount () }
+      Threads = threadCount ()
+      PendingWorkItems = Threading.ThreadPool.PendingWorkItemCount }
 
 /// The heartbeat's resource suffix: load average, GC heap size, and how many gen0/1/2
 /// collections ran since the previous heartbeat. A GC share near 100% with gen2 counts
@@ -180,7 +184,7 @@ let resourceSuffix (previous: ResourceReading) (current: ResourceReading) : stri
 
     let heapGb = float current.HeapBytes / 1073741824.0
 
-    $"; %s{load}; heap %.2f{heapGb} GB; collections gen0 +%d{current.Gen0 - previous.Gen0}, gen1 +%d{current.Gen1 - previous.Gen1}, gen2 +%d{current.Gen2 - previous.Gen2}; threads %d{current.Threads}"
+    $"; %s{load}; heap %.2f{heapGb} GB; collections gen0 +%d{current.Gen0 - previous.Gen0}, gen1 +%d{current.Gen1 - previous.Gen1}, gen2 +%d{current.Gen2 - previous.Gen2}; threads %d{current.Threads}; pool queue %d{current.PendingWorkItems}"
 
 /// When the heap valve (see `Watchdog`) forces a collection: the heap is above
 /// `Threshold` and no gen2 collection has run for `Quiet`.
