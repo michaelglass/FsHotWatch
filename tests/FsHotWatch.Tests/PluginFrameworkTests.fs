@@ -1477,7 +1477,9 @@ let ``a faulted exclusive run declared onFailure folds its failure message and t
         let reg = registerDefault handler
         dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/throw" ]))
 
-        waitUntil (fun () -> retainedRan.Value = 1) 20000
+        // The retained work can run before the fold that claimed it records the claim, so
+        // wait for both, or the claim reads as absent on a loaded box.
+        waitUntil (fun () -> retainedRan.Value = 1 && drainClaim.Value.IsSome) 20000
         test <@ folded.Value = Some("boom", SlotHolder.Fold) @>
         test <@ drainClaim.Value = Some Claimed @>
         test <@ retainedRan.Value = 1 @>
