@@ -559,7 +559,8 @@ let private receiptOver (tree: string option) : TestEvidenceReceipt =
       ZeroSelection = ZeroSelection.NotAZero
       FullSuiteCause = FullSuiteCause.SelectionReachedEveryProject
       SelectedBy = []
-      SeedFanout = SeedFanoutReading.NoSelection }
+      SeedFanout = SeedFanoutReading.NoSelection
+      Price = None }
 
 [<Fact(Timeout = 15000)>]
 let ``a queued impact run whose debt was discharged launches nothing`` () =

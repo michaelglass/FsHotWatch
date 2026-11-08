@@ -88,7 +88,7 @@ let internal runTestsWithImpactWith
     let compileInputsOf = env.Launch.CompileInputsOf
     let coverageIngestFailed = env.Launch.CoverageIngestFailed
     let logLaunch = env.Launch.LogLaunch
-    let logSelectedBy = env.Launch.LogSelectedBy
+    let priceSelection = env.Launch.PriceSelection
     let observeModelGeneration = env.Launch.ObserveModelGeneration
     let observeTestInputs = env.Launch.ObserveTestInputs
     let tracesFor = env.Launch.TracesFor
@@ -174,7 +174,7 @@ let internal runTestsWithImpactWith
             if nothingForced && not alwaysOnly && (baselineEquivalent || nothingToVerify) then
                 return! zeroAffectedSkip emitStarted inputs launch nothingToVerify
             else
-                logSelectedBy launch
+                let launch = priceSelection launch
 
                 logLaunchSelection inputs hasCachedResults widenings selected excludedByProject treeUnverified
 
@@ -253,6 +253,7 @@ let internal runTestsWithImpactWith
                   FullSuiteCause = fullSuiteCause
                   SelectedBy = []
                   SeedFanout = SeedFanoutReading.NoSelection
+                  Price = None
                   TraceShadow = [] }
 
             return TestsFinished(started, completed, launch)

@@ -2,6 +2,7 @@
 module FsHotWatch.Tests.SelectionPriceTests
 
 open System
+open System.Text.Json
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.TestPrune
@@ -97,6 +98,28 @@ let ``a price names the classes no run recorded`` () =
     let priced = price book [ "P", Asked.Classes(Set.ofList [ "P.A"; "P.New" ]) ]
     test <@ (describe priced).Contains "1 class(es) never recorded" @>
     test <@ not ((describe (price book [ "P", Asked.Whole ])).Contains "unpriced") @>
+
+
+[<Fact(Timeout = 10000)>]
+let ``a price reads as counts, and names only the projects no run holds`` () =
+    let priced =
+        price book [ "P", Asked.Classes(Set.ofList [ "P.A"; "P.New" ]); "R", Asked.Whole ]
+
+    let reading = Reading.ofPrice priced
+
+    test
+        <@
+            reading = { EstimateMs = 100.0
+                        PricedClasses = 1
+                        UnpricedClasses = 1
+                        UnpricedProjects = [ "R" ] }
+        @>
+
+    let wire = Nodes.JsonNode.Parse(JsonSerializer.Serialize(Reading.wire reading))
+    test <@ wire.["estimateMs"].GetValue<float>() = 100.0 @>
+    test <@ wire.["pricedClasses"].GetValue<int>() = 1 @>
+    test <@ wire.["unpricedClasses"].GetValue<int>() = 1 @>
+    test <@ wire.["unpricedProjects"].[0].GetValue<string>() = "R" @>
 
 [<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a book over a runs directory reads only its newest runs, and none when it is missing`` () =

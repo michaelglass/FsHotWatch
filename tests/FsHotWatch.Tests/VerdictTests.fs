@@ -136,6 +136,7 @@ let private build (s: Spec) : Verdict.Verdict =
           NotSelected = s.NotSelected
           SelectedBy = s.SelectedBy
           SeedFanout = None
+          Price = None
           GradedEvidence = GradedEvidenceReading.NotReported
           OutcomeKeys = None }
         s.Tree
@@ -1295,6 +1296,7 @@ let ``the verdict accounts for EVERY run the check produced, not just the graded
                   NotSelected = None
                   SelectedBy = None
                   SeedFanout = None
+                  Price = None
                   GradedEvidence = GradedEvidenceReading.NotReported
                   OutcomeKeys = None }
 
@@ -1348,6 +1350,7 @@ let ``a report that ran ONLY in an early batch is reported as having run — and
                                   NotSelected = None
                                   SelectedBy = None
                                   SeedFanout = None
+                                  Price = None
                                   GradedEvidence = GradedEvidenceReading.NotReported
                                   OutcomeKeys = None } }
 
@@ -1384,6 +1387,7 @@ let ``the verdict names every CTRF report on disk for the check — the omission
                               NotSelected = None
                               SelectedBy = None
                               SeedFanout = None
+                              Price = None
                               GradedEvidence = GradedEvidenceReading.NotReported
                               OutcomeKeys = None } }
 
@@ -7151,6 +7155,37 @@ let ``a verdict file whose fanout reading has a kind this build does not know re
             readScopeOf
                 root
                 """{"kind":"full","ranProjects":6,"totalProjects":6,"seedFanout":{"kind":"a-kind-from-another-version"}}"""
+
+        test <@ TestScope.isUnreadable v.Scope @>)
+
+
+[<Fact>]
+let ``a selection's price survives a round trip through the verdict file`` () =
+    withTempDir "verdict-price-roundtrip" (fun root ->
+        let v =
+            readScopeOf
+                root
+                """{"kind":"filtered","ranProjects":1,"totalProjects":6,"price":{"estimateMs":42.5,"pricedClasses":3,"unpricedClasses":1,"unpricedProjects":[]}}"""
+
+        test <@ v.Scope = ImpactFiltered(1, 6) @>
+
+        test
+            <@
+                v.Price = Some
+                    { FsHotWatch.TestPrune.SelectionPrice.Reading.EstimateMs = 42.5
+                      FsHotWatch.TestPrune.SelectionPrice.Reading.PricedClasses = 3
+                      FsHotWatch.TestPrune.SelectionPrice.Reading.UnpricedClasses = 1
+                      FsHotWatch.TestPrune.SelectionPrice.Reading.UnpricedProjects = [] }
+            @>
+
+        let scope = (Nodes.JsonNode.Parse(Verdict.serialize v)).["scope"]
+        test <@ scope.["price"].["pricedClasses"].GetValue<int>() = 3 @>)
+
+[<Fact>]
+let ``a verdict file whose price this build cannot read reads as an unreadable scope`` () =
+    withTempDir "verdict-price-unreadable" (fun root ->
+        let v =
+            readScopeOf root """{"kind":"full","ranProjects":6,"totalProjects":6,"price":{"estimateMs":"free"}}"""
 
         test <@ TestScope.isUnreadable v.Scope @>)
 // ---------------------------------------------------------------------------

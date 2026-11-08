@@ -392,6 +392,48 @@ let ``test-scope carries the attribution of a full run too`` () =
     test <@ kind = "full" @>
     test <@ attributed = 3 @>
 
+// --- what a launch is priced at, carried to the verdict's reply ------------------
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a launch is priced from the recorded runs, and a project none recorded is named`` () =
+    let root = isolatedRoot ()
+
+    let priced = pricedSelectionIn root (fullSuiteLaunch [ "ProjA" ])
+
+    test
+        <@
+            priced.Price = Some
+                { SelectionPrice.Reading.EstimateMs = 0.0
+                  SelectionPrice.Reading.PricedClasses = 0
+                  SelectionPrice.Reading.UnpricedClasses = 0
+                  SelectionPrice.Reading.UnpricedProjects = [ "ProjA" ] }
+        @>
+
+[<Fact(Timeout = 30000)>]
+let ``test-scope carries the price of the run it grades`` () =
+    let f = fixture ()
+    let launched, launch = buildAndLaunch f (owing "Lib.f" (verified f))
+
+    test
+        <@
+            launch.Price
+            |> Option.exists (fun p -> p.UnpricedProjects = [ "ProjA"; "ProjB" ])
+        @>
+
+    let completed = update f launched (finishedGreen launch)
+
+    use reply = JsonDocument.Parse(testScope f completed)
+    let price = reply.RootElement.GetProperty("price")
+
+    let unpriced =
+        price.GetProperty("unpricedProjects").EnumerateArray()
+        |> Seq.map _.GetString()
+        |> List.ofSeq
+
+    test <@ unpriced = [ "ProjA"; "ProjB" ] @>
+    let estimate = price.GetProperty("estimateMs").GetDouble()
+    test <@ estimate = 0.0 @>
+
 // --- the top seeds by fanout -----------------------------------------------------
 
 [<Fact(Timeout = 10000)>]

@@ -6,6 +6,8 @@
   (AUTOMATION-1115). They read as ordinary `failed <test>` lines, so a reader saw test failures from a project whose
   host was killed.
 
+- **feat: `test-scope` sends `price`**, what the graded selection was priced at before it ran, carried from the launch on the receipt the run earns. A run that executes nothing is not priced.
+
 - feat: a test run logs one line for each launched project it filed no test evidence for, naming why (`<project>:
   no test evidence written — the run was filtered`), and the evidence tally counts them (`withheld N`)
   (AUTOMATION-1511). The reason was logged at debug only, so a project that never got evidence (an impact-filtered

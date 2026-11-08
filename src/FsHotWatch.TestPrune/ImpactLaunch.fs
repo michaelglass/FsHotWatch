@@ -86,7 +86,7 @@ type internal RunLaunchSupport =
       CoverageIngestFailed: PluginCtx<TestPruneMsg> -> CoverageIngestFailure -> unit
       EvidencePlanFor: EvidencePlanner
       LogLaunch: string -> TestMode -> TestRunLaunch -> unit
-      LogSelectedBy: TestRunLaunch -> unit
+      PriceSelection: TestRunLaunch -> TestRunLaunch
       ObserveModelGeneration: PluginCtx<TestPruneMsg> -> int64 option
       ObserveTestInputs: PluginCtx<TestPruneMsg> -> Map<string, string * string> option
       TracesFor: PluginCtx<TestPruneMsg> -> TestMode -> TraceRunHost option }
@@ -771,6 +771,7 @@ let internal assembleLaunch
           FullSuiteCause = fullSuiteCause
           SelectedBy = selectedBy
           SeedFanout = inputs.SeedFanout
+          Price = None
           TraceShadow = traceShadow }
 
     { EvidencePlan = evidencePlan
@@ -830,6 +831,7 @@ let internal zeroAffectedSkip
                     Selection = Map.empty
                     SelectedBy = []
                     SeedFanout = SeedFanoutReading.NoSelection
+                    Price = None
                     // Executed nothing, so it neither covers nor projects
                     // anything.
                     WouldHaveRun = None

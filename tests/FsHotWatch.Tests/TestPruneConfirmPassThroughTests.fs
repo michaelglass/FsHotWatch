@@ -669,6 +669,7 @@ let private selectionOwned: (string * string) list =
     [ "test-scope:seeds", "the symbols whose impact selection launched the run; pass-through selects nothing"
       "test-scope:seedCount", "the count of those symbols"
       "test-scope:seedFanout", "which of those symbols alone selected the most tests; pass-through ranks none"
+      "test-scope:price", "read from the runs recorded before this one, so a second run on a root is priced differently"
       "test-scope:cause",
       "why the run took the full suite: a confirm requests it, a cold check takes it for want of a baseline" ]
 
