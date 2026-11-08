@@ -313,3 +313,53 @@ let ``a timed-out run with no report leaves the ledger naming the timeout, throu
 
         test <@ red.Class = None @>
         test <@ red.Entry.Message.StartsWith timeoutSubject @>)
+
+// QA's residual: the shape check still reads stdout, so prose that ends in a duration
+// passes it. A complete CTRF report is the runner's own record, so it names the reds.
+
+let private proseWithDuration = "failed after 3 retries (10s)"
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``prose ending in a duration files no test when the run wrote a complete report`` () =
+    let report =
+        ctrf
+            [ $"%s{realClass}.%s{realMethod}", "failed"
+              $"%s{otherClass}.still green", "passed" ]
+
+    let filed =
+        failuresOf
+            noRunLog
+            (fun _ -> ReportedFailures.ofReport report)
+            Map.empty
+            (results (failedRun ([ proseWithDuration; realFailureLine ] @ summary 1 2)))
+        |> List.map (fun f -> f.Class, f.Method, f.Entry.Message)
+
+    test <@ filed = [ Some realClass, Some realMethod, realFailureLine ] @>
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a complete report with no failed row files prose as the project's red, not a test`` () =
+    let filed =
+        failuresOf
+            noRunLog
+            (fun _ -> ReportedFailures.ofReport greenReport)
+            Map.empty
+            (results (failedRun [ proseWithDuration; "Test run summary: Failed!" ]))
+
+    test <@ filed |> List.map (fun f -> f.Class) = [ None ] @>
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a report that does not reconcile leaves the console naming the reds`` () =
+    // The summary claims two failures, the rows show one: incomplete, so the console's
+    // result lines still file the test the report did not spell out.
+    let incomplete =
+        $"""{{"results":{{"summary":{{"tests":2,"passed":0,"failed":2,"pending":0,"skipped":0,"other":0}},"tests":[{{"name":"%s{realClass}.%s{realMethod}","status":"failed","duration":1}}]}}}}"""
+
+    let filed =
+        failuresOf
+            noRunLog
+            (fun _ -> ReportedFailures.ofReport incomplete)
+            Map.empty
+            (results (failedRun [ realFailureLine; $"failed %s{otherClass}.also red (5ms)" ]))
+        |> List.map (fun f -> f.Class)
+
+    test <@ filed = [ Some realClass; Some otherClass ] @>
