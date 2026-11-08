@@ -32,7 +32,7 @@ open FsHotWatch.TestPrune.RuntimeCoverageSelection
 
 type AffectedTestsState =
     | NotYetAnalyzed
-    | Analyzed of TestMethodInfo list
+    | Analyzed of AffectedSelection
 
 /// A receipt input tree as read: its identity and the per-file entries hashed into it.
 /// The identity is a content address of `Entries`, so a tree carries its own paths

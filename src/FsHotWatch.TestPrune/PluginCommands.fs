@@ -609,7 +609,7 @@ let internal pluginCommands (env: CommandEnv) =
                       if symbols.IsEmpty then
                           []
                       else
-                          queries.AffectedTests symbols
+                          (queries.AffectedTests symbols).Tests
 
                   return
                       tests

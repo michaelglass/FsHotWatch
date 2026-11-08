@@ -1424,10 +1424,16 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
     /// never removes a test. `SeedCoverage.affectedTests` answers every symbol from one
     /// loaded region; `InMemoryStore` states the same rule one symbol at a time.
     member this.QueryAffectedTests(changedSymbolNames: string list) : TestMethodInfo list =
+        (this.QueryAffectedSelection changedSymbolNames).Tests
+
+    /// `QueryAffectedTests`, with the test projects the composition-root fail-safe restored
+    /// named beside the rows. An index with no marker can restore nothing.
+    member this.QueryAffectedSelection(changedSymbolNames: string list) : AffectedSelection =
         if changedSymbolNames.IsEmpty then
-            []
+            AffectedSelection.none
         elif not (this.HasCompositionRoots()) then
             this.QueryAffectedTestsUnbarriered changedSymbolNames
+            |> AffectedSelection.ofTests
         else
             this.WithRegion(changedSymbolNames, fun region -> SeedCoverage.affectedTests region changedSymbolNames)
 

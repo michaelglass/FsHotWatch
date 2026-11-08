@@ -48,7 +48,8 @@ let private index: SymbolFreeEdit.Index =
               if List.contains "Lib.g" seeds then
                   method "P2" "GTests"
                   method "P2" "MoreGTests"
-                  method "Unrun" "Elsewhere" ] }
+                  method "Unrun" "Elsewhere" ]
+            |> AffectedSelection.ofTests }
 
 let private runnable project = project <> "Unrun"
 
@@ -88,7 +89,7 @@ let ``the explanation is the selection a symbol-free edit to the file makes`` ()
     let explained = SymbolFreeEdit.explainFile runnable index "src/Lib.fs"
 
     match selected, explained with
-    | SymbolFreeEdit.Covering(_, seeds, classes), Some e ->
+    | SymbolFreeEdit.Covering(_, seeds, classes, _), Some e ->
         test <@ e.Seeds = seeds @>
         test <@ e.Classes = classes @>
     | other -> Assert.Fail $"expected both to cover the file, got %A{other}"
@@ -230,7 +231,8 @@ let private selection classes fanout : SymbolFreeEdit.FileSelection =
     { Seeds = [ "Lib.f" ]
       Classes = classes
       CoveringTests = 0
-      Fanout = fanout }
+      Fanout = fanout
+      RestoredProjects = Set.empty }
 
 [<Fact(Timeout = 10000)>]
 let ``a file no configured test covers is said to select no class`` () =
@@ -335,3 +337,47 @@ let ``fshw explain prices the selection from the newest recorded runs`` () =
             doc.RootElement.GetProperty("price").GetProperty("estimateMs").GetDouble()
 
         test <@ estimate = 4000.0 @>)
+
+// --- the composition-root fail-safe ------------------------------------------------
+
+let private restoring: SymbolFreeEdit.Index =
+    { index with
+        Affected =
+            fun seeds ->
+                { index.Affected seeds with
+                    RestoredProjects = Set.ofList [ "P2"; "Unrun" ] } }
+
+let private explanationOf (selection: SymbolFreeEdit.FileSelection option) : Explain.Explanation =
+    { File = "src/Lib.fs"
+      Selection = selection
+      AlwaysClasses = Map.empty
+      Price = None }
+
+[<Fact(Timeout = 10000)>]
+let ``explaining a file names the runnable projects the composition-root fail-safe restored`` () =
+    let explained = SymbolFreeEdit.explainFile runnable restoring "src/Lib.fs"
+    test <@ explained |> Option.map _.RestoredProjects = Some(Set.singleton "P2") @>
+
+    let text = explanationOf explained |> Explain.format |> String.concat "\n"
+    test <@ text.Contains "composition-root fail-safe" @>
+    test <@ text.Contains "P2" @>
+
+    use doc = JsonDocument.Parse(explanationOf explained |> Explain.toJson)
+
+    let restored =
+        doc.RootElement.GetProperty("restoredProjects").EnumerateArray()
+        |> Seq.map _.GetString()
+        |> List.ofSeq
+
+    test <@ restored = [ "P2" ] @>
+
+[<Fact(Timeout = 10000)>]
+let ``explaining a file whose selection restored nothing says nothing about the fail-safe`` () =
+    let explained = SymbolFreeEdit.explainFile runnable index "src/Lib.fs"
+    test <@ explained |> Option.map _.RestoredProjects = Some Set.empty @>
+
+    let text = explanationOf explained |> Explain.format |> String.concat "\n"
+    test <@ not (text.Contains "fail-safe") @>
+
+    use doc = JsonDocument.Parse(explanationOf explained |> Explain.toJson)
+    test <@ doc.RootElement.GetProperty("restoredProjects").GetArrayLength() = 0 @>

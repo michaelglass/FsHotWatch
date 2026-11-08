@@ -231,6 +231,9 @@ type SelectionSources =
         RuntimeCoverage: Set<string>
         /// The projects an outstanding red added classes to, or put in the run.
         OutstandingFailure: Set<string>
+        /// The projects a seed's barrier emptied, whose tests the composition-root fail-safe
+        /// restored.
+        CompositionRootRestored: Set<string>
         /// The projects whose classes cover a changed or still-owed symbol.
         ChangedSymbols: Set<string>
         /// The projects whose classes cover a symbol-free edit's file.
@@ -248,6 +251,7 @@ module SelectionSources =
           DependencyFanout = Set.empty
           RuntimeCoverage = Set.empty
           OutstandingFailure = Set.empty
+          CompositionRootRestored = Set.empty
           ChangedSymbols = Set.empty
           SymbolFreeEdit = Set.empty
           AlwaysClasses = Set.empty }
@@ -271,6 +275,7 @@ module SelectionAttribution =
               SelectionCause.DependencyFanout, sources.DependencyFanout
               SelectionCause.RuntimeCoverage, sources.RuntimeCoverage
               SelectionCause.OutstandingFailure, sources.OutstandingFailure
+              SelectionCause.CompositionRootRestored, sources.CompositionRootRestored
               SelectionCause.ChangedSymbols, sources.ChangedSymbols
               SelectionCause.SymbolFreeEdit, sources.SymbolFreeEdit
               SelectionCause.AlwaysClasses, sources.AlwaysClasses ]

@@ -130,7 +130,8 @@ type SymbolFreeEdit =
     /// these classes, by project, cover its symbols. A file whose symbols no runnable test
     /// covers adds no class: what executes its code is known, and it is nothing, so
     /// `classes` is empty when no edited file is covered.
-    | Covering of files: string list * seeds: string list * classes: Map<string, string list>
+    /// `restored` names the projects among them the composition-root fail-safe restored.
+    | Covering of files: string list * seeds: string list * classes: Map<string, string list> * restored: Set<string>
     /// Why the edit is not narrowed: the run stays every project in full.
     | Refused of reason: string
 
@@ -142,8 +143,8 @@ module internal SymbolFreeEdit =
             SymbolsIn: string -> string list
             /// The test methods the index holds as declared in a repo-relative file.
             TestsIn: string -> TestMethodInfo list
-            /// The tests a set of seed symbols selects (`QueryAffectedTests`).
-            Affected: string list -> TestMethodInfo list
+            /// The tests a set of seed symbols selects (`QueryAffectedSelection`).
+            Affected: string list -> AffectedSelection
         }
 
     let private isFSharpSource (rel: string) =
@@ -155,14 +156,16 @@ module internal SymbolFreeEdit =
     let private covering (runnable: string -> bool) (index: Index) (rel: string) =
         let seeds = index.SymbolsIn rel
 
-        let tests =
-            if List.isEmpty seeds then
-                []
-            else
-                index.Affected seeds @ index.TestsIn rel
-                |> List.filter (fun t -> runnable t.TestProject)
+        if List.isEmpty seeds then
+            seeds, [], Set.empty
+        else
+            let affected = index.Affected seeds |> AffectedSelection.within runnable
 
-        seeds, tests
+            let tests =
+                affected.Tests
+                @ (index.TestsIn rel |> List.filter (fun t -> runnable t.TestProject))
+
+            seeds, tests, affected.RestoredProjects
 
     /// Classes by project, each project's sorted and distinct.
     let private classesOf (tests: TestMethodInfo list) : Map<string, string list> =
@@ -183,18 +186,19 @@ module internal SymbolFreeEdit =
             CoveringTests: int
             /// Its symbols ranked by the tests each alone selects.
             Fanout: SeedFanoutReading
+            /// The runnable projects among them the composition-root fail-safe restored:
+            /// a barrier would have emptied them, so they run unbarriered.
+            RestoredProjects: Set<string>
         }
 
     /// The selection a symbol-free edit to `rel` makes, explained; `None` when the index
     /// holds no symbol for it, which `select` refuses to narrow.
     let explainFile (runnable: string -> bool) (index: Index) (rel: string) : FileSelection option =
         match covering runnable index rel with
-        | [], _ -> None
-        | seeds, tests ->
+        | [], _, _ -> None
+        | seeds, tests, restored ->
             let aloneCount seed =
-                index.Affected [ seed ]
-                |> List.filter (fun t -> runnable t.TestProject)
-                |> List.length
+                (index.Affected [ seed ] |> AffectedSelection.within runnable).Tests.Length
 
             Some
                 { Seeds = seeds |> List.distinct |> List.sort
@@ -202,7 +206,8 @@ module internal SymbolFreeEdit =
                   CoveringTests = tests |> List.distinct |> List.length
                   // Ranked whenever anything is selected: one file's symbols are few, and
                   // the walk runs only when someone asks.
-                  Fanout = SeedFanoutReading.ofSelection 0 MaxSeedsToAttribute tests.Length seeds aloneCount }
+                  Fanout = SeedFanoutReading.ofSelection 0 MaxSeedsToAttribute tests.Length seeds aloneCount
+                  RestoredProjects = restored }
 
     /// Decide the narrowing for a launch whose evidence is bound to `evidence` and whose
     /// tree is now `current`. `sealedTree` is the tree the last `BatchChecked` folded
@@ -242,22 +247,23 @@ module internal SymbolFreeEdit =
                 let perFile =
                     delta.Changed
                     |> List.map (fun rel ->
-                        let seeds, tests = covering runnable index rel
-                        rel, seeds, tests)
+                        let seeds, tests, restored = covering runnable index rel
+                        rel, seeds, tests, restored)
 
                 // A file the index holds no symbol for is one it cannot answer for. A
                 // file it holds symbols for, with no runnable test covering any, is
                 // answered: nothing executes it.
-                match perFile |> List.tryFind (fun (_, seeds, _) -> List.isEmpty seeds) with
-                | Some(rel, _, _) -> SymbolFreeEdit.Refused $"the impact index holds no symbol for %s{rel}"
+                match perFile |> List.tryFind (fun (_, seeds, _, _) -> List.isEmpty seeds) with
+                | Some(rel, _, _, _) -> SymbolFreeEdit.Refused $"the impact index holds no symbol for %s{rel}"
                 | None ->
-                    let classes = perFile |> List.collect (fun (_, _, tests) -> tests) |> classesOf
+                    let classes = perFile |> List.collect (fun (_, _, tests, _) -> tests) |> classesOf
 
                     SymbolFreeEdit.Covering(
                         delta.Changed,
                         perFile
-                        |> List.collect (fun (_, seeds, _) -> seeds)
+                        |> List.collect (fun (_, seeds, _, _) -> seeds)
                         |> List.distinct
                         |> List.sort,
-                        classes
+                        classes,
+                        perFile |> List.map (fun (_, _, _, restored) -> restored) |> Set.unionMany
                     )

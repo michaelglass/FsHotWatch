@@ -7222,6 +7222,30 @@ let private testsByCauseOf (v: Verdict.Verdict) =
         |> Some
 
 [<Fact>]
+let ``a project the fail-safe restored counts under its own cause, above changed-symbols`` () =
+    let v =
+        build
+            { greenVerdict "abc" 1 with
+                Command = Verdict.Check
+                RunId = Some(Guid.NewGuid())
+                Scope = ImpactFiltered(2, 4)
+                SelectedBy =
+                    Some
+                        [ attributed
+                              "ProjR"
+                              [ FsHotWatch.TestPrune.SelectionCause.CompositionRootRestored
+                                FsHotWatch.TestPrune.SelectionCause.ChangedSymbols ]
+                          attributed "ProjA" [ FsHotWatch.TestPrune.SelectionCause.ChangedSymbols ] ]
+                Suites = [ executedSuite "ProjR" 40; executedSuite "ProjA" 3 ] }
+
+    test
+        <@
+            testsByCauseOf v = Some
+                [ "composition-root-restored", 40, [ "ProjR" ]
+                  "changed-symbols", 3, [ "ProjA" ] ]
+        @>
+
+[<Fact>]
 let ``the verdict counts the tests each project's widest cause selected, and the counts sum to the tests the run executed``
     ()
     =

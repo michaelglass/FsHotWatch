@@ -14,6 +14,7 @@ open System.Text.Json
 open System.Threading.Tasks
 open Xunit
 open Swensen.Unquote
+open TestPrune.AstAnalyzer
 open TestPrune.Database
 open FsHotWatch.Events
 open FsHotWatch.PluginFramework
@@ -138,7 +139,8 @@ let ``every source maps to its own cause`` () =
           OutstandingFailure = all
           ChangedSymbols = all
           SymbolFreeEdit = all
-          AlwaysClasses = all }
+          AlwaysClasses = all
+          CompositionRootRestored = all }
 
     let causes =
         SelectionAttribution.attribute every (Map.ofList [ "P", [] ]) (Map.ofList [ "P", ProjectInFull ])
@@ -152,6 +154,7 @@ let ``every source maps to its own cause`` () =
                        SelectionCause.DependencyFanout
                        SelectionCause.RuntimeCoverage
                        SelectionCause.OutstandingFailure
+                       SelectionCause.CompositionRootRestored
                        SelectionCause.ChangedSymbols
                        SelectionCause.SymbolFreeEdit
                        SelectionCause.AlwaysClasses ]
@@ -508,7 +511,8 @@ let private selecting (count: int) (db: Database) : ImpactQueries =
                       { SymbolFullName = $"ProjA.T%d{i}.t"
                         TestProject = "ProjA"
                         TestClass = $"ProjA.T%d{i}"
-                        TestMethod = "t" } ] }
+                        TestMethod = "t" } ]
+                |> TestPrune.AstAnalyzer.AffectedSelection.ofTests }
 
 [<Fact(Timeout = 30000)>]
 let ``a wide launch carries its top seeds by fanout, and test-scope sends them`` () =
@@ -607,3 +611,117 @@ let ``an impact launch selects the same tests with shadow trace selection on as 
     test <@ withShadow.Selection = without.Selection @>
     test <@ withShadow.SelectedBy = without.SelectedBy @>
     test <@ without.TraceShadow.IsEmpty @>
+
+// --- the composition-root fail-safe ----------------------------------------------
+
+/// `App.handler` reaches `ProjA` directly and through the fixture boot, and `ProjC` only
+/// through the boot. With the marker, the barrier narrows `ProjA` to `ProjA.Direct` and
+/// empties `ProjC`, so the fail-safe restores `ProjC` whole; without it nothing is cut.
+let private indexRestoringGraph (f: Fixture) (marked: bool) =
+    let symbol name file : TestPrune.AstAnalyzer.SymbolInfo =
+        { FullName = name
+          Kind = TestPrune.AstAnalyzer.Function
+          Location = TestPrune.AstAnalyzer.InSource(file, 1, 5, "") }
+
+    let edge from target : TestPrune.AstAnalyzer.Dependency =
+        { FromSymbol = from
+          ToSymbol = target
+          Kind = TestPrune.AstAnalyzer.Calls
+          Source = "core" }
+
+    let testIn project cls : TestPrune.AstAnalyzer.TestMethodInfo =
+        { SymbolFullName = $"%s{cls}.t"
+          TestProject = project
+          TestClass = cls
+          TestMethod = "t" }
+
+    let analysis: TestPrune.AstAnalyzer.AnalysisResult =
+        { Symbols =
+            [ symbol "App.handler" "src/App.fs"
+              symbol "App.routes" "src/App.fs"
+              symbol "Fixture.boot" "tests/Fixture.fs"
+              symbol "ProjA.Direct.t" "tests/ProjA.fs"
+              symbol "ProjA.Booted.t" "tests/ProjA.fs"
+              symbol "ProjC.Booted.t" "tests/ProjC.fs" ]
+          Dependencies =
+            [ edge "App.routes" "App.handler"
+              edge "Fixture.boot" "App.routes"
+              edge "ProjA.Direct.t" "App.handler"
+              edge "ProjA.Booted.t" "Fixture.boot"
+              edge "ProjC.Booted.t" "Fixture.boot" ]
+          TestMethods =
+            [ testIn "ProjA" "ProjA.Direct"
+              testIn "ProjA" "ProjA.Booted"
+              testIn "ProjC" "ProjC.Booted" ]
+          Attributes =
+            if marked then
+                [ { SymbolFullName = "App.routes"
+                    AttributeName = "CompositionRootAttribute"
+                    ArgsJson = "[]" } ]
+            else
+                []
+          ParentLinks = []
+          Diagnostics = TestPrune.AstAnalyzer.AnalysisDiagnostics.Zero }
+
+    let db = Database.create (Path.Combine(f.Ctx.RepoRoot, "tp.db"))
+    db.RebuildProjects([ analysis ])
+
+let private causesOnTheWire (reply: string) (project: string) =
+    let scope =
+        reply
+        |> FsHotWatch.Cli.IpcParsing.parseTestRunReport
+        |> VerdictFixtures.scopeOnTheWire
+
+    scope.["selectedBy"].AsArray()
+    |> Seq.find (fun e -> e.["project"].GetValue<string>() = project)
+    |> fun e -> e.["causes"].AsArray() |> Seq.map (fun c -> c.GetValue<string>()) |> List.ofSeq
+
+[<Fact(Timeout = 30000)>]
+let ``a project the barrier emptied is attributed to the fail-safe in the verdict, and one it narrowed is not`` () =
+    let f = fixture ()
+    let state = verified f
+    indexRestoringGraph f true
+
+    let launched, launch = buildAndLaunch f (owing "App.handler" state)
+
+    test
+        <@
+            launch.SelectedBy = [ { Project = "ProjA"
+                                    Causes = [ SelectionCause.ChangedSymbols ]
+                                    SkippedClasses = [] }
+                                  { Project = "ProjB"
+                                    Causes = [ SelectionCause.AlwaysClasses ]
+                                    SkippedClasses = [] }
+                                  { Project = "ProjC"
+                                    Causes = [ SelectionCause.CompositionRootRestored; SelectionCause.ChangedSymbols ]
+                                    SkippedClasses = [] } ]
+        @>
+
+    // The barrier really narrowed ProjA: what it cut is out of the run.
+    test <@ launch.Selection["ProjA"] = ProjectClasses(Set.singleton "ProjA.Direct") @>
+    test <@ launch.Selection["ProjC"] = ProjectClasses(Set.singleton "ProjC.Booted") @>
+
+    let reply = testScope f (update f launched (finishedGreen launch))
+    test <@ causesOnTheWire reply "ProjC" = [ "composition-root-restored"; "changed-symbols" ] @>
+    test <@ causesOnTheWire reply "ProjA" = [ "changed-symbols" ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``an unbarriered selection never reports the fail-safe`` () =
+    let f = fixture ()
+    let state = verified f
+    indexRestoringGraph f false
+
+    let launched, launch = buildAndLaunch f (owing "App.handler" state)
+
+    // Positive control: without the marker the same seed still selects both projects, so
+    // the absence below is about the barrier and not about a launch that selects nothing.
+    test
+        <@
+            launch.SelectedBy
+            |> List.filter (fun e -> e.Project <> "ProjB")
+            |> List.map (fun e -> e.Project, e.Causes) = [ "ProjA", [ SelectionCause.ChangedSymbols ]
+                                                           "ProjC", [ SelectionCause.ChangedSymbols ] ]
+        @>
+
+    let reply = testScope f (update f launched (finishedGreen launch))
+    test <@ not (reply.Contains "composition-root-restored") @>

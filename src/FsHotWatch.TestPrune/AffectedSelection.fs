@@ -75,7 +75,7 @@ let internal affectedTestsFor (env: SelectionEnv) (symbols: string list) =
     let runnableProjects = env.RunnableProjects
 
     if symbols.IsEmpty then
-        [], SeedFanoutReading.NoSelection
+        AffectedSelection.none, SeedFanoutReading.NoSelection
     else
         // Scoped to projects this daemon actually runs. Selecting tests in an
         // unconfigured project would put classes in the run map that never
@@ -83,13 +83,15 @@ let internal affectedTestsFor (env: SelectionEnv) (symbols: string list) =
         // skip) disagree with the commit rule. See `debtScope`.
         let queryRunnable (seeds: string list) =
             queries.AffectedTests seeds
-            |> fun ts ->
+            |> fun answer ->
                 if Set.isEmpty runnableProjects then
-                    ts
+                    answer
                 else
-                    ts |> List.filter (fun t -> Set.contains t.TestProject runnableProjects)
+                    answer
+                    |> AffectedSelection.within (fun project -> Set.contains project runnableProjects)
 
-        let affected = queryRunnable symbols
+        let selection = queryRunnable symbols
+        let affected = selection.Tests
         let sortedSeeds = List.sort symbols
 
         // Count the INPUT explicitly, not just the output. `symbols` is the
@@ -121,7 +123,7 @@ let internal affectedTestsFor (env: SelectionEnv) (symbols: string list) =
             match aloneCounts.TryGetValue seed with
             | true, n -> n
             | false, _ ->
-                let n = (queryRunnable [ seed ]).Length
+                let n = (queryRunnable [ seed ]).Tests.Length
                 aloneCounts[seed] <- n
                 n
 
@@ -240,7 +242,7 @@ let internal affectedTestsFor (env: SelectionEnv) (symbols: string list) =
         let fanout =
             SeedFanoutReading.ofSelection WideSelectionTests MaxSeedsToAttribute affected.Length sortedSeeds aloneCount
 
-        affected, fanout
+        selection, fanout
 
 let internal selectAffectedWith
     (env: SelectionEnv)
@@ -262,7 +264,8 @@ let internal selectAffectedWith
         Set.union flushedState.Debt.PendingQueue (Set.ofList flushedState.ChangedSymbols)
         |> Set.toList
 
-    let affectedTests, seedFanout = affectedTestsFor env symbols
+    let affectedSelection, seedFanout = affectedTestsFor env symbols
+    let affectedTests = affectedSelection.Tests
 
     // Classify every considered symbol ONCE, under one resolution of the declared
     // exclusions (see `debtScope`):
@@ -429,7 +432,7 @@ let internal selectAffectedWith
             { commitPending uncovered flushedState.Debt with
                 RuntimeObligations = runtimeObligations }
         ChangedSymbols = remainingSymbols
-        AffectedTests = Analyzed affectedTests
+        AffectedTests = Analyzed affectedSelection
         ChangedSymbolsAllUncovered = allChangesUncovered
         LastSeeds = seedsThatSelectedTests
         LastSeedFanout = fanoutOfThoseSeeds }

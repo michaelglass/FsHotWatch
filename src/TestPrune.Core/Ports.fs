@@ -15,6 +15,7 @@ type SymbolStore =
       GetProjectKey: string -> string option
       GetIndexState: unit -> TestPrune.Domain.IndexState
       QueryAffectedTests: string list -> TestMethodInfo list
+      QueryAffectedSelection: string list -> AffectedSelection
       GetRuntimeCoverageProjects: string list -> string list
       GetTestMethodsInProjects: string list -> TestMethodInfo list
       GetAllSymbols: unit -> SymbolInfo list
@@ -48,6 +49,7 @@ let toSymbolStore (db: Database) : SymbolStore =
       GetProjectKey = db.GetProjectKey
       GetIndexState = db.GetIndexState
       QueryAffectedTests = db.QueryAffectedTests
+      QueryAffectedSelection = db.QueryAffectedSelection
       GetRuntimeCoverageProjects = db.GetRuntimeCoverageProjects
       GetTestMethodsInProjects = db.GetTestMethodsInProjects
       GetAllSymbols = db.GetAllSymbols

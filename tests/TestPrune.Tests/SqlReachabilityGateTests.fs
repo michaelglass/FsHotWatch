@@ -337,7 +337,9 @@ let private oracle (g: RandomGraph) : Set<string> =
     |> List.collect (fun seed ->
         let barriered = selectedFor seed (Set.remove seed g.Roots)
         let unbarriered = selectedFor seed Set.empty
-        CompositionRoot.restoreEmptiedProjects _.TestProject barriered unbarriered)
+
+        CompositionRoot.restoreEmptiedProjects _.TestProject barriered unbarriered
+        |> fst)
     |> List.map _.SymbolFullName
     |> Set.ofList
 

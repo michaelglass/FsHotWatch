@@ -349,7 +349,7 @@ let internal onRunFinishedWith
                         state.ChangedFiles
                         |> List.filter (fun file -> not (List.contains file launch.ChangedFiles))
                 ChangedSymbols = remainingChangedSymbols
-                AffectedTests = Analyzed []
+                AffectedTests = Analyzed AffectedSelection.none
                 Replies = replies }
 
     // An unavailable launch ran nothing. Its receipt is revoked and the fanout

@@ -197,8 +197,48 @@ let private seedIndex (db: TestPrune.Database.Database) =
 
     clearSqlitePoolForDb db
 
+/// `Lib.f` reaches `LibTests` only through a composition root, so a barrier would empty P1
+/// and the fail-safe restores it.
+let private seedRestoringIndex (db: TestPrune.Database.Database) =
+    let symbol name file : SymbolInfo =
+        { FullName = name
+          Kind = SymbolKind.Value
+          Location = InSource(file, 1, 1, $"%s{name}-hash") }
+
+    let dependsOn from target : Dependency =
+        { FromSymbol = from
+          ToSymbol = target
+          Kind = DependencyKind.Calls
+          Source = "core" }
+
+    let covering: TestMethodInfo =
+        { SymbolFullName = "LibTests.f works"
+          TestProject = "P1"
+          TestClass = "LibTests"
+          TestMethod = "f works" }
+
+    db.RebuildProjects(
+        [ { AnalysisResult.Create(
+                [ symbol "Lib.f" "src/Lib.fs"
+                  symbol "App.routes" "src/App.fs"
+                  symbol "LibTests.f works" "LibTests.fs" ],
+                [ dependsOn "App.routes" "Lib.f"; dependsOn "LibTests.f works" "App.routes" ],
+                [ covering ]
+            ) with
+              Attributes =
+                  [ { SymbolFullName = "App.routes"
+                      AttributeName = "CompositionRootAttribute"
+                      ArgsJson = "[]" } ] } ]
+    )
+
+    clearSqlitePoolForDb db
+
 /// The repository, with `always` declared as P1's `alwaysClasses`.
-let private withNarrowingRepoDeclaring (always: string list) (body: NarrowingRepo -> unit) =
+let private withNarrowingRepoIndexed
+    (seed: TestPrune.Database.Database -> unit)
+    (always: string list)
+    (body: NarrowingRepo -> unit)
+    =
     withTempDir "tp-symbol-free" (fun tmpDir ->
         let source = Path.Combine(tmpDir, "src", "Lib.fs")
         let orphan = Path.Combine(tmpDir, "src", "Orphan.fs")
@@ -210,7 +250,7 @@ let private withNarrowingRepoDeclaring (always: string list) (body: NarrowingRep
         seedBaseline tmpDir [ "P1" ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
-        seedIndex (TestPrune.Database.Database.create dbPath)
+        seed (TestPrune.Database.Database.create dbPath)
 
         let config =
             { PendingQueueHelpers.flagConfig tmpDir "P1" flag with
@@ -244,6 +284,9 @@ let private withNarrowingRepoDeclaring (always: string list) (body: NarrowingRep
                   Root = tmpDir }
         finally
             host.Teardown())
+
+let private withNarrowingRepoDeclaring always body =
+    withNarrowingRepoIndexed seedIndex always body
 
 let private withNarrowingRepo body = withNarrowingRepoDeclaring [] body
 
@@ -408,7 +451,8 @@ let private index: SymbolFreeEdit.Index =
                   method "P1" "LibTests"
               if List.contains "Lib.g" seeds then
                   method "P2" "GTests"
-                  method "Unrun" "Elsewhere" ] }
+                  method "Unrun" "Elsewhere" ]
+            |> AffectedSelection.ofTests }
 
 let private compiledAll = Some(fun (_: string) -> true)
 let private runnable project = project <> "Unrun"
@@ -431,7 +475,8 @@ let ``a symbol-free edit to a compiled source file runs the classes covering eve
             narrowed = SymbolFreeEdit.Covering(
                 [ "src/Lib.fs" ],
                 [ "Lib.f"; "Lib.g" ],
-                Map.ofList [ "P1", [ "LibTests" ]; "P2", [ "GTests" ] ]
+                Map.ofList [ "P1", [ "LibTests" ]; "P2", [ "GTests" ] ],
+                Set.empty
             )
         @>
 
@@ -445,7 +490,7 @@ let ``tests declared in the edited file are run with those covering it`` () =
                 | _ -> [] }
 
     match selectWith (Some before) (Some after) (Some after.Identity) compiledAll ix with
-    | SymbolFreeEdit.Covering(_, _, classes) -> test <@ classes["P1"] = [ "InFileTests"; "LibTests" ] @>
+    | SymbolFreeEdit.Covering(_, _, classes, _) -> test <@ classes["P1"] = [ "InFileTests"; "LibTests" ] @>
     | other -> Assert.Fail $"expected a narrowing, got %A{other}"
 
 [<Fact>]
@@ -528,14 +573,15 @@ let ``a file the index holds no symbol for keeps the whole-project run`` () =
 let ``a file whose symbols no runnable test covers is narrowed to no class`` () =
     let uncovered =
         { index with
-            Affected = fun _ -> [ method "Unrun" "Elsewhere" ] }
+            Affected = fun _ -> AffectedSelection.ofTests [ method "Unrun" "Elsewhere" ] }
 
     test
         <@
             selectWith (Some before) (Some after) (Some after.Identity) compiledAll uncovered = SymbolFreeEdit.Covering(
                 [ "src/Lib.fs" ],
                 [ "Lib.f"; "Lib.g" ],
-                Map.empty
+                Map.empty,
+                Set.empty
             )
         @>
 
@@ -556,7 +602,8 @@ let ``an uncovered file edited beside a covered one adds no class of its own`` (
             selectWith (Some before) (Some both) (Some both.Identity) compiledAll ix = SymbolFreeEdit.Covering(
                 [ "src/Lib.fs"; "src/Other.fs" ],
                 [ "Lib.f"; "Other.h" ],
-                Map.ofList [ "P1", [ "LibTests" ] ]
+                Map.ofList [ "P1", [ "LibTests" ] ],
+                Set.empty
             )
         @>
 
@@ -569,3 +616,40 @@ let ``a tree whose identity moved with no path moving is not narrowed`` () =
             selectWith (Some before) (Some relabelled) (Some relabelled.Identity) compiledAll index
             |> refusedWith "no path moved"
         @>
+
+[<Fact>]
+let ``a symbol-free edit names the runnable projects the fail-safe restored for its symbols`` () =
+    let restoring =
+        { index with
+            Affected =
+                fun seeds ->
+                    { index.Affected seeds with
+                        RestoredProjects = Set.ofList [ "P2"; "Unrun" ] } }
+
+    match selectWith (Some before) (Some after) (Some after.Identity) compiledAll restoring with
+    | SymbolFreeEdit.Covering(_, _, _, restored) -> test <@ restored = Set.singleton "P2" @>
+    | other -> Assert.Fail $"expected a narrowing, got %A{other}"
+
+[<Fact(Timeout = 60000)>]
+let ``a comment-only edit whose barrier empties a project attributes the project to the fail-safe`` () =
+    withNarrowingRepoIndexed seedRestoringIndex [] (fun repo ->
+        landBuild repo.Host
+        test <@ lastRun repo = "sh" @>
+
+        File.WriteAllText(repo.Source, libSource "edited")
+        foldAndBuild repo
+
+        // Selected through the fail-safe, and still narrowed to the covering class.
+        test <@ lastRun repo = "--filter-class LibTests" @>
+
+        let report =
+            match repo.Host.RunCommand("test-scope", [||]) |> Async.RunSynchronously with
+            | Some reply -> parseTestRunReport reply
+            | None -> failwith "no test-scope command"
+
+        let causes =
+            report.SelectedBy
+            |> Option.defaultValue []
+            |> List.collect (fun e -> e.Causes |> List.map FsHotWatch.TestPrune.SelectionCause.token)
+
+        test <@ causes = [ "composition-root-restored"; "symbol-free-edit" ] @>)

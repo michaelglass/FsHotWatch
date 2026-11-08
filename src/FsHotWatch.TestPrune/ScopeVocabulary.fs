@@ -129,6 +129,11 @@ type SelectionCause =
     | RuntimeCoverage
     /// It holds an outstanding red, which every run re-verifies.
     | OutstandingFailure
+    /// A changed symbol reaches it only through a composition root whose barrier would
+    /// have emptied it, so the fail-safe cancelled the barrier and its tests came back.
+    /// Ranked above `ChangedSymbols` so a project in the run because a barrier was
+    /// cancelled is never counted as one the barrier narrowed.
+    | CompositionRootRestored
     /// Its classes cover a changed or still-owed symbol.
     | ChangedSymbols
     /// Its classes cover the symbols of a compiled source file whose edit changed no
@@ -150,6 +155,7 @@ module SelectionCause =
           SelectionCause.DependencyFanout
           SelectionCause.RuntimeCoverage
           SelectionCause.OutstandingFailure
+          SelectionCause.CompositionRootRestored
           SelectionCause.ChangedSymbols
           SelectionCause.SymbolFreeEdit
           SelectionCause.AlwaysClasses
@@ -165,6 +171,7 @@ module SelectionCause =
         | SelectionCause.DependencyFanout -> "dependency-fanout"
         | SelectionCause.RuntimeCoverage -> "runtime-coverage"
         | SelectionCause.OutstandingFailure -> "outstanding-failure"
+        | SelectionCause.CompositionRootRestored -> "composition-root-restored"
         | SelectionCause.ChangedSymbols -> "changed-symbols"
         | SelectionCause.SymbolFreeEdit -> "symbol-free-edit"
         | SelectionCause.AlwaysClasses -> "always-classes"

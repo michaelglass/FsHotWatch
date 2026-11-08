@@ -190,6 +190,34 @@ type TestMethodInfo =
       TestClass: string
       TestMethod: string }
 
+/// What the impact walk selected, and which test projects are in it only because the
+/// composition-root fail-safe cancelled the barrier that emptied them. Merged into
+/// `Tests`, a restored project reads like one the walk reached honestly, which
+/// over-reports what a barrier saves.
+type AffectedSelection =
+    {
+        Tests: TestMethodInfo list
+        /// The projects some seed's barrier emptied, judged per seed like the fail-safe
+        /// itself. Empty for a selection no barrier cut.
+        RestoredProjects: Set<string>
+    }
+
+module AffectedSelection =
+    /// Nothing selected.
+    let none: AffectedSelection =
+        { Tests = []
+          RestoredProjects = Set.empty }
+
+    /// A selection the fail-safe had no part in.
+    let ofTests (tests: TestMethodInfo list) : AffectedSelection =
+        { Tests = tests
+          RestoredProjects = Set.empty }
+
+    /// The part of a selection in the projects `keep` accepts.
+    let within (keep: string -> bool) (selection: AffectedSelection) : AffectedSelection =
+        { Tests = selection.Tests |> List.filter (fun t -> keep t.TestProject)
+          RestoredProjects = selection.RestoredProjects |> Set.filter keep }
+
 /// Normalize symbol source paths from absolute to repo-relative.
 let normalizeSymbolPaths (repoRoot: string) (symbols: SymbolInfo list) =
     let relative (file: string) =

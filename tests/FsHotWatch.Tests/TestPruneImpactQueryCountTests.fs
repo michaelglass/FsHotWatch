@@ -153,10 +153,11 @@ let ``a seed that alone selects more than its whole queue is named as a non-mono
             { ImpactQueries.ofDatabase db with
                 AffectedTests =
                     fun seeds ->
-                        match seeds with
-                        | [ single ] when single = symbolName 1 -> testsNamed 600
-                        | [ _ ] -> testsNamed 1
-                        | _ -> testsNamed 501 }
+                        (match seeds with
+                         | [ single ] when single = symbolName 1 -> testsNamed 600
+                         | [ _ ] -> testsNamed 1
+                         | _ -> testsNamed 501)
+                        |> TestPrune.AstAnalyzer.AffectedSelection.ofTests }
 
         let lines = Collections.Concurrent.ConcurrentQueue<string>()
 

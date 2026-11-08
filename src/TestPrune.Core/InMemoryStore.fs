@@ -205,6 +205,39 @@ let fromAnalysisResultsWith (policy: Domain.WalkPolicy) (results: AnalysisResult
 
         afterLift @ expandedChildren |> List.distinct
 
+    let queryAffectedSelection (changedNames: string list) : AffectedSelection =
+        let testsIn (affected: Set<string>) =
+            allTests |> List.filter (fun t -> Set.contains t.SymbolFullName affected)
+
+        if Set.isEmpty compositionRoots then
+            testsIn (transitiveClosure walkedReverseEdges (expandChanged changedNames))
+            |> AffectedSelection.ofTests
+        else
+            // The fail-safe is judged per changed symbol, and the batch selects the
+            // union — `Domain.CompositionRoot.emptiedProjects` says why. Stated
+            // literally here, one walk pair per symbol; `Database` reaches the same
+            // rows from one loaded region.
+            let selectOne (changed: string) =
+                let seeds = expandChanged [ changed ]
+
+                // A composition root that CHANGED is an ordinary seed — the walk runs
+                // past it in full, because rewired composition is exactly what
+                // host-booting tests verify. Only a root REACHED from something it
+                // aggregates stops the walk. Subtracting the seeds is that asymmetry.
+                let barriers = Set.difference compositionRoots (Set.ofList seeds)
+
+                let barriered =
+                    testsIn (transitiveClosureWithBarriers walkedReverseEdges barriers seeds)
+
+                let unbarriered = testsIn (transitiveClosure walkedReverseEdges seeds)
+
+                Domain.CompositionRoot.restoreEmptiedProjects _.TestProject barriered unbarriered
+
+            let answers = changedNames |> List.map selectOne
+
+            { Tests = answers |> List.collect fst |> List.distinct
+              RestoredProjects = answers |> List.map snd |> Set.unionMany }
+
     { GetSymbolsInFile = fun file -> symbolsByFile |> Map.tryFind file |> Option.defaultValue []
       GetDependenciesFromFile = fun file -> depsByFile |> Map.tryFind file |> Option.defaultValue []
       GetParentLinksInFile = fun file -> parentLinksByFile |> Map.tryFind file |> Option.defaultValue []
@@ -214,35 +247,8 @@ let fromAnalysisResultsWith (policy: Domain.WalkPolicy) (results: AnalysisResult
       GetProjectKey = fun _ -> None
       // Built whole from its inputs and never re-indexed: complete, at one generation.
       GetIndexState = fun () -> Domain.IndexState.Complete "in-memory"
-      QueryAffectedTests =
-        fun changedNames ->
-            let testsIn (affected: Set<string>) =
-                allTests |> List.filter (fun t -> Set.contains t.SymbolFullName affected)
-
-            if Set.isEmpty compositionRoots then
-                testsIn (transitiveClosure walkedReverseEdges (expandChanged changedNames))
-            else
-                // The fail-safe is judged per changed symbol, and the batch selects the
-                // union — `Domain.CompositionRoot.emptiedProjects` says why. Stated
-                // literally here, one walk pair per symbol; `Database` reaches the same
-                // rows from one loaded region.
-                let selectOne (changed: string) =
-                    let seeds = expandChanged [ changed ]
-
-                    // A composition root that CHANGED is an ordinary seed — the walk runs
-                    // past it in full, because rewired composition is exactly what
-                    // host-booting tests verify. Only a root REACHED from something it
-                    // aggregates stops the walk. Subtracting the seeds is that asymmetry.
-                    let barriers = Set.difference compositionRoots (Set.ofList seeds)
-
-                    let barriered =
-                        testsIn (transitiveClosureWithBarriers walkedReverseEdges barriers seeds)
-
-                    let unbarriered = testsIn (transitiveClosure walkedReverseEdges seeds)
-
-                    Domain.CompositionRoot.restoreEmptiedProjects _.TestProject barriered unbarriered
-
-                changedNames |> List.collect selectOne |> List.distinct
+      QueryAffectedTests = fun changedNames -> (queryAffectedSelection changedNames).Tests
+      QueryAffectedSelection = queryAffectedSelection
       GetRuntimeCoverageProjects = fun _ -> []
       GetTestMethodsInProjects =
         fun projects ->

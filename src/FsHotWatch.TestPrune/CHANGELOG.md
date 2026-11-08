@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: a test selection attributes a project the composition-root fail-safe restored to its own cause,
+  `composition-root-restored` (AUTOMATION-1515). Such a project read as `changed-symbols`, which over-reported what a
+  barrier saves. It ranks immediately above `changed-symbols`: `testsByCause` counts a project once under its widest
+  cause, so the rank makes that count mean "in the run because a barrier was cancelled", and a project a barrier only
+  narrowed still counts as `changed-symbols`.
+
 - fix: a timed-out test run that named some tests says it timed out on each of those entries in `verdict.json`
   (AUTOMATION-1115). They read as ordinary `failed <test>` lines, so a reader saw test failures from a project whose
   host was killed.

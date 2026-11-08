@@ -47,8 +47,9 @@ open FsHotWatch.TestPrune.TestReports
 /// count them per handler instance.
 type internal ImpactQueries =
     {
-        /// The tests `QueryAffectedTests` selects for a set of changed symbols.
-        AffectedTests: string list -> TestMethodInfo list
+        /// The tests `QueryAffectedTests` selects for a set of changed symbols, and the
+        /// projects the composition-root fail-safe restored among them.
+        AffectedTests: string list -> AffectedSelection
         /// For each symbol, the test projects its single-seed query would select from.
         CoveringProjectsBySeed: string list -> Map<string, Set<string>>
         /// Every test project the index holds a test method for. Not a covering query:
@@ -73,6 +74,6 @@ module internal ImpactQueries =
             None
 
     let ofDatabase (db: Database) : ImpactQueries =
-        { AffectedTests = db.QueryAffectedTests
+        { AffectedTests = db.QueryAffectedSelection
           CoveringProjectsBySeed = db.QueryCoveringProjectsBySeed
           IndexedTestProjects = indexedTestProjects db }

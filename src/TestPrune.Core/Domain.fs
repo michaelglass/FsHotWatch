@@ -91,19 +91,21 @@ module CompositionRoot =
 
     /// One seed's selection: its barriered rows, plus its unbarriered rows in every
     /// project its barrier emptied (see `emptiedProjects`). Appending cannot duplicate
-    /// a row, because a restored row's project has no barriered row.
+    /// a row, because a restored row's project has no barriered row. Returns the rows and
+    /// the projects that were restored.
     let internal restoreEmptiedProjects
         (testProjectOf: 'test -> string)
         (barriered: 'test list)
         (unbarriered: 'test list)
-        : 'test list =
+        : 'test list * Set<string> =
         let projectsOf (rows: 'test list) =
             rows |> List.map testProjectOf |> Set.ofList
 
         let emptied = emptiedProjects (projectsOf barriered) (projectsOf unbarriered)
 
         barriered
-        @ (unbarriered |> List.filter (fun t -> Set.contains (testProjectOf t) emptied))
+        @ (unbarriered |> List.filter (fun t -> Set.contains (testProjectOf t) emptied)),
+        emptied
 
 /// Which dependency edges the affected-test walk follows.
 ///

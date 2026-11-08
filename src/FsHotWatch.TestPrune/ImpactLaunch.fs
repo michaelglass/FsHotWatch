@@ -284,16 +284,20 @@ let internal widenLaunch
 
 /// The impact selection an impact run launches from (`selectForLaunch`).
 type internal LaunchSelection =
-    { CoveringProjectsBySymbol: Map<string, Set<string>>
-      SymbolAffectedByProject: Map<string, string list>
-      TraceShadow: ShadowReading list
-      QuarantinedAffectedByProject: Map<string, string list>
-      AffectedByProject: Map<string, string list>
-      TotalClasses: int
-      InputTree: ReceiptTree option
-      SymbolFreeEdit: SymbolFreeEdit option
-      NarrowedSeeds: string list option
-      AlwaysOnly: bool }
+    {
+        CoveringProjectsBySymbol: Map<string, Set<string>>
+        SymbolAffectedByProject: Map<string, string list>
+        /// The projects the composition-root fail-safe restored among those.
+        RestoredProjects: Set<string>
+        TraceShadow: ShadowReading list
+        QuarantinedAffectedByProject: Map<string, string list>
+        AffectedByProject: Map<string, string list>
+        TotalClasses: int
+        InputTree: ReceiptTree option
+        SymbolFreeEdit: SymbolFreeEdit option
+        NarrowedSeeds: string list option
+        AlwaysOnly: bool
+    }
 
 /// Select what an impact run launches: the projects covering each launched symbol, the
 /// classes the symbols reach, the shadow trace reading, quarantined failures, the forced
@@ -348,17 +352,20 @@ let internal selectForLaunch
     //
     // A pass-through flush selects nothing, so its launch asks the one grouped
     // question the check-reach sample needs: what `check` would have selected.
-    let affectedTestsList =
+    let affectedSelection =
         if TestMode.skips FlushSelection inputs.Mode then
             if Set.isEmpty launchedSymbols then
-                []
+                AffectedSelection.none
             else
                 queries.AffectedTests(Set.toList launchedSymbols)
-                |> List.filter (fun t -> Set.isEmpty runnableProjects || Set.contains t.TestProject runnableProjects)
+                |> AffectedSelection.within (fun project ->
+                    Set.isEmpty runnableProjects || Set.contains project runnableProjects)
         else
             match inputs.AffectedTests with
-            | Analyzed tests -> tests
-            | NotYetAnalyzed -> []
+            | Analyzed selection -> selection
+            | NotYetAnalyzed -> AffectedSelection.none
+
+    let affectedTestsList = affectedSelection.Tests
 
     let symbolAffectedByProject =
         affectedTestsList
@@ -385,7 +392,7 @@ let internal selectForLaunch
                 // query; R7 applies the static file rules to changed files no trace claims.
                 { Seeds = Set.toList launchedSymbols
                   ChangedFiles = inputs.ChangedFiles
-                  StaticWalk = queries.AffectedTests
+                  StaticWalk = fun seeds -> (queries.AffectedTests seeds).Tests
                   FileFallback =
                     fun files ->
                         match selectTests symbols files Map.empty |> fst with
@@ -472,7 +479,7 @@ let internal selectForLaunch
             with
             // No test covers the edited files, and no always-class stands in
             // for them: only running can earn evidence for the edited tree.
-            | SymbolFreeEdit.Covering(files, _, classes) when
+            | SymbolFreeEdit.Covering(files, _, classes, _) when
                 Map.isEmpty classes && Map.isEmpty (AlwaysClasses.only configs)
                 ->
                 SymbolFreeEdit.Refused
@@ -484,7 +491,7 @@ let internal selectForLaunch
 
     let affectedByProject, narrowedSeeds =
         match symbolFreeEdit with
-        | Some(SymbolFreeEdit.Covering(files, seeds, classes)) ->
+        | Some(SymbolFreeEdit.Covering(files, seeds, classes, _)) ->
             let classCount = classes |> Map.values |> Seq.sumBy List.length
 
             let running =
@@ -512,7 +519,7 @@ let internal selectForLaunch
     // every project in full.
     let uncoveredSymbolFreeEdit =
         match symbolFreeEdit with
-        | Some(SymbolFreeEdit.Covering(_, _, classes)) -> Map.isEmpty classes
+        | Some(SymbolFreeEdit.Covering(_, _, classes, _)) -> Map.isEmpty classes
         | _ -> false
 
     let alwaysOnly =
@@ -537,6 +544,7 @@ let internal selectForLaunch
 
     { CoveringProjectsBySymbol = coveringProjectsBySymbol
       SymbolAffectedByProject = symbolAffectedByProject
+      RestoredProjects = affectedSelection.RestoredProjects
       TraceShadow = traceShadow
       QuarantinedAffectedByProject = quarantinedAffectedByProject
       AffectedByProject = affectedByProject
@@ -584,6 +592,7 @@ let internal assembleLaunch
     let launchedRevisions = widenings.LaunchedRevisions
     let coveringProjectsBySymbol = selected.CoveringProjectsBySymbol
     let symbolAffectedByProject = selected.SymbolAffectedByProject
+    let selectionRestored = selected.RestoredProjects
     let traceShadow = selected.TraceShadow
     let quarantinedAffectedByProject = selected.QuarantinedAffectedByProject
     let affectedByProject = selected.AffectedByProject
@@ -665,7 +674,7 @@ let internal assembleLaunch
     let namedClasses: Map<string, Set<string>> =
         let symbolFreeClasses =
             match symbolFreeEdit with
-            | Some(SymbolFreeEdit.Covering(_, _, classes)) -> classes
+            | Some(SymbolFreeEdit.Covering(_, _, classes, _)) -> classes
             | _ -> Map.empty
 
         [ quarantinedAffectedByProject; AlwaysClasses.only configs; symbolFreeClasses ]
@@ -706,10 +715,14 @@ let internal assembleLaunch
                 |> Map.filter (fun project classes -> Map.tryFind project symbolAffectedByProject <> Some classes)
                 |> Map.keys
                 |> Set.ofSeq
+              CompositionRootRestored =
+                match symbolFreeEdit with
+                | Some(SymbolFreeEdit.Covering(_, _, _, restored)) -> Set.union selectionRestored restored
+                | _ -> selectionRestored
               ChangedSymbols = symbolAffectedByProject |> Map.keys |> Set.ofSeq
               SymbolFreeEdit =
                 match symbolFreeEdit with
-                | Some(SymbolFreeEdit.Covering(_, _, classes)) -> classes |> Map.keys |> Set.ofSeq
+                | Some(SymbolFreeEdit.Covering(_, _, classes, _)) -> classes |> Map.keys |> Set.ofSeq
                 | _ -> Set.empty
               AlwaysClasses = AlwaysClasses.only configs |> Map.keys |> Set.ofSeq }
 

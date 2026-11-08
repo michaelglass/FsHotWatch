@@ -659,7 +659,7 @@ let internal flushAndQueryAffectedWith
             Debt =
                 { flushedState.Debt with
                     RuntimeObligations = runtimeObligations }
-            AffectedTests = Analyzed []
+            AffectedTests = Analyzed AffectedSelection.none
             ChangedSymbolsAllUncovered = UncoveredChanges.No }
     else
         selectAffected flushedState runtimeObligations
@@ -937,5 +937,5 @@ let internal dischargeCoveredBootScanWith
                     RuntimeObligations = Map.empty }
             ChangedFiles = []
             ChangedSymbols = []
-            AffectedTests = Analyzed [] }
+            AffectedTests = Analyzed AffectedSelection.none }
     | _ -> state

@@ -220,8 +220,9 @@ let private reached (starts: int64 list) (successors: int64 -> int64 list) : Has
 /// start, expanding markers that are themselves starts: a marker another seed reaches
 /// but one seed starts from is expanded by that seed's own walk, so the batch walk
 /// reaches exactly the union of the per-seed ones. The restored rows are one walk per
-/// distinct set of seeds that emptied a project, kept to those projects.
-let affectedTests (region: Region) (seeds: string list) : TestMethodInfo list =
+/// distinct set of seeds that emptied a project, kept to those projects. The answer names
+/// those projects beside the merged rows.
+let affectedTests (region: Region) (seeds: string list) : AffectedSelection =
     let dependents = listAt region.Dependents
     let perSeed = reachBySeed region seeds
     let allStarts = perSeed |> List.collect _.Starts |> List.distinct
@@ -238,12 +239,15 @@ let affectedTests (region: Region) (seeds: string list) : TestMethodInfo list =
         |> rowsOn
         |> List.ofSeq
 
-    let restored =
+    let emptiedBySeed =
         perSeed
         |> List.collect (fun r ->
             Domain.CompositionRoot.emptiedProjects r.Narrowed r.Full
             |> Set.toList
             |> List.map (fun project -> project, r.Starts))
+
+    let restored =
+        emptiedBySeed
         |> List.groupBy fst
         |> List.map (fun (project, owners) -> project, owners |> List.collect snd |> List.distinct |> List.sort)
         |> List.groupBy snd
@@ -255,4 +259,5 @@ let affectedTests (region: Region) (seeds: string list) : TestMethodInfo list =
             |> Seq.filter (fun t -> emptied.Contains t.TestProject)
             |> List.ofSeq)
 
-    barriered @ restored |> List.distinct
+    { Tests = barriered @ restored |> List.distinct
+      RestoredProjects = emptiedBySeed |> List.map fst |> Set.ofList }

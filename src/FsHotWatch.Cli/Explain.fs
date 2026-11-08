@@ -76,7 +76,7 @@ let explain (db: Database) (book: SelectionPrice.Book) (scope: TestsScope) (rel:
     let index: SymbolFreeEdit.Index =
         { SymbolsIn = fun rel -> db.GetSymbolsInFile rel |> List.map _.FullName |> List.distinct
           TestsIn = db.GetTestMethodsInFile
-          Affected = db.QueryAffectedTests }
+          Affected = db.QueryAffectedSelection }
 
     let runnable project =
         Set.isEmpty scope.Runnable || Set.contains project scope.Runnable
@@ -127,6 +127,7 @@ let toJson (e: Explanation) : string =
                coveringTests = s.CoveringTests
                classes = byProject s.Classes
                alwaysClasses = byProject e.AlwaysClasses
+               restoredProjects = s.RestoredProjects |> Set.toArray
                seedFanout = SeedFanoutReading.wire s.Fanout
                price =
                 e.Price
@@ -165,6 +166,15 @@ let format (e: Explanation) : string list =
                   test in those classes:"
                 :: projectLines s.Classes
 
+        let restored =
+            if Set.isEmpty s.RestoredProjects then
+                []
+            else
+                let projects = String.concat ", " s.RestoredProjects
+
+                [ $"The composition-root fail-safe restored %d{Set.count s.RestoredProjects} project(s): a barrier \
+                    would have emptied them, so they run unbarriered: %s{projects}." ]
+
         let fanout =
             match s.Fanout with
             | SeedFanoutReading.Top top when not (List.isEmpty top) ->
@@ -180,6 +190,7 @@ let format (e: Explanation) : string list =
             | None -> []
 
         selected
+        @ restored
         @ always
         @ priced
         @ fanout

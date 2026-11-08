@@ -431,3 +431,121 @@ module ``selection is monotone in its seeds`` =
 
             // Not vacuous: some batch selected something.
             test <@ subsets |> List.exists (database >> Set.isEmpty >> not) @>)
+
+// ---------------------------------------------------------------------------
+// Naming the projects the fail-safe restored
+//
+// A project restored by the fail-safe is in the run because its barrier was
+// cancelled, not because the walk found an honest route to it. Merged into the
+// barriered rows the two read alike, so attribution counted the restored project as
+// a saving the barrier never made. `QueryAffectedSelection` names them.
+// ---------------------------------------------------------------------------
+
+[<Literal>]
+let private RestoringSeed = "App.handler"
+
+[<Literal>]
+let private RestoringRoot = "App.routes"
+
+[<Literal>]
+let private RestoringBoot = "Tests.boot"
+
+[<Literal>]
+let private DirectTest = "Tests.direct"
+
+[<Literal>]
+let private BootedTest = "Tests.booted"
+
+[<Literal>]
+let private OnlyBootedTest = "Tests.onlyBooted"
+
+[<Literal>]
+let private NarrowedProject = "tests/Narrowed"
+
+[<Literal>]
+let private RestoredProject = "tests/Restored"
+
+/// One project the barrier narrows (`DirectTest` survives it, `BootedTest` does not) and
+/// one it empties (`OnlyBootedTest` reaches the seed only through the marker).
+let private restoringGraph (marked: bool) =
+    { Symbols =
+        [ symbol RestoringSeed "src/Handlers.fs"
+          symbol RestoringRoot "src/Routes.fs"
+          symbol RestoringBoot "tests/Boot.fs"
+          symbol DirectTest "tests/Direct.fs"
+          symbol BootedTest "tests/Booted.fs"
+          symbol OnlyBootedTest "tests/OnlyBooted.fs" ]
+      Dependencies =
+        [ edge RestoringRoot RestoringSeed
+          edge RestoringBoot RestoringRoot
+          edge DirectTest RestoringSeed
+          edge BootedTest RestoringBoot
+          edge OnlyBootedTest RestoringBoot ]
+      TestMethods =
+        [ testMethodIn NarrowedProject DirectTest
+          testMethodIn NarrowedProject BootedTest
+          testMethodIn RestoredProject OnlyBootedTest ]
+      Attributes =
+        if marked then
+            [ { SymbolFullName = RestoringRoot
+                AttributeName = "CompositionRootAttribute"
+                ArgsJson = "[]" } ]
+        else
+            []
+      ParentLinks = []
+      Diagnostics = AnalysisDiagnostics.Zero }
+
+/// The selection over `analysis`, asserted identical across both stores: the rows, and
+/// which projects were restored.
+let private answerOverBothStores (analysis: AnalysisResult) (seeds: string list) =
+    let reading (answer: AffectedSelection) =
+        answer.Tests |> List.map _.SymbolFullName |> Set.ofList, answer.RestoredProjects
+
+    let inMemory =
+        (fromAnalysisResults [ analysis ]).QueryAffectedSelection seeds |> reading
+
+    let mutable database = Set.empty, Set.empty
+
+    withDb (fun db ->
+        db.RebuildProjects([ analysis ])
+        database <- db.QueryAffectedSelection seeds |> reading)
+
+    test <@ inMemory = database @>
+    database
+
+[<Fact>]
+let ``a project the barrier emptied is named as restored, and a project it only narrowed is not`` () =
+    let tests, restored = answerOverBothStores (restoringGraph true) [ RestoringSeed ]
+
+    test <@ tests = Set.ofList [ DirectTest; OnlyBootedTest ] @>
+    test <@ restored = Set.singleton RestoredProject @>
+
+[<Fact>]
+let ``an unbarriered selection names nothing as restored`` () =
+    // Positive control: the same seed over the same graph, unmarked, selects every test,
+    // so the empty answer below is about the barrier and not about a selector that
+    // reports nothing.
+    let tests, restored = answerOverBothStores (restoringGraph false) [ RestoringSeed ]
+
+    test <@ tests = Set.ofList [ DirectTest; BootedTest; OnlyBootedTest ] @>
+    test <@ Set.isEmpty restored @>
+
+[<Fact>]
+let ``a seed whose walk crosses no marker names nothing as restored, even in an index that has one`` () =
+    let tests, restored = answerOverBothStores (restoringGraph true) [ RestoringBoot ]
+
+    test <@ tests = Set.ofList [ BootedTest; OnlyBootedTest ] @>
+    test <@ Set.isEmpty restored @>
+
+[<Fact>]
+let ``a project restored by one seed is named even when another seed of the batch keeps it non-empty`` () =
+    // `OtherHandler` alone has its barrier empty the integration project. `TranslateHandler`
+    // keeps that project non-empty through its route edge, and the fail-safe is judged per
+    // seed, so the restoration still happened.
+    let _, alone = answerOverBothStores (graph true) [ OtherHandler ]
+    let _, batch = answerOverBothStores (graph true) [ TranslateHandler; OtherHandler ]
+    let _, keeper = answerOverBothStores (graph true) [ TranslateHandler ]
+
+    test <@ alone = Set.singleton IntegrationProject @>
+    test <@ batch = Set.singleton IntegrationProject @>
+    test <@ Set.isEmpty keeper @>
