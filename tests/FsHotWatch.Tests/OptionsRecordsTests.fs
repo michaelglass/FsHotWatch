@@ -1039,47 +1039,55 @@ let ``a listing is keyed by the names it holds, never by their bytes`` () =
 
         test <@ refused.StartsWith "error:" @>)
 
+// `RecordingFileSystem` derives from an MSBuild type, so a method that names it needs
+// Microsoft.Build the moment the JIT compiles it. That has to be AFTER the loader below
+// has located MSBuild, or this test passes only when another one ran first.
+[<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)>]
+let private recordingFileSystemAnswersAsTheRealOne (root: string) =
+    let file = Path.Combine(root, "a.props")
+    File.WriteAllText(file, "text")
+    let fs = OptionsInputs.RecordingFileSystem.Create()
+
+    test <@ fs.ReadFile(file).ReadToEnd() = "text" @>
+
+    do
+        use stream = fs.GetFileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read)
+        test <@ stream.Length = 4L @>
+
+    test <@ fs.ReadFileAllText file = "text" @>
+    test <@ fs.ReadFileAllBytes file = "text"B @>
+    test <@ fs.EnumerateFiles(root, "*.props", SearchOption.TopDirectoryOnly) |> Seq.length = 1 @>
+    test <@ fs.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly) |> Seq.isEmpty @>
+
+    test
+        <@
+            fs.EnumerateFileSystemEntries(root, "*", SearchOption.TopDirectoryOnly)
+            |> Seq.length = 1
+        @>
+
+    test <@ fs.GetAttributes file = File.GetAttributes file @>
+    test <@ fs.GetLastWriteTimeUtc file = File.GetLastWriteTimeUtc file @>
+    test <@ fs.DirectoryExists root @>
+    test <@ not (fs.FileExists "relative.props") @>
+    test <@ fs.FileOrDirectoryExists file @>
+
+    test <@ fs.Reads = [ file ] @>
+    test <@ Set.ofList fs.Probes = set [ file; root; "relative.props" ] @>
+
+    test
+        <@
+            fs.Listings |> List.map (fun l -> l.Kind, l.Pattern, l.Recursive) |> Set.ofList = set
+                [ ListingKind.Files, "*.props", false
+                  ListingKind.Directories, "*", false
+                  ListingKind.Entries, "*", false ]
+        @>
+
+
 [<Fact(Timeout = 120000)>]
 let ``the recording file system answers as the real one and records every question`` () =
     withTempDir "options-recording" (fun root ->
         Daemon.Daemon.msbuildWorkspaceLoader root |> ignore
-        let file = Path.Combine(root, "a.props")
-        File.WriteAllText(file, "text")
-        let fs = OptionsInputs.RecordingFileSystem.Create()
-
-        test <@ fs.ReadFile(file).ReadToEnd() = "text" @>
-
-        do
-            use stream = fs.GetFileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read)
-            test <@ stream.Length = 4L @>
-
-        test <@ fs.ReadFileAllText file = "text" @>
-        test <@ fs.ReadFileAllBytes file = "text"B @>
-        test <@ fs.EnumerateFiles(root, "*.props", SearchOption.TopDirectoryOnly) |> Seq.length = 1 @>
-        test <@ fs.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly) |> Seq.isEmpty @>
-
-        test
-            <@
-                fs.EnumerateFileSystemEntries(root, "*", SearchOption.TopDirectoryOnly)
-                |> Seq.length = 1
-            @>
-
-        test <@ fs.GetAttributes file = File.GetAttributes file @>
-        test <@ fs.GetLastWriteTimeUtc file = File.GetLastWriteTimeUtc file @>
-        test <@ fs.DirectoryExists root @>
-        test <@ not (fs.FileExists "relative.props") @>
-        test <@ fs.FileOrDirectoryExists file @>
-
-        test <@ fs.Reads = [ file ] @>
-        test <@ Set.ofList fs.Probes = set [ file; root; "relative.props" ] @>
-
-        test
-            <@
-                fs.Listings |> List.map (fun l -> l.Kind, l.Pattern, l.Recursive) |> Set.ofList = set
-                    [ ListingKind.Files, "*.props", false
-                      ListingKind.Directories, "*", false
-                      ListingKind.Entries, "*", false ]
-            @>)
+        recordingFileSystemAnswersAsTheRealOne root)
 
 [<Fact(Timeout = 120000)>]
 let ``the toolchain names fshw, Ionide and MSBuild, and a file names what it reads from the environment`` () =

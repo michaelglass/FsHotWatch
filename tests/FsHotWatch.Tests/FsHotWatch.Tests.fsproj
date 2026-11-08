@@ -56,6 +56,7 @@
     <Compile Include="SnapshotEpochTests.fs" />
     <Compile Include="ProcessHelperTests.fs" />
     <Compile Include="SettledEscalationOps.fs" />
+    <Compile Include="InProcessProcessTableTests.fs" />
     <Compile Include="KillEscalationTests.fs" />
     <Compile Include="ShutdownEscalationTests.fs" />
     <Compile Include="ProcessOwnershipTests.fs" />

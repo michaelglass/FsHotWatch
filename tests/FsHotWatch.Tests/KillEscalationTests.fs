@@ -542,3 +542,72 @@ let ``signalPid reports a pid it could not signal`` () =
     match signalPid Int32.MaxValue 0 with
     | Error reason -> Assert.Contains("errno", reason)
     | Ok() -> Assert.Fail "a signal to a pid that does not exist was reported as delivered"
+
+// ---------------------------------------------------------------------------
+// A kill that hangs is exactly when the box is too loaded for `ps` to answer. Escalation
+// reads the table inside this process, so the tree is still reaped (AUTOMATION-1153).
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``the escalation table is read in process and never starts ps when that succeeds`` () =
+    let row' =
+        { Pid = 7
+          ParentPid = 1
+          Zombie = false
+          Command = "x" }
+
+    let table =
+        readEscalationTable (fun () -> Ok [ row' ]) (fun () -> failwith "ps must not be started")
+
+    Assert.Equal<ProcessRow list>([ row' ], Result.defaultValue [] table)
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``the escalation table falls back to ps only when the in-process read is unavailable`` () =
+    let table =
+        readEscalationTable (fun () -> Error "no table here") (fun () -> Ok [ row 9 1 false ])
+
+    Assert.Equal<ProcessRow list>([ row 9 1 false ], Result.defaultValue [] table)
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a hung tree is still reaped when ps does not answer`` () =
+    // The field incident: every `ps` the escalation starts misses its budget. The kernel
+    // still knows the tree, and SIGKILL reaps root and child.
+    let os =
+        FakeOs([ row 100 1 false; row 200 100 false ], Map.ofList [ 100, t0; 200, t0 ], ignoresTerm)
+
+    let ops = os.Ops 2
+
+    let e =
+        escalateWith
+            { ops with
+                ReadTable =
+                    fun () -> readEscalationTable ops.ReadTable (fun () -> Error "`ps` did not answer within 2s") }
+            root
+
+    Assert.Empty(e.Survivors)
+    Assert.Contains((100, 9), os.Sent)
+    Assert.Contains((200, 9), os.Sent)
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``the live escalation table reads a real process tree without starting ps`` () =
+    // `sh` stays alive waiting for its `sleep` child, so both rows are in the table.
+    use parent =
+        Process.Start(
+            ProcessStartInfo("sh", [ "-c"; "sleep 30 & wait" ], RedirectStandardOutput = true, UseShellExecute = false)
+        )
+
+    try
+        let childOfParent () =
+            match liveEscalationOps.ReadTable() with
+            | Ok rows ->
+                rows |> List.exists (fun r -> r.Pid = parent.Id)
+                && rows |> List.exists (fun r -> r.ParentPid = parent.Id && not r.Zombie)
+            | Error reason -> failwith reason
+
+        Assert.True(FsHotWatch.Tests.TestHelpers.waitUntilTrue childOfParent 10000)
+
+        let tree = liveEscalationOps.ReadTable() |> Result.map (treeOf parent.Id)
+        Assert.Equal(2, (Result.defaultValue [] tree).Length)
+    finally
+        parent.Kill true
+        parent.WaitForExit()
