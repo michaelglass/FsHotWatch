@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.0 - 2026-11-08
+
 - feat: symbol-level mutation judging (AUTOMATION-1497). `Mutation.runWith ... (Some index)` ingests the baseline and
   judges each mutant against `TraceSelect` for "its symbol changed" (R1-R4, R6) through `Mutation.symbolSelection`.
   `run` still judges by probe. `MutationReport.Judging` says which was used. BREAKING (API): `MutationReport` has

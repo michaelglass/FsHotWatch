@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.106 - 2026-11-08
+
 - fix: a file compiled into two projects (a linked `Compile Include`) is checked under each project
   without one check cancelling the other. `CheckPipeline` kept its running checks by file alone, so
   a change batch's check of the file under its second project found the first project's check

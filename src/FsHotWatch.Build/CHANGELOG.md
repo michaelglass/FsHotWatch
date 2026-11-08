@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.54 - 2026-11-08
+
 - fix: a warm `fshw check` no longer runs a second, no-op `dotnet build` after every edit
   (AUTOMATION-1512). The check's scan re-announces every registered source while the watcher's
   build of the same edit is still running; the plugin buffered that announcement and built again

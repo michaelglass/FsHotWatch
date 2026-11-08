@@ -6,6 +6,8 @@
   `changed-symbols`, and `fshw explain` says when a file's selection includes projects the fail-safe restored
   (`restoredProjects` in `--json`) (AUTOMATION-1515).
 
+## 0.14.0-alpha.139 - 2026-11-08
+
 - **feat: the verdict file's `scope` records `price`**, what the graded selection was priced at before it ran (`estimateMs`, `pricedClasses`, `unpricedClasses`, `unpricedProjects`), read from the `test-scope` reply. Absent or `null` where the run was not priced; a shape this build cannot read makes the scope unreadable.
 
 ## 0.14.0-alpha.138 - 2026-11-04
