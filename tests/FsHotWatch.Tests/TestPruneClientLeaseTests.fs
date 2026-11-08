@@ -161,3 +161,68 @@ let ``a test run the daemon owes is not cancelled when a client goes`` () =
         test <@ alive pid @>
     finally
         reap hostPid
+
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
+[<Fact(Timeout = 60000)>]
+let ``a build arriving after its client has gone launches nothing and runs no beforeRun`` () =
+    // QA's reproduction: the client goes, THEN the build its scan set off (deferred until
+    // now) completes. The launch must fold withdrawn: no test run opened, no beforeRun,
+    // no test host.
+    let root = isolatedRoot ()
+    let ran = Path.Combine(root, "ran.txt")
+    let script = Path.Combine(root, "fake-tests.sh")
+    File.WriteAllText(script, $"echo ran >> \"%s{ran}\"\nexit 0\n")
+
+    let configs =
+        [ { Project = "MyTests"
+            Command = "sh"
+            Args = $"\"%s{script}\""
+            Group = "default"
+            Environment = []
+            FilterTemplate = None
+            ClassJoin = " "
+            TimeoutSec = Some 300
+            ReportVerificationFormat = AutoDetect
+            Starvation = None
+            CheckSkip = None
+            NameHungTests = false
+            Weight = 1.0
+            AlwaysClasses = [] } ]
+
+    let beforeRuns = ref 0
+    let recorder, startedCount, unclosed = lifecycleRecorder ()
+    let host = PluginHost.create (Unchecked.defaultof<_>) root
+    host.RegisterHandler recorder
+
+    host.RegisterHandler(
+        create
+            ":memory:"
+            root
+            (Some configs)
+            None
+            (Some(fun _ _ -> Interlocked.Increment beforeRuns |> ignore))
+            None
+            None
+            []
+    )
+
+    use client = new CancellationTokenSource()
+    client.Cancel()
+
+    PluginWorkOwner.ConsumerLeases.onBehalfOf (PluginWorkOwner.ConsumerLeases.ofClient client.Token) (fun () ->
+        host.EmitBuildCompleted BuildSucceeded)
+
+    waitForQuiescent host 20000
+    Thread.Sleep 500
+    waitForQuiescent host 20000
+
+    test <@ beforeRuns.Value = 0 @>
+    test <@ startedCount () = 0 @>
+    test <@ not (File.Exists ran) @>
+    test <@ (unclosed ()).IsEmpty @>
+
+    // The tree is still owed: the next build the daemon owes launches it.
+    host.EmitBuildCompleted BuildSucceeded
+    waitUntil (fun () -> File.Exists ran) 20000
+    waitForQuiescent host 20000
+    test <@ beforeRuns.Value = 1 @>
