@@ -3588,6 +3588,9 @@ type Daemon
         // Read by the idle-exit scheduler and the heartbeat so
         // a cold or forced scan is never mistaken for idleness.
         scanLeases: ScanActivity.ScanLeases,
+        // The files the watcher has reported an edit to (`SuspectRecheck.EditedFiles`), shared
+        // with the change-batch worker that records them.
+        editedFiles: SuspectRecheck.EditedFiles,
         // Per-daemon process registry. Plugin-spawned children (test runners,
         // playwright drivers, file-command processes) register against it, and
         // Dispose kills everything still tracked — that is how `fshw stop` and
@@ -3817,20 +3820,30 @@ type Daemon
     member internal _.SetScanState(state: ScanState) = setScanStatus scanAgent state
 
     /// Once per tree, before a verdict is graded: re-check every file whose latest check
-    /// left an `fcs-internal` entry (`SuspectRecheck.settle`). `awaitQuiet` waits until the
+    /// left an `fcs-internal` entry, and every diagnostic-only red in a file no edit touched
+    /// (`SuspectRecheck.settle`). `awaitQuiet` waits until the
     /// host owns no work; it is what a held test run is waited for with, and what the
     /// re-check's own scan is settled with.
     member internal this.RecheckSuspectOnce(awaitQuiet: unit -> Async<unit>) : Async<SuspectRecheck.Outcome option> =
+        let internalSuspects () =
+            host.GetErrorsByPlugin(PluginActivity.FcsInternalPluginName)
+            |> Map.toList
+            |> List.filter (fun (_, entries) -> not entries.IsEmpty)
+            |> List.map fst
+
         SuspectRecheck.settle
             retriedTrees
             { Recheck =
                 { ExclusiveHolders = host.ExclusiveHolders
                   SuspectFiles =
                     fun () ->
-                        host.GetErrorsByPlugin(PluginActivity.FcsInternalPluginName)
-                        |> Map.toList
-                        |> List.filter (fun (_, entries) -> not entries.IsEmpty)
-                        |> List.map fst
+                        internalSuspects ()
+                        @ SuspectRecheck.diagnosticOnlyReds (host.FailingReasons false) editedFiles.Contains
+                        |> List.distinct
+                  StillSuspect =
+                    fun () ->
+                        internalSuspects () @ (host.FailingReasons false |> Map.keys |> List.ofSeq)
+                        |> List.distinct
                   Drop = fun file -> pipeline.DropAnswer(AbsFilePath.create file)
                   Recheck = this.ScanAll }
               TreeHash =
@@ -3841,7 +3854,20 @@ type Daemon
                     | :? IOException
                     | :? UnauthorizedAccessException -> None
               AwaitQuiet = awaitQuiet
-              Log = Logging.info "daemon" }
+              Log = Logging.info "daemon"
+              Reasons =
+                fun () ->
+                    internalSuspects ()
+                    |> List.map (fun file -> file, SuspectRecheck.Reason.FcsInternal)
+                    |> Map.ofList
+              FileReceipt =
+                SuspectRecheck.Receipt.file
+                    (OutcomeStore.openFor repoRoot (Logging.info "suspect-recheck"))
+                    (DaemonIdentity.BinaryIdentity.render (DaemonIdentity.currentIdentity ()))
+                    repoRoot }
+
+    /// Note that the watcher reported these changes (`editedFiles`).
+    member internal _.NoteEdited(changes: FileChangeKind list) = editedFiles.Note changes
 
     /// The wait a `check` grades after: settle, re-check suspect answers once for this
     /// tree, and settle again when it did.
@@ -5500,6 +5526,8 @@ module Daemon =
 
             let beforeScanPublication = ref ignore
 
+            let editedFiles = SuspectRecheck.EditedFiles()
+
             let batchCtx: BatchContext =
                 { Host = host
                   InvalidateFcs =
@@ -5579,6 +5607,8 @@ module Daemon =
                                     async.Return state.Suppressed
                                 else
                                     async {
+                                        editedFiles.Note changes
+
                                         // Failure policy lives in `runDaemonStep`.
                                         match!
                                             runDaemonStep
@@ -5771,6 +5801,7 @@ module Daemon =
                 opts.PressureIdleFloorMin,
                 opts.VanishedRootCheckEvery,
                 scanLeases,
+                editedFiles,
                 processRegistry,
                 changeInput.Close,
                 checker,

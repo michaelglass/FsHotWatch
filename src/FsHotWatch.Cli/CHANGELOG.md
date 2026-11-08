@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: the verdict file names the re-check run for its tree under `suspectRecheck` (`{tree, rechecked: [{file, why}],
+  survivors}`, `why` is `fcs-internal` or `diagnostic-only`; `null` when none ran), read from the outcome store so it
+  outlives the daemon that ran it (AUTOMATION-1124).
+
 - **feat: the verdict file's `scope` records `price`**, what the graded selection was priced at before it ran (`estimateMs`, `pricedClasses`, `unpricedClasses`, `unpricedProjects`), read from the `test-scope` reply. Absent or `null` where the run was not priced; a shape this build cannot read makes the scope unreadable.
 
 ## 0.14.0-alpha.138 - 2026-11-04

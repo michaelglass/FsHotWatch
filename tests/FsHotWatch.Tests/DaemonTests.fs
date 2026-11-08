@@ -7276,6 +7276,100 @@ let ``a tree is re-checked once: a suspect answer that returns on it stays for t
         test <@ second = None @>
         test <@ (suspectEntries daemon).ContainsKey sourcePath @>)
 
+let private withError severity message : ErrorLedger.ErrorEntry =
+    { suspectEntry with
+        Severity = severity
+        Message = message }
+
+let private fcsEntries (daemon: Daemon) =
+    daemon.Host.GetErrorsByPlugin(PluginActivity.FcsPluginName)
+
+let private holds (daemon: Daemon) (file: string) (message: string) =
+    fcsEntries daemon
+    |> Map.tryFind file
+    |> Option.exists (List.exists (fun e -> e.Message = message))
+
+[<Fact(Timeout = 60000)>]
+let ``a diagnostic-only red in an untouched file is re-checked once before the verdict is graded`` () =
+    withScannedCleanProject "daemon-diag-only" (fun daemon sourcePath ->
+        daemon.Host.ReportErrors(
+            PluginActivity.FcsPluginName,
+            sourcePath,
+            [ withError ErrorLedger.DiagnosticSeverity.Error "a stale diagnostic" ]
+        )
+
+        settleForVerdict daemon
+
+        // Gone only because the file was checked again: every check rewrites its ledger
+        // key, and the fixture's scripted options can add an entry of their own, so the
+        // assertion names the entry this test planted.
+        test <@ not (holds daemon sourcePath "a stale diagnostic") @>)
+
+[<Fact(Timeout = 60000)>]
+let ``the re-check files a receipt a later reader finds by tree`` () =
+    withScannedCleanProject "daemon-diag-receipt" (fun daemon sourcePath ->
+        daemon.Host.ReportErrors(
+            PluginActivity.FcsPluginName,
+            sourcePath,
+            [ withError ErrorLedger.DiagnosticSeverity.Error "a stale diagnostic" ]
+        )
+
+        settleForVerdict daemon
+
+        let root = daemon.RepoRoot
+        let tree = (FsHotWatch.TreeHash.compute root []).Hash
+        let store = OutcomeStore.openFor root ignore
+        let relative = System.IO.Path.GetRelativePath(root, sourcePath).Replace('\\', '/')
+
+        let filed = SuspectRecheck.Receipt.read store tree
+        test <@ filed |> Option.map _.Tree = Some tree @>
+
+        test <@ filed |> Option.map _.Rechecked = Some [ relative, SuspectRecheck.Reason.DiagnosticOnly ] @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a diagnostic red in a file edited under this daemon is left for the verdict`` () =
+    withScannedCleanProject "daemon-diag-edited" (fun daemon sourcePath ->
+        daemon.NoteEdited [ SourceChanged [ sourcePath ] ]
+
+        daemon.Host.ReportErrors(
+            PluginActivity.FcsPluginName,
+            sourcePath,
+            [ withError ErrorLedger.DiagnosticSeverity.Error "a real error" ]
+        )
+
+        settleForVerdict daemon
+        test <@ holds daemon sourcePath "a real error" @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a diagnostic red beside a test failure is left for the verdict`` () =
+    withScannedCleanProject "daemon-diag-beside" (fun daemon sourcePath ->
+        daemon.Host.ReportErrors(
+            PluginActivity.FcsPluginName,
+            sourcePath,
+            [ withError ErrorLedger.DiagnosticSeverity.Error "a real error" ]
+        )
+
+        daemon.Host.ReportErrors(
+            PluginActivity.TestPrunePluginName,
+            sourcePath + ".tests",
+            [ withError ErrorLedger.DiagnosticSeverity.Error "a test failed" ]
+        )
+
+        settleForVerdict daemon
+        test <@ holds daemon sourcePath "a real error" @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a warning in an untouched file is not re-checked`` () =
+    withScannedCleanProject "daemon-diag-warning" (fun daemon sourcePath ->
+        daemon.Host.ReportErrors(
+            PluginActivity.FcsPluginName,
+            sourcePath,
+            [ withError ErrorLedger.DiagnosticSeverity.Warning "a standing warning" ]
+        )
+
+        settleForVerdict daemon
+        test <@ holds daemon sourcePath "a standing warning" @>)
+
 type private HeldRunMsg = | HeldRunDone
 
 [<Fact(Timeout = 60000)>]

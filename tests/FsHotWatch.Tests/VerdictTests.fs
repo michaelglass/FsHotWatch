@@ -7404,3 +7404,21 @@ let ``a green that still applies names the suites that passed only alone, after 
             test <@ described.Contains "1 starved, then passed alone: Slow.Tests" @>
             test <@ not (described.Contains "Quick.Tests") @>
         | Verdict.PriorConfirmation.MustEarn -> failwith "a full-suite green over this very tree must still apply")
+
+[<Fact>]
+let ``a verdict cites the re-check receipt filed for its tree, and reads it back`` () =
+    let receipt: FsHotWatch.SuspectRecheck.Receipt =
+        { Tree = "abc"
+          Rechecked = [ "src/A.fs", FsHotWatch.SuspectRecheck.Reason.DiagnosticOnly ]
+          Survivors = [ "src/A.fs" ] }
+
+    let v = build (greenVerdict "abc" 1) |> Verdict.withSuspectRecheck (Some receipt)
+    let node = (Nodes.JsonNode.Parse(Verdict.serialize v)).["suspectRecheck"]
+
+    test <@ node.["rechecked"].[0].["why"].GetValue<string>() = "diagnostic-only" @>
+    test <@ FsHotWatch.SuspectRecheck.Receipt.tryOfJson node = Some receipt @>
+
+[<Fact>]
+let ``a verdict with no re-check says so`` () =
+    let v = build (greenVerdict "abc" 1)
+    test <@ isNull (Nodes.JsonNode.Parse(Verdict.serialize v)).["suspectRecheck"] @>
