@@ -379,7 +379,8 @@ module ReceiptTransition =
                       ZeroSelection = launch.ZeroSelection
                       FullSuiteCause = launch.FullSuiteCause
                       SelectedBy = launch.SelectedBy
-                      SeedFanout = launch.SeedFanout }
+                      SeedFanout = launch.SeedFanout
+                      Price = launch.Price }
 
     /// Fold one transition into the store. Total, and the only place the store changes
     /// on a completion.

@@ -429,9 +429,9 @@
         "platform": "macos"
       },
       {
-        "line": 95,
-        "branch": 80,
-        "reason": "provisional Linux floor (2026-10-28): new file, not yet measured on Linux. macOS measures line 97.9%, branch 85.7%; set a few points below, to be settled by inspecting the next GitHub CI coverage report.",
+        "line": 97,
+        "branch": 85,
+        "reason": "inspected 2026-11-08 from GitHub CI run 42487205708 (Linux coverage-report for 9a699f3e): the only uncovered lines are the IOException / UnauthorizedAccessException arms of Book.ofRunsDir (lines 92-94), the same two the macOS floor names; a test cannot provoke them without a directory that fails mid-enumeration.",
         "platform": "linux"
       }
     ],
@@ -458,8 +458,8 @@
       },
       {
         "line": 100,
-        "branch": 96,
-        "reason": "inspected 2026-10-28 from GitHub CI run 40645381943 (Linux coverage-report for eadfd46d): its uncovered edges were TestsScope.load (lines 31-39), runDefault (191) and the empty-Runnable branch of runnable (70), each now reached by an ExplainFileTests test. Line is floored at 100. Branch holds one of 29 branches of headroom only until Linux measures those tests; raise it to 100 from the next CI coverage report.",
+        "branch": 100,
+        "reason": "inspected 2026-11-08 from GitHub CI run 42487205708 (Linux coverage-report for 9a699f3e): line 100%, branch 100% (31/31), every edge of Explain.fs covered.",
         "platform": "linux"
       }
     ],

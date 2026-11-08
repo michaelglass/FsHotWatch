@@ -54,6 +54,8 @@ type TestEvidenceReceipt =
         /// The seeds that alone selected the most tests, or why they were not ranked —
         /// the launch's `TestRunLaunch.SeedFanout`.
         SeedFanout: SeedFanoutReading
+        /// What the run was priced at before it ran — the launch's `TestRunLaunch.Price`.
+        Price: SelectionPrice.Reading option
     }
 
 /// The test-evidence receipt a session holds, or why it holds none. One value, so a

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **feat: the verdict file's `scope` records `price`**, what the graded selection was priced at before it ran (`estimateMs`, `pricedClasses`, `unpricedClasses`, `unpricedProjects`), read from the `test-scope` reply. Absent or `null` where the run was not priced; a shape this build cannot read makes the scope unreadable.
+
 ## 0.14.0-alpha.138 - 2026-11-04
 
 - Finish: AUTOMATION-975 shadow judges theory-row failures and pins that it never changes a launch

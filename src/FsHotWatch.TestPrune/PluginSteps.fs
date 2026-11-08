@@ -361,9 +361,10 @@ let internal coverageIngestFailedIn (repoRoot: string) (ctx: PluginCtx<TestPrune
             "test-prune"
             $"failed to durably record that the runtime coverage of %s{failure.Project} did not ingest (%s{CoverageNotIngested.sidecarPath repoRoot}): %s{ex.Message}"
 
-/// Which cause selected each project of a run that is about to execute. Logged once
-/// the run is past the zero-affected skip, which executes nothing and selects nothing.
-let internal logSelectedByIn (repoRoot: string) (launch: TestRunLaunch) =
+/// Which cause selected each project of a run that is about to execute, and what it is
+/// priced at: logged, and the launch returned carrying the price. Called once the run is
+/// past the zero-affected skip, which executes nothing and selects nothing.
+let internal pricedSelectionIn (repoRoot: string) (launch: TestRunLaunch) : TestRunLaunch =
     Logging.info "test-prune" $"Selected by: %s{ProjectAttribution.describe launch.SelectedBy}"
 
     // Priced before it runs, from the class durations the newest runs recorded
@@ -372,11 +373,14 @@ let internal logSelectedByIn (repoRoot: string) (launch: TestRunLaunch) =
         let book =
             SelectionPrice.Book.ofRunsDir SelectionPrice.DefaultWindow (FsHotWatch.Ctrf.reportsDir repoRoot)
 
-        Logging.info
-            "test-prune"
-            $"Priced: %s{SelectionPrice.describe (SelectionPrice.price book (askedOf launch.Selection))}"
+        let priced = SelectionPrice.price book (askedOf launch.Selection)
+        Logging.info "test-prune" $"Priced: %s{SelectionPrice.describe priced}"
+
+        { launch with
+            Price = Some(SelectionPrice.Reading.ofPrice priced) }
     with ex ->
         Logging.warn "test-prune" $"Priced: not priced — %s{ex.Message}"
+        launch
 
 /// The run in flight has concluded: forget it, and end the pass-through it ran for
 /// when it executed at least one project to a verdict (`TestMode.afterRun`).
