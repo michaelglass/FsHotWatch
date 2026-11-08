@@ -562,7 +562,17 @@ let internal failuresOf
                       // bound in `ErrorLedger.Transport` still stands behind this — a
                       // plugin must not be able to do it again — but the bound is a
                       // backstop, and this is the defect.
-                      Entry = ErrorLedger.ErrorEntry.error line })
+                      //
+                      // A killed run's line keeps the timeout: the verdict records only
+                      // `Message`, so a reader would otherwise see test failures from a
+                      // project whose host was killed.
+                      Entry =
+                        ErrorLedger.ErrorEntry.error (
+                            match RedRunEnding.ofResult result with
+                            | RedRunEnding.Exited -> line
+                            | RedRunEnding.TimedOut _ as ending ->
+                                $"%s{project}: %s{RedRunEnding.describe ending}; before the kill it reported: %s{line}"
+                        ) })
         | TestsDeferred reason ->
             // NOT a test failure — surface an honest "waiting on build / did not
             // run" diagnostic at `Deferred` severity so the verdict is NON-green
