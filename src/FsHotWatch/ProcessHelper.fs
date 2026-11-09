@@ -1906,7 +1906,8 @@ let internal startableCommand (command: string) : string option =
     |> Option.filter isExecutableFile
     |> Option.map IO.Path.GetFullPath
 
-/// `psi`, made to start as the leader of its own process group, so an escalation can
+/// `psi`, made to start as the leader of its own process group (for the spawns that are
+/// accounted, `runProcessCore`), so an escalation can
 /// signal every member of its tree with `kill(-pgid, ...)` even once the root has gone or
 /// re-parented them. Left alone with no `perl`, for a command that cannot be started (escalation then falls back to the pid
 /// sweep), and when the caller holds a terminal: a child in its own group would no longer
@@ -2458,7 +2459,12 @@ let internal runProcessCore
 
     let child =
         try
-            let psi = makeChildProcessStartInfo command args workDir env |> ownProcessGroup
+            let psi =
+                makeChildProcessStartInfo command args workDir env
+                // Only the trees whose teardown is accounted for (builds and test hosts) lead
+                // their own group: the wrapper turns an exec the OS refuses into an exit, and a
+                // plain spawn's caller may be retrying on exactly that refusal.
+                |> if accounted then ownProcessGroup else id
 
             match helper with
             | Some connection -> launchViaHelper connection psi
