@@ -2033,3 +2033,32 @@ let ``FileTaskCache without a repo root replays findings keyed by a plugin ident
         match cache.Lookup key cacheKey with
         | CacheHit replayed -> test <@ replayed.Errors = result.Errors @>
         | CacheMiss reason -> failwith $"expected a hit, got a miss: %s{CacheMissReason.describe reason}")
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a cached run start reads back as the same UTC instant`` () =
+    // `DateTime.Parse` turns an "...Z" stamp into LOCAL time. DateTime comparison ignores
+    // Kind, so a coverage check compared a UTC file time with a local clock reading and,
+    // east of Greenwich, every report read as older than its run (AUTOMATION-1530).
+    withTempDir "cached-start-utc" (fun tmpDir ->
+        let startedAt = DateTime(2026, 11, 9, 14, 33, 55, DateTimeKind.Utc)
+
+        let started: TestRunStarted =
+            { RunId = Guid.NewGuid()
+              StartedAt = startedAt }
+
+        let result =
+            { CacheKey = hash "k"
+              Errors = []
+              Status = cachedFileDone
+              EmittedEvents = [ CachedTestRunStarted started ] }
+
+        (FileTaskCache(tmpDir) :> ITaskCache).Set (ckPlugin "start") (hash "k") result
+
+        let back =
+            (FileTaskCache(tmpDir) :> ITaskCache).TryGet (ckPlugin "start") (hash "k")
+
+        match back |> Option.map _.EmittedEvents with
+        | Some [ CachedTestRunStarted read ] ->
+            test <@ read.StartedAt.Kind = DateTimeKind.Utc @>
+            test <@ read.StartedAt = startedAt @>
+        | other -> failwith $"expected the cached start, got %A{other}")

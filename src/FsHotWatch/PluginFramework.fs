@@ -1463,6 +1463,11 @@ let internal registerHandlerForOwner
             $"%s{PluginName.value handler.Name}: %s{label}"
             deadline
 
+    /// When each run this plugin launched and has not finished started: a run's start is
+    /// emitted before the cache window that records its completion opens.
+    let liveRunStarts =
+        System.Collections.Concurrent.ConcurrentDictionary<System.Guid, System.DateTime>()
+
     /// The context `Update` receives for one event. `event` names that event, so a claim
     /// it makes can follow the key's result fold.
     let contextFor (event: PluginWorkOwner.WorkId) : PluginCtx<'Msg> =
@@ -1478,9 +1483,15 @@ let internal registerHandlerForOwner
           ClearErrors = fun file -> services.ClearErrors handler.Name file
           ClearAllErrors = fun () -> services.ClearPlugin handler.Name
           EmitBuildCompleted = emit services.EmitBuildCompleted
-          EmitTestRunStarted = emit services.EmitTestRunStarted
+          EmitTestRunStarted =
+            fun started ->
+                liveRunStarts[started.RunId] <- started.StartedAt
+                emit services.EmitTestRunStarted started
           EmitTestProgress = emit services.EmitTestProgress
-          EmitTestRunCompleted = emit services.EmitTestRunCompleted
+          EmitTestRunCompleted =
+            fun completed ->
+                liveRunStarts.TryRemove completed.RunId |> ignore
+                emit services.EmitTestRunCompleted completed
           EmitCommandCompleted = emit services.EmitCommandCompleted
           Checker = services.Checker
           RepoRoot = services.RepoRoot
@@ -1695,9 +1706,9 @@ let internal registerHandlerForOwner
                                 let freshRunId = System.Lazy<System.Guid>(System.Guid.NewGuid)
 
                                 // Live TestRunStarted is emitted before the test host launches,
-                                // outside the later TestsFinished cache-write window. New cache
-                                // entries therefore carry only progress/completion; synthesize the
-                                // matching start on replay. Older entries already contain it.
+                                // outside the later TestsFinished cache-write window, so an entry
+                                // written before the capture recorded a start has only
+                                // progress/completion; synthesize the matching start on replay.
                                 if
                                     result.EmittedEvents
                                     |> List.exists (function
@@ -1917,6 +1928,25 @@ let internal registerHandlerForOwner
                                                 services.EmitTestProgress r
                                         EmitTestRunCompleted =
                                             fun r ->
+                                                // What the run wrote must not read as older than the run on
+                                                // a replay, so the entry keeps the start the run launched with.
+                                                let hasStart =
+                                                    capturedEvents
+                                                    |> Seq.exists (function
+                                                        | TaskCache.CachedTestRunStarted started ->
+                                                            started.RunId = r.RunId
+                                                        | _ -> false)
+
+                                                if not hasStart then
+                                                    capturedEvents.Add(
+                                                        TaskCache.CachedTestRunStarted
+                                                            { RunId = r.RunId
+                                                              StartedAt =
+                                                                match liveRunStarts.TryRemove r.RunId with
+                                                                | true, launchedAt -> launchedAt
+                                                                | false, _ -> DateTime.UtcNow - r.TotalElapsed }
+                                                    )
+
                                                 capturedEvents.Add(TaskCache.CachedTestRunCompleted r)
                                                 services.EmitTestRunCompleted r
                                         EmitCommandCompleted =
