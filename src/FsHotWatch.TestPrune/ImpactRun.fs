@@ -102,6 +102,7 @@ let internal runTestsWithImpactWith
             emittedStart <- Some started
             ctx.EmitTestRunStarted started
 
+        let fanoutProjects = undischargedFanout env ctx configs inputs fanoutProjects
         let widenings = widenLaunch env ctx configs inputs fanoutProjects
         let launchedRuntimeObligations = widenings.LaunchedRuntimeObligations
         let fullSuiteCause = widenings.FullSuiteCause
