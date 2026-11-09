@@ -270,7 +270,8 @@ let internal initialStateOf
     let loadedFailures = restored.LoadedFailures
     let restoredEvidence = restored.RestoredEvidence
 
-    { Debt = loadedDebt
+    { ColdScan = ColdScan.NotStarted
+      Debt = loadedDebt
       Mode = initialMode
       InFlight = None
       LastRed = None

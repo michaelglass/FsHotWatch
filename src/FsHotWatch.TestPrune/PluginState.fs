@@ -152,8 +152,47 @@ type RedConclusion =
         Tree: string
     }
 
+/// How far the boot scan has got, as the symbol index sees it. A run on a cold daemon can
+/// finish while the scan is still checking files, and the analyses are written to the
+/// index only when the boot scan's cohort flushes. Until then the index lacks most of the
+/// tree, so a join against it would report those symbols as not indexed.
+[<RequireQualifiedAccess>]
+type ColdScan =
+    /// No file has been checked yet: nothing suggests a scan, so nothing is waited for.
+    | NotStarted
+    /// Files are being checked; each probe here answers when the boot scan flushes.
+    | InProgress of waiting: System.Threading.Tasks.TaskCompletionSource list
+    /// The boot scan's cohort has been flushed to the index.
+    | Flushed
+
+module ColdScan =
+    let onFileChecked (scan: ColdScan) : ColdScan =
+        match scan with
+        | ColdScan.NotStarted -> ColdScan.InProgress []
+        | ColdScan.InProgress _
+        | ColdScan.Flushed -> scan
+
+    /// Answer `probe` now, or hold it until the boot scan flushes.
+    let onProbe (probe: System.Threading.Tasks.TaskCompletionSource) (scan: ColdScan) : ColdScan =
+        match scan with
+        | ColdScan.InProgress waiting -> ColdScan.InProgress(probe :: waiting)
+        | ColdScan.NotStarted
+        | ColdScan.Flushed ->
+            probe.TrySetResult() |> ignore
+            scan
+
+    let onBootScanFlushed (scan: ColdScan) : ColdScan =
+        match scan with
+        | ColdScan.InProgress waiting -> waiting |> List.iter (fun probe -> probe.TrySetResult() |> ignore)
+        | ColdScan.NotStarted
+        | ColdScan.Flushed -> ()
+
+        ColdScan.Flushed
+
 type TestPruneState =
     {
+        /// How far the boot scan has got, for trace ingestion's wait on the index.
+        ColdScan: ColdScan
         Debt: VerificationDebt
         /// Set by `set-scope`. Pass-through lasts for the run launched under it: that
         /// run's fold returns the daemon to impact selection once it executed a project

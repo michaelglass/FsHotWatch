@@ -101,13 +101,12 @@ type TraceIngestion =
 
 /// The symbol index traces are joined against, as ingestion waits for it. The index is
 /// written by the plugin's own event folds, which run beside the test run: a traced run on
-/// a cold daemon can finish while the analysis events admitted before it are still being
-/// folded, and a join against that index reports symbols it has not written yet as not
-/// indexed.
+/// a cold daemon can finish while the boot scan is still checking files, and a join
+/// against that index reports symbols it has not written yet as not indexed.
 type IndexFold =
     {
         /// Completes once every analysis event admitted before the call has been folded
-        /// into the index.
+        /// into the index and, while a boot scan is under way, once that scan has flushed.
         Folded: unit -> Tasks.Task
         /// How long ingestion waits for `Folded` before it gives up on joining.
         Bound: TimeSpan

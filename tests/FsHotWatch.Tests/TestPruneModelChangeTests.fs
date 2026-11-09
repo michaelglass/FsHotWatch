@@ -856,3 +856,87 @@ let ``a daemon that starts over an unreadable ingest record owes unknown debt, n
     let causes = (restarted f).Handler.Init.Debt.UnknownDebt
 
     test <@ causes.Length = 1 && causes.Head.Contains path @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-1532. A run on a cold daemon finished while the boot scan was at 1011 of 2745
+// files. The join then read an index the scan had not flushed, and every union case and
+// type in the unchecked files read as not indexed, so no test had a complete trace.
+// ---------------------------------------------------------------------------
+
+let private probeTask () =
+    TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+
+let private batchOf (trigger: BatchCheckedTrigger) : BatchChecked =
+    { Trigger = trigger
+      Files = []
+      Generation = 1L
+      ModelGeneration = Some 1L
+      Retained = None
+      StartedAt = DateTime.UtcNow
+      CompletedAt = DateTime.UtcNow }
+
+[<Fact(Timeout = 30000)>]
+let ``an index probe with no scan under way answers at once (positive control)`` () =
+    let f = fixture ()
+    let probe = probeTask ()
+    update f f.Handler.Init (Custom(IndexFoldProbe probe)) |> ignore
+    test <@ probe.Task.IsCompleted @>
+
+[<Fact(Timeout = 30000)>]
+let ``an index probe during the boot scan waits for the scan's flush`` () =
+    let f = fixture ()
+    let probe = probeTask ()
+
+    let scanning =
+        { f.Handler.Init with
+            ColdScan = ColdScan.InProgress [] }
+
+    let held = update f scanning (Custom(IndexFoldProbe probe))
+    test <@ not probe.Task.IsCompleted @>
+
+    let flushed = update f held (BatchChecked(batchOf BootScan))
+    test <@ probe.Task.IsCompleted @>
+    test <@ flushed.ColdScan = ColdScan.Flushed @>
+
+[<Fact(Timeout = 30000)>]
+let ``an in-session batch does not release a probe the boot scan owes`` () =
+    let f = fixture ()
+    let probe = probeTask ()
+
+    let scanning =
+        { f.Handler.Init with
+            ColdScan = ColdScan.InProgress [] }
+
+    let held = update f scanning (Custom(IndexFoldProbe probe))
+    update f held (BatchChecked(batchOf (InSessionBatch []))) |> ignore
+    test <@ not probe.Task.IsCompleted @>
+
+[<Fact(Timeout = 30000)>]
+let ``an index probe after the boot scan answers at once`` () =
+    let f = fixture ()
+    let probe = probeTask ()
+
+    let flushed =
+        { f.Handler.Init with
+            ColdScan = ColdScan.Flushed }
+
+    update f flushed (Custom(IndexFoldProbe probe)) |> ignore
+    test <@ probe.Task.IsCompleted @>
+
+[<Fact(Timeout = 30000)>]
+let ``the first checked file starts the cold scan, and a later one leaves it alone`` () =
+    let probe = probeTask ()
+    test <@ ColdScan.onFileChecked ColdScan.NotStarted = ColdScan.InProgress [] @>
+    test <@ ColdScan.onFileChecked (ColdScan.InProgress [ probe ]) = ColdScan.InProgress [ probe ] @>
+    test <@ ColdScan.onFileChecked ColdScan.Flushed = ColdScan.Flushed @>
+
+[<Fact(Timeout = 30000)>]
+let ``a file checked through the fold starts the cold scan`` () =
+    let f = fixture ()
+
+    let result =
+        { FsHotWatch.Tests.TestHelpers.fakeFileCheckResult "/tmp/repo/src/Lib.fs" with
+            ModelGeneration = Some 1L }
+
+    let scanned = update f f.Handler.Init (FileChecked result)
+    test <@ scanned.ColdScan = ColdScan.InProgress [] @>
