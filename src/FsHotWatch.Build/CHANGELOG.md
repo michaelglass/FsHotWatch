@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.55 - 2026-11-09
+
 - fix: a stale published reference assembly no longer gives up after one rebuild (AUTOMATION-1518). A
   repair recompiles the project's dependents, which can leave their own reference assemblies behind, so
   a version bump over an incremental tree went 10, 7, 1 stale and failed `1 stale artifacts`. The build

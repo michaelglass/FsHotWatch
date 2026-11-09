@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.107 - 2026-11-09
+
 - feat: a diagnostic-only red in a file the change did not touch is re-checked once before a verdict is graded, whatever
   raised it (AUTOMATION-1124). `SuspectRecheck` covered only the `fcs-internal` class. A failing ERROR-severity entry from
   `fcs`, `analyzers` or `lint` now qualifies when no other kind of red is on the ledger and this daemon saw no edit to the
