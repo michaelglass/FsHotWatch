@@ -969,6 +969,7 @@ let private daemonTagged (ipc: IpcOps) : IpcOps =
 
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
+      ReleaseIfSole = fun _ -> async { return "released" }
       Scan = fun _ _ -> async { return "scan started" }
       ScanStatus = fun _ -> async { return "idle" }
       GetStatus = fun _ -> async { return completedStatusJson }
@@ -2676,6 +2677,13 @@ let private raiseFrameReaderOverflow () =
 let private fakeDaemonIpc (repoRoot: string) (d: FakeDaemon) : IpcOps =
     { fakeIpc () with
         IsRunning = fun _ -> d.Running
+        ReleaseIfSole =
+            fun _ ->
+                async {
+                    d.Shutdowns <- d.Shutdowns + 1
+                    d.Running <- false
+                    return "released"
+                }
         Shutdown =
             fun _ ->
                 async {

@@ -300,6 +300,7 @@
     <Compile Include="ExplainFileTests.fs" />
     <Compile Include="SelectionPriceTests.fs" />
     <Compile Include="ProgramTests.fs" />
+    <Compile Include="ReleaseIfSoleTests.fs" />
     <Compile Include="DetachedLaunchTests.fs" />
     <Compile Include="LogDestinationTests.fs" />
     <Compile Include="ThreadSuspendInjectionTests.fs" />
