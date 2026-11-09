@@ -53,6 +53,7 @@ let private fakeConfig: DaemonConfiguration =
 
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
+      ReleaseIfSole = fun _ -> async { return "released" }
       Scan = fun _ _ -> async { return "scan started" }
       ScanStatus = fun _ -> async { return "idle" }
       GetStatus = fun _ -> async { return "{}" }
@@ -1863,6 +1864,13 @@ type private FakeDaemon(initiallyRunning: bool) =
                 fun _ _ _ ->
                     launches <- launches + 1
                     running <- true
+            ReleaseIfSole =
+                fun _ ->
+                    async {
+                        shutdowns <- shutdowns + 1
+                        running <- false
+                        return "released"
+                    }
             Shutdown =
                 fun _ ->
                     async {

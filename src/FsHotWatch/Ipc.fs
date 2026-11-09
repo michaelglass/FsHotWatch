@@ -270,11 +270,37 @@ let internal readStatusesThenLedger (readStatuses: unit -> 'S) (readLedger: unit
     let ledger = readLedger ()
     statuses, ledger
 
+/// What `ReleaseIfSole` answers, shared by the daemon and its clients.
+module ReleaseReply =
+    /// Nobody else was using the daemon: it is stopping.
+    [<Literal>]
+    let released = "released"
+
+    let private keptPrefix = "kept: "
+
+    /// Someone else is using the daemon; `who` names them.
+    let kept (who: string) : string = keptPrefix + who
+
+    /// Whom a reply says the daemon was kept for; `None` when it is stopping.
+    let keptFor (reply: string) : string option =
+        if reply.StartsWith(keptPrefix, System.StringComparison.Ordinal) then
+            Some(reply.Substring keptPrefix.Length)
+        else
+            None
+
+/// How long `ReleaseIfSole` lets a reading of "others" settle before believing it. The
+/// releasing client's last connection can still be closing when it asks.
+let private ReleaseSettle = System.TimeSpan.FromSeconds 1.0
+
 [<NoComparison; NoEquality>]
 type DaemonRpcConfig =
     {
         Host: PluginHost
         RequestShutdown: unit -> unit
+        /// Who else holds this repository's run claims, described for a person. Read inside
+        /// `ReleaseIfSole`, so a claim taken between a client asking and the daemon answering
+        /// is still seen.
+        LiveRunClaims: unit -> string list
         /// Admit a scan for the invocation that asked for it, if it named one: the scan's
         /// work is held through that invocation's run claim (`RunClaim.leaseFor`).
         RequestScan: string option -> unit
@@ -347,10 +373,13 @@ type DaemonRpcTarget
         config: DaemonRpcConfig,
         ?watchdog: OperationWatchdog.Watchdog,
         ?deadline: TimeSpan,
-        ?disconnected: CancellationToken
+        ?disconnected: CancellationToken,
+        ?connectedClients: unit -> int
     ) =
 
     let disconnected = defaultArg disconnected CancellationToken.None
+
+    let connectedClients = defaultArg connectedClients (fun () -> 0)
 
     /// The seam deadline. A caller-supplied one is honoured only when it is a
     /// real, finite bound — `Infinite`/zero/negative would reintroduce exactly the
@@ -515,6 +544,37 @@ type DaemonRpcTarget
     member _.Shutdown() : string =
         config.RequestShutdown()
         "shutting down"
+
+    /// Stop the daemon, but only if nobody else is using it: no other open connection and
+    /// no live run claim. This is decided here, not by the client, because only the daemon can
+    /// see a `test-rerun` holding a call and no claim. Asked for by a one-shot verb that
+    /// started this daemon. The caller's own last connection may still be closing, so the
+    /// reading settles for up to `ReleaseSettle` before it counts as another client.
+    member _.ReleaseIfSole() : Task<string> =
+        task {
+            let reading () =
+                max 0 (connectedClients () - 1), config.LiveRunClaims()
+
+            let settling = Diagnostics.Stopwatch.StartNew()
+            let mutable current = reading ()
+
+            while current <> (0, []) && settling.Elapsed < ReleaseSettle do
+                do! Task.Delay 25
+                current <- reading ()
+
+            match current with
+            | 0, [] ->
+                config.RequestShutdown()
+                return ReleaseReply.released
+            | clients, claims ->
+                let others =
+                    [ if clients > 0 then
+                          yield $"%d{clients} other connected client(s)"
+                      yield! claims ]
+                    |> String.concat "; "
+
+                return ReleaseReply.kept others
+        }
 
     /// Trigger a full scan. Returns the generation counter to pass to WaitForScan. The
     /// scan is the daemon's: it runs to completion whoever is left to read it.
@@ -869,8 +929,10 @@ module IpcServer =
         (config: DaemonRpcConfig)
         (watchdog: OperationWatchdog.Watchdog)
         (disconnected: CancellationToken)
+        (connectedClients: unit -> int)
         : Served =
-        { Target = box (DaemonRpcTarget(config, watchdog, disconnected = disconnected))
+        { Target =
+            box (DaemonRpcTarget(config, watchdog, disconnected = disconnected, connectedClients = connectedClients))
           Context = config.Context }
 
     /// Decides what serves a newly connected client: the RPC target for it, or `None`
@@ -1124,10 +1186,23 @@ module IpcServer =
         (config: DaemonRpcConfig)
         (cts: CancellationTokenSource)
         : Async<unit> =
+        let connected = ref 0
+
         serveConnections
             drainBound
             pipeName
-            (fun _ disconnected -> async { return Some(servedDaemon config watchdog disconnected) })
+            (fun _ disconnected ->
+                async {
+                    // Held from accept to disconnect, and registered here because this runs before
+                    // the connection serves its first call: `ReleaseIfSole` always counts itself.
+                    Interlocked.Increment connected |> ignore
+
+                    disconnected.Register(fun () -> Interlocked.Decrement connected |> ignore)
+                    |> ignore
+
+                    return
+                        Some(servedDaemon config watchdog disconnected (fun () -> Volatile.Read(&connected.contents)))
+                })
             cts
 
     /// Serve with a watchdog this server creates, and disposes when the server loop
@@ -1193,6 +1268,9 @@ module IpcClient =
 
     /// Shut down the daemon gracefully.
     let shutdown (pipeName: string) : Async<string> = invoke pipeName "Shutdown" [||]
+
+    /// Stop the daemon only if this client is its sole user (`DaemonRpcTarget.ReleaseIfSole`).
+    let releaseIfSole (pipeName: string) : Async<string> = invoke pipeName "ReleaseIfSole" [||]
 
     /// Trigger a full scan of all registered files.
     let scan (pipeName: string) : Async<string> = invoke pipeName "Scan" [||]
