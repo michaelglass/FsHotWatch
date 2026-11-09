@@ -281,7 +281,14 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
         | r -> failwith $"Unknown build result: %s{r}"
     | "testRunStarted" ->
         let runId = System.Guid.Parse(obj["runId"].GetValue<string>())
-        let startedAt = System.DateTime.Parse(obj["startedAt"].GetValue<string>())
+
+        let startedAt =
+            System.DateTime.Parse(
+                obj["startedAt"].GetValue<string>(),
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.RoundtripKind
+            )
+
         CachedTestRunStarted { RunId = runId; StartedAt = startedAt }
     | "testProgress" ->
         let runId = System.Guid.Parse(obj["runId"].GetValue<string>())

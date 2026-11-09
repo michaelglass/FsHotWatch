@@ -1286,6 +1286,149 @@ let ``cache replay synthesizes a matching start for a completion captured after 
     }
     |> Async.RunSynchronously
 
+[<Fact(Timeout = 30000)>]
+let ``a completion captured without its start is cached with the start its run really had`` () =
+    // A replay stamped "now, less the run's length" could postdate every report the
+    // original run wrote, so a coverage check on an unchanged tree read them as stale
+    // (AUTOMATION-1530). The capture is the last moment that arithmetic is true.
+    let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+    let cacheKey = ContentHash.create "capture-start"
+    let elapsed = System.TimeSpan.FromSeconds 60.0
+
+    let completed: TestRunCompleted =
+        { RunId = System.Guid.NewGuid()
+          TotalElapsed = elapsed
+          Outcome = TestRunOutcome.Normal
+          Results = Map.empty
+          Verification = Ran RunScope.FullSuite }
+
+    let replayedStarts = System.Collections.Concurrent.ConcurrentQueue<TestRunStarted>()
+
+    let handler: PluginHandler<unit, unit> =
+        { Name = PluginName.create "capture-start"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.EmitTestRunCompleted completed
+                        ctx.ReportStatus(PluginStatus.completedNow "done" System.TimeSpan.Zero)
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          PrepareCommit = None
+          CacheKey = Some(fun _ _ -> Some cacheKey)
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { defaultServices with
+                EmitTestRunStarted = replayedStarts.Enqueue
+                TaskCache = Some cache }
+            handler
+
+    let before = System.DateTime.UtcNow
+    dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
+    let after = System.DateTime.UtcNow
+
+    let entry =
+        cache.TryGet
+            { Plugin = "capture-start"
+              File = None }
+            cacheKey
+
+    test <@ entry.IsSome @>
+
+    let captured =
+        entry.Value.EmittedEvents
+        |> List.choose (function
+            | TaskCache.CachedTestRunStarted started -> Some started
+            | _ -> None)
+
+    test <@ captured.Length = 1 @>
+    test <@ captured.Head.RunId = completed.RunId @>
+    test <@ captured.Head.StartedAt >= before - elapsed @>
+    test <@ captured.Head.StartedAt <= after - elapsed @>
+
+    // The live run's start is the plugin's to emit; the capture must not add a second one.
+    test <@ replayedStarts.IsEmpty @>
+
+    // A replay, whenever it happens, reports that same start.
+    dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
+    test <@ replayedStarts |> Seq.map _.StartedAt |> Seq.toList = [ captured.Head.StartedAt ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``a run started outside the capture window is cached with the start it was launched with`` () =
+    // TestPrune emits the start before the host launches and the completion from a later,
+    // cached event. Its reused projects rewrite their reports in the run's first second,
+    // and the completion is emitted a moment after the run's clock stops, so "now less
+    // elapsed" still landed after those reports (AUTOMATION-1530).
+    let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+    let cacheKey = ContentHash.create "live-start"
+    let runId = System.Guid.NewGuid()
+    let launchedAt = System.DateTime.UtcNow.AddMinutes -10.0
+
+    let completed: TestRunCompleted =
+        { RunId = runId
+          TotalElapsed = System.TimeSpan.FromSeconds 1.0
+          Outcome = TestRunOutcome.Normal
+          Results = Map.empty
+          Verification = Ran RunScope.FullSuite }
+
+    let startPath = "/tmp/repo/Start.fs"
+
+    let handler: PluginHandler<unit, unit> =
+        { Name = PluginName.create "live-start"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged(SourceChanged [ path ]) when path = startPath ->
+                        ctx.EmitTestRunStarted
+                            { RunId = runId
+                              StartedAt = launchedAt }
+                    | FileChanged _ ->
+                        ctx.EmitTestRunCompleted completed
+                        ctx.ReportStatus(PluginStatus.completedNow "done" System.TimeSpan.Zero)
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          PrepareCommit = None
+          CacheKey =
+            Some(fun _ event ->
+                match event with
+                | FileChanged(SourceChanged [ path ]) when path = startPath -> None
+                | _ -> Some cacheKey)
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { defaultServices with
+                TaskCache = Some cache }
+            handler
+
+    dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ startPath ]))
+    dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "/tmp/repo/Finish.fs" ]))
+
+    let entry = cache.TryGet { Plugin = "live-start"; File = None } cacheKey
+    test <@ entry.IsSome @>
+
+    let captured =
+        entry.Value.EmittedEvents
+        |> List.choose (function
+            | TaskCache.CachedTestRunStarted started -> Some started.StartedAt
+            | _ -> None)
+
+    test <@ captured = [ launchedAt ] @>
+
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``RunExclusive releases slot when work raises and logs without re-posting completion`` () =
     // When work throws, completion stays ValueNone (no Custom message posted) and the slot

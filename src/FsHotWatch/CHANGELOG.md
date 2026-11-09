@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a repeated `check` on an unchanged tree no longer goes red on coverage (AUTOMATION-1530). A test run replayed from the
+  cache said it started "now, less its length", which could be later than the coverage report the original run wrote, so the
+  report read as stale. The cache now records the run's real start and reads it back as UTC; it had come back as local time, which made every
+  report read as older east of Greenwich. A report that is really missing is still refused.
+
 - fix: a run asked for before a daemon's first discovery has begun waits for the model instead of launching without one
   (AUTOMATION-887). A cold daemon serves first and its startup scan restores before it discovers, so `ProjectModel()` read
   `Unobserved` for those seconds, and a launch only waited on `Rediscovering`. The run took its reading as "no model",
