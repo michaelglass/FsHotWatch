@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: a dependency fanout whose projects already hold evidence at these inputs launches no run (AUTOMATION-1534). It force-ran them,
+  reused every receipt and still paid for `beforeRun` and the run's bookkeeping, about 2 minutes after `confirm --fresh` on a large
+  repository. A project with no reusable evidence still runs in full.
+
 - fix: traces from a run that finishes during a cold daemon's boot scan are no longer joined against a half-built symbol index
   (AUTOMATION-1532). Ingestion waited for the analysis events already admitted, but the scan was still checking files and the index
   is written when its cohort flushes, so every union case and type in the rest of the tree read as not indexed and no test had a

@@ -120,6 +120,38 @@ type internal LaunchWidenings =
       LaunchedRevisions: Map<string, int64> }
 
 /// The widenings every impact launch applies, logged, and the symbols and revisions it launches against.
+/// The fanout left once projects that hold evidence at these inputs are taken out. A
+/// fanout force-runs a project, and the launch then reuses that evidence anyway, so such
+/// a project gives a run nothing to do. Taking it out here lets a cycle with nothing else
+/// owed end at the zero-affected skip rather than pay for a launch (AUTOMATION-1534).
+let internal undischargedFanout
+    (env: RunEnv)
+    ctx
+    (configs: TestConfig list)
+    (inputs: TestRunInputs)
+    (fanout: Set<string>)
+    =
+    if
+        Set.isEmpty fanout
+        || TestMode.requestsFullSuite inputs.Mode
+        || inputs.Debt.RecoveryOutstanding
+    then
+        fanout
+    else
+        match env.Launch.EvidencePlanFor ctx configs fanout.Contains true inputs.OutstandingFailures with
+        | None -> fanout
+        | Some plan ->
+            let held = fanout |> Set.filter plan.Reused.ContainsKey
+
+            if not held.IsEmpty then
+                let names = String.concat "; " held
+
+                Logging.info
+                    "test-prune"
+                    $"Dependency fanout: %d{held.Count} project(s) already hold evidence at these inputs, not force-run: %s{names}"
+
+            Set.difference fanout held
+
 let internal widenLaunch
     (env: RunEnv)
     (ctx: PluginCtx<TestPruneMsg>)

@@ -900,3 +900,63 @@ let ``a settled test-scope reply names the outcome key each project's full run o
                     key = keys[project]
                     || (outcomes.Lookup(Option.get (ActionKey.KeyValue.tryParse key))).IsNone)
             @>)
+
+// ---------------------------------------------------------------------------
+// A dependency fanout whose every project already holds evidence at these inputs
+// (AUTOMATION-1534). The cycle reused every receipt and still paid for a launch: the
+// beforeRun steps, the freshness gates, and a whole run's bookkeeping.
+// ---------------------------------------------------------------------------
+
+/// A checkout that counts its beforeRun steps, which only a launched run takes.
+let private countingCheckout (root: string) (evidence: TestEvidenceRun.Wiring option) =
+    let launches = ref 0
+
+    let c =
+        checkoutSetUp
+            None
+            (Some(fun _ _ -> System.Threading.Interlocked.Increment launches |> ignore))
+            true
+            root
+            evidence
+            false
+
+    c, launches
+
+/// The file a referenced project's restored package graph lives in. Build output, so it
+/// is outside the verdict tree, and the dependency fingerprint reads it.
+let private assetsFile (root: string) =
+    Path.Combine(root, "src", libs.Head, "obj", "project.assets.json")
+
+let private seedAssets (root: string) =
+    Directory.CreateDirectory(Path.GetDirectoryName(assetsFile root)) |> ignore
+    File.WriteAllText(assetsFile root, "{\"version\":1}")
+
+/// Rewrites what the fingerprint reads and nothing the symbol diff or tree can see.
+let private moveFingerprint (root: string) =
+    File.WriteAllText(assetsFile root, "{\"version\":2}")
+
+[<Fact(Timeout = RunsTestCapMs)>]
+let ``a dependency fanout every project of which holds evidence launches no run`` () =
+    withRepo (fun store rootNamed ->
+        let root = rootNamed "a"
+        seedAssets root
+        let c, launches = countingCheckout root (Some(wiringFor store))
+        run c |> ignore
+        test <@ launches.Value = 1 @>
+
+        moveFingerprint c.Root
+        run c |> ignore
+        test <@ launches.Value = 1 @>)
+
+[<Fact(Timeout = RunsTestCapMs)>]
+let ``a dependency fanout with no evidence still force-runs (positive control)`` () =
+    withRepo (fun _ rootNamed ->
+        let root = rootNamed "a"
+        seedAssets root
+        let c, launches = countingCheckout root None
+        run c |> ignore
+        test <@ launches.Value = 1 @>
+
+        moveFingerprint c.Root
+        run c |> ignore
+        test <@ launches.Value = 2 @>)
