@@ -2973,6 +2973,15 @@ let internal deadPluginMessage (log: string) (name: string) (crash: exn) : strin
     + $"The crash: %s{crash.Message}. "
     + $"This is a bug in fshw, not in the tree being checked. See %s{log} for the full stack, then `fshw stop` to reclaim the daemon."
 
+/// The failure a wait raises for a DEAD plugin: logged here, so the daemon has a line of its
+/// own for what the client is about to be told.
+let internal deadPluginFailure (name: string) (crash: exn) : exn =
+    let message = deadPluginMessage (Logging.logPointer ()) name crash
+
+    // The message points the reader at the log, so the log holds it.
+    Logging.error "wait" message
+    System.TimeoutException message
+
 let formatPluginWait
     (now: System.DateTime)
     (pluginName: string)
@@ -3255,7 +3264,7 @@ let private waitCoreWith
         // certain one — no threshold, no inference from silence. Everything below
         // is the heuristic backstop for a stall nobody reported.
         match host.FaultedPlugins() with
-        | (name, ex) :: _ -> raise (System.TimeoutException(deadPluginMessage (Logging.logPointer ()) name ex))
+        | (name, ex) :: _ -> raise (deadPluginFailure name ex)
         | [] ->
 
             // Cheapest test first, and the one that is almost always false.
