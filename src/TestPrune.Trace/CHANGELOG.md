@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.9.1 - 2026-11-09
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.9.0 - 2026-11-08
 
 - feat: symbol-level mutation judging (AUTOMATION-1497). `Mutation.runWith ... (Some index)` ingests the baseline and

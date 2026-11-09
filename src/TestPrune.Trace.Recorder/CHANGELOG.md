@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.9.1 - 2026-11-09
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.9.0 - 2026-11-08
 
 - feat: `Reflect` shims note union reflection (`type` inputs) and assembly type sweeps (`types` inputs), and

@@ -803,3 +803,30 @@ let ``LIVE: a grandchild that ignores SIGTERM, left by a root already gone, is r
         gate.Set()
         signalPid grandchild 9 |> ignore
         cleanUp p
+
+/// What `sh` reports about itself: its pid and its process group.
+let private pidAndGroup (outcome: ProcessOutcome) =
+    match outcome with
+    | Succeeded output ->
+        match (ProcessOutput.text output).Split(' ', StringSplitOptions.RemoveEmptyEntries) with
+        | [| pid; group |] -> pid, group
+        | other -> failwith $"unexpected output: %A{other}"
+    | other -> failwith $"the child did not succeed: %A{other}"
+
+// A wrapped child's refused exec reaches the caller as an exit, not a Win32Exception, so
+// the wrapper is only for the spawns escalation needs a group for. A plain spawn stays
+// direct: FileCommand retries a refusal it sees as ETXTBSY.
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``only an accounted spawn leads its own process group`` () =
+    let script = "-c \"echo $$ $(ps -o pgid= -p $$)\""
+    let bounds = ProcessBounds.silent (TimeSpan.FromSeconds 30.0)
+
+    let plainPid, plainGroup = pidAndGroup (runProcess "sh" script "/tmp" [] bounds)
+    Assert.NotEqual<string>(plainPid, plainGroup)
+
+    // A caller with a terminal keeps its children in its own group (see `ownProcessGroup`).
+    if Console.IsInputRedirected then
+        let accountedPid, accountedGroup =
+            pidAndGroup (fst (runProcessAccounted None "sh" script "/tmp" [] bounds))
+
+        Assert.Equal<string>(accountedPid, accountedGroup)

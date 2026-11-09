@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 16.0.0 - 2026-11-09
+
 - feat: the affected-test walk names the projects the composition-root fail-safe restored (AUTOMATION-1515).
   `QueryAffectedSelection` answers the rows with `RestoredProjects`, judged per seed like the fail-safe itself; an
   index with no marker, or a seed whose walk crosses none, restores nothing. **BREAKING (API):** `Ports.SymbolStore`
