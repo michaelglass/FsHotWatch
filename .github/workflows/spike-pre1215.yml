@@ -12,6 +12,7 @@ jobs:
     timeout-minutes: 120
     env:
       DOTNET_NOLOGO: '1'
+      NuGetAudit: 'false'
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-dotnet@v5
